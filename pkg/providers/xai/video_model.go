@@ -49,7 +49,7 @@ func (m *VideoModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *VideoModel) Provider() string {
-	return "xai"
+	return "xai.video"
 }
 
 // ModelID returns the model ID

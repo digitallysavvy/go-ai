@@ -33,7 +33,7 @@ func (m *RerankingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *RerankingModel) Provider() string {
-	return "cohere"
+	return "cohere.reranking"
 }
 
 // ModelID returns the model ID

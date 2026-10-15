@@ -40,7 +40,7 @@ func NewTranscriptionModel(p *Provider, modelID string) *TranscriptionModel {
 func (m *TranscriptionModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *TranscriptionModel) Provider() string { return "elevenlabs" }
+func (m *TranscriptionModel) Provider() string { return "elevenlabs.transcription" }
 
 // ModelID returns the model ID.
 func (m *TranscriptionModel) ModelID() string { return m.modelID }

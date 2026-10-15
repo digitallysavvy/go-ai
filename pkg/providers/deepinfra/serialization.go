@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("deepinfra", deserializeLanguageModel)
+	provider.RegisterModelDeserializer("deepinfra.chat", deserializeLanguageModel)
 	provider.RegisterImageModelDeserializer("deepinfra", deserializeImageModel)
+	provider.RegisterImageModelDeserializer("deepinfra.image", deserializeImageModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

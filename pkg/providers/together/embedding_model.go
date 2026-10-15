@@ -32,7 +32,7 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "together"
+	return "togetherai.embedding"
 }
 
 // ModelID returns the model ID

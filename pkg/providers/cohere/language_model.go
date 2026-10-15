@@ -40,7 +40,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "cohere"
+	return "cohere.chat"
 }
 
 // ModelID returns the model ID

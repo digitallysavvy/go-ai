@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("cohere", deserializeModel)
+	provider.RegisterModelDeserializer("cohere.chat", deserializeModel)
 	provider.RegisterEmbeddingModelDeserializer("cohere", deserializeEmbeddingModel)
+	provider.RegisterEmbeddingModelDeserializer("cohere.textEmbedding", deserializeEmbeddingModel)
 }
 
 func (m *LanguageModel) Serialize() provider.SerializedModel {

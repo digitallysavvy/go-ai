@@ -44,7 +44,7 @@ func (m *TranscriptionModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *TranscriptionModel) Provider() string {
-	return "gladia"
+	return "gladia.transcription"
 }
 
 // ModelID returns the model ID

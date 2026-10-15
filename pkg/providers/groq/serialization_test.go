@@ -13,14 +13,14 @@ func TestGroqSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := modelAny.(*LanguageModel).Serialize()
-	if serialized.Provider != "groq" || serialized.ModelID != "llama-3.3-70b-versatile" || serialized.Config == nil {
+	if serialized.Provider != "groq.chat" || serialized.ModelID != "llama-3.3-70b-versatile" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	restored, err := deserializeModel(serialized)
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "groq" || restored.ModelID() != "llama-3.3-70b-versatile" {
+	if restored.Provider() != "groq.chat" || restored.ModelID() != "llama-3.3-70b-versatile" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
@@ -32,7 +32,7 @@ func TestGroqSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
 	serialized := modelAny.(*TranscriptionModel).Serialize()
-	if serialized.Provider != "groq" || serialized.ModelID != "whisper-large-v3" {
+	if serialized.Provider != "groq.transcription" || serialized.ModelID != "whisper-large-v3" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -43,7 +43,7 @@ func TestGroqSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeTranscriptionModel error = %v", err)
 	}
-	if restored.Provider() != "groq" || restored.ModelID() != "whisper-large-v3" {
+	if restored.Provider() != "groq.transcription" || restored.ModelID() != "whisper-large-v3" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 

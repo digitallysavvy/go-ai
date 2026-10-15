@@ -30,7 +30,7 @@ func NewRerankingModel(provider *Provider, modelID string) *RerankingModel {
 func (m *RerankingModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *RerankingModel) Provider() string { return "together" }
+func (m *RerankingModel) Provider() string { return "togetherai.reranking" }
 
 // ModelID returns the model ID.
 func (m *RerankingModel) ModelID() string { return m.modelID }

@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("gmicloud", deserializeModel)
+	provider.RegisterModelDeserializer("gmicloud.chat", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

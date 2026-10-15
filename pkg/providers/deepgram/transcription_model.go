@@ -36,7 +36,7 @@ func (m *TranscriptionModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *TranscriptionModel) Provider() string {
-	return "deepgram"
+	return "deepgram.transcription"
 }
 
 // ModelID returns the model ID

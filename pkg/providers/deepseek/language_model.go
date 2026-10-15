@@ -43,8 +43,15 @@ func (m *LanguageModel) SpecificationVersion() string {
 }
 
 // Provider returns the provider name
+//
+// Mirrors TS config.provider: "deepseek.chat" by default; a host that
+// supplies its own Config.Name (for example azure's "azure.deepseek")
+// provides the full identifier.
 func (m *LanguageModel) Provider() string {
-	return m.provider.Name()
+	if m.provider.config.Name != "" {
+		return m.provider.config.Name
+	}
+	return "deepseek.chat"
 }
 
 // ModelID returns the model ID

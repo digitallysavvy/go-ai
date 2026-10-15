@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterModelDeserializer("alibaba", deserializeLanguageModel)
+	provider.RegisterModelDeserializer("alibaba.chat", deserializeLanguageModel)
 	provider.RegisterEmbeddingModelDeserializer("alibaba.embedding", deserializeEmbeddingModel)
 }
 

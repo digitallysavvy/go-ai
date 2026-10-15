@@ -32,7 +32,7 @@ func TestCohereProviderSurfaceAndEmbeddingFactory(t *testing.T) {
 		t.Fatal("expected empty embedding model error")
 	}
 	rm, err := p.RerankingModel("rerank-v3.5")
-	if err != nil || rm.Provider() != "cohere" {
+	if err != nil || rm.Provider() != "cohere.reranking" {
 		t.Fatalf("reranking model error=%v model=%#v", err, rm)
 	}
 }
@@ -53,7 +53,7 @@ func TestCohereEmbeddingModelDoEmbedMany(t *testing.T) {
 	})
 	d := Dimension1024
 	model := NewEmbeddingModel(p, "embed-v4", EmbeddingOptions{OutputDimension: &d, InputType: InputTypeSearchDocument})
-	if model.SpecificationVersion() != "v4" || model.Provider() != "cohere" || model.ModelID() != "embed-v4" {
+	if model.SpecificationVersion() != "v4" || model.Provider() != "cohere.textEmbedding" || model.ModelID() != "embed-v4" {
 		t.Fatalf("metadata mismatch")
 	}
 	if model.MaxEmbeddingsPerCall() != 96 || !model.SupportsParallelCalls() {
@@ -117,7 +117,7 @@ data: [DONE]
 		}, nil
 	})
 	lm := NewLanguageModel(p, "command-r-plus")
-	if lm.SpecificationVersion() != "v4" || lm.Provider() != "cohere" || lm.ModelID() != "command-r-plus" {
+	if lm.SpecificationVersion() != "v4" || lm.Provider() != "cohere.chat" || lm.ModelID() != "command-r-plus" {
 		t.Fatalf("metadata mismatch")
 	}
 	if !lm.SupportsTools() || !lm.SupportsStructuredOutput() || !lm.SupportsImageInput() {

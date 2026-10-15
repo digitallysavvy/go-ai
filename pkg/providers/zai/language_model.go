@@ -39,7 +39,7 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *LanguageModel) Provider() string { return "zai" }
+func (m *LanguageModel) Provider() string { return "zai.chat" }
 
 // ModelID returns the model ID.
 func (m *LanguageModel) ModelID() string { return m.modelID }

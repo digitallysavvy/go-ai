@@ -43,7 +43,7 @@ func NewImageModel(p *Provider, modelID, baseURL, editBaseURL string) *ImageMode
 func (m *ImageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *ImageModel) Provider() string { return "deepinfra" }
+func (m *ImageModel) Provider() string { return "deepinfra.image" }
 
 // ModelID returns the model ID.
 func (m *ImageModel) ModelID() string { return m.modelID }

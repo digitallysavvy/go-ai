@@ -38,7 +38,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "alibaba"
+	return "alibaba.chat"
 }
 
 // ModelID returns the model ID

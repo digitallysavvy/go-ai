@@ -13,7 +13,7 @@ func TestAlibabaLanguageModelMetadataAndCapabilities(t *testing.T) {
 	if model.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
-	if model.Provider() != "alibaba" {
+	if model.Provider() != "alibaba.chat" {
 		t.Fatalf("Provider() = %q", model.Provider())
 	}
 	if model.ModelID() != "qwen-plus" {

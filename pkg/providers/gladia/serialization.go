@@ -8,6 +8,7 @@ import (
 
 func init() {
 	provider.RegisterTranscriptionModelDeserializer("gladia", deserializeModel)
+	provider.RegisterTranscriptionModelDeserializer("gladia.transcription", deserializeModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

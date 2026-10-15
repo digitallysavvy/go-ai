@@ -51,7 +51,7 @@ func TestMistralTranscriptionModelDoTranscribe(t *testing.T) {
 	})
 
 	m := NewTranscriptionModel(p, "voxtral-mini-latest")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "mistral" || m.ModelID() != "voxtral-mini-latest" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "mistral.transcription" || m.ModelID() != "voxtral-mini-latest" {
 		t.Fatalf("metadata mismatch")
 	}
 

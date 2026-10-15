@@ -13,7 +13,7 @@ import (
 func TestEmbeddingModelBasics(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewEmbeddingModel(p, "embed-model")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "together" || m.ModelID() != "embed-model" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "togetherai.embedding" || m.ModelID() != "embed-model" {
 		t.Fatalf("unexpected model metadata")
 	}
 	if m.MaxEmbeddingsPerCall() != 2048 || !m.SupportsParallelCalls() {

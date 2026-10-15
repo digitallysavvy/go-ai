@@ -39,7 +39,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "moonshot"
+	return "moonshotai.chat"
 }
 
 // ModelID returns the model ID

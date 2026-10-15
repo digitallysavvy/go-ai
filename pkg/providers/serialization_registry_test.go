@@ -120,6 +120,28 @@ func modelIDFor(key string) string {
 // the test only asserts that deserialization succeeds; it does not require
 // Provider() == key.
 var registryAliasKeys = map[string]string{
+	// Pre-TS-parity provider ids: models serialized before Provider() followed
+	// TS config.provider (for example groq.chat) carry the bare name. The bare
+	// key stays registered so those payloads restore under the TS id.
+	"groq": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"cerebras": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"fireworks": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"together": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"alibaba": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepinfra": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"moonshot": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepseek": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"gmicloud": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"zai": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"cohere": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"mistral": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"bfl": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"fal": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepgram": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"assemblyai": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"gladia": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"elevenlabs": "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"bfl.video": "pre-TS-parity serialization key, restores under the TS config.provider id",
 	// Payloads serialized before the evaluate -> decide rename carry the
 	// old TypeSafe provider tag; they restore as typesafe.decision.
 	"typesafe.evaluation": "pre-rename serialization key, restores as typesafe.decision",

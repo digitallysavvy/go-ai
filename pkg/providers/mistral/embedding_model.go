@@ -32,7 +32,7 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "mistral"
+	return "mistral.embedding"
 }
 
 // ModelID returns the model ID

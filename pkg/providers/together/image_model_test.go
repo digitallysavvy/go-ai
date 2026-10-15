@@ -12,7 +12,7 @@ import (
 func TestImageModelBuildRequestBodyAndConvertResponse(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewImageModel(p, "img-model")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "together" || m.ModelID() != "img-model" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "togetherai.image" || m.ModelID() != "img-model" {
 		t.Fatalf("unexpected model metadata")
 	}
 

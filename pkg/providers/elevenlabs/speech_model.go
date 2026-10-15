@@ -65,7 +65,7 @@ func (m *SpeechModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *SpeechModel) Provider() string {
-	return "elevenlabs"
+	return "elevenlabs.speech"
 }
 
 // ModelID returns the model ID

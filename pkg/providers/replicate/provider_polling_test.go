@@ -105,7 +105,7 @@ func TestReplicateVideoDoGeneratePollingNoVideo(t *testing.T) {
 		return nil, errors.New("unexpected request")
 	})
 	vm := NewVideoModel(p, "vid-ver:vid-version-id")
-	if vm.SpecificationVersion() != "v4" || vm.Provider() != "replicate" || vm.ModelID() != "vid-ver:vid-version-id" {
+	if vm.SpecificationVersion() != "v4" || vm.Provider() != "replicate.video" || vm.ModelID() != "vid-ver:vid-version-id" {
 		t.Fatalf("metadata mismatch")
 	}
 	if got := vm.MaxVideosPerCall(); got == nil || *got != 1 {

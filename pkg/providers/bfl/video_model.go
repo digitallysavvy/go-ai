@@ -36,7 +36,7 @@ func NewVideoModel(provider *Provider, modelID string) *VideoModel {
 func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name
-func (m *VideoModel) Provider() string { return "bfl.video" }
+func (m *VideoModel) Provider() string { return "black-forest-labs.video" }
 
 // ModelID returns the model ID
 func (m *VideoModel) ModelID() string { return m.modelID }

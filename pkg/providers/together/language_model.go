@@ -37,7 +37,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "together"
+	return "togetherai.chat"
 }
 
 // ModelID returns the model ID

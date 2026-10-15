@@ -38,7 +38,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "groq"
+	return "groq.chat"
 }
 
 // ModelID returns the model ID

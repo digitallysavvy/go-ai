@@ -41,7 +41,7 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "cohere"
+	return "cohere.textEmbedding"
 }
 
 // ModelID returns the model ID
