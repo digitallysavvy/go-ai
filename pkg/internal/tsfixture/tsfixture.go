@@ -825,11 +825,14 @@ func readCaseFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	zr, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, err
 	}
-	defer zr.Close()
-	return io.ReadAll(zr)
+	b, err := io.ReadAll(zr)
+	if cerr := zr.Close(); err == nil {
+		err = cerr
+	}
+	return b, err
 }
