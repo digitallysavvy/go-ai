@@ -982,6 +982,10 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 			hasNonText = true
 		}
 	}
+	// TS reports every text block (and every citation text) as its own part.
+	if len(ordered) > 1 {
+		hasNonText = true
+	}
 	if hasNonText {
 		result.Content = ordered
 	}

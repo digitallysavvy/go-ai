@@ -36,6 +36,8 @@ type Case struct {
 	CallArgs    string                 `json:"callArgs"`
 	Call        map[string]interface{} `json:"call"`
 	Exps        []Expectation          `json:"exps"`
+	Asserts     []Assertion            `json:"asserts"`
+	Aliases     map[string]string      `json:"aliases"`
 }
 
 // Response is the canned wire response.
@@ -46,6 +48,8 @@ type Response struct {
 	Name   string          `json:"name"`
 	Raw    string          `json:"raw"` // fixture file content
 	Error  string          `json:"error"`
+	// Headers the TS test server sent with the response.
+	Headers map[string]string `json:"headers"`
 }
 
 // Expectation is one snapshot assertion.
@@ -81,6 +85,9 @@ var StreamBodyEncoder func(lines []string) (contentType string, body []byte)
 func (c Case) handler() http.HandlerFunc {
 	r := c.Response
 	return func(w http.ResponseWriter, req *http.Request) {
+		for k, v := range r.Headers {
+			w.Header().Set(k, v)
+		}
 		if StreamBodyEncoder != nil && (r.Kind == "chunks" || r.Kind == "fixture-chunks") {
 			var lines []string
 			src := r.Chunks
@@ -136,11 +143,14 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				t.Skip(why)
 			}
 			var reqBody interface{}
+			var reqs []request
 			h := c.handler()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if reqBody == nil {
-					b, _ := io.ReadAll(r.Body)
-					_ = json.Unmarshal(b, &reqBody)
+				b, _ := io.ReadAll(r.Body)
+				rq := newRequest(b, r.Header, "http://"+r.Host+r.URL.RequestURI(), r.Method)
+				reqs = append(reqs, rq)
+				if len(reqs) == 1 {
+					reqBody = rq.body
 				}
 				h(w, r)
 			}))
@@ -154,12 +164,25 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 			var content interface{}
 			var stream []interface{}
 			var res *types.GenerateResult
+			resultMap := map[string]interface{}{}
 			if c.CallKind == "stream" {
 				s, err := m.DoStream(ctx, opts)
 				if err != nil {
 					t.Fatalf("DoStream: %v", err)
 				}
-				stream = CanonStream(StreamToTS(drain(s)))
+				chunks := drain(s)
+				raw := StreamToTS(chunks)
+				stream = CanonStream(raw)
+				resultMap["stream"] = raw
+				if rb, ok := s.(provider.StreamRequestBody); ok {
+					resultMap["request"] = map[string]interface{}{"body": rb.RequestBody()}
+				}
+				for _, ch := range chunks {
+					if ch.Type == provider.ChunkTypeResponseMetadata && ch.ResponseMetadata != nil && len(ch.ResponseMetadata.Headers) > 0 {
+						resultMap["response"] = map[string]interface{}{"headers": lowerHeaders(ch.ResponseMetadata.Headers)}
+						break
+					}
+				}
 			} else {
 				var err error
 				res, err = m.DoGenerate(ctx, opts)
@@ -167,6 +190,37 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					t.Fatalf("DoGenerate: %v", err)
 				}
 				content = GenerateContentToTS(res)
+				resultMap["content"] = content
+				resultMap["usage"] = UsageToTS(res.Usage)
+				resultMap["finishReason"] = map[string]interface{}{"raw": nilIfEmpty(res.RawFinishReason), "unified": string(res.FinishReason)}
+				warnings := make([]interface{}, 0, len(res.Warnings))
+				for _, w := range res.Warnings {
+					v := jsonValue(w)
+					if m, ok := v.(map[string]interface{}); ok && m["type"] != "other" {
+						delete(m, "message") // Go also mirrors details there for old callers
+					}
+					warnings = append(warnings, v)
+				}
+				resultMap["warnings"] = warnings
+				resultMap["providerMetadata"] = res.ProviderMetadata
+				resultMap["request"] = map[string]interface{}{"body": res.RawRequest}
+				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders)}
+				if m := res.ResponseMetadata; m != nil {
+					if m.ID != "" {
+						resp["id"] = m.ID
+					}
+					if m.ModelID != "" {
+						resp["modelId"] = m.ModelID
+					}
+					if !m.Timestamp.IsZero() {
+						resp["timestamp"] = m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
+					}
+				}
+				resultMap["response"] = resp
+			}
+			roots := map[string]interface{}{
+				"result": resultMap,
+				"server": map[string]interface{}{"calls": reqs},
 			}
 			for _, e := range c.Exps {
 				var got interface{}
@@ -189,7 +243,14 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				case (e.Expr == "result.finishReason" || e.Expr == "response.finishReason") && res != nil:
 					got = map[string]interface{}{"raw": nilIfEmpty(res.RawFinishReason), "unified": string(res.FinishReason)}
 				default:
-					continue
+					if e.Expr == "result" || e.Expr == "response" {
+						continue // whole-result snapshots include wire details Go does not expose
+					}
+					v, ok := evalPath(roots, c.Aliases, e.Expr)
+					if !ok {
+						continue
+					}
+					got = jsonValue(v)
 				}
 				snap := e.Snap
 				if m, ok := snap.(map[string]interface{}); ok && m["__err"] != nil {
@@ -203,6 +264,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					t.Errorf("%s: mismatch vs TS snapshot (- TS, + Go):\n%s", e.Expr, d)
 				}
 			}
+			runAsserts(t, c, roots)
 		})
 	}
 }
@@ -491,6 +553,10 @@ var MetadataKeyAlias map[string]string
 // name) to the name the TS test registered them under.
 var ToolNameAlias map[string]string
 
+// PromptToolNameAlias maps the tool names a TS prompt uses to the names the Go
+// provider knows the tools by (the reverse of ToolNameAlias).
+var PromptToolNameAlias map[string]string
+
 // DropResponseTimestamp omits the response-metadata timestamp from stream
 // parts, for providers where TS reports none.
 var DropResponseTimestamp bool
@@ -730,7 +796,19 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 		}
 		return nil
 	}
-	for k, v := range call {
+	// tools first: their hook may register names the prompt refers to
+	keys := make([]string, 0, len(call))
+	for k := range call {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if (keys[i] == "tools") != (keys[j] == "tools") {
+			return keys[i] == "tools"
+		}
+		return keys[i] < keys[j]
+	})
+	for _, k := range keys {
+		v := call[k]
 		switch k {
 		case "prompt":
 			msgs, why := buildPrompt(v)
@@ -852,7 +930,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				msg.Content = append(msg.Content, types.ReasoningContent{Text: p["text"].(string), ProviderOptions: po})
 			case "tool-call":
 				in := p["input"]
-				tc := types.ToolCallContent{ToolCallID: p["toolCallId"].(string), ToolName: p["toolName"].(string), ProviderOptions: po}
+				tc := types.ToolCallContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
 				if str, ok := in.(string); ok {
 					tc.Input = str
 					_ = json.Unmarshal([]byte(str), &tc.Arguments)
@@ -890,7 +968,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				}
 				msg.Content = append(msg.Content, fc)
 			case "tool-result":
-				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: p["toolName"].(string), ProviderOptions: po}
+				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
 				if out, ok := p["output"].(map[string]interface{}); ok {
 					o := &types.ToolResultOutput{Type: types.ToolResultOutputType(out["type"].(string))}
 					switch o.Type {
@@ -936,4 +1014,23 @@ func readCaseFile(path string) ([]byte, error) {
 func stringOf(v interface{}) string {
 	s, _ := v.(string)
 	return s
+}
+
+func lowerHeaders(h map[string]string) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range h {
+		lk := strings.ToLower(k)
+		if lk == "date" || lk == "content-length" {
+			continue // added by the Go test server / transport, not by the TS mock
+		}
+		out[lk] = v
+	}
+	return out
+}
+
+func promptToolName(name string) string {
+	if n, ok := PromptToolNameAlias[name]; ok {
+		return n
+	}
+	return name
 }

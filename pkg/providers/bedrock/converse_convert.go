@@ -892,7 +892,12 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 		if err != nil {
 			return nil, false, err
 		}
-		return map[string]interface{}{"image": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}}, true, nil
+		imageBlock := map[string]interface{}{"image": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}}
+		// TS: providerOptions.bedrock.guardContent wraps an inline image part.
+		if bedrockImageGuardContentOptions(file.ProviderOptions) {
+			return map[string]interface{}{"guardContent": imageBlock}, true, nil
+		}
+		return imageBlock, true, nil
 	case "video":
 		format, err := bedrockVideoFormat(mediaType)
 		if err != nil {

@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -346,13 +347,22 @@ func TestPerCall_ContextManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareRequest: %v", err)
 	}
-	cm, ok := req.body["context_management"].(*ContextManagement)
-	if !ok || len(cm.Edits) != 1 {
-		t.Fatalf("context_management = %#v, want one edit", req.body["context_management"])
+	// The request body uses the API's snake_case names (TS maps clearToolInputs
+	// to clear_tool_inputs and excludeTools to exclude_tools).
+	cm, ok := req.body["context_management"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("context_management = %#v", req.body["context_management"])
 	}
-	edit, ok := cm.Edits[0].(*ClearToolUsesEdit)
-	if !ok || edit.ClearToolInputs == nil || !*edit.ClearToolInputs || len(edit.ExcludeTools) != 1 || edit.ExcludeTools[0] != "keep_me" {
-		t.Fatalf("edit = %#v", cm.Edits[0])
+	edits, _ := cm["edits"].([]map[string]interface{})
+	if len(edits) != 1 {
+		t.Fatalf("context_management = %#v, want one edit", cm)
+	}
+	edit := edits[0]
+	if edit["clear_tool_inputs"] != true || !reflect.DeepEqual(edit["exclude_tools"], []string{"keep_me"}) {
+		t.Fatalf("edit = %#v", edit)
+	}
+	if _, camel := edit["clearToolInputs"]; camel {
+		t.Fatalf("camelCase option name leaked into the request: %#v", edit)
 	}
 	found := false
 	for _, b := range req.betas {

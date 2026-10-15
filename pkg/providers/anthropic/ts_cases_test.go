@@ -15,7 +15,7 @@ import (
 func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, bool) {
 	if len(args) == 0 {
 		if _, ok := anthropicBuiltinToolTypes[id]; ok {
-			tsfixture.ToolNameAlias[id] = name
+			tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
 			return types.Tool{Name: id, ProviderID: id, Type: "provider"}, true
 		}
 		var t types.Tool
@@ -27,7 +27,7 @@ func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, b
 		default:
 			return t, false
 		}
-		tsfixture.ToolNameAlias[id] = name
+		tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
 		return t, true
 	}
 	raw, _ := json.Marshal(args)
@@ -54,28 +54,32 @@ func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, b
 	default:
 		return t, false
 	}
-	tsfixture.ToolNameAlias[id] = name
+	tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
 	return t, true
 }
 
 func TestTSCasesLanguage(t *testing.T) {
 	tsfixture.ProviderToolHook = tsProviderTool
-	tsfixture.ToolNameAlias = map[string]string{}
+	tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias = map[string]string{}, map[string]string{}
 	tsfixture.DropResponseTimestamp = true
-	defer func() { tsfixture.ToolNameAlias, tsfixture.DropResponseTimestamp = nil, false }()
+	defer func() {
+		tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias, tsfixture.DropResponseTimestamp = nil, nil, false
+	}()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/language.json.gz")
 	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
 		if id == "" {
 			id = "claude-3-haiku-20240307"
 		}
-		m, err := New(Config{APIKey: "k", BaseURL: base}).LanguageModel(id)
+		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).LanguageModel(id)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return m
 	}, map[string]string{
-		"should send the model id and settings":              "TS passes topK 0.1; Go TopK is an int",
-		"should process PDF citation responses":              "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
-		"should process PDF citation responses in streaming": "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
+		"should send the model id and settings":                                "TS passes topK 0.1; Go TopK is an int",
+		"should not strip temperature / topP / topK when thinking is disabled": "TS passes topK 0.1; Go TopK is an int",
+		"should pass headers":                                                  "the TS test sets provider-level headers on createAnthropic; the harness builds a default provider",
+		"should process PDF citation responses":                                "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
+		"should process PDF citation responses in streaming":                   "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
 	})
 }

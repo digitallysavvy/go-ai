@@ -404,7 +404,11 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		body["safeguards"] = sg
 	}
 	if o.ContextManagement != nil {
-		body["context_management"] = o.ContextManagement
+		cm, err := wireContextManagement(o.ContextManagement)
+		if err != nil {
+			return nil, err
+		}
+		body["context_management"] = cm
 	}
 	if o.Compaction != nil {
 		body["compaction"] = o.Compaction

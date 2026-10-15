@@ -13,6 +13,7 @@ import vm from 'vm';
 import path from 'path';
 
 const testFile = process.argv[2];
+const wantAsserts = process.argv.includes('--asserts');
 const src = fs.readFileSync(testFile, 'utf8');
 const snapPath = path.join(path.dirname(testFile), '__snapshots__', path.basename(testFile) + '.snap');
 let extSnaps = {};
@@ -135,7 +136,7 @@ function tpl(s, k) {
 // top-level consts (TEST_PROMPT, TEST_TOOLS, ...)
 const ctx = vm.createContext({ JSON, Date, Math, Buffer, Uint8Array, TextEncoder, URL, Object, Array, String, Number });
 {
-  const re = /^(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
+  const re = wantAsserts ? /^(?:export )?(?:const|let) (\w+)(?::[^=]+)?\s*=\s+/gm : /^(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
   let m;
   while ((m = re.exec(src))) {
     const k = m.index + m[0].length;
@@ -145,11 +146,25 @@ const ctx = vm.createContext({ JSON, Date, Math, Buffer, Uint8Array, TextEncoder
     if ('{[('.includes(src[j])) end = balanced(src, j); else end = src.indexOf('\n', j);
     let e2 = end;
     while (e2 < src.length && src[e2] !== ';' && src[e2] !== '\n') e2++;
-    try { vm.runInContext(`var ${m[1]} = (${stripTS(src.slice(k, e2))})`, ctx); } catch (e) { /* skip */ }
+    if (wantAsserts) { const se = stmtEnd(src, j); if (se > 0) e2 = se; }
+    try { vm.runInContext(`var ${m[1]} = (${stripTS(trimSemi(src.slice(k, e2)))})`, ctx); } catch (e) { /* skip */ }
   }
 }
 // strip TS-only syntax so the literal evaluates as JS
 function stripTS(s) { return s.replace(/\s+satisfies\s+[\w.]+(<[^>]*>)?/g, '').replace(/\s+as\s+const\b/g, ''); }
+// end of the statement that starts at j: the next ';' outside brackets/strings
+function stmtEnd(s, j) {
+  for (let k = j; k < s.length; k++) {
+    const c = s[k];
+    if (c === "'" || c === '"') { k++; while (k < s.length && s[k] !== c) { if (s[k] === '\\') k++; k++; } continue; }
+    if (c === '`') { k = tpl(s, k + 1); continue; }
+    if ('{[('.includes(c)) { const e = balanced(s, k); if (e < 0) return -1; k = e - 1; continue; }
+    if (c === ';') return k;
+  }
+  return -1;
+}
+// --asserts only: a one-line declaration's slice keeps its trailing ';'
+function trimSemi(s) { return wantAsserts ? s.replace(/;\s*$/, '') : s; }
 function evalExpr(s) { return vm.runInContext('(' + stripTS(s) + ')', ctx); }
 
 const re = /\n(\s*)(it|test)(?:\.each\([^)]*\))?\(\s*(['"`])((?:\\.|(?!\3).)*)\3/g;
@@ -172,6 +187,7 @@ const nestedDecls = [];
     if (end < 0) continue;
     let e2 = end;
     while (e2 < src.length && src[e2] !== ';' && src[e2] !== '\n') e2++;
+    if (wantAsserts) { const se = stmtEnd(src, j); if (se > 0) e2 = se; }
     nestedDecls.push({ pos: mN.index, indent: mN[1].length, name: mN[2], expr: src.slice(k, e2) });
   }
 }
@@ -203,7 +219,7 @@ for (let i = 0; i < starts.length; i++) {
   const saved = {};
   for (const d of scopedDecls(starts[i].idx, starts[i].line.length - 2)) {
     if (!(d.name in saved)) saved[d.name] = ctx[d.name];
-    try { vm.runInContext(`var ${d.name} = (${stripTS(d.expr)})`, ctx); } catch (e) { /* keep module value */ }
+    try { vm.runInContext(`var ${d.name} = (${stripTS(trimSemi(d.expr))})`, ctx); } catch (e) { /* keep module value */ }
   }
   let body0 = src.slice(starts[i].idx, i + 1 < starts.length ? starts[i + 1].idx : src.length);
   { const op = body0.indexOf('('); const e = op >= 0 ? balanced(body0, op) : -1; if (e > 0) body0 = body0.slice(0, e); }
@@ -266,9 +282,61 @@ for (let i = 0; i < starts.length; i++) {
     }
   }
 
+  // response headers the test server sends (--asserts only: they feed
+  // result.response.headers and the response id/timestamp)
+  if (wantAsserts && response) {
+    try {
+      let hdr = null;
+      const fxh = /prepare(?:Json|Chunks)FixtureResponse\(\s*['"][^'"]+['"]\s*,\s*\{/.exec(body);
+      if (fxh) {
+        const os = fxh.index + fxh[0].length - 1;
+        const objText = body.slice(os, balanced(body, os));
+        const hm = /\bheaders:\s*\{/.exec(objText);
+        if (hm) { const hs = hm.index + hm[0].length - 1; hdr = evalExpr(objText.slice(hs, balanced(objText, hs))); }
+      } else {
+        const tm = /type:\s*'(json-value|stream-chunks)'/.exec(body);
+        if (tm) {
+          const os = body.lastIndexOf('{', tm.index);
+          const oe = balanced(body, os);
+          if (os >= 0 && oe > 0) {
+            const objText = body.slice(os, oe);
+            const hm = /\bheaders:\s*\{/.exec(objText);
+            if (hm) { const hs = hm.index + hm[0].length - 1; hdr = evalExpr(objText.slice(hs, balanced(objText, hs))); }
+          }
+        }
+      }
+      if (hdr && typeof hdr === 'object') response.headers = JSON.parse(JSON.stringify(hdr));
+    } catch (err) { /* headers not evaluable */ }
+  }
+
   const mid = body.match(/(?:\.chat|\.deepseek|chatModel|languageModel|responses|\.completion|chatModelFor|createModel|\.responsesModel)\(\s*['"]([^'"]+)['"]/) ||
     body.match(/\bprovider\(\s*['"]([^'"]+)['"]/) || body.match(/\bmodelId:\s*['"]([^'"]+)['"]/);
   const call = body.match(/do(Generate|Stream)\(/);
+  // the model may be a variable declared earlier: const opusModel = provider('claude-opus-4-7')
+  let midVar = null;
+  {
+    const cv = /\b(\w+)\.do(?:Generate|Stream)\(/.exec(body);
+    if (cv && wantAsserts) {
+      const sc = scopedDecls(starts[i].idx, starts[i].line.length - 2).filter(d => d.name === cv[1]);
+      let last = sc.length ? sc[sc.length - 1].expr : null;
+      // a declaration inside the test body wins
+      const own = new RegExp('\\b(?:const|let)\\s+' + cv[1] + '\\s*=\\s*').exec(body0);
+      if (own) { const st = own.index + own[0].length; const se = stmtEnd(body0, st); if (se > st) last = body0.slice(st, se); }
+      if (last == null) {
+        const mg = new RegExp('^(?:export )?(?:const|let)\\s+' + cv[1] + '(?::[^=]+)?\\s*=\\s*([^;]*?);', 'm').exec(src);
+        if (mg) last = mg[1];
+      }
+      if (last) {
+        const ids = [...last.matchAll(/\(\s*['"]([^'"]+)['"]\s*[,)]/g)];
+        if (ids.length) midVar = ids[ids.length - 1][1];
+        else {
+          // new Model(modelIdConst, { ... }): the first argument is a const string
+          const am = /\bnew\s+\w+\(\s*([A-Za-z_$][\w$]*)\s*[,)]/.exec(last);
+          if (am) { try { const v = vm.runInContext(am[1], ctx); if (typeof v === 'string') midVar = v; } catch (e) { /* unresolved */ } }
+        }
+      }
+    }
+  }
   let callArgs = null, callKind = null, callObj = null;
   if (call) {
     callKind = call[1].toLowerCase();
@@ -322,7 +390,38 @@ for (let i = 0; i < starts.length; i++) {
     const ms = [...pre.matchAll(/^describe\(\s*(['"`])(.*?)\1/gm)];
     if (ms.length) topDescribe = ms[ms.length - 1][2];
   }
+  // plain expect(...).toEqual(...) style assertions (--asserts): expressions
+  // are kept as source text and evaluated by the Go side over the call result
+  const asserts = [];
+  const aliases = {};
+  if (wantAsserts) {
+    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*await\s+(server\.calls\[\d+\]\.\w+)\s*;/g)) aliases[am[1]] = am[2];
+    for (const am of body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*(result\.[\w.\[\]?']+)\s*;/g)) aliases[am[1]] = am[2];
+    const reE = /\bexpect\(/g;
+    let em;
+    while ((em = reE.exec(body))) {
+      const st = em.index + 'expect'.length;
+      const e = balanced(body, st);
+      if (e < 0) continue;
+      let expr = body.slice(st + 1, e - 1).trim().replace(/^await\s+/, '');
+      let k = e;
+      let not = false;
+      if (body.startsWith('.not', k)) { not = true; k += 4; }
+      const mm3 = /^\.(toEqual|toStrictEqual|toBe|toMatchObject|toHaveLength|toBeUndefined|toBeNull|toBeDefined|toContain|toBeGreaterThan|toBeTruthy|toBeFalsy)\(/.exec(body.slice(k));
+      if (!mm3) continue;
+      const as = k + mm3[0].length - 1;
+      const ae = balanced(body, as);
+      if (ae < 0) continue;
+      const argSrc = body.slice(as + 1, ae - 1).trim();
+      let arg = null, ok = true;
+      if (argSrc !== '') {
+        try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (v === undefined ? { __undef: true } : v))); } catch (err) { ok = false; }
+      }
+      if (!ok) continue;
+      asserts.push({ expr, matcher: mm3[1], not, arg });
+    }
+  }
   for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
-  if (exps.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: mid ? mid[1] : null, suspect, topDescribe, exps });
+  if (exps.length || asserts.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: midVar || (mid ? mid[1] : null), suspect, topDescribe, exps, ...(wantAsserts ? { asserts, aliases } : {}) });
 }
 console.log(JSON.stringify(out));

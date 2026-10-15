@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // encodeTSStream turns the TS test's JSON event lines ({"<event>": {...}})
@@ -27,7 +28,22 @@ func encodeTSStream(lines []string) (string, []byte) {
 	return "application/vnd.amazon.eventstream", buildBedrockEventStreamBody(events)
 }
 
+// tsProviderTool maps a TS provider tool to Go, which names provider tools by
+// their id.
+func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, bool) {
+	if len(args) != 0 {
+		return types.Tool{}, false
+	}
+	tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
+	return types.Tool{Name: id, ProviderID: id, Type: "provider"}, true
+}
+
 func TestTSCasesChat(t *testing.T) {
+	tsfixture.ProviderToolHook = tsProviderTool
+	tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias = map[string]string{}, map[string]string{}
+	defer func() {
+		tsfixture.ProviderToolHook, tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias = nil, nil, nil
+	}()
 	tsfixture.StreamBodyEncoder = encodeTSStream
 	defer func() { tsfixture.StreamBodyEncoder = nil }()
 	cases := tsfixture.LoadCases(t, "testdata/tscases/chat.json.gz")
@@ -40,5 +56,9 @@ func TestTSCasesChat(t *testing.T) {
 			t.Fatal(err)
 		}
 		return m
-	}, nil)
+	}, map[string]string{
+		"should expose the raw response headers":         "the TS mock server answers with text/event-stream headers; Go reads the AWS event stream",
+		"should include response headers in rawResponse": "the TS mock server answers with text/event-stream headers; Go reads the AWS event stream",
+		"should handle Anthropic provider-defined tools": "the TS test mocks the Anthropic prepareTools result (tool_choice, betas, schema)",
+	})
 }
