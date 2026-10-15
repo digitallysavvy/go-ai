@@ -992,6 +992,21 @@ type prepareCallContext struct {
 	prepareStep PrepareStepHook
 }
 
+// hookFailedModel stands in for the real model on a step whose PrepareCall or
+// PrepareStep hook returned an error: the model call fails with that error.
+type hookFailedModel struct {
+	provider.LanguageModel
+	err error
+}
+
+func (m *hookFailedModel) DoGenerate(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+	return nil, m.err
+}
+
+func (m *hookFailedModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+	return nil, m.err
+}
+
 func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
 	if w.PrepareCall == nil && w.PrepareStep == nil && pctx.prepareStep == nil && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
 		return nil
@@ -1007,20 +1022,37 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx contex
 			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
 			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
 		}
-		if w.PrepareStep != nil {
-			if mutated, err := w.PrepareStep(ctx, opts); err == nil {
-				opts = mutated
+		// A hook error fails the run (TS prepareStep/prepareCall rejections
+		// propagate): PrepareCallConfig cannot carry an error, so the step's
+		// model is swapped for one that returns it.
+		failStep := func(err error) agent.PrepareCallConfig {
+			base := c.Model
+			if base == nil {
+				base = w.Model
 			}
+			c.Model = &hookFailedModel{LanguageModel: base, err: err}
+			return c
+		}
+		if w.PrepareStep != nil {
+			mutated, err := w.PrepareStep(ctx, opts)
+			if err != nil {
+				return failStep(err)
+			}
+			opts = mutated
 		}
 		if pctx.prepareStep != nil {
-			if mutated, err := pctx.prepareStep(ctx, opts); err == nil {
-				opts = mutated
+			mutated, err := pctx.prepareStep(ctx, opts)
+			if err != nil {
+				return failStep(err)
 			}
+			opts = mutated
 		}
 		if w.PrepareCall != nil {
-			if mutated, err := w.PrepareCall(ctx, opts); err == nil {
-				opts = mutated
+			mutated, err := w.PrepareCall(ctx, opts)
+			if err != nil {
+				return failStep(err)
 			}
+			opts = mutated
 		}
 		c.System, c.AllowSystemInMessages, c.Messages, c.Tools, c.ToolChoice, c.CallOptions = opts.System, opts.AllowSystemInMessages, opts.Messages, opts.Tools, opts.ToolChoice, opts.CallOptions
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -78,5 +79,40 @@ func TestOrderedToolsFromToolSetIsDeterministic(t *testing.T) {
 				t.Fatalf("iteration %d: order %v", i, got)
 			}
 		}
+	}
+}
+
+// A PrepareStep/PrepareCall hook error fails the run instead of being ignored.
+func TestWorkflowPrepareHookErrorFailsTheRun(t *testing.T) {
+	boom := errors.New("prepare boom")
+	hook := func(context.Context, LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+		return LanguageModelCallOptions{}, boom
+	}
+	for name, cfg := range map[string]WorkflowAgent{
+		"prepareStep": {PrepareStep: hook},
+		"prepareCall": {PrepareCall: hook},
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := &wfJSONModel{}
+			cfg.Model = model
+			w, err := NewWorkflowAgent(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := w.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); !errors.Is(err, boom) {
+				t.Fatalf("generate err = %v, want hook error", err)
+			}
+			res, err := w.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"})
+			if err == nil {
+				_ = res.ConsumeStream()
+				err = res.Err()
+			}
+			if !errors.Is(err, boom) {
+				t.Fatalf("stream err = %v, want hook error", err)
+			}
+			if len(model.opts) != 0 || len(model.wfMockModel.opts) != 0 {
+				t.Fatal("the real model was called despite the hook error")
+			}
+		})
 	}
 }
