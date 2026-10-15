@@ -326,4 +326,3 @@ func NormalizeUIMessageStreamParts(ctx context.Context, in <-chan ai.UIMessageCh
 	}()
 	return out
 }
-
