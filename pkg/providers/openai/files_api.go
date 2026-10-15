@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -222,6 +223,10 @@ func (f *FilesAPI) DownloadFile(ctx context.Context, opts provider.DownloadFileO
 		Headers: opts.Headers,
 	})
 	if err != nil {
+		var statusErr *internalhttp.HTTPStatusError
+		if errors.As(err, &statusErr) {
+			return nil, internalhttp.StatusProviderError("openai", statusErr.StatusCode, statusErr.Headers, statusErr.Body)
+		}
 		return nil, err
 	}
 

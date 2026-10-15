@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"errors"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -406,4 +408,26 @@ func (c *closeTrackingReader) Close() error {
 		c.onClose()
 	}
 	return nil
+}
+
+// Download errors are provider errors (status, message from the error body),
+// like every other Files API call -- not a raw transport status error.
+func TestFilesAPI_DownloadFile_ErrorIsProviderError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"No such file","type":"invalid_request_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	_, err := p.Files().(provider.FileDownloader).DownloadFile(t.Context(), provider.DownloadFileOptions{
+		File: types.ProviderReference{"openai": "file-missing"},
+	})
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) {
+		t.Fatalf("want *ProviderError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "No such file") {
+		t.Fatalf("message lost: %v", err)
+	}
 }
