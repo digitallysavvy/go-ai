@@ -217,9 +217,9 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		var chunkData struct {
 			Choices []struct {
 				Delta struct {
-					Content          string  `json:"content"`
-					ReasoningContent *string `json:"reasoning_content"`
-					Reasoning        *string `json:"reasoning"`
+					Content          json.RawMessage `json:"content"`
+					ReasoningContent *string         `json:"reasoning_content"`
+					Reasoning        *string         `json:"reasoning"`
 					ToolCalls        []struct {
 						Index    *int    `json:"index"`
 						ID       string  `json:"id"`
@@ -342,27 +342,33 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		if len(chunkData.Choices) > 0 {
 			choice := chunkData.Choices[0]
 
-			// Text delta — emit immediately.
-			if choice.Delta.Content != "" {
+			// Content: a string or an array of text / thinking parts (TS
+			// convertOpenAICompatibleContent); thinking parts are reasoning.
+			// Chunks are queued behind anything already queued for this event
+			// so tool calls and the finish reason in the same event still run.
+			parts, err := OpenAICompatContentParts(choice.Delta.Content)
+			if err != nil {
+				s.streamErrored = true
+				s.finishErrored = true
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				}, nil
+			}
+			for _, part := range parts {
+				if part.Reasoning {
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: part.Text, ID: "reasoning-0"})
+					continue
+				}
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
-					// Append (not prepend): see the matching comment above for
-					// the reasoning-start case.
-					s.flushQueue = append(s.flushQueue,
-						&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-						&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-					)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				chunk := &provider.StreamChunk{
-					Type: provider.ChunkTypeText,
-					Text: choice.Delta.Content,
-				}
-				if len(s.flushQueue) > 0 {
-					s.flushQueue = append(s.flushQueue, chunk)
-					continue
-				}
-				return chunk, nil
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: part.Text})
 			}
 
 			// Tool call delta — accumulate arguments by index, never emit yet.
@@ -382,16 +388,12 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 					})
 					s.enqueueChunks(chunks)
 				}
-				if choice.FinishReason != nil && *choice.FinishReason != "" {
-					s.recordFinish(*choice.FinishReason)
-				}
-				continue
 			}
 
-			// Finish event — flush all accumulated tool calls, then emit finish.
+			// finish_reason is recorded; tool calls and the finish part are
+			// emitted when the stream ends (TS flush()).
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
 				s.recordFinish(*choice.FinishReason)
-				continue
 			}
 		}
 

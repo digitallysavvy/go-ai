@@ -81,11 +81,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/chat/completions",
 		Body:    reqBody,
 		Headers: opts.Headers,
-	}, &response)
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "zai"); err != nil {
+		return nil, err
+	}
 	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
