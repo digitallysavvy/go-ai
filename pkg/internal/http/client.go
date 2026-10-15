@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -507,4 +508,14 @@ func transportError(err error) error {
 		return err
 	}
 	return fmt.Errorf("Cannot connect to API: %w", err) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+// StatusProviderError builds a *providererrors.ProviderError for a non-2xx
+// provider response, mirroring the TS APICallError a failedResponseHandler
+// produces: the status code (and so retryability), response headers and body
+// are preserved and the message is taken from the JSON error body when
+// present.
+func StatusProviderError(providerName string, statusCode int, headers http.Header, body []byte) error {
+	cause := &HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderError(providerName, 0, "", cause.Error(), cause)
 }

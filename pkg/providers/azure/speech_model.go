@@ -65,7 +65,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("azure OpenAI API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("azure", resp.StatusCode, resp.Headers, resp.Body)
 	}
 	requestBytes, err := json.Marshal(reqBody)
 	if err != nil {

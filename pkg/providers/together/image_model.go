@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -54,7 +55,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("together AI API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("together", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	result, err := m.convertResponse(resp.Body)

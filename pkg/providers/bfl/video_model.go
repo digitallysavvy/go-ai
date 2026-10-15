@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"math"
 	"net/http"
 	"net/url"
@@ -480,7 +481,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, providererrors.NewProviderError("bfl", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var submit bflVideoSubmitResponse
@@ -691,7 +692,7 @@ func (m *VideoModel) handleVideoPollError(err error) error {
 				return fmt.Errorf("Black Forest Labs API error: %s", envelope.Message) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 			}
 		}
-		return fmt.Errorf("Black Forest Labs API error: status check returned %d: %s", dlErr.StatusCode, string(dlErr.Body)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		return internalhttp.StatusProviderError("bfl", dlErr.StatusCode, dlErr.Headers, dlErr.Body)
 	}
 	return fmt.Errorf("failed to check status: %w", err)
 }

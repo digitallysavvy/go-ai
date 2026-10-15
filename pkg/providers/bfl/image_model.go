@@ -109,7 +109,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var createResp bflCreateResponse
@@ -608,7 +608,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 				return nil, perr
 			}
 		}
-		return nil, fmt.Errorf("BFL API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, nil, []byte(body))
 	}
 	return body, nil
 }

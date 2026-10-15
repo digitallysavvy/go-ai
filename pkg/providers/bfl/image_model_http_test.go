@@ -350,7 +350,7 @@ func TestBFLImageModel_DoGenerateErrorPaths(t *testing.T) {
 		p := New(Config{APIKey: "k", BaseURL: server.URL})
 		m := NewImageModel(p, "flux-pro")
 		_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
-		if err == nil || !strings.Contains(err.Error(), "status 400") {
+		if err == nil || !strings.Contains(err.Error(), "provider error (400)") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})

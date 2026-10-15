@@ -108,7 +108,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if httpResp.StatusCode != 200 {
 		body, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close() //nolint:errcheck
-		return nil, fmt.Errorf("API returned status %d: %s", httpResp.StatusCode, string(body))
+		return nil, internalhttp.StatusProviderError("alibaba", httpResp.StatusCode, httpResp.Header, []byte(body))
 	}
 
 	// Create stream wrapper

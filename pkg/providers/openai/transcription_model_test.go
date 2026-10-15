@@ -238,7 +238,7 @@ func TestTranscriptionDoTranscribeSuccessAndErrors(t *testing.T) {
 	}))
 	defer closeErr()
 	mErr := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: errorServerURL + "/v1"}), "whisper-1")
-	if _, err := mErr.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"}); err == nil || !strings.Contains(err.Error(), "returned status 400") {
+	if _, err := mErr.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"}); err == nil || !strings.Contains(err.Error(), "provider error (400)") {
 		t.Fatalf("expected status error, got %v", err)
 	}
 

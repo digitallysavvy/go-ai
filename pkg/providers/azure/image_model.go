@@ -135,7 +135,7 @@ func (m *ImageModel) doGenerateOpenAI(ctx context.Context, opts *provider.ImageG
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("azure OpenAI API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("azure", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	return m.convertResponse(resp.Body)

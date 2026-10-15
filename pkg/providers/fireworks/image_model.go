@@ -108,7 +108,7 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("Fireworks AI API returned status %d: %s", resp.StatusCode, string(resp.Body)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+		return nil, internalhttp.StatusProviderError("fireworks", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	return m.convertResponse(resp.Body)
