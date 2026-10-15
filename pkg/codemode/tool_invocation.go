@@ -493,6 +493,14 @@ func raceAgainstAbort[T any](ctx context.Context, fn func() (T, error)) (T, erro
 	}
 	ch := make(chan outcome, 1)
 	go func() {
+		// A panic in a host tool must not take the process down (this runs on
+		// its own goroutine, where nothing above can recover it): report it
+		// as an ordinary tool failure, like a thrown error in TS.
+		defer func() {
+			if r := recover(); r != nil {
+				ch <- outcome{zero, fmt.Errorf("host tool panicked: %v", r)}
+			}
+		}()
 		v, err := fn()
 		ch <- outcome{v, err}
 	}()

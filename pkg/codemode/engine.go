@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -275,8 +276,18 @@ func classifySandboxFailure(err error, outerCtx context.Context, policy resolved
 		}
 		return NewTimeoutError(policy.TimeoutMs)
 	}
+	// A trap of the WASM engine itself (typically unbounded recursion running
+	// the engine's native stack off its end) is not a JavaScript error and its
+	// raw text carries the engine's internal trace; report the reason only.
+	if m := wasmTrapPattern.FindStringSubmatch(msg); m != nil {
+		return fmt.Errorf("InternalError: sandbox runtime trapped: %s", strings.TrimSpace(m[1]))
+	}
 	return err
 }
+
+// wasmTrapPattern extracts the trap reason from a wazero error
+// ("... wasm error: <reason>\nwasm stack trace: ...").
+var wasmTrapPattern = regexp.MustCompile(`wasm error: ([^\n]+)`)
 
 func looksLikeContextCancellation(msg string) bool {
 	return strings.Contains(msg, "context deadline exceeded") ||
