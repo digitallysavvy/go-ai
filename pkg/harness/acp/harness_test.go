@@ -1307,3 +1307,23 @@ func TestDoStartACPContinueRecoveryPropagatesEventLogReadFailure(t *testing.T) {
 		t.Fatalf("DoStart error = %v, want the event-log read failure", err)
 	}
 }
+
+// A CredentialBrokeringErr failure fails the session start (TS throws from
+// credentialBrokering inside doStart).
+func TestDoStartACPCredentialBrokeringErrFailsStart(t *testing.T) {
+	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.CredentialEnv = []string{"X_KEY"}
+		s.CredentialBrokeringErr = func(_, _, _ map[string]string) ([]harness.RequestTransformation, error) {
+			return nil, errors.New("invalid base url")
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.DoStart(context.Background(), harness.StartOptions{SessionID: "brokerr", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox})
+	if err == nil || err.Error() != "invalid base url" {
+		t.Fatalf("DoStart error = %v, want the brokering error", err)
+	}
+}

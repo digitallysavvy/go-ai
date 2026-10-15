@@ -203,6 +203,12 @@ type Authentication struct {
 // credential environments. Mirrors TS `ACPCredentialBrokering`.
 type CredentialBrokering func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation
 
+// CredentialBrokeringErr is CredentialBrokering for implementations whose
+// transformation construction can fail (for example an invalid base URL in the
+// environment). TS `createCredentialRequestTransformation` throws there and
+// the error fails the session start; this form surfaces it the same way.
+type CredentialBrokeringErr func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error)
+
 // AuthenticationFile is one file materialized under the ACP implementation's
 // private home directory before it starts. Mirrors TS `ACPAuthenticationFile`.
 type AuthenticationFile struct {
@@ -287,12 +293,16 @@ type Settings struct {
 	Executable string
 	Args       []string
 	// ForwardEnv/CredentialEnv/Env must not overlap (validated).
-	ForwardEnv           []string
-	CredentialEnv        []string
-	CredentialBrokering  CredentialBrokering
-	AuthenticationFiles  AuthenticationFilesFunc
-	CredentialForwarding harness.CredentialForwarding
-	Env                  map[string]string
+	ForwardEnv          []string
+	CredentialEnv       []string
+	CredentialBrokering CredentialBrokering
+	// CredentialBrokeringErr is the error-returning form of
+	// CredentialBrokering; when set it is used instead, and its error fails
+	// the session start. Configure at most one of the two.
+	CredentialBrokeringErr CredentialBrokeringErr
+	AuthenticationFiles    AuthenticationFilesFunc
+	CredentialForwarding   harness.CredentialForwarding
+	Env                    map[string]string
 
 	Authentication         *Authentication
 	ClientCapabilities     map[string]any

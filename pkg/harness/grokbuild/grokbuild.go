@@ -109,10 +109,11 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
-		ForwardEnv:           []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
-		CredentialEnv:        []string{"XAI_API_KEY"},
-		CredentialBrokering:  CredentialBrokering,
-		CredentialForwarding: settings.CredentialForwarding,
+		ForwardEnv:             []string{"GROK_XAI_API_BASE_URL", "GROK_MODELS_BASE_URL", "GROK_CLI_CHAT_PROXY_BASE_URL"},
+		CredentialEnv:          []string{"XAI_API_KEY"},
+		CredentialBrokering:    CredentialBrokering,
+		CredentialBrokeringErr: CredentialBrokeringErr,
+		CredentialForwarding:   settings.CredentialForwarding,
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
 				"GROK_CLIENT_NAME":      map[string]any{"$source": "client-app-name"},
@@ -157,9 +158,23 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 // CredentialBrokering builds the request transformation mapping Grok
 // Build's sandbox XAI_API_KEY back to the host credential. Mirrors the
 // `credentialBrokering` closure in `createGrokBuild()`.
+//
+// A transformation that cannot be built (an invalid `GROK_XAI_API_BASE_URL`)
+// yields nil here for source compatibility; CredentialBrokeringErr surfaces the
+// error the way TS (which throws) does, and is what the harness wires.
 func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
-	if env["XAI_API_KEY"] == "" || sandboxEnv["XAI_API_KEY"] == "" {
+	transformations, err := CredentialBrokeringErr(env, sandboxEnv, headers)
+	if err != nil {
 		return nil
+	}
+	return transformations
+}
+
+// CredentialBrokeringErr is CredentialBrokering returning the error from
+// building the transformation.
+func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+	if env["XAI_API_KEY"] == "" || sandboxEnv["XAI_API_KEY"] == "" {
+		return nil, nil
 	}
 	matchURL := env["GROK_XAI_API_BASE_URL"]
 	if matchURL == "" {
@@ -179,7 +194,7 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.R
 		TransformHeaders: transformHeaders,
 	})
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return []harness.RequestTransformation{tr}
+	return []harness.RequestTransformation{tr}, nil
 }

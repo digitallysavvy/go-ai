@@ -8,7 +8,23 @@ import (
 // CredentialBrokering builds the request transformations mapping Copilot's
 // sandbox-side GitHub / provider credentials back to the host values.
 // Mirrors the `credentialBrokering` closure in `createGitHubCopilot()`.
+//
+// A provider transformation that cannot be built (an invalid
+// `COPILOT_PROVIDER_BASE_URL`) is skipped here for source compatibility;
+// CredentialBrokeringErr surfaces it the way TS (which throws) does, and is
+// what the harness wires.
 func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
+	transformations, _ := credentialBrokering(env, sandboxEnv, headers, true)
+	return transformations
+}
+
+// CredentialBrokeringErr is CredentialBrokering returning the error from
+// building a transformation instead of dropping it.
+func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+	return credentialBrokering(env, sandboxEnv, headers, false)
+}
+
+func credentialBrokering(env, sandboxEnv, headers map[string]string, lenient bool) ([]harness.RequestTransformation, error) {
 	var transformations []harness.RequestTransformation
 
 	githubHost := normalizeGitHubHost(firstNonEmpty(env["COPILOT_GH_HOST"], env["GH_HOST"], "github.com"))
@@ -50,12 +66,16 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.R
 			transformHeaders[k] = v
 		}
 		transformHeaders["Authorization"] = "Bearer " + providerCredential
-		if tr, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
+		tr, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
 			MatchURL:         providerBaseURL,
 			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxProviderCredential},
 			TransformHeaders: transformHeaders,
-		}); err == nil {
+		})
+		switch {
+		case err == nil:
 			transformations = append(transformations, tr)
+		case !lenient:
+			return nil, err
 		}
 	case headers != nil:
 		copilotHosts := []string{githubHost, "*." + githubHost}
@@ -70,7 +90,7 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string) []harness.R
 		}
 	}
 
-	return transformations
+	return transformations, nil
 }
 
 func firstNonEmpty(values ...string) string {

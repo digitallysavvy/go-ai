@@ -126,11 +126,12 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
-		HostToolMCPTransport: acp.HostToolMCPHTTP,
-		ForwardEnv:           []string{"COPILOT_GH_HOST", "GH_HOST"},
-		CredentialEnv:        []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
-		CredentialBrokering:  CredentialBrokering,
-		CredentialForwarding: CredentialForwarding(settings.CredentialForwarding),
+		HostToolMCPTransport:   acp.HostToolMCPHTTP,
+		ForwardEnv:             []string{"COPILOT_GH_HOST", "GH_HOST"},
+		CredentialEnv:          []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
+		CredentialBrokering:    CredentialBrokering,
+		CredentialBrokeringErr: CredentialBrokeringErr,
+		CredentialForwarding:   CredentialForwarding(settings.CredentialForwarding),
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
 				"COPILOT_PROVIDER_BASE_URL": map[string]any{"$source": "gateway-base-url", "ensureSuffix": "/v1"},

@@ -36,7 +36,7 @@ type acpHarness struct {
 // (`acp-harness.ts`), minus the concrete per-implementation configs (Cursor,
 // fx, GitHub Copilot, Grok Build — WG12).
 func CreateACP(settings Settings) (harness.Harness, error) {
-	if (settings.CredentialEnv == nil) != (settings.CredentialBrokering == nil) {
+	if (settings.CredentialEnv == nil) != (settings.CredentialBrokering == nil && settings.CredentialBrokeringErr == nil) {
 		return nil, fmt.Errorf("ACP credentialEnv and credentialBrokering must be configured together.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, reserved := settings.MCPServers[ReservedMCPServerName]; reserved {
@@ -293,7 +293,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	credentialForwardingEnvironmentVariables := uniqueStrings(append(append([]string{}, credentialEnvironmentVariables...), providerCredentialEnvironmentVariables(resolvedProviderAuth)...))
 	var sandboxCredentialEnvironment map[string]string
 
-	if settings.CredentialBrokering != nil {
+	if settings.CredentialBrokering != nil || settings.CredentialBrokeringErr != nil {
 		if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
 			providerEnvironment, err := resolveProviderEnvironment(resolvedProviderAuth, h.clientApp)
 			if err != nil {
@@ -322,7 +322,15 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				merged[k] = v
 			}
 			sandboxImplementationEnvironment = merged
-			transformations := settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, opts.Headers)
+			var transformations []harness.RequestTransformation
+			if settings.CredentialBrokeringErr != nil {
+				transformations, err = settings.CredentialBrokeringErr(brokeringEnvironment, sandboxImplementationEnvironment, opts.Headers)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				transformations = settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, opts.Headers)
+			}
 			if len(transformations) > 0 {
 				if err := adder.AddRequestTransformations(ctx, transformations); err != nil {
 					return nil, err
@@ -484,7 +492,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, err
 		}
 	}
-	if settings.CredentialBrokering != nil && sandboxCredentialEnvironment == nil {
+	if (settings.CredentialBrokering != nil || settings.CredentialBrokeringErr != nil) && sandboxCredentialEnvironment == nil {
 		env := map[string]string{}
 		for k, v := range sandboxImplementationEnvironment {
 			env[k] = v
