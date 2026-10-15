@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	retryutil "github.com/digitallysavvy/go-ai/pkg/internal/retry"
@@ -128,25 +129,53 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 	providerMetadata := map[string]interface{}{}
 	usage := types.ImageUsage{}
 
-	for _, callImageCount := range callImageCounts {
-		callN := callImageCount
-		_, attempts, err := doGenerateImageWithRetry(ctx, opts.Model, &provider.ImageGenerateOptions{
-			Prompt:          opts.Prompt,
-			N:               &callN,
-			Size:            opts.Size,
-			AspectRatio:     opts.AspectRatio,
-			Seed:            opts.Seed,
-			Quality:         opts.Quality,
-			Style:           opts.Style,
-			Files:           opts.Files,
-			Mask:            opts.Mask,
-			ProviderOptions: opts.ProviderOptions,
-			Headers:         opts.Headers,
-		}, opts.MaxRetries)
-		if err != nil {
-			return nil, err
-		}
+	// TS runs the model calls in parallel (Promise.all); results are
+	// aggregated in call order. The first failure cancels the other calls.
+	type callOutcome struct {
+		attempts []*types.ImageResult
+		err      error
+	}
+	outcomes := make([]callOutcome, len(callImageCounts))
+	callCtx, cancelCalls := context.WithCancel(ctx)
+	defer cancelCalls()
+	var (
+		wg       sync.WaitGroup
+		errOnce  sync.Once
+		firstErr error
+	)
+	for i, callImageCount := range callImageCounts {
+		wg.Add(1)
+		go func(i, callN int) {
+			defer wg.Done()
+			_, attempts, err := doGenerateImageWithRetry(callCtx, opts.Model, &provider.ImageGenerateOptions{
+				Prompt:          opts.Prompt,
+				N:               &callN,
+				Size:            opts.Size,
+				AspectRatio:     opts.AspectRatio,
+				Seed:            opts.Seed,
+				Quality:         opts.Quality,
+				Style:           opts.Style,
+				Files:           opts.Files,
+				Mask:            opts.Mask,
+				ProviderOptions: opts.ProviderOptions,
+				Headers:         opts.Headers,
+			}, opts.MaxRetries)
+			outcomes[i] = callOutcome{attempts: attempts, err: err}
+			if err != nil {
+				errOnce.Do(func() {
+					firstErr = err
+					cancelCalls()
+				})
+			}
+		}(i, callImageCount)
+	}
+	wg.Wait()
+	if firstErr != nil {
+		return nil, firstErr
+	}
 
+	for _, outcome := range outcomes {
+		attempts := outcome.attempts
 		// Every attempt for this call (including empty/exhausted-retry ones)
 		// contributes its own diagnostics entry and its images/warnings/
 		// usage/response to the aggregate, matching TS generate-image.ts's
@@ -160,6 +189,9 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 			images = append(images, callImages...)
 			warnings = append(warnings, raw.Warnings...)
 			usage.ImageCount += raw.Usage.ImageCount
+			usage.InputTokens += raw.Usage.InputTokens
+			usage.OutputTokens += raw.Usage.OutputTokens
+			usage.TotalTokens += raw.Usage.TotalTokens
 			mergeImageProviderMetadata(providerMetadata, raw.ProviderMetadata)
 
 			response := raw.Response
@@ -233,6 +265,9 @@ func generatedFilesFromImageResult(raw *types.ImageResult) ([]types.GeneratedFil
 		} else {
 			appendImage(raw.Image, raw.MimeType, raw.URL)
 		}
+	}
+	for i := range images {
+		images[i].ProviderMetadata = imageProviderMetadata(raw.ProviderMetadata, i)
 	}
 	// A zero-image result is not an error here: it may be a legitimate
 	// (possibly retryable) empty attempt. doGenerateImageWithRetry/
@@ -510,4 +545,36 @@ func toInterfaceSlice(value interface{}) []interface{} {
 	default:
 		return []interface{}{typed}
 	}
+}
+
+// imageProviderMetadata extracts the metadata of one image from the legacy
+// providerMetadata.<provider>.images[] result shape (TS
+// getImageProviderMetadata): only JSON object entries are kept.
+func imageProviderMetadata(providerMetadata map[string]interface{}, index int) map[string]interface{} {
+	var out map[string]interface{}
+	for providerName, raw := range providerMetadata {
+		metadata, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		var entry map[string]interface{}
+		switch images := metadata["images"].(type) {
+		case []interface{}:
+			if index < len(images) {
+				entry, _ = images[index].(map[string]interface{})
+			}
+		case []map[string]interface{}:
+			if index < len(images) {
+				entry = images[index]
+			}
+		}
+		if entry == nil {
+			continue
+		}
+		if out == nil {
+			out = map[string]interface{}{}
+		}
+		out[providerName] = entry
+	}
+	return out
 }

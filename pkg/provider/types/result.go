@@ -347,6 +347,11 @@ type GeneratedFile struct {
 
 	// MediaType is the MIME type of the file (e.g., "video/mp4", "image/png")
 	MediaType string `json:"mediaType"`
+
+	// ProviderMetadata holds per-file provider metadata keyed by provider name
+	// (TS GeneratedFile.providerMetadata). GenerateImage fills it from the
+	// model's providerMetadata.<provider>.images[index].
+	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 }
 
 // Base64 returns the generated file bytes as a base64 string, matching the
