@@ -283,7 +283,13 @@ func attemptRepair(
 	}
 	cause := parseErr
 	var noObjErr *NoObjectGeneratedError
-	if errors.As(parseErr, &noObjErr) && noObjErr.Cause != nil {
+	if errors.As(parseErr, &noObjErr) {
+		// TS only repairs a JSONParseError / TypeValidationError cause; a
+		// NoObjectGeneratedError without one (the model returned no text
+		// part at all) is rethrown as is.
+		if noObjErr.Cause == nil {
+			return nil, nil
+		}
 		cause = noObjErr.Cause
 	}
 	return repair(ctx, text, cause)

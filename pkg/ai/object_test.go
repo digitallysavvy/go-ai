@@ -2280,3 +2280,34 @@ func TestGenerateObject_NonObjectRootIsSchemaMismatch(t *testing.T) {
 		})
 	}
 }
+
+// TS parseAndValidateObjectResultWithRepair only invokes repairText for a
+// JSONParseError / TypeValidationError cause, not when no text was returned.
+func TestGenerateObject_RepairTextNotCalledWithoutTextPart(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "x",
+		Schema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		RepairText: func(context.Context, string, error) (*string, error) {
+			called = true
+			s := `{}`
+			return &s, nil
+		},
+	})
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) || !strings.Contains(noObjErr.Message, "did not return a response") {
+		t.Fatalf("err = %v", err)
+	}
+	if called {
+		t.Fatal("repairText must not be called when the model returned no text")
+	}
+}
