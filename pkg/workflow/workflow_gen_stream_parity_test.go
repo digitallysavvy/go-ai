@@ -128,7 +128,9 @@ func TestWorkflowGenerateAndStreamAgreeOnToolEdgeCases(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if e := res.ConsumeStream(); e != nil { t.Logf("consume err: %v", e) }
+					if e := res.ConsumeStream(); e != nil {
+						t.Logf("consume err: %v", e)
+					}
 					steps = len(res.Steps())
 				} else {
 					res, err := w.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"})

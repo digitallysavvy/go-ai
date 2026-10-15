@@ -19,10 +19,10 @@ func TestSSETransportStreamOutlivesRequestTimeout(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
-		fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
 		fl.Flush()
 		time.Sleep(600 * time.Millisecond)
-		fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
 		fl.Flush()
 		time.Sleep(300 * time.Millisecond)
 	}))
@@ -43,7 +43,7 @@ func TestSSETransportStreamOutlivesRequestTimeout(t *testing.T) {
 func TestSSETransportReportsStreamFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
 		w.(http.Flusher).Flush()
 		time.Sleep(100 * time.Millisecond)
 		hj, _, _ := w.(http.Hijacker).Hijack()
@@ -68,7 +68,7 @@ func TestHTTPTransportStreamedPostResponseOutlivesRequestTimeout(t *testing.T) {
 		fl := w.(http.Flusher)
 		fl.Flush()
 		time.Sleep(600 * time.Millisecond)
-		fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
 		fl.Flush()
 	}))
 	defer srv.Close()
@@ -118,10 +118,10 @@ func TestSSETransportStreamSurvivesConnectContextCancel(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl := w.(http.Flusher)
-		fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /post\n\n")
 		fl.Flush()
 		time.Sleep(300 * time.Millisecond)
-		fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")
 		fl.Flush()
 		time.Sleep(200 * time.Millisecond)
 	}))

@@ -119,7 +119,7 @@ func TestMCPClientFailsPendingRequestsWhenTransportCloses(t *testing.T) {
 	if err := client.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close() //nolint:errcheck
+	defer client.Close()                              //nolint:errcheck
 	tr.onRequest = func(*MCPMessage) { close(tr.in) } // server dies instead of answering
 
 	done := make(chan error, 1)

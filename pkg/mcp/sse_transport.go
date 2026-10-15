@@ -322,7 +322,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
 		}
 
-		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || !(t.oauthConfigured() || t.auth.enabled()) {
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || (!t.oauthConfigured() && !t.auth.enabled()) {
 			break
 		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))

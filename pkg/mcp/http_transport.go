@@ -555,7 +555,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp == nil {
 			return fail(NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
-		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || !(t.oauthConfigured() || t.auth.enabled()) {
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || (!t.oauthConfigured() && !t.auth.enabled()) {
 			break
 		}
 		// A nil Body here is not the case this fix cares about (see the
