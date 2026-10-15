@@ -687,3 +687,23 @@ directly -- the same sandbox construction `RunCodeMode` uses in production
 holds independently of it) all pass against this rebuilt binary, as does
 the full repository `go build ./...`, `go vet ./...`, `go test ./pkg/...`,
 and example build/vet gate.
+
+## No Go stack in script-visible errors (review round 3, 2026-10-14) — qjs.wasm NOT rebuilt
+
+Upstream appends `debug.Stack()` to two errors whose text can reach sandboxed
+scripts and, through `pkg/codemode`, a model:
+
+- `newProxyErr` (`errors.go`): the error built when a Go function called from
+  JS panics (all three branches: `error`, `string`, other values).
+- `Runtime.call` (`runtime.go`): the panic raised when a WASM export call
+  fails (for example the runaway-recursion trap).
+
+Both now carry only the message: no goroutine dump and no host source paths.
+The `runtime/debug` import is gone from both files. This is a Go-only change;
+`qjs.wasm` is untouched.
+
+**On re-sync:** re-apply this patch. Regression tests:
+`proxy_error_no_stack_patch_test.go` in this package (proxy panic path;
+mutation-checked by restoring `debug.Stack()` in `newProxyErr`) and
+`pkg/codemode/robustness_test.go`'s
+`TestRunawayRecursionErrorDoesNotLeakHostTrace` (WASM call path).
