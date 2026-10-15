@@ -106,61 +106,121 @@ func buildElevenLabsRealtimeURL(baseURL, modelID, audioFormat string, languageCo
 		u.Scheme = "ws"
 	}
 
-	q := url.Values{}
-	q.Set("model_id", modelID)
-	q.Set("audio_format", audioFormat)
+	// URLSearchParams keeps insertion order, and the request URL is surfaced
+	// (RequestBody), so build the query in the TS order rather than sorted.
+	var q queryBuilder
+	q.set("model_id", modelID)
+	q.set("audio_format", audioFormat)
 
 	includeDetailedCommit := streaming != nil &&
 		(boolValue(streaming.IncludeTimestamps) || boolValue(streaming.IncludeLanguageDetection))
 
 	if streaming != nil {
 		if streaming.CommitStrategy != "" {
-			q.Set("commit_strategy", streaming.CommitStrategy)
+			q.set("commit_strategy", streaming.CommitStrategy)
 		}
 		if streaming.EnableLogging != nil {
-			q.Set("enable_logging", strconv.FormatBool(*streaming.EnableLogging))
+			q.set("enable_logging", strconv.FormatBool(*streaming.EnableLogging))
 		}
 		if streaming.FilterBackgroundAudio != nil {
-			q.Set("filter_background_audio", strconv.FormatBool(*streaming.FilterBackgroundAudio))
+			q.set("filter_background_audio", strconv.FormatBool(*streaming.FilterBackgroundAudio))
 		}
 		if streaming.IncludeLanguageDetection != nil {
-			q.Set("include_language_detection", strconv.FormatBool(*streaming.IncludeLanguageDetection))
+			q.set("include_language_detection", strconv.FormatBool(*streaming.IncludeLanguageDetection))
 		}
 	}
 	if includeDetailedCommit {
-		q.Set("include_timestamps", "true")
+		q.set("include_timestamps", "true")
 	} else if streaming != nil && streaming.IncludeTimestamps != nil {
-		q.Set("include_timestamps", strconv.FormatBool(*streaming.IncludeTimestamps))
+		q.set("include_timestamps", strconv.FormatBool(*streaming.IncludeTimestamps))
 	}
 	if languageCode != nil {
-		q.Set("language_code", *languageCode)
+		q.set("language_code", *languageCode)
 	}
 	if streaming != nil {
 		if streaming.MinSilenceDurationMs != nil {
-			q.Set("min_silence_duration_ms", strconv.Itoa(*streaming.MinSilenceDurationMs))
+			q.set("min_silence_duration_ms", strconv.Itoa(*streaming.MinSilenceDurationMs))
 		}
 		if streaming.MinSpeechDurationMs != nil {
-			q.Set("min_speech_duration_ms", strconv.Itoa(*streaming.MinSpeechDurationMs))
+			q.set("min_speech_duration_ms", strconv.Itoa(*streaming.MinSpeechDurationMs))
 		}
 		if streaming.NoVerbatim != nil {
-			q.Set("no_verbatim", strconv.FormatBool(*streaming.NoVerbatim))
+			q.set("no_verbatim", strconv.FormatBool(*streaming.NoVerbatim))
 		}
 		if streaming.VadSilenceThresholdSecs != nil {
-			q.Set("vad_silence_threshold_secs", formatFloatParam(*streaming.VadSilenceThresholdSecs))
+			q.set("vad_silence_threshold_secs", formatFloatParam(*streaming.VadSilenceThresholdSecs))
 		}
 		if streaming.VadThreshold != nil {
-			q.Set("vad_threshold", formatFloatParam(*streaming.VadThreshold))
+			q.set("vad_threshold", formatFloatParam(*streaming.VadThreshold))
 		}
 		for _, keyterm := range streaming.Keyterms {
-			q.Add("keyterms", keyterm)
+			q.add("keyterms", keyterm)
 		}
 		for _, lang := range streaming.SecondaryLanguages {
-			q.Add("secondary_languages", lang)
+			q.add("secondary_languages", lang)
 		}
 	}
 
-	u.RawQuery = q.Encode()
+	u.RawQuery = q.encode()
 	return u, nil
+}
+
+// queryBuilder is an insertion-ordered application/x-www-form-urlencoded
+// query, like the WHATWG URLSearchParams the TS SDK uses (url.Values.Encode
+// sorts by key).
+type queryBuilder struct {
+	keys, values []string
+}
+
+func (q *queryBuilder) set(key, value string) {
+	for i, k := range q.keys {
+		if k == key {
+			q.values[i] = value
+			return
+		}
+	}
+	q.add(key, value)
+}
+
+func (q *queryBuilder) add(key, value string) {
+	q.keys = append(q.keys, key)
+	q.values = append(q.values, value)
+}
+
+func (q *queryBuilder) encode() string {
+	var b strings.Builder
+	for i, k := range q.keys {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		b.WriteString(formURLEncode(k))
+		b.WriteByte('=')
+		b.WriteString(formURLEncode(q.values[i]))
+	}
+	return b.String()
+}
+
+// formURLEncode is the WHATWG application/x-www-form-urlencoded byte
+// serializer: ASCII alphanumerics and *-._ stay, space becomes +, everything
+// else is percent-encoded.
+func formURLEncode(s string) string {
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '*', c == '-', c == '.', c == '_':
+			b.WriteByte(c)
+		case c == ' ':
+			b.WriteByte('+')
+		default:
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&15])
+		}
+	}
+	return b.String()
 }
 
 func formatFloatParam(f float64) string {
@@ -248,9 +308,9 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// tagged getHeaders() used for regular HTTP requests, which carries the
 	// `ai-sdk-elevenlabs/VERSION` tag. Match that here instead of building a
 	// fresh, untagged header set.
-	headers := version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
+	headers := internalhttp.MergeHeaders(version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 		"xi-api-key": m.provider.config.APIKey,
-	}, opts.Headers), version.ProviderUserAgent("elevenlabs"))
+	}, m.provider.config.Headers), version.ProviderUserAgent("elevenlabs")), opts.Headers)
 
 	var previousText *string
 	if streaming != nil {
