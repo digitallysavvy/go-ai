@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // Assertion is one plain vitest expectation (expect(expr).toEqual(arg) and
@@ -18,6 +20,11 @@ type Assertion struct {
 	Matcher string      `json:"matcher"`
 	Not     bool        `json:"not"`
 	Arg     interface{} `json:"arg"`
+	// CallArgs are the arguments of the call Expr itself makes (the assertion
+	// is over fn(CallArgs...) rather than over the test's first call).
+	CallArgs []interface{} `json:"callArgs"`
+	// CallSuffix is what follows that call in Expr (for example ".inputTokens").
+	CallSuffix string `json:"callSuffix"`
 }
 
 // request is one request the test server received.
@@ -207,6 +214,12 @@ func (a Assertion) check(roots map[string]interface{}, aliases map[string]string
 		return "", true
 	}
 	got = jsonValue(got)
+	// a TS Set arrives as {__set: [...]}; length and membership look inside it
+	if m, ok := got.(map[string]interface{}); ok && len(m) == 1 && (a.Matcher == "toContain" || a.Matcher == "toHaveLength") {
+		if items, ok := m["__set"]; ok {
+			got = items
+		}
+	}
 	var pass bool
 	switch a.Matcher {
 	case "toEqual", "toStrictEqual":
@@ -298,63 +311,117 @@ func runAsserts(t *testing.T, c Case, roots map[string]interface{}) {
 // result in the TS return shape, so the assertions (expressions over result,
 // its destructured members and any returned out-parameters such as warnings)
 // can be evaluated; extra holds out-parameters (such as a warnings array the
-// TS function appends to). Cases listed in skip (by test name) are logged only.
+// TS function appends to). An assertion over a call of its own
+// (expect(fn(a, b)).toEqual(...)) runs call with that call's arguments. Cases
+// listed in skip (by test name) are logged only.
 func RunFn(t *testing.T, cases []Case, call func(args []interface{}) (interface{}, map[string]interface{}, error), skip map[string]string) {
 	t.Helper()
+	isThrow := func(a Assertion) bool {
+		return strings.HasPrefix(a.Matcher, "rejects.") || strings.HasPrefix(a.Matcher, "toThrow")
+	}
 	for _, c := range cases {
 		c := c
-		if c.FnArgs == nil || len(c.Asserts) == 0 {
+		if len(c.Asserts) == 0 {
 			continue
 		}
 		t.Run(c.Test, func(t *testing.T) {
 			if why, ok := skip[c.Test]; ok {
 				t.Skip(why)
 			}
-			ret, extra, err := call(c.FnArgs)
-			if errors.Is(err, ErrUnsupported) {
-				t.Skipf("unsupported input: %v", err)
+			// group: assertions over the test's first call, and one group
+			// per assertion that makes its own call
+			type group struct {
+				args    []interface{}
+				asserts []Assertion
 			}
-			expectsThrow := false
+			main := group{args: c.FnArgs}
+			var own []group
 			for _, a := range c.Asserts {
-				if strings.HasPrefix(a.Matcher, "rejects.") || strings.HasPrefix(a.Matcher, "toThrow") {
+				if a.CallArgs != nil {
+					own = append(own, group{args: a.CallArgs, asserts: []Assertion{a}})
+				} else {
+					main.asserts = append(main.asserts, a)
+				}
+			}
+			groups := own
+			if len(main.asserts) > 0 {
+				groups = append([]group{main}, own...)
+			}
+			for _, g := range groups {
+				ret, extra, err := call(g.args)
+				if errors.Is(err, ErrUnsupported) {
+					t.Skipf("unsupported input: %v", err)
+				}
+				expectsThrow := false
+				for _, a := range g.asserts {
+					if !isThrow(a) {
+						continue
+					}
 					expectsThrow = true
 					if (err == nil) != a.Not {
-						t.Errorf("%s(...): error = %v, TS expects it to throw (not=%v)", a.Expr[:min(len(a.Expr), 40)], err, a.Not)
+						t.Errorf("%s: error = %v, TS expects it to throw (not=%v)", firstLine(a.Expr), err, a.Not)
 					}
 					if msg, ok := a.Arg.(string); ok && msg != "" && err != nil && !strings.Contains(err.Error(), msg) {
 						t.Errorf("error %q does not contain the TS message %q", err.Error(), msg)
 					}
 				}
-			}
-			if err != nil && !expectsThrow {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if err != nil {
-				return
-			}
-			roots := map[string]interface{}{"result": jsonValue(ret)}
-			for k, v := range extra {
-				roots[k] = jsonValue(v)
-			}
-			if m, ok := jsonValue(ret).(map[string]interface{}); ok {
-				for k, v := range m {
-					if _, taken := roots[k]; !taken {
-						roots[k] = v
+				if err != nil && !expectsThrow {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if err != nil {
+					continue
+				}
+				roots := map[string]interface{}{"result": jsonValue(ret)}
+				for k, v := range extra {
+					roots[k] = jsonValue(v)
+				}
+				if m, ok := jsonValue(ret).(map[string]interface{}); ok {
+					for k, v := range m {
+						if _, taken := roots[k]; !taken {
+							roots[k] = v
+						}
 					}
 				}
-			}
-			var plain []Assertion
-			for _, a := range c.Asserts {
-				if !strings.HasPrefix(a.Matcher, "rejects.") && !strings.HasPrefix(a.Matcher, "toThrow") {
+				var plain []Assertion
+				for _, a := range g.asserts {
+					if isThrow(a) {
+						continue
+					}
+					if a.CallArgs != nil {
+						a.Expr = "result" + a.CallSuffix // the call itself is the result
+					}
 					plain = append(plain, a)
 				}
+				cc := c
+				cc.Asserts = plain
+				runAsserts(t, cc, roots)
 			}
-			c.Asserts = plain
-			runAsserts(t, c, roots)
 		})
 	}
+}
+
+func firstLine(s string) string {
+	s, _, _ = strings.Cut(s, "\n")
+	if len(s) > 60 {
+		s = s[:60]
+	}
+	return s
 }
 
 // ErrUnsupported is returned by a RunFn call function for an input the Go side
 // cannot express (the case is skipped).
 var ErrUnsupported = errors.New("unsupported")
+
+// WarningsToTS renders warnings the way TS reports them: Go also mirrors
+// details into message for old callers, which TS does not have.
+func WarningsToTS(ws []types.Warning) []interface{} {
+	out := make([]interface{}, 0, len(ws))
+	for _, w := range ws {
+		v := jsonValue(w)
+		if m, ok := v.(map[string]interface{}); ok && m["type"] != "other" {
+			delete(m, "message")
+		}
+		out = append(out, v)
+	}
+	return out
+}

@@ -78,6 +78,17 @@ function parseSnap(text) {
       }
       return o;
     }
+    if (s.startsWith('Set {', i)) {
+      i += 5;
+      const items = [];
+      for (;;) {
+        ws();
+        if (s[i] === '}') { i++; break; }
+        if (s[i] === ',') { i++; continue; }
+        items.push(val());
+      }
+      return { __set: items };
+    }
     if (c === '[' && /^\[[A-Za-z]\w*(Error)?:/.test(s.slice(i, i + 60))) {
       const e = s.indexOf('],\n', i);
       const v = s.slice(i, e + 1);
@@ -223,6 +234,24 @@ function scopedDecls(testIdx, testIndent) {
     .sort((x, y) => x.indent - y.indent || x.pos - y.pos);
 }
 
+function splitTopLevelArgs(inner) {
+  const parts = [];
+  let cur = '';
+  for (let k = 0; k < inner.length; k++) {
+    const c = inner[k];
+    if (c === "'" || c === '"') { const q = c; let j = k + 1; while (j < inner.length && inner[j] !== q) { if (inner[j] === '\\') j++; j++; } cur += inner.slice(k, j + 1); k = j; continue; }
+    if (c === '`') { const j = tpl(inner, k + 1); cur += inner.slice(k, j + 1); k = j; continue; }
+    if ('{[('.includes(c)) { const j = balanced(inner, k); cur += inner.slice(k, j); k = j - 1; continue; }
+    if (c === ',') { parts.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  if (cur.trim() !== '') parts.push(cur);
+  return parts.map(p => p.trim());
+}
+function evalArgsJSON(srcs) {
+  return srcs.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))));
+}
+
 function topDescribeOf(idx) {
   const ms = [...src.slice(0, idx).matchAll(/^describe\(\s*(['"`])(.*?)\1/gm)];
   return ms.length ? ms[ms.length - 1][2] : '';
@@ -327,11 +356,35 @@ for (let i = 0; i < starts.length; i++) {
       if (argSrc !== '') { try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))); } catch (err) { ok = false; arg = argSrc; } }
       const matcher = (rejects ? 'rejects.' : '') + mm3[1];
       if (!ok && !/toThrow/.test(matcher)) continue;
-      asserts2.push({ expr, matcher, not, arg: ok ? arg : null });
+      const a2 = { expr, matcher, not, arg: ok ? arg : null };
+      if (new RegExp('^' + fnName + '\\(').test(expr)) {
+        try {
+          const open = expr.indexOf('(');
+          a2.callArgs = evalArgsJSON(splitTopLevelArgs(expr.slice(open + 1, balanced(expr, open) - 1)));
+          a2.callSuffix = expr.slice(balanced(expr, open));
+        } catch (err) { continue; }
+      }
+      asserts2.push(a2);
+    }
+    {
+      const reIS = /expect\(([^\n]*?)\)\s*\.toMatchInlineSnapshot\(\s*`/g;
+      let is;
+      while ((is = reIS.exec(body0))) {
+        const s0 = is.index + is[0].length;
+        const k = tpl(body0, s0);
+        const snap = parseSnap(dedent(body0.slice(s0, k).replace(/\\([\\`$])/g, '$1')));
+        if (snap && snap.__err) continue;
+        const e2 = is[1].trim().replace(/^await\s+/, '');
+        const a3 = { expr: e2, matcher: 'toEqual', not: false, arg: snap };
+        if (new RegExp('^' + fnName + '\\(').test(e2)) {
+          try { const open = e2.indexOf('('); a3.callArgs = evalArgsJSON(splitTopLevelArgs(e2.slice(open + 1, balanced(e2, open) - 1))); a3.callSuffix = e2.slice(balanced(e2, open)); } catch (err) { continue; }
+        }
+        asserts2.push(a3);
+      }
     }
     for (const n of Object.keys(saved2)) { if (saved2[n] === undefined) delete ctx[n]; else ctx[n] = saved2[n]; }
     for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
-    if (cm && fnArgs && asserts2.length) out.push({ test: name, topDescribe: topDescribeOf(starts[i].idx), fnArgs, fnArgSrc, asserts: asserts2, aliases: aliases2 });
+    if ((cm && fnArgs || asserts2.some(a => a.callArgs)) && asserts2.length) out.push({ test: name, topDescribe: topDescribeOf(starts[i].idx), fnArgs: fnArgs || [], fnArgSrc: fnArgSrc || [], asserts: asserts2, aliases: aliases2 });
     continue;
   }
 

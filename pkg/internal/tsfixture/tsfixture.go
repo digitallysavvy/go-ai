@@ -868,41 +868,13 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 			rf.Description, _ = m["description"].(string)
 			o.ResponseFormat = rf
 		case "toolChoice":
-			m := v.(map[string]interface{})
-			t, _ := m["type"].(string)
-			o.ToolChoice = types.ToolChoice{Type: types.ToolChoiceType(t)}
-			o.ToolChoice.ToolName, _ = m["toolName"].(string)
+			o.ToolChoice = BuildToolChoice(v)
 		case "tools":
-			for _, tv := range v.([]interface{}) {
-				m := tv.(map[string]interface{})
-				tool := types.Tool{}
-				tool.Name, _ = m["name"].(string)
-				tool.Description, _ = m["description"].(string)
-				if m["type"] == "provider" {
-					tool.Type = "provider"
-					tool.ProviderID, _ = m["id"].(string)
-					a, _ := m["args"].(map[string]interface{})
-					if ProviderToolHook != nil {
-						ht, ok := ProviderToolHook(tool.ProviderID, tool.Name, a)
-						if !ok {
-							return nil, "provider tool args (typed config in Go)"
-						}
-						tool = ht
-					} else if len(a) > 0 {
-						return nil, "provider tool args (typed config in Go)"
-					}
-					tool.ProviderExecuted = true
-				} else {
-					tool.Parameters = m["inputSchema"]
-					if sv, ok := m["strict"].(bool); ok {
-						tool.Strict = &sv
-					}
-					if po, ok := m["providerOptions"].(map[string]interface{}); ok {
-						tool.ProviderOptions = po
-					}
-				}
-				o.Tools = append(o.Tools, tool)
+			tools, why := BuildTools(v)
+			if why != "" {
+				return nil, why
 			}
+			o.Tools = append(o.Tools, tools...)
 		default:
 			return nil, "option " + k
 		}
@@ -1047,4 +1019,58 @@ func promptToolName(name string) string {
 // returns a reason when the prompt uses a part the harness cannot build.
 func BuildPromptMessages(v interface{}) ([]types.Message, string) {
 	return buildPrompt(v)
+}
+
+// BuildToolChoice converts the JSON form of a TS toolChoice.
+func BuildToolChoice(v interface{}) types.ToolChoice {
+	m, _ := v.(map[string]interface{})
+	t, _ := m["type"].(string)
+	tc := types.ToolChoice{Type: types.ToolChoiceType(t)}
+	tc.ToolName, _ = m["toolName"].(string)
+	return tc
+}
+
+// BuildTools converts the JSON form of a TS tools list to Go tools. It returns
+// a reason when a provider tool cannot be built.
+func BuildTools(v interface{}) ([]types.Tool, string) {
+	var out []types.Tool
+	list, _ := v.([]interface{})
+	for _, tv := range list {
+		m := tv.(map[string]interface{})
+		tool := types.Tool{}
+		tool.Name, _ = m["name"].(string)
+		tool.Description, _ = m["description"].(string)
+		if m["type"] == "provider" {
+			tool.Type = "provider"
+			tool.ProviderID, _ = m["id"].(string)
+			a, _ := m["args"].(map[string]interface{})
+			if ProviderToolHook != nil {
+				ht, ok := ProviderToolHook(tool.ProviderID, tool.Name, a)
+				if !ok {
+					return nil, "provider tool args (typed config in Go)"
+				}
+				tool = ht
+			} else if len(a) > 0 {
+				return nil, "provider tool args (typed config in Go)"
+			}
+			tool.ProviderExecuted = true
+		} else {
+			tool.Parameters = m["inputSchema"]
+			if sv, ok := m["strict"].(bool); ok {
+				tool.Strict = &sv
+			}
+			if po, ok := m["providerOptions"].(map[string]interface{}); ok {
+				tool.ProviderOptions = po
+			}
+			if exs, ok := m["inputExamples"].([]interface{}); ok {
+				for _, ev := range exs {
+					em, _ := ev.(map[string]interface{})
+					in, _ := em["input"].(map[string]interface{})
+					tool.InputExamples = append(tool.InputExamples, types.ToolInputExample{Input: in})
+				}
+			}
+		}
+		out = append(out, tool)
+	}
+	return out, ""
 }

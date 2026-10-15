@@ -538,6 +538,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			rejectsForcedToolUse:       caps.RejectsForcedToolUse || th.typ == ThinkingTypeEnabled,
 		})
 	}
+	if prepared.err != nil {
+		return nil, prepared.err
+	}
 	if prepared.tools != nil {
 		body["tools"] = prepared.tools
 	}

@@ -15,46 +15,84 @@ import (
 // tsProviderTool maps a TS provider tool to the Go tool. Go identifies
 // provider tools by their TS id in Name.
 func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, bool) {
-	if len(args) == 0 {
-		if _, ok := anthropicBuiltinToolTypes[id]; ok {
-			tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
-			return types.Tool{Name: id, ProviderID: id, Type: "provider"}, true
-		}
-		var t types.Tool
-		switch id {
-		case "anthropic.web_fetch_20260209":
-			t = tools.WebFetch20260209(tools.WebFetch20260209Config{})
-		case "anthropic.computer_toolset_20260801":
-			t = tools.ComputerToolset20260801(tools.ComputerToolset20260801Config{})
-		default:
-			return t, false
-		}
-		tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
-		return t, true
-	}
 	raw, _ := json.Marshal(args)
+	decode := func(v interface{}) bool { return len(args) == 0 || json.Unmarshal(raw, v) == nil }
 	var t types.Tool
 	switch id {
 	case "anthropic.web_search_20250305":
 		var c tools.WebSearch20260209Config
-		if json.Unmarshal(raw, &c) != nil {
+		if !decode(&c) {
 			return t, false
 		}
 		t = tools.WebSearch20250305(c)
+	case "anthropic.web_search_20260209":
+		var c tools.WebSearch20260209Config
+		if !decode(&c) {
+			return t, false
+		}
+		t = tools.WebSearch20260209(c)
+	case "anthropic.web_search_20260318":
+		var c tools.WebSearch20260318Config
+		if !decode(&c) {
+			return t, false
+		}
+		t = tools.WebSearch20260318(c)
 	case "anthropic.web_fetch_20250910":
 		var c tools.WebFetch20260209Config
-		if json.Unmarshal(raw, &c) != nil {
+		if !decode(&c) {
 			return t, false
 		}
 		t = tools.WebFetch20250910(c)
+	case "anthropic.web_fetch_20260209":
+		var c tools.WebFetch20260209Config
+		if !decode(&c) {
+			return t, false
+		}
+		t = tools.WebFetch20260209(c)
+	case "anthropic.web_fetch_20260318":
+		var c tools.WebFetch20260318Config
+		if !decode(&c) {
+			return t, false
+		}
+		t = tools.WebFetch20260318(c)
 	case "anthropic.advisor_20260301":
 		var c tools.Advisor20260301Args
-		if json.Unmarshal(raw, &c) != nil {
+		if !decode(&c) {
 			return t, false
 		}
 		t = tools.Advisor20260301(c)
+	case "anthropic.computer_20241022", "anthropic.computer_20250124":
+		var c tools.Computer20241022Args
+		if !decode(&c) {
+			return t, false
+		}
+		if id == "anthropic.computer_20241022" {
+			t = tools.Computer20241022(c)
+		} else {
+			t = tools.Computer20250124(c)
+		}
+	case "anthropic.computer_20251124":
+		var c tools.Computer20251124Args
+		if !decode(&c) {
+			return t, false
+		}
+		t = tools.Computer20251124(c)
+	case "anthropic.text_editor_20250728":
+		var c tools.TextEditor20250728Args
+		if !decode(&c) {
+			return t, false
+		}
+		t = tools.TextEditor20250728(c)
+	case "anthropic.computer_toolset_20260801":
+		if len(args) != 0 {
+			return t, false
+		}
+		t = tools.ComputerToolset20260801(tools.ComputerToolset20260801Config{})
 	default:
-		return t, false
+		if _, ok := anthropicBuiltinToolTypes[id]; !ok || len(args) != 0 {
+			return t, false
+		}
+		t = types.Tool{Name: id, ProviderID: id, Type: "provider"}
 	}
 	tsfixture.ToolNameAlias[id], tsfixture.PromptToolNameAlias[name] = name, id
 	return t, true
@@ -86,6 +124,8 @@ func TestTSCasesLanguage(t *testing.T) {
 	})
 }
 
+const invalidBase64 = "the TS test passes strings like 'base64PDFdata' that are not valid base64; Go decodes file data"
+
 // TestTSCasesConvertPrompt replays convert-to-anthropic-prompt.test.ts.
 func TestTSCasesConvertPrompt(t *testing.T) {
 	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_prompt.json.gz")
@@ -96,6 +136,12 @@ func TestTSCasesConvertPrompt(t *testing.T) {
 			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
 		}
 		opts := prompt.AnthropicPromptOptions{}
+		if tn, ok := in["toolsetNames"].(map[string]interface{}); ok {
+			opts.ToolsetNames = map[string]string{}
+			for k, v := range tn {
+				opts.ToolsetNames[k] = fmt.Sprint(v)
+			}
+		}
 		if v, ok := in["sendReasoning"].(bool); ok {
 			opts.SendReasoning = &v
 		}
@@ -130,10 +176,7 @@ func TestTSCasesConvertPrompt(t *testing.T) {
 		if messages == nil {
 			messages = []map[string]interface{}{}
 		}
-		warnings := make([]interface{}, 0, len(out.Warnings))
-		for _, w := range out.Warnings {
-			warnings = append(warnings, w)
-		}
+		warnings := tsfixture.WarningsToTS(out.Warnings)
 		betas := out.Betas
 		if betas == nil {
 			betas = []string{}
@@ -143,6 +186,60 @@ func TestTSCasesConvertPrompt(t *testing.T) {
 			"betas":  map[string]interface{}{"__set": betas},
 		}, map[string]interface{}{"warnings": warnings}, nil
 	}, map[string]string{
-		"should add PDF file parts for base64 PDFs": "the TS test passes 'base64PDFdata', which is not valid base64; Go decodes file data",
+		"should add PDF file parts for base64 PDFs":                          invalidBase64,
+		"should not include citations by default":                            invalidBase64,
+		"should include citations when enabled on file part":                 invalidBase64,
+		"should include custom title and context when provided":              invalidBase64,
+		"should handle multiple documents with consistent citation settings": invalidBase64,
+	})
+}
+
+// TestTSCasesPrepareTools replays anthropic-prepare-tools.test.ts.
+func TestTSCasesPrepareTools(t *testing.T) {
+	tsfixture.ProviderToolHook = tsProviderTool
+	tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias = map[string]string{}, map[string]string{}
+	defer func() {
+		tsfixture.ProviderToolHook, tsfixture.ToolNameAlias, tsfixture.PromptToolNameAlias = nil, nil, nil
+	}()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/prepare_tools.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		o := prepareToolsOptions{
+			supportsStructuredOutput: in["supportsStructuredOutput"] == true,
+			supportsStrictTools:      in["supportsStrictTools"] == true,
+			rejectsForcedToolUse:     in["rejectsForcedToolUse"] == true,
+		}
+		if tools, ok := in["tools"]; ok {
+			ts, why := tsfixture.BuildTools(tools)
+			if why != "" {
+				return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+			}
+			o.tools = ts
+		}
+		if tc, ok := in["toolChoice"].(map[string]interface{}); ok {
+			choice := tsfixture.BuildToolChoice(tc)
+			o.toolChoice = &choice
+		}
+		if v, ok := in["disableParallelToolUse"].(bool); ok {
+			o.disableParallelToolUse = &v
+		}
+		out := prepareTools(o)
+		if out.err != nil {
+			return nil, nil, out.err
+		}
+		warnings := tsfixture.WarningsToTS(out.warnings)
+		betas := out.betas
+		if betas == nil {
+			betas = []string{}
+		}
+		return map[string]interface{}{
+			"tools":        out.tools,
+			"tool_choice":  out.toolChoice,
+			"toolChoice":   out.toolChoice,
+			"toolWarnings": warnings,
+			"betas":        map[string]interface{}{"__set": betas},
+		}, nil, nil
+	}, map[string]string{
+		"should correctly prepare computer_20251124 tool": "enableZoom is a Go bool: unset is sent as enable_zoom false (same API default)",
 	})
 }
