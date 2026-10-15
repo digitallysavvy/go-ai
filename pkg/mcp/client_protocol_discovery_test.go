@@ -111,7 +111,7 @@ func (t *discoveryMockTransport) respondDiscover(id interface{}) {
 	} else {
 		result := DiscoverResult{
 			SupportedVersions: []string{LatestProtocolVersion},
-			Capabilities:      ServerCapabilities{Tools: &ToolsCapability{}, Completions: &CompletionsCapability{}},
+			Capabilities:      ServerCapabilities{Tools: &ToolsCapability{}, Prompts: &PromptsCapability{}, Completions: &CompletionsCapability{}},
 			Instructions:      "modern era instructions",
 			ResultType:        "success",
 			Meta: map[string]interface{}{

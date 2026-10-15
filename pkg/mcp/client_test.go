@@ -276,7 +276,9 @@ func (m *mockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 				Version: "1.0.0",
 			},
 			Capabilities: ServerCapabilities{
-				Tools: &ToolsCapability{},
+				Tools:     &ToolsCapability{},
+				Resources: &ResourcesCapability{},
+				Prompts:   &PromptsCapability{},
 			},
 		}
 
@@ -664,7 +666,7 @@ func (t *pagedToolsTransport) Send(ctx context.Context, msg *MCPMessage) error {
 	switch msg.Method {
 	case "initialize":
 		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
-		result := InitializeResult{ProtocolVersion: ProtocolVersion, ServerInfo: ServerInfo{Name: "paged-server", Version: "1.0.0"}}
+		result := InitializeResult{ProtocolVersion: ProtocolVersion, Capabilities: ServerCapabilities{Tools: &ToolsCapability{}, Resources: &ResourcesCapability{}, Prompts: &PromptsCapability{}}, ServerInfo: ServerInfo{Name: "paged-server", Version: "1.0.0"}}
 		data, _ := json.Marshal(result)
 		response.Result = data
 		t.messages <- response
@@ -767,7 +769,7 @@ func (t *retryableCallTransport) Send(ctx context.Context, msg *MCPMessage) erro
 	switch msg.Method {
 	case "initialize":
 		response := &MCPMessage{JSONRpc: "2.0", ID: msg.ID}
-		result := InitializeResult{ProtocolVersion: ProtocolVersion, ServerInfo: ServerInfo{Name: "retry-server", Version: "1.0.0"}}
+		result := InitializeResult{ProtocolVersion: ProtocolVersion, Capabilities: ServerCapabilities{Tools: &ToolsCapability{}, Resources: &ResourcesCapability{}, Prompts: &PromptsCapability{}}, ServerInfo: ServerInfo{Name: "retry-server", Version: "1.0.0"}}
 		data, _ := json.Marshal(result)
 		response.Result = data
 		t.messages <- response
