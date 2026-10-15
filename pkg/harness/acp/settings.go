@@ -66,29 +66,33 @@ type PermissionModeTarget struct {
 //
 // TS also accepts a partial record (a key left out). Such a mapping is part of
 // the implementation identity but is otherwise ignored: it is never sent to the
-// bridge. Go expresses a left-out key by listing its mode in Unset; the zero
-// value (Unset empty) is a complete mapping, so existing callers are unchanged.
+// bridge. Go expresses a left-out key with the matching Unset* flag; the zero
+// value (no flag set) is a complete mapping, so existing callers are unchanged.
+// The struct stays comparable with == (flags, not a slice, as in v0.5.2).
 type PermissionModeMapping struct {
 	AllowReads *PermissionModeTarget
 	AllowEdits *PermissionModeTarget
 	AllowAll   *PermissionModeTarget
-	// Unset lists modes whose key is absent (TS `undefined`). The target field
-	// of a listed mode is ignored.
-	Unset []harness.PermissionMode
+	// UnsetAllowReads, UnsetAllowEdits and UnsetAllowAll mark a mode whose key
+	// is absent (TS `undefined`). The target field of a flagged mode is ignored.
+	UnsetAllowReads, UnsetAllowEdits, UnsetAllowAll bool
 }
 
 // IsComplete reports whether every mode has an entry (a target or an explicit
 // nil no-op). Mirrors TS `isCompletePermissionModeMapping`; a nil mapping is
 // not complete.
 func (m *PermissionModeMapping) IsComplete() bool {
-	return m != nil && len(m.Unset) == 0
+	return m != nil && !m.UnsetAllowReads && !m.UnsetAllowEdits && !m.UnsetAllowAll
 }
 
 func (m *PermissionModeMapping) isUnset(mode harness.PermissionMode) bool {
-	for _, u := range m.Unset {
-		if u == mode {
-			return true
-		}
+	switch mode {
+	case harness.PermissionModeAllowReads:
+		return m.UnsetAllowReads
+	case harness.PermissionModeAllowEdits:
+		return m.UnsetAllowEdits
+	case harness.PermissionModeAllowAll:
+		return m.UnsetAllowAll
 	}
 	return false
 }
