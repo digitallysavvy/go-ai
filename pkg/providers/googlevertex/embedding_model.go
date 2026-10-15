@@ -3,6 +3,7 @@ package googlevertex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -165,7 +167,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if err != nil {
 		// A ProviderError keeps the HTTP status, body and the extracted
 		// error.message, so embed/embedMany can retry 429/5xx like TS.
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "vertex embedding request failed: "+err.Error(), err)
+		return nil, vertexEmbeddingError(m.Provider(), err)
 	}
 
 	// TS maps every prediction and does not compare their number with the
@@ -237,7 +239,7 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 	if err != nil {
 		// A ProviderError keeps the HTTP status, body and the extracted
 		// error.message, so embed/embedMany can retry 429/5xx like TS.
-		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "vertex embedding request failed: "+err.Error(), err)
+		return nil, vertexEmbeddingError(m.Provider(), err)
 	}
 
 	usage := types.EmbeddingUsage{}
@@ -398,4 +400,15 @@ func isNumber(v interface{}) bool {
 		return true
 	}
 	return false
+}
+
+// vertexEmbeddingError maps a failed predict/embedContent call: an HTTP
+// failure gives the TS googleVertexFailedResponseHandler message (error.message
+// of a Google error body, else the HTTP status text).
+func vertexEmbeddingError(providerName string, err error) error {
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return gemini.GoogleHTTPError(providerName, statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+	}
+	return providererrors.NewProviderError(providerName, 0, "", "vertex embedding request failed: "+err.Error(), err)
 }

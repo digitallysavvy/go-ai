@@ -469,7 +469,7 @@ func TestProvider_New_ValidationErrors(t *testing.T) {
 				Location:    "us-central1",
 				AccessToken: "token",
 			},
-			expectError: "project is required",
+			expectError: "Google Vertex project setting is missing",
 		},
 		{
 			name: "Missing location",
@@ -477,7 +477,7 @@ func TestProvider_New_ValidationErrors(t *testing.T) {
 				Project:     "my-project",
 				AccessToken: "token",
 			},
-			expectError: "location is required",
+			expectError: "Google Vertex location setting is missing",
 		},
 	}
 

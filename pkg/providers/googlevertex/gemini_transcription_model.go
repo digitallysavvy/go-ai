@@ -223,8 +223,7 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "failed to transcribe audio: "+err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "",
-			fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
+		return nil, gemini.GoogleHTTPError(m.Provider(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 
 	var plainText, transcriptionText strings.Builder

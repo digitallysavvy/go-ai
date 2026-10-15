@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -640,25 +641,9 @@ func parseEmbeddingContentPart(raw interface{}) (EmbeddingPart, error) {
 func (m *EmbeddingModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		// Preserve the HTTP status and headers so ai.EmbedMany/Embed retries
-		// follow the TS APICallError semantics (429/5xx retryable, retry-after).
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-				Status  string `json:"status"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil {
-			if payload.Error.Message != "" {
-				message = payload.Error.Message
-			}
-			code = payload.Error.Status
-		}
-		providerErr := providererrors.NewProviderError("google", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		// Preserve the HTTP status and headers so retries follow the TS
+		// APICallError semantics (429/5xx retryable, retry-after).
+		return gemini.GoogleHTTPError("google", statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
 	}
 	return providererrors.NewProviderError("google", 0, "", err.Error(), err)
 }

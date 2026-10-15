@@ -283,6 +283,39 @@ type googleErrorData struct {
 	} `json:"error"`
 }
 
+// parseGoogleErrorData validates body against TS googleErrorDataSchema:
+// error.code must be present (number or null), error.message and
+// error.status must be strings, error.details an array when not null.
+func parseGoogleErrorData(body []byte, out *googleErrorData) bool {
+	var raw struct {
+		Error *struct {
+			Code    json.RawMessage `json:"code"`
+			Message *string         `json:"message"`
+			Status  *string         `json:"status"`
+			Details json.RawMessage `json:"details"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &raw) != nil || raw.Error == nil || raw.Error.Message == nil || raw.Error.Status == nil || len(raw.Error.Code) == 0 {
+		return false
+	}
+	var code *float64
+	if json.Unmarshal(raw.Error.Code, &code) != nil {
+		return false
+	}
+	var details []interface{}
+	if len(raw.Error.Details) > 0 && json.Unmarshal(raw.Error.Details, &details) != nil {
+		return false
+	}
+	if code != nil {
+		c := int(*code)
+		out.Error.Code = &c
+	}
+	out.Error.Message = *raw.Error.Message
+	out.Error.Status = *raw.Error.Status
+	out.Error.Details = details
+	return true
+}
+
 // generateID returns a fresh ID for a server tool call/source, using the
 // configured generator when set (TS: `config.generateId()`), falling back to
 // the shared streaming ID generator otherwise.
@@ -306,18 +339,31 @@ func (m *LanguageModel) handleError(err error) error {
 		return providererrors.NewProviderError(m.cfg.ProviderName, 0, "", err.Error(), err)
 	}
 
-	message := err.Error()
+	return GoogleHTTPError(m.cfg.ProviderName, httpErr.StatusCode, httpErr.Headers, httpErr.Body, err)
+}
+
+// GoogleHTTPError builds the ProviderError for a failed Google API response
+// (TS googleFailedResponseHandler): the message is error.message when the body
+// matches googleErrorDataSchema, otherwise the HTTP status text.
+func GoogleHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	message := http.StatusText(status)
+	if message == "" && cause != nil {
+		message = cause.Error()
+	}
 	var data googleErrorData
-	if jsonErr := json.Unmarshal(httpErr.Body, &data); jsonErr == nil && data.Error.Message != "" {
+	schemaOK := parseGoogleErrorData(body, &data)
+	if schemaOK {
 		message = data.Error.Message
+	} else {
+		data = googleErrorData{}
 	}
 
-	perr := providererrors.NewProviderError(m.cfg.ProviderName, httpErr.StatusCode, data.Error.Status, message, err)
-	perr.ResponseBody = string(httpErr.Body)
-	if len(httpErr.Headers) > 0 {
-		perr.ResponseHeaders = providerutils.ExtractHeaders(httpErr.Headers)
+	perr := providererrors.NewProviderError(providerName, status, data.Error.Status, message, cause)
+	perr.ResponseBody = string(body)
+	if len(headers) > 0 {
+		perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
 	}
-	if data.Error.Message != "" {
+	if schemaOK {
 		perr.Data = data
 	}
 	return perr

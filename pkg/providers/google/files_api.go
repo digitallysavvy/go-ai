@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -270,24 +272,7 @@ func googleFilesNumber(v interface{}) (int64, bool) {
 // handleFilesError builds the ProviderError for a failed Files API response
 // (TS googleFailedResponseHandler: error.message, status as the code).
 func (p *Provider) handleFilesError(status int, headers http.Header, body []byte) error {
-	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-			Status  string `json:"status"`
-		} `json:"error"`
-	}
-	message := string(body)
-	code := ""
-	if json.Unmarshal(body, &payload) == nil {
-		if payload.Error.Message != "" {
-			message = payload.Error.Message
-		}
-		code = payload.Error.Status
-	}
-	perr := providererrors.NewProviderError("google", status, code, message, nil)
-	perr.ResponseBody = string(body)
-	perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
-	return perr
+	return gemini.GoogleHTTPError("google", status, headers, body, nil)
 }
 
 func invalidGoogleFilesOptions(cause error) error {

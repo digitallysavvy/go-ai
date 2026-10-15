@@ -4,12 +4,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
-	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"regexp"
 	"strings"
 	"unicode/utf16"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -100,11 +102,11 @@ func sanitizeDocumentName(filename string) string {
 	name := stripBedrockFileExtension(filename)
 	name = whitespacePattern.ReplaceAllString(name, " ")
 	name = invalidDocumentNameCharsPattern.ReplaceAllString(name, "")
-	name = strings.TrimSpace(name)
+	name = providerutils.JSTrim(name)
 	if len(name) > 200 {
 		name = name[:200]
 	}
-	return strings.TrimSpace(name)
+	return providerutils.JSTrim(name)
 }
 
 func stripBedrockFileExtension(filename string) string {
@@ -700,12 +702,12 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 
 					switch p := part.(type) {
 					case types.TextContent:
-						if strings.TrimSpace(p.Text) == "" && !hasReasoning {
+						if providerutils.JSTrim(p.Text) == "" && !hasReasoning {
 							break
 						}
 						text := p.Text
 						if isLastBlock && isLastMessage && isLastContentPart {
-							text = strings.TrimSpace(text)
+							text = providerutils.JSTrim(text)
 						}
 						assistantContent = append(assistantContent, map[string]interface{}{"text": text})
 					case types.ReasoningContent:

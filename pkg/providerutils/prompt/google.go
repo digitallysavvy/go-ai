@@ -920,8 +920,14 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 					textParts = append(textParts, googleJSONText(b))
 				}
 			case f.hasData():
+				// TS resolveFullMediaType: complete a top-level media type by
+				// sniffing the bytes (best effort here; TS throws on failure).
+				mediaType := f.mediaType
+				if resolved, err := googleResolveFullMediaType(f.mediaType, f.data, true); err == nil {
+					mediaType = resolved
+				}
 				responseParts = append(responseParts, map[string]interface{}{
-					"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": f.base64Data()},
+					"inlineData": map[string]interface{}{"mimeType": mediaType, "data": f.base64Data()},
 				})
 			default:
 				textParts = append(textParts, googleJSONText(b))
@@ -967,7 +973,11 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 		case types.FileContentBlock:
 			f := c.resolveFile(fileBlockToContent(b))
 			if f.url == "" && f.reference == "" && !f.hasText && f.hasData() {
-				appendInline(f.mediaType, f.base64Data())
+				mediaType := f.mediaType
+				if resolved, err := googleResolveFullMediaType(f.mediaType, f.data, true); err == nil {
+					mediaType = resolved
+				}
+				appendInline(mediaType, f.base64Data())
 			} else {
 				*parts = append(*parts, map[string]interface{}{"text": googleJSONText(b)})
 			}

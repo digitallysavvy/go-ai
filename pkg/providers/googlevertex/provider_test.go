@@ -55,7 +55,7 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 				Location:    "us-central1",
 				AccessToken: "test-token",
 			},
-			expectedErr: "project is required for Google Vertex AI",
+			expectedErr: "Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.",
 		},
 		{
 			name: "missing location",
@@ -63,7 +63,7 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 				Project:     "test-project",
 				AccessToken: "test-token",
 			},
-			expectedErr: "location is required for Google Vertex AI",
+			expectedErr: "Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.",
 		},
 	}
 

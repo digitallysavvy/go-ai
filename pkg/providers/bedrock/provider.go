@@ -15,6 +15,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -238,7 +239,7 @@ func (p *Provider) agentRuntimeBaseURL() (string, error) {
 }
 
 func (p *Provider) authenticateRequest(ctx context.Context, req *stdhttp.Request, payload []byte) error {
-	apiKey := strings.TrimSpace(firstNonEmpty(p.config.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
+	apiKey := providerutils.JSTrim(firstNonEmpty(p.config.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		return nil

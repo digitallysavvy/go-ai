@@ -1196,3 +1196,32 @@ func TestConvertToAnthropicPrompt_LegacyToolResultFields(t *testing.T) {
 		{"type":"tool_result","tool_use_id":"c","content":"failed","is_error":true}
 	]}]`)
 }
+
+func TestAnthropicLastAssistantTextTrimIsJSTrim(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "hi\xef\xbb\xbf "}}}}
+	got, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := got.Messages[0]["content"].([]map[string]interface{})
+	if content[0]["text"] != "hi" {
+		t.Fatalf("text = %q", content[0]["text"])
+	}
+}
+
+// TS tool_search_tool_result error blocks carry no `caller`.
+func TestAnthropicToolSearchErrorResultHasNoCaller(t *testing.T) {
+	opts := map[string]interface{}{"anthropic": map[string]interface{}{"caller": map[string]interface{}{"type": "direct"}}}
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolResultContent{ToolCallID: "s", ToolName: "tool_search_tool_regex", ProviderOptions: opts,
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorJSON, Value: map[string]interface{}{"errorCode": "too_many_requests"}}},
+	}}}
+	got, err := ConvertToAnthropicPrompt(msgs, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := got.Messages[0]["content"].([]map[string]interface{})[0]
+	if _, has := part["caller"]; has {
+		t.Fatalf("unexpected caller: %v", part)
+	}
+}
