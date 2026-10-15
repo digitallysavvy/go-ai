@@ -7,7 +7,9 @@ hooks and writes one JSON line per test:
 - every `model.do*()` call: the arguments, the result (or error) and the model
   (class, id, provider name, plain config settings);
 - every HTTP request the test server saw (method, URL, headers, body) and the
-  response it served.
+  response it served, and, for tests that inject a mock `fetch` into the model
+  config (or the language model a decision model wraps), the exchange that
+  `fetch` produced (marked `mockFetch`).
 
 Go replays a recording through the Go provider of the same name
 (`TestTSWire`, `tsfixture.RunWire`): the Go model gets the same call options,
@@ -50,9 +52,14 @@ The Anthropic, Google, Vertex and Bedrock suites are registered in
 as raw JSON (`WireSuite.RawSchemas`) so schema key order is compared, replay
 Vertex Anthropic through its sub-provider, and send the fixed Google speech and
 Cloud TTS hosts to the replay server with a host-rewriting transport. The
-`anthropic-aws` recording has no HTTP exchanges (its tests inject a mock fetch)
-and is not kept; Bedrock `doStream` tests are skipped because the recording
-stores the binary event-stream frames as text (the case suites replay them).
+`anthropic-aws` tests exercise provider settings, environment variables and
+credentials (nothing a Go provider can be replayed against), so no recording is
+kept. Bedrock `doStream` tests whose response the test server serves as text
+chunks are skipped (the recording stores the binary event-stream frames as
+text; the case suites replay them); responses captured from a mock `fetch` are
+binary bodies and replay faithfully. The Anthropic and Google decision-model
+tests are recorded but skipped: a Go map carries the questions and the choice
+criteria, so the prompt orders them by key where TS uses insertion order.
 
 Packages whose Go provider needs package-private setup replay in-package:
 `fal` (fixed hosts), `azure` (URL layout selected by the resource name) and
