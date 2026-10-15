@@ -141,6 +141,19 @@ func (p *Provider) open(id string, create bool) (*Session, bool, error) {
 	if statErr != nil && !fresh {
 		return nil, false, statErr
 	}
+	// The session directory holds HOME (credentials written by adapters) and
+	// is usually under a shared temp dir, so keep it owner-only.
+	if err := os.MkdirAll(p.opts.RootDir, 0o700); err != nil {
+		return nil, false, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, false, err
+	}
+	if fresh {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, false, err
+		}
+	}
 	for _, d := range []string{workDir, homeDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, false, err
@@ -254,13 +267,11 @@ func (s *Session) Stop(context.Context) error {
 
 // Destroy stops the session and removes its directory (unless KeepFiles).
 func (s *Session) Destroy(ctx context.Context) error {
-	if err := s.Stop(ctx); err != nil {
-		return err
-	}
+	stopErr := s.Stop(ctx)
 	if s.keepFiles {
-		return nil
+		return stopErr
 	}
-	return os.RemoveAll(s.dir)
+	return errors.Join(stopErr, os.RemoveAll(s.dir))
 }
 
 // Restricted returns a filesystem/process-only view of the same sandbox.
@@ -325,7 +336,13 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 	p := &process{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{}), exitCode: -1}
 	s.mu.Lock()
 	s.procs[p] = struct{}{}
+	raced := s.stopped
 	s.mu.Unlock()
+	if raced {
+		// Stop ran between the stopped check and registration; it did not
+		// see this process, so kill it here.
+		_ = p.Kill()
+	}
 	go func() {
 		select {
 		case <-ctx.Done():

@@ -221,3 +221,22 @@ func TestOnFirstCreateRunsOnlyForFreshSessions(t *testing.T) {
 	}
 	_ = s.Destroy(ctx)
 }
+
+func TestSessionDirIsOwnerOnly(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	p := NewProvider(Options{RootDir: root})
+	sess, err := p.CreateSession(context.Background(), harness.CreateSandboxSessionOptions{SessionID: "s1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess.Destroy(context.Background()) }()
+	for _, d := range []string{root, filepath.Join(root, "s1")} {
+		fi, err := os.Stat(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o700 {
+			t.Fatalf("%s mode = %v, want 0700", d, fi.Mode().Perm())
+		}
+	}
+}
