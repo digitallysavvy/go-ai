@@ -123,6 +123,9 @@ func mistralReasoningMapWarnings(supported bool, explicitEffort string, reasonin
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if _, err := ConvertToMistralChatMessagesWithError(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
@@ -157,6 +160,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if _, err := ConvertToMistralChatMessagesWithError(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}

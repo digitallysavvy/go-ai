@@ -93,6 +93,10 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 }
 
 func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions runs before the prompt conversion.
+	if err := m.validateCompletionProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	warnings := completionWarnings(opts)
 	completionPrompt, stopSequences, err := convertToCompletionPrompt(opts.Prompt)
 	if err != nil {

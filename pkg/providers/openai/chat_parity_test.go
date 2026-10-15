@@ -208,13 +208,13 @@ func TestChatPromptCacheOptionsForwarded(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewLanguageModel(p, "gpt-5.6")
 
-	opts := map[string]interface{}{"mode": "manual", "ttl": "24h"}
+	opts := map[string]interface{}{"mode": "explicit", "ttl": "30m"}
 	body, _, _ := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:          types.Prompt{Text: "hi"},
 		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"promptCacheOptions": opts}},
 	}, false)
 	got, ok := body["prompt_cache_options"].(map[string]interface{})
-	if !ok || got["mode"] != "manual" || got["ttl"] != "24h" {
+	if !ok || got["mode"] != "explicit" || got["ttl"] != "30m" {
 		t.Fatalf("prompt_cache_options = %#v", body["prompt_cache_options"])
 	}
 }
@@ -284,7 +284,7 @@ func TestChatReasoningEffortRejectedWhenUnsupportedForGpt6(t *testing.T) {
 
 	body, warnings, _ := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{
 		Prompt:          types.Prompt{Text: "hi"},
-		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": "disabled"}},
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"reasoningEffort": "minimal"}},
 	}, false)
 	if _, ok := body["reasoning_effort"]; ok {
 		t.Fatalf("reasoning_effort should be dropped, got %#v", body["reasoning_effort"])

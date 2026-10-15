@@ -232,6 +232,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := m.validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
+
 	// Extract the "openai" provider options map once; every option below reads
 	// from it.
 	var openaiOpts map[string]interface{}

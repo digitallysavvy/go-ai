@@ -65,6 +65,9 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
@@ -100,6 +103,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
@@ -134,6 +140,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[st
 // (frequency_penalty, presence_penalty, p, k, seed, stop_sequences),
 // response_format (json mode), tools/tool_choice, and thinking.
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	body := map[string]interface{}{"model": m.modelID}
 	var messages []map[string]interface{}
 	var documents []map[string]interface{}

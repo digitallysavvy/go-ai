@@ -78,6 +78,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			Values:               inputs,
 		}
 	}
+	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
+	}
 	reqBody := map[string]interface{}{
 		"input": inputs,
 		"model": m.modelID,

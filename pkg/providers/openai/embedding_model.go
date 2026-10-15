@@ -63,6 +63,11 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 
 // DoEmbed performs embedding for a single input
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+	if opts != nil {
+		if err := m.validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
+	}
 	reqBody := map[string]interface{}{
 		"model": m.modelID,
 		"input": input,
@@ -97,12 +102,30 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// TS OpenAICompatibleEmbeddingModel parses provider options before the
+	// too-many-values check; OpenAIEmbeddingModel checks the count first.
+	validate := func() error {
+		if opts == nil {
+			return nil
+		}
+		return m.validateEmbeddingProviderOptions(opts.ProviderOptions)
+	}
+	if m.provider.config.OpenAICompatible {
+		if err := validate(); err != nil {
+			return nil, err
+		}
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
 		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
 			Provider:             m.Provider(),
 			ModelID:              m.modelID,
 			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
 			Values:               inputs,
+		}
+	}
+	if !m.provider.config.OpenAICompatible {
+		if err := validate(); err != nil {
+			return nil, err
 		}
 	}
 	if len(inputs) == 0 {

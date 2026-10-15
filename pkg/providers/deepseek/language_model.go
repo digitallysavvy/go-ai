@@ -139,6 +139,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 }
 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := m.validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	var warnings []types.Warning
 	body := map[string]interface{}{
 		"model": m.modelID,
