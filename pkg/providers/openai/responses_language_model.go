@@ -1339,7 +1339,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		if err := json.Unmarshal(rawItem, &peek); err != nil {
 			continue
 		}
-		if isResponsesFunctionCallType(peek.Type) {
+		if responsesItemIsFunctionCall(peek.Type, rawItem, false) {
 			hasFunctionCall = true
 		}
 
@@ -2355,12 +2355,28 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 	return result
 }
 
-// isResponsesFunctionCallType reports whether a Responses output item is a
-// client-side tool call, which TS counts as hasFunctionCall.
-func isResponsesFunctionCallType(itemType string) bool {
+// responsesItemIsFunctionCall reports whether a Responses output item is a
+// client-side tool call, which TS counts as hasFunctionCall. A computer_call
+// without a call_id is executed server-side and does not count; streaming
+// only counts an apply_patch_call once its status is "completed" (doGenerate
+// counts every apply_patch_call).
+func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming bool) bool {
 	switch itemType {
-	case "function_call", "custom_tool_call", "computer_call", "apply_patch_call":
+	case "function_call", "custom_tool_call":
 		return true
+	case "computer_call":
+		var item struct {
+			CallID *string `json:"call_id"`
+		}
+		return json.Unmarshal(raw, &item) == nil && item.CallID != nil
+	case "apply_patch_call":
+		if !streaming {
+			return true
+		}
+		var item struct {
+			Status string `json:"status"`
+		}
+		return json.Unmarshal(raw, &item) == nil && item.Status == "completed"
 	}
 	return false
 }
@@ -3788,7 +3804,7 @@ func openAIResponsesRawChunk(data string) *provider.StreamChunk {
 // All other item types were emitted incrementally and need no action here.
 func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
 	itemType := s.itemTypes[e.OutputIndex]
-	if isResponsesFunctionCallType(itemType) {
+	if responsesItemIsFunctionCall(itemType, e.Item, true) {
 		s.hasFunctionCall = true
 	}
 

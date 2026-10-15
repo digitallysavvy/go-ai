@@ -1450,7 +1450,7 @@ func TestTextVerbosityOmittedWhenNotSet(t *testing.T) {
 	}
 }
 
-// TS emits text-start + text-delta '' for the empty-string content OpenAI
+// TS emits text-start + text-delta ” for the empty-string content OpenAI
 // sends in its role chunk, but nothing for content:null (tool-call chunks).
 func TestOpenAIStreamEmptyContentEmitsEmptyTextDelta(t *testing.T) {
 	sseData := `data: {"id":"c","model":"m","created":1,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}

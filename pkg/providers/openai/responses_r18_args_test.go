@@ -1,11 +1,15 @@
 package openai
 
 import (
+	"encoding/json"
+	"io"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 )
 
 // TS resolves reasoningEffort once (option ?? top-level reasoning) and then
@@ -91,5 +95,44 @@ func TestResponsesEmptiedIncludeIsOmitted(t *testing.T) {
 	}
 	if _, ok := body["top_logprobs"]; ok {
 		t.Fatal("top_logprobs must be dropped")
+	}
+}
+
+// TS counts only client-side tool calls for the tool-calls finish reason: a
+// server-executed computer_call (null call_id) does not.
+func TestResponsesFinishReasonIgnoresServerExecutedComputerCall(t *testing.T) {
+	model := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-4o")
+	item, _ := json.Marshal(map[string]interface{}{"type": "computer_call", "id": "c1", "status": "completed"})
+	result, err := model.convertResponse(responses.ResponsesAPIResponse{Output: []json.RawMessage{item}}, true, "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FinishReason != types.FinishReasonStop {
+		t.Fatalf("doGenerate finish = %q, want stop", result.FinishReason)
+	}
+
+	finishOf := func(sse string) types.FinishReason {
+		stream := newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)
+		defer stream.Close() //nolint:errcheck
+		for {
+			c, err := stream.Next()
+			if err != nil {
+				t.Fatalf("no finish chunk: %v", err)
+			}
+			if c.Type == provider.ChunkTypeFinish {
+				return c.FinishReason
+			}
+		}
+	}
+	done := `data: {"type":"response.completed","response":{"id":"r","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`
+	computer := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"computer_call","id":"c1","status":"in_progress"}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"computer_call","id":"c1","status":"completed"}}
+
+`
+	if got := finishOf(computer + done); got != types.FinishReasonStop {
+		t.Fatalf("doStream computer finish = %q, want stop", got)
 	}
 }
