@@ -84,3 +84,12 @@ func TestUnionNestedErrors(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestValidationMessageValueIsJSStringify(t *testing.T) {
+	schema := Object(F("n", String))
+	msg := ValidationMessage(schema, `{"b":1.0,"a":"é<","n":2e2}`)
+	want := `Value: {"b":1,"a":"é<","n":200}.`
+	if !strings.Contains(msg, want) {
+		t.Fatalf("message %q lacks %q", msg, want)
+	}
+}
