@@ -84,3 +84,52 @@ func TestSerializeRedactsAuthToken(t *testing.T) {
 		t.Fatalf("serialized model lost BaseURL: %s", data)
 	}
 }
+
+// TS getHeaders → loadApiKey runs per request: a missing key fails the
+// request (no HTTP call) with a LoadAPIKeyError, and the key is read at
+// request time, not at construction.
+func TestMissingAPIKeyErrorsAtRequestTime(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	called := false
+	var gotKey string
+	hc := &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		gotKey = r.Header.Get("x-api-key")
+		return nil, errors.New("stop")
+	})}
+	p := New(Config{HTTPClient: hc}) // construction must not fail
+	m, err := p.LanguageModel("claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gen := func() error {
+		_, err := m.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		return err
+	}
+	err = gen()
+	var le *providererrors.LoadAPIKeyError
+	if !errors.As(err, &le) || called {
+		t.Fatalf("err = %v called = %v", err, called)
+	}
+	want := "Anthropic API key is missing. Pass it using the 'apiKey' parameter or the ANTHROPIC_API_KEY environment variable."
+	if le.Message != want {
+		t.Fatalf("message = %q", le.Message)
+	}
+	if _, err := m.DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); !errors.As(err, &le) {
+		t.Fatalf("stream err = %v", err)
+	}
+	// Key set after construction is picked up.
+	t.Setenv("ANTHROPIC_API_KEY", "late")
+	_ = gen()
+	if gotKey != "late" {
+		t.Fatalf("key = %q", gotKey)
+	}
+	// Explicit auth headers keep working without an API key.
+	called = false
+	pm, _ := New(Config{HTTPClient: hc, Headers: map[string]string{"X-Api-Key": "hdr"}}).LanguageModel("claude-sonnet-4-5")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	_, _ = pm.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if !called {
+		t.Fatal("explicit header config should send the request")
+	}
+}

@@ -72,6 +72,7 @@ type Client struct {
 	baseURL string
 	headers map[string]string
 
+	headersFunc  func() (map[string]string, error)
 	maxBodyBytes int64
 
 	mu sync.RWMutex
@@ -91,6 +92,11 @@ type Config struct {
 	// HTTPClient is the underlying HTTP client to use
 	// If nil, DefaultHTTPClient will be used
 	HTTPClient *http.Client
+
+	// HeadersFunc, when set, is called for every request and its result is
+	// layered over Headers (TS lazy `headers: () => ...`). An error aborts the
+	// request before anything is sent.
+	HeadersFunc func() (map[string]string, error)
 
 	// MaxResponseBytes bounds buffered response body reads. Zero uses
 	// fileutil.DefaultMaxDownloadSize (2 GiB), the TS response-handler limit.
@@ -133,6 +139,7 @@ func NewClient(cfg Config) *Client {
 		baseURL: cfg.BaseURL,
 		headers: cfg.Headers,
 
+		headersFunc:  cfg.HeadersFunc,
 		maxBodyBytes: cfg.MaxResponseBytes,
 	}
 }
@@ -202,6 +209,20 @@ func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
 // URL and default headers) under the read lock, so callers never range over
 // or concatenate the live fields while SetHeader/SetBaseURL may be running
 // on another goroutine.
+func (c *Client) requestDefaults() (string, map[string]string, error) {
+	baseURL, headers := c.snapshot()
+	if c.headersFunc != nil {
+		extra, err := c.headersFunc()
+		if err != nil {
+			return "", nil, err
+		}
+		for k, v := range extra {
+			headers[k] = v
+		}
+	}
+	return baseURL, headers, nil
+}
+
 func (c *Client) snapshot() (string, map[string]string) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -225,7 +246,10 @@ func encodeQuery(q map[string]string) string {
 
 // Do performs an HTTP request
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
-	baseURL, defaultHeaders := c.snapshot()
+	baseURL, defaultHeaders, err := c.requestDefaults()
+	if err != nil {
+		return nil, err
+	}
 
 	// Build full URL
 	url := baseURL + req.Path
@@ -359,7 +383,10 @@ func (c *Client) streamClient() *http.Client {
 
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
-	baseURL, defaultHeaders := c.snapshot()
+	baseURL, defaultHeaders, err := c.requestDefaults()
+	if err != nil {
+		return nil, err
+	}
 
 	// Build full URL
 	url := baseURL + req.Path

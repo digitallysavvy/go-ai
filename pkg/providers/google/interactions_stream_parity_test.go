@@ -3,8 +3,12 @@ package google
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -232,5 +236,109 @@ func TestInteractionsConvertBareTopLevelMediaTypeSniffsBytes(t *testing.T) {
 	}}}}, GoogleInteractionsProviderOptions{})
 	if err == nil || !strings.Contains(err.Error(), "must specify subtype since it could not be auto-detected") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS only knows model_output/thought/function_call/processing/built-in steps:
+// a top-level text/image/video step is an unknown block that emits nothing,
+// in streaming and in parseOutputs.
+func TestInteractionsTopLevelContentStepsAreIgnored(t *testing.T) {
+	chunks := runInteractionsEvents(t,
+		`{"event_type":"step.start","index":0,"step":{"type":"text","text":"x"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hi"}}`,
+		`{"event_type":"step.stop","index":0}`,
+		`{"event_type":"step.start","index":1,"step":{"type":"image"}}`,
+		`{"event_type":"step.delta","index":1,"delta":{"type":"image","data":"AAEC"}}`,
+		`{"event_type":"step.stop","index":1}`,
+		`{"event_type":"interaction.completed","interaction":{"id":"v1","status":"completed"}}`,
+	)
+	for _, c := range chunks {
+		switch c.Type {
+		case provider.ChunkTypeStreamStart, provider.ChunkTypeFinish:
+		default:
+			t.Fatalf("unexpected chunk %v", c.Type)
+		}
+	}
+	content, _, _ := (&InteractionsLanguageModel{}).parseOutputs([]interactionsContentBlock{{Type: "text", Text: "x"}, {Type: "image", Data: "AAEC"}}, "v1")
+	if len(content) != 0 {
+		t.Fatalf("content = %#v", content)
+	}
+}
+
+// TS generateId: every source gets its own id (no repeating "source-N").
+func TestInteractionsSourceIDsAreUnique(t *testing.T) {
+	chunks := runInteractionsEvents(t,
+		`{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text_annotation","annotations":[{"type":"url_citation","url":"https://a.example"}]}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text_annotation","annotations":[{"type":"url_citation","url":"https://b.example"}]}}`,
+		`{"event_type":"step.stop","index":0}`,
+	)
+	seen := map[string]bool{}
+	n := 0
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeSource {
+			n++
+			if c.SourceContent.ID == "" || seen[c.SourceContent.ID] {
+				t.Fatalf("source id %q empty or repeated", c.SourceContent.ID)
+			}
+			seen[c.SourceContent.ID] = true
+		}
+	}
+	if n != 2 {
+		t.Fatalf("sources = %d", n)
+	}
+	ids := 0
+	gen := func() string { ids++; return "gen-" + string(rune('0'+ids)) }
+	out := annotationsToSources([]interactionsAnnotation{{Type: "url_citation", URL: "https://a.example"}}, gen)
+	if out[0].(types.SourceContent).ID != "gen-1" {
+		t.Fatalf("configured generator unused: %#v", out)
+	}
+}
+
+// TS flush emits the finish part once, at the end of the stream: an error
+// event does not finish early or close open blocks.
+func TestInteractionsErrorEventFinishesAtStreamEnd(t *testing.T) {
+	chunks := runInteractionsEvents(t,
+		`{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"a"}}`,
+		`{"event_type":"error","error":{"message":"boom","code":"X"}}`,
+	)
+	var types []provider.ChunkType
+	for _, c := range chunks {
+		types = append(types, c.Type)
+	}
+	want := []provider.ChunkType{provider.ChunkTypeStreamStart, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeError, provider.ChunkTypeFinish}
+	if len(types) != len(want) {
+		t.Fatalf("chunks = %v", types)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("chunks = %v", types)
+		}
+	}
+}
+
+// TS streamGoogleInteractionEvents stops after a terminal `error` event: the
+// background stream must not reconnect when the connection then closes.
+func TestInteractionsBackgroundStreamDoesNotReconnectAfterError(t *testing.T) {
+	var gets atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gets.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"event_type\":\"error\",\"error\":{\"message\":\"boom\"}}\n\n")
+	}))
+	defer server.Close()
+	client := New(Config{APIKey: "k", BaseURL: server.URL}).client
+	stream, err := newInteractionsStream(context.Background(), client, "v1", nil, nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	chunks := drainInteractions(t, stream)
+	if gets.Load() != 1 {
+		t.Fatalf("GET count = %d, want 1", gets.Load())
+	}
+	if last := chunks[len(chunks)-1]; last.Type != provider.ChunkTypeFinish {
+		t.Fatalf("last chunk = %v", last.Type)
 	}
 }

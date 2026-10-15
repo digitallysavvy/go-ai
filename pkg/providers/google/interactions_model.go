@@ -39,10 +39,8 @@ type InteractionsConfig struct {
 	ProviderName string
 	// Client issues the actual /interactions HTTP requests.
 	Client *internalhttp.Client
-	// GenerateID generates fallback tool-call/source IDs (TS
-	// `GoogleInteractionsConfig.generateId`). Reserved for future use; the
-	// current implementation derives fallback IDs from the response/step
-	// shape instead (matching existing Go behavior).
+	// GenerateID generates fallback tool-call, processing and source ids (TS
+	// `GoogleInteractionsConfig.generateId`). Defaults to a random id.
 	GenerateID func() string
 
 	// SerializableConfig returns a JSON-friendly copy of the constructing
@@ -196,7 +194,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 			return nil, fmt.Errorf("google.interactions: background POST response did not include an interaction id; cannot stream the result")
 		}
 		if isTerminalInteractionStatus(response.Status) {
-			synth := newSynthesizedInteractionsStream(response, warnings, resp.Headers, opts.IncludeRawChunks)
+			synth := newSynthesizedInteractionsStream(m, response, warnings, resp.Headers, opts.IncludeRawChunks)
 			if s, ok := synth.(*sliceTextStream); ok {
 				s.requestBody = args
 			}
@@ -208,6 +206,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 		}
 		if s, ok := pollStream.(*interactionsStream); ok {
 			s.requestBody = args
+			s.generateID = m.cfg.GenerateID
 			s.includeRawChunks = opts.IncludeRawChunks
 		}
 		return pollStream, nil
@@ -229,6 +228,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 	eventStream := newInteractionsEventStream(ctx, m.cfg.Client, httpResp.Body, "", headers, warnings, providerutils.ExtractHeaders(httpResp.Header), 0)
 	if s, ok := eventStream.(*interactionsStream); ok {
 		s.requestBody = streamArgs
+		s.generateID = m.cfg.GenerateID
 		s.includeRawChunks = opts.IncludeRawChunks
 	}
 	return eventStream, nil

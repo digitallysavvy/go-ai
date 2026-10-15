@@ -76,7 +76,7 @@ func TestInteractionsStreamIncludeRawChunksAndMalformedEvent(t *testing.T) {
 func TestSynthesizedInteractionsStreamMetadataAndRaw(t *testing.T) {
 	t.Parallel()
 	resp := interactionsResponse{ID: "v1", Created: "2026-01-02T03:04:05Z", Model: "deep-research", Status: InteractionStatusCompleted}
-	chunks := drainInteractions(t, newSynthesizedInteractionsStream(resp, nil, nil, true))
+	chunks := drainInteractions(t, newSynthesizedInteractionsStream(&InteractionsLanguageModel{}, resp, nil, nil, true))
 	if len(chunks) < 3 || chunks[0].Type != provider.ChunkTypeResponseMetadata || chunks[1].Type != provider.ChunkTypeRaw {
 		var ts []provider.ChunkType
 		for _, c := range chunks {
@@ -87,7 +87,7 @@ func TestSynthesizedInteractionsStreamMetadataAndRaw(t *testing.T) {
 	if chunks[0].ResponseMetadata.ID != "v1" || chunks[0].ResponseMetadata.ModelID != "deep-research" || chunks[0].ResponseMetadata.Timestamp.IsZero() {
 		t.Fatalf("metadata = %#v", chunks[0].ResponseMetadata)
 	}
-	for _, c := range drainInteractions(t, newSynthesizedInteractionsStream(resp, nil, nil, false)) {
+	for _, c := range drainInteractions(t, newSynthesizedInteractionsStream(&InteractionsLanguageModel{}, resp, nil, nil, false)) {
 		if c.Type == provider.ChunkTypeRaw {
 			t.Fatal("raw chunk without includeRawChunks")
 		}

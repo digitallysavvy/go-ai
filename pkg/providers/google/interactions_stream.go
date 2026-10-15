@@ -53,10 +53,21 @@ type interactionsStream struct {
 	// deltas or tool results is surfaced once.
 	emittedSources map[string]bool
 
+	// generateID creates source ids (TS config.generateId()); nil falls back
+	// to a random id.
+	generateID func() string
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+}
+
+func (s *interactionsStream) newID() string {
+	if s.generateID != nil {
+		return s.generateID()
+	}
+	return streaming.GenerateID()
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -142,8 +153,8 @@ func parseInteractionsCreated(created string) time.Time {
 	return t
 }
 
-func newSynthesizedInteractionsStream(response interactionsResponse, warnings []types.Warning, headers http.Header, includeRawChunks bool) provider.TextStream {
-	content, _, hasFunctionCall := (&InteractionsLanguageModel{}).parseOutputs(response.Steps, normalizedInteractionID(response.ID))
+func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response interactionsResponse, warnings []types.Warning, headers http.Header, includeRawChunks bool) provider.TextStream {
+	content, _, hasFunctionCall := model.parseOutputs(response.Steps, normalizedInteractionID(response.ID))
 	chunks := make([]*provider.StreamChunk, 0, len(content)+4)
 	if len(warnings) > 0 {
 		chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: warnings})
@@ -224,7 +235,15 @@ restart:
 		return &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: warnings}, nil
 	}
 	for {
-		event, err := s.parser.Next()
+		var event *streaming.SSEEvent
+		var err error
+		if s.completed && s.resumable {
+			// TS streamGoogleInteractionEvents ends the stream after the
+			// terminal interaction.completed / error event.
+			err = io.EOF
+		} else {
+			event, err = s.parser.Next()
+		}
 		if err == io.EOF {
 			if s.resumable && !s.completed && s.interactionID != "" {
 				if err := s.reopenAfterEOF(); err != nil {
@@ -234,7 +253,8 @@ restart:
 				continue
 			}
 			if !s.finished {
-				s.closeAll()
+				// TS flush: the finish part only; blocks that never saw a
+				// step.stop stay open.
 				s.appendFinish()
 				if len(s.buffer) > 0 {
 					goto restart
@@ -369,9 +389,6 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		open := &interactionOpenBlock{kind: block.Type, id: id, blockType: block.Type, toolCallID: firstNonEmpty(block.ID, id), toolName: block.Name, signature: block.Signature, data: block.Data, mimeType: block.MimeType, uri: block.URI, callID: firstNonEmpty(block.CallID, id), result: block.Result, isError: block.IsError != nil && *block.IsError}
 		s.open[idx] = open
 		switch block.Type {
-		case "text":
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: id})
-			s.emitSources(annotationsToSources(block.Annotations))
 		case "thought":
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: id})
 			for _, item := range block.Summary {
@@ -394,7 +411,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 				case "text":
 					open.kind = "text"
 					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: id})
-					s.emitSources(annotationsToSources(initial.Annotations))
+					s.emitSources(annotationsToSources(initial.Annotations, s.newID))
 				case "image":
 					open.kind = "image"
 					open.data, open.mimeType, open.uri = initial.Data, initial.MimeType, initial.URI
@@ -411,6 +428,11 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}})
 			open.startEmitted = true
 		default:
+			// Step types outside the TS schema (including top-level
+			// text/image/video) are unknown blocks: tracked, never emitted.
+			if block.Type != "processing_call" && block.Type != "processing_result" {
+				open.kind = "unknown"
+			}
 			// Built-in tool steps never count as client function calls (TS
 			// hasFunctionCall is only set by function_call steps).
 			if isBuiltinInteractionsToolCall(block.Type) {
@@ -471,13 +493,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: open.id, Text: delta.Text})
 			}
 		case open.kind == "text" && (delta.Type == "text_annotation" || delta.Type == "text_annotation_delta"):
-			s.emitSources(annotationsToSources(delta.Annotations))
-		case (open.kind == "image" && delta.Type == "image") || (open.kind == "video" && delta.Type == "video"):
-			// Legacy top-level image/video steps (not in the TS schema)
-			// accumulate and are emitted at step.stop.
-			open.data = firstNonEmpty(delta.Data, open.data)
-			open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
-			open.uri = firstNonEmpty(delta.URI, open.uri)
+			s.emitSources(annotationsToSources(delta.Annotations, s.newID))
 		case open.kind == "thought":
 			if delta.Type == "thought_summary" && len(delta.ContentRaw) > 0 {
 				var contentBlock interactionsContentBlock
@@ -547,8 +563,8 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			s.finishStatus = InteractionStatusInProgress
 		}
 	case "interaction.completed":
+		s.completed = true
 		if event.Interaction != nil {
-			s.completed = true
 			if event.Interaction.Status != "" {
 				s.finishStatus = event.Interaction.Status
 			}
@@ -562,8 +578,6 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 				s.interactionID = event.Interaction.ID
 			}
 		}
-		s.closeAll()
-		s.appendFinish()
 	case "error":
 		s.finishStatus = InteractionStatusFailed
 		// TS: createProviderStreamError({message: error?.message ?? 'Unknown
@@ -582,14 +596,13 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		if json.Unmarshal([]byte(s.currentEventData), &data) != nil {
 			data = nil
 		}
-		s.closeAll()
+		s.completed = true
 		s.buffer = append(s.buffer, &provider.StreamChunk{
 			Type:        provider.ChunkTypeError,
 			Text:        message,
 			AbortReason: message,
 			Err:         providererrors.NewStreamProviderError(message, "google.interactions", "error", code, nil, nil, data),
 		})
-		s.appendFinish()
 	}
 }
 
@@ -601,8 +614,6 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: open.id, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)})
 	case "image":
 		s.emitFile(open.data, open.uri, open.mimeType, "image/png")
-	case "video":
-		s.emitFile(open.data, open.uri, open.mimeType, "video/mp4")
 	case "processing_call":
 		meta := processingMeta(open.signature, s.interactionID, open.toolCallID, "")
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_call", ProviderMetadata: meta}, ProviderMetadata: meta})
@@ -634,15 +645,8 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		} else if isBuiltinInteractionsToolResult(open.blockType) {
 			block := interactionsContentBlock{Type: open.blockType, CallID: open.callID, Name: open.toolName, Result: open.result}
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: open.callID, ToolName: open.toolName, Result: open.result, ProviderExecuted: true}})
-			s.emitSources(builtinToolResultSources(block))
+			s.emitSources(builtinToolResultSources(block, s.newID))
 		}
-	}
-}
-
-func (s *interactionsStream) closeAll() {
-	for idx, open := range s.open {
-		s.stopBlock(open)
-		delete(s.open, idx)
 	}
 }
 

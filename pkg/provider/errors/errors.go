@@ -303,6 +303,27 @@ func IsInvalidArgumentError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// LoadAPIKeyError signals that a required API key was neither passed
+// explicitly nor found in its environment variable (TS AI_LoadAPIKeyError).
+type LoadAPIKeyError struct {
+	Message string
+}
+
+func (e *LoadAPIKeyError) Error() string { return e.Message }
+
+// NewLoadAPIKeyError builds the TS loadApiKey error text:
+// "<description> API key is missing. Pass it using the 'apiKey' parameter or
+// the <ENV> environment variable."
+func NewLoadAPIKeyError(description, envVar string) *LoadAPIKeyError {
+	return &LoadAPIKeyError{Message: fmt.Sprintf("%s API key is missing. Pass it using the 'apiKey' parameter or the %s environment variable.", description, envVar)}
+}
+
+// IsLoadAPIKeyError checks if an error is a LoadAPIKeyError.
+func IsLoadAPIKeyError(err error) bool {
+	var target *LoadAPIKeyError
+	return errors.As(err, &target)
+}
+
 // TooManyEmbeddingValuesForCallError signals that a provider embedding model
 // received more values than it supports in one request.
 type TooManyEmbeddingValuesForCallError struct {

@@ -37,8 +37,8 @@ func TestInteractionsGenerateRequestAndResponse(t *testing.T) {
 			"model":"gemini-2.5-flash",
 			"created":"2026-05-04T19:00:00Z",
 			"steps":[
-				{"type":"thought","signature":"sig-1","summary":[{"type":"text","text":"thinking"}]},
-				{"type":"text","text":"hello"},
+				{"type":"thought","signature":"sig-1","summary":[{"type":"model_output","content":[{"type":"text","text":"thinking"}]}]},
+				{"type":"model_output","content":[{"type":"text","text":"hello"}]},
 				{"type":"function_call","id":"call-1","name":"lookup","arguments":{"q":"x"},"signature":"sig-2"}
 			],
 			"usage":{"total_input_tokens":3,"total_output_tokens":4,"total_tokens":7,"total_thought_tokens":2}
@@ -153,7 +153,7 @@ func TestInteractionsPreviousInteractionCompactsAssistantAndToolResult(t *testin
 	var captured map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&captured)
-		_, _ = fmt.Fprint(w, `{"id":"v1_next","status":"completed","steps":[{"type":"text","text":"next"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_next","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"next"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -251,7 +251,7 @@ func TestInteractionsAgentUsesCurrentDeepResearchAgentName(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_agent","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_agent","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -280,7 +280,7 @@ func TestInteractionsTypedImageConfigMapsToSnakeCase(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_img","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_img","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -347,7 +347,7 @@ func TestInteractionsResponseFormatVideoEntry(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_vid","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_vid","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -408,7 +408,7 @@ func TestInteractionsResponseFormatVideoEntry_AgentKeepsIt(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1_agent_vid","status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_agent_vid","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -486,9 +486,9 @@ func TestInteractionsParseOutputsPreservesToolCallsInOrderedContent(t *testing.T
 	p := New(Config{APIKey: "test-key"})
 	model := NewInteractionsLanguageModel(p, ModelGemini25Flash)
 	content, toolCalls, hasFunctionCall := model.parseOutputs([]interactionsContentBlock{
-		{Type: "text", Text: "before"},
+		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"text","text":"before"}]`)},
 		{Type: "function_call", ID: "call-1", Name: "lookup", Arguments: json.RawMessage(`{"q":"x"}`), Signature: "sig"},
-		{Type: "text", Text: "after"},
+		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"text","text":"after"}]`)},
 		{Type: "google_search_call", ID: "search-1", Arguments: json.RawMessage(`{"query":"go"}`)},
 	}, "v1_order")
 
@@ -564,7 +564,7 @@ func TestInteractionsImageURIOutputsAreGeneratedFiles(t *testing.T) {
 
 	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
 	content, _, _ := model.parseOutputs([]interactionsContentBlock{
-		{Type: "image", URI: "https://example.com/out.png", MimeType: "image/png"},
+		{Type: "model_output", ContentRaw: json.RawMessage(`[{"type":"image","uri":"https://example.com/out.png","mime_type":"image/png"}]`)},
 	}, "v1_img")
 	if len(content) != 1 {
 		t.Fatalf("content len = %d", len(content))
@@ -779,7 +779,7 @@ func TestInteractionsOutputTokensByModality(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"id":"v1_mod","status":"completed","steps":[{"type":"text","text":"ok"}],"usage":{"output_tokens_by_modality":[{"modality":"video","tokens":57920},{"modality":"text","tokens":12}]}}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1_mod","status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}],"usage":{"output_tokens_by_modality":[{"modality":"video","tokens":57920},{"modality":"text","tokens":12}]}}`)
 	}))
 	defer server.Close()
 
@@ -806,7 +806,7 @@ func TestInteractionsGenerateEmptyProviderMetadataGoogleObject(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"status":"completed","steps":[{"type":"text","text":"ok"}]}`)
+		_, _ = fmt.Fprint(w, `{"status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}]}`)
 	}))
 	defer server.Close()
 
@@ -973,8 +973,8 @@ func TestInteractionsStreamFlushesFinishWithoutComplete(t *testing.T) {
 			finish = chunk
 		}
 	}
-	if !sawTextEnd {
-		t.Fatal("expected open text block to be closed on EOF")
+	if sawTextEnd {
+		t.Fatal("TS flush emits only the finish part: unclosed blocks stay open")
 	}
 	if finish == nil || finish.FinishReason != types.FinishReasonLength {
 		t.Fatalf("finish = %#v", finish)
@@ -1048,7 +1048,7 @@ func TestInteractionsStreamProcessingAndVideoSteps(t *testing.T) {
 		``,
 		`data: {"event_type":"step.stop","index":1}`,
 		``,
-		`data: {"event_type":"step.start","index":2,"step":{"type":"video"}}`,
+		`data: {"event_type":"step.start","index":2,"step":{"type":"model_output"}}`,
 		``,
 		`data: {"event_type":"step.delta","index":2,"delta":{"type":"video","uri":"gs://bucket/out.mp4","mime_type":"video/mp4"}}`,
 		``,

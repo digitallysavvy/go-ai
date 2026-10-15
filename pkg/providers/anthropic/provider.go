@@ -199,6 +199,9 @@ func New(cfg Config) *Provider {
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
+		// TS getHeaders runs per request: the key is (re)loaded then, and a
+		// missing key fails the request with a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) { return requestAuthHeaders(cfg) },
 	})
 
 	return &Provider{
@@ -225,6 +228,31 @@ func authHeadersFor(cfg Config) map[string]string {
 		headers["x-api-key"] = apiKey
 	}
 	return headers
+}
+
+// requestAuthHeaders resolves the credentials of a plain Anthropic provider
+// at request time like TS getHeaders/loadApiKey: the API key comes from
+// Config.APIKey or the ANTHROPIC_API_KEY environment variable, and a missing
+// key is a LoadAPIKeyError. Wrapper providers (UserAgentName/NoUserAgentTag
+// set), AuthToken users and callers that authenticate through explicit
+// Config.Headers (x-api-key or Authorization) keep their own credentials.
+func requestAuthHeaders(cfg Config) (map[string]string, error) {
+	if cfg.AuthToken != "" || cfg.UserAgentName != "" || cfg.NoUserAgentTag {
+		return nil, nil
+	}
+	for k := range cfg.Headers {
+		if strings.EqualFold(k, "x-api-key") || strings.EqualFold(k, "authorization") {
+			return nil, nil
+		}
+	}
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if apiKey == "" {
+		return nil, providererrors.NewLoadAPIKeyError("Anthropic", "ANTHROPIC_API_KEY")
+	}
+	return map[string]string{"x-api-key": apiKey}, nil
 }
 
 func (p *Provider) authHeaders() map[string]string { return authHeadersFor(p.config) }
