@@ -192,6 +192,19 @@ type AgentSettings struct {
 	// nest model-call and tool-execution spans. Nil disables it. Mirrors TS
 	// `HarnessAgentSettings.telemetry`.
 	Telemetry *telemetry.Options
+
+	// Debug configures diagnostics: bridge log forwarding (sandbox console
+	// lines and structured debug events) and the HARNESS_DEBUG stderr
+	// default. Set &DebugConfig{Enabled: &true} to turn it on in code; the
+	// HARNESS_DEBUG, HARNESS_DEBUG_LEVEL and HARNESS_DEBUG_SUBSYSTEMS env vars
+	// fill any unset field. Mirrors TS `HarnessAgentSettings.debug`.
+	Debug *DebugConfig
+
+	// OnLog is a programmatic sink for forwarded bridge diagnostics. It
+	// receives every captured console line and structured event, normalized,
+	// independent of the stderr default. Only called when diagnostics are
+	// enabled via Debug or HARNESS_DEBUG. Mirrors TS `onLog`.
+	OnLog func(Diagnostic)
 }
 
 var forbiddenAgentHeaders = map[string]struct{}{
