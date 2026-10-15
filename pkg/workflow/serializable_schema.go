@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -349,8 +347,10 @@ func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (
 		return input, nil
 	}
 	params := def.InputSchema
+	hint := def.inputSchemaHint
 	if params == nil {
 		params = def.Parameters
+		hint = def.parametersHint
 	}
 	if params == nil {
 		return input, nil
@@ -365,14 +365,17 @@ func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (
 	params = stripSchemaFormats(normalized).(map[string]interface{})
 	s := schema.NewSimpleJSONSchema(params)
 	defaulted := schema.ApplyDefaults(input, s)
+	name := def.Name
+	if name == "" {
+		name = "tool"
+	}
+	// The generic validator does not know every keyword Ajv does (if/then/else
+	// among them), so the Ajv-ordered walk decides too.
+	details := collectActionableErrors(defaulted, params, hint, "data")
+	if len(details) > 0 {
+		return nil, fmt.Errorf("workflow: invalid input for %s: %s", name, strings.Join(details, ", "))
+	}
 	if err := s.Validator().Validate(defaulted); err != nil {
-		name := def.Name
-		if name == "" {
-			name = "tool"
-		}
-		if details := collectActionableErrors(defaulted, params, "data", nil); len(details) > 0 {
-			return nil, fmt.Errorf("workflow: invalid input for %s: %s", name, strings.Join(details, ", "))
-		}
 		return nil, fmt.Errorf("workflow: invalid input for %s: %w", name, err)
 	}
 	return defaulted, nil
@@ -402,89 +405,6 @@ func stripSchemaFormats(v interface{}) interface{} {
 	default:
 		return v
 	}
-}
-
-// collectActionableErrors walks value against sch and reports every enum,
-// const, required and additionalProperties violation with the details a model
-// needs to correct the call (allowed values, unexpected property names, and
-// every invalid array location). Messages mirror TS formatAjvError (#22392).
-// It covers properties, items and allOf; other keywords are left to the
-// generic validator error.
-func collectActionableErrors(value interface{}, sch map[string]interface{}, path string, out []string) []string {
-	if sch == nil {
-		return out
-	}
-	out = appendTypeAndBoundErrors(value, sch, path, out)
-	if enum, ok := sch["enum"].([]interface{}); ok && len(enum) > 0 {
-		matched := false
-		for _, e := range enum {
-			if jsonEqual(value, e) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			parts := make([]string, len(enum))
-			for i, e := range enum {
-				parts[i] = jsonString(e)
-			}
-			out = append(out, fmt.Sprintf("%s must be one of %s", path, strings.Join(parts, ", ")))
-		}
-	}
-	if c, ok := sch["const"]; ok && !jsonEqual(value, c) {
-		out = append(out, fmt.Sprintf("%s must equal %s", path, jsonString(c)))
-	}
-	if obj, ok := value.(map[string]interface{}); ok {
-		if req, ok := sch["required"].([]interface{}); ok {
-			for _, r := range req {
-				if name, ok := r.(string); ok {
-					if _, exists := obj[name]; !exists {
-						out = append(out, fmt.Sprintf("%s is missing required property %s", path, jsonString(name)))
-					}
-				}
-			}
-		}
-		props, _ := sch["properties"].(map[string]interface{})
-		if add, ok := sch["additionalProperties"].(bool); ok && !add {
-			keys := make([]string, 0, len(obj))
-			for k := range obj {
-				if _, declared := props[k]; !declared {
-					keys = append(keys, k)
-				}
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				out = append(out, fmt.Sprintf("%s has unexpected property %s", path, jsonString(k)))
-			}
-		}
-		keys := make([]string, 0, len(props))
-		for k := range props {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			child, exists := obj[k]
-			sub, ok := props[k].(map[string]interface{})
-			if exists && ok {
-				out = collectActionableErrors(child, sub, path+"/"+escapeInstancePathKey(k), out)
-			}
-		}
-	}
-	if arr, ok := value.([]interface{}); ok {
-		if items, ok := sch["items"].(map[string]interface{}); ok {
-			for i, el := range arr {
-				out = collectActionableErrors(el, items, fmt.Sprintf("%s/%d", path, i), out)
-			}
-		}
-	}
-	if allOf, ok := sch["allOf"].([]interface{}); ok {
-		for _, sub := range allOf {
-			if m, ok := sub.(map[string]interface{}); ok {
-				out = collectActionableErrors(value, m, path, out)
-			}
-		}
-	}
-	return out
 }
 
 func jsonString(v interface{}) string {
@@ -565,94 +485,6 @@ func matchesJSONType(v interface{}, name string) bool {
 
 func formatJSNumber(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
-}
-
-// appendTypeAndBoundErrors adds the Ajv messages for the type keyword and for
-// the numeric, string and array bounds that apply to the value's own type
-// (TS formatAjvError falls through to `data<path> <ajv message>` for them).
-func appendTypeAndBoundErrors(value interface{}, sch map[string]interface{}, path string, out []string) []string {
-	var names []string
-	switch t := sch["type"].(type) {
-	case string:
-		names = []string{t}
-	case []interface{}:
-		for _, e := range t {
-			if n, ok := e.(string); ok {
-				names = append(names, n)
-			}
-		}
-	case []string:
-		names = t
-	}
-	if len(names) > 0 {
-		matched := false
-		for _, n := range names {
-			if matchesJSONType(value, n) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			out = append(out, fmt.Sprintf("%s must be %s", path, strings.Join(names, ",")))
-		}
-	}
-	bound := func(key string) (float64, bool) {
-		v, ok := sch[key]
-		if !ok {
-			return 0, false
-		}
-		return jsonNumber(v)
-	}
-	if f, ok := jsonNumber(value); ok {
-		if m, has := bound("multipleOf"); has && m != 0 {
-			if q := f / m; q != math.Trunc(q) {
-				out = append(out, fmt.Sprintf("%s must be multiple of %s", path, formatJSNumber(m)))
-			}
-		}
-		if m, has := bound("maximum"); has && f > m {
-			out = append(out, fmt.Sprintf("%s must be <= %s", path, formatJSNumber(m)))
-		}
-		if m, has := bound("minimum"); has && f < m {
-			out = append(out, fmt.Sprintf("%s must be >= %s", path, formatJSNumber(m)))
-		}
-		if m, has := bound("exclusiveMaximum"); has && f >= m {
-			out = append(out, fmt.Sprintf("%s must be < %s", path, formatJSNumber(m)))
-		}
-		if m, has := bound("exclusiveMinimum"); has && f <= m {
-			out = append(out, fmt.Sprintf("%s must be > %s", path, formatJSNumber(m)))
-		}
-	}
-	if str, ok := value.(string); ok {
-		n := utf8.RuneCountInString(str)
-		if m, has := bound("maxLength"); has && float64(n) > m {
-			out = append(out, fmt.Sprintf("%s must NOT have more than %s characters", path, formatJSNumber(m)))
-		}
-		if m, has := bound("minLength"); has && float64(n) < m {
-			out = append(out, fmt.Sprintf("%s must NOT have fewer than %s characters", path, formatJSNumber(m)))
-		}
-		if pat, ok := sch["pattern"].(string); ok {
-			if re, err := regexp.Compile(pat); err == nil && !re.MatchString(str) {
-				out = append(out, fmt.Sprintf("%s must match pattern %q", path, pat))
-			}
-		}
-	}
-	if arr, ok := value.([]interface{}); ok {
-		if m, has := bound("maxItems"); has && float64(len(arr)) > m {
-			out = append(out, fmt.Sprintf("%s must NOT have more than %s items", path, formatJSNumber(m)))
-		}
-		if m, has := bound("minItems"); has && float64(len(arr)) < m {
-			out = append(out, fmt.Sprintf("%s must NOT have fewer than %s items", path, formatJSNumber(m)))
-		}
-	}
-	if obj, ok := value.(map[string]interface{}); ok {
-		if m, has := bound("maxProperties"); has && float64(len(obj)) > m {
-			out = append(out, fmt.Sprintf("%s must NOT have more than %s properties", path, formatJSNumber(m)))
-		}
-		if m, has := bound("minProperties"); has && float64(len(obj)) < m {
-			out = append(out, fmt.Sprintf("%s must NOT have fewer than %s properties", path, formatJSNumber(m)))
-		}
-	}
-	return out
 }
 
 // optionsOrArgs returns the tool's provider options, falling back to Args for
