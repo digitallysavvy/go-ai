@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -518,5 +519,29 @@ func TestVideoModel_GetPollOptions_JSONNumbers(t *testing.T) {
 	got := m.getPollOptions(providerOpts)
 	if got.PollIntervalMs != 111 || got.PollTimeoutMs != 222 {
 		t.Fatalf("JSON-sourced poll options were dropped: got PollIntervalMs=%d PollTimeoutMs=%d, want 111/222", got.PollIntervalMs, got.PollTimeoutMs)
+	}
+}
+
+// TS fetchStatus sends the provider headers (Authorization) with the queue
+// status request; the Go port previously sent only the call headers.
+func TestVideoModel_DoStatus_SendsProviderAuthorization(t *testing.T) {
+	var statusAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fal-ai/luma-dream-machine", videoQueueHandler(t, "id", "/fal-ai/luma-dream-machine/requests/id", nil, nil))
+	mux.HandleFunc("/fal-ai/luma-dream-machine/requests/id", func(w http.ResponseWriter, r *http.Request) {
+		statusAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"video":{"url":"https://fal.media/v.mp4"}}`))
+	})
+	model, _ := newTestVideoModel(t, "luma-dream-machine", mux)
+	start, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: start.Operation}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(statusAuth, "Key ") {
+		t.Fatalf("status request Authorization = %q, want provider Key header", statusAuth)
 	}
 }
