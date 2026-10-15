@@ -1107,3 +1107,27 @@ func TestBatch_DoGetBatchResults_ImageWithoutDataErrorsStream(t *testing.T) {
 		t.Fatal("Err() should report the failure")
 	}
 }
+
+// TS: `paginationToken = page.pagination_token ?? undefined; while (!= null)`
+// — an empty-string token keeps paging (only null/absent ends the loop).
+func TestBatch_DoGetBatchResults_EmptyPaginationTokenKeepsPaging(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.resultsBody = []map[string]interface{}{
+		{"results": []map[string]interface{}{successfulTextResultWire("a", "A")}, "pagination_token": ""},
+		{"results": []map[string]interface{}{successfulTextResultWire("b", "B")}, "pagination_token": nil},
+	}
+	batch := newTestXAIBatchProvider(server.ts.URL)
+	stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults() error = %v", err)
+	}
+	results := drainXAIBatchResults(t, stream)
+	if len(results) != 2 || results[1].ID != "b" {
+		t.Fatalf("results = %+v, want a then b", results)
+	}
+	if got := server.request(2).Query["pagination_token"]; len(got) != 1 || got[0] != "" {
+		t.Errorf("second page pagination_token = %v, want [\"\"]", got)
+	}
+}

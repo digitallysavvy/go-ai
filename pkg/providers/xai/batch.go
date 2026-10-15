@@ -528,7 +528,9 @@ func (s *xaiBatchResultsStream) fetchPage() error {
 
 	s.buffer = page.Results
 	s.idx = 0
-	if page.PaginationToken != nil && *page.PaginationToken != "" {
+	// TS: `paginationToken = page.pagination_token ?? undefined` — only a
+	// null/absent token ends the loop; an empty string keeps paging.
+	if page.PaginationToken != nil {
 		s.nextToken = page.PaginationToken
 	} else {
 		s.nextToken = nil
