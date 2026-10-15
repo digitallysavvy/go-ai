@@ -4,6 +4,7 @@ package langchain
 
 import (
 	"context"
+	"errors"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,11 @@ type StreamEvent struct {
 	Data         interface{}
 	Namespace    []string
 	HasNamespace bool
+
+	// Err, when set, reports that the upstream stream failed (TS: the
+	// iterator throws). The adapter calls the final and error/abort callbacks
+	// and ends the UI stream with an `error` chunk.
+	Err error
 }
 
 // StreamCallbacks mirrors the TypeScript adapter callback surface for stream
@@ -221,6 +227,12 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 					finalizeCallbacks(errs, callbacks, textChunks, lastValuesData, nil)
 					return
 				}
+				if event.Err != nil {
+					// TS catch block: onFinal, then onAbort/onError, then an
+					// `error` chunk; the stream still closes normally.
+					failStream(ctx, out, errs, callbacks, textChunks, event.Err)
+					return
+				}
 				if event.Mode == "values" {
 					lastValuesData = event.Data
 				}
@@ -238,6 +250,32 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 		}
 	}()
 	return out, errs
+}
+
+// failStream ends a stream whose upstream failed, like the TS catch block of
+// toUIMessageStream.
+func failStream(ctx context.Context, out chan<- ai.UIMessageChunk, errs chan<- error, callbacks *StreamCallbacks, textChunks []string, cause error) {
+	if callbacks != nil && callbacks.OnFinal != nil {
+		if err := callbacks.OnFinal(strings.Join(textChunks, "")); err != nil {
+			reportCallbackError(errs, callbacks, err)
+			return
+		}
+	}
+	if callbacks != nil {
+		var err error
+		if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+			if callbacks.OnAbort != nil {
+				err = callbacks.OnAbort()
+			}
+		} else if callbacks.OnError != nil {
+			err = callbacks.OnError(cause)
+		}
+		if err != nil {
+			errs <- err
+			return
+		}
+	}
+	sendChunk(ctx, out, ai.UIMessageChunk{"type": "error", "errorText": cause.Error()})
 }
 
 func handleCallbackChunk(callbacks *StreamCallbacks, textChunks *[]string, chunk ai.UIMessageChunk) error {
