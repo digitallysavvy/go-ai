@@ -93,3 +93,24 @@ func TestTSCasesConvertMessages(t *testing.T) {
 		"should serialize JSON Schema references in function response content": "tool result JSON arrives as a Go map, which has no key order",
 	})
 }
+
+// TestTSCasesInteractions replays interactions/google-interactions-language-model.test.ts.
+func TestTSCasesInteractions(t *testing.T) {
+	tsfixture.DropResponseTimestamp = true
+	defer func() { tsfixture.DropResponseTimestamp = false }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/interactions.json.gz")
+	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
+		if id == "" {
+			id = "gemini-2.5-flash"
+		}
+		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).Interactions(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}, map[string]string{
+		"polls doGenerate until terminal for model calls with background: true":                           multiResponse,
+		"returns the polled terminal response from doGenerate when POST returns in_progress":              multiResponse,
+		"round-trips an assistant tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
+	})
+}

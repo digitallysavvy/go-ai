@@ -46,9 +46,9 @@ type Case struct {
 
 // Response is the canned wire response.
 type Response struct {
-	Kind   string          `json:"kind"` // json | chunks | fixture-json | fixture-chunks
-	Body   json.RawMessage `json:"body"` // raw, to keep the key order of the wire body
-	Chunks []string        `json:"chunks"`
+	Kind   string          `json:"kind"`   // json | chunks | fixture-json | fixture-chunks
+	Body   json.RawMessage `json:"body"`   // raw, to keep the key order of the wire body
+	Chunks []interface{}   `json:"chunks"` // SSE text, or JSON events that are sent as data: lines
 	Name   string          `json:"name"`
 	Raw    string          `json:"raw"` // fixture file content
 	Error  string          `json:"error"`
@@ -94,7 +94,7 @@ func (c Case) handler() http.HandlerFunc {
 		}
 		if StreamBodyEncoder != nil && (r.Kind == "chunks" || r.Kind == "fixture-chunks") {
 			var lines []string
-			src := r.Chunks
+			src := r.chunkStrings()
 			if r.Kind == "fixture-chunks" {
 				src = strings.Split(r.Raw, "\n")
 			}
@@ -126,7 +126,7 @@ func (c Case) handler() http.HandlerFunc {
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		case "chunks":
 			w.Header().Set("Content-Type", "text/event-stream")
-			for _, ch := range r.Chunks {
+			for _, ch := range r.chunkStrings() {
 				_, _ = io.WriteString(w, ch)
 			}
 		}
@@ -1073,4 +1073,19 @@ func BuildTools(v interface{}) ([]types.Tool, string) {
 		out = append(out, tool)
 	}
 	return out, ""
+}
+
+// chunkStrings renders the canned stream chunks as wire text: a string is sent
+// as is, a JSON event becomes a data: line.
+func (r *Response) chunkStrings() []string {
+	out := make([]string, 0, len(r.Chunks))
+	for _, c := range r.Chunks {
+		if s, ok := c.(string); ok {
+			out = append(out, s)
+			continue
+		}
+		b, _ := json.Marshal(c)
+		out = append(out, "data: "+string(b)+"\n\n")
+	}
+	return out
 }
