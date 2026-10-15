@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // resolveKlingAIAuthToken resolves the bearer token to use for a KlingAI API
@@ -90,11 +92,14 @@ func generateJWTToken(accessKey, secretKey string) (string, error) {
 		"typ": "JWT",
 	}
 
-	// Create JWT payload with claims
-	payload := map[string]interface{}{
-		"iss": accessKey,
-		"exp": now + 1800, // Valid for 30 minutes
-		"nbf": now - 5,    // Valid 5 seconds before current time
+	// Create JWT payload with claims, in the TS key order (iss, exp, nbf).
+	payload := providerutils.OrderedMap{
+		Keys: []string{"iss", "exp", "nbf"},
+		Vals: map[string]interface{}{
+			"iss": accessKey,
+			"exp": now + 1800, // Valid for 30 minutes
+			"nbf": now - 5,    // Valid 5 seconds before current time
+		},
 	}
 
 	// Encode header and payload to base64url
