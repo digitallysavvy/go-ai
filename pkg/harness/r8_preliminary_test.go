@@ -64,11 +64,26 @@ func TestRunPrompt_GeneratorHostToolStreamsPreliminaryResults(t *testing.T) {
 	if len(mock.toolResults) != 1 {
 		t.Fatalf("runtime submissions = %+v, want only the final output", mock.toolResults)
 	}
-	n := 0
+	// TS HarnessStreamTextResult records every tool-result part in step
+	// content, preliminary ones included: 2 preliminary + 1 final.
+	n, prelimContent, toolMsgParts := 0, 0, 0
 	for _, s := range out.Result.Steps() {
 		n += len(s.ToolResults)
+		for _, c := range s.Content {
+			if tr, ok := c.(types.ToolResultContent); ok && tr.Preliminary {
+				prelimContent++
+			}
+		}
+		for _, m := range s.ResponseMessages {
+			if m.Role == types.RoleTool {
+				toolMsgParts += len(m.Content)
+			}
+		}
 	}
-	if n != 1 {
-		t.Fatalf("step tool results = %d, want 1 (preliminary results are stream-only)", n)
+	if n != 3 || prelimContent != 2 {
+		t.Fatalf("step tool results = %d (preliminary content %d), want 3 (2)", n, prelimContent)
+	}
+	if toolMsgParts != 3 {
+		t.Fatalf("tool message parts = %d, want 3 (TS toResponseMessages emits one per recorded result)", toolMsgParts)
 	}
 }
