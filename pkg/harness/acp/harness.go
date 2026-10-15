@@ -100,7 +100,7 @@ type resumeStateData struct {
 	TurnStartConfig              *TurnStartConfig               `json:"turnStartConfig,omitempty"`
 	Recovery                     *recoveryInfo                  `json:"recovery,omitempty"`
 	Restoration                  *restorationInfo               `json:"restoration,omitempty"`
-	InitialGuidanceApplied       bool                           `json:"initialGuidanceApplied,omitempty"`
+	InitialGuidanceApplied       *bool                          `json:"initialGuidanceApplied,omitempty"` // pointer: an explicit false must round-trip (absent means true on resume)
 	InstructionsFingerprint      string                         `json:"instructionsFingerprint,omitempty"`
 	SkillsDirectory              string                         `json:"skillsDirectory,omitempty"`
 }
@@ -229,7 +229,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		if resumeData.ImplementationIdentity != implementationIdentity {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
-		if resumeData.AuthenticationProfile != nil && resumeData.AuthenticationProfile.Digest != authProfile.Digest {
+		if resumeData.AuthenticationProfile == nil || resumeData.AuthenticationProfile.Digest != authProfile.Digest {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if coords := resumeData.Bridge; coords != nil && coords.SandboxID != "" && sandboxID != "" && coords.SandboxID != sandboxID {
@@ -357,6 +357,12 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		homePath: implementationHomeDir, skillsDir: skillsDir, skillsDirectory: skillsDirectory,
 		sandboxID: sandboxID, sandboxCredentialEnvironment: sandboxCredentialEnvironment,
 		reconnect: settings.Reconnect, bridgeStateDir: bridgeStateDir,
+		debug: debugConfig(opts.Observability), instructionsFingerprint: resumeData.InstructionsFingerprint,
+	}
+	// Mirrors TS `resolveACPInitialGuidanceApplied`: false for a fresh
+	// session, else the persisted flag (default true).
+	if isResume {
+		sessionArgs.initialGuidanceApplied = resumeData.InitialGuidanceApplied == nil || *resumeData.InitialGuidanceApplied
 	}
 
 	// Attach to a still-running bridge when coordinates are known (TS's

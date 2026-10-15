@@ -40,6 +40,12 @@ type sessionParams struct {
 	sandboxCredentialEnvironment map[string]string
 	reconnect                    bridge.ReconnectOptions
 	bridgeStateDir               string
+	debug                        *harness.DebugConfig
+	// initialGuidanceApplied / instructionsFingerprint seed the prompt
+	// guidance bookkeeping from the lifecycle state. Mirrors TS
+	// `resolveACPInitialGuidanceApplied` + `instructionsFingerprint`.
+	initialGuidanceApplied  bool
+	instructionsFingerprint string
 
 	bridgePort      int
 	bridgeToken     string
@@ -82,6 +88,7 @@ func newSession(p sessionParams) *session {
 		latestACPSessionID: p.acpSessionID, turnStartConfig: p.turnStartConfig,
 		recoveryStatus: p.recoveryStatus, restoration: p.restoration,
 		replayOnly: p.replayOnly, lossyRerun: p.lossyRerun,
+		initialGuidanceApplied: p.initialGuidanceApplied, instructionsFingerprint: p.instructionsFingerprint,
 	}
 	s.p.channel.On("bridge-thread", func(e bridge.Event) {
 		if t, ok := e.Message.(*bridge.Thread); ok {
@@ -325,6 +332,19 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		}
 	}
 
+	// An abort asks the bridge to stop; the turn then settles with the abort
+	// error when the bridge reports `finish` (or the channel closes), so the
+	// terminal event is still forwarded and the session's in-flight state is
+	// reset. Mirrors TS `abortRequested` / `abortError`.
+	var abortMu sync.Mutex
+	var abortRequested bool
+	var abortErr error
+	abortState := func() (bool, error) {
+		abortMu.Lock()
+		defer abortMu.Unlock()
+		return abortRequested, abortErr
+	}
+
 	settle := func(err error) {
 		for _, u := range unsub {
 			u()
@@ -504,6 +524,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			forward(f.Part)
 		}
+		if requested, err := abortState(); requested {
+			settle(err)
+			return
+		}
 		settle(nil)
 	}))
 	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
@@ -536,6 +560,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 			return
 		}
 		closeForwardedBlock()
+		if requested, err := abortState(); requested && err != nil {
+			settle(err)
+			return
+		}
 		settle(fmt.Errorf("%s ACP bridge closed before turn end.", s.p.harnessID)) //nolint:staticcheck // matches TS SDK exact error text
 	})
 
@@ -549,8 +577,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = s.p.channel.Send(bridge.AbortCommand{})
-			settle(ctx.Err())
+			abortMu.Lock()
+			abortRequested = true
+			abortErr = ctx.Err()
+			abortMu.Unlock()
+			if err := s.p.channel.Send(bridge.AbortCommand{}); err != nil {
+				settle(ctx.Err())
+			}
 		case <-c.done:
 		}
 	}()
@@ -704,6 +737,9 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	blocks, err := convertPromptToTextBlocks(prompt, s.p.harnessID)
 	if err != nil {
 		return nil, err
@@ -714,6 +750,7 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		AuthenticationProfile: s.p.authenticationProfile, SessionMeta: s.p.sessionMeta,
 		InstructionMapping: s.p.instructionMapping, ResponseFormat: responseFormat,
 		OutputSchemaMapping: s.p.outputSchemaMapping, Model: model, ModelMapping: s.p.modelMapping,
+		Debug: s.p.debug,
 	})
 	nextFingerprint := fingerprintValue(instructions)
 
@@ -735,7 +772,7 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		}
 		msg := StartMessage{
 			StartBase: bridge.StartBase{
-				Tools: tools, PermissionMode: s.p.permissionMode, ResponseFormat: responseFormat,
+				Tools: tools, PermissionMode: s.p.permissionMode, ResponseFormat: responseFormat, Debug: s.p.debug,
 			},
 			Prompt: wirePrompt, BuiltinTools: s.p.builtinTools, PermissionModeMapping: s.p.permissionModeMapping,
 			MCPServers: s.p.mcpServers, TurnStartConfig: turnStartConfig,
@@ -781,10 +818,11 @@ func (s *session) DoCompact(context.Context, string) error {
 func (s *session) createLifecycleData(coords *bridgeCoords, includeTurnStartConfig bool) resumeStateData {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	guidanceApplied := s.initialGuidanceApplied
 	data := resumeStateData{
 		ImplementationIdentity: s.p.implementationIdentity, AuthenticationProfile: &s.p.authenticationProfile,
 		SandboxCredentialEnvironment: s.p.sandboxCredentialEnvironment, ACPSessionID: s.latestACPSessionID,
-		Bridge: coords, InitialGuidanceApplied: s.initialGuidanceApplied,
+		Bridge: coords, InitialGuidanceApplied: &guidanceApplied,
 		InstructionsFingerprint: s.instructionsFingerprint, SkillsDirectory: s.p.skillsDirectory,
 		Recovery: s.recoveryStatus, Restoration: s.restoration,
 	}
@@ -873,6 +911,13 @@ func (s *session) terminate(command string) error {
 		case <-time.After(5 * time.Second):
 		}
 		_ = s.p.proc.Kill()
+	} else {
+		// Attached to a bridge another process spawned: there is no process
+		// handle to wait on, so wait for the bridge to close the channel.
+		select {
+		case <-s.p.channel.Done():
+		case <-time.After(5 * time.Second):
+		}
 	}
 	s.p.channel.Close()
 	return nil
@@ -1005,8 +1050,5 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	if resumeData.Restoration != nil {
 		p.restoration = &restorationInfo{Method: resumeData.Restoration.Method}
 	}
-	sess := newSession(p)
-	sess.initialGuidanceApplied = resumeData.InitialGuidanceApplied
-	sess.instructionsFingerprint = resumeData.InstructionsFingerprint
-	return sess, nil
+	return newSession(p), nil
 }

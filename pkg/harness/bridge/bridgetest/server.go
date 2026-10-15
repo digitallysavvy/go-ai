@@ -272,7 +272,10 @@ func (s *Server) handleInbound(c *serverConn, raw []byte) {
 		}
 		_ = c.send(&bridge.Stop{Data: body})
 		_ = c.ws.Close()
-	case bridge.TypeAbort, bridge.TypeDestroyCommand:
+	case bridge.TypeDestroyCommand:
+		// The real bridge exits after `destroy`, closing the socket.
+		_ = c.ws.Close()
+	case bridge.TypeAbort:
 		// Not needed by current tests; the fake bridge just keeps running.
 	}
 }
