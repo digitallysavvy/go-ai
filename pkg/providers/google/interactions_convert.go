@@ -553,7 +553,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				args = map[string]interface{}{}
 			}
 			id := firstNonEmpty(block.ID, "call_"+fmt.Sprint(len(toolCalls)+1))
-			argsJSON := jsonStringify(args)
+			argsJSON := jsonorder.Text(block.Arguments, args)
 			metaRaw := providerMetaRaw(block.Signature, interactionID)
 			content = append(content, types.ToolCallContent{
 				ToolCallID:       id,
@@ -581,7 +581,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 					args = map[string]interface{}{}
 				}
 				id := firstNonEmpty(block.ID, fmt.Sprintf("call_%d", len(toolCalls)+1))
-				argsJSON := jsonStringify(args)
+				argsJSON := jsonorder.Text(block.Arguments, args)
 				content = append(content, types.ToolCallContent{
 					ToolCallID:       id,
 					ToolName:         builtinToolName(block),
