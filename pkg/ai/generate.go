@@ -1539,21 +1539,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// with an empty text result so the loop continues (TS
 			// resolveProviderToolResult).
 			if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && providerResultFinishAllowed(genResult.FinishReason) {
-				answered := func(id string) bool {
-					for _, part := range stepResult.Content {
-						switch v := part.(type) {
-						case types.ToolResultContent:
-							if v.ToolCallID == id {
-								return true
-							}
-						case types.ToolErrorContent:
-							if v.ToolCallID == id {
-								return true
-							}
-						}
-					}
-					return false
-				}
+				answered := func(id string) bool { return contentAnswersProviderCall(stepResult.Content, id) }
 				for _, call := range missingProviderResultCalls(genResult.ToolCalls, toolsByName, answered) {
 					synthetic := emptyProviderResult(call, stepModel.Provider(), stepModel.ModelID())
 					stepResult.Content = append(stepResult.Content, toolResultContentFromToolResult(synthetic))

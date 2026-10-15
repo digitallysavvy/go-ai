@@ -2388,7 +2388,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && !transformStopped && providerResultFinishAllowed(r.finishReason) {
 			for _, call := range missingProviderResultCalls(stepToolCalls, toolsByName, func(id string) bool {
 				_, ok := streamedToolResults[id]
-				return ok
+				return ok || contentAnswersProviderCall(stepContent, id)
 			}) {
 				synthetic := emptyProviderResult(call, stepProvider, stepModelID)
 				streamedToolResults[call.ID] = synthetic

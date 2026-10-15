@@ -821,6 +821,12 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				shouldContinue = false
 			}
 		}
+		// A provider-executed call the provider gated behind its own
+		// tool-approval-request (MCP) pauses the loop until the caller
+		// answers; TS WorkflowAgent returns on providerApprovalRequests.
+		if agentHasProviderApprovalRequest(stepResult.Content) {
+			shouldContinue = false
+		}
 		// TS stepTimeMs spans the model call and the tool execution.
 		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
 		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
@@ -2727,4 +2733,22 @@ func responseMessagesOf(steps []types.StepResult) []types.Message {
 		messages = append(messages, step.Response.Messages...)
 	}
 	return messages
+}
+
+// agentHasProviderApprovalRequest reports whether content holds a
+// non-automatic tool-approval-request for a provider-executed call.
+func agentHasProviderApprovalRequest(content []types.ContentPart) bool {
+	for _, part := range content {
+		switch p := part.(type) {
+		case types.ToolApprovalRequestContent:
+			if p.ToolCall.ProviderExecuted && !p.IsAutomatic {
+				return true
+			}
+		case *types.ToolApprovalRequestContent:
+			if p != nil && p.ToolCall.ProviderExecuted && !p.IsAutomatic {
+				return true
+			}
+		}
+	}
+	return false
 }

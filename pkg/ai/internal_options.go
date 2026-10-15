@@ -107,24 +107,38 @@ func EmptyProviderResults(calls []types.ToolCall, tools []types.Tool, content []
 	for i := range tools {
 		byName[tools[i].Name] = &tools[i]
 	}
-	answered := func(id string) bool {
-		for _, part := range content {
-			switch v := part.(type) {
-			case types.ToolResultContent:
-				if v.ToolCallID == id {
-					return true
-				}
-			case types.ToolErrorContent:
-				if v.ToolCallID == id {
-					return true
-				}
-			}
-		}
-		return false
-	}
+	answered := func(id string) bool { return contentAnswersProviderCall(content, id) }
 	var results []types.ToolResult
 	for _, call := range missingProviderResultCalls(calls, byName, answered) {
 		results = append(results, emptyProviderResult(call, provider, model))
 	}
 	return results
+}
+
+// contentAnswersProviderCall reports whether step content already settles a
+// provider-executed call: it has a result or error, or the provider asked for
+// approval of it. TS WorkflowAgent pauses for a provider tool-approval-request
+// (providerApprovalRequests) and never answers that call with an empty result.
+func contentAnswersProviderCall(content []types.ContentPart, id string) bool {
+	for _, part := range content {
+		switch v := part.(type) {
+		case types.ToolResultContent:
+			if v.ToolCallID == id {
+				return true
+			}
+		case types.ToolErrorContent:
+			if v.ToolCallID == id {
+				return true
+			}
+		case types.ToolApprovalRequestContent:
+			if v.ToolCallID == id || v.ToolCall.ID == id {
+				return true
+			}
+		case *types.ToolApprovalRequestContent:
+			if v != nil && (v.ToolCallID == id || v.ToolCall.ID == id) {
+				return true
+			}
+		}
+	}
+	return false
 }
