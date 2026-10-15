@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,5 +109,46 @@ func TestFilesAPI_UploadFile_RespondsPromptlyToContextCancellation(t *testing.T)
 	}
 	if elapsed > 1*time.Second {
 		t.Fatalf("UploadFile took %v to notice ctx cancellation (expected well under the 5s poll interval)", elapsed)
+	}
+}
+
+// Call headers reach the upload, int poll options are honored, and a failed
+// status poll is an error (previously the empty error body ended the loop as
+// if the file were ready).
+func TestFilesAPI_UploadFile_HeadersIntPollOptionsAndPollFailure(t *testing.T) {
+	var srv *httptest.Server
+	var initHeader string
+	polls := 0
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/upload/v1beta/files":
+			initHeader = r.Header.Get("X-Custom")
+			w.Header().Set("x-goog-upload-url", srv.URL+"/upload-session")
+		case "/upload-session":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": map[string]interface{}{"name": "files/abc", "state": "PROCESSING"}})
+		case "/files/abc":
+			polls++
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":403,"message":"nope","status":"PERMISSION_DENIED"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	start := time.Now()
+	_, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{
+		Data:            types.FileData{Type: types.FileDataTypeData, Data: []byte{1}},
+		MediaType:       "application/pdf",
+		Headers:         map[string]string{"X-Custom": "yes"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"pollIntervalMs": 10}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("err = %v, want the poll failure", err)
+	}
+	if initHeader != "yes" {
+		t.Fatalf("X-Custom on init = %q", initHeader)
+	}
+	if time.Since(start) > time.Second || polls != 1 {
+		t.Fatalf("int pollIntervalMs ignored (elapsed %v, polls %d)", time.Since(start), polls)
 	}
 }
