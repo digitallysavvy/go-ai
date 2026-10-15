@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ProtocolVersion is the legacy MCP protocol version this client advertises
@@ -340,13 +343,12 @@ func (r *CallToolResult) UnmarshalJSON(data []byte) error {
 	// default isError to false, tolerating any JSON-serializable value
 	// (object/array/string/number/boolean/null).
 	if !r.contentPresent && r.structuredContentPresent {
-		text, marshalErr := json.Marshal(out.StructuredContent)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to synthesize text content from structuredContent: %w", marshalErr)
-		}
+		// JSON.stringify(result.structuredContent): the server's key order,
+		// no HTML escaping.
+		text := jsonStringifyRaw(raw["structuredContent"])
 		r.Content = []ToolResultContent{{
 			Type:              "text",
-			Text:              string(text),
+			Text:              text,
 			textPresent:       true,
 			textStringPresent: true,
 		}}
@@ -363,38 +365,54 @@ func (r CallToolResult) MarshalJSON() ([]byte, error) {
 	structuredContentPresent := r.structuredContentPresent || r.StructuredContent != nil
 	toolResultPresent := r.toolResultPresent || r.ToolResult != nil
 	metadataPresent := r.metadataPresent || r.Metadata != nil
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	emitted := map[string]bool{}
-	first := true
+	var w objectWriter
 	if contentPresent {
-		if err := appendJSONField(&buf, &first, emitted, "content", r.Content); err != nil {
+		if err := w.value("content", r.Content); err != nil {
 			return nil, err
 		}
 	}
 	if structuredContentPresent {
-		if err := appendJSONField(&buf, &first, emitted, "structuredContent", r.StructuredContent); err != nil {
+		if err := w.value("structuredContent", r.StructuredContent); err != nil {
 			return nil, err
 		}
 	}
 	if toolResultPresent {
-		if err := appendJSONField(&buf, &first, emitted, "toolResult", r.ToolResult); err != nil {
+		if err := w.value("toolResult", r.ToolResult); err != nil {
 			return nil, err
 		}
 	}
 	if r.IsError || r.isErrorPresent || contentPresent {
-		if err := appendJSONField(&buf, &first, emitted, "isError", r.IsError); err != nil {
+		if err := w.value("isError", r.IsError); err != nil {
 			return nil, err
 		}
 	}
 	if metadataPresent {
-		if err := appendJSONField(&buf, &first, emitted, "_meta", r.Metadata); err != nil {
+		if err := w.value("_meta", r.Metadata); err != nil {
 			return nil, err
 		}
 	}
-	appendRawFields(&buf, &first, emitted, r.rawFields, r.rawFieldOrder)
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	w.raw(r.rawFields)
+	// zod emits the schema's keys first (ResultSchema's _meta and resultType,
+	// then the variant's), then the loose extras in wire order.
+	return w.bytes(callToolResultKeyOrder, r.rawFieldOrder), nil
+}
+
+var callToolResultKeyOrder = []string{"_meta", "resultType", "content", "structuredContent", "toolResult", "isError"}
+
+// toolResultContentKeyOrder is the key order of the zod schema of a content
+// block of the given type; the block's other keys follow in wire order.
+func toolResultContentKeyOrder(contentType string) []string {
+	switch contentType {
+	case "text":
+		return []string{"type", "text"}
+	case "image":
+		return []string{"type", "data", "mimeType"}
+	case "resource":
+		return []string{"type", "resource"}
+	case "resource_link":
+		return []string{"type", "uri", "name", "description", "mimeType"}
+	}
+	return []string{"type"}
 }
 
 // ToolResultContent represents content in a tool result
@@ -460,36 +478,32 @@ func (c *ToolResultContent) UnmarshalJSON(data []byte) error {
 }
 
 func (c ToolResultContent) MarshalJSON() ([]byte, error) {
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	emitted := map[string]bool{}
-	first := true
-	appendStringJSONField(&buf, &first, emitted, "type", c.Type, c.Type != "")
-	appendStringJSONField(&buf, &first, emitted, "text", c.Text, c.Text != "" || c.textStringPresent)
-	appendStringJSONField(&buf, &first, emitted, "data", c.Data, c.Data != "" || c.dataStringPresent)
-	appendStringJSONField(&buf, &first, emitted, "mimeType", c.MimeType, c.MimeType != "" || c.mimeTypeStringPresent)
-	appendStringJSONField(&buf, &first, emitted, "uri", c.URI, c.URI != "")
-	appendStringJSONField(&buf, &first, emitted, "name", c.Name, c.Name != "")
-	appendStringJSONField(&buf, &first, emitted, "title", c.Title, c.Title != "")
-	appendStringJSONField(&buf, &first, emitted, "description", c.Description, c.Description != "")
+	var w objectWriter
+	w.str("type", c.Type, c.Type != "")
+	w.str("text", c.Text, c.Text != "" || c.textStringPresent)
+	w.str("data", c.Data, c.Data != "" || c.dataStringPresent)
+	w.str("mimeType", c.MimeType, c.MimeType != "" || c.mimeTypeStringPresent)
+	w.str("uri", c.URI, c.URI != "")
+	w.str("name", c.Name, c.Name != "")
+	w.str("title", c.Title, c.Title != "")
+	w.str("description", c.Description, c.Description != "")
 	if c.Resource != nil {
-		if err := appendJSONField(&buf, &first, emitted, "resource", c.Resource); err != nil {
+		if err := w.value("resource", c.Resource); err != nil {
 			return nil, err
 		}
 	}
 	if c.Metadata != nil {
-		if err := appendJSONField(&buf, &first, emitted, "metadata", c.Metadata); err != nil {
+		if err := w.value("metadata", c.Metadata); err != nil {
 			return nil, err
 		}
 	}
 	if c.Meta != nil {
-		if err := appendJSONField(&buf, &first, emitted, "_meta", c.Meta); err != nil {
+		if err := w.value("_meta", c.Meta); err != nil {
 			return nil, err
 		}
 	}
-	appendRawFields(&buf, &first, emitted, c.rawFields, c.rawFieldOrder)
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	w.raw(c.rawFields)
+	return w.bytes(toolResultContentKeyOrder(c.Type), c.rawFieldOrder), nil
 }
 
 func copyRawFields(raw map[string]json.RawMessage) map[string]json.RawMessage {
@@ -544,65 +558,132 @@ func unmarshalStringField(raw map[string]json.RawMessage, key string, target *st
 	return true, false
 }
 
-func appendStringJSONField(buf *bytes.Buffer, first *bool, emitted map[string]bool, key, value string, emit bool) {
+// objectWriter builds a JSON object from known fields and the raw fields the
+// wire message carried, the way a TS client holds it after zod parsed the
+// message: the schema's keys first (in schema order), then the other keys in
+// the sender's order; every value is written as JSON.stringify would.
+type objectWriter struct {
+	keys []string
+	vals map[string]string
+}
+
+func (w *objectWriter) set(key, val string) {
+	if w.vals == nil {
+		w.vals = map[string]string{}
+	}
+	if _, ok := w.vals[key]; !ok {
+		w.keys = append(w.keys, key)
+	}
+	w.vals[key] = val
+}
+
+func (w *objectWriter) str(key, value string, emit bool) {
 	if !emit {
 		return
 	}
-	keyJSON, _ := json.Marshal(key)
-	valueJSON, _ := json.Marshal(value)
-	if !*first {
-		buf.WriteByte(',')
-	}
-	*first = false
-	buf.Write(keyJSON)
-	buf.WriteByte(':')
-	buf.Write(valueJSON)
-	emitted[key] = true
+	b, _ := jsonstr.Marshal(value) //nolint:errcheck // strings always encode
+	w.set(key, string(b))
 }
 
-func appendJSONField(buf *bytes.Buffer, first *bool, emitted map[string]bool, key string, value interface{}) error {
-	valueJSON, err := json.Marshal(value)
+func (w *objectWriter) value(key string, value interface{}) error {
+	b, err := jsonstr.Marshal(value)
 	if err != nil {
 		return err
 	}
-	keyJSON, _ := json.Marshal(key)
-	if !*first {
-		buf.WriteByte(',')
-	}
-	*first = false
-	buf.Write(keyJSON)
-	buf.WriteByte(':')
-	buf.Write(valueJSON)
-	emitted[key] = true
+	w.set(key, string(b))
 	return nil
 }
 
-func appendRawFields(buf *bytes.Buffer, first *bool, emitted map[string]bool, rawFields map[string]json.RawMessage, rawFieldOrder []string) {
-	seen := map[string]bool{}
-	for _, key := range rawFieldOrder {
-		if _, ok := rawFields[key]; !ok || emitted[key] {
-			continue
+// raw adds the wire fields that no known field already wrote.
+func (w *objectWriter) raw(fields map[string]json.RawMessage) {
+	names := make([]string, 0, len(fields))
+	for key := range fields {
+		if _, ok := w.vals[key]; !ok {
+			names = append(names, key)
 		}
-		appendRawField(buf, first, key, rawFields[key])
-		seen[key] = true
 	}
-	for key, value := range rawFields {
-		if emitted[key] || seen[key] {
-			continue
-		}
-		appendRawField(buf, first, key, value)
+	sort.Strings(names)
+	for _, key := range names {
+		w.set(key, jsonStringifyRaw(fields[key]))
 	}
 }
 
-func appendRawField(buf *bytes.Buffer, first *bool, key string, value json.RawMessage) {
-	keyJSON, _ := json.Marshal(key)
-	if !*first {
-		buf.WriteByte(',')
+func (w *objectWriter) bytes(schemaOrder, wireOrder []string) []byte {
+	ordered := make([]string, 0, len(w.keys))
+	seen := make(map[string]bool, len(w.keys))
+	for _, key := range schemaOrder {
+		if _, ok := w.vals[key]; ok && !seen[key] {
+			seen[key] = true
+			ordered = append(ordered, key)
+		}
 	}
-	*first = false
-	buf.Write(keyJSON)
-	buf.WriteByte(':')
-	buf.Write(value)
+	for _, key := range wireOrder {
+		if _, ok := w.vals[key]; ok && !seen[key] {
+			seen[key] = true
+			ordered = append(ordered, key)
+		}
+	}
+	for _, key := range w.keys {
+		if !seen[key] {
+			ordered = append(ordered, key)
+		}
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, key := range ordered {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		k, _ := jsonstr.Marshal(key) //nolint:errcheck // strings always encode
+		buf.Write(k)
+		buf.WriteByte(':')
+		buf.WriteString(w.vals[key])
+	}
+	buf.WriteByte('}')
+	return buf.Bytes()
+}
+
+// jsonStringifyRaw is JSON.stringify(JSON.parse(raw)): the text a TS client
+// holds after parsing the wire message. Object key order is kept, strings are
+// written without HTML escaping (and without the escapes the sender used) and
+// numbers in JavaScript notation. Text that does not parse is returned as is.
+func jsonStringifyRaw(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "null"
+	}
+	tree, ok := jsonorder.Parse(raw)
+	if !ok {
+		return string(raw)
+	}
+	return jsonorder.Stringify(jsNumbers(tree))
+}
+
+// jsNumbers returns the ordered tree with its numbers as float64, the form
+// JSON.parse gives them (a number outside the double range is Infinity, which
+// JSON.stringify writes as null).
+func jsNumbers(v interface{}) interface{} {
+	switch x := v.(type) {
+	case *jsonorder.Object:
+		out := jsonorder.New()
+		for _, k := range x.Keys() {
+			val, _ := x.Get(k)
+			out.Set(k, jsNumbers(val))
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = jsNumbers(e)
+		}
+		return out
+	case json.Number:
+		f, err := x.Float64()
+		if err != nil || math.IsInf(f, 0) {
+			return nil
+		}
+		return f
+	}
+	return v
 }
 
 func (c ToolResultContent) hasTextField() bool {
