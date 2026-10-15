@@ -1797,22 +1797,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			break
 		}
 
-		// Evaluate stop conditions after steps with tool results
-		if len(stopConditions) > 0 {
-			state := StopConditionState{
-				Steps:    result.Steps,
-				Messages: currentMessages,
-				Usage:    result.Usage,
-			}
-			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
-				result.StopReason = reason
-				lastStep := result.Steps[len(result.Steps)-1]
-				result.Text = lastStep.Text
-				result.FinishReason = lastStep.FinishReason
-				break
-			}
-		}
-
 		// Check if we should continue.
 		// Continue when there are local tool calls in the turn OR when a provider
 		// tool with SupportsDeferredResults has not yet delivered its result.
@@ -1832,6 +1816,24 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// left unexecuted because of an unsafe finish reason stop the loop.
 		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, rawStepToolResults) {
 			break
+		}
+
+		// TS evaluates stop conditions only when the loop would otherwise
+		// continue (client tool calls resolved, plus results or pending
+		// deferred provider results); on natural ends they are not called.
+		if len(stopConditions) > 0 {
+			state := StopConditionState{
+				Steps:    result.Steps,
+				Messages: currentMessages,
+				Usage:    result.Usage,
+			}
+			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
+				result.StopReason = reason
+				lastStep := result.Steps[len(result.Steps)-1]
+				result.Text = lastStep.Text
+				result.FinishReason = lastStep.FinishReason
+				break
+			}
 		}
 	}
 
