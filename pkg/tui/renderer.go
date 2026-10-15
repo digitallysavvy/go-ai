@@ -620,7 +620,7 @@ func (r *TerminalRenderer) listenForStreamKeys(ctx context.Context, cancelStream
 }
 
 func (r *TerminalRenderer) waitForExit(ctx context.Context, options TerminalSessionOptions) error {
-	if (options.WaitForExitSet && !options.WaitForExit) || options.ContinueSession || !supportsTerminalWaitInput(r.input) {
+	if (options.WaitForExitSet && !options.WaitForExit) || !supportsTerminalWaitInput(r.input) {
 		return nil
 	}
 	for {
