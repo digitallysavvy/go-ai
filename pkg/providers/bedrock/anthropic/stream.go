@@ -127,13 +127,19 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 		if errType == "" {
 			errType = "error"
 		}
+		errBody := map[string]interface{}{
+			"type":    errType,
+			"message": message,
+			"data":    data,
+		}
+		// TS spreads getAmazonBedrockStreamErrorMetadata(type) into the error.
+		if status, retryable, ok := bedrockStreamErrorMetadata(errType); ok {
+			errBody["statusCode"] = status
+			errBody["isRetryable"] = retryable
+		}
 		payload := map[string]interface{}{
-			"type": "error",
-			"error": map[string]interface{}{
-				"type":    errType,
-				"message": message,
-				"data":    data,
-			},
+			"type":  "error",
+			"error": errBody,
 		}
 		encoded, err := json.Marshal(payload)
 		if err != nil {
@@ -143,4 +149,21 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 		return err
 	}
 	return nil
+}
+
+// bedrockStreamErrorMetadata ports TS getAmazonBedrockStreamErrorMetadata.
+func bedrockStreamErrorMetadata(errType string) (statusCode int, isRetryable bool, ok bool) {
+	switch errType {
+	case "internalServerException", "InternalServerException":
+		return 500, true, true
+	case "modelStreamErrorException", "ModelStreamErrorException":
+		return 424, true, true
+	case "serviceUnavailableException", "ServiceUnavailableException":
+		return 503, true, true
+	case "throttlingException", "ThrottlingException":
+		return 429, true, true
+	case "validationException", "ValidationException":
+		return 400, false, true
+	}
+	return 0, false, false
 }

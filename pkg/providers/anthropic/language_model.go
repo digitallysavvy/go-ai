@@ -1432,6 +1432,18 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
+		// TS's JSON event-stream parser drops the "[DONE]" sentinel.
+		if event.Data == "[DONE]" {
+			continue
+		}
+
+		// TS ignores SSE event names and dispatches on the payload's `type`.
+		// Transports that rebuild the stream without `event:` lines (Bedrock's
+		// event-stream to SSE adapter) rely on this.
+		if event.Event == "" {
+			event.Event = sseEventTypeFromPayload(event.Data)
+		}
+
 		// Once a spliced-stream error chunk has been emitted, every remaining
 		// event is silently discarded (TS hasInvalidMessageSequence guard).
 		if s.spliced {
@@ -2656,4 +2668,16 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 			},
 		},
 	}
+}
+
+// sseEventTypeFromPayload returns the payload's top-level "type" string, or
+// "" when the data is not a JSON object with one.
+func sseEventTypeFromPayload(data string) string {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(data), &probe) != nil {
+		return ""
+	}
+	return probe.Type
 }
