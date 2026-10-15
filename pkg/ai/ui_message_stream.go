@@ -824,7 +824,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				if finishReason == "" {
 					finishReason = types.FinishReasonError
 				}
-				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New(chunk.Text)})
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: streamChunkError(chunk)})
 			}
 			if isModelOutputChunkType(chunk.Type) {
 				sawOutput = true
@@ -2552,7 +2552,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	case provider.ChunkTypeError:
 		out = append(out, map[string]interface{}{
 			"type":      "error",
-			"errorText": opts.OnError(errors.New(chunk.Text)),
+			"errorText": opts.OnError(streamChunkError(&chunk)),
 		})
 	// ChunkTypeFinish is handled by toUIMessageChunks' own switch (alongside
 	// ChunkTypeFinishStep) before this function is ever reached, so it is
@@ -2631,4 +2631,14 @@ func reasoningFileBase64Data(file *types.ReasoningFileContent) string {
 		return base64.StdEncoding.EncodeToString(file.Data)
 	}
 	return ""
+}
+
+// streamChunkError returns the error carried by an error chunk: chunk.Err when
+// the provider set it (keeping its type for errors.As in onError handlers),
+// else an error built from chunk.Text.
+func streamChunkError(chunk *provider.StreamChunk) error {
+	if chunk.Err != nil {
+		return chunk.Err
+	}
+	return errors.New(chunk.Text)
 }

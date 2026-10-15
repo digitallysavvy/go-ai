@@ -1869,7 +1869,7 @@ streamLoop:
 			// finishReason "error" instead of whatever finish reason (if
 			// any) the model happened to send. Mirrors TS stream-object.ts's
 			// TransformStream error handling (audit row b181020 / WG5).
-			chunkErr := errors.New(chunk.Text)
+			chunkErr := streamChunkError(chunk)
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
