@@ -213,6 +213,21 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 
+		// TS validates each parsed frame against chunkSchema; a mismatch is a
+		// TypeValidationError `error` part and the stream keeps reading.
+		if message := chunkValidationMessage(event.Data); message != "" {
+			errChunk := &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewValidationErrorWithContext(compactJSONString(event.Data), validationIssueText(message), nil, &providererrors.ValidationContext{}),
+			}
+			if len(s.chunkBuffer) > 0 {
+				s.chunkBuffer = append(s.chunkBuffer, errChunk)
+				continue
+			}
+			return errChunk, nil
+		}
+
 		var chunkData Response
 		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
 			// TS google-language-model.ts: `if (!chunk.success) { controller
@@ -221,7 +236,10 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			// chunk and the transform CONTINUES reading, it does not terminate
 			// the stream. Previously Go returned this as a terminal Next()
 			// error, ending the stream outright (P1-1c part 2).
-			message := fmt.Sprintf("failed to parse stream chunk: %v", err)
+			message := "JSON parsing failed: Text: " + event.Data + "."
+			if json.Valid([]byte(event.Data)) {
+				message = fmt.Sprintf("failed to parse stream chunk: %v", err)
+			}
 			errChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: message,

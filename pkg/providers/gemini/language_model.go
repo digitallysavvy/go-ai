@@ -74,12 +74,32 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	generateContent := func(body map[string]interface{}) (Response, *internalhttp.Response, error) {
 		var response Response
+		var raw json.RawMessage
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			Method:  http.MethodPost,
 			Path:    m.cfg.GeneratePath(m.modelID),
 			Body:    body,
 			Headers: headers,
-		}, &response)
+		}, &raw)
+		if err != nil {
+			return response, resp, err
+		}
+		// TS createJsonResponseHandler(responseSchema): a body that does not
+		// match the schema is an APICallError "Invalid JSON response".
+		if message := chunkValidationMessage(string(raw)); message != "" {
+			return response, resp, &providererrors.ProviderError{
+				Provider:        m.cfg.ProviderName,
+				StatusCode:      resp.StatusCode,
+				Message:         "Invalid JSON response",
+				Cause:           providererrors.NewValidationErrorWithContext(compactJSONString(string(raw)), validationIssueText(message), nil, &providererrors.ValidationContext{}),
+				ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
+				ResponseBody:    string(resp.Body),
+			}
+		}
+		err = json.Unmarshal(raw, &response)
+		if err != nil {
+			err = fmt.Errorf("failed to decode JSON response: %w", err)
+		}
 		return response, resp, err
 	}
 
@@ -278,6 +298,10 @@ func (m *LanguageModel) generateID() string {
 // (TS googleFailedResponseHandler / createJsonErrorResponseHandler).
 func (m *LanguageModel) handleError(err error) error {
 	var httpErr *internalhttp.HTTPStatusError
+	var existing *providererrors.ProviderError
+	if errors.As(err, &existing) && existing.Message == "Invalid JSON response" {
+		return err
+	}
 	if !errors.As(err, &httpErr) {
 		return providererrors.NewProviderError(m.cfg.ProviderName, 0, "", err.Error(), err)
 	}

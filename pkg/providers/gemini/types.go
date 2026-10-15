@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -77,7 +79,9 @@ func (u *UsageMetadata) UnmarshalJSON(data []byte) error {
 	var fields struct {
 		usageMetadataFields
 	}
-	if err := json.Unmarshal(data, &fields.usageMetadataFields); err != nil {
+	// TS counts are z.number(), so a fractional count is a valid frame; Go's
+	// typed fields are ints, so decode from an integer-coerced copy.
+	if err := json.Unmarshal(coerceUsageCounts(data), &fields.usageMetadataFields); err != nil {
 		return err
 	}
 	*u = UsageMetadata(fields.usageMetadataFields)
@@ -230,7 +234,7 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 func (p *Part) UnmarshalJSON(b []byte) error {
 	type plain Part
 	var v plain
-	if err := json.Unmarshal(b, &v); err != nil {
+	if err := json.Unmarshal(lenientPart(b), &v); err != nil {
 		return err
 	}
 	*p = Part(v)
@@ -419,6 +423,89 @@ func addTokenDetails(a, b []tokenDetail) []tokenDetail {
 	out := make([]tokenDetail, 0, len(order))
 	for _, m := range order {
 		out = append(out, tokenDetail{Modality: m, TokenCount: counts[m]})
+	}
+	return out
+}
+
+// lenientPart drops the values whose TS schema is permissive (z.unknown() or
+// a fall-through union member) but whose Go field type is narrower, so that a
+// frame TS accepts is not rejected by the typed decode: toolCall.args and
+// toolResponse.response that are not objects (toolCall args keep their wire
+// text in toolCallArgsRaw), and a functionCall that is not an object.
+func lenientPart(b []byte) []byte {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(b, &m) != nil {
+		return b
+	}
+	changed := false
+	if raw, ok := m["functionCall"]; ok && !isJSONObject(raw) && string(raw) != "null" {
+		delete(m, "functionCall")
+		changed = true
+	}
+	for key, inner := range map[string]string{"toolCall": "args", "toolResponse": "response"} {
+		raw, ok := m[key]
+		if !ok || !isJSONObject(raw) {
+			continue
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil {
+			continue
+		}
+		if v, ok := obj[inner]; ok && !isJSONObject(v) {
+			delete(obj, inner)
+			if nb, err := json.Marshal(obj); err == nil {
+				m[key] = nb
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return b
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return b
+	}
+	return out
+}
+
+func isJSONObject(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) > 0 && t[0] == '{'
+}
+
+// coerceUsageCounts rewrites fractional token counts in a usageMetadata
+// object to integers (see UsageMetadata.UnmarshalJSON).
+func coerceUsageCounts(data []byte) []byte {
+	var m map[string]interface{}
+	if json.Unmarshal(data, &m) != nil {
+		return data
+	}
+	toInt := func(v interface{}) interface{} {
+		if f, ok := v.(float64); ok {
+			return int64(f)
+		}
+		return v
+	}
+	for k, v := range m {
+		switch k {
+		case "promptTokensDetails", "cacheTokensDetails", "candidatesTokensDetails", "toolUsePromptTokensDetails":
+			if arr, ok := v.([]interface{}); ok {
+				for _, e := range arr {
+					if em, ok := e.(map[string]interface{}); ok {
+						em["tokenCount"] = toInt(em["tokenCount"])
+					}
+				}
+			}
+		default:
+			if strings.HasSuffix(k, "TokenCount") {
+				m[k] = toInt(v)
+			}
+		}
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return data
 	}
 	return out
 }

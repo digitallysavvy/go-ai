@@ -451,3 +451,12 @@ func compactJSON(data string) string {
 	}
 	return b.String()
 }
+
+// validationIssueText returns the issue list that follows "Error message: "
+// in a validation message, or the whole message when the marker is absent.
+func validationIssueText(message string) string {
+	if _, after, ok := strings.Cut(message, "Error message: "); ok {
+		return after
+	}
+	return message
+}

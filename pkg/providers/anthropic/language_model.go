@@ -1686,7 +1686,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: message,
-					Err:  providererrors.NewValidationErrorWithContext(compactJSON(event.Data), strings.TrimPrefix(message[strings.Index(message, "Error message: "):], "Error message: "), nil, &providererrors.ValidationContext{}),
+					Err:  providererrors.NewValidationErrorWithContext(compactJSON(event.Data), validationIssueText(message), nil, &providererrors.ValidationContext{}),
 				}, nil
 			}
 			// TS dispatches on the payload `type`, not the SSE event name.
