@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // appendTextPart accumulates a ChunkTypeText delta into stepContent, merging
@@ -442,6 +443,7 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				ToolName:         tr.ToolName,
 				Input:            tr.Input,
 				Error:            tr.Error.Error(),
+				ErrorText:        providerutils.ToolErrorText(tr.Error),
 				ProviderExecuted: tr.ProviderExecuted,
 				ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
 				ToolMetadata:     tr.ToolMetadata,
@@ -471,6 +473,7 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 				ToolName:         tr.ToolName,
 				Input:            tr.Input,
 				Error:            output.Error(),
+				ErrorText:        providerutils.ToolErrorText(output),
 				ProviderExecuted: tr.ProviderExecuted,
 				ProviderMetadata: providerMetadataRaw(tr.ProviderMetadata),
 				ToolMetadata:     tr.ToolMetadata,
@@ -526,6 +529,7 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 			ToolName:         result.ToolName,
 			Input:            result.Input,
 			Error:            result.Error.Error(),
+			ErrorText:        providerutils.ToolErrorText(result.Error),
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
@@ -564,6 +568,7 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 			ToolName:         result.ToolName,
 			Input:            result.Input,
 			Error:            output.Error(),
+			ErrorText:        providerutils.ToolErrorText(output),
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,

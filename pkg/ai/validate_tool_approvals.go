@@ -244,3 +244,6 @@ func isDeepEqualJSONData(a, b interface{}) bool {
 	}
 	return bytes.Equal(ca, cb)
 }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *InvalidToolInputError) ErrorName() string { return "AI_InvalidToolInputError" }

@@ -587,3 +587,9 @@ func invalidToolCallResult(call types.ToolCall) types.ToolResult {
 		ToolMetadata:     call.ToolMetadata,
 	}
 }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *NoSuchToolError) ErrorName() string { return "AI_NoSuchToolError" }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *ToolCallRepairError) ErrorName() string { return "AI_ToolCallRepairError" }

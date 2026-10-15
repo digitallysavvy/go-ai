@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
@@ -658,5 +659,108 @@ func TestGenerateText_TextDerivedFromContentTextParts(t *testing.T) {
 	}
 	if r.Text != "Hello, world!" || r.Steps[0].Text != "Hello, world!" {
 		t.Fatalf("text = %q / step %q", r.Text, r.Steps[0].Text)
+	}
+}
+
+func toolResultTexts(msgs []types.Message) []string {
+	var out []string
+	for _, m := range msgs {
+		for _, p := range m.Content {
+			if tr, ok := p.(types.ToolResultContent); ok && tr.Output != nil {
+				out = append(out, string(tr.Output.Type)+":"+fmt.Sprint(tr.Output.Value))
+			}
+		}
+	}
+	return out
+}
+
+// generate-text.test.ts describe('tool execution errors') and
+// describe('invalid tool calls') through GenerateText and StreamText.
+func TestTSReplay_ToolErrors(t *testing.T) {
+	call := types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}
+	failing := tool1()
+	failing.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return nil, errors.New("test error")
+	}
+	gen := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{ToolCalls: []types.ToolCall{call}, FinishReason: types.FinishReasonToolCalls, Usage: *usage(10, 20)}, nil
+		},
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(10, 20)},
+			}), nil
+		},
+	}
+	check := func(t *testing.T, content []types.ContentPart, msgs []types.Message) {
+		t.Helper()
+		if len(content) != 2 {
+			t.Fatalf("content = %v", contentKinds(content))
+		}
+		if _, ok := content[0].(types.ToolCallContent); !ok {
+			t.Fatalf("content[0] = %T", content[0])
+		}
+		te, ok := content[1].(types.ToolErrorContent)
+		if !ok || te.ToolCallID != "call-1" {
+			t.Fatalf("content[1] = %#v, want tool-error", content[1])
+		}
+		if got := toolResultTexts(msgs); !reflect.DeepEqual(got, []string{"error-text:Error: test error"}) {
+			t.Fatalf("response tool outputs = %v, want error-text 'Error: test error'", got)
+		}
+		if len(msgs) != 2 || msgs[0].Role != types.RoleAssistant || msgs[1].Role != types.RoleTool {
+			t.Fatalf("roles = %v", roles(msgs))
+		}
+	}
+	t.Run("generateText", func(t *testing.T) {
+		r, err := GenerateText(context.Background(), GenerateTextOptions{Model: gen, Prompt: "test-input", Tools: []types.Tool{failing}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		check(t, r.Content, r.ResponseMessages)
+	})
+	t.Run("streamText", func(t *testing.T) {
+		r, err := StreamText(context.Background(), StreamTextOptions{Model: gen, Prompt: "test-input", Tools: []types.Tool{failing}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.ConsumeStream()
+		check(t, r.Content(), r.ResponseMessages())
+	})
+}
+
+func TestTSReplay_InvalidToolCallSkipsApprovalAndExecution(t *testing.T) {
+	bad := types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"cities": "San Francisco"}}
+	executed := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{ToolCalls: []types.ToolCall{bad}, FinishReason: types.FinishReasonToolCalls, Usage: *usage(10, 20)}, nil
+		},
+	}
+	r, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "prompt", Tools: []types.Tool{approvalTool(&executed)},
+		ToolApproval: map[string]interface{}{"tool1": "user-approval"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed != 0 {
+		t.Fatal("invalid call executed")
+	}
+	for _, p := range r.Content {
+		if _, ok := p.(types.ToolApprovalRequestContent); ok {
+			t.Fatal("invalid call requested approval")
+		}
+	}
+	tc, ok := r.Content[0].(types.ToolCallContent)
+	if !ok || !tc.Invalid || !tc.Dynamic {
+		t.Fatalf("content[0] = %#v, want invalid dynamic tool-call", r.Content[0])
+	}
+	if _, ok := r.Content[1].(types.ToolErrorContent); !ok {
+		t.Fatalf("content[1] = %T, want tool-error", r.Content[1])
+	}
+	outs := toolResultTexts(r.ResponseMessages)
+	if len(outs) != 1 || !strings.HasPrefix(outs[0], "error-text:AI_InvalidToolInputError: Invalid input for tool tool1: ") {
+		t.Fatalf("response tool outputs = %v", outs)
 	}
 }
