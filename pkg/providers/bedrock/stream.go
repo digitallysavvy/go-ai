@@ -494,6 +494,10 @@ func (s *bedrockConverseStream) handleContentBlockStop(value map[string]interfac
 		if args == nil && rawInvalid == "" {
 			args = map[string]interface{}{}
 		}
+		if rawInvalid == "" {
+			// TS emits the accumulated input string as the tool call input.
+			rawInvalid = input
+		}
 		s.enqueue(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
