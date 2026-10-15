@@ -426,7 +426,13 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				return sess, nil
 			}
 			if isContinue {
-				logText, _ := toolSafeSandboxSession.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
+				// Unlike the other adapters (TS `.catch(() => null)`), ACP
+				// propagates a failed event-log read: the attach error is
+				// replaced by it, exactly as the TS catch block does.
+				logText, readErr := toolSafeSandboxSession.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: bridgeStateDir + "/event-log.ndjson"})
+				if readErr != nil {
+					return nil, readErr
+				}
 				if harnessutil.ClassifyDiskLog(logText) == harnessutil.DiskLogReplay {
 					respawnStrategy = &acpRespawnStrategy{mode: acpRecoveryDiskReplay, reason: "completed coherent event log", afterSeq: coords.LastSeenEventID}
 				} else {
