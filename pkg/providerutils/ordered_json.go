@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
-	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Key-order helpers. A JavaScript object keeps its insertion order, so TS
@@ -54,7 +56,9 @@ func CompactJSON(raw json.RawMessage) string {
 }
 
 // OrderedMap marshals its keys in the given order (then any keys missing from
-// Keys, sorted).
+// Keys, sorted), without HTML escaping, like JSON.stringify of a JS object.
+// It is a thin builder over jsonorder.Object, the SDK's one ordered-JSON
+// implementation.
 type OrderedMap struct {
 	Keys []string
 	Vals map[string]interface{}
@@ -62,106 +66,58 @@ type OrderedMap struct {
 
 // MarshalJSON implements json.Marshaler.
 func (o OrderedMap) MarshalJSON() ([]byte, error) {
-	seen := make(map[string]bool, len(o.Keys))
-	keys := make([]string, 0, len(o.Vals))
+	return o.object().MarshalJSON()
+}
+
+func (o OrderedMap) object() *jsonorder.Object {
+	obj := jsonorder.New()
 	for _, k := range o.Keys {
-		if _, ok := o.Vals[k]; ok && !seen[k] {
-			seen[k] = true
-			keys = append(keys, k)
+		if v, ok := o.Vals[k]; ok {
+			if _, dup := obj.Get(k); !dup {
+				obj.Set(k, v)
+			}
 		}
 	}
 	var rest []string
 	for k := range o.Vals {
-		if !seen[k] {
+		if _, seen := obj.Get(k); !seen {
 			rest = append(rest, k)
 		}
 	}
 	sort.Strings(rest)
-	keys = append(keys, rest...)
-
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	for i, k := range keys {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-		kb, err := json.Marshal(k)
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(kb)
-		buf.WriteByte(':')
-		vb, err := json.Marshal(o.Vals[k])
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(vb)
+	for _, k := range rest {
+		obj.Set(k, o.Vals[k])
 	}
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
+	return obj
 }
 
-// orderNode is the key-order skeleton of a raw JSON value.
-type orderNode struct {
-	keys     []string
-	children map[string]*orderNode
-	elems    []*orderNode
-}
-
-func readOrderNode(dec *json.Decoder) *orderNode {
-	tok, err := dec.Token()
-	if err != nil {
-		return nil
-	}
-	d, ok := tok.(json.Delim)
-	if !ok {
-		return &orderNode{}
-	}
-	n := &orderNode{}
-	switch d {
-	case '{':
-		n.children = map[string]*orderNode{}
-		for dec.More() {
-			kt, err := dec.Token()
-			if err != nil {
-				return n
-			}
-			k, _ := kt.(string)
-			child := readOrderNode(dec)
-			if _, dup := n.children[k]; !dup {
-				n.keys = append(n.keys, k)
-			}
-			n.children[k] = child
-		}
-		_, _ = dec.Token()
-	case '[':
-		for dec.More() {
-			n.elems = append(n.elems, readOrderNode(dec))
-		}
-		_, _ = dec.Token()
-	}
-	return n
-}
-
-func applyOrder(v interface{}, n *orderNode) interface{} {
+// applyOrder rebuilds v with each object's keys in the order they have in
+// ref (a jsonorder.Parse tree); keys ref lacks follow, sorted. Arrays are
+// paired with ref by index.
+func applyOrder(v interface{}, ref interface{}) interface{} {
 	switch x := v.(type) {
 	case map[string]interface{}:
-		out := make(map[string]interface{}, len(x))
+		refObj, _ := ref.(*jsonorder.Object)
 		var keys []string
-		var children map[string]*orderNode
-		if n != nil {
-			keys, children = n.keys, n.children
+		if refObj != nil {
+			keys = refObj.Keys()
 		}
+		out := make(map[string]interface{}, len(x))
 		for k, val := range x {
-			out[k] = applyOrder(val, children[k])
+			var child interface{}
+			if refObj != nil {
+				child, _ = refObj.Get(k)
+			}
+			out[k] = applyOrder(val, child)
 		}
 		return OrderedMap{Keys: keys, Vals: out}
 	case []interface{}:
+		refArr, _ := ref.([]interface{})
 		out := make([]interface{}, len(x))
 		for i, val := range x {
-			var child *orderNode
-			if n != nil && i < len(n.elems) {
-				child = n.elems[i]
+			var child interface{}
+			if i < len(refArr) {
+				child = refArr[i]
 			}
 			out[i] = applyOrder(val, child)
 		}
@@ -174,8 +130,8 @@ func applyOrder(v interface{}, n *orderNode) interface{} {
 // marshaling its keys in the order they have in ref; keys that ref does not
 // have follow, sorted. Arrays are paired with ref by index.
 func OrderLike(v interface{}, ref json.RawMessage) interface{} {
-	n := readOrderNode(json.NewDecoder(bytes.NewReader(ref)))
-	return applyOrder(v, n)
+	tree, _ := jsonorder.Parse(ref)
+	return applyOrder(v, tree)
 }
 
 // BatchJSONLLine is one line of a batch input file with the key order TS
@@ -194,13 +150,11 @@ func schemaInstructionText(schema interface{}) (string, bool) {
 	if raw, ok := RawJSONObject(schema); ok {
 		return CompactJSON(raw), true
 	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(schema); err != nil {
+	b, err := jsonstr.Marshal(schema)
+	if err != nil {
 		return "", false
 	}
-	return strings.TrimSuffix(buf.String(), "\n"), true
+	return string(b), true
 }
 
 // ResponseFormatSchemaOrRaw resolves a ResponseFormat.Schema to the value a
@@ -238,11 +192,9 @@ func ArgumentsJSONText(args map[string]interface{}, raw string) string {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(args); err != nil {
+	b, err := jsonstr.Marshal(args)
+	if err != nil {
 		return "{}"
 	}
-	return strings.TrimSuffix(buf.String(), "\n")
+	return string(b)
 }
