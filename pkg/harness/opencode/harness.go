@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -312,13 +313,13 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		return nil, err
 	}
 
-	var supportsUserMessageResponses bool
+	var supportsUserMessageResponses atomic.Bool
 	channelOpts := bridge.ChannelOptions{
 		Connect: bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{
 			Name: "OpenCode bridge", WaitForHello: true, HelloTimeout: helloTimeout,
 			OnHello: func(h *bridge.Hello) {
 				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
-					supportsUserMessageResponses = *h.Capabilities.ExperimentalUserMessageResponses
+					supportsUserMessageResponses.Store(*h.Capabilities.ExperimentalUserMessageResponses)
 				}
 			},
 		}),
@@ -339,7 +340,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	sessionArgs.isResume = respawnStrategy != ""
 	sessionArgs.seedResumeSessionOnFirstPrompt = respawnStrategy != ""
 	sessionArgs.rerunContinue = respawnStrategy == "rerun"
-	sessionArgs.supportsUserMessageResponses = func() bool { return supportsUserMessageResponses }
+	sessionArgs.supportsUserMessageResponses = supportsUserMessageResponses.Load
 	return newSession(sessionArgs), nil
 }
 
