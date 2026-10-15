@@ -26,6 +26,9 @@ type Issue struct {
 	Expected      string
 	Values        []string
 	Discriminator string
+	// Errors holds, for a plain invalid_union issue, each member's first
+	// issue with paths relative to the union value (zod v4 nested `errors`).
+	Errors []*Issue
 }
 
 // json renders the issue like zod v4's ZodIssue object (same key order as
@@ -54,6 +57,12 @@ func (i *Issue) json() []byte {
 		parts = append(parts, `"code":`+enc(i.Code), `"values":`+enc(vals))
 	case i.Discriminator != "":
 		parts = append(parts, `"code":`+enc(i.Code), `"errors":[]`, `"note":"No matching discriminator"`, `"discriminator":`+enc(i.Discriminator))
+	case i.Code == "invalid_union":
+		nested := make([]string, 0, len(i.Errors))
+		for _, e := range i.Errors {
+			nested = append(nested, "["+string(e.json())+"]")
+		}
+		parts = append(parts, `"code":`+enc(i.Code), `"errors":[`+strings.Join(nested, ",")+`]`)
 	default:
 		parts = append(parts, `"code":`+enc(i.Code))
 	}
@@ -272,12 +281,15 @@ func RecordOf(n Node) Node {
 // Union is z.union: the first matching node wins.
 func Union(nodes ...Node) Node {
 	return func(v interface{}, present bool, path []interface{}) *Issue {
+		var errs []*Issue
 		for _, n := range nodes {
-			if n(v, present, path) == nil {
+			bad := n(v, present, nil)
+			if bad == nil {
 				return nil
 			}
+			errs = append(errs, bad)
 		}
-		return &Issue{Path: path, Code: "invalid_union", Message: "Invalid input"}
+		return &Issue{Path: path, Code: "invalid_union", Errors: errs, Message: "Invalid input"}
 	}
 }
 
