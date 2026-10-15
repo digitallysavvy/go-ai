@@ -161,7 +161,10 @@ func ConvertToolModelOutput(output types.ToolResultOutput) ([]ToolModelOutputCon
 			case types.ImageContentBlock:
 				out = append(out, ToolModelOutputContent{Type: ToolModelOutputContentImage, Data: base64Std(b.Data), MediaType: b.MediaType})
 			default:
-				return nil, false, unsupportedModelOutput(fmt.Sprintf("unsupported content '%s'.", block.ToolResultContentType()))
+				// TS throws HarnessBridgeCapabilityUnsupportedError with this exact
+				// text (the host translates it to the capability error).
+				return nil, false, NewCapabilityUnsupportedError(fmt.Sprintf(
+					"Harnesses support only text and inline images in tool model output; unsupported content '%s'.", block.ToolResultContentType()), "", nil)
 			}
 		}
 		return out, false, nil

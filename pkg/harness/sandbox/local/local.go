@@ -364,7 +364,7 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 		return nil, startErr
 	}
 	stdout, stderr := io.Reader(stdoutR), io.Reader(stderrR)
-	p := &process{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{}), exitCode: -1}
+	p := &process{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{}), exitCode: 1}
 	s.mu.Lock()
 	s.procs[p] = struct{}{}
 	raced := s.stopped
@@ -516,9 +516,15 @@ type process struct {
 
 func (p *process) wait(ctx context.Context) {
 	err := p.cmd.Wait()
-	code := -1
+	// Same mapping as the TS reference sandbox (local-sandbox.ts): the
+	// process's own exit code; for a signal-killed process 128 + 1 (Node
+	// reports the signal as a string, so its `typeof signal === 'number'`
+	// check always falls back to 1); 1 when neither is known.
+	code := 1
 	if p.cmd.ProcessState != nil {
-		code = p.cmd.ProcessState.ExitCode()
+		if code = p.cmd.ProcessState.ExitCode(); code == -1 {
+			code = 129
+		}
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {

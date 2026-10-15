@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -25,6 +26,13 @@ import (
 // the runtime/model or exposed to the consumer; it exists only for local
 // diagnostics.
 const invalidToolInputMessage = "Tool input validation failed." //nolint:staticcheck // exact TS parity string (run-prompt.ts's invalidToolInputMessage)
+
+// hostToolOutcome is the result of running a host tool: its raw output, or
+// the error it failed with. Mirrors TS `HostToolOutcome`.
+type hostToolOutcome struct {
+	output interface{}
+	err    error
+}
 
 // nowMs returns the current wall-clock time in Unix milliseconds, used for
 // telemetry.go's model-call response-time measurement (mirrors TS
@@ -297,6 +305,7 @@ func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 	})
 
 	done := make(chan struct{})
+	in.Callbacks = in.Callbacks.panicSafe()
 	d := &turnDriver{ctx: ctx, in: in, stream: stream, telCallID: callID}
 	go func() {
 		defer close(done)
@@ -358,9 +367,15 @@ type turnDriver struct {
 	stepToolCalls   []types.ToolCall
 	stepToolResults []types.ToolResult
 	toolExecMs      map[string]int64
-	stepNumber      int
-	stepOpen        bool
-	startCalled     bool
+	// hostOutcomes keeps the host-side outcome of each executed host tool
+	// (raw output or the original error), so tool-execution-end callbacks
+	// and telemetry report it rather than the runtime's echoed, stringified
+	// copy (TS `toolExecution.toolOutput = toToolOutput(outcome)`). Guarded
+	// by execMu.
+	hostOutcomes map[string]hostToolOutcome
+	stepNumber   int
+	stepOpen     bool
+	startCalled  bool
 
 	// hostInputPauseRequested/deferredPauseFinishStep/ignoredFinishStep/
 	// hostToolCallIDsAwaitingEcho implement TS #23260's parallel/sequential
@@ -514,6 +529,7 @@ func (d *turnDriver) run() {
 	d.continuationsByApprovalID = map[string]types.ToolApprovalResponseContent{}
 	d.continuationsByToolCallID = map[string]types.ToolResultContent{}
 	d.toolExecMs = map[string]int64{}
+	d.hostOutcomes = map[string]hostToolOutcome{}
 	d.startedToolExecutions = map[string]bool{}
 	d.telToolCtx = map[string]context.Context{}
 	d.stripToolInput = NewToolInputWorkDirStripper(d.in.SessionWorkDir)
@@ -1387,20 +1403,50 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	} else {
 		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Result: tr.Result, ProviderExecuted: ok && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
 	}
+	// Step content keeps the echoed (work-dir-stripped) result, as TS builds
+	// it from the forwarded stream parts.
 	d.stepToolResults = append(d.stepToolResults, toolResult)
+	// A host-executed tool reports its own outcome (raw output / original
+	// error) to the callbacks, not the echoed copy (TS keeps the first
+	// `toolExecution.toolOutput`).
+	d.execMu.Lock()
+	host, hostRan := d.hostOutcomes[tr.ToolCallID]
+	delete(d.hostOutcomes, tr.ToolCallID)
+	d.execMu.Unlock()
+	if hostRan {
+		toolResult = hostOutcomeResult(call, host)
+	}
+	d.publishToolExecutionEnd(tr.ToolCallID, tr.ToolName, call, toolResult)
+}
+
+// hostOutcomeResult builds the types.ToolResult for a host tool's outcome.
+func hostOutcomeResult(call types.ToolCall, o hostToolOutcome) types.ToolResult {
+	r := types.ToolResult{ToolCallID: call.ID, ToolName: call.ToolName, Input: call.Arguments, Dynamic: call.Dynamic}
+	if o.err != nil {
+		r.Error = o.err
+	} else {
+		r.Result = o.output
+	}
+	return r
+}
+
+// publishToolExecutionEnd fires OnToolExecutionEnd and telemetry's tool end
+// (ensuring the start events fired first). Mirrors TS
+// `publishToolExecutionEnd`.
+func (d *turnDriver) publishToolExecutionEnd(toolCallID, toolName string, call types.ToolCall, toolResult types.ToolResult) {
 	// Host tool goroutines write toolExecMs under execMu.
 	d.execMu.Lock()
-	execMs := d.toolExecMs[tr.ToolCallID]
+	execMs := d.toolExecMs[toolCallID]
 	d.execMu.Unlock()
 
-	// recordToolResult always runs on the main goroutine, so reading
-	// d.telStepCtx live here (rather than a pre-captured snapshot) is safe.
+	// Always runs on the main goroutine, so reading d.telStepCtx live here
+	// (rather than a pre-captured snapshot) is safe.
 	d.ensureToolExecutionStarted(d.telStepCtx, call)
 
 	if d.in.Callbacks.OnToolExecutionEnd != nil {
 		d.in.Callbacks.OnToolExecutionEnd(d.ctx, ai.OnToolCallFinishEvent{
 			CallID:     d.telCallID,
-			ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, ToolCall: call, ToolOutput: toolResult,
+			ToolCallID: toolCallID, ToolName: toolName, ToolCall: call, ToolOutput: toolResult,
 			ToolExecutionMs: execMs,
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
@@ -1655,9 +1701,20 @@ func harnessUsageToTypesUsageValue(u Usage) types.Usage {
 		v := int64(*u.OutputTokens.Total)
 		out.OutputTokens = &v
 	}
-	if u.InputTokens.Total != nil && u.OutputTokens.Total != nil {
-		v := int64(*u.InputTokens.Total + *u.OutputTokens.Total)
-		out.TotalTokens = &v
+	// TS addTokenCounts: undefined only when both are; otherwise a missing
+	// side counts as 0.
+	if u.InputTokens.Total != nil || u.OutputTokens.Total != nil {
+		var sum int64
+		if u.InputTokens.Total != nil {
+			sum += int64(*u.InputTokens.Total)
+		}
+		if u.OutputTokens.Total != nil {
+			sum += int64(*u.OutputTokens.Total)
+		}
+		out.TotalTokens = &sum
+	}
+	if len(u.Raw) > 0 {
+		out.Raw = u.Raw
 	}
 	if u.InputTokens.CacheRead != nil || u.InputTokens.CacheWrite != nil || u.InputTokens.NoCache != nil {
 		details := &types.InputTokenDetails{}
@@ -1860,7 +1917,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			d.hostInputPauseRequested = true
 			return false, nil
 		}
-		d.executeHostToolAsync(tool, raw, call, hostCall.Arguments)
+		d.executeHostToolAsync(tool, raw, call, hostCall.Arguments, false)
 		return false, nil
 	}
 }
@@ -1918,7 +1975,7 @@ func (d *turnDriver) recordPendingResult(raw *ToolCallPart) {
 // display value. Mirrors TS `maybeExecuteHostTool`'s
 // `input.parsedToolCall.input` (the raw-validated `validatedHostToolCall`,
 // not the display `parsedToolCall`).
-func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, call types.ToolCall, execArgs map[string]interface{}) {
+func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, call types.ToolCall, execArgs map[string]interface{}, inline bool) {
 	// Snapshotted here, synchronously in the caller's (turnDriver.run's)
 	// goroutine, rather than read as d.telStepCtx from inside the spawned
 	// goroutine below: d.telStepCtx is mutated by the main goroutine at
@@ -1954,7 +2011,7 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		d.markAwaitingEcho(raw.ToolCallID)
 	}
 	d.execWG.Add(1)
-	go func() {
+	body := func() {
 		defer d.execWG.Done()
 		start := time.Now()
 		var toolCtx interface{}
@@ -1969,8 +2026,15 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 			// and the tool sees the defaulted value.
 			normalizedToolCtx := schema.ApplyDefaults(toolCtx, tool.ContextSchema)
 			if err := tool.ContextSchema.Validator().Validate(normalizedToolCtx); err != nil {
-				_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": "Tool context validation failed."}, IsError: true})
-				d.recordExecError(raw.ToolCallID, err)
+				// Context is host-only and can contain credentials: the detailed
+				// error stays in the host-facing outcome and is never sent to
+				// the runtime/model. The turn continues with a tool error (TS
+				// maybeExecuteHostTool returns `{executed: true, ok: false}`).
+				d.setHostOutcome(raw.ToolCallID, hostToolOutcome{err: providererrors.NewValidationErrorWithContext(
+					normalizedToolCtx, err.Error(), err,
+					&providererrors.ValidationContext{Field: "tool context", EntityName: raw.ToolName},
+				)})
+				d.submitHostToolResult(raw.ToolCallID, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": "Tool context validation failed."}, IsError: true})
 				return
 			}
 			toolCtx = normalizedToolCtx
@@ -1979,7 +2043,15 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		// can create nested spans for tool -> generateText chains (TS
 		// 59a2306's `wrappedExecuteTool`, matching pkg/ai/generate.go's own
 		// tool-loop wrapping of the same call).
-		runTool := func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
+		runTool := func(execCtx context.Context, args map[string]interface{}) (res interface{}, execErr error) {
+			// A throwing tool is a tool error in TS (the exception is caught
+			// and submitted as `String(err)`); a Go panic must not take the
+			// process down either.
+			defer func() {
+				if r := recover(); r != nil {
+					res, execErr = nil, fmt.Errorf("tool %q panicked: %v", raw.ToolName, r)
+				}
+			}()
 			return tool.Execute(execCtx, args, types.ToolExecutionOptions{
 				ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
 				ExperimentalSandbox: d.in.SandboxSession,
@@ -2017,7 +2089,8 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		d.toolExecMs[raw.ToolCallID] = time.Since(start).Milliseconds()
 		d.execMu.Unlock()
 		if err != nil {
-			_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": toolErrorString(err)}, IsError: true})
+			d.setHostOutcome(raw.ToolCallID, hostToolOutcome{err: err})
+			d.submitHostToolResult(raw.ToolCallID, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": toolErrorString(err)}, IsError: true})
 			return
 		}
 		submission := ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}
@@ -2030,15 +2103,46 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 				ToolCallID: raw.ToolCallID, Input: execArgs, Output: output, Result: output, //nolint:staticcheck // Result is the deprecated alias; set for older callbacks
 			})
 			if mErr != nil {
-				_ = d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": toolErrorString(mErr)}, IsError: true})
+				d.setHostOutcome(raw.ToolCallID, hostToolOutcome{err: mErr})
+				d.submitHostToolResult(raw.ToolCallID, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": toolErrorString(mErr)}, IsError: true})
 				return
 			}
 			if modelOutput != nil {
 				submission.ToolResult = newModelToolResult(raw.ToolCallID, raw.ToolName, *modelOutput)
 			}
 		}
-		_ = d.submitToolResult(submission)
-	}()
+		d.setHostOutcome(raw.ToolCallID, hostToolOutcome{output: output})
+		d.submitHostToolResult(raw.ToolCallID, submission)
+	}
+	if inline {
+		body()
+		return
+	}
+	go body()
+}
+
+func (d *turnDriver) setHostOutcome(toolCallID string, o hostToolOutcome) {
+	d.execMu.Lock()
+	d.hostOutcomes[toolCallID] = o
+	d.execMu.Unlock()
+}
+
+// takeHostOutcome removes and returns a host tool's recorded outcome.
+func (d *turnDriver) takeHostOutcome(toolCallID string) (hostToolOutcome, bool) {
+	d.execMu.Lock()
+	defer d.execMu.Unlock()
+	o, ok := d.hostOutcomes[toolCallID]
+	delete(d.hostOutcomes, toolCallID)
+	return o, ok
+}
+
+// submitHostToolResult submits a host tool's result to the runtime. A
+// submission failure fails the turn at the next join, as a rejected
+// execution does in TS.
+func (d *turnDriver) submitHostToolResult(toolCallID string, submission ToolResultSubmission) {
+	if err := d.submitToolResult(submission); err != nil {
+		d.recordExecError(toolCallID, err)
+	}
 }
 
 // submitToolResult is the single path every tool result takes back to the
@@ -2283,13 +2387,8 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		}); err != nil {
 			return turnOutcomeContinue, err
 		}
-		d.bufferedResultChunks = append(d.bufferedResultChunks, []provider.StreamChunk{{
-			Type: provider.ChunkTypeToolResult,
-			ToolResult: &types.ToolResult{
-				ToolCallID: approval.ToolCallID, ToolName: approval.ToolName,
-				Input: call.Arguments, Error: errors.New(invalidToolInputMessage), Dynamic: true, //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
-			},
-		}})
+		// TS publishes this outcome right away (`publishToolExecutions`).
+		d.stream.push(d.hostOutcomeChunk(approval.ToolCallID, approval.ToolName, call, hostToolOutcome{err: errors.New(invalidToolInputMessage)})) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
 		return turnOutcomeContinue, nil
 	}
 
@@ -2301,8 +2400,35 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		}
 		return turnOutcomeAwaitingToolResult, nil
 	}
-	d.executeHostToolAsync(tool, &ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input}, call, validatedHostToolCall.Arguments)
+	// Run the approved tool to completion here, like TS (`await
+	// maybeExecuteHostTool`): its outcome is surfaced as a continuation
+	// tool-result/tool-error part, since the runtime's echo of a settled call
+	// is skipped as a replay.
+	d.executeHostToolAsync(tool, &ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input}, call, validatedHostToolCall.Arguments, true)
+	if outcome, ok := d.takeHostOutcome(approval.ToolCallID); ok {
+		d.publishToolExecutionEnd(approval.ToolCallID, approval.ToolName, call, hostOutcomeResult(call, outcome))
+		d.stream.push(d.hostOutcomeChunk(approval.ToolCallID, approval.ToolName, call, outcome))
+	}
 	return turnOutcomeContinue, nil
+}
+
+// hostOutcomeChunk is the consumer-stream tool-result / tool-error part for a
+// host tool outcome produced outside the runtime's echo. Mirrors TS
+// `enqueueHostToolOutcome`: the output is work-dir-stripped like every
+// forwarded result; an error keeps the original value; the part is dynamic
+// only for the invalid-input case TS flags (`dynamic: true` is set there).
+func (d *turnDriver) hostOutcomeChunk(toolCallID, toolName string, call types.ToolCall, o hostToolOutcome) provider.StreamChunk {
+	tr := &types.ToolResult{ToolCallID: toolCallID, ToolName: toolName, Input: call.Arguments}
+	if o.err != nil {
+		tr.Error = o.err
+		tr.Dynamic = o.err.Error() == invalidToolInputMessage
+	} else {
+		tr.Result = o.output
+		if stripped, _ := StripWorkDir(&ToolResultPart{ToolCallID: toolCallID, ToolName: toolName, Result: o.output}, d.in.SessionWorkDir).(*ToolResultPart); stripped != nil {
+			tr.Result = stripped.Result
+		}
+	}
+	return provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: tr}
 }
 
 // processResultContinuation submits a client-supplied tool result (or a
@@ -2316,7 +2442,19 @@ func (d *turnDriver) processResultContinuation(pending PendingToolResult, contin
 		output, isError := unwrapToolResultOutput(*continuation)
 		submission.Output = output
 		submission.IsError = isError
-		submission.ToolResult = continuation
+		// TS: `{...continuation, toolName: pendingResult.toolName,
+		// providerOptions: pendingResult.providerOptions when the
+		// continuation has none}`. The fallback carries adapter-private state
+		// (e.g. ACP's native question request) stamped on the tool call.
+		tr := *continuation
+		tr.ToolName = pending.ToolName
+		if tr.ProviderOptions == nil && len(pending.ProviderOptions) > 0 {
+			tr.ProviderOptions = make(map[string]interface{}, len(pending.ProviderOptions))
+			for k, v := range pending.ProviderOptions {
+				tr.ProviderOptions[k] = v
+			}
+		}
+		submission.ToolResult = &tr
 	case pending.CompletedResult != nil:
 		submission.Output = pending.CompletedResult.Output
 		if pending.CompletedResult.IsError != nil {
@@ -2354,7 +2492,7 @@ func unwrapToolResultOutput(result types.ToolResultContent) (output interface{},
 	case types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON, types.ToolResultOutputError:
 		return result.Output.Value, true
 	case types.ToolResultOutputExecutionDenied:
-		return map[string]interface{}{"type": string(result.Output.Type), "reason": result.Output.Reason}, false
+		return executionDeniedOutput(result.Output.Reason), false
 	case types.ToolResultOutputContent:
 		return result.Output, false
 	default:

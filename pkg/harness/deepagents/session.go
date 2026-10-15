@@ -191,21 +191,10 @@ func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFun
 		c.settleError(errors.New("deepagents bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			// Like TS `onAbort`, do nothing once the turn settled: a late
-			// abort frame would hit the bridge's next turn.
-			select {
-			case <-c.done:
-				return
-			default:
-			}
-			_ = channel.Send(bridge.AbortCommand{})
-			c.settleError(context.Cause(ctx))
-		case <-c.done:
-		}
-	}()
+	go bridge.WatchAbort(ctx, c.done, func() {
+		_ = channel.Send(bridge.AbortCommand{})
+		c.settleError(context.Cause(ctx))
+	})
 
 	return c
 }

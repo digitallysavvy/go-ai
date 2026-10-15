@@ -800,7 +800,10 @@ func (s *AgentSession) Stop(ctx context.Context) (*ResumeSessionState, error) {
 
 // Destroy stops the runtime without returning lifecycle state and discards
 // resumability. A harness-owned network sandbox is destroyed. Calling it on
-// an ended session is a no-op. Mirrors TS `HarnessAgentSession.destroy`.
+// an ended session is a no-op. Teardown is best-effort, exactly as in TS
+// `HarnessAgentSession.destroy`: an adapter or sandbox destroy failure is
+// swallowed, so the returned error is always nil (kept for source
+// compatibility).
 func (s *AgentSession) Destroy(ctx context.Context) error {
 	s.mu.Lock()
 	if s.sessionState != SessionStateActive {
@@ -812,14 +815,16 @@ func (s *AgentSession) Destroy(ctx context.Context) error {
 	s.mu.Unlock()
 
 	s.endLocalHandle(SessionStateDestroyed)
-	var err error
 	if underlying != nil {
-		err = underlying.DoDestroy(ctx)
+		// TS awaits `doDestroy()` and swallows its rejection
+		// (`.catch(() => {})`): destroying is best-effort teardown and the
+		// owned sandbox below is destroyed regardless.
+		_ = underlying.DoDestroy(ctx)
 	}
 	if owns {
 		destroySandbox(ctx, sandbox)
 	}
-	return err
+	return nil
 }
 
 // destroySandbox destroys an owned network sandbox, swallowing errors like

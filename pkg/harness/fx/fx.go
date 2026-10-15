@@ -110,6 +110,9 @@ func BuildConfig(settings Settings) acp.Settings {
 		CredentialBrokering: func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
 			return CredentialBrokering(env, sandboxEnv, headers, suppliedAuthenticationEnvironment)
 		},
+		CredentialBrokeringErr: func(env, sandboxEnv, headers map[string]string) ([]harness.RequestTransformation, error) {
+			return CredentialBrokeringErr(env, sandboxEnv, headers, suppliedAuthenticationEnvironment)
+		},
 		ProviderAuthentication: &acp.ProviderAuthentication{
 			GatewayEnv: map[string]any{
 				"AI_GATEWAY_API_KEY":  map[string]any{"$source": "gateway-api-key"},
@@ -137,7 +140,25 @@ func BuildConfig(settings Settings) acp.Settings {
 // CredentialBrokering builds the request transformations for fx's
 // subscription and AI Gateway credentials. Mirrors the `credentialBrokering`
 // closure in `createFx()`.
+//
+// A transformation that cannot be built (an invalid `AI_GATEWAY_BASE_URL`) is
+// skipped here for source compatibility; CredentialBrokeringErr surfaces it
+// the way TS (which throws) does, and is what createFx wires.
 func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment bool) []harness.RequestTransformation {
+	transformations, err := credentialBrokering(env, sandboxEnv, headers, suppliedAuthenticationEnvironment, true)
+	if err != nil {
+		return nil
+	}
+	return transformations
+}
+
+// CredentialBrokeringErr is CredentialBrokering returning the error from
+// building a transformation instead of dropping it.
+func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment bool) ([]harness.RequestTransformation, error) {
+	return credentialBrokering(env, sandboxEnv, headers, suppliedAuthenticationEnvironment, false)
+}
+
+func credentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAuthenticationEnvironment, lenient bool) ([]harness.RequestTransformation, error) {
 	var transformations []harness.RequestTransformation
 	for _, rc := range GetSubscriptionRequestCredentials(env, sandboxEnv) {
 		matchURL := "https://api.x.ai/v1"
@@ -156,12 +177,15 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 			TransformHeaders: transformHeaders,
 		})
 		if err != nil {
-			continue
+			if lenient {
+				continue
+			}
+			return nil, err
 		}
 		transformations = append(transformations, tr)
 	}
 	if len(transformations) > 0 {
-		return transformations
+		return transformations, nil
 	}
 
 	environmentVariableName := "AI_GATEWAY_API_KEY"
@@ -175,7 +199,7 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 	credential := env[environmentVariableName]
 	sandboxCredential := sandboxEnv[environmentVariableName]
 	if credential == "" || sandboxCredential == "" {
-		return nil
+		return nil, nil
 	}
 	baseURL := env["AI_GATEWAY_BASE_URL"]
 	if baseURL == "" {
@@ -193,9 +217,9 @@ func CredentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 		TransformHeaders: transformHeaders,
 	})
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return []harness.RequestTransformation{tr}
+	return []harness.RequestTransformation{tr}, nil
 }
 
 // sanitizeMCPToolNameSegment mirrors TS `sanitizeFxMcpToolNameSegment`:

@@ -446,21 +446,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		pc.settleError(errors.New("claude-code bridge closed before the turn finished.")) //nolint:staticcheck // matches TS SDK's exact error text
 	})
 
-	go func() {
-		select {
-		case <-ctx.Done():
-			// Like TS `onAbort`, do nothing once the turn settled: a late
-			// abort frame would hit the bridge's next turn.
-			select {
-			case <-pc.done:
-				return
-			default:
-			}
-			_ = s.opts.channel.Send(bridge.AbortCommand{})
-			pc.settleError(context.Cause(ctx))
-		case <-pc.done:
-		}
-	}()
+	go bridge.WatchAbort(ctx, pc.done, func() {
+		_ = s.opts.channel.Send(bridge.AbortCommand{})
+		pc.settleError(context.Cause(ctx))
+	})
 
 	return pc
 }

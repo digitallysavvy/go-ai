@@ -447,3 +447,22 @@ func TestCreateFx(t *testing.T) {
 		t.Errorf("HarnessID() = %q, want fx", h.HarnessID())
 	}
 }
+
+// TS createCredentialRequestTransformation throws on an invalid
+// AI_GATEWAY_BASE_URL; the Err form surfaces it while the original signature
+// keeps returning nothing.
+func TestCredentialBrokeringErrSurfacesInvalidGatewayURL(t *testing.T) {
+	env := map[string]string{"AI_GATEWAY_API_KEY": "host", "AI_GATEWAY_BASE_URL": "://not a url"}
+	sandboxEnv := map[string]string{"AI_GATEWAY_API_KEY": "sandbox"}
+	if _, err := CredentialBrokeringErr(env, sandboxEnv, nil, true); err == nil {
+		t.Fatal("expected an error for an invalid AI_GATEWAY_BASE_URL")
+	}
+	if got := CredentialBrokering(env, sandboxEnv, nil, true); got != nil {
+		t.Fatalf("CredentialBrokering = %v, want nil (error dropped)", got)
+	}
+	env["AI_GATEWAY_BASE_URL"] = "https://gateway.example/v1"
+	got, err := CredentialBrokeringErr(env, sandboxEnv, nil, true)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("valid url: %v %v", got, err)
+	}
+}

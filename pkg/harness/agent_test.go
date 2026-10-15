@@ -255,6 +255,8 @@ type mockSession struct {
 	// DoDetach — used to exercise a detach failure leaving the local session
 	// handle usable for Stop-based cleanup (TS #21591).
 	doDetach func(context.Context) (*ResumeSessionState, error)
+	// doDestroy, when set, overrides mockSession's default DoDestroy.
+	doDestroy func(context.Context) error
 }
 
 func (s *mockSession) SessionID() string { return s.id }
@@ -284,7 +286,12 @@ func (s *mockSession) DoDetach(ctx context.Context) (*ResumeSessionState, error)
 func (s *mockSession) DoStop(context.Context) (*ResumeSessionState, error) {
 	return NewResumeSessionState("mock", map[string]any{})
 }
-func (s *mockSession) DoDestroy(context.Context) error { return nil }
+func (s *mockSession) DoDestroy(ctx context.Context) error {
+	if s.doDestroy != nil {
+		return s.doDestroy(ctx)
+	}
+	return nil
+}
 
 // mockSessionWithHistory wraps mockSession and additionally implements
 // HistoryReader, mirroring TS mockHarness's optional `doReadHistory`

@@ -88,6 +88,32 @@ type Callbacks struct {
 	OnEnd                    func(ctx context.Context, e ai.OnFinishEvent)
 }
 
+// panicSafe wraps every set callback so a panicking callback is recovered
+// and dropped instead of crashing the turn (TS awaits each callback inside
+// `Promise.allSettled`, so a throwing callback never fails the turn).
+func (c Callbacks) panicSafe() Callbacks {
+	return Callbacks{
+		OnStart:                  safeCallback(c.OnStart),
+		OnStepStart:              safeCallback(c.OnStepStart),
+		OnLanguageModelCallStart: safeCallback(c.OnLanguageModelCallStart),
+		OnLanguageModelCallEnd:   safeCallback(c.OnLanguageModelCallEnd),
+		OnToolExecutionStart:     safeCallback(c.OnToolExecutionStart),
+		OnToolExecutionEnd:       safeCallback(c.OnToolExecutionEnd),
+		OnStepEnd:                safeCallback(c.OnStepEnd),
+		OnEnd:                    safeCallback(c.OnEnd),
+	}
+}
+
+func safeCallback[E any](fn func(context.Context, E)) func(context.Context, E) {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, e E) {
+		defer func() { _ = recover() }()
+		fn(ctx, e)
+	}
+}
+
 // AgentSettings are the construction-time settings for a HarnessAgent.
 // Mirrors TS `HarnessAgentSettings`.
 //

@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"regexp"
 	"strings"
@@ -30,6 +31,8 @@ type fakeSandbox struct {
 	bridgeAddr    string
 	files         map[string]string
 	runs          []string
+	// readTextErr, when set, fails every ReadTextFile.
+	readTextErr error
 }
 
 func (s *fakeSandbox) Description() string { return "acp fake sandbox" }
@@ -68,6 +71,9 @@ func (s *fakeSandbox) ReadBinaryFile(context.Context, string) ([]byte, error)  {
 func (s *fakeSandbox) ReadTextFile(_ context.Context, opts providerutils.SandboxReadTextFileOptions) (*string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.readTextErr != nil {
+		return nil, s.readTextErr
+	}
 	if v, ok := s.files[opts.Path]; ok {
 		return &v, nil
 	}
@@ -1258,5 +1264,66 @@ func TestNonTextContentTypes_BridgeEnvAndIdentity(t *testing.T) {
 	}
 	if createImplementationIdentity(withImage) != createImplementationIdentity(dup) {
 		t.Error("duplicate declarations must hash like a single one")
+	}
+}
+
+// TS ACP doStart propagates a failed event-log read during continue recovery
+// (the other adapters swallow it): the error replaces the attach failure.
+func TestDoStartACPContinueRecoveryPropagatesEventLogReadFailure(t *testing.T) {
+	const token = "readerr-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sess, err := h.DoStart(ctx, harness.StartOptions{SessionID: "readerr-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	continueState, err := sess.DoSuspendTurn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data resumeStateData
+	if err := json.Unmarshal(continueState.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	data.Bridge.Port = 9999 // unreachable: attach fails
+	continueState.Data, _ = json.Marshal(data)
+	sandbox.mu.Lock()
+	sandbox.readTextErr = errors.New("sandbox read failed")
+	sandbox.mu.Unlock()
+
+	_, err = h.DoStart(ctx, harness.StartOptions{
+		SessionID: "readerr-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox, ContinueFrom: continueState,
+	})
+	if err == nil || err.Error() != "sandbox read failed" {
+		t.Fatalf("DoStart error = %v, want the event-log read failure", err)
+	}
+}
+
+// A CredentialBrokeringErr failure fails the session start (TS throws from
+// credentialBrokering inside doStart).
+func TestDoStartACPCredentialBrokeringErrFailsStart(t *testing.T) {
+	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.CredentialEnv = []string{"X_KEY"}
+		s.CredentialBrokeringErr = func(_, _, _ map[string]string) ([]harness.RequestTransformation, error) {
+			return nil, errors.New("invalid base url")
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.DoStart(context.Background(), harness.StartOptions{SessionID: "brokerr", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox})
+	if err == nil || err.Error() != "invalid base url" {
+		t.Fatalf("DoStart error = %v, want the brokering error", err)
 	}
 }
