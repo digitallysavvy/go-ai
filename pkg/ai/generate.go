@@ -1450,6 +1450,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.Usage = result.Usage.Add(genResult.Usage)
 
 		hasUserApproval := false
+		injectedProviderResult := false
 		var rawStepToolResults []types.ToolResult
 		toolResultsBefore := len(result.ToolResults)
 
@@ -1532,6 +1533,38 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				if tr.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 					hasUserApproval = true
 				}
+			}
+
+			// WorkflowAgent: answer provider-executed calls that got no result
+			// with an empty text result so the loop continues (TS
+			// resolveProviderToolResult).
+			if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && providerResultFinishAllowed(genResult.FinishReason) {
+				answered := func(id string) bool {
+					for _, part := range stepResult.Content {
+						switch v := part.(type) {
+						case types.ToolResultContent:
+							if v.ToolCallID == id {
+								return true
+							}
+						case types.ToolErrorContent:
+							if v.ToolCallID == id {
+								return true
+							}
+						}
+					}
+					return false
+				}
+				for _, call := range missingProviderResultCalls(genResult.ToolCalls, toolsByName, answered) {
+					synthetic := emptyProviderResult(call, stepModel.Provider(), stepModel.ModelID())
+					stepResult.Content = append(stepResult.Content, toolResultContentFromToolResult(synthetic))
+					stepResult.ToolResults = append(stepResult.ToolResults, synthetic)
+					result.ToolResults = append(result.ToolResults, synthetic)
+					injectedProviderResult = true
+				}
+				stepResult.StaticToolResults = filterStaticToolResults(stepResult.ToolResults)
+				stepResult.DynamicToolResults = filterDynamicToolResults(stepResult.ToolResults)
+				result.StaticToolResults = filterStaticToolResults(result.ToolResults)
+				result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
 			}
 
 			// Build response messages: assistant + tool results.
@@ -1791,7 +1824,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 		}
 		hasPendingDeferred := len(pendingDeferredToolCalls) > 0
-		if !hasLocalToolCalls && !hasPendingDeferred {
+		if !hasLocalToolCalls && !hasPendingDeferred && !injectedProviderResult {
 			break
 		}
 		// Continue only after every local tool call has an output or was
