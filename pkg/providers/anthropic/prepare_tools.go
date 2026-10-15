@@ -169,7 +169,10 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 			}
 			continue
 		}
-		if t.Type == "provider" || (strings.HasPrefix(t.Name, "anthropic.") && t.ProviderExecuted) {
+		if t.Type == "provider" || (strings.HasPrefix(t.Name, "anthropic.")) {
+			// Anthropic function names cannot contain ".", so an
+			// "anthropic.*" name is always a provider tool id; unknown ids
+			// get exactly one warning, as in TS.
 			id := t.ProviderID
 			if id == "" {
 				id = t.Name
