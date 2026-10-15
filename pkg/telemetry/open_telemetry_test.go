@@ -812,3 +812,37 @@ func TestOpenTelemetryObjectRootEndOutputMessages(t *testing.T) {
 		t.Error("object root must not carry cache_creation tokens (TS omits them)")
 	}
 }
+
+// TS reuses baseSupplementalAttributes (runtime context, headers) on the step
+// span but not on tool spans.
+func TestOpenTelemetryStepSpanReusesRootSupplementalAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), RuntimeContext: true, Headers: true})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText", Settings: settings, CallID: "sup", ModelID: "m",
+		RuntimeContext: map[string]interface{}{"user": "u1"}, Headers: map[string]string{"x-id": "7"},
+	})
+	stepCtx := integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "sup"})
+	toolCtx := integration.OnToolExecutionStart(stepCtx, TelemetryToolCallStartEvent{Settings: settings, CallID: "sup", ToolCallID: "t1", ToolName: "tool"})
+	integration.OnToolExecutionEnd(toolCtx, TelemetryToolCallFinishEvent{Settings: settings, CallID: "sup", ToolCallID: "t1", ToolName: "tool"})
+	integration.OnStepEnd(stepCtx, TelemetryStepEndEvent{Settings: settings, OperationType: "ai.generateText", CallID: "sup", FinishReason: "stop"})
+
+	step := findSpan(rec, "step 1")
+	tool := findSpan(rec, "execute_tool tool")
+	if step == nil || tool == nil {
+		t.Fatal("missing step or tool span")
+	}
+	if v, ok := attrValue(step, "ai.settings.context.user"); !ok || v != "u1" {
+		t.Errorf("step runtime context = %v (ok=%v)", v, ok)
+	}
+	if v, ok := attrValue(step, "ai.request.headers.x-id"); !ok || v != "7" {
+		t.Errorf("step header = %v (ok=%v)", v, ok)
+	}
+	if _, ok := attrValue(tool, "ai.settings.context.user"); ok {
+		t.Error("tool span must not carry the runtime context (TS tool spans have none)")
+	}
+}

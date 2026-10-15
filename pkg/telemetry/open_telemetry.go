@@ -129,8 +129,12 @@ func genAISpanKey(kind, callID string) string { return "genai:" + kind + ":" + c
 // trace.ContextWithSpan before starting a child span, so nesting stays
 // correct regardless of what the other integration did to ctx.
 type genAICallState struct {
-	mu        sync.Mutex
-	rootSpan  trace.Span
+	mu       sync.Mutex
+	rootSpan trace.Span
+	// baseSupp holds the root span's supplemental runtime-context/header
+	// attributes (TS baseSupplementalAttributes) for the step, embeddings
+	// and reranking child spans.
+	baseSupp  []attribute.KeyValue
 	stepSpan  trace.Span
 	toolSpans map[string]trace.Span
 	// embedSpans/rerankSpan mirror LegacyOpenTelemetry's own fields in
@@ -151,6 +155,18 @@ func genAIState(callID string) *genAICallState {
 	}
 	v, _ := genAICallStates.LoadOrStore(callID, &genAICallState{})
 	return v.(*genAICallState)
+}
+
+// genAIBaseSupplemental returns the root span's supplemental attributes
+// (runtime context and headers) recorded for callID.
+func genAIBaseSupplemental(callID string) []attribute.KeyValue {
+	st := genAIState(callID)
+	if st == nil {
+		return nil
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.baseSupp
 }
 
 // genAIDeleteState removes callID's call state once its root span has ended.
@@ -285,11 +301,19 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 			span.SetAttributes(attribute.String("ai.settings.output", e.SettingsOutput))
 		}
 	}
+	// TS baseSupplementalAttributes: the runtime-context and header
+	// attributes of the root span, reused by the step, embeddings and
+	// reranking child spans (not by chat or tool spans).
+	var baseSupp []attribute.KeyValue
 	if i.opts.RuntimeContext {
 		if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
 			span.SetAttributes(attrs...)
 			ctx = context.WithValue(ctx, genAIRuntimeContextKey{}, attrs)
+			baseSupp = append(baseSupp, attrs...)
 		}
+	}
+	if i.opts.Headers {
+		baseSupp = append(baseSupp, headerAttributes(e.Headers)...)
 	}
 	// H5: record this integration's own root span in callId-keyed state, so
 	// OnStepStart/OnToolExecutionStart/OnEnd/OnError/OnAbort can find it by
@@ -298,6 +322,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st := genAIState(e.CallID)
 		st.mu.Lock()
 		st.rootSpan = span
+		st.baseSupp = baseSupp
 		st.mu.Unlock()
 	}
 	return ctx
@@ -377,6 +402,7 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 		stepSpan.SetAttributes(attrs...)
 	}
 	stepSpan.SetAttributes(attribute.String("gen_ai.operation.name", "agent_step"))
+	stepSpan.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	if i.opts.ToolChoice && e.ToolChoice.Type != "" {
 		if b, err := json.Marshal(e.ToolChoice); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
@@ -779,6 +805,7 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", jsonStringifyEach(e.Values)))
 	}
@@ -879,6 +906,7 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordInputs) {
 		if docs, ok := e.Documents.([]string); ok && len(docs) > 0 {
 			span.SetAttributes(attribute.StringSlice("ai.documents", jsonStringifyEach(docs)))
@@ -984,11 +1012,6 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	if e.Settings == nil || e.Settings.RecordInputs {
 		if b, err := json.Marshal(e.Args); err == nil {
 			child.SetAttributes(attribute.String("gen_ai.tool.call.arguments", string(b)))
-		}
-	}
-	if i.opts.RuntimeContext {
-		if attrs, ok := ctx.Value(genAIRuntimeContextKey{}).([]attribute.KeyValue); ok {
-			child.SetAttributes(attrs...)
 		}
 	}
 	if e.CallID != "" {
