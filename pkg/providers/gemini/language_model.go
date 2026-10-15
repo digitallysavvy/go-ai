@@ -147,7 +147,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		}
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	result.RawRequest = reqBody
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	if result.ResponseMetadata == nil {
+		result.ResponseMetadata = &types.ResponseMetadata{ModelID: m.modelID}
+	}
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
 }
 
@@ -534,7 +539,15 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 	}
 
 	// Finish reason.
-	hasToolCalls := len(result.ToolCalls) > 0
+	// Only client-executed tool calls count (TS: tool-call && !providerExecuted);
+	// a provider-executed code execution call still finishes with "stop".
+	hasToolCalls := false
+	for _, tc := range result.ToolCalls {
+		if !tc.ProviderExecuted {
+			hasToolCalls = true
+			break
+		}
+	}
 	switch {
 	case isPromptBlocked:
 		result.FinishReason = types.FinishReasonContentFilter

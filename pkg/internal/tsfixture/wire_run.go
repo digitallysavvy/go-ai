@@ -69,6 +69,9 @@ type WireSuite struct {
 	SkipLanguage bool
 	// ProviderTool maps a TS provider tool for language-model calls.
 	ProviderTool func(id, name string, args map[string]interface{}) (types.Tool, bool)
+	// SkipModel returns a reason to skip a test that calls a model this suite
+	// does not replay (for example a model another suite covers).
+	SkipModel func(m WireModel) string
 }
 
 // wireClsPrefix remembers, per TS model class, the base-URL prefix of tests
@@ -154,6 +157,11 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		kind := WireKind(c)
 		if kind == "" {
 			skip(fmt.Sprintf("unsupported TS call %s on %s", c.Method, c.Model.Cls))
+		}
+		if s.SkipModel != nil {
+			if why := s.SkipModel(c.Model); why != "" {
+				skip(why)
+			}
 		}
 		if hasFn(c.Args) {
 			skip("the TS call passes a function (for example a webhook factory)")
@@ -366,12 +374,55 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 			delete(gr, "modelId")
 		}
 	}
-	wantN, _ := srv.NormalizeOrigins(want).(map[string]interface{})
-	gotN, _ := srv.NormalizeOrigins(g).(map[string]interface{})
+	if WireKind(c) == "language" {
+		// TS exposes the zod-parsed response body, Go the typed one.
+		for _, m := range []map[string]interface{}{want, g} {
+			if r, ok := m["response"].(map[string]interface{}); ok {
+				delete(r, "body")
+			}
+		}
+	}
+	wantN, _ := srv.NormalizeOrigins(wireNormalizeParts(want)).(map[string]interface{})
+	gotN, _ := srv.NormalizeOrigins(wireNormalizeParts(g)).(map[string]interface{})
 	if d := DiffValues(wantN, gotN); d != "" {
 		return []string{"result (- TS, + Go):\n" + d}
 	}
 	return nil
+}
+
+// wireNormalizeParts applies the conventions the case replay already uses to
+// language-model content: provider tools are named by id in Go (ToolNameAlias),
+// generated source ids differ, and an explicit isError false is unset.
+func wireNormalizeParts(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		o := make(map[string]interface{}, len(x))
+		for k, e := range x {
+			switch {
+			case k == "id" && x["type"] == "source":
+				continue
+			case k == "isError" && e == false:
+				continue
+			case k == "toolName":
+				if name, _ := e.(string); ToolNameAlias[name] != "" {
+					e = ToolNameAlias[name]
+				}
+			}
+			o[k] = wireNormalizeParts(e)
+		}
+		return o
+	case []interface{}:
+		o := make([]interface{}, 0, len(x))
+		for _, e := range x {
+			// the Go rendering of content leaves out empty text parts
+			if m, ok := e.(map[string]interface{}); ok && m["type"] == "text" && (m["text"] == nil || m["text"] == "") && len(m) <= 2 {
+				continue
+			}
+			o = append(o, wireNormalizeParts(e))
+		}
+		return o
+	}
+	return v
 }
 
 func wireErrSummary(e interface{}) string {

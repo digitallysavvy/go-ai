@@ -85,3 +85,25 @@ func TestStreamRawUsageMergesStartAndDelta(t *testing.T) {
 		}
 	}
 }
+
+// TS parses usage with a loose object but plain objects for iterations and
+// output_tokens_details, so their unknown keys are stripped from the raw usage.
+func TestRawUsageStripsUnknownIterationKeys(t *testing.T) {
+	var u anthropicUsage
+	in := `{"input_tokens":1,"output_tokens":2,"service_tier":"standard","iterations":[{"type":"message","input_tokens":1,"output_tokens":2,"cache_creation":{"ephemeral_5m_input_tokens":0}}],"output_tokens_details":{"thinking_tokens":3,"other":1}}`
+	if err := json.Unmarshal([]byte(in), &u); err != nil {
+		t.Fatal(err)
+	}
+	raw := anthropicRawUsage(u)
+	if raw["service_tier"] != "standard" {
+		t.Fatalf("loose usage key lost: %v", raw)
+	}
+	b, _ := json.Marshal(raw["iterations"])
+	if string(b) != `[{"input_tokens":1,"output_tokens":2,"type":"message"}]` {
+		t.Fatalf("iterations = %s", b)
+	}
+	b, _ = json.Marshal(raw["output_tokens_details"])
+	if string(b) != `{"thinking_tokens":3}` {
+		t.Fatalf("output_tokens_details = %s", b)
+	}
+}

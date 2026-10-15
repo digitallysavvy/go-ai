@@ -948,3 +948,20 @@ func TestJSONResponseToolTextIsNotHTMLEscaped(t *testing.T) {
 		t.Fatalf("text = %q", result.Text)
 	}
 }
+
+// TS counts only client-executed tool calls for the finish reason: a
+// provider-executed code execution call finishes with "stop".
+func TestProviderExecutedToolCallDoesNotMakeToolCallsFinish(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"executableCode":{"language":"PYTHON","code":"print(1)"}},{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	if len(result.ToolCalls) == 0 || !result.ToolCalls[0].ProviderExecuted {
+		t.Fatalf("expected a provider-executed tool call, got %#v", result.ToolCalls)
+	}
+	if result.FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish reason = %q, want stop", result.FinishReason)
+	}
+}

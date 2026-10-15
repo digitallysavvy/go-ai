@@ -177,7 +177,9 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 	}
 	headers := requestHeaders(opts)
 
-	if m.agent != "" {
+	// `background: true` is incompatible with `stream: true` on POST, so
+	// background calls (TS isBackground) POST first and then stream the GET.
+	if interactionsOpts.Background != nil && *interactionsOpts.Background {
 		var response interactionsResponse
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			Method:  http.MethodPost,
@@ -401,15 +403,20 @@ func (m *InteractionsLanguageModel) buildArgs(opts *provider.GenerateOptions, _ 
 		Store:                 interactionsOpts.Store,
 		GenerationConfig:      generationConfig,
 		AgentConfig:           emptyMapToNil(interactionsOpts.AgentConfig),
-		Environment:           interactionsOpts.Environment,
 		Background:            interactionsOpts.Background,
+	}
+	// TS sends `background` only when providerOptions.google.background is
+	// set: some agents require it, others reject it.
+	if interactionsOpts.Environment != nil {
+		if !isAgent {
+			const msg = "google.interactions: environment is only supported when an agent is set; environment will be omitted from the request body."
+			warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
+		} else {
+			body.Environment = interactionsEnvironment(interactionsOpts.Environment)
+		}
 	}
 	if isAgent {
 		body.Agent = m.agent
-		if body.Background == nil {
-			background := true
-			body.Background = &background
-		}
 	} else if interactionsOpts.Agent != "" {
 		body.Agent = interactionsOpts.Agent
 	} else {
@@ -643,6 +650,75 @@ func validateInteractionsProviderOptions(opts GoogleInteractionsProviderOptions)
 		return fmt.Errorf("google.interactions: agentConfig.visualization %q is not supported", visualization)
 	}
 	return nil
+}
+
+// dropNilValues is TS pruneUndefined: only nil values are dropped.
+func dropNilValues(in map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(in))
+	for k, v := range in {
+		if v != nil {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// interactionsEnvironment maps providerOptions.google.environment to the wire
+// value (TS getArgs): a string is sent as is; an object becomes
+// {type:"remote", sources?, network?}.
+func interactionsEnvironment(raw interface{}) interface{} {
+	if s, ok := raw.(string); ok {
+		return s
+	}
+	var env map[string]interface{}
+	switch v := raw.(type) {
+	case map[string]interface{}:
+		env = v
+	default:
+		b, err := json.Marshal(raw)
+		if err != nil || json.Unmarshal(b, &env) != nil {
+			return raw
+		}
+	}
+	out := map[string]interface{}{"type": "remote"}
+	if sources, ok := env["sources"].([]interface{}); ok && len(sources) > 0 {
+		mapped := make([]interface{}, 0, len(sources))
+		for _, src := range sources {
+			m, _ := src.(map[string]interface{})
+			if m == nil {
+				mapped = append(mapped, src)
+				continue
+			}
+			if m["type"] == "inline" {
+				mapped = append(mapped, map[string]interface{}{"type": "inline", "content": m["content"], "target": m["target"]})
+				continue
+			}
+			mapped = append(mapped, dropNilValues(map[string]interface{}{"type": m["type"], "source": m["source"], "target": m["target"]}))
+		}
+		out["sources"] = mapped
+	}
+	switch n := env["network"].(type) {
+	case string:
+		if n == "disabled" {
+			out["network"] = "disabled"
+		}
+	case map[string]interface{}:
+		var allow []interface{}
+		entries, _ := n["allowlist"].([]interface{})
+		for _, e := range entries {
+			m, _ := e.(map[string]interface{})
+			if m == nil {
+				allow = append(allow, e)
+				continue
+			}
+			allow = append(allow, dropNilValues(map[string]interface{}{"domain": m["domain"], "transform": m["transform"]}))
+		}
+		if allow == nil {
+			allow = []interface{}{}
+		}
+		out["network"] = map[string]interface{}{"allowlist": allow}
+	}
+	return out
 }
 
 func containsString(values []string, target string) bool {

@@ -84,6 +84,29 @@ type WireResponse struct {
 	Chunks  []string          `json:"chunks"`
 	BodyB64 string            `json:"bodyB64"`
 	Status  int               `json:"status"`
+
+	// rawBody is the body as recorded, with the JSON key order of the TS
+	// object (Body is a Go map, which sorts keys); json-value responses are
+	// served from it so the model sees the same text as in TS.
+	rawBody json.RawMessage
+}
+
+// UnmarshalJSON decodes the response and keeps the raw body text.
+func (r *WireResponse) UnmarshalJSON(b []byte) error {
+	type plain WireResponse
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var aux struct {
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*r = WireResponse(p)
+	r.rawBody = aux.Body
+	return nil
 }
 
 // Path is the URL path of the request.
@@ -301,7 +324,10 @@ func (s *WireServer) handle(w http.ResponseWriter, r *http.Request) {
 	switch resp.Type {
 	case "json-value":
 		setH(map[string]string{"Content-Type": "application/json"})
-		b, _ := json.Marshal(resp.Body)
+		b := []byte(resp.rawBody)
+		if len(b) == 0 {
+			b, _ = json.Marshal(resp.Body)
+		}
 		_, _ = io.WriteString(w, s.rewrite(string(b)))
 	case "stream-chunks":
 		setH(map[string]string{"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"})

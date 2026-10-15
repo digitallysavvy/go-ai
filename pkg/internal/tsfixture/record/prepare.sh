@@ -13,7 +13,7 @@ W=$2
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$W/packages" "$W/tools" "$W/rec"
 cp "$AI/pnpm-lock.yaml" "$W/" 2>/dev/null || true
-for p in provider provider-utils test-server anthropic openai openai-compatible azure xai groq mistral deepseek moonshotai gateway cohere elevenlabs black-forest-labs heygen typesafe-ai alibaba cartesia voyage prodia assemblyai baseten bytedance cerebras deepgram deepinfra fal fireworks fish-audio gladia gmicloud huggingface hume klingai luma minimax open-responses perplexity quiverai replicate revai togetherai topaz zai; do
+for p in provider provider-utils test-server anthropic anthropic-aws amazon-bedrock google google-vertex openai openai-compatible azure xai groq mistral deepseek moonshotai gateway cohere elevenlabs black-forest-labs heygen typesafe-ai alibaba cartesia voyage prodia assemblyai baseten bytedance cerebras deepgram deepinfra fal fireworks fish-audio gladia gmicloud huggingface hume klingai luma minimax open-responses perplexity quiverai replicate revai togetherai topaz zai; do
   [ -d "$AI/packages/$p" ] && rsync -a --exclude node_modules --exclude dist "$AI/packages/$p" "$W/packages/"
 done
 rsync -a --exclude node_modules "$AI/tools/tsconfig" "$W/tools/"

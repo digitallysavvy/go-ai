@@ -966,3 +966,17 @@ func TestImageModel_DoGenerate_ContentFilterIsTerminal(t *testing.T) {
 	require.NotNil(t, result.IsRetryable)
 	assert.False(t, *result.IsRetryable)
 }
+
+// TS reports result.finishReason.raw: a prompt block without candidates
+// carries the block reason as the raw finish reason.
+func TestImageModel_PromptBlockReportsRawFinishReason(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":9,"totalTokenCount":9}}`))
+	}))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "blocked"})
+	require.NoError(t, err)
+	meta, _ := result.ProviderMetadata["google"].(map[string]interface{})
+	assert.Equal(t, "PROHIBITED_CONTENT", meta["finishReason"])
+}
