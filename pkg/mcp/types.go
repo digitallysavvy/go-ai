@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
@@ -974,7 +975,12 @@ func rawString(block map[string]json.RawMessage, key string) (string, bool) {
 	return s, true
 }
 
+// isBase64String mirrors zod's z.base64(): standard alphabet with padding.
+// Go's decoder silently skips CR/LF, which zod rejects.
 func isBase64String(s string) bool {
+	if strings.ContainsAny(s, "\r\n") {
+		return false
+	}
 	_, err := base64.StdEncoding.DecodeString(s)
 	return err == nil
 }
