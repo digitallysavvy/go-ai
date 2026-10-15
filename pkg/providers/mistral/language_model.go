@@ -90,7 +90,9 @@ func (m *LanguageModel) checkReasoningWarnings(opts *provider.GenerateOptions) [
 	if prov, err := extractMistralProviderOptions(opts); err == nil {
 		warnings = append(warnings, mistralReasoningMapWarnings(m.supportsReasoningEffort(), prov.ReasoningEffort, opts.Reasoning)...)
 	}
-	return warnings
+	// TS mistral prepareTools: provider-defined tools are dropped with a warning.
+	_, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+	return append(warnings, dropped...)
 }
 
 // mistralReasoningMapWarnings returns the warnings TS emits for the top-level
@@ -280,7 +282,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["prompt_cache_key"] = provOpts.PromptCacheKey
 	}
 	if len(opts.Tools) > 0 {
-		tools := opts.Tools
+		tools, _ := tool.DropProviderDefinedTools(opts.Tools, nil)
 		if opts.ToolChoice.Type != "" {
 			// TS mistral prepareTools: required and tool both force 'any'; a
 			// specific tool is selected by filtering the tool list.

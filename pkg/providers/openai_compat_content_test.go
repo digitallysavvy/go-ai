@@ -277,3 +277,47 @@ func TestCompatChatStreamIncludesUsage(t *testing.T) {
 		})
 	}
 }
+
+// TS prepareTools: a provider-defined tool is dropped with an `unsupported`
+// warning instead of being sent as a function tool.
+func TestCompatChatDropsProviderDefinedTools(t *testing.T) {
+	for _, f := range compatFactories() {
+		if f.name == "zai" || f.name == "ollama" {
+			continue
+		}
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			var body map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer srv.Close()
+			res, err := f.mk(srv.URL).DoGenerate(context.Background(), &provider.GenerateOptions{
+				Prompt: compatPrompt,
+				Tools: []types.Tool{
+					{Name: "search", Type: "provider", ProviderID: "acme.search"},
+					{Name: "lookup", Description: "d", Parameters: map[string]interface{}{"type": "object"}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tools, _ := body["tools"].([]interface{})
+			if len(tools) != 1 {
+				t.Fatalf("tools = %v", body["tools"])
+			}
+			found := false
+			for _, w := range res.Warnings {
+				if w.Type == "unsupported" && w.Feature == "provider-defined tool acme.search" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("warnings = %v", res.Warnings)
+			}
+		})
+	}
+}

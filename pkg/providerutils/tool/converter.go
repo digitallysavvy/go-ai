@@ -412,3 +412,31 @@ func ConvertToolChoiceToGoogle(choice types.ToolChoice) string {
 		return "AUTO"
 	}
 }
+
+// DropProviderDefinedTools removes provider-defined tools (Type "provider")
+// from tools for chat APIs that only take function tools and returns an
+// `unsupported` warning per dropped tool. TS prepareTools does this with
+// feature `provider-defined tool <tool.id>` (the OpenAI chat model uses
+// `tool type: provider`); label overrides the default feature text.
+func DropProviderDefinedTools(tools []types.Tool, label func(types.Tool) string) ([]types.Tool, []types.Warning) {
+	var kept []types.Tool
+	var warnings []types.Warning
+	for _, t := range tools {
+		if t.Type != "provider" {
+			kept = append(kept, t)
+			continue
+		}
+		feature := ""
+		if label != nil {
+			feature = label(t)
+		} else {
+			id := t.ProviderID
+			if id == "" {
+				id = t.Name
+			}
+			feature = "provider-defined tool " + id
+		}
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: feature})
+	}
+	return kept, warnings
+}

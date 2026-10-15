@@ -569,7 +569,16 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// shared tool.ToOpenAIFormat helper, which other OpenAI-compatible
 	// providers also use.
 	if len(opts.Tools) > 0 {
-		openaiTools := tool.ToOpenAIFormat(opts.Tools)
+		// Provider-defined tools are not Chat Completions tools: TS warns
+		// `tool type: provider` (native) / `provider-defined tool <id>`
+		// (openai-compatible) and drops them.
+		var label func(types.Tool) string
+		if !m.provider.config.OpenAICompatible {
+			label = func(types.Tool) string { return "tool type: provider" }
+		}
+		functionTools, droppedTools := tool.DropProviderDefinedTools(opts.Tools, label)
+		warnings = append(warnings, droppedTools...)
+		openaiTools := tool.ToOpenAIFormat(functionTools)
 		normalizedTools, toolSchemaWarnings, normErr := normalizeOpenAIChatToolSchemas(openaiTools)
 		if normErr != nil {
 			return nil, nil, normErr

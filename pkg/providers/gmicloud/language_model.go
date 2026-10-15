@@ -159,8 +159,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -193,7 +196,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
 func (m *LanguageModel) convertResponse(response gmicloudResponse) *types.GenerateResult {

@@ -292,8 +292,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 
 	// Tools
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -365,7 +368,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		warnings = append(warnings, validator.Warnings()...)
 	}
 
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
 // convertResponse converts Alibaba API response to SDK format

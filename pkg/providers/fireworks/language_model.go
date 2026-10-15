@@ -159,8 +159,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -276,7 +279,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["service_tier"] = serviceTier
 	}
 
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
 func (m *LanguageModel) convertResponse(response fireworksResponse) *types.GenerateResult {
