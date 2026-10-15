@@ -321,10 +321,9 @@ func (s *bedrockConverseStream) handleContentBlockStart(value map[string]interfa
 	toolUse, hasToolUse := start["toolUse"].(map[string]interface{})
 
 	if !hasToolUse {
-		if _, exists := s.contentBlocks[idx]; !exists {
-			s.contentBlocks[idx] = &bedrockStreamContentBlock{Kind: "text"}
-			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(idx)})
-		}
+		// TS sets the block and emits text-start unconditionally.
+		s.contentBlocks[idx] = &bedrockStreamContentBlock{Kind: "text"}
+		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(idx)})
 		return
 	}
 
