@@ -14,11 +14,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf16"
 
 	"github.com/rivo/uniseg"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 var errInterrupted = errors.New("Interrupted")
@@ -142,6 +146,8 @@ type toolSectionState struct {
 	deniedReason     string
 	status           string
 	providerExecuted bool
+	// inputComplete is set once the full input arrived (TS input-available).
+	inputComplete bool
 	// outputDenied is set once the tool output was denied (TS
 	// output-denied); a denied approval response alone renders as a plain
 	// tool section with the "denied" status (TS approval-responded).
@@ -950,6 +956,7 @@ func (m *renderModel) apply(chunk provider.StreamChunk) {
 			tool := m.ensureTool(chunk.ToolCall.ID, chunk.ToolCall.ToolName, chunk.ToolCall.Title)
 			tool.input = chunk.ToolCall.Arguments
 			tool.inputText = chunk.ToolCall.RawArguments
+			tool.inputComplete = true
 			tool.providerExecuted = chunk.ToolCall.ProviderExecuted
 			tool.status = "executing"
 		}
@@ -1124,6 +1131,11 @@ func (m *renderModel) shouldCollapse(index int, key string) bool {
 func renderToolSection(sectionID string, tool *toolSectionState, collapsed bool) chatSection {
 	name := nonEmpty(tool.title, tool.toolName)
 	title := "Tool · " + name
+	if collapsed {
+		// TS renders every collapsed tool, errors and denials included, as a
+		// plain tool header with the status on the right.
+		return chatSection{id: sectionID, kind: sectionTool, title: title, rightTitle: nonEmpty(tool.status, "waiting"), collapsed: true}
+	}
 	content := toolInputText(tool)
 	if tool.output != nil || (tool.status == "done" && tool.errorText == "") {
 		// TS output-available always prints the output, even null.
@@ -1147,14 +1159,113 @@ func formatToolApprovalTitle(request AgentTUIToolApprovalRequest) string {
 	return "tool " + title
 }
 
+// toolInputText is the "Input:" block of a tool section. TS prints
+// JSON.stringify(part.input, null, 2): the input object in the key order the
+// model sent it, or, while the input is still streaming, the repaired partial
+// JSON parsed so far.
 func toolInputText(tool *toolSectionState) string {
-	if tool.input != nil {
-		return "Input:\n" + formatValue(tool.input)
+	if tool.inputComplete || tool.input != nil {
+		if tree, ok := orderedToolInput(tool); ok {
+			return "Input:\n" + prettyJSON(tree, "")
+		}
+		if tool.input != nil {
+			return "Input:\n" + formatValue(tool.input)
+		}
+		if tool.inputComplete {
+			return "Input:\n{}"
+		}
 	}
 	if tool.inputText != "" {
-		return "Input:\n" + tool.inputText
+		if tree, ok := parsePartialOrdered(tool.inputText); ok {
+			return "Input:\n" + prettyJSON(tree, "")
+		}
 	}
 	return "Input: (streaming...)"
+}
+
+// orderedToolInput returns the raw tool input text as an ordered tree when it
+// parses and describes the same input as tool.input (so a repaired or edited
+// input is still printed from tool.input).
+func orderedToolInput(tool *toolSectionState) (interface{}, bool) {
+	if tool.inputText == "" {
+		return nil, false
+	}
+	tree, ok := jsonorder.Parse([]byte(tool.inputText))
+	if !ok {
+		return nil, false
+	}
+	want := tool.input
+	if want == nil {
+		want = map[string]interface{}{}
+	}
+	a, errA := json.Marshal(want)
+	b, errB := json.Marshal(jsonorder.Plain(tree))
+	if errA != nil || errB != nil || !bytes.Equal(a, b) {
+		return nil, false
+	}
+	return tree, true
+}
+
+// parsePartialOrdered parses possibly incomplete JSON text, repairing it like
+// the TS parsePartialJson, and keeps the key order.
+func parsePartialOrdered(text string) (interface{}, bool) {
+	if tree, ok := jsonorder.Parse([]byte(text)); ok {
+		return tree, true
+	}
+	fixed := jsonparser.FixJSON(text)
+	if fixed == "" {
+		return nil, false
+	}
+	return jsonorder.Parse([]byte(fixed))
+}
+
+// prettyJSON is JSON.stringify(value, null, 2) for an ordered tree; a string
+// at the top level is printed as is, like formatValue.
+func prettyJSON(v interface{}, indent string) string {
+	if indent == "" {
+		if str, ok := v.(string); ok {
+			return str
+		}
+	}
+	switch x := v.(type) {
+	case *jsonorder.Object:
+		keys := x.Keys()
+		if len(keys) == 0 {
+			return "{}"
+		}
+		inner := indent + "  "
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			val, _ := x.Get(k)
+			parts[i] = inner + jsonScalar(k) + ": " + prettyJSON(val, inner)
+		}
+		return "{\n" + strings.Join(parts, ",\n") + "\n" + indent + "}"
+	case []interface{}:
+		if len(x) == 0 {
+			return "[]"
+		}
+		inner := indent + "  "
+		parts := make([]string, len(x))
+		for i, e := range x {
+			parts[i] = inner + prettyJSON(e, inner)
+		}
+		return "[\n" + strings.Join(parts, ",\n") + "\n" + indent + "]"
+	case json.Number:
+		return jsonScalar(jsonorder.Plain(x))
+	}
+	return jsonScalar(v)
+}
+
+func jsonScalar(v interface{}) string {
+	b, err := jsonstr.Marshal(v)
+	if err != nil {
+		return fmt.Sprint(v)
+	}
+	return string(b)
+}
+
+func utf16Length(s string) int {
+	return len(utf16.Encode([]rune(s)))
 }
 
 func renderSectionLines(section chatSection, width int) []string {
@@ -1166,7 +1277,8 @@ func renderSectionLines(section chatSection, width int) []string {
 	if section.rightTitle != "" {
 		right = " " + sanitizeTerminalText(section.rightTitle, false) + " "
 	}
-	borderWidth := maxInt(0, width-2-visibleLength(title)-visibleLength(right))
+	// TS measures the titles with String.length (UTF-16 code units).
+	borderWidth := maxInt(0, width-2-utf16Length(title)-utf16Length(right))
 	top := styleColor + "╭" + title + strings.Repeat(border, borderWidth) + right + "╮" + ansiReset
 	bottom := styleColor + "╰" + strings.Repeat(border, maxInt(0, width-2)) + "╯" + ansiReset
 	if section.collapsed {
