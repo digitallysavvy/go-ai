@@ -355,11 +355,14 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 		case provider.ChunkTypeToolCall:
 			if tc := c.ToolCall; tc != nil {
 				o["toolCallId"], o["toolName"] = tc.ID, tc.ToolName
-				if tc.RawArguments != "" {
+				switch {
+				case tc.RawArguments != "":
 					o["input"] = tc.RawArguments
-				} else {
+				case tc.Arguments != nil:
 					b, _ := json.Marshal(tc.Arguments)
 					o["input"] = string(b)
+				default:
+					o["input"] = ""
 				}
 				if tc.ProviderExecuted {
 					o["providerExecuted"] = true
@@ -396,12 +399,16 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 		case provider.ChunkTypeError:
 			o["error"] = c.Text
 		case provider.ChunkTypeRaw:
-			continue
+			o["rawValue"] = c.Raw
 		}
 		out = append(out, o)
 	}
 	return out
 }
+
+// MetadataKeyAlias renames provider-metadata keys of the TS snapshot (e.g. the
+// tests' "test-provider") to the key the Go provider under test reports.
+var MetadataKeyAlias map[string]string
 
 // Normalize drops TS "undefined" markers and nil/empty noise so the two sides
 // compare structurally.
@@ -410,6 +417,9 @@ func Normalize(v interface{}) interface{} {
 	case map[string]interface{}:
 		if _, ok := x["__undef"]; ok && len(x) == 1 {
 			return nil
+		}
+		if x["type"] == "tool-call" && x["input"] == "" {
+			x["input"] = "{}" // empty tool input and {} are the same call
 		}
 		o := map[string]interface{}{}
 		for k, e := range x {
@@ -423,6 +433,16 @@ func Normalize(v interface{}) interface{} {
 			n := Normalize(e)
 			if n == nil {
 				continue
+			}
+			if k == "providerMetadata" {
+				if pm, ok := n.(map[string]interface{}); ok && len(MetadataKeyAlias) > 0 {
+					for from, to := range MetadataKeyAlias {
+						if v, ok := pm[from]; ok {
+							delete(pm, from)
+							pm[to] = v
+						}
+					}
+				}
 			}
 			o[k] = n
 		}
@@ -534,6 +554,16 @@ func CanonStream(parts []interface{}) []interface{} {
 		switch m["type"] {
 		case "text-start", "text-end":
 			continue
+		case "stream-start":
+			// Go emits it only when there are warnings.
+			if w, _ := m["warnings"].([]interface{}); len(w) == 0 {
+				continue
+			}
+		case "response-metadata":
+			// Go providers add a headers-only metadata chunk (no wire id).
+			if _, ok := m["id"]; !ok {
+				continue
+			}
 		case "text-delta":
 			d, _ := m["delta"].(string)
 			if d == "" {

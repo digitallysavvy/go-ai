@@ -103,6 +103,7 @@ data: [DONE]
 	chunks := collectStreamChunks(t, stream)
 	wantTypes := []provider.ChunkType{
 		provider.ChunkTypeRaw,
+		provider.ChunkTypeResponseMetadata, // first event carries an id
 		provider.ChunkTypeText,
 		provider.ChunkTypeRaw,
 		provider.ChunkTypeFinish,
@@ -123,8 +124,8 @@ data: [DONE]
 		encoded, _ := json.Marshal(raw)
 		t.Fatalf("raw chunk = %s, want id raw-1", encoded)
 	}
-	if chunks[1].Text != "Hello" {
-		t.Fatalf("text chunk = %q, want Hello", chunks[1].Text)
+	if chunks[2].Text != "Hello" {
+		t.Fatalf("text chunk = %q, want Hello", chunks[2].Text)
 	}
 }
 

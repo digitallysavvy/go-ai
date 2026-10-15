@@ -77,6 +77,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
 }
@@ -98,7 +99,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newOllamaStream(httpResp.Body)
 	stream.SetRequestBody(reqBody)
-	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
+	stream.IncludeRawChunks = opts.IncludeRawChunks
+	stream.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return stream, nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -273,7 +276,9 @@ type ollamaStream struct {
 }
 
 func newOllamaStream(reader io.ReadCloser) *ollamaStream {
-	return &ollamaStream{
+	s := &ollamaStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
 	}
+	s.MetadataKey = "ollama"
+	return s
 }

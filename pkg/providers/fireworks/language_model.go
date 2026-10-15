@@ -79,6 +79,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	return result, nil
@@ -101,7 +102,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	stream := newFireworksStream(httpResp.Body)
 	stream.SetRequestBody(reqBody)
-	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
+	stream.IncludeRawChunks = opts.IncludeRawChunks
+	stream.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
+	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -418,6 +421,7 @@ type fireworksStream struct {
 
 func newFireworksStream(reader io.ReadCloser) *fireworksStream {
 	s := streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason)
+	s.MetadataKey = "fireworks"
 	s.OnReasoningDelta = func(eventBytes []byte) (string, bool) {
 		var chunk struct {
 			Choices []struct {
