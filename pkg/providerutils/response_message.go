@@ -79,7 +79,9 @@ func ConvertToResponseMessages(toolCalls []types.ToolCall, content []types.Conte
 	}
 	if len(toolResults) > 0 {
 		for _, result := range toolResults {
-			if result.ProviderExecuted || seenToolResultIDs[result.ToolCallID] {
+			// A call awaiting user approval has no result yet: TS carries only
+			// the tool-approval-request part (in the assistant message).
+			if result.ProviderExecuted || seenToolResultIDs[result.ToolCallID] || result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				continue
 			}
 			seenToolResultIDs[result.ToolCallID] = true

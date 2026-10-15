@@ -1,0 +1,429 @@
+package ai
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
+)
+
+// The tests in this file replay scenarios from the TS test suite
+// (packages/ai/src/generate-text/stream-text.test.ts and generate-text.test.ts
+// at b658e8503c) through StreamText/GenerateText with the same mock-model
+// inputs, and compare against the expected parts, snapshots and callback order
+// the TS tests assert.
+
+// tsPartName renders a Go full-stream chunk as the TS part it corresponds to
+// ("type" or "type:detail"). Go-only lifecycle markers (response-metadata,
+// ai.stream.*) have no TS fullStream counterpart and render as "".
+func tsPartName(c *provider.StreamChunk) string {
+	switch c.Type {
+	case provider.ChunkTypeResponseMetadata, provider.ChunkTypeFirstChunk, provider.ChunkTypeStreamFinish:
+		return ""
+	case provider.ChunkTypeText:
+		return "text-delta:" + c.ID + ":" + c.Text
+	case provider.ChunkTypeReasoning:
+		return "reasoning-delta:" + c.ID + ":" + c.Text
+	case provider.ChunkTypeTextStart, provider.ChunkTypeTextEnd, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoningEnd:
+		return string(c.Type) + ":" + c.ID
+	case provider.ChunkTypeToolCall:
+		return "tool-call:" + c.ToolCall.ID + ":" + c.ToolCall.ToolName
+	case provider.ChunkTypeToolResult:
+		return "tool-result:" + c.ToolResult.ToolCallID + ":" + fmt.Sprint(c.ToolResult.Result)
+	case provider.ChunkTypeFinishStep:
+		return "finish-step:" + string(c.FinishReason)
+	case provider.ChunkTypeFinish:
+		return "finish:" + string(c.FinishReason)
+	default:
+		return string(c.Type)
+	}
+}
+
+func collectTSParts(t *testing.T, s provider.TextStream) []string {
+	t.Helper()
+	var parts []string
+	for {
+		c, err := s.Next()
+		if err == io.EOF {
+			return parts
+		}
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+		if name := tsPartName(c); name != "" {
+			parts = append(parts, name)
+		}
+	}
+}
+
+func usage(in, out int64) *types.Usage {
+	total := in + out
+	return &types.Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &total}
+}
+
+func tool1() types.Tool {
+	return types.Tool{
+		Name:       "tool1",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}, "additionalProperties": false},
+		Execute:    func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil },
+	}
+}
+
+// stream-text.test.ts describe('options.stopWhen') > '2 steps: initial,
+// tool-result'.
+func TestTSReplay_StreamText_TwoStepsToolResult(t *testing.T) {
+	n := 0
+	model := &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(ctx context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			n++
+			if n == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-0", ModelID: "mock-model-id"}},
+					{Type: provider.ChunkTypeReasoningStart, ID: "0"},
+					{Type: provider.ChunkTypeReasoning, ID: "0", Text: "thinking"},
+					{Type: provider.ChunkTypeReasoningEnd, ID: "0"},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(3, 10)},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "id-1", ModelID: "mock-model-id"}},
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, "},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "world!"},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: usage(3, 10)},
+			}), nil
+		},
+	}
+	var order []string
+	var finish OnFinishEvent
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "test-input", Tools: []types.Tool{tool1()}, StopWhen: []StopCondition{StepCountIs(3)},
+		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { order = append(order, fmt.Sprintf("step-end:%d", e.StepNumber)) },
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
+			order = append(order, "end")
+			finish = e
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectTSParts(t, result.FullStream())
+	want := []string{
+		"start", "start-step",
+		"reasoning-start:0", "reasoning-delta:0:thinking", "reasoning-end:0",
+		"tool-call:call-1:tool1", "tool-result:call-1:result1", "finish-step:tool-calls",
+		"start-step",
+		"text-start:1", "text-delta:1:Hello, ", "text-delta:1:world!", "text-end:1",
+		"finish-step:stop", "finish:stop",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fullStream parts\n got %q\nwant %q", got, want)
+	}
+
+	// Step inputs (TS 'should contain correct step inputs'): the second call
+	// replays the assistant reasoning + tool call and the tool result.
+	if len(model.StreamCalls) != 2 {
+		t.Fatalf("model calls = %d", len(model.StreamCalls))
+	}
+	msgs := model.StreamCalls[1].Prompt.Messages
+	if len(msgs) != 3 || msgs[0].Role != types.RoleUser || msgs[1].Role != types.RoleAssistant || msgs[2].Role != types.RoleTool {
+		t.Fatalf("step 2 prompt roles = %v", roles(msgs))
+	}
+	if k := contentKinds(msgs[1].Content); !reflect.DeepEqual(k, []string{"reasoning", "tool-call"}) {
+		t.Fatalf("assistant content = %v", k)
+	}
+	tr, ok := msgs[2].Content[0].(types.ToolResultContent)
+	if !ok || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "result1" {
+		t.Fatalf("tool message = %#v", msgs[2].Content[0])
+	}
+
+	// Callbacks (TS 'onFinish should send correct information').
+	if !reflect.DeepEqual(order, []string{"step-end:0", "step-end:1", "end"}) {
+		t.Fatalf("callback order = %v", order)
+	}
+	if k := contentKinds(finish.Content); !reflect.DeepEqual(k, []string{"reasoning", "tool-call", "other", "text"}) {
+		t.Fatalf("onEnd content = %v", k)
+	}
+	if len(finish.Reasoning) != 0 || finish.ReasoningText != "" {
+		t.Fatalf("onEnd reasoning must be the final step's: %v %q", finish.Reasoning, finish.ReasoningText)
+	}
+	if len(finish.StaticToolCalls) != 1 || len(finish.StaticToolResults) != 1 || len(finish.Steps) != 2 {
+		t.Fatalf("onEnd aggregates: calls=%d results=%d steps=%d", len(finish.StaticToolCalls), len(finish.StaticToolResults), len(finish.Steps))
+	}
+	if len(finish.ResponseMessages) != 3 || finish.FinalStep.StepNumber != 1 {
+		t.Fatalf("onEnd responseMessages=%d finalStep=%d", len(finish.ResponseMessages), finish.FinalStep.StepNumber)
+	}
+	if *finish.Usage.TotalTokens != 26 || *finish.TotalUsage.TotalTokens != 26 {
+		t.Fatalf("onEnd usage = %v / %v, want 26 (TS usage: totalUsage)", *finish.Usage.TotalTokens, *finish.TotalUsage.TotalTokens)
+	}
+	if result.Text() != "Hello, world!" {
+		t.Fatalf("text = %q", result.Text())
+	}
+	steps := result.Steps()
+	if steps[0].Response.ID != "id-0" || steps[1].Response.ID != "id-1" {
+		t.Fatalf("step response ids = %q %q", steps[0].Response.ID, steps[1].Response.ID)
+	}
+	if steps[0].FinishReason != types.FinishReasonToolCalls || steps[1].FinishReason != types.FinishReasonStop {
+		t.Fatalf("step finish reasons = %v %v", steps[0].FinishReason, steps[1].FinishReason)
+	}
+}
+
+func roles(msgs []types.Message) []string {
+	var out []string
+	for _, m := range msgs {
+		out = append(out, string(m.Role))
+	}
+	return out
+}
+
+var _ = strings.Join
+
+func approvalTool(executed *int) types.Tool {
+	t := tool1()
+	t.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		*executed++
+		return "result1", nil
+	}
+	return t
+}
+
+func helloModel(prompts *[][]types.Message) *testutil.MockLanguageModel {
+	return &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(ctx context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			if prompts != nil {
+				*prompts = append(*prompts, o.Prompt.Messages)
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello, world!"},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: usage(3, 10)},
+			}), nil
+		},
+		DoGenerateFunc: func(ctx context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+			if prompts != nil {
+				*prompts = append(*prompts, o.Prompt.Messages)
+			}
+			return &types.GenerateResult{Text: "Hello, world!", FinishReason: types.FinishReasonStop, Usage: *usage(3, 10)}, nil
+		},
+	}
+}
+
+func tsApprovalHistory(approved bool) []types.Message {
+	call := types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}
+	return []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "test-input"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			contentPartFromToolCall(call),
+			types.ToolApprovalRequestContent{ApprovalID: "id-1", ToolCallID: "call-1"},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolApprovalResponseContent{ApprovalID: "id-1", Approved: approved},
+		}},
+	}
+}
+
+// stream-text.test.ts 'when a single tool needs approval (user-defined)'.
+func TestTSReplay_StreamText_ToolNeedsApproval(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(ctx context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(3, 10)},
+			}), nil
+		},
+	}
+	executed := 0
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "test-input", Tools: []types.Tool{approvalTool(&executed)},
+		ToolApproval: map[string]interface{}{"tool1": "user-approval"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectTSParts(t, result.FullStream())
+	want := []string{"start", "start-step", "tool-call:call-1:tool1", "tool-approval-request", "finish-step:tool-calls", "finish:tool-calls"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fullStream\n got %q\nwant %q", got, want)
+	}
+	if executed != 0 {
+		t.Fatalf("tool executed %d times before approval", executed)
+	}
+	if k := contentKinds(result.Content()); len(k) != 2 || k[0] != "tool-call" {
+		t.Fatalf("content = %v, want [tool-call, tool-approval-request]", k)
+	}
+	if _, ok := result.Content()[1].(types.ToolApprovalRequestContent); !ok {
+		t.Fatalf("content[1] = %T", result.Content()[1])
+	}
+	msgs := result.ResponseMessages()
+	if len(msgs) != 1 || msgs[0].Role != types.RoleAssistant || len(msgs[0].Content) != 2 {
+		t.Fatalf("response messages = %#v", msgs)
+	}
+	if _, ok := msgs[0].Content[1].(types.ToolApprovalRequestContent); !ok {
+		t.Fatalf("assistant content[1] = %T, want approval request", msgs[0].Content[1])
+	}
+}
+
+// stream-text.test.ts 'when a call ... is approved': the tool runs before the
+// first step, its result is the first part after `start`, and the model sees
+// the tool result in the prompt.
+func TestTSReplay_StreamText_ApprovedCallExecutesBeforeFirstStep(t *testing.T) {
+	var prompts [][]types.Message
+	executed := 0
+	var prepareStepResponseMessages [][]types.Message
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: helloModel(&prompts), Messages: tsApprovalHistory(true), Tools: []types.Tool{approvalTool(&executed)},
+		ToolApproval: map[string]interface{}{"tool1": "user-approval"},
+		StopWhen:     []StopCondition{StepCountIs(3)},
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			prepareStepResponseMessages = append(prepareStepResponseMessages, o.ResponseMessages)
+			return o
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectTSParts(t, result.FullStream())
+	want := []string{
+		"start", "tool-result:call-1:result1", "start-step",
+		"text-start:1", "text-delta:1:Hello, world!", "text-end:1", "finish-step:stop", "finish:stop",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fullStream\n got %q\nwant %q", got, want)
+	}
+	if executed != 1 {
+		t.Fatalf("executed = %d", executed)
+	}
+	if len(prompts) != 1 || len(prompts[0]) != 3 || prompts[0][2].Role != types.RoleTool {
+		t.Fatalf("prompts = %v", prompts)
+	}
+	if k := contentKinds(prompts[0][1].Content); !reflect.DeepEqual(k, []string{"tool-call"}) {
+		t.Fatalf("assistant prompt content = %v (approval request must not be sent)", k)
+	}
+	tr := prompts[0][2].Content[0].(types.ToolResultContent)
+	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputText || tr.Output.Value != "result1" {
+		t.Fatalf("tool result = %#v", tr)
+	}
+	rm := result.ResponseMessages()
+	if len(rm) != 2 || rm[0].Role != types.RoleTool || rm[1].Role != types.RoleAssistant {
+		t.Fatalf("response messages roles = %v, want [tool assistant]", roles(rm))
+	}
+	if len(prepareStepResponseMessages) != 1 || len(prepareStepResponseMessages[0]) != 1 || prepareStepResponseMessages[0][0].Role != types.RoleTool {
+		t.Fatalf("prepareStep responseMessages = %v", prepareStepResponseMessages)
+	}
+}
+
+// stream-text.test.ts 'when a call ... is denied': the tool is not executed and
+// the prompt carries an execution-denied tool result; the full stream emits
+// tool-output-denied.
+func TestTSReplay_StreamText_DeniedCall(t *testing.T) {
+	var prompts [][]types.Message
+	executed := 0
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: helloModel(&prompts), Messages: tsApprovalHistory(false), Tools: []types.Tool{approvalTool(&executed)},
+		ToolApproval: map[string]interface{}{"tool1": "user-approval"},
+		StopWhen:     []StopCondition{StepCountIs(3)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectTSParts(t, result.FullStream())
+	want := []string{
+		"start", "tool-output-denied", "start-step",
+		"text-start:1", "text-delta:1:Hello, world!", "text-end:1", "finish-step:stop", "finish:stop",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fullStream\n got %q\nwant %q", got, want)
+	}
+	if executed != 0 {
+		t.Fatalf("denied tool executed")
+	}
+	tr := prompts[0][2].Content[0].(types.ToolResultContent)
+	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputExecutionDenied {
+		t.Fatalf("prompt tool result = %#v, want execution-denied", tr.Output)
+	}
+}
+
+// generate-text.test.ts approval scenarios through GenerateText.
+func TestTSReplay_GenerateText_Approvals(t *testing.T) {
+	t.Run("needs approval", func(t *testing.T) {
+		model := &testutil.MockLanguageModel{
+			DoGenerateFunc: func(ctx context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{
+					ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}},
+					FinishReason: types.FinishReasonToolCalls, Usage: *usage(3, 10),
+				}, nil
+			},
+		}
+		executed := 0
+		r, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: model, Prompt: "test-input", Tools: []types.Tool{approvalTool(&executed)},
+			ToolApproval: map[string]interface{}{"tool1": "user-approval"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if executed != 0 || len(r.Steps) != 1 {
+			t.Fatalf("executed=%d steps=%d", executed, len(r.Steps))
+		}
+		if k := contentKinds(r.Content); len(k) != 2 || k[0] != "tool-call" {
+			t.Fatalf("content = %v", k)
+		}
+		if _, ok := r.Content[1].(types.ToolApprovalRequestContent); !ok {
+			t.Fatalf("content[1] = %T", r.Content[1])
+		}
+		if len(r.ResponseMessages) != 1 || r.ResponseMessages[0].Role != types.RoleAssistant {
+			t.Fatalf("response messages = %v", roles(r.ResponseMessages))
+		}
+	})
+	t.Run("approved", func(t *testing.T) {
+		var prompts [][]types.Message
+		executed := 0
+		r, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: helloModel(&prompts), Messages: tsApprovalHistory(true), Tools: []types.Tool{approvalTool(&executed)},
+			ToolApproval: map[string]interface{}{"tool1": "user-approval"}, StopWhen: []StopCondition{StepCountIs(3)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if executed != 1 || r.Text != "Hello, world!" {
+			t.Fatalf("executed=%d text=%q", executed, r.Text)
+		}
+		if got := roles(r.ResponseMessages); !reflect.DeepEqual(got, []string{"tool", "assistant"}) {
+			t.Fatalf("response messages = %v", got)
+		}
+		tr := prompts[0][2].Content[0].(types.ToolResultContent)
+		if tr.Output == nil || tr.Output.Value != "result1" {
+			t.Fatalf("prompt tool result = %#v", tr)
+		}
+	})
+	t.Run("denied", func(t *testing.T) {
+		var prompts [][]types.Message
+		executed := 0
+		_, err := GenerateText(context.Background(), GenerateTextOptions{
+			Model: helloModel(&prompts), Messages: tsApprovalHistory(false), Tools: []types.Tool{approvalTool(&executed)},
+			ToolApproval: map[string]interface{}{"tool1": "user-approval"}, StopWhen: []StopCondition{StepCountIs(3)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if executed != 0 {
+			t.Fatal("denied tool executed")
+		}
+		tr := prompts[0][2].Content[0].(types.ToolResultContent)
+		if tr.Output == nil || tr.Output.Type != types.ToolResultOutputExecutionDenied {
+			t.Fatalf("prompt tool result = %#v", tr.Output)
+		}
+	})
+}

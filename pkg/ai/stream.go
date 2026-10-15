@@ -137,8 +137,8 @@ type StreamTextOptions struct {
 	Reasoning *types.ReasoningLevel
 
 	// SendReasoning controls whether reasoning/thinking boundary chunks are
-	// exposed to OnChunk. nil and false suppress reasoning-start/end, matching
-	// the TypeScript SDK default.
+	// exposed to OnChunk and Stream(). nil (the default) keeps them, as TS
+	// fullStream does; an explicit false suppresses reasoning-start/end.
 	SendReasoning *bool
 
 	// ProviderOptions allows passing provider-specific options
@@ -4208,8 +4208,12 @@ func isAbortErr(ctx context.Context, err error) bool {
 	return ctx != nil && ctx.Err() != nil
 }
 
+// shouldSuppressReasoningBoundaries reports whether reasoning-start/end are
+// dropped from the stream. TS fullStream always carries them (its sendReasoning
+// is a UI-message-stream option that defaults to true), so only an explicit
+// false suppresses them.
 func shouldSuppressReasoningBoundaries(sendReasoning *bool) bool {
-	return sendReasoning == nil || !*sendReasoning
+	return sendReasoning != nil && !*sendReasoning
 }
 
 func includedRequestMessages(include bool, messages []types.Message) []types.Message {

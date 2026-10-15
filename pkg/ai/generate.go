@@ -320,8 +320,8 @@ type GenerateTextOptions struct {
 	Reasoning *types.ReasoningLevel
 
 	// SendReasoning controls whether reasoning/thinking stream boundary chunks
-	// are exposed to callbacks. nil and false suppress reasoning-start/end,
-	// matching the TypeScript SDK default.
+	// are exposed to callbacks. nil (the default) keeps them, as TS does; an
+	// explicit false suppresses reasoning-start/end.
 	SendReasoning *bool
 
 	// ========================================================================
