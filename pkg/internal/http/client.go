@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -171,6 +172,22 @@ func (e *HTTPStatusError) Error() string {
 		return "HTTP <nil>"
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, string(e.Body))
+}
+
+// HTTPStatusDetails implements providererrors.HTTPStatusDetails so
+// providererrors.NewProviderError can lift the status code, headers and body
+// out of the cause chain.
+func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
+	if e == nil {
+		return 0, nil, nil
+	}
+	headers := make(map[string]string, len(e.Headers))
+	for k, v := range e.Headers {
+		if len(v) > 0 {
+			headers[strings.ToLower(k)] = v[0]
+		}
+	}
+	return e.StatusCode, headers, e.Body
 }
 
 // snapshot returns a point-in-time copy of the mutable client state (base
