@@ -210,6 +210,9 @@ type ServerCapabilities struct {
 	Prompts     *PromptsCapability     `json:"prompts,omitempty"`
 	Resources   *ResourcesCapability   `json:"resources,omitempty"`
 	Tools       *ToolsCapability       `json:"tools,omitempty"`
+	// Elicitation advertises support for elicitation requests (TS
+	// ServerCapabilities.elicitation, e.g. applyDefaults).
+	Elicitation map[string]interface{} `json:"elicitation,omitempty"`
 }
 
 // EventsCapability represents the experimental events capability.

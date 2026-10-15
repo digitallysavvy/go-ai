@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // toJSONPayload JSON-encodes a Go value produced outside the sandbox (a
@@ -96,7 +98,9 @@ func marshalJSCompatible(value interface{}) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := json.Marshal(converted)
+	// jsonstr: JSON.stringify text, so the byte-size limit counts '<', '>' and
+	// '&' as one byte, not as a six-byte escape.
+	data, err := jsonstr.Marshal(converted)
 	if err != nil {
 		return "", err
 	}

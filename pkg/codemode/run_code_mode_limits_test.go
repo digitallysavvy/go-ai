@@ -63,3 +63,11 @@ func TestCanonicalJSONWritesLineSeparatorsRaw(t *testing.T) {
 		t.Fatalf("canonicalJSON = %q, %v", got, err)
 	}
 }
+
+// TS measures JSON.stringify text: '<', '>' and '&' are one byte each.
+func TestToJSONPayloadCountsHTMLCharactersAsOneByte(t *testing.T) {
+	got, err := toJSONPayload("<>&", 5, "Tool output")
+	if err != nil || got != `"<>&"` {
+		t.Fatalf("payload = %q, %v", got, err)
+	}
+}
