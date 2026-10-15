@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 // ProtocolVersion is the legacy MCP protocol version this client advertises
@@ -96,6 +98,11 @@ type MCPTool struct {
 	Meta         map[string]interface{} `json:"_meta,omitempty"`
 
 	titlePresent bool
+	// inputSchemaHint is the inputSchema as the server sent it, with its key
+	// order (a Go map has none). ToolFromMCP wraps the schema in
+	// jsonorder.Hinted with it, so the schema reaches the model in the
+	// server's key order, like TS (a JS object keeps insertion order).
+	inputSchemaHint interface{}
 }
 
 func (t *MCPTool) UnmarshalJSON(data []byte) error {
@@ -126,6 +133,11 @@ func (t *MCPTool) UnmarshalJSON(data []byte) error {
 		Meta:         out.Meta,
 	}
 	_, t.titlePresent = raw["title"]
+	if rawSchema, ok := raw["inputSchema"]; ok {
+		if hint, ok := jsonorder.Parse(rawSchema); ok {
+			t.inputSchemaHint = hint
+		}
+	}
 	return nil
 }
 

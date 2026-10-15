@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -114,6 +115,13 @@ func fingerprintInputSchema(parameters interface{}) (interface{}, error) {
 		}, nil
 	case map[string]interface{}:
 		return p, nil
+	case jsonorder.Hinted, *jsonorder.Hinted:
+		// MCP tools carry their server schema as a Hinted map; the digest sorts
+		// keys, so the order hint is irrelevant here.
+		if m, ok := schema.ParametersMap(p); ok {
+			return m, nil
+		}
+		return nil, fmt.Errorf("unsupported tool input schema type %T", parameters)
 	case interface{ JSONSchema() map[string]interface{} }:
 		return p.JSONSchema(), nil
 	case schema.Schema:

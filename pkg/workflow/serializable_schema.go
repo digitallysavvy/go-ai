@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -65,6 +66,97 @@ type SerializableToolDef struct {
 	// Schema. ValidateSerializableToolInput defers to that original validator
 	// instead of re-validating the lossy JSON Schema copy (TS #22397).
 	HasOwnValidator bool `json:"hasOwnValidator,omitempty"`
+
+	// parametersHint and inputSchemaHint hold the key order of the schema the
+	// definition was made from (or decoded from), which the map fields cannot
+	// keep. They survive MarshalJSON/UnmarshalJSON and ResolveSerializableTools,
+	// so an MCP tool's schema keeps the server's key order across a durable
+	// boundary, like TS (JSON text keeps its order).
+	parametersHint  interface{}
+	inputSchemaHint interface{}
+}
+
+// serializableToolDefJSON has the fields of SerializableToolDef and no methods,
+// so MarshalJSON and UnmarshalJSON can reuse the struct's own encoding.
+type serializableToolDefJSON SerializableToolDef
+
+// MarshalJSON writes the definition with its schemas in their source key order.
+func (d SerializableToolDef) MarshalJSON() ([]byte, error) {
+	if d.parametersHint == nil && d.inputSchemaHint == nil {
+		return json.Marshal(serializableToolDefJSON(d))
+	}
+	aux := struct {
+		serializableToolDefJSON
+		Parameters  json.RawMessage `json:"parameters,omitempty"`
+		InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+	}{serializableToolDefJSON: serializableToolDefJSON(d)}
+	var err error
+	if aux.Parameters, err = marshalOrdered(d.Parameters, d.parametersHint); err != nil {
+		return nil, err
+	}
+	if aux.InputSchema, err = marshalOrdered(d.InputSchema, d.inputSchemaHint); err != nil {
+		return nil, err
+	}
+	return json.Marshal(aux)
+}
+
+func marshalOrdered(m map[string]interface{}, hint interface{}) (json.RawMessage, error) {
+	if m == nil {
+		return nil, nil
+	}
+	if hint == nil {
+		return json.Marshal(m)
+	}
+	return jsonorder.Hinted{V: m, Hint: hint}.MarshalJSON()
+}
+
+// UnmarshalJSON reads the definition and remembers the key order of its
+// schemas.
+func (d *SerializableToolDef) UnmarshalJSON(data []byte) error {
+	if err := json.Unmarshal(data, (*serializableToolDefJSON)(d)); err != nil {
+		return err
+	}
+	var raw struct {
+		Parameters  json.RawMessage `json:"parameters"`
+		InputSchema json.RawMessage `json:"inputSchema"`
+	}
+	d.parametersHint, d.inputSchemaHint = nil, nil
+	if json.Unmarshal(data, &raw) == nil {
+		d.parametersHint = parseOrderHint(raw.Parameters)
+		d.inputSchemaHint = parseOrderHint(raw.InputSchema)
+	}
+	return nil
+}
+
+func parseOrderHint(raw []byte) interface{} {
+	if len(raw) == 0 {
+		return nil
+	}
+	if v, ok := jsonorder.Parse(raw); ok {
+		if o, isObj := v.(*jsonorder.Object); isObj {
+			return o
+		}
+	}
+	return nil
+}
+
+// toolParametersHint is the key order of a tool's Parameters when it carries
+// one (jsonorder.Hinted from an MCP server, or an *schema.OrderedSchema).
+func toolParametersHint(parameters interface{}) interface{} {
+	var raw []byte
+	switch p := parameters.(type) {
+	case jsonorder.Hinted:
+		raw, _ = p.MarshalJSON() //nolint:errcheck // no hint on failure
+	case *jsonorder.Hinted:
+		if p != nil {
+			raw, _ = p.MarshalJSON() //nolint:errcheck // no hint on failure
+		}
+	case *schema.OrderedSchema:
+		if p != nil {
+			raw, _ = p.MarshalJSON() //nolint:errcheck // no hint on failure
+		}
+	}
+	return parseOrderHint(raw)
 }
 
 // SerializeToolSet converts tools to a JSON-safe map keyed by tool name.
@@ -78,6 +170,7 @@ func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error
 		if err != nil {
 			return nil, err
 		}
+		hint := toolParametersHint(tool.Parameters)
 		def := SerializableToolDef{
 			Name:                    tool.Name,
 			Description:             tool.Description,
@@ -91,6 +184,8 @@ func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error
 			InputExamples:           tool.InputExamples,
 			ProviderMetadata:        tool.ProviderMetadata,
 			HasOwnValidator:         hasOwnValidator,
+			parametersHint:          hint,
+			inputSchemaHint:         hint,
 		}
 		if tool.ProviderExecuted {
 			def.Type = "provider"
@@ -115,6 +210,11 @@ func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error
 // Schema validator (for example a struct-based validator).
 func serializeToolParameters(parameters interface{}) (map[string]interface{}, bool, error) {
 	if s, ok := parameters.(schema.Schema); ok && s != nil {
+		if o, isOrdered := s.(*schema.OrderedSchema); isOrdered {
+			// Plain JSON Schema that only keeps its key order: no own validator.
+			params, err := MarshalSchema(o)
+			return params, false, err
+		}
 		if v := s.Validator(); v != nil {
 			params, err := MarshalSchema(v.JSONSchema())
 			_, plainJSON := v.(*schema.JSONSchemaValidator)
@@ -148,14 +248,20 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 			toolName = name
 		}
 		params := def.Parameters
+		hint := def.parametersHint
 		if params == nil {
 			params = def.InputSchema
+			hint = def.inputSchemaHint
+		}
+		var parameters interface{} = params
+		if hint != nil && params != nil {
+			parameters = jsonorder.Hinted{V: params, Hint: hint}
 		}
 		tools = append(tools, types.Tool{
 			Name:                    toolName,
 			Description:             def.Description,
 			Title:                   def.Title,
-			Parameters:              params,
+			Parameters:              parameters,
 			Strict:                  def.Strict,
 			ProviderExecuted:        def.ProviderExecuted || def.IsProviderExecuted || def.Type == "provider",
 			SupportsDeferredResults: def.SupportsDeferredResults,

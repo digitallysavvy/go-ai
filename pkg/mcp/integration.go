@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -108,7 +109,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 		mcpMetadata["app"] = app
 	}
 	providerMetadata := map[string]interface{}{"mcp": mcpMetadata}
-	parameters := interface{}(normalizeAutomaticMCPInputSchema(mcpTool.InputSchema))
+	parameters := automaticMCPParameters(mcpTool)
 	var outputSchema schema.Schema
 	toolType := types.ToolTypeDynamic
 	if toolSchema != nil {
@@ -190,6 +191,31 @@ func extractMCPToolAnnotations(annotations map[string]interface{}) map[string]in
 		}
 	}
 	return out
+}
+
+// automaticMCPParameters is the tool's Parameters for a tool converted with no
+// explicit schema: the server's inputSchema, normalized. The schema carries the
+// key order the server sent (jsonorder.Hinted), as TS spreads the JS object
+// `{...inputSchema, properties: inputSchema.properties ?? {},
+// additionalProperties: false}`: the server's keys in order, then
+// `properties` and `additionalProperties` if the server did not send them.
+func automaticMCPParameters(mcpTool MCPTool) interface{} {
+	normalized := normalizeAutomaticMCPInputSchema(mcpTool.InputSchema)
+	hint, ok := mcpTool.inputSchemaHint.(*jsonorder.Object)
+	if !ok {
+		return normalized
+	}
+	ordered := jsonorder.New()
+	for _, k := range hint.Keys() {
+		v, _ := hint.Get(k)
+		ordered.Set(k, v)
+	}
+	for _, k := range []string{"properties", "additionalProperties"} {
+		if _, has := ordered.Get(k); !has {
+			ordered.Set(k, nil)
+		}
+	}
+	return jsonorder.Hinted{V: normalized, Hint: ordered}
 }
 
 func normalizeAutomaticMCPInputSchema(input map[string]interface{}) map[string]interface{} {

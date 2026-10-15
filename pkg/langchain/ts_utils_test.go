@@ -53,8 +53,11 @@ func TestTSConvertAssistantContent(t *testing.T) {
 		t.Fatalf("mixed: %#v", got)
 	}
 	got = convertAssistantContent([]types.ContentPart{types.TextContent{Text: "Just text"}})
-	if c, _ := got["tool_calls"].([]interface{}); len(c) != 0 {
-		t.Fatalf("no tool calls expected: %#v", got)
+	// langchain-core AIMessage.toDict().data always has both arrays.
+	c, ok := got["tool_calls"].([]interface{})
+	inv, ok2 := got["invalid_tool_calls"].([]interface{})
+	if !ok || len(c) != 0 || !ok2 || len(inv) != 0 {
+		t.Fatalf("want empty tool_calls and invalid_tool_calls: %#v", got)
 	}
 }
 
