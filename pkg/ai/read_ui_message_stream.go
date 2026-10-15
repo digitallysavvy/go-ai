@@ -69,6 +69,9 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 				if !ok {
 					return
 				}
+				// TS reset-step writes a snapshot only when it removed parts.
+				emptyReset := stringValue(chunk["type"]) == "reset-step" &&
+					currentStepStartIndex(uiParts(state.message)) >= len(uiParts(state.message))
 				var processingErr error
 				state.apply(chunk, func(err error) string {
 					if processingErr == nil {
@@ -92,7 +95,7 @@ func ReadUIMessages(ctx context.Context, opts ReadUIMessagesOptions) (<-chan UIM
 					}
 					continue
 				}
-				if !uiChunkWritesMessage(chunk) {
+				if emptyReset || !uiChunkWritesMessage(chunk) {
 					continue
 				}
 				snapshot, err := UIMessageFromChunk(state.responseMessage())

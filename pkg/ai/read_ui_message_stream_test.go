@@ -465,3 +465,16 @@ func uiPartText(p UIMessagePart) string {
 	}
 	return ""
 }
+
+func TestReadUIMessages_ResetStepWritesOnlyWhenPartsRemoved(t *testing.T) {
+	got, err := sendChunks(t, nil, []UIMessageChunk{
+		{"type": "start", "messageId": "m1"},
+		{"type": "start-step"},
+		{"type": "reset-step"}, // nothing since the step start: no snapshot
+		{"type": "text-start", "id": "t1"},
+		{"type": "reset-step"}, // removes the text part: snapshot
+	})
+	require.NoError(t, err)
+	// start (messageId), text-start, reset-step with removed parts.
+	assert.Len(t, got, 3)
+}
