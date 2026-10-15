@@ -1,0 +1,548 @@
+package acp
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"reflect"
+	"regexp"
+	"strings"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
+
+var placeholderRE = regexp.MustCompile(`^aisdkhc_[A-Za-z0-9_-]{43}$`)
+
+// plainSandbox is a fakeSandbox that does not support additive request
+// transformations (TS `fakeSandbox` without `addRequestTransformations`).
+type plainSandbox struct{ f *fakeSandbox }
+
+func (p plainSandbox) Description() string { return p.f.Description() }
+func (p plainSandbox) Run(ctx context.Context, o providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+	return p.f.Run(ctx, o)
+}
+func (p plainSandbox) Spawn(ctx context.Context, o providerutils.SandboxProcessOptions) (providerutils.SandboxProcess, error) {
+	return p.f.Spawn(ctx, o)
+}
+func (p plainSandbox) ReadFile(ctx context.Context, path string) (io.ReadCloser, error) {
+	return p.f.ReadFile(ctx, path)
+}
+func (p plainSandbox) ReadBinaryFile(ctx context.Context, path string) ([]byte, error) {
+	return p.f.ReadBinaryFile(ctx, path)
+}
+func (p plainSandbox) ReadTextFile(ctx context.Context, o providerutils.SandboxReadTextFileOptions) (*string, error) {
+	return p.f.ReadTextFile(ctx, o)
+}
+func (p plainSandbox) WriteFile(ctx context.Context, path string, r io.Reader) error {
+	return p.f.WriteFile(ctx, path, r)
+}
+func (p plainSandbox) WriteBinaryFile(ctx context.Context, path string, b []byte) error {
+	return p.f.WriteBinaryFile(ctx, path, b)
+}
+func (p plainSandbox) WriteTextFile(ctx context.Context, o providerutils.SandboxWriteTextFileOptions) error {
+	return p.f.WriteTextFile(ctx, o)
+}
+func (p plainSandbox) ID() string                      { return p.f.ID() }
+func (p plainSandbox) DefaultWorkingDirectory() string { return p.f.DefaultWorkingDirectory() }
+func (p plainSandbox) Ports() []int                    { return p.f.Ports() }
+func (p plainSandbox) GetPortEndpoint(ctx context.Context, o harness.PortEndpointOptions) (harness.PortEndpoint, error) {
+	return p.f.GetPortEndpoint(ctx, o)
+}
+func (p plainSandbox) GetPortURL(ctx context.Context, o harness.PortEndpointOptions) (string, error) {
+	return p.f.GetPortURL(ctx, o)
+}
+func (p plainSandbox) Stop(ctx context.Context) error          { return p.f.Stop(ctx) }
+func (p plainSandbox) Destroy(ctx context.Context) error       { return p.f.Destroy(ctx) }
+func (p plainSandbox) Restricted() providerutils.SandboxSession { return p }
+
+var _ harness.NetworkSandboxSession = plainSandbox{}
+
+func replaySandbox(t *testing.T, token string) *fakeSandbox {
+	t.Helper()
+	srv := bridgetest.NewServer(bridgetest.Options{Token: token})
+	t.Cleanup(srv.Close)
+	return newFakeSandbox(srv)
+}
+
+func bearerTransformation(host, pathPrefix, sandboxValue, hostValue string) harness.RequestTransformation {
+	m := harness.RequestTransformationMatch{
+		Host:    host,
+		Headers: []harness.KeyValueMatcher{{Key: &harness.StringMatcher{Exact: "Authorization"}, Value: &harness.StringMatcher{Exact: "Bearer " + sandboxValue}}},
+	}
+	if pathPrefix != "" {
+		m.Path = &harness.StringMatcher{StartsWith: pathPrefix}
+	}
+	return harness.RequestTransformation{Match: m, Transform: harness.RequestTransformationTransform{Headers: map[string]string{"Authorization": "Bearer " + hostValue}}}
+}
+
+// TS 'brokers host-resolved direct credentials before launching the sandbox bridge'.
+func TestTSReplay_BrokersHostResolvedDirectCredentials(t *testing.T) {
+	t.Setenv("HOST_PROVIDER_BASE_URL", "https://host-provider.example/v1")
+	sandbox := replaySandbox(t, "tok")
+	var gotEnv, gotSandboxEnv map[string]string
+	var forwarded []harness.CredentialForwardingOptions
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.ForwardEnv = []string{"PROVIDER_BASE_URL", "HOST_PROVIDER_BASE_URL"}
+		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+		s.Env = map[string]string{"STATIC_SETTING": "literal-value"}
+		s.ResolveAuthenticationEnvironment = func(context.Context, harness.Authentication, map[string]string) (map[string]string, error) {
+			return map[string]string{"PROVIDER_API_KEY": "direct-secret", "PROVIDER_BASE_URL": "https://provider.example/v1"}, nil
+		}
+		s.CredentialForwarding = func(_ context.Context, o harness.CredentialForwardingOptions) (string, error) {
+			forwarded = append(forwarded, o)
+			return "ephemeral-" + o.EnvironmentVariableName, nil
+		}
+		s.CredentialBrokering = func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
+			gotEnv, gotSandboxEnv = env, sandboxEnv
+			if sandboxEnv["PROVIDER_API_KEY"] == "" {
+				return nil
+			}
+			return []harness.RequestTransformation{bearerTransformation("provider.example", "/v1", sandboxEnv["PROVIDER_API_KEY"], env["PROVIDER_API_KEY"])}
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	wantEnv := map[string]string{"PROVIDER_API_KEY": "direct-secret", "PROVIDER_BASE_URL": "https://provider.example/v1", "HOST_PROVIDER_BASE_URL": "https://host-provider.example/v1", "STATIC_SETTING": "literal-value"}
+	wantSandbox := map[string]string{"PROVIDER_API_KEY": "ephemeral-PROVIDER_API_KEY", "PROVIDER_BASE_URL": "https://provider.example/v1", "HOST_PROVIDER_BASE_URL": "https://host-provider.example/v1", "STATIC_SETTING": "literal-value"}
+	if !reflect.DeepEqual(gotEnv, wantEnv) || !reflect.DeepEqual(gotSandboxEnv, wantSandbox) {
+		t.Fatalf("brokering env = %v, sandboxEnv = %v", gotEnv, gotSandboxEnv)
+	}
+	want := bearerTransformation("provider.example", "/v1", "ephemeral-PROVIDER_API_KEY", "direct-secret")
+	if len(sandbox.addReqTrans) != 1 || !reflect.DeepEqual(sandbox.addReqTrans[0], []harness.RequestTransformation{want}) {
+		t.Fatalf("transformations = %+v", sandbox.addReqTrans)
+	}
+	if len(forwarded) != 1 || forwarded[0].EnvironmentVariableName != "PROVIDER_API_KEY" || !placeholderRE.MatchString(forwarded[0].Credential) {
+		t.Fatalf("forwarded = %+v", forwarded)
+	}
+	env := sandbox.spawnEnvs[0]
+	for k, v := range wantSandbox {
+		if env[k] != v {
+			t.Errorf("spawn env %s = %q, want %q", k, env[k], v)
+		}
+	}
+	if b, _ := json.Marshal(env); strings.Contains(string(b), "direct-secret") {
+		t.Errorf("spawn env leaked: %s", b)
+	}
+}
+
+// TS 'materializes private authentication files with brokered credentials'.
+func TestTSReplay_AuthenticationFilesWithBrokeredCredentials(t *testing.T) {
+	t.Setenv("PROVIDER_API_KEY", "host-secret")
+	sandbox := replaySandbox(t, "tok")
+	var calls int
+	var gotEnv, gotSandboxEnv map[string]string
+	var gotBrokered bool
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+		s.CredentialBrokering = func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation { return nil }
+		s.CredentialForwarding = func(context.Context, harness.CredentialForwardingOptions) (string, error) {
+			return "sandbox-secret", nil
+		}
+		s.AuthenticationFiles = func(env, sandboxEnv map[string]string, brokered bool) []AuthenticationFile {
+			calls++
+			gotEnv, gotSandboxEnv, gotBrokered = env, sandboxEnv, brokered
+			b, _ := json.Marshal(map[string]string{"token": sandboxEnv["PROVIDER_API_KEY"]})
+			return []AuthenticationFile{{Path: ".config/provider/auth.json", Content: string(b)}}
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	if calls != 1 || gotEnv["PROVIDER_API_KEY"] != "host-secret" || gotSandboxEnv["PROVIDER_API_KEY"] != "sandbox-secret" || !gotBrokered {
+		t.Fatalf("authenticationFiles called %d times with env=%v sandboxEnv=%v brokered=%v", calls, gotEnv, gotSandboxEnv, gotBrokered)
+	}
+	if got := sandbox.files["/home/vercel-sandbox/.config/provider/auth.json"]; got != `{"token":"sandbox-secret"}` {
+		t.Fatalf("files = %v", sandbox.files)
+	}
+	foundChmod := false
+	for _, r := range sandbox.runs {
+		if r == "chmod 600 -- '/home/vercel-sandbox/.config/provider/auth.json'" {
+			foundChmod = true
+		}
+	}
+	if !foundChmod {
+		t.Fatalf("runs = %q", sandbox.runs)
+	}
+	for _, c := range sandbox.files {
+		if strings.Contains(c, "host-secret") {
+			t.Fatalf("a file contains the host secret: %s", c)
+		}
+	}
+}
+
+// TS 'uses resolved Gateway profile values for brokering without serializing the credential'.
+func TestTSReplay_GatewayProfileBrokering(t *testing.T) {
+	t.Setenv("PROVIDER_API_KEY", "direct-secret")
+	t.Setenv("AI_GATEWAY_API_KEY", "gateway-secret")
+	t.Setenv("AI_GATEWAY_BASE_URL", "https://gateway.example")
+	sandbox := replaySandbox(t, "tok")
+	var gotEnv, gotSandboxEnv, gotHeaders map[string]string
+	var forwarded []harness.CredentialForwardingOptions
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.HarnessID = "gateway-brokered-acp"
+		s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
+		s.ForwardEnv = nil
+		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+		s.ProviderAuthentication = &ProviderAuthentication{GatewayEnv: map[string]any{
+			"PROVIDER_API_KEY":  map[string]any{"$source": "gateway-api-key"},
+			"PROVIDER_BASE_URL": map[string]any{"$source": "gateway-base-url", "ensureSuffix": "/v1"},
+		}}
+		s.CredentialForwarding = func(_ context.Context, o harness.CredentialForwardingOptions) (string, error) {
+			forwarded = append(forwarded, o)
+			return "ephemeral-" + o.EnvironmentVariableName, nil
+		}
+		s.CredentialBrokering = func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
+			gotEnv, gotSandboxEnv, gotHeaders = env, sandboxEnv, headers
+			if sandboxEnv["PROVIDER_API_KEY"] == "" {
+				return nil
+			}
+			return []harness.RequestTransformation{bearerTransformation("gateway.example", "/v1", sandboxEnv["PROVIDER_API_KEY"], env["PROVIDER_API_KEY"])}
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project", Headers: map[string]string{"x-tenant": "acme"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	if !reflect.DeepEqual(gotEnv, map[string]string{"PROVIDER_API_KEY": "gateway-secret", "PROVIDER_BASE_URL": "https://gateway.example/v1"}) ||
+		!reflect.DeepEqual(gotSandboxEnv, map[string]string{"PROVIDER_API_KEY": "ephemeral-PROVIDER_API_KEY", "PROVIDER_BASE_URL": "https://gateway.example/v1"}) ||
+		!reflect.DeepEqual(gotHeaders, map[string]string{"x-tenant": "acme"}) {
+		t.Fatalf("env=%v sandboxEnv=%v headers=%v", gotEnv, gotSandboxEnv, gotHeaders)
+	}
+	want := bearerTransformation("gateway.example", "/v1", "ephemeral-PROVIDER_API_KEY", "gateway-secret")
+	if len(sandbox.addReqTrans) != 1 || !reflect.DeepEqual(sandbox.addReqTrans[0], []harness.RequestTransformation{want}) {
+		t.Fatalf("transformations = %+v", sandbox.addReqTrans)
+	}
+	env := sandbox.spawnEnvs[0]
+	if env["PROVIDER_API_KEY"] != "ephemeral-PROVIDER_API_KEY" || env["PROVIDER_BASE_URL"] != "https://gateway.example/v1" {
+		t.Fatalf("spawn env = %v", env)
+	}
+	if _, ok := env["AI_SDK_ACP_GATEWAY_API_KEY"]; ok {
+		t.Error("gateway api key env var must be withheld")
+	}
+	if b, _ := json.Marshal(env); strings.Contains(string(b), "gateway-secret") {
+		t.Errorf("spawn env leaked: %s", b)
+	}
+	cfg := bridgeConfig(t, env)
+	if pe, ok := cfg["providerEnvironment"].(map[string]any); !ok || len(pe) != 0 || cfg["providerAuthentication"].(map[string]any)["type"] != "ai-gateway" {
+		t.Errorf("bridge configuration = %v", cfg)
+	}
+	if len(forwarded) != 1 || forwarded[0].EnvironmentVariableName != "PROVIDER_API_KEY" || !placeholderRE.MatchString(forwarded[0].Credential) {
+		t.Errorf("forwarded = %+v", forwarded)
+	}
+}
+
+// TS 'uses the exposed environment variable name for brokered Gateway credentials'.
+func TestTSReplay_GatewayCredentialUsesExposedVariableName(t *testing.T) {
+	t.Setenv("AI_GATEWAY_API_KEY", "gateway-secret")
+	sandbox := replaySandbox(t, "tok")
+	var gotEnv, gotSandboxEnv map[string]string
+	var forwarded []harness.CredentialForwardingOptions
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.HarnessID = "renamed-gateway-credential-acp"
+		s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
+		s.ForwardEnv = nil
+		s.CredentialEnv = []string{}
+		s.ProviderAuthentication = &ProviderAuthentication{GatewayEnv: map[string]any{"RUNTIME_PROVIDER_API_KEY": map[string]any{"$source": "gateway-api-key"}}}
+		s.CredentialForwarding = func(_ context.Context, o harness.CredentialForwardingOptions) (string, error) {
+			forwarded = append(forwarded, o)
+			return o.Credential, nil
+		}
+		s.CredentialBrokering = func(env, sandboxEnv, headers map[string]string) []harness.RequestTransformation {
+			gotEnv, gotSandboxEnv = env, sandboxEnv
+			if sandboxEnv["RUNTIME_PROVIDER_API_KEY"] == "" {
+				return nil
+			}
+			return []harness.RequestTransformation{bearerTransformation("gateway.example", "", sandboxEnv["RUNTIME_PROVIDER_API_KEY"], env["RUNTIME_PROVIDER_API_KEY"])}
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	placeholder := gotSandboxEnv["RUNTIME_PROVIDER_API_KEY"]
+	if !placeholderRE.MatchString(placeholder) || !reflect.DeepEqual(gotEnv, map[string]string{"RUNTIME_PROVIDER_API_KEY": "gateway-secret"}) {
+		t.Fatalf("env=%v sandboxEnv=%v", gotEnv, gotSandboxEnv)
+	}
+	if len(forwarded) != 1 || forwarded[0].Credential != placeholder || forwarded[0].EnvironmentVariableName != "RUNTIME_PROVIDER_API_KEY" {
+		t.Fatalf("forwarded = %+v", forwarded)
+	}
+	want := bearerTransformation("gateway.example", "", placeholder, "gateway-secret")
+	if len(sandbox.addReqTrans) != 1 || !reflect.DeepEqual(sandbox.addReqTrans[0], []harness.RequestTransformation{want}) {
+		t.Fatalf("transformations = %+v", sandbox.addReqTrans)
+	}
+	env := sandbox.spawnEnvs[0]
+	if env["RUNTIME_PROVIDER_API_KEY"] != placeholder {
+		t.Errorf("spawn env = %v", env)
+	}
+	if b, _ := json.Marshal(env); strings.Contains(string(b), "gateway-secret") {
+		t.Errorf("spawn env leaked: %s", b)
+	}
+}
+
+// TS 'persists sandbox credentials and reinstalls the same matchers across process resumes'.
+func TestTSReplay_PersistsSandboxCredentialsAcrossResumes(t *testing.T) {
+	t.Setenv("PROVIDER_API_KEY", "direct-secret")
+	sandbox := replaySandbox(t, "tok")
+	create := func() harness.Harness {
+		h, err := CreateACP(testSettings(func(s *Settings) {
+			s.MintBridgeToken = func(string) string { return "tok" }
+			s.HarnessID = "resumable-brokered-acp"
+			s.ForwardEnv = nil
+			s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+			s.CredentialBrokering = func(env, sandboxEnv, _ map[string]string) []harness.RequestTransformation {
+				if sandboxEnv["PROVIDER_API_KEY"] == "" {
+					return nil
+				}
+				return []harness.RequestTransformation{bearerTransformation("provider.example", "", sandboxEnv["PROVIDER_API_KEY"], env["PROVIDER_API_KEY"])}
+			}
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	first, err := create().DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume, err := first.DoDetach(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data struct {
+		SandboxCredentialEnvironment map[string]string `json:"sandboxCredentialEnvironment"`
+	}
+	_ = json.Unmarshal(resume.Data, &data)
+	persisted := data.SandboxCredentialEnvironment["PROVIDER_API_KEY"]
+	if !placeholderRE.MatchString(persisted) || sandbox.spawnEnvs[0]["PROVIDER_API_KEY"] != persisted {
+		t.Fatalf("persisted = %q, spawn env = %v", persisted, sandbox.spawnEnvs[0])
+	}
+	if strings.Contains(string(resume.Data), "direct-secret") {
+		t.Fatalf("resume state leaked the secret: %s", resume.Data)
+	}
+	var roundTrip harness.ResumeSessionState
+	b, _ := json.Marshal(resume)
+	if err := json.Unmarshal(b, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := create().DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project", ResumeFrom: &roundTrip})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumed.DoDestroy(context.Background()) })
+	if len(sandbox.spawnCommands) != 1 {
+		t.Fatalf("spawns = %d, want 1 (attach)", len(sandbox.spawnCommands))
+	}
+	if len(sandbox.addReqTrans) != 2 || !reflect.DeepEqual(sandbox.addReqTrans[0], sandbox.addReqTrans[1]) {
+		t.Fatalf("transformations = %+v", sandbox.addReqTrans)
+	}
+	want := bearerTransformation("provider.example", "", persisted, "direct-secret")
+	if !reflect.DeepEqual(sandbox.addReqTrans[1], []harness.RequestTransformation{want}) {
+		t.Fatalf("transformations[1] = %+v", sandbox.addReqTrans[1])
+	}
+}
+
+// TS 'preserves real credential forwarding when additive transformations are unavailable'.
+func TestTSReplay_RealForwardingWithoutAdditiveTransformations(t *testing.T) {
+	t.Setenv("PROVIDER_API_KEY", "legacy-secret")
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	t.Cleanup(srv.Close)
+	sandbox := newFakeSandbox(srv)
+	called := false
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.ForwardEnv = nil
+		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+		s.CredentialBrokering = func(env, sandboxEnv, _ map[string]string) []harness.RequestTransformation {
+			called = true
+			return nil
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: plainSandbox{sandbox}, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	if called {
+		t.Fatal("credentialBrokering must not run without additive transformations")
+	}
+	if sandbox.spawnEnvs[0]["PROVIDER_API_KEY"] != "legacy-secret" {
+		t.Fatalf("spawn env = %v", sandbox.spawnEnvs[0])
+	}
+}
+
+// TS 'customizes direct and Gateway credentials under their sandbox environment names'.
+func TestTSReplay_CustomizesDirectAndGatewayCredentials(t *testing.T) {
+	t.Setenv("PROVIDER_API_KEY", "direct-secret")
+	t.Setenv("AI_GATEWAY_API_KEY", "gateway-secret")
+	sandbox := replaySandbox(t, "tok")
+	var forwarded []harness.CredentialForwardingOptions
+	called := false
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.HarnessID = "custom-forwarding-acp"
+		s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
+		s.ForwardEnv = nil
+		s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+		s.CredentialBrokering = func(env, sandboxEnv, _ map[string]string) []harness.RequestTransformation { called = true; return nil }
+		s.ProviderAuthentication = &ProviderAuthentication{GatewayEnv: map[string]any{"RUNTIME_PROVIDER_API_KEY": map[string]any{"$source": "gateway-api-key"}}}
+		s.CredentialForwarding = func(_ context.Context, o harness.CredentialForwardingOptions) (string, error) {
+			forwarded = append(forwarded, o)
+			if o.Credential == "gateway-secret" {
+				return "ephemeral-gateway-credential", nil
+			}
+			return "ephemeral-direct-credential", nil
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: plainSandbox{sandbox}, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	if called {
+		t.Fatal("brokering must not run")
+	}
+	want := []harness.CredentialForwardingOptions{
+		{Credential: "direct-secret", EnvironmentVariableName: "PROVIDER_API_KEY"},
+		{Credential: "gateway-secret", EnvironmentVariableName: "RUNTIME_PROVIDER_API_KEY"},
+	}
+	if !reflect.DeepEqual(forwarded, want) {
+		t.Fatalf("forwarded = %+v, want %+v", forwarded, want)
+	}
+	env := sandbox.spawnEnvs[0]
+	if env["PROVIDER_API_KEY"] != "ephemeral-direct-credential" || env["RUNTIME_PROVIDER_API_KEY"] != "ephemeral-gateway-credential" {
+		t.Fatalf("spawn env = %v", env)
+	}
+	if _, ok := env["AI_SDK_ACP_GATEWAY_API_KEY"]; ok {
+		t.Error("gateway api key env var must be withheld")
+	}
+	if pe, ok := bridgeConfig(t, env)["providerEnvironment"].(map[string]any); !ok || len(pe) != 0 {
+		t.Errorf("providerEnvironment = %v", bridgeConfig(t, env)["providerEnvironment"])
+	}
+}
+
+// TS 'aborts before spawning when credential forwarding fails' / 'aborts before
+// attach or spawn when credential brokering fails'.
+func TestTSReplay_CredentialFailuresAbortBeforeSpawn(t *testing.T) {
+	t.Setenv("PROVIDER_API_KEY", "direct-secret")
+	t.Run("forwarding", func(t *testing.T) {
+		sandbox := replaySandbox(t, "tok")
+		boom := errors.New("credential forwarding failed")
+		h, _ := CreateACP(testSettings(func(s *Settings) {
+			s.ForwardEnv = nil
+			s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+			s.CredentialBrokering = func(_, _, _ map[string]string) []harness.RequestTransformation { return nil }
+			s.CredentialForwarding = func(context.Context, harness.CredentialForwardingOptions) (string, error) { return "", boom }
+		}))
+		_, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: plainSandbox{sandbox}, SessionWorkDir: "/w"})
+		if !errors.Is(err, boom) || len(sandbox.spawnCommands) != 0 {
+			t.Fatalf("err = %v, spawns = %d", err, len(sandbox.spawnCommands))
+		}
+	})
+	t.Run("brokering", func(t *testing.T) {
+		srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+		t.Cleanup(srv.Close)
+		sandbox := &failingAdder{fakeSandbox: newFakeSandbox(srv), err: errors.New("request transformation installation failed")}
+		h, _ := CreateACP(testSettings(func(s *Settings) {
+			s.ForwardEnv = nil
+			s.CredentialEnv = []string{"PROVIDER_API_KEY"}
+			s.CredentialBrokering = func(env, sandboxEnv, _ map[string]string) []harness.RequestTransformation {
+				return []harness.RequestTransformation{bearerTransformation("provider.example", "", sandboxEnv["PROVIDER_API_KEY"], env["PROVIDER_API_KEY"])}
+			}
+		}))
+		_, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w"})
+		if !errors.Is(err, sandbox.err) || len(sandbox.spawnCommands) != 0 {
+			t.Fatalf("err = %v, spawns = %d", err, len(sandbox.spawnCommands))
+		}
+	})
+}
+
+type failingAdder struct {
+	*fakeSandbox
+	err error
+}
+
+func (f *failingAdder) Restricted() providerutils.SandboxSession { return f }
+func (f *failingAdder) AddRequestTransformations(context.Context, []harness.RequestTransformation) error {
+	return f.err
+}
+
+// TS 'validates lifecycle state structurally and rejects incompatible identities at start'.
+func TestTSReplay_LifecycleIdentityMismatchRejected(t *testing.T) {
+	sandbox := replaySandbox(t, "tok")
+	mk := func(args ...string) harness.Harness {
+		h, err := CreateACP(testSettings(func(s *Settings) {
+			s.MintBridgeToken = func(string) string { return "tok" }
+			s.HarnessID = "identity-acp"
+			s.Args = args
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	first, second := mk(), mk("different")
+	sess, err := first.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume, err := sess.DoStop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := second.(harness.LifecycleStateValidator); !ok || v.ValidateLifecycleStateData(resume.Data) != nil {
+		t.Fatal("a structurally valid state must validate against any identity")
+	}
+	// A legacy providerKind spelling stays structurally valid.
+	var data map[string]any
+	_ = json.Unmarshal(resume.Data, &data)
+	data["authenticationProfile"].(map[string]any)["providerKind"] = "implementation-default"
+	legacy, _ := json.Marshal(data)
+	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(legacy); err != nil {
+		t.Fatalf("legacy providerKind rejected: %v", err)
+	}
+	_, err = second.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w", ResumeFrom: resume})
+	if err == nil || !strings.Contains(err.Error(), "ACP lifecycle state is incompatible with the configured implementation.") {
+		t.Fatalf("err = %v", err)
+	}
+	// Structurally broken state data is rejected up front.
+	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(`{"bridge":{"port":1}}`)); err == nil {
+		t.Fatal("state without implementationIdentity must be rejected")
+	}
+}

@@ -113,12 +113,38 @@ type bridgeCoords struct {
 	StateDir        string  `json:"stateDir,omitempty"`
 }
 
+// ValidateLifecycleStateData mirrors TS `acpResumeStateSchema` (zod): the data
+// must be an object carrying a string `implementationIdentity`, well-typed
+// bridge coordinates, and enum-valued recovery/restoration markers.
 func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 {
-		return nil
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil || probe == nil {
+		return fmt.Errorf("ACP lifecycle state data must be an object.") //nolint:staticcheck // mirrors the TS zod object requirement
+	}
+	var identity string
+	if raw, ok := probe["implementationIdentity"]; !ok || json.Unmarshal(raw, &identity) != nil {
+		return fmt.Errorf("ACP lifecycle state data: implementationIdentity must be a string.") //nolint:staticcheck // mirrors the TS zod string requirement
 	}
 	var v resumeStateData
-	return json.Unmarshal(data, &v)
+	if err := json.Unmarshal(data, &v); err != nil {
+		return fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
+	}
+	if b := v.Bridge; b != nil {
+		var bridgeProbe map[string]json.RawMessage
+		_ = json.Unmarshal(probe["bridge"], &bridgeProbe)
+		for _, key := range []string{"port", "token", "lastSeenEventId"} {
+			if _, ok := bridgeProbe[key]; !ok {
+				return fmt.Errorf("ACP lifecycle state data: bridge.%s is required.", key) //nolint:staticcheck // mirrors the TS zod requirement
+			}
+		}
+	}
+	if r := v.Recovery; r != nil && r.Mode != "disk-replay" && r.Mode != "lossy-rerun" {
+		return fmt.Errorf("ACP lifecycle state data: recovery.mode must be 'disk-replay' or 'lossy-rerun'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	if r := v.Restoration; r != nil && r.Method != "resume" && r.Method != "load" {
+		return fmt.Errorf("ACP lifecycle state data: restoration.method must be 'resume' or 'load'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	return nil
 }
 
 func unsupported(harnessID, message string) error {

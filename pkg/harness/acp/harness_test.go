@@ -26,10 +26,14 @@ type fakeSandbox struct {
 	addReqTrans   [][]harness.RequestTransformation
 	bridgeAddr    string
 	files         map[string]string
+	runs          []string
 }
 
 func (s *fakeSandbox) Description() string { return "acp fake sandbox" }
 func (s *fakeSandbox) Run(_ context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+	s.mu.Lock()
+	s.runs = append(s.runs, opts.Command)
+	s.mu.Unlock()
 	if opts.Command == `printf "%s" "$HOME"` {
 		return providerutils.SandboxRunResult{ExitCode: 0, Stdout: "/home/vercel-sandbox"}, nil
 	}
