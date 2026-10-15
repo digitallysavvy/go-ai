@@ -1449,3 +1449,47 @@ func TestTextVerbosityOmittedWhenNotSet(t *testing.T) {
 		t.Errorf("expected no verbosity when textVerbosity not set")
 	}
 }
+
+// TS emits text-start + text-delta '' for the empty-string content OpenAI
+// sends in its role chunk, but nothing for content:null (tool-call chunks).
+func TestOpenAIStreamEmptyContentEmitsEmptyTextDelta(t *testing.T) {
+	sseData := `data: {"id":"c","model":"m","created":1,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newOpenAIStream(io.NopCloser(strings.NewReader(sseData)))
+	defer stream.Close() //nolint:errcheck
+	var texts []string
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeText {
+			texts = append(texts, c.Text)
+		}
+	}
+	if len(texts) != 1 || texts[0] != "" {
+		t.Fatalf("text chunks = %q, want exactly one empty delta", texts)
+	}
+}
+
+// TS getResponseMetadata uses `created || undefined`: a missing created field
+// leaves the timestamp unset instead of the Unix epoch.
+func TestDoGenerateMissingCreatedLeavesTimestampUnset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"x","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+	model := NewLanguageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gpt-4")
+	result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.ResponseMetadata.Timestamp.IsZero() {
+		t.Fatalf("Timestamp = %v, want zero", result.ResponseMetadata.Timestamp)
+	}
+}

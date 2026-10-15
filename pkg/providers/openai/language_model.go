@@ -149,10 +149,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
-		ID:        response.ID,
-		Timestamp: time.Unix(response.Created, 0).UTC(),
-		ModelID:   response.Model,
-		Headers:   result.ResponseHeaders,
+		ID:      response.ID,
+		ModelID: response.Model,
+		Headers: result.ResponseHeaders,
+	}
+	// TS getResponseMetadata: `created || undefined` -- a missing/zero
+	// timestamp stays unset instead of becoming the Unix epoch.
+	if response.Created != 0 {
+		result.ResponseMetadata.Timestamp = time.Unix(response.Created, 0).UTC()
 	}
 	return result, nil
 }
@@ -1223,8 +1227,11 @@ func (s *openAIStream) contentParts(raw json.RawMessage) []streaming.CompatConte
 		parts, _ := streaming.OpenAICompatContentParts(raw)
 		return parts
 	}
+	// TS OpenAIChatLanguageModel: `delta.content != null` opens the text
+	// block and emits a text-delta, even for the empty string OpenAI sends in
+	// its role chunk (the TS test expects { delta: '' } first).
 	var text string
-	if json.Unmarshal(raw, &text) != nil || text == "" {
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &text) != nil {
 		return nil
 	}
 	return []streaming.CompatContentPart{{Text: text}}
