@@ -44,8 +44,11 @@ func (m *LanguageModel) SpecificationVersion() string {
 // openai-compatible chat models (baseten, deepinfra, cerebras, ...) resolve
 // their own provider name, e.g. "baseten" for "baseten.chat" (TS #22466).
 func (m *LanguageModel) fileReferenceProvider() string {
+	if !m.provider.config.OpenAICompatible {
+		return "openai"
+	}
 	name, _, _ := strings.Cut(m.Provider(), ".")
-	if name == "" || name == "azure" {
+	if name == "" {
 		return "openai"
 	}
 	return name
@@ -261,7 +264,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// object is sent as "{}" rather than forwarded verbatim. This is unique
 	// to OpenAI's own chat conversion -- other ToOpenAIMessages callers
 	// (Groq/DeepSeek/openai-compatible/Alibaba/...) must not opt in.
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true, WrapToolErrorOutputs: true, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
+	native := !m.provider.config.OpenAICompatible
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
 		if convErr != nil {

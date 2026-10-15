@@ -32,7 +32,9 @@ func TestChatFileReferenceResolvesProviderKey(t *testing.T) {
 	}{
 		{"openai", Config{APIKey: "k"}, "openai"},
 		{"azure", Config{APIKey: "k", Name: "azure"}, "openai"},
-		{"baseten", Config{APIKey: "k", ChatProviderName: "baseten.chat"}, "baseten"},
+		{"baseten", Config{APIKey: "k", ChatProviderName: "baseten.chat", OpenAICompatible: true}, "baseten"},
+		// TS bedrock-mantle wraps OpenAIChatLanguageModel: fixed "openai" key.
+		{"bedrock-mantle", Config{APIKey: "k", Name: "bedrock-mantle", ChatProviderName: "bedrock-mantle.chat"}, "openai"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
