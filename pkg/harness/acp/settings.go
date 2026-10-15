@@ -126,8 +126,8 @@ const (
 // ModelMapping maps the HarnessAgent model identifier to an ACP session
 // operation. Mirrors TS `ACPModelMapping`.
 type ModelMapping struct {
-	Type ModelMappingType
-	Path string
+	Type ModelMappingType `json:"type"`
+	Path string           `json:"path"`
 }
 
 // ProviderAuthentication configures the ACP implementation to authenticate
@@ -143,9 +143,9 @@ type ProviderAuthentication struct {
 // for the implementation (methodId from `authenticate`). Mirrors TS
 // `ACPAuthentication`.
 type Authentication struct {
-	MethodID           string
-	Meta               map[string]any
-	ClientCapabilities map[string]any
+	MethodID           string         `json:"methodId"`
+	Meta               map[string]any `json:"meta,omitempty"`
+	ClientCapabilities map[string]any `json:"clientCapabilities,omitempty"`
 }
 
 // CredentialBrokering builds request transformations from resolved
