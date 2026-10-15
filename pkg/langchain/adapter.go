@@ -38,7 +38,11 @@ type StreamEvent struct {
 }
 
 // StreamCallbacks mirrors the TypeScript adapter callback surface for stream
-// lifecycle hooks. Callback errors are reported on the returned error channel.
+// lifecycle hooks. A callback error during the stream follows the TS catch
+// block: OnFinal, then OnError (OnAbort for a cancellation), then an `error`
+// chunk with the error text. An OnStart error, or an error from OnFinal,
+// OnAbort or OnError while handling a failure, errors the stream: it arrives
+// on the returned error channel.
 type StreamCallbacks struct {
 	OnStart  func() error
 	OnToken  func(token string) error
@@ -234,7 +238,9 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 		received := false
 		if callbacks != nil && callbacks.OnStart != nil {
 			if err := callbacks.OnStart(); err != nil {
-				reportCallbackError(errs, callbacks, err)
+				// TS awaits onStart outside its try block: a throw errors
+				// the stream (no onError, no error chunk).
+				errs <- err
 				return
 			}
 		}
@@ -260,7 +266,7 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 				if !ok {
 					for _, chunk := range finishChunks(state, received && sendFinishEnabled(callbacks)) {
 						if err := handleCallbackChunk(callbacks, &textChunks, chunk); err != nil {
-							reportCallbackError(errs, callbacks, err)
+							failStream(ctx, out, errs, callbacks, textChunks, err)
 							return
 						}
 						if !sendChunk(ctx, out, chunk) {
@@ -268,7 +274,7 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 							return
 						}
 					}
-					finalizeCallbacks(errs, callbacks, textChunks, lastValuesData, nil)
+					completeStream(ctx, out, errs, callbacks, textChunks, lastValuesData)
 					return
 				}
 				if event.Err != nil {
@@ -283,7 +289,7 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 				}
 				for _, chunk := range processLangGraphEvent(state, event) {
 					if err := handleCallbackChunk(callbacks, &textChunks, chunk); err != nil {
-						reportCallbackError(errs, callbacks, err)
+						failStream(ctx, out, errs, callbacks, textChunks, err)
 						return
 					}
 					if !sendChunk(ctx, out, chunk) {
@@ -297,12 +303,34 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 	return out, errs
 }
 
-// failStream ends a stream whose upstream failed, like the TS catch block of
-// toUIMessageStream.
+// completeStream runs the end-of-stream callbacks (onFinal, then onFinish). A
+// callback that fails lands in the TS catch block, like any other error of
+// the stream body.
+func completeStream(ctx context.Context, out chan<- ai.UIMessageChunk, errs chan<- error, callbacks *StreamCallbacks, textChunks []string, finalState interface{}) {
+	if callbacks == nil {
+		return
+	}
+	if callbacks.OnFinal != nil {
+		if err := callbacks.OnFinal(strings.Join(textChunks, "")); err != nil {
+			failStream(ctx, out, errs, callbacks, textChunks, err)
+			return
+		}
+	}
+	if callbacks.OnFinish != nil {
+		if err := callbacks.OnFinish(finalState); err != nil {
+			failStream(ctx, out, errs, callbacks, textChunks, err)
+		}
+	}
+}
+
+// failStream ends a stream whose upstream or callback failed, like the TS
+// catch block of toUIMessageStream: onFinal, then onAbort or onError, then an
+// `error` chunk; the stream still closes normally. A failure of the catch
+// block's own callbacks errors the stream instead.
 func failStream(ctx context.Context, out chan<- ai.UIMessageChunk, errs chan<- error, callbacks *StreamCallbacks, textChunks []string, cause error) {
 	if callbacks != nil && callbacks.OnFinal != nil {
 		if err := callbacks.OnFinal(strings.Join(textChunks, "")); err != nil {
-			reportCallbackError(errs, callbacks, err)
+			errs <- err
 			return
 		}
 	}
@@ -349,42 +377,32 @@ func handleCallbackChunk(callbacks *StreamCallbacks, textChunks *[]string, chunk
 	return nil
 }
 
+// finalizeCallbacks ends a stream cut short by terminalErr (a cancelled
+// context): onFinal, then onAbort or onError, and the error on the channel.
+// A callback that fails errors the stream with its own error.
 func finalizeCallbacks(errs chan<- error, callbacks *StreamCallbacks, textChunks []string, finalState interface{}, terminalErr error) {
+	if terminalErr == nil {
+		return
+	}
 	completion := strings.Join(textChunks, "")
 	if callbacks != nil && callbacks.OnFinal != nil {
 		if err := callbacks.OnFinal(completion); err != nil {
-			reportCallbackError(errs, callbacks, err)
+			errs <- err
 			return
 		}
 	}
-	if terminalErr != nil {
-		if callbacks != nil && callbacks.OnAbort != nil && isContextAbort(terminalErr) {
-			if err := callbacks.OnAbort(); err != nil {
-				reportCallbackError(errs, callbacks, err)
-				return
-			}
-		} else if callbacks != nil && callbacks.OnError != nil {
-			if err := callbacks.OnError(terminalErr); err != nil {
-				reportCallbackError(errs, callbacks, err)
-				return
-			}
+	if callbacks != nil && callbacks.OnAbort != nil && isContextAbort(terminalErr) {
+		if err := callbacks.OnAbort(); err != nil {
+			errs <- err
+			return
 		}
-		errs <- terminalErr
-		return
-	}
-	if callbacks != nil && callbacks.OnFinish != nil {
-		if err := callbacks.OnFinish(finalState); err != nil {
-			reportCallbackError(errs, callbacks, err)
+	} else if callbacks != nil && callbacks.OnError != nil {
+		if err := callbacks.OnError(terminalErr); err != nil {
+			errs <- err
 			return
 		}
 	}
-}
-
-func reportCallbackError(errs chan<- error, callbacks *StreamCallbacks, err error) {
-	if callbacks != nil && callbacks.OnError != nil {
-		_ = callbacks.OnError(err)
-	}
-	errs <- err
+	errs <- terminalErr
 }
 
 func isContextAbort(err error) bool {
