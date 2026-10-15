@@ -1661,7 +1661,6 @@ func openAIToolCalls(source map[string]interface{}) []interface{} {
 	return raw
 }
 
-
 func messageMaps(root map[string]interface{}) []map[string]interface{} {
 	raw, ok := asSlice(root["messages"])
 	if !ok {
