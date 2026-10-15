@@ -1,0 +1,308 @@
+package agent
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+)
+
+// The legacy AgentResult loop (GenerateAgent, Execute, ExecuteWithMessages)
+// calls the provider directly rather than delegating to ai.GenerateText, so it
+// dispatches its own step, model-call and tool-call telemetry to the
+// registered integrations (TS #22480 dispatches the same events from
+// WorkflowAgent's model step). Without it a bare GenerateAgent emitted no
+// spans at all.
+
+type telemetryCallIDKey struct{}
+
+type loopTelemetryKey struct{}
+
+// WithTelemetryCallID marks ctx as already carrying a telemetry root span
+// (opened by the caller with FireOnStart under callID). The legacy loop then
+// dispatches its step, model-call and tool-call events under that call ID
+// instead of opening a second root span. WorkflowAgent uses this so its
+// 'ai.workflowAgent.generate' root is the parent of the loop's step spans.
+func WithTelemetryCallID(ctx context.Context, callID string) context.Context {
+	return context.WithValue(ctx, telemetryCallIDKey{}, callID)
+}
+
+func newTelemetryCallID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// loopTelemetry carries the per-run telemetry state of the legacy loop.
+type loopTelemetry struct {
+	settings *ai.TelemetrySettings
+	callID   string
+	// ownsRoot is true when the loop opened the root span itself.
+	ownsRoot bool
+}
+
+func (a *ToolLoopAgent) loopTelemetrySettings() *ai.TelemetrySettings {
+	if a.config.Telemetry != nil {
+		return a.config.Telemetry
+	}
+	return a.config.ExperimentalTelemetry //nolint:staticcheck // deprecated alias, Telemetry wins
+}
+
+func telemetryContextMap(include map[string]bool, v interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if len(include) == 0 || v == nil {
+		return out
+	}
+	rv := reflect.ValueOf(v)
+	for rv.Kind() == reflect.Pointer && !rv.IsNil() {
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Map || rv.Type().Key().Kind() != reflect.String {
+		return out
+	}
+	for key, enabled := range include {
+		if !enabled {
+			continue
+		}
+		if val := rv.MapIndex(reflect.ValueOf(key).Convert(rv.Type().Key())); val.IsValid() {
+			out[key] = val.Interface()
+		}
+	}
+	return out
+}
+
+func telemetryRuntimeContextFor(s *ai.TelemetrySettings, rc interface{}) map[string]interface{} {
+	if s == nil {
+		return map[string]interface{}{}
+	}
+	return telemetryContextMap(s.IncludeRuntimeContext, rc)
+}
+
+func telemetryToolsContextFor(s *ai.TelemetrySettings, tc map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if s == nil {
+		return out
+	}
+	for name, v := range tc {
+		if f := telemetryContextMap(s.IncludeToolsContext[name], v); len(f) > 0 {
+			out[name] = f
+		}
+	}
+	return out
+}
+
+func telemetryUsage(u types.Usage) telemetry.TelemetryUsage {
+	out := telemetry.TelemetryUsage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalTokens: u.TotalTokens}
+	if u.InputDetails != nil {
+		out.NoCacheInputTokens = u.InputDetails.NoCacheTokens
+		out.CacheReadInputTokens = u.InputDetails.CacheReadTokens
+		out.CacheCreationInputTokens = u.InputDetails.CacheWriteTokens
+	}
+	if u.OutputDetails != nil {
+		out.OutputTextTokens = u.OutputDetails.TextTokens
+		out.ReasoningTokens = u.OutputDetails.ReasoningTokens
+	}
+	return out
+}
+
+func isAbort(ctx context.Context, err error) bool {
+	return err != nil && (errors.Is(err, context.Canceled) || (ctx != nil && ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled)))
+}
+
+// beginLoopTelemetry opens the root span unless the caller already did.
+func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types.Message) (context.Context, *loopTelemetry) {
+	settings := a.loopTelemetrySettings()
+	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
+		return ctx, &loopTelemetry{settings: settings, callID: id}
+	}
+	lt := &loopTelemetry{settings: settings, callID: newTelemetryCallID(), ownsRoot: true}
+	var sys string
+	if settings != nil && settings.RecordInputs {
+		sys = a.config.System
+	}
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:         lt.callID,
+		OperationType:  "ai.generateText",
+		ModelProvider:  a.config.Model.Provider(),
+		ModelID:        a.config.Model.ModelID(),
+		Settings:       settings,
+		System:         sys,
+		Messages:       messages,
+		RuntimeContext: telemetryRuntimeContextFor(settings, a.runtimeContext()),
+		ToolsContext:   telemetryToolsContextFor(settings, a.config.ToolsContext),
+	})
+	return ctx, lt
+}
+
+// endLoopTelemetry closes the root span opened by beginLoopTelemetry.
+func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry, result *AgentResult, err error) {
+	if lt == nil || !lt.ownsRoot {
+		return
+	}
+	if err != nil {
+		if isAbort(ctx, err) {
+			var steps []types.StepResult
+			if result != nil {
+				steps = result.Steps
+			}
+			telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: lt.settings, CallID: lt.callID, Reason: err, Steps: steps})
+		} else {
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: lt.settings, CallID: lt.callID, Error: err})
+		}
+		return
+	}
+	if result == nil {
+		return
+	}
+	var last types.StepResult
+	if n := len(result.Steps); n > 0 {
+		last = result.Steps[n-1]
+	}
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+		CallID:           lt.callID,
+		OperationType:    "ai.generateText",
+		FinishReason:     string(result.FinishReason),
+		Usage:            telemetryUsage(result.Usage),
+		ModelProvider:    a.config.Model.Provider(),
+		ModelID:          a.config.Model.ModelID(),
+		Text:             result.Text,
+		ToolCalls:        last.ToolCalls,
+		ProviderMetadata: last.ProviderMetadata,
+		Settings:         lt.settings,
+		RuntimeContext:   telemetryRuntimeContextFor(lt.settings, a.runtimeContext()),
+		ToolsContext:     telemetryToolsContextFor(lt.settings, a.config.ToolsContext),
+	})
+}
+
+// loopStepTelemetry tracks the open step (and model-call) span of one step.
+type loopStepTelemetry struct {
+	lt      *loopTelemetry
+	stepCtx context.Context
+	// errCtx is the context failures are reported under: the model-call ctx
+	// while a provider call is in flight (so the nested "chat" span closes
+	// too), the step ctx otherwise.
+	errCtx context.Context
+	closed bool
+}
+
+func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetry, stepIndex int, c PrepareCallConfig) *loopStepTelemetry {
+	stepCtx := telemetry.FireOnStepStart(ctx, telemetry.TelemetryStepStartEvent{
+		CallID:         lt.callID,
+		OperationType:  "ai.generateText",
+		Settings:       lt.settings,
+		StepNumber:     stepIndex,
+		ModelProvider:  c.Model.Provider(),
+		ModelID:        c.Model.ModelID(),
+		ToolChoice:     c.ToolChoice,
+		PromptMessages: c.Messages,
+		StepTools:      c.Tools,
+		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext),
+		ToolsContext:   telemetryToolsContextFor(lt.settings, c.ToolsContext),
+	})
+	return &loopStepTelemetry{lt: lt, stepCtx: stepCtx, errCtx: stepCtx}
+}
+
+// fail closes the step span after an error (no error status for an abort).
+func (s *loopStepTelemetry) fail(err error) {
+	if s == nil || s.closed {
+		return
+	}
+	s.closed = true
+	if isAbort(s.stepCtx, err) {
+		err = nil
+	}
+	telemetry.FireOnStepError(s.errCtx, telemetry.TelemetryErrorEvent{Settings: s.lt.settings, CallID: s.lt.callID, Error: err})
+}
+
+func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc map[string]interface{}) {
+	if s == nil || s.closed {
+		return
+	}
+	s.closed = true
+	var reasoning strings.Builder
+	for _, r := range step.Reasoning {
+		if reasoning.Len() > 0 {
+			reasoning.WriteByte('\n')
+		}
+		reasoning.WriteString(r.Text)
+	}
+	telemetry.FireOnStepEnd(s.stepCtx, telemetry.TelemetryStepEndEvent{
+		CallID:           s.lt.callID,
+		OperationType:    "ai.generateText",
+		StepNumber:       step.StepNumber,
+		FinishReason:     string(step.FinishReason),
+		Usage:            telemetryUsage(step.Usage),
+		Text:             step.Text,
+		Reasoning:        reasoning.String(),
+		ToolCalls:        step.ToolCalls,
+		ProviderMetadata: step.ProviderMetadata,
+		Settings:         s.lt.settings,
+		RuntimeContext:   telemetryRuntimeContextFor(s.lt.settings, rc),
+		ToolsContext:     telemetryToolsContextFor(s.lt.settings, tc),
+	})
+}
+
+func (s *loopStepTelemetry) modelCallStart(c PrepareCallConfig, model interface {
+	Provider() string
+	ModelID() string
+}, prompt types.Prompt, genTools []types.Tool) context.Context {
+	if s == nil {
+		return nil
+	}
+	ctx := telemetry.FireOnLanguageModelCallStart(s.stepCtx, telemetry.LanguageModelCallStartEvent{
+		Settings:         s.lt.settings,
+		CallID:           s.lt.callID,
+		ModelProvider:    model.Provider(),
+		ModelID:          model.ModelID(),
+		Prompt:           prompt,
+		Tools:            genTools,
+		System:           c.System,
+		Temperature:      c.Temperature,
+		MaxOutputTokens:  c.MaxTokens,
+		TopP:             c.TopP,
+		TopK:             c.TopK,
+		PresencePenalty:  c.PresencePenalty,
+		FrequencyPenalty: c.FrequencyPenalty,
+		StopSequences:    c.StopSequences,
+		Seed:             c.Seed,
+	})
+	s.errCtx = ctx
+	return ctx
+}
+
+func (s *loopStepTelemetry) modelCallEnd(model interface {
+	Provider() string
+	ModelID() string
+}, res *types.GenerateResult, started time.Time) {
+	if s == nil {
+		return
+	}
+	elapsed := time.Since(started).Milliseconds()
+	perf := telemetry.LanguageModelCallPerformance{ResponseTimeMs: elapsed}
+	telemetry.FireOnLanguageModelCallEnd(s.stepCtx, telemetry.LanguageModelCallEndEvent{
+		Settings:         s.lt.settings,
+		CallID:           s.lt.callID,
+		ModelProvider:    model.Provider(),
+		ModelID:          model.ModelID(),
+		FinishReason:     string(res.FinishReason),
+		Usage:            telemetryUsage(res.Usage),
+		Content:          res.Content,
+		ProviderMetadata: res.ProviderMetadata,
+		Performance:      perf,
+	})
+	s.errCtx = s.stepCtx
+}
+
+func telemetryToolContextFor(s *ai.TelemetrySettings, toolName string, v interface{}) map[string]interface{} {
+	if s == nil {
+		return map[string]interface{}{}
+	}
+	return telemetryContextMap(s.IncludeToolsContext[toolName], v)
+}

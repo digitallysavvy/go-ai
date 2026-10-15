@@ -194,3 +194,41 @@ func TestWorkflowTelemetryIncludesOnlyOptedInRuntimeContext(t *testing.T) {
 		}
 	}
 }
+
+// TS #22480: WorkflowAgent.generate dispatches step, model-call and tool-call
+// telemetry to registered integrations, all under the workflow root span.
+func TestWorkflowGenerateDispatchesStepAndModelCallTelemetry(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	a, err := NewWorkflowAgent(WorkflowAgent{
+		Model: &wfMockModel{},
+		Tools: []types.Tool{{
+			Name: "t1",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		}},
+		Telemetry: &telemetry.Options{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("wf")})},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]int{}
+	for _, s := range rec.Ended() {
+		names[s.Name()]++
+	}
+	want := map[string]int{"ai.workflowAgent.generate": 1, "ai.generateText.doGenerate": 2, "ai.toolCall": 1}
+	for n, c := range want {
+		if names[n] != c {
+			t.Errorf("span %q count = %d, want %d (all: %v)", n, names[n], c, names)
+		}
+	}
+}

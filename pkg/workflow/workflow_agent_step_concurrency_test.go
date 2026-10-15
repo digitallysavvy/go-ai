@@ -127,10 +127,10 @@ func TestWorkflowStepLoopHonorsToolCallConcurrency(t *testing.T) {
 	if run(t, nil, &one, true) {
 		t.Fatal("stream, per-call ToolCallConcurrency 1: tool calls overlapped")
 	}
-	// Generate goes through ToolLoopAgent.GenerateAgent's legacy loop, which
-	// still executes a step's tools sequentially (tracked gap, see
-	// state TRACKER); the bound is passed through so it applies once that
-	// loop honors ToolCallConcurrency. Only the sequential bound is checked.
+	// Generate (TS #22135): the same bound applies; unset runs concurrently.
+	if !run(t, nil, nil, false) {
+		t.Fatal("generate, unset: tool calls should run concurrently")
+	}
 	if run(t, &one, nil, false) || run(t, nil, &one, false) {
 		t.Fatal("generate, ToolCallConcurrency 1: tool calls overlapped")
 	}

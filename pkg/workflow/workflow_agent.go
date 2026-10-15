@@ -2,7 +2,10 @@ package workflow
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 	"time"
@@ -1103,6 +1106,13 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.ToolCallConcurrency != nil {
 		toolCallConcurrency = ovr.ToolCallConcurrency
 	}
+	if toolCallConcurrency == nil {
+		// TS WorkflowAgent runs a step's tool calls concurrently when no
+		// limit is set. The AgentResult generate loop only does so when a
+		// limit is given, so pass an effectively unbounded one.
+		unbounded := math.MaxInt32
+		toolCallConcurrency = &unbounded
+	}
 	tools := orderedTools(w.Tools, w.ToolSet)
 	if govr.Tools != nil || govr.ToolSet != nil {
 		tools = orderedTools(govr.Tools, govr.ToolSet)
@@ -1240,7 +1250,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	// for 'ai.workflowAgent.generate' (stream-text-iterator.ts). Without this,
 	// approval-resume tool execution has no root span to parent under and its
 	// tool span is silently skipped (27d294d).
+	callID := newWorkflowCallID()
 	ctx = telemetrypkg.FireOnStart(ctx, telemetrypkg.TelemetryStartEvent{
+		CallID:         callID,
 		OperationType:  "ai.workflowAgent.generate",
 		ModelProvider:  modelProvider,
 		ModelID:        modelID,
@@ -1249,7 +1261,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	})
 	toolCallConcurrency, err := resolveToolCallConcurrency(opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
@@ -1265,12 +1277,12 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
-		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		if onAbort != nil {
 			onAbort(ctx, nil)
 		}
@@ -1284,15 +1296,15 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 	}
 	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings}
-	result, err := a.GenerateAgent(ctx, call)
+	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil {
-			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 			if onAbort != nil {
 				onAbort(ctx, nil)
 			}
 		} else {
-			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		if onError := mergeError(w.OnError, opts.OnError); onError != nil {
 			onError(ctx, err)
@@ -1300,6 +1312,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		return nil, err
 	}
 	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
+		CallID:         callID,
 		Settings:       telemetrySettings,
 		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
 		FinishReason:   string(result.FinishReason),
@@ -1448,4 +1461,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		ModelID:        modelID,
 	})
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
+}
+
+// newWorkflowCallID returns the call ID shared by one WorkflowAgent run's
+// telemetry events (TelemetryStartEvent.CallID).
+func newWorkflowCallID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }

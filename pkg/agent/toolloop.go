@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 	"github.com/google/uuid"
 )
@@ -482,6 +483,21 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	if a.config.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
+	if err := validateToolCallConcurrency(a.config.ToolCallConcurrency); err != nil {
+		return nil, err
+	}
+	// Open the telemetry root span (unless the caller already did) so the
+	// step, model-call and tool-call spans below have a parent; see
+	// loop_telemetry.go.
+	var lt *loopTelemetry
+	ctx, lt = a.beginLoopTelemetry(ctx, messages)
+	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)
+	result, err := a.runLoop(ctx, messages, callCallbacks, lt)
+	a.endLoopTelemetry(ctx, lt, result, err)
+	return result, err
+}
+
+func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, callCallbacks agentCallbacks, lt *loopTelemetry) (*AgentResult, error) {
 	if a.config.Model.SpecificationVersion() == "" || a.config.Model.Provider() == "" || a.config.Model.ModelID() == "" {
 		return nil, fmt.Errorf("model must implement provider.LanguageModel metadata methods")
 	}
@@ -687,10 +703,15 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			a.config.OnStepStart(stepIndex)
 		}
 
+		// Open the step telemetry span; tools and the model call run under it.
+		stepTel := a.startStepTelemetry(ctx, lt, stepIndex, callConfig)
+		stepCtx := stepTel.stepCtx
+
 		// Execute one step with custom data
-		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(ctx, callConfig)
+		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(stepCtx, callConfig, stepTel)
 		customData = newCustomData
 		if err != nil {
+			stepTel.fail(err)
 			// Call OnChainError callback
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(err)
@@ -723,8 +744,9 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 				}
 			}
 			if len(callConfig.ExperimentalRefineToolInput) > 0 {
-				refined, refineErr := ai.RefineToolCalls(ctx, stepResult.ToolCalls, callConfig.Tools, callConfig.ExperimentalRefineToolInput, callConfig.RuntimeContext, callConfig.ToolsContext)
+				refined, refineErr := ai.RefineToolCalls(stepCtx, stepResult.ToolCalls, callConfig.Tools, callConfig.ExperimentalRefineToolInput, callConfig.RuntimeContext, callConfig.ToolsContext)
 				if refineErr != nil {
+					stepTel.fail(refineErr)
 					return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepIndex, refineErr)
 				}
 				stepResult.ToolCalls = refined
@@ -732,8 +754,9 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 			// callConfig.Messages (this step's messages, including its own
 			// AppendToolCallerMessages announcement), not currentMessages,
 			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
-			toolResults, err := a.executeTools(ctx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
+			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
 			if err != nil {
+				stepTel.fail(err)
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
 					a.config.OnChainError(err)
@@ -771,6 +794,8 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 		result.Steps = append(result.Steps, *stepResult)
 		result.Usage = result.Usage.Add(stepResult.Usage)
 		result.Warnings = append(result.Warnings, stepResult.Warnings...)
+
+		stepTel.finish(stepResult, callConfig.RuntimeContext, callConfig.ToolsContext)
 
 		// Call step end callback (legacy/basic).
 		if onStepEnd := resolveAgentBasicOnStepEnd(a.config); onStepEnd != nil {
@@ -1401,7 +1426,7 @@ func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResu
 }
 
 // executeStep executes a single agent step
-func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig) (*types.StepResult, bool, interface{}, []types.Tool, error) {
+func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig, stepTel *loopStepTelemetry) (*types.StepResult, bool, interface{}, []types.Tool, error) {
 	// Apply per-step timeout if configured
 	stepCtx := ctx
 	var stepCancel context.CancelFunc
@@ -1459,11 +1484,27 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 
 	// Call the model with step context, retrying transient Gateway failures
 	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5).
-	genResult, err := ai.DoGenerateWithGatewayRetry(stepCtx, stepModel, genOpts, callConfig.MaxRetries)
+	modelCallCtx := stepCtx
+	if mc := stepTel.modelCallStart(callConfig, stepModel, prompt, callConfig.Tools); mc != nil {
+		// Run the provider call inside the model-call span so provider HTTP
+		// spans nest under it, while the step ctx stays unchanged.
+		modelCallCtx = mc
+		if stepCtx != ctx {
+			// keep the per-step timeout deadline on the model-call ctx
+			var cancel context.CancelFunc
+			modelCallCtx, cancel = context.WithCancel(mc)
+			defer cancel()
+			stop := context.AfterFunc(stepCtx, cancel)
+			defer stop()
+		}
+	}
+	modelCallStarted := time.Now()
+	genResult, err := ai.DoGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, callConfig.MaxRetries)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
+	stepTel.modelCallEnd(stepModel, genResult, modelCallStarted)
 	rawFinishReason := genResult.RawFinishReason
 
 	// Create step result
@@ -1513,12 +1554,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
 func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks) ([]types.ToolResult, error) {
-	results := make([]types.ToolResult, 0, len(toolCalls))
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
-
-	for _, call := range toolCalls {
+	runCall := func(call types.ToolCall) ([]types.ToolResult, error) {
+		results := make([]types.ToolResult, 0, 1)
 		// Call tool call callback
 		if a.config.OnToolCall != nil {
 			a.config.OnToolCall(call)
@@ -1530,7 +1570,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			// its own error on a subsequent response (TS 7bd6bdd, mirrored
 			// in ai.executeTools).
 			if call.ProviderExecuted {
-				continue
+				return results, nil
 			}
 			invalidErr := call.Error
 			if invalidErr == nil {
@@ -1547,7 +1587,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, invalidErr)
 			}
-			continue
+			return results, nil
 		}
 
 		// Find the tool
@@ -1575,7 +1615,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, notFoundErr)
 			}
-			continue
+			return results, nil
 		}
 
 		providerExecuted := tool.ProviderExecuted
@@ -1593,7 +1633,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
 			})
-			continue
+			return results, nil
 		}
 		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
 			if !a.config.ToolApprover(call) {
@@ -1623,7 +1663,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, rejectionErr)
 			}
-			continue
+			return results, nil
 		case types.ToolApprovalStatusUserApproval:
 			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
@@ -1636,7 +1676,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
 			})
-			continue
+			return results, nil
 		}
 
 		if providerExecuted {
@@ -1672,7 +1712,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 		} else {
 			if tool.Execute == nil {
-				continue
+				return results, nil
 			}
 
 			toolContext, err := validateAgentToolContext(tool, call.ToolName, toolsContext[call.ToolName])
@@ -1686,7 +1726,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					ProviderMetadata: providerMetadata,
 					ToolMetadata:     call.ToolMetadata,
 				})
-				continue
+				return results, nil
 			}
 
 			// Locally-executed tool: execute now
@@ -1721,9 +1761,38 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ToolMetadata:        call.ToolMetadata,
 				ExperimentalSandbox: experimentalSandbox,
 			}
+			// Dispatch tool-call telemetry: integrations open a child span of
+			// the step span in toolCtx and wrap the execution (loop_telemetry.go).
+			var tsettings *ai.TelemetrySettings
+			tcallID := ""
+			if lt, ok := ctx.Value(loopTelemetryKey{}).(*loopTelemetry); ok && lt != nil {
+				tsettings, tcallID = lt.settings, lt.callID
+			}
+			toolTelCtx := telemetry.FireOnToolCallStart(ctx, telemetry.TelemetryToolCallStartEvent{
+				Settings:    tsettings,
+				CallID:      tcallID,
+				ToolCallID:  call.ID,
+				ToolName:    call.ToolName,
+				Args:        call.Arguments,
+				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
+			})
 			startMs := time.Now().UnixMilli()
-			toolResult, toolErr := tool.Execute(ctx, call.Arguments, execOptions)
+			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(toolTelCtx, tsettings, call.ToolName, call.Arguments,
+				func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
+					return tool.Execute(execCtx, args, execOptions)
+				})
 			durationMs := time.Now().UnixMilli() - startMs
+			telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
+				Settings:    tsettings,
+				CallID:      tcallID,
+				ToolCallID:  call.ID,
+				ToolName:    call.ToolName,
+				Args:        call.Arguments,
+				Result:      toolResult,
+				Error:       toolErr,
+				DurationMs:  durationMs,
+				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
+			})
 			var modelOutput *types.ToolResultOutput
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
@@ -1804,9 +1873,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				}
 			}
 		}
+		return results, nil
 	}
-
-	return results, nil
+	return a.runToolCalls(ctx, toolCalls, runCall)
 }
 
 func (a *ToolLoopAgent) runtimeContext() interface{} {
