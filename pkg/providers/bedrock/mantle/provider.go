@@ -31,6 +31,10 @@ type ProviderSettings struct {
 	CredentialProvider bedrock.CredentialProvider
 }
 
+// mantleSigningService is the SigV4 service name Mantle requests are signed
+// with (TS passes 'bedrock-mantle' to createSigV4FetchFunction).
+const mantleSigningService = "bedrock-mantle"
+
 // mantleOpenAIOnlyModelPattern matches model IDs Mantle serves under its
 // separate OpenAI-compatible route (`/openai/v1`) rather than the default
 // `/v1`. Ports TS mantle/bedrock-mantle-provider.ts's getBaseURL regex:
@@ -75,11 +79,12 @@ func CreateBedrockMantle(settings ProviderSettings) *BedrockMantleProvider {
 			accessKeyID := firstNonEmpty(settings.AccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
 			secretAccessKey := firstNonEmpty(settings.SecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
 			sessionToken := firstNonEmpty(settings.SessionToken, os.Getenv("AWS_SESSION_TOKEN"))
-			httpClient = withSigV4Transport(httpClient, bedrock.NewAWSSigner(
+			httpClient = withSigV4Transport(httpClient, bedrock.NewAWSSignerForService(
 				accessKeyID,
 				secretAccessKey,
 				sessionToken,
 				region,
+				mantleSigningService,
 			))
 		}
 	}
