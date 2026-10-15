@@ -60,12 +60,35 @@ func (s *scriptedServer) requested() []string {
 	return append([]string(nil), s.urls...)
 }
 
-func captureLog(t *testing.T) *bytes.Buffer {
+// lockedBuffer is a bytes.Buffer safe for the transport's background
+// goroutines to write while the test reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// captureLog redirects the standard logger for the test and restores the
+// previous writer afterwards. (Restoring nil made any later log.Printf from a
+// still-running transport goroutine panic.)
+func captureLog(t *testing.T) *lockedBuffer {
 	t.Helper()
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(nil) })
-	return &buf
+	buf := &lockedBuffer{}
+	prev := log.Writer()
+	log.SetOutput(buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return buf
 }
 
 func chunkTypes(chunks []ai.UIMessageChunk) []string {
