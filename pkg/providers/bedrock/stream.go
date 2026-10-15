@@ -159,7 +159,8 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			if s.includeRawChunks {
 				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: string(event.Data)})
 			}
-			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse Amazon Bedrock stream event: %v", err)})
+			parseErr := providererrors.NewJSONParseError(string(event.Data), err)
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr})
 			continue
 		}
 		delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.

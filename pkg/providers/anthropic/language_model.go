@@ -1670,11 +1670,12 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		// frame that is not valid JSON, and doStream turns it into an `error`
 		// part and keeps reading (it never ends the stream).
 		if strings.TrimSpace(event.Data) != "" && !json.Valid([]byte(event.Data)) {
-			message := "JSON parsing failed: Text: " + event.Data + "."
+			var probe interface{}
+			parseErr := providererrors.NewJSONParseError(event.Data, json.Unmarshal([]byte(event.Data), &probe))
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: message,
-				Err:  providererrors.NewStreamProviderError(message, "anthropic", "", nil, nil, nil, nil),
+				Text: parseErr.Error(),
+				Err:  parseErr,
 			}, nil
 		}
 

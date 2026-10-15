@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -91,8 +92,12 @@ func TestChunkSchemaAcceptsValidFrames(t *testing.T) {
 func TestInvalidJSONFrameMessage(t *testing.T) {
 	s := newTestStream(sseStream(`{not json`))
 	c, _ := s.Next()
-	if c == nil || c.Type != provider.ChunkTypeError || c.Text != "JSON parsing failed: Text: {not json." {
+	if c == nil || c.Type != provider.ChunkTypeError || !strings.HasPrefix(c.Text, "JSON parsing failed: Text: {not json.\nError message: ") {
 		t.Fatalf("got %+v", c)
+	}
+	var jpe *providererrors.JSONParseError
+	if !errors.As(c.Err, &jpe) || jpe.Text != "{not json" {
+		t.Fatalf("Err = %#v, want *JSONParseError", c.Err)
 	}
 }
 

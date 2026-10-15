@@ -255,12 +255,18 @@ restart:
 		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
 			// TS: an unparsable chunk marks the interaction failed, is
 			// surfaced as an error part and reading continues.
-			message := fmt.Sprintf("failed to parse interactions stream event: %v", err)
+			var chunkErr error
+			if !json.Valid([]byte(event.Data)) {
+				var probe interface{}
+				chunkErr = providererrors.NewJSONParseError(event.Data, json.Unmarshal([]byte(event.Data), &probe))
+			} else {
+				chunkErr = providererrors.NewValidationErrorWithContext(event.Data, fmt.Sprintf("failed to parse interactions stream event: %v", err), err, &providererrors.ValidationContext{})
+			}
 			s.finishStatus = InteractionStatusFailed
 			s.buffer = append(s.buffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: message,
-				Err:  providererrors.NewStreamProviderError(message, "google.interactions", "", nil, nil, nil, nil),
+				Text: chunkErr.Error(),
+				Err:  chunkErr,
 			})
 			goto restart
 		}
