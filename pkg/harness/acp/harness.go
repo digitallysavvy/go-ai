@@ -249,17 +249,24 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	sandboxProviderAuthEnvironment := resolvedProviderAuth.Env
 	var sandboxProviderEnvironment map[string]string
 	credentialEnvironmentVariables := uniqueStrings(append(append([]string{}, settings.CredentialEnv...), "AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"))
+	credentialForwardingEnvironmentVariables := uniqueStrings(append(append([]string{}, credentialEnvironmentVariables...), providerCredentialEnvironmentVariables(resolvedProviderAuth)...))
 	var sandboxCredentialEnvironment map[string]string
-	credentialsBrokered := false
 
 	if settings.CredentialBrokering != nil {
 		if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
+			providerEnvironment, err := resolveProviderEnvironment(resolvedProviderAuth, h.clientApp)
+			if err != nil {
+				return nil, err
+			}
 			brokeringEnvironment := map[string]string{}
 			for k, v := range implementationEnvironment {
 				brokeringEnvironment[k] = v
 			}
+			for k, v := range providerEnvironment {
+				brokeringEnvironment[k] = v
+			}
 			sandboxCredentialEnvironment, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment: brokeringEnvironment, CredentialEnvironmentVariables: credentialEnvironmentVariables,
+				Environment: brokeringEnvironment, CredentialEnvironmentVariables: credentialForwardingEnvironmentVariables,
 				CredentialForwarding:                 settings.CredentialForwarding,
 				PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
 			})
@@ -274,26 +281,32 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				merged[k] = v
 			}
 			sandboxImplementationEnvironment = merged
-			headers := opts.Headers
-			transformations := settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, headers)
+			transformations := settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, opts.Headers)
 			if len(transformations) > 0 {
 				if err := adder.AddRequestTransformations(ctx, transformations); err != nil {
 					return nil, err
 				}
 			}
-			credentialsBrokered = true
 			if resolvedProviderAuth.Type == "ai-gateway" {
 				sandboxProviderEnvironment = map[string]string{}
 			}
 		}
 	}
 	if settings.CredentialForwarding != nil && sandboxProviderEnvironment == nil && resolvedProviderAuth.Type == "ai-gateway" {
-		sandboxProviderEnvironment = map[string]string{}
+		sandboxProviderEnvironment, err = resolveProviderEnvironment(resolvedProviderAuth, h.clientApp)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if sandboxProviderEnvironment != nil {
-		for k, v := range sandboxProviderEnvironment {
-			sandboxImplementationEnvironment[k] = v
+		merged := map[string]string{}
+		for k, v := range sandboxImplementationEnvironment {
+			merged[k] = v
 		}
+		for k, v := range sandboxProviderEnvironment {
+			merged[k] = v
+		}
+		sandboxImplementationEnvironment = merged
 		filtered := map[string]string{}
 		for k, v := range resolvedProviderAuth.Env {
 			if k != "AI_SDK_ACP_GATEWAY_API_KEY" && k != "AI_SDK_ACP_GATEWAY_BASE_URL" {
@@ -411,7 +424,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	forwardedImplementationEnvironment := sandboxImplementationEnvironment
 	if sandboxCredentialEnvironment == nil {
 		forwardedImplementationEnvironment, err = harnessutil.ApplyCredentialForwarding(ctx, harnessutil.CredentialForwardingOptions{
-			Environment: sandboxImplementationEnvironment, CredentialEnvironmentVariables: credentialEnvironmentVariables,
+			Environment: sandboxImplementationEnvironment, CredentialEnvironmentVariables: credentialForwardingEnvironmentVariables,
 			CredentialForwarding: settings.CredentialForwarding,
 		})
 		if err != nil {
@@ -435,10 +448,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		}
 		harnessutil.WarnCredentialBrokeringUnavailable(harnessutil.WarnCredentialBrokeringUnavailableOptions{
 			Environment: env, ForwardedEnvironment: forwarded,
-			CredentialEnvironmentVariables: append(append([]string{}, credentialEnvironmentVariables...), "AI_SDK_ACP_GATEWAY_API_KEY"),
+			CredentialEnvironmentVariables: append(append([]string{}, credentialForwardingEnvironmentVariables...), "AI_SDK_ACP_GATEWAY_API_KEY"),
 		})
 	}
-	_ = credentialsBrokered
 
 	if settings.AuthenticationFiles != nil {
 		files := settings.AuthenticationFiles(implementationEnvironment, forwardedImplementationEnvironment, sandboxCredentialEnvironment != nil)
@@ -467,9 +479,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	if resolvedProviderAuth.Type != "" {
 		bridgeProviderAuthentication = &bridgeProviderAuth{Type: resolvedProviderAuth.Type, Env: resolvedProviderAuth.GatewayEnv}
 	}
-	var providerEnvironment map[string]string
+	var providerEnvironment *map[string]string
 	if sandboxProviderEnvironment != nil {
-		providerEnvironment = map[string]string{}
+		providerEnvironment = &map[string]string{}
 	}
 	for k, v := range createBridgeEnvironment(bridgeConfiguration{
 		Authentication: settings.Authentication, ProviderAuthentication: bridgeProviderAuthentication,
