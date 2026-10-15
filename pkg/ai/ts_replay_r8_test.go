@@ -197,3 +197,73 @@ func TestTSReplay_MultipleStreamConsumption(t *testing.T) {
 		t.Fatalf("text stream body = %q", body)
 	}
 }
+
+// stream-text.test.ts 'provider-executed tool (MCP) approval' > 'when a
+// provider-executed tool emits tool-approval-request'.
+func TestTSReplay_ProviderExecutedToolApprovalRequest(t *testing.T) {
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: transformTestModel(
+			provider.StreamChunk{Type: provider.ChunkTypeStreamStart},
+			provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "mcp-call-1", ToolName: "mcp_tool", Arguments: map[string]interface{}{"query": "test"}, RawArguments: `{ "query": "test" }`, ProviderExecuted: true}},
+			provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{ApprovalID: "mcp-approval-1", ToolCallID: "mcp-call-1"}},
+			provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(3, 10)},
+		),
+		Prompt: "test-input",
+		Tools:  []types.Tool{{Name: "mcp_tool", ProviderExecuted: true, Parameters: map[string]interface{}{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request *types.ToolApprovalRequestContent
+	var order []string
+	for {
+		c, err := res.NewStream().Next()
+		_ = c
+		_ = err
+		break
+	}
+	s := res.NewStream()
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if name := tsPartName(c); name != "" {
+			order = append(order, name)
+		}
+		if c.Type == provider.ChunkTypeToolApprovalRequest {
+			request = c.ToolApprovalRequest
+		}
+	}
+	want := []string{"start", "start-step", "tool-call:mcp-call-1:mcp_tool", string(provider.ChunkTypeToolApprovalRequest), "finish-step:tool-calls", "finish:tool-calls"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("full stream\n got %q\nwant %q", order, want)
+	}
+	if request == nil || request.ApprovalID != "mcp-approval-1" || request.ToolCall.ID != "mcp-call-1" || request.ToolCall.ToolName != "mcp_tool" || request.ToolCall.Arguments["query"] != "test" {
+		t.Fatalf("approval request = %#v, want the tool call attached", request)
+	}
+	if res.FinishReason() != types.FinishReasonToolCalls || len(res.Steps()) != 1 {
+		t.Fatalf("finish=%v steps=%d", res.FinishReason(), len(res.Steps()))
+	}
+	var kinds []string
+	for _, p := range res.Steps()[0].Content {
+		switch p.(type) {
+		case types.ToolCallContent:
+			kinds = append(kinds, "call")
+		case types.ToolApprovalRequestContent:
+			kinds = append(kinds, "request")
+		default:
+			kinds = append(kinds, fmt.Sprintf("%T", p))
+		}
+	}
+	if !reflect.DeepEqual(kinds, []string{"call", "request"}) {
+		t.Fatalf("content = %v", kinds)
+	}
+	msgs := res.ResponseMessages()
+	if len(msgs) != 1 || msgs[0].Role != types.RoleAssistant {
+		t.Fatalf("response messages = %v", roles(msgs))
+	}
+	if k := contentKinds(msgs[0].Content); len(k) != 2 {
+		t.Fatalf("assistant content = %v", k)
+	}
+}

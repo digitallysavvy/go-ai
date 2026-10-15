@@ -1985,6 +1985,30 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
+			// A provider-emitted approval request (an MCP server asking for
+			// approval of its provider-executed call) carries the call it
+			// belongs to and is part of the step's content (TS
+			// stream-language-model-call tool-approval-request). One without a
+			// matching call is an error part.
+			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil && chunk.ToolApprovalRequest.ToolCall.ID == "" {
+				request := *chunk.ToolApprovalRequest
+				var matched *types.ToolCall
+				for i := range stepToolCalls {
+					if stepToolCalls[i].ID == request.ToolCallID {
+						matched = &stepToolCalls[i]
+						break
+					}
+				}
+				if matched == nil {
+					notFound := &ToolCallNotFoundForApprovalError{ToolCallID: request.ToolCallID, ApprovalID: request.ApprovalID}
+					chunk = &provider.StreamChunk{Type: provider.ChunkTypeError, Err: notFound, Text: notFound.Error()}
+				} else {
+					request.ToolCall = *matched
+					chunk.ToolApprovalRequest = &request
+					stepContent = append(stepContent, request)
+				}
+			}
+
 			// Track provider-inline tool results for the deferred hasResult check.
 			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
 				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, stepToolCalls, toolsByName, &stepUsage)
@@ -2512,6 +2536,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if tr.ProviderExecuted && tr.Result == nil && tr.Error == nil {
 					continue
 				}
+			}
+			// A provider-executed call whose result has not arrived is only a
+			// pending marker: TS emits no tool-result part for it (the real
+			// result arrives in the stream, now or in a later step).
+			if isPendingProviderResult(*tr) {
+				continue
 			}
 			emitChunk(provider.StreamChunk{
 				Type:       provider.ChunkTypeToolResult,
