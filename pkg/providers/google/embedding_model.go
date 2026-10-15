@@ -427,7 +427,7 @@ func embeddingAPIParts(parts []EmbeddingPart) ([]map[string]interface{}, error) 
 func embeddingPartsForValue(text string, index, valueCount int, opts GoogleEmbeddingProviderOptions) ([]map[string]interface{}, error) {
 	if opts.Content != nil {
 		if len(opts.Content) != valueCount {
-			return nil, fmt.Errorf("the number of multimodal content entries (%d) must match the number of values (%d)", len(opts.Content), valueCount)
+			return nil, fmt.Errorf("The number of multimodal content entries (%d) must match the number of values (%d).", len(opts.Content), valueCount) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		textParts := make([]map[string]interface{}, 0, 1+len(opts.Content[index]))
 		if text != "" {

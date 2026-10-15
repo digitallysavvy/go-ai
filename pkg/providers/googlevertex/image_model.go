@@ -141,7 +141,9 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		Base64Images: out.Base64Images,
 		MimeType:     out.MediaType,
 		Usage:        usage,
-		Warnings:     append(vertexImageWarnings(opts), lmResult.Warnings...),
+		// TS returns only the image model's own warnings; the inner
+		// language-model call's warnings are dropped.
+		Warnings: vertexImageWarnings(opts),
 		ProviderMetadata: map[string]interface{}{
 			"googleVertex": map[string]interface{}{"images": imagesMeta},
 			"vertex":       map[string]interface{}{"images": imagesMeta},
