@@ -2,8 +2,8 @@ package alibaba
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -227,7 +227,7 @@ func alibabaOpenAIStyleToolCalls(toolCalls []types.ToolCall) []map[string]interf
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			if b, err := json.Marshal(args); err == nil {
+			if b, err := jsonstr.Marshal(args); err == nil {
 				arguments = string(b)
 			}
 		}
@@ -299,7 +299,7 @@ func extractToolResultText(tr types.ToolResultContent) string {
 				return v
 			}
 		case types.ToolResultOutputJSON, types.ToolResultOutputContent:
-			if b, err := json.Marshal(tr.Output.Value); err == nil {
+			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
 		case types.ToolResultOutputError, types.ToolResultOutputErrorText:
@@ -307,7 +307,7 @@ func extractToolResultText(tr types.ToolResultContent) string {
 				return v
 			}
 		case types.ToolResultOutputErrorJSON:
-			if b, err := json.Marshal(tr.Output.Value); err == nil {
+			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
 		}
@@ -317,7 +317,7 @@ func extractToolResultText(tr types.ToolResultContent) string {
 		if s, ok := tr.Result.(string); ok {
 			return s
 		}
-		if b, err := json.Marshal(tr.Result); err == nil {
+		if b, err := jsonstr.Marshal(tr.Result); err == nil {
 			return string(b)
 		}
 	}

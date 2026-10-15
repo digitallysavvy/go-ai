@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
@@ -61,7 +62,7 @@ func openAIShellToolCall(providerName string, tools []types.Tool, raw json.RawMe
 		commands = []string{}
 	}
 	args := map[string]interface{}{"action": map[string]interface{}{"commands": commands}}
-	input, _ := json.Marshal(struct {
+	input := marshalNoEscape(struct {
 		Action struct {
 			Commands []string `json:"commands"`
 		} `json:"action"`
@@ -107,18 +108,30 @@ func openAILocalShellToolCall(providerName string, tools []types.Tool, raw json.
 	if err := json.Unmarshal(raw, &item); err != nil {
 		return types.ToolCall{}, false
 	}
+	// env is kept when the wire sent it, even as {}.
+	var env *map[string]string
+	if item.Action.Env != nil {
+		env = &item.Action.Env
+	}
 	var input []byte
 	if stream {
-		input, _ = json.Marshal(map[string]interface{}{"action": struct {
-			Type             string            `json:"type"`
-			Command          []string          `json:"command"`
-			TimeoutMs        *int              `json:"timeoutMs,omitempty"`
-			User             *string           `json:"user,omitempty"`
-			WorkingDirectory *string           `json:"workingDirectory,omitempty"`
-			Env              map[string]string `json:"env,omitempty"`
-		}{"exec", item.Action.Command, item.Action.TimeoutMs, item.Action.User, item.Action.WorkingDirectory, item.Action.Env}})
+		input = marshalNoEscape(map[string]interface{}{"action": struct {
+			Type             string             `json:"type"`
+			Command          []string           `json:"command"`
+			TimeoutMs        *int               `json:"timeoutMs,omitempty"`
+			User             *string            `json:"user,omitempty"`
+			WorkingDirectory *string            `json:"workingDirectory,omitempty"`
+			Env              *map[string]string `json:"env,omitempty"`
+		}{"exec", item.Action.Command, item.Action.TimeoutMs, item.Action.User, item.Action.WorkingDirectory, env}})
 	} else {
-		input, _ = json.Marshal(map[string]interface{}{"action": item.Action})
+		input = marshalNoEscape(map[string]interface{}{"action": struct {
+			Type             string             `json:"type"`
+			Command          []string           `json:"command"`
+			TimeoutMs        *int               `json:"timeout_ms,omitempty"`
+			User             *string            `json:"user,omitempty"`
+			WorkingDirectory *string            `json:"working_directory,omitempty"`
+			Env              *map[string]string `json:"env,omitempty"`
+		}{item.Action.Type, item.Action.Command, item.Action.TimeoutMs, item.Action.User, item.Action.WorkingDirectory, env}})
 	}
 	var args map[string]interface{}
 	_ = json.Unmarshal(input, &args)
@@ -140,5 +153,11 @@ func marshalOrNil(m map[string]interface{}) json.RawMessage {
 	if err != nil {
 		return nil
 	}
+	return b
+}
+
+// marshalNoEscape is jsonstr.Marshal without the error.
+func marshalNoEscape(v interface{}) []byte {
+	b, _ := jsonstr.Marshal(v)
 	return b
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"net/http"
 	"strings"
 
@@ -583,7 +584,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		argsJSON, _ := json.Marshal(args)
+		argsJSON, _ := jsonstr.Marshal(args)
 		namespace := ""
 		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
@@ -704,7 +705,7 @@ func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCa
 
 func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{}, string) {
 	if part.Arguments != nil {
-		argsJSON, _ := json.Marshal(part.Arguments)
+		argsJSON, _ := jsonstr.Marshal(part.Arguments)
 		return part.Arguments, string(argsJSON)
 	}
 	if part.Input == "" {
@@ -712,14 +713,14 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 	}
 	var parsed interface{}
 	if err := json.Unmarshal([]byte(part.Input), &parsed); err != nil {
-		argsJSON, _ := json.Marshal(part.Input)
+		argsJSON, _ := jsonstr.Marshal(part.Input)
 		return map[string]interface{}{}, string(argsJSON)
 	}
 	if args, ok := parsed.(map[string]interface{}); ok {
-		argsJSON, _ := json.Marshal(args)
+		argsJSON, _ := jsonstr.Marshal(args)
 		return args, string(argsJSON)
 	}
-	argsJSON, _ := json.Marshal(parsed)
+	argsJSON, _ := jsonstr.Marshal(parsed)
 	return map[string]interface{}{}, string(argsJSON)
 }
 
@@ -752,7 +753,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
 		}
 		arguments := tc.Arguments
-		rawArguments, _ := json.Marshal(arguments)
+		rawArguments, _ := jsonstr.Marshal(arguments)
 		var callID *string
 		execution := "server"
 		if rawCallID, ok := arguments["call_id"].(string); ok && rawCallID != "" {
@@ -760,7 +761,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			execution = "client"
 		}
 		if nested, ok := arguments["arguments"]; ok {
-			rawArguments, _ = json.Marshal(nested)
+			rawArguments, _ = jsonstr.Marshal(nested)
 		}
 		// TS: `id: id ?? part.toolCallId` -- unlike local_shell_call/
 		// shell_call/apply_patch_call/computer_call (which use a bare `id!`
@@ -861,7 +862,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
 		input := tc.RawArguments
 		if input == "" {
-			raw, _ := json.Marshal(tc.Arguments)
+			raw, _ := jsonstr.Marshal(tc.Arguments)
 			input = string(raw)
 		}
 		var async *bool
@@ -952,7 +953,7 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 				// encrypted_content below) when an empty-text reasoning part
 				// would otherwise append nothing to an already-started
 				// reasoning sequence.
-				raw, _ := json.Marshal(part)
+				raw, _ := jsonstr.Marshal(part)
 				warnings = append(warnings, types.Warning{
 					Type:    "other",
 					Message: fmt.Sprintf("Cannot append empty reasoning part to existing reasoning sequence. Skipping reasoning part: %s.", raw),
@@ -978,7 +979,7 @@ func convertReasoningItem(part types.ReasoningContent, opts ConvertOptions, reas
 		// Row (P1-5c item 7): a reasoning part with neither an itemId nor
 		// encrypted_content didn't originate from this provider and cannot
 		// be replayed; TS warns instead of silently dropping it.
-		raw, _ := json.Marshal(part)
+		raw, _ := jsonstr.Marshal(part)
 		return nil, []types.Warning{{
 			Type:    "other",
 			Message: fmt.Sprintf("Non-OpenAI reasoning parts are not supported. Skipping reasoning part: %s.", raw),
@@ -1643,7 +1644,7 @@ func buildParallelFunctionCallOutput(group parallelToolResultGroup, opts Convert
 		case string:
 			parts[i] = out
 		default:
-			b, _ := json.Marshal(out)
+			b, _ := jsonstr.Marshal(out)
 			parts[i] = string(b)
 		}
 	}
@@ -1981,7 +1982,7 @@ func stringMapArg(values map[string]interface{}, key string) map[string]string {
 }
 
 func decodeToolOutputJSON(value interface{}, target interface{}) bool {
-	data, err := json.Marshal(value)
+	data, err := jsonstr.Marshal(value)
 	if err != nil {
 		return false
 	}
@@ -2072,7 +2073,7 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 		if !hasOutputSchema {
 			return value
 		}
-		b, _ := json.Marshal(value)
+		b, _ := jsonstr.Marshal(value)
 		return string(b)
 	}
 	if tr.Output != nil {
@@ -2082,7 +2083,7 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 			// tell a failed execution from a successful result (TS #22209).
 			// The wrapped text is already JSON, so it is not re-encoded for
 			// tools with an output schema.
-			if b, err := json.Marshal(map[string]interface{}{"error": tr.Output.Value}); err == nil {
+			if b, err := jsonstr.Marshal(map[string]interface{}{"error": tr.Output.Value}); err == nil {
 				return string(b)
 			}
 		case types.ToolResultOutputText:
@@ -2090,7 +2091,7 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 				return scalarOutput(s)
 			}
 		case types.ToolResultOutputJSON:
-			if b, err := json.Marshal(tr.Output.Value); err == nil {
+			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
 		case types.ToolResultOutputExecutionDenied:

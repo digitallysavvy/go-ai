@@ -3,6 +3,7 @@ package mistral
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -121,7 +122,7 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 					if args == nil {
 						args = map[string]interface{}{}
 					}
-					b, _ := json.Marshal(args)
+					b, _ := jsonstr.Marshal(args)
 					input = string(b)
 				}
 				var opts map[string]interface{}
@@ -154,7 +155,7 @@ func toolCallContentInput(p types.ToolCallContent) string {
 	if args == nil {
 		args = map[string]interface{}{}
 	}
-	b, _ := json.Marshal(args)
+	b, _ := jsonstr.Marshal(args)
 	return string(b)
 }
 
@@ -181,7 +182,7 @@ func executionResultString(tr types.ToolResultContent) string {
 	if s, ok := result.(string); ok {
 		return s
 	}
-	b, _ := json.Marshal(result)
+	b, _ := jsonstr.Marshal(result)
 	return string(b)
 }
 
@@ -192,7 +193,7 @@ func toStringMap(v interface{}) (map[string]interface{}, bool) {
 	if m, ok := v.(map[string]interface{}); ok {
 		return m, true
 	}
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return nil, false
 	}

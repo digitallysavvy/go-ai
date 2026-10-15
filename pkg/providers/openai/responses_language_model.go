@@ -1410,7 +1410,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			rawArgs, _ := json.Marshal(map[string]interface{}{
+			rawArgs := marshalNoEscape(map[string]interface{}{
 				"callId":    item.CallID,
 				"operation": item.Operation,
 			})
@@ -1686,7 +1686,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if isHosted {
 				hostedToolSearchCallIds = append(hostedToolSearchCallIds, toolCallID)
 			}
-			inputRaw, _ := json.Marshal(map[string]interface{}{
+			inputRaw := marshalNoEscape(map[string]interface{}{
 				"arguments": item.Arguments,
 				"call_id":   item.CallID,
 			})
@@ -1789,7 +1789,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				codeValue = *item.Code
 			}
 			codeArgs := map[string]interface{}{"containerId": item.ContainerID, "code": codeValue}
-			rawCodeArgs, _ := json.Marshal(codeArgs)
+			rawCodeArgs := marshalNoEscape(codeArgs)
 			codeInterpreterToolName := openAIProviderToolDisplayName(tools, "openai.code_interpreter", "code_interpreter")
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.ID,
@@ -2002,7 +2002,7 @@ func programCallArguments(item responses.ProgramItem) (map[string]interface{}, s
 		"code":        item.Code,
 		"fingerprint": item.Fingerprint,
 	}
-	raw, _ := json.Marshal(args)
+	raw := marshalNoEscape(args)
 	return args, string(raw)
 }
 
@@ -2041,7 +2041,7 @@ func computerCallArguments(item responses.ComputerCall) (map[string]interface{},
 		"pendingSafetyChecks": checks,
 		"status":              status,
 	}
-	raw, _ := json.Marshal(args)
+	raw := marshalNoEscape(args)
 	return args, string(raw)
 }
 
@@ -3100,7 +3100,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					},
 				})
 				if isDelete {
-					inputStr, _ := json.Marshal(struct {
+					inputStr := marshalNoEscape(struct {
 						CallID    string `json:"callId"`
 						Operation struct {
 							Type string `json:"type"`
@@ -3123,7 +3123,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						Path string `json:"path"`
 						Diff string `json:"diff"`
 					}
-					prefixJSON, _ := json.Marshal(struct {
+					prefixJSON := marshalNoEscape(struct {
 						CallID    string       `json:"callId"`
 						Operation applyPatchOp `json:"operation"`
 					}{CallID: callID, Operation: applyPatchOp{Type: opType, Path: opPath}})
@@ -3498,7 +3498,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				if toolCall.codeInterpreter != nil {
 					containerID = toolCall.codeInterpreter.containerID
 				}
-				inputStr, _ := json.Marshal(map[string]interface{}{"code": e.Code, "containerId": containerID})
+				inputStr := marshalNoEscape(map[string]interface{}{"code": e.Code, "containerId": containerID})
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: toolCall.toolCallID, Text: `"}`},
 					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
@@ -3998,7 +3998,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
 			)
 		}
-		rawArgs, _ := json.Marshal(map[string]interface{}{
+		rawArgs := marshalNoEscape(map[string]interface{}{
 			"callId":    item.CallID,
 			"operation": item.Operation,
 		})
@@ -4292,7 +4292,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		} else {
 			callIDForInput = toolCallID
 		}
-		inputRaw, _ := json.Marshal(map[string]interface{}{"arguments": item.Arguments, "call_id": callIDForInput})
+		inputRaw := marshalNoEscape(map[string]interface{}{"arguments": item.Arguments, "call_id": callIDForInput})
 		tc := types.ToolCall{
 			ID:               toolCallID,
 			ToolName:         toolCall.toolName,

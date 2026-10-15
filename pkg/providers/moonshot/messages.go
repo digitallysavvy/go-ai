@@ -2,8 +2,8 @@ package moonshot
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -227,7 +227,7 @@ func moonshotWireToolCalls(toolCalls []types.ToolCall) []map[string]interface{} 
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			if b, err := json.Marshal(args); err == nil {
+			if b, err := jsonstr.Marshal(args); err == nil {
 				arguments = string(b)
 			}
 		}
@@ -256,7 +256,7 @@ func extractMoonshotToolResultText(tr types.ToolResultContent) string {
 			}
 			return "Tool call execution denied."
 		case types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputErrorJSON:
-			if b, err := json.Marshal(tr.Output.Value); err == nil {
+			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
 				return string(b)
 			}
 		}
@@ -265,7 +265,7 @@ func extractMoonshotToolResultText(tr types.ToolResultContent) string {
 		if s, ok := tr.Result.(string); ok {
 			return s
 		}
-		if b, err := json.Marshal(tr.Result); err == nil {
+		if b, err := jsonstr.Marshal(tr.Result); err == nil {
 			return string(b)
 		}
 	}

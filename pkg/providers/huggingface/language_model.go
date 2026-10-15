@@ -3,6 +3,7 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"net/http"
 	"strings"
 	"time"
@@ -69,7 +70,7 @@ func extractHFProviderOptions(raw map[string]interface{}) *hfProviderOptions {
 	if !ok {
 		return nil
 	}
-	data, err := json.Marshal(value)
+	data, err := jsonstr.Marshal(value)
 	if err != nil {
 		return nil
 	}

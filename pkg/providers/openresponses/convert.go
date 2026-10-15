@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"reflect"
 	"strings"
 
@@ -531,13 +532,13 @@ func serializeToolCallArguments(toolCall types.ToolCallContent) string {
 		if json.Valid([]byte(toolCall.Input)) {
 			return toolCall.Input
 		}
-		data, err := json.Marshal(toolCall.Input)
+		data, err := jsonstr.Marshal(toolCall.Input)
 		if err == nil {
 			return string(data)
 		}
 	}
 	if toolCall.Arguments != nil {
-		data, err := json.Marshal(toolCall.Arguments)
+		data, err := jsonstr.Marshal(toolCall.Arguments)
 		if err == nil {
 			return string(data)
 		}
@@ -801,7 +802,7 @@ func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]typ
 		return fmt.Sprintf("%v", v), nil
 	default:
 		// For complex types, JSON encode
-		jsonBytes, _ := json.Marshal(v)
+		jsonBytes, _ := jsonstr.Marshal(v)
 		return string(jsonBytes), nil
 	}
 }
@@ -822,7 +823,7 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 		}
 		return "Tool call execution denied.", nil
 	case types.ToolResultOutputJSON:
-		jsonBytes, _ := json.Marshal(output.Value)
+		jsonBytes, _ := jsonstr.Marshal(output.Value)
 		return string(jsonBytes), nil
 	case types.ToolResultOutputContent:
 		parts := make([]interface{}, 0, len(output.Content))
@@ -860,7 +861,7 @@ func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *
 		if output.Value == nil {
 			return "", nil
 		}
-		jsonBytes, _ := json.Marshal(output.Value)
+		jsonBytes, _ := jsonstr.Marshal(output.Value)
 		return string(jsonBytes), nil
 	}
 }

@@ -27,14 +27,15 @@ import (
 // Case is one TS test that feeds a canned response through a model and
 // snapshots the output.
 type Case struct {
-	Test     string                 `json:"test"`
-	Response *Response              `json:"response"`
-	CallKind string                 `json:"callKind"`
-	ModelID  string                 `json:"modelId"`
-	Suspect  bool                   `json:"suspect"`
-	CallArgs string                 `json:"callArgs"`
-	Call     map[string]interface{} `json:"call"`
-	Exps     []Expectation          `json:"exps"`
+	Test        string                 `json:"test"`
+	Response    *Response              `json:"response"`
+	CallKind    string                 `json:"callKind"`
+	ModelID     string                 `json:"modelId"`
+	TopDescribe string                 `json:"topDescribe"`
+	Suspect     bool                   `json:"suspect"`
+	CallArgs    string                 `json:"callArgs"`
+	Call        map[string]interface{} `json:"call"`
+	Exps        []Expectation          `json:"exps"`
 }
 
 // Response is the canned wire response.
@@ -545,6 +546,16 @@ func CanonStream(parts []interface{}) []interface{} {
 				}
 			}
 			out = append(out, map[string]interface{}{"type": "text-delta", "delta": d})
+			continue
+		case "reasoning-delta":
+			d, _ := m["delta"].(string)
+			if n := len(out); n > 0 {
+				if prev, ok := out[n-1].(map[string]interface{}); ok && prev["type"] == "reasoning-delta" {
+					prev["delta"] = prev["delta"].(string) + d
+					continue
+				}
+			}
+			out = append(out, map[string]interface{}{"type": "reasoning-delta", "delta": d})
 			continue
 		case "tool-input-delta":
 			if d, _ := m["delta"].(string); d == "" {

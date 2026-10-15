@@ -14,6 +14,7 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -142,7 +143,7 @@ func ExpandParallelToolCall(toolCallID, toolName, input, itemID string, tools []
 		if childToolName == "" || !availableToolNames[childToolName] {
 			return nil, false
 		}
-		childInput, _ := json.Marshal(parameters)
+		childInput, _ := jsonstr.Marshal(parameters)
 		expanded = append(expanded, types.ToolCall{
 			ID:           fmt.Sprintf("%s_%d", toolCallID, index),
 			ToolName:     childToolName,

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -272,7 +273,7 @@ func perplexityToolCallArguments(part types.ToolCallContent) string {
 			value = part.Input
 		}
 	}
-	b, err := json.Marshal(value)
+	b, err := jsonstr.Marshal(value)
 	if err != nil {
 		return "{}"
 	}
@@ -353,7 +354,7 @@ func serializePerplexityToolOutput(p types.ToolResultContent) (string, error) {
 		if s, ok := out.value.(string); ok {
 			return s, nil
 		}
-		b, err := json.Marshal(out.value)
+		b, err := jsonstr.Marshal(out.value)
 		return string(b), err
 	case "execution-denied":
 		if out.reason != "" {
@@ -376,7 +377,7 @@ func serializePerplexityToolOutput(p types.ToolResultContent) (string, error) {
 		}
 		return b.String(), nil
 	default: // json, error-json
-		b, err := json.Marshal(out.value)
+		b, err := jsonstr.Marshal(out.value)
 		return string(b), err
 	}
 }
