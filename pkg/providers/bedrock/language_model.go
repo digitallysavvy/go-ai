@@ -915,10 +915,21 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				r := types.ReasoningContent{Text: rc.ReasoningText.Text}
 				if rc.ReasoningText.Signature != "" {
 					r.Signature = rc.ReasoningText.Signature
+					// TS: providerMetadata.{amazonBedrock,bedrock}.signature.
+					r.ProviderMetadata = mustMarshalProviderMetadata(map[string]interface{}{
+						"amazonBedrock": map[string]interface{}{"signature": rc.ReasoningText.Signature},
+						"bedrock":       map[string]interface{}{"signature": rc.ReasoningText.Signature},
+					})
 				}
 				reasoning = r
 			case rc.RedactedReasoning != nil:
-				reasoning = types.ReasoningContent{RedactedData: rc.RedactedReasoning.Data}
+				reasoning = types.ReasoningContent{
+					RedactedData: rc.RedactedReasoning.Data,
+					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
+						"amazonBedrock": map[string]interface{}{"redactedData": rc.RedactedReasoning.Data},
+						"bedrock":       map[string]interface{}{"redactedData": rc.RedactedReasoning.Data},
+					}),
+				}
 			case rc.RedactedContent != "":
 				reasoning = types.ReasoningContent{
 					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
