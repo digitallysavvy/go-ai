@@ -34,6 +34,7 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `MaxRetries` | `int` | MaxRetries is the maximum number of times a failed "tools/call" request is retried with exponential backoff, matching TypeScript's MCPClient maxRetries option (TS prepareMaxRetries). Default: 0 (no retries). A negative value makes Connect return an error (TS throws MCPClientError "maxRetries must be &gt;= 0" from the constructor; Go has no fallible constructor, so the check runs at Connect instead). Only transient failures are retried: HTTP status 408/409/429/&gt;=500 and transport-level connection errors (refused/reset/timeout/broken pipe/ closed). JSON-RPC application errors (a non-zero MCPClientError.Code) and successful results with IsError=true are never retried. |
 | `ProtocolVersionDiscovery` | `*bool` | ProtocolVersionDiscovery controls whether the client probes the 2026-07-28 `server/discover` method before falling back to the legacy `initialize` handshake (hash e6a9927). Default true. Only takes effect when the transport implements ProtocolVersionDiscoveryTransport and reports support (only HTTPTransport does today). |
 | `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics the client would otherwise drop silently: a tool skipped because its x-mcp-header annotation is invalid, a tool call whose header binding failed (hash 0c60a40), or a registered OnElicitationRequest handler that returned an error or an invalid ElicitResult (matching TS DefaultMCPClient.onRequestMessage's this.onError(error) call). |
+| `InitialInitializeResult` | `*InitializeResult` | InitialInitializeResult, when set, is reused as the server's initialize result from a previous MCP session: Connect starts the transport and applies it without sending an initialize request or the initialized notification (TS initialInitializeResult). |
 | `ExperimentalEvents` | `*MCPEventsConfig` | ExperimentalEvents configures experimental MCP events (webhook subscriptions with a Store, or managed subscriptions with an Adapter). Experimental: may change in any release. |
 
 {/* /gen:fields */}
@@ -49,10 +50,12 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `ListAllTools(ctx) ([]MCPTool, error)` | Lists every tool across pages. |
 | `GetSerializableTools(ctx) (*ListToolsResult, error)` | Returns the tool definitions in a form you can store, for example for [fingerprinting](../ai/tool-call-repair.mdx#tool-definition-fingerprints). |
 | `CallTool(ctx, name string, arguments map[string]interface{}) (*CallToolResult, error)` | Calls a tool. |
-| `ListResources(ctx) ([]MCPResource, error)` | Lists resources. |
+| `ListResources(ctx) ([]MCPResource, error)` | Lists the first page of resources. |
+| `ListResourcesWithCursor(ctx, cursor string) (*ListResourcesResult, error)` | Lists one page of resources from a cursor. |
 | `ListResourceTemplates(ctx) (*ListResourceTemplatesResult, error)` | Lists resource templates. |
 | `ReadResource(ctx, uri string) (*ReadResourceResult, error)` | Reads a resource. |
-| `ListPrompts(ctx) ([]MCPPrompt, error)` | Lists prompts. |
+| `ListPrompts(ctx) ([]MCPPrompt, error)` | Lists the first page of prompts. |
+| `ListPromptsWithCursor(ctx, cursor string) (*ListPromptsResult, error)` | Lists one page of prompts from a cursor. |
 | `GetPrompt(ctx, name string, arguments map[string]interface{}) (*GetPromptResult, error)` | Gets a prompt with arguments filled in. |
 | `Complete(ctx, params CompleteRequestParams) (*CompleteResult, error)` | Requests argument completions for a prompt or resource template. |
 | `OnElicitationRequest(handler func(context.Context, ElicitationRequest) (ElicitResult, error))` | Registers the handler for server-initiated elicitation requests. |
@@ -60,6 +63,10 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `ServerInfo() ServerInfo` | Server name and version. |
 | `ServerInstructions() string` | Instructions the server sent. |
 | `InitializeResult() InitializeResult` | The raw initialize result. |
+
+Requests for tools, resources or prompts fail with `Server does not support tools` (or `resources`, `prompts`) when the server did not advertise that capability during the handshake. A request on a closed client, or after the transport dropped, fails with `Attempted to send a request from a closed client`. A request that was in flight when the connection dropped fails with `Connection closed`. If the handshake fails, `Connect` closes the transport before returning.
+
+Set `MCPClientConfig.InitialInitializeResult` to reuse the initialize result of an earlier session: `Connect` starts the transport and applies it without sending `initialize`.
 
 `MaxRetries` retries only `tools/call` requests that fail with a transient error: HTTP 408, 409, 429 or 5xx, or a connection-level failure. JSON-RPC application errors and results with `IsError` set are never retried.
 
@@ -122,6 +129,7 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `Env` | `[]string` | Env are additional environment variables to set, in "KEY=VALUE" form (the os.Environ()/exec.Cmd.Env convention). The child process does not inherit the full parent environment: only Env plus a small safe allowlist of inherited vars (PATH, HOME, etc. — see getEnvironment) are passed through, mirroring TS mcp-stdio/get-environment.ts. |
 | `WorkingDir` | `string` | WorkingDir is the working directory for the command |
 | `Config` | `TransportConfig` | Config is the base transport configuration |
+| `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics such as a stdout line that is not a valid JSON-RPC message (TS onerror). Such lines are skipped instead of ending the connection. |
 
 {/* /gen:fields */}
 
@@ -134,6 +142,8 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `URL` | `string` | URL is the URL of the MCP server |
 | `TimeoutMS` | `int` | Timeout is the HTTP request timeout |
 | `OAuth` | `*OAuthConfig` | OAuth configuration (optional) |
+| `AuthProvider` | `OAuthClientProvider` | AuthProvider enables the MCP OAuth flow: its tokens are sent as a bearer token, and a 401 response runs Auth once (shared by concurrent requests) before the request is retried. Matches TS HttpMCPTransport's authProvider. When Auth cannot complete without user interaction the request fails with \*UnauthorizedError (also reported through OnError). |
+| `AuthHTTPClient` | `*http.Client` | AuthHTTPClient is the HTTP client used for the OAuth discovery, registration and token requests Auth makes (TS passes the transport's fetch). Nil uses Auth's default client. |
 | `Config` | `TransportConfig` | Config is the base transport configuration |
 | `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for all MCP HTTP requests. Useful for TLS customization, proxy settings, and custom dialers. |
 | `SSEClient` | `SSEClient` | SSEClient is an optional custom SSE-capable client used instead of HTTPClient when supplied. It lets callers provide custom event-stream transports, TLS settings, proxy behavior, or dialers. |
@@ -157,8 +167,17 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `Config` | `TransportConfig` | Config is the base transport configuration. |
 | `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for GET and POST requests. |
 | `SSEClient` | `SSEClient` | SSEClient is an optional custom SSE-capable client used instead of HTTPClient when supplied. |
+| `AuthProvider` | `OAuthClientProvider` | AuthProvider enables the MCP OAuth flow: its tokens are sent as a bearer token, and a 401 response runs Auth once (shared by concurrent requests) before the request is retried. Matches TS SseMCPTransport's authProvider. When Auth cannot complete without user interaction the request fails with \*UnauthorizedError. |
+| `AuthHTTPClient` | `*http.Client` | AuthHTTPClient is the HTTP client used for the OAuth discovery, registration and token requests Auth makes (TS passes the transport's fetch). Nil uses Auth's default client. |
+| `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics (TS onerror). |
 
 {/* /gen:fields */}
+
+### OAuth with an AuthProvider
+
+Set `AuthProvider` (an [`mcp.OAuthClientProvider`](./oauth.mdx)) on `HTTPTransportConfig` or `SSETransportConfig` to let the transport run the OAuth flow itself. Every request carries the provider's access token as a bearer token. On a 401 response the transport calls [`mcp.Auth`](./oauth.mdx) once, shared by all concurrent requests, and retries the request. If `Auth` returns `REDIRECT`, the provider's `RedirectToAuthorization` has been called and the request fails with `*mcp.UnauthorizedError`; finish the flow by calling `Auth` with the authorization code. `AuthHTTPClient` sets the HTTP client used for the discovery, registration and token requests.
+
+Event-stream bodies are not subject to `TimeoutMS`: the timeout bounds a POST until its response headers arrive (and the whole exchange for non-streamed responses), but a standing SSE stream or a streamed POST response stays open. The stdio transport keeps its child process alive after the context given to `Connect` is cancelled, always drains the child's stderr, and skips stdout lines that are not JSON-RPC (reporting them through `StdioTransportConfig.OnError`).
 
 ### OAuthConfig
 
@@ -569,6 +588,7 @@ Managed adapters receive a `context.Context` instead of TS request options: canc
 | `mcp.MCPClientErrorOption` | Option for `NewMCPClientError`: `mcp.WithMCPHTTPResponse`, `mcp.WithMCPHTTPResponseBody`, `mcp.WithMCPHTTPStatus`, `mcp.WithMCPHTTPURL`. |
 | `*mcp.MCPError` | A protocol error payload. |
 | `*mcp.TimeoutError`, `mcp.NewTimeoutError(operation)` | A request timed out. |
+| `*mcp.UnauthorizedError` | The server answered 401 and the transport's `AuthProvider` could not obtain a token without user interaction. |
 | `*mcp.TransportError`, `mcp.NewTransportError(message, cause)` | A transport-level failure. |
 | `mcp.ErrParseError`, `mcp.ErrInvalidRequest`, `mcp.ErrMethodNotFound`, `mcp.ErrInvalidParams`, `mcp.ErrInternalError`, `mcp.ErrToolNotFound`, `mcp.ErrToolExecutionFail`, `mcp.ErrResourceNotFound`, `mcp.ErrUnauthorized` | Sentinel `*MCPClientError` values. |
 

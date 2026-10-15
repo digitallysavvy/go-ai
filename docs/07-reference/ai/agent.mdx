@@ -192,6 +192,8 @@ These tables are generated from the `agent.AgentGenerateOptions` and `agent.Agen
 | `OnChunk` | `func(chunk provider.StreamChunk)` |  |
 | `InitialStreamChunks` | `[]provider.StreamChunk` |  |
 | `ExperimentalTransform` | `[]ai.StreamTransformFunc` | ExperimentalTransform is an ordered list of transforms applied to stream chunks before they reach OnChunk and the returned StreamTextResult, forwarded to ai.StreamTextOptions.ExperimentalTransform. |
+| `OnError` | `func(ctx context.Context, err error)` | OnError is called for error chunks received while streaming, forwarded to ai.StreamTextOptions.OnError. |
+| `OnAbort` | `func(ctx context.Context, steps []types.StepResult)` | OnAbort is called when streaming is aborted by context cancellation, forwarded to ai.StreamTextOptions.OnAbort. |
 
 {/* /gen:fields */}
 
