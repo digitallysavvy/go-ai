@@ -67,7 +67,10 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 
 	var outerToolCall string
 	switch {
-	case input.ToolExecutionOptions != nil && input.ToolExecutionOptions.ToolCallID != "":
+	case input.ToolExecutionOptions != nil && (input.ToolExecutionOptions.ToolCallID != "" || input.Continuation == nil):
+		// TS `??` keeps an explicit empty toolCallId. A Go caller that
+		// resumes with options carrying no ID (only a context, say) still
+		// resumes under the continuation's ID.
 		outerToolCall = input.ToolExecutionOptions.ToolCallID
 	case input.Continuation != nil:
 		outerToolCall = input.Continuation.OuterToolCallID
