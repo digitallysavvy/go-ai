@@ -41,8 +41,8 @@ func TestMCPToolSchemaKeepsServerKeyOrder(t *testing.T) {
 	if !strings.Contains(string(body), `"required":["zeta","alpha"],"properties":{"zeta"`) {
 		t.Fatalf("openai tool body lost order: %s", body)
 	}
-	// The schema is still readable as a map and validates.
-	m, ok := schema.ParametersMap(tools[0].Parameters)
+	// The schema is still a plain map and validates.
+	m, ok := tools[0].Parameters.(map[string]interface{})
 	if !ok || m["additionalProperties"] != false {
 		t.Fatalf("ParametersMap = %#v, %v", m, ok)
 	}
@@ -60,7 +60,7 @@ func TestMCPToolSchemaAppendsMissingKeysLikeTS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := json.Marshal(tools[0].Parameters)
+	got, _ := json.Marshal(toolutil.ResolveToolSchemas(tools)[0].Parameters)
 	want := `{"type":"object","description":"d","properties":{},"additionalProperties":false}`
 	if string(got) != want {
 		t.Fatalf("schema = %s\nwant     %s", got, want)
@@ -114,5 +114,36 @@ func TestMCPToolFingerprintMatchesPlainSchema(t *testing.T) {
 	}
 	if got["t"] == "" || got["t"] != want["t"] {
 		t.Fatalf("fingerprint = %q, want %q", got["t"], want["t"])
+	}
+}
+
+// A v0.5.2 caller type-asserts an MCP tool's Parameters as a map.
+func TestMCPToolParametersStayPlainMap(t *testing.T) {
+	var tool MCPTool
+	if err := json.Unmarshal([]byte(`{"name":"t","inputSchema":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}`), &tool); err != nil {
+		t.Fatal(err)
+	}
+	converter := NewMCPToolConverter(NewMCPClient(newMockTransport(), MCPClientConfig{}))
+	tools, err := converter.ToolsFromDefinitions([]MCPTool{tool}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := tools[0].Parameters.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Parameters is %T, want map[string]interface{}", tools[0].Parameters)
+	}
+	if m["type"] != "object" || m["additionalProperties"] != false {
+		t.Fatalf("Parameters = %#v", m)
+	}
+	if tools[0].ParameterKeyOrder == nil {
+		t.Fatal("key order was not recorded")
+	}
+	// An explicit map schema has no order source and stays a plain map.
+	explicit, err := converter.ToolsFromDefinitions([]MCPTool{tool}, map[string]MCPToolSchema{"t": {InputSchema: map[string]interface{}{"type": "object"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := explicit[0].Parameters.(map[string]interface{}); !ok || explicit[0].ParameterKeyOrder != nil {
+		t.Fatalf("explicit schema: %T order=%v", explicit[0].Parameters, explicit[0].ParameterKeyOrder)
 	}
 }

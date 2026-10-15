@@ -99,8 +99,8 @@ type MCPTool struct {
 
 	titlePresent bool
 	// inputSchemaHint is the inputSchema as the server sent it, with its key
-	// order (a Go map has none). ToolFromMCP wraps the schema in
-	// jsonorder.Hinted with it, so the schema reaches the model in the
+	// order (a Go map has none). ToolFromMCP records it in
+	// Tool.ParameterKeyOrder, so the schema reaches the model in the
 	// server's key order, like TS (a JS object keeps insertion order).
 	inputSchemaHint interface{}
 }

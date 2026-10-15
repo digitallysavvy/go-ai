@@ -109,7 +109,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 		mcpMetadata["app"] = app
 	}
 	providerMetadata := map[string]interface{}{"mcp": mcpMetadata}
-	parameters := automaticMCPParameters(mcpTool)
+	parameters, parameterKeyOrder := automaticMCPParameters(mcpTool)
 	var outputSchema schema.Schema
 	toolType := types.ToolTypeDynamic
 	if toolSchema != nil {
@@ -120,6 +120,7 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 				return types.Tool{}, err
 			}
 			parameters = normalizedInputSchema
+			parameterKeyOrder = nil
 		}
 		var err error
 		outputSchema, err = normalizeMCPOutputSchema(toolSchema.OutputSchema)
@@ -129,16 +130,17 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 	}
 
 	return types.Tool{
-		Name:             mcpTool.Name,
-		Description:      mcpTool.Description,
-		Title:            resolvedTitle,
-		Parameters:       parameters,
-		OutputSchema:     outputSchema,
-		ProviderName:     "mcp",
-		ProviderMetadata: providerMetadata,
-		Metadata:         mcpMetadata,
-		Meta:             copyMap(mcpTool.Meta),
-		Type:             toolType,
+		Name:              mcpTool.Name,
+		Description:       mcpTool.Description,
+		Title:             resolvedTitle,
+		Parameters:        parameters,
+		ParameterKeyOrder: parameterKeyOrder,
+		OutputSchema:      outputSchema,
+		ProviderName:      "mcp",
+		ProviderMetadata:  providerMetadata,
+		Metadata:          mcpMetadata,
+		Meta:              copyMap(mcpTool.Meta),
+		Type:              toolType,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
 			// Call MCP tool
 			result, err := c.client.CallTool(ctx, mcpTool.Name, input)
@@ -194,16 +196,17 @@ func extractMCPToolAnnotations(annotations map[string]interface{}) map[string]in
 }
 
 // automaticMCPParameters is the tool's Parameters for a tool converted with no
-// explicit schema: the server's inputSchema, normalized. The schema carries the
-// key order the server sent (jsonorder.Hinted), as TS spreads the JS object
+// explicit schema: the server's inputSchema, normalized, as a plain map. The
+// second result is the key order the server sent, for Tool.ParameterKeyOrder,
+// as TS spreads the JS object
 // `{...inputSchema, properties: inputSchema.properties ?? {},
 // additionalProperties: false}`: the server's keys in order, then
 // `properties` and `additionalProperties` if the server did not send them.
-func automaticMCPParameters(mcpTool MCPTool) interface{} {
+func automaticMCPParameters(mcpTool MCPTool) (map[string]interface{}, interface{}) {
 	normalized := normalizeAutomaticMCPInputSchema(mcpTool.InputSchema)
 	hint, ok := mcpTool.inputSchemaHint.(*jsonorder.Object)
 	if !ok {
-		return normalized
+		return normalized, nil
 	}
 	ordered := jsonorder.New()
 	for _, k := range hint.Keys() {
@@ -215,7 +218,7 @@ func automaticMCPParameters(mcpTool MCPTool) interface{} {
 			ordered.Set(k, nil)
 		}
 	}
-	return jsonorder.Hinted{V: normalized, Hint: ordered}
+	return normalized, ordered
 }
 
 func normalizeAutomaticMCPInputSchema(input map[string]interface{}) map[string]interface{} {

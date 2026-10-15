@@ -142,9 +142,14 @@ func parseOrderHint(raw []byte) interface{} {
 
 // toolParametersHint is the key order of a tool's Parameters when it carries
 // one (jsonorder.Hinted from an MCP server, or an *schema.OrderedSchema).
-func toolParametersHint(parameters interface{}) interface{} {
+func toolParametersHint(tool types.Tool) interface{} {
+	if o, ok := tool.ParameterKeyOrder.(*jsonorder.Object); ok && o != nil {
+		if _, isMap := tool.Parameters.(map[string]interface{}); isMap {
+			return o
+		}
+	}
 	var raw []byte
-	switch p := parameters.(type) {
+	switch p := tool.Parameters.(type) {
 	case jsonorder.Hinted:
 		raw, _ = p.MarshalJSON() //nolint:errcheck // no hint on failure
 	case *jsonorder.Hinted:
@@ -170,7 +175,7 @@ func SerializeToolSet(tools []types.Tool) (map[string]SerializableToolDef, error
 		if err != nil {
 			return nil, err
 		}
-		hint := toolParametersHint(tool.Parameters)
+		hint := toolParametersHint(tool)
 		def := SerializableToolDef{
 			Name:                    tool.Name,
 			Description:             tool.Description,
@@ -253,15 +258,19 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 			params = def.InputSchema
 			hint = def.inputSchemaHint
 		}
+		// Parameters stays a plain map (as in v0.5.2); the key order rides
+		// in ParameterKeyOrder.
 		var parameters interface{} = params
+		var keyOrder interface{}
 		if hint != nil && params != nil {
-			parameters = jsonorder.Hinted{V: params, Hint: hint}
+			keyOrder = hint
 		}
 		tools = append(tools, types.Tool{
 			Name:                    toolName,
 			Description:             def.Description,
 			Title:                   def.Title,
 			Parameters:              parameters,
+			ParameterKeyOrder:       keyOrder,
 			Strict:                  def.Strict,
 			ProviderExecuted:        def.ProviderExecuted || def.IsProviderExecuted || def.Type == "provider",
 			SupportsDeferredResults: def.SupportsDeferredResults,
