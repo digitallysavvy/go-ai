@@ -124,7 +124,8 @@ func (e *ProviderError) IsRetryable() bool {
 	if e.Retryable != nil {
 		return *e.Retryable
 	}
-	return e.StatusCode == 0 || e.StatusCode == 429 || e.StatusCode >= 500
+	// TS APICallError default: 408 (request timeout), 409 (conflict), 429, 5xx.
+	return e.StatusCode == 0 || e.StatusCode == 408 || e.StatusCode == 409 || e.StatusCode == 429 || e.StatusCode >= 500
 }
 
 // IsProviderError checks if an error is a ProviderError
