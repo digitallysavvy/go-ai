@@ -1729,6 +1729,20 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		automaticStreamRetryCount := 0
 		callbackStreamRetryCount := 0
 
+		// Tool-part buffering for streamRetries (TS stream-text.ts
+		// shouldBufferToolParts / bufferedAttemptParts). Once retries are
+		// possible, the first tool-related chunk and everything after it is
+		// held back, unprocessed (no forwarding, callbacks, approval
+		// functions or step state), until the attempt finishes (model-call-end
+		// or end of stream) or fails. A failed attempt that is retried drops
+		// the held chunks; otherwise they are replayed in order.
+		bufferToolParts := opts.StreamRetries != nil && (*opts.StreamRetries > 0 || opts.OnErrorRetry != nil)
+		var heldChunks, replayQueue []*provider.StreamChunk
+		streamEnded := false
+		var decidedErr *provider.StreamChunk
+		var decidedErrNormalized error
+		var openTextIDs, openReasoningIDs []string
+
 	stepAttempt:
 		for {
 			if sinkPartialErr != nil {
@@ -1736,8 +1750,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				chunkDeadlineCancel()
 				break
 			}
-			chunk, err := r.nextChunk(chunkDeadlineCtx)
+			var chunk *provider.StreamChunk
+			var err error
+			replayed := false
+			switch {
+			case len(replayQueue) > 0:
+				chunk, replayQueue = replayQueue[0], replayQueue[1:]
+				replayed = true
+			case streamEnded:
+				err = io.EOF
+			default:
+				chunk, err = r.nextChunk(chunkDeadlineCtx)
+			}
 			if err == io.EOF {
+				if len(heldChunks) > 0 {
+					replayQueue, heldChunks, streamEnded = heldChunks, nil, true
+					continue
+				}
 				break
 			}
 			if err != nil {
@@ -1753,7 +1782,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				chunkDeadlineCancel()
 				break
 			}
-			if isOutputChunkForTiming(*chunk) {
+			// Replayed chunks were observed when first read; they must not
+			// re-arm finished timers (TS).
+			if !replayed && isOutputChunkForTiming(*chunk) {
 				chunkDeadlineCtx, chunkDeadlineCancel, chunkDeadlineReason = resetChunkDeadlineOnOutput(stepCtx, r.timeout, chunkDeadlineCancel)
 			}
 			if r.resumeChunksRemaining > 0 {
@@ -1762,6 +1793,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.resumeChunksRemaining--
 				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 				continue
+			}
+			if bufferToolParts && !replayed {
+				if chunk.Type == provider.ChunkTypeFinish && len(heldChunks) > 0 {
+					replayQueue, heldChunks = append(heldChunks, chunk), nil
+					continue
+				}
+				if chunk.Type != provider.ChunkTypeError && chunk.Type != provider.ChunkTypeFinish &&
+					(isStreamRetryToolPart(chunk.Type) || len(heldChunks) > 0) {
+					heldChunks = append(heldChunks, chunk)
+					continue
+				}
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
 			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, remapGenerateID)
@@ -2112,50 +2154,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
-			// NOT IMPLEMENTED, intentionally: TS's tool-part buffering
-			// (stream-text.ts's `shouldBufferToolParts` /
-			// `bufferedAttemptParts`). Once StreamRetries is configured, TS
-			// stops forwarding chunks to the consumer as soon as it sees a
-			// tool-related part (tool-input-*/tool-call/tool-approval-*/
-			// tool-result/tool-error), buffering that part and every part
-			// after it (of any type) until the attempt reaches
-			// model-call-end (flush) or errors (discard on retry, or flush
-			// then forward on a terminal error). Reviewed for WG8 parity
-			// (2026-09-27) and judged infeasible to port without a large,
-			// risky rewrite of this loop:
-			//   - This loop forwards each chunk (OnChunk/fullStream/
-			//     telemetry/transform chain) inline as it is read, and
-			//     accumulates step state (text, tool calls, usage, content,
-			//     IDs) inline too — TS splits these into separate pipeline
-			//     stages (buffering stage -> tool-callback stage -> tool-
-			//     execution stage -> aggregation stage) that all sit
-			//     downstream of the buffer, so a discarded attempt's parts
-			//     never reach any of them. Reproducing that would mean
-			//     restructuring every per-chunk side effect in this ~600
-			//     line loop (chunk deadlines, ID remap tables, tool input
-			//     callbacks, StepResponse metadata, transform chaining) to
-			//     operate on a buffered/replayed chunk queue instead of the
-			//     chunk currently being read.
-			//   - The primary risk TS's buffering guards against — a tool
-			//     from a discarded attempt getting executed, or double-
-			//     executed after a retry — does not apply here: Go always
-			//     executes tools once, in a batch, after this loop ends
-			//     (see executeTools below), using stepToolCalls, which IS
-			//     fully reset on a retry (see the reset block below). So a
-			//     retry can never cause a tool to run for the discarded
-			//     attempt.
-			//   - The residual, accepted gap: if tool-related chunks were
-			//     already streamed to the consumer (OnChunk/fullStream)
-			//     before the error that triggers a retry, the consumer will
-			//     see those "phantom" chunks (and their forwarded text/
-			//     reasoning neighbors once buffering would have started)
-			//     even though the attempt is discarded, whereas TS hides
-			//     them entirely. This is purely a consumer-visible
-			//     presentation difference during an active mid-stream
-			//     retry (an opt-in, narrow window) — internal state
-			//     (Text(), ToolCalls(), Usage(), FinalStep, etc.) is
-			//     unaffected because it's rebuilt from the reset step state
-			//     below, not from what was forwarded.
+			// Tool-part buffering for streamRetries is handled at the top of
+			// this loop (heldChunks / replayQueue), before any of the
+			// processing above, as in TS where the buffer sits upstream of
+			// every stage.
 			//
 			// Call OnError for error chunks before forwarding, and decide
 			// whether a retryable mid-stream provider error should reopen
@@ -2199,7 +2201,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					// this list.
 					normalizedErr = providererrors.NormalizeStreamProviderError(rawErr, stepProvider, chunk.Raw)
 				}
-				if opts.OnError != nil {
+				// A terminal error whose held-back attempt chunks were just
+				// replayed: OnError and the retry decision already ran.
+				alreadyDecided := replayed && chunk == decidedErr
+				if alreadyDecided {
+					normalizedErr = decidedErrNormalized
+				} else if opts.OnError != nil {
 					safeInvoke(func() { opts.OnError(ctx, normalizedErr) })
 				}
 
@@ -2215,7 +2222,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if opts.StreamRetries != nil {
 					streamRetriesLimit = *opts.StreamRetries
 				}
-				automaticRetry := !isToolChoiceViolation && automaticStreamRetryCount < streamRetriesLimit
+				automaticRetry := !alreadyDecided && !isToolChoiceViolation && automaticStreamRetryCount < streamRetriesLimit
 				// Callback-directed retry additionally requires StreamRetries
 				// to have been explicitly set (even to 0): TS's
 				// canRetryStreamViaOnError is `streamRetries !== undefined &&
@@ -2225,7 +2232,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// preserve incremental tool streaming for existing onError
 				// observers."
 				callbackRetry := false
-				if !isToolChoiceViolation && !automaticRetry && opts.StreamRetries != nil && opts.OnErrorRetry != nil && callbackStreamRetryCount < 1 {
+				if !alreadyDecided && !isToolChoiceViolation && !automaticRetry && opts.StreamRetries != nil && opts.OnErrorRetry != nil && callbackStreamRetryCount < 1 {
 					callbackRetry = safeInvokeBool(func() bool {
 						return opts.OnErrorRetry(ctx, StreamTextOnErrorRetryEvent{Error: normalizedErr})
 					})
@@ -2261,6 +2268,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						break
 					}
 					r.setStream(newStream)
+
+					// Drop the failed attempt's held-back chunks and close the
+					// text/reasoning blocks it left open downstream (TS
+					// closeOpenAttemptParts).
+					heldChunks, replayQueue = nil, nil
+					for _, id := range openTextIDs {
+						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: id}})
+					}
+					for _, id := range openReasoningIDs {
+						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeReasoningEnd, ID: id}})
+					}
+					openTextIDs, openReasoningIDs = nil, nil
 
 					// Discard this attempt's buffered step output and start
 					// the step's aggregation fresh, so the recovered step
@@ -2302,6 +2321,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					continue stepAttempt
 				}
 
+				// No retry: hand the held-back attempt chunks to the consumer
+				// first, then this error (TS flushBufferedAttemptParts).
+				if !alreadyDecided && len(heldChunks) > 0 {
+					decidedErr, decidedErrNormalized = chunk, normalizedErr
+					replayQueue, heldChunks = append(heldChunks, chunk), nil
+					continue stepAttempt
+				}
+
 				stepSawTerminal = true
 				if r.finishReason == "" {
 					r.finishReason = types.FinishReasonError
@@ -2319,6 +2346,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// transform, then sink whatever survives to onChunk/telemetry.
 			// Forward chunk(s) to consumer before any tool Execute fires.
 			if forwardChunk {
+				switch chunk.Type {
+				case provider.ChunkTypeTextStart:
+					openTextIDs = append(openTextIDs, chunk.ID)
+				case provider.ChunkTypeTextEnd:
+					openTextIDs = removeID(openTextIDs, chunk.ID)
+				case provider.ChunkTypeReasoningStart:
+					openReasoningIDs = append(openReasoningIDs, chunk.ID)
+				case provider.ChunkTypeReasoningEnd:
+					openReasoningIDs = removeID(openReasoningIDs, chunk.ID)
+				}
 				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 			}
 			if len(pendingApprovalChunks) > 0 {
@@ -2861,18 +2898,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 
-		if len(stopConditions) > 0 {
-			state := StopConditionState{
-				Steps:    allSteps,
-				Messages: currentMessages,
-				Usage:    r.usage,
-			}
-			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
-				r.stopReason = reason
-				break
-			}
-		}
-
 		// Continue when this step included local tool calls that were executed
 		// in-step, or when a deferred provider tool has not yet delivered its result.
 		hasLocalToolCalls := false
@@ -2888,6 +2913,20 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Tool calls left unexecuted (unsafe finish reason) stop the loop.
 		if hasUnresolvedLocalToolCalls(stepToolCalls, toolsByName, stepToolResults) {
 			break
+		}
+
+		// TS evaluates stop conditions only when the loop would otherwise
+		// continue; on natural ends they are not called.
+		if len(stopConditions) > 0 {
+			state := StopConditionState{
+				Steps:    allSteps,
+				Messages: currentMessages,
+				Usage:    r.usage,
+			}
+			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
+				r.stopReason = reason
+				break
+			}
 		}
 
 		// Resolve ResponseFormat for the next step.
@@ -4802,4 +4841,25 @@ func (r *StreamTextResult) finalStepText() string {
 		return r.finalText
 	}
 	return r.text
+}
+
+// isStreamRetryToolPart reports whether the chunk is a tool-related part that starts
+// streamRetries buffering (TS stream-text.ts isToolPart).
+func isStreamRetryToolPart(t provider.ChunkType) bool {
+	switch t {
+	case provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd,
+		provider.ChunkTypeToolCall, provider.ChunkTypeToolApprovalRequest, provider.ChunkTypeToolApprovalResponse,
+		provider.ChunkTypeToolResult:
+		return true
+	}
+	return false
+}
+
+func removeID(ids []string, id string) []string {
+	for i, v := range ids {
+		if v == id {
+			return append(ids[:i], ids[i+1:]...)
+		}
+	}
+	return ids
 }

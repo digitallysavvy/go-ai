@@ -250,3 +250,128 @@ func TestStreamText_StreamRetriesRejectsNegativeValue(t *testing.T) {
 		t.Fatalf("expected *providererrors.InvalidArgumentError, got %T: %v", err, err)
 	}
 }
+
+func collectChunkTypes(t *testing.T, result *StreamTextResult) []provider.ChunkType {
+	t.Helper()
+	var got []provider.ChunkType
+	stream := result.NewStream()
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		got = append(got, c.Type)
+	}
+	return got
+}
+
+// A failed attempt's tool parts (and everything after them) are held back and
+// dropped on retry: the consumer never sees them and the tool never runs
+// (TS stream-text.ts bufferedAttemptParts). The text block the attempt left
+// open is closed.
+func TestStreamText_StreamRetriesDropsBufferedToolParts(t *testing.T) {
+	t.Parallel()
+
+	var executed int
+	approvalCalls := 0
+	tools := []types.Tool{{
+		Name: "search",
+		ToolApproval: types.ToolNeedsApprovalFunc(func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool {
+			approvalCalls++
+			return false
+		}),
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			executed++
+			return "ok", nil
+		},
+	}}
+	call := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			call++
+			if call == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeTextStart, ID: "t1"},
+					{Type: provider.ChunkTypeText, ID: "t1", Text: "thinking"},
+					{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "c1", ToolName: "search"}},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "search", Arguments: map[string]interface{}{}}},
+					{Type: provider.ChunkTypeError, Text: "Internal Server Error"},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	retries := 1
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "hi", Tools: tools, StreamRetries: &retries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	types1 := collectChunkTypes(t, result)
+	if call != 2 || executed != 0 || approvalCalls != 0 {
+		t.Fatalf("calls=%d executed=%d approvals=%d", call, executed, approvalCalls)
+	}
+	for _, ct := range types1 {
+		if ct == provider.ChunkTypeToolInputStart || ct == provider.ChunkTypeToolCall || ct == provider.ChunkTypeToolResult {
+			t.Fatalf("discarded attempt leaked %s: %v", ct, types1)
+		}
+	}
+	var sawTextEnd bool
+	for _, ct := range types1 {
+		if ct == provider.ChunkTypeTextEnd {
+			sawTextEnd = true
+		}
+	}
+	if !sawTextEnd {
+		t.Fatalf("open text block of the failed attempt was not closed: %v", types1)
+	}
+	if got := result.Text(); got != "done" {
+		t.Fatalf("Text() = %q", got)
+	}
+}
+
+// With the retry budget exhausted the held parts are delivered, in order,
+// before the error.
+func TestStreamText_StreamRetriesFlushesBufferedPartsOnTerminalError(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "search", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeText, Text: "after"},
+				{Type: provider.ChunkTypeError, Text: "boom"},
+			}), nil
+		},
+	}
+	retries := 0
+	var reported int
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "hi", StreamRetries: &retries,
+		OnErrorRetry: func(context.Context, StreamTextOnErrorRetryEvent) bool { return false },
+		OnError:      func(context.Context, error) { reported++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectChunkTypes(t, result)
+	idx := map[provider.ChunkType]int{}
+	for i, ct := range got {
+		if _, ok := idx[ct]; !ok {
+			idx[ct] = i
+		}
+	}
+	tc, okc := idx[provider.ChunkTypeToolCall]
+	tx, okt := idx[provider.ChunkTypeText]
+	er, oke := idx[provider.ChunkTypeError]
+	if !okc || !okt || !oke || tc >= tx || tx >= er {
+		t.Fatalf("want tool-call < text < error, got %v", got)
+	}
+	if reported != 1 {
+		t.Fatalf("OnError calls = %d, want 1", reported)
+	}
+}
