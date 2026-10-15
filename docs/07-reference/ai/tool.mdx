@@ -336,6 +336,29 @@ queryTool := types.Tool{
 }
 ```
 
+### Streaming Tool (Preliminary Results)
+
+`types.StreamingExecutor` adapts a generator-style body (the Go form of a TypeScript `async *execute()`). Every value the sequence yields is streamed as a preliminary tool result (`preliminary: true` in the full stream and in UI message streams). The last yielded value is the final result, which is the only one recorded in `Content`, `Steps`, `ToolResults` and the response messages. `GenerateText` ignores the preliminary values.
+
+```go
+import "iter"
+
+weatherTool := types.Tool{
+    Name:       "weather",
+    Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}}},
+    Execute: types.StreamingExecutor(func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) iter.Seq2[interface{}, error] {
+        return func(yield func(interface{}, error) bool) {
+            if !yield(map[string]interface{}{"status": "loading"}, nil) {
+                return
+            }
+            yield(map[string]interface{}{"status": "success", "temperature": 72}, nil)
+        }
+    }),
+}
+```
+
+A tool can also read `opts.OnPreliminaryResult` directly (it is nil when the caller does not stream).
+
 ## See Also
 
 - [Dynamic Tools](./dynamic-tool.mdx) - Registering tools at runtime

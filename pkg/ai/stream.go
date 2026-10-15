@@ -1528,6 +1528,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		rec = &transformRecorder{}
 	}
 	transformStopped := false
+	var preliminaryMu sync.Mutex
 	stopTransformStream := StreamTransformStopper(func() { transformStopped = true })
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
 	transformEmitterAt := func(startIdx int) StreamTransformEmitter {
@@ -1729,9 +1730,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// Outputs of resumed tool approvals: forward, but they belong
 				// to the initial response, not to this step's content.
 				r.resumeChunksRemaining--
-				if onChunk != nil {
-					onChunk(*chunk)
-				}
+				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 				continue
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
@@ -2358,6 +2357,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				experimentalSandbox: opts.ExperimentalSandbox,
 				toolExecutionMs:     toolExecutionMs,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
+				onPreliminary: func(result types.ToolResult) {
+					// Tools may run concurrently; the transform chain is not
+					// concurrency-safe.
+					preliminaryMu.Lock()
+					defer preliminaryMu.Unlock()
+					forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &result}})
+				},
 			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)

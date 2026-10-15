@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -150,7 +151,18 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 		})
 		// Resumed approvals run concurrently by default (TS Promise.all),
 		// bounded by ToolCallConcurrency, with results in model order.
-		executed, err = executeToolsLimited(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, opts.callbacks, opts.toolCallConcurrency)
+		callbacks := opts.callbacks
+		var preliminaryMu sync.Mutex
+		if opts.streaming {
+			// Preliminary results of streaming tools are full-stream parts in
+			// the order they were produced, ahead of the final results.
+			callbacks.onPreliminary = func(result types.ToolResult) {
+				preliminaryMu.Lock()
+				defer preliminaryMu.Unlock()
+				out.chunks = append(out.chunks, provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &result})
+			}
+		}
+		executed, err = executeToolsLimited(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, callbacks, opts.toolCallConcurrency)
 		if err != nil {
 			return out, err
 		}
