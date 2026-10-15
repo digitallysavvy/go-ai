@@ -198,7 +198,7 @@ func convertOllamaUsage(usage ollamaUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cachedTokens > 0 {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
@@ -206,8 +206,11 @@ func convertOllamaUsage(usage ollamaUsage) types.Usage {
 			CacheWriteTokens: nil,
 		}
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,

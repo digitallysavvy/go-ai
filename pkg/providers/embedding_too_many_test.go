@@ -32,14 +32,26 @@ func TestEmbeddingModelsReturnTooManyValuesError(t *testing.T) {
 	}
 	bt := baseten.New(baseten.Config{APIKey: "k", ModelURL: srv.URL + "/sync/v1"})
 	models := map[string]func() (provider.EmbeddingModel, error){
-		"openai":    func() (provider.EmbeddingModel, error) { return openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m") },
-		"azure":     func() (provider.EmbeddingModel, error) { return az.EmbeddingModel("m") },
-		"cohere":    func() (provider.EmbeddingModel, error) { return cohere.New(cohere.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m") },
-		"mistral":   func() (provider.EmbeddingModel, error) { return mistral.New(mistral.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m") },
-		"together":  func() (provider.EmbeddingModel, error) { return together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m") },
-		"fireworks": func() (provider.EmbeddingModel, error) { return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m") },
-		"voyage":    func() (provider.EmbeddingModel, error) { return voyage.New(voyage.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m") },
-		"baseten":   func() (provider.EmbeddingModel, error) { return bt.EmbeddingModel("m") },
+		"openai": func() (provider.EmbeddingModel, error) {
+			return openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m")
+		},
+		"azure": func() (provider.EmbeddingModel, error) { return az.EmbeddingModel("m") },
+		"cohere": func() (provider.EmbeddingModel, error) {
+			return cohere.New(cohere.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m")
+		},
+		"mistral": func() (provider.EmbeddingModel, error) {
+			return mistral.New(mistral.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m")
+		},
+		"together": func() (provider.EmbeddingModel, error) {
+			return together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m")
+		},
+		"fireworks": func() (provider.EmbeddingModel, error) {
+			return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m")
+		},
+		"voyage": func() (provider.EmbeddingModel, error) {
+			return voyage.New(voyage.Config{APIKey: "k", BaseURL: srv.URL}).EmbeddingModel("m")
+		},
+		"baseten": func() (provider.EmbeddingModel, error) { return bt.EmbeddingModel("m") },
 	}
 	for name, mk := range models {
 		t.Run(name, func(t *testing.T) {

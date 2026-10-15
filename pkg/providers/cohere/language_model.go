@@ -113,7 +113,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	inner := newCohereV2Stream(httpResp.Body)
 	inner.requestBody = reqBody
-	return streaming.NewWarningsStream(inner, warnings), nil
+	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Cohere v2 chat request body without warnings.

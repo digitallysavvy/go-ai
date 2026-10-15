@@ -823,7 +823,7 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 || cacheWriteTokens != nil || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		if cacheWriteTokens != nil {
 			noCacheTokens -= *cacheWriteTokens
@@ -838,8 +838,11 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 
 	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,

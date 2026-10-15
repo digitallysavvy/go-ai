@@ -172,7 +172,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.extensionRegistry = m.provider.extensionRegistry
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
-	return stream, nil
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Open Responses API request body
@@ -1015,7 +1015,7 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 {
+	{
 		noCacheTokens := inputTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:   &noCacheTokens,
@@ -1024,8 +1024,11 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	}
 
 	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := outputTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,

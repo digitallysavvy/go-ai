@@ -335,7 +335,7 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
@@ -345,8 +345,11 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 			ImageTokens:      imageTokens,
 		}
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,

@@ -260,3 +260,47 @@ func TestResponsesStreamMetadataCarriesHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestCohereAndOpenResponsesStreamsExposeHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Resp", "hdr")
+		_, _ = w.Write([]byte("data: {\"type\":\"message-start\"}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+	for name, mk := range map[string]func() (provider.LanguageModel, error){
+		"cohere": func() (provider.LanguageModel, error) {
+			return cohere.New(cohere.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		},
+		"openresponses": func() (provider.LanguageModel, error) {
+			return openresponses.New(openresponses.Config{Name: "x", BaseURL: srv.URL}).LanguageModel("m")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := mk()
+			if err != nil {
+				t.Fatal(err)
+			}
+			st, err := m.DoStream(context.Background(), &provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close() //nolint:errcheck
+			for {
+				ch, err := st.Next()
+				if err != nil {
+					t.Fatal("no response-metadata chunk with headers")
+				}
+				if ch != nil && ch.Type == provider.ChunkTypeResponseMetadata {
+					h := ch.ResponseMetadata.Headers
+					if h["X-Resp"] == "" && h["x-resp"] == "" {
+						t.Fatalf("headers = %v", h)
+					}
+					return
+				}
+			}
+		})
+	}
+}

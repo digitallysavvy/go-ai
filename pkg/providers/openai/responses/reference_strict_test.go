@@ -25,3 +25,22 @@ func TestConvertPromptToInputRejectsReferenceWithoutProviderKey(t *testing.T) {
 		t.Fatalf("err = %v, want NoSuchProviderReferenceError for xai", err)
 	}
 }
+
+func TestConvertPromptToInputRejectsToolOutputReferenceWithoutProviderKey(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleTool,
+		Content: []types.ContentPart{types.ToolResultContent{
+			ToolCallID: "c1", ToolName: "t",
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+				types.FileContentBlock{MediaType: "application/pdf", FileData: types.FileData{
+					Type: types.FileDataTypeReference, Reference: types.ProviderReference{"anthropic": "f"},
+				}},
+			}},
+		}},
+	}}}
+	_, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	var noRef *providererrors.NoSuchProviderReferenceError
+	if !errors.As(err, &noRef) || noRef.Provider != "openai" {
+		t.Fatalf("err = %v", err)
+	}
+}

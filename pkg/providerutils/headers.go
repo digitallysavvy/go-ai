@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -33,9 +34,13 @@ type responseMetadataStream struct {
 	passQueue  []*provider.StreamChunk
 	checkedOne bool
 	sawStart   bool
+	pendingErr error
 }
 
 func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
+	if s.pendingErr != nil {
+		return nil, s.pendingErr
+	}
 	if len(s.passQueue) > 0 {
 		chunk := s.passQueue[0]
 		s.passQueue = s.passQueue[1:]
@@ -46,7 +51,7 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 			s.checkedOne = true
 			chunk, err := s.inner.Next()
 			if err != nil {
-				return chunk, err
+				return s.metaThenErr(chunk, err)
 			}
 			if chunk != nil && chunk.Type == provider.ChunkTypeStreamStart {
 				s.sawStart = true
@@ -57,7 +62,7 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 		if s.sawStart {
 			chunk, err := s.inner.Next()
 			if err != nil {
-				return chunk, err
+				return s.metaThenErr(chunk, err)
 			}
 			if chunk != nil && chunk.Type == provider.ChunkTypeRaw {
 				s.passQueue = append(s.passQueue, s.meta)
@@ -71,6 +76,19 @@ func (s *responseMetadataStream) Next() (*provider.StreamChunk, error) {
 	}
 	return s.inner.Next()
 }
+
+// metaThenErr delivers the response metadata before surfacing an inner stream
+// error/EOF that occurred before any content, so headers are never lost on
+// short streams. Genuine (non-EOF) errors are returned as is.
+func (s *responseMetadataStream) metaThenErr(chunk *provider.StreamChunk, err error) (*provider.StreamChunk, error) {
+	if err != io.EOF {
+		return chunk, err
+	}
+	s.emitted = true
+	s.pendingErr = err
+	return s.meta, nil
+}
+
 func (s *responseMetadataStream) Err() error   { return s.inner.Err() }
 func (s *responseMetadataStream) Close() error { return s.inner.Close() }
 

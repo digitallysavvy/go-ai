@@ -339,7 +339,7 @@ func convertZaiUsage(usage zaiUsage) types.Usage {
 	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
 		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
 	}
-	if cachedTokens > 0 {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:   &noCacheTokens,
@@ -350,8 +350,11 @@ func convertZaiUsage(usage zaiUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,

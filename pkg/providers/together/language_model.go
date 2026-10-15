@@ -252,7 +252,7 @@ func convertTogetherUsage(usage togetherUsage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
@@ -264,8 +264,11 @@ func convertTogetherUsage(usage togetherUsage) types.Usage {
 	}
 
 	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
