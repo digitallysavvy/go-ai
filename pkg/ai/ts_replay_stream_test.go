@@ -594,3 +594,69 @@ func TestTSReplay_CallbackOrderWithToolCall(t *testing.T) {
 		}
 	}
 }
+
+// generate-text.test.ts describe('result.content') > 'should generate content':
+// a provider that returns every part in Content, text included, keeps the
+// model's order (text, source, file, reasoning, tool-call, text) and the tool
+// result follows. result.text joins the text parts of the final step.
+func TestTSReplay_GenerateText_ContentOrder(t *testing.T) {
+	call := types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}
+	n := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+			n++
+			if n > 1 {
+				return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+			}
+			return &types.GenerateResult{
+				Text:         "Hello, world!More text",
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{call},
+				Content: []types.ContentPart{
+					types.TextContent{Text: "Hello, world!"},
+					types.SourceContent{SourceType: "url", ID: "123", URL: "https://example.com", Title: "Example"},
+					types.GeneratedFileContent{MediaType: "image/png", Data: []byte{1, 2, 3}},
+					types.ReasoningContent{Text: "I will open the conversation with witty banter."},
+					contentPartFromToolCall(call),
+					types.TextContent{Text: "More text"},
+				},
+			}, nil
+		},
+	}
+	r, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "prompt", Tools: []types.Tool{tool1()}, StopWhen: []StopCondition{StepCountIs(1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"text", "source", "other", "reasoning", "tool-call", "text", "other"}
+	if got := contentKinds(r.Content); !reflect.DeepEqual(got, want) {
+		t.Fatalf("content kinds = %v, want %v", got, want)
+	}
+	if r.Steps[0].Text != "Hello, world!More text" {
+		t.Fatalf("step text = %q, want the joined text parts", r.Steps[0].Text)
+	}
+	if len(r.Files) != 1 || len(r.Sources) != 1 {
+		t.Fatalf("files=%d sources=%d", len(r.Files), len(r.Sources))
+	}
+}
+
+// A provider that fills Content with text parts but leaves Text empty still
+// yields the step text TS derives from the text parts.
+func TestGenerateText_TextDerivedFromContentTextParts(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonStop,
+				Content:      []types.ContentPart{types.TextContent{Text: "Hello, "}, types.ReasoningContent{Text: "hm"}, types.TextContent{Text: "world!"}},
+			}, nil
+		},
+	}
+	r, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Text != "Hello, world!" || r.Steps[0].Text != "Hello, world!" {
+		t.Fatalf("text = %q / step %q", r.Text, r.Steps[0].Text)
+	}
+}

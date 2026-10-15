@@ -115,6 +115,12 @@ func IsGatewayCallRetryable(err error) bool {
 }
 
 func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
+	result, err := doGenerateWithGatewayRetryRaw(ctx, model, opts, maxRetries)
+	normalizeGenerateResultText(result)
+	return result, err
+}
+
+func doGenerateWithGatewayRetryRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
 		return model.DoGenerate(ctx, opts)

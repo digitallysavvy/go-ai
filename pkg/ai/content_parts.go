@@ -2,6 +2,7 @@ package ai
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -592,4 +593,26 @@ func setTrailingTextCitations(parts []types.ContentPart, citations []types.Citat
 		}
 	}
 	return parts
+}
+
+// normalizeGenerateResultText fills GenerateResult.Text from the text parts of
+// Content when a provider returned its text only there. TS derives text from
+// the text parts of content (extractTextContent), so core accepts both shapes:
+// text in Text with the remaining parts in Content, or every part in Content.
+func normalizeGenerateResultText(result *types.GenerateResult) {
+	if result == nil || result.Text != "" {
+		return
+	}
+	var text strings.Builder
+	for _, part := range result.Content {
+		switch p := part.(type) {
+		case types.TextContent:
+			text.WriteString(p.Text)
+		case *types.TextContent:
+			if p != nil {
+				text.WriteString(p.Text)
+			}
+		}
+	}
+	result.Text = text.String()
 }

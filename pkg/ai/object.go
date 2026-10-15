@@ -136,6 +136,12 @@ func cloneSchemaValue(value interface{}) interface{} {
 }
 
 func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
+	result, err := doGenerateWithRetryRaw(ctx, model, opts, maxRetries)
+	normalizeGenerateResultText(result)
+	return result, err
+}
+
+func doGenerateWithRetryRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
 	if maxRetries <= 0 {
 		return model.DoGenerate(ctx, opts)
 	}
