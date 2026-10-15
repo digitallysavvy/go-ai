@@ -382,3 +382,40 @@ func TestSimulateStreamingMiddleware_PreservesCitations(t *testing.T) {
 		}
 	}
 }
+
+func TestSimulateStreamingEmitsToolCallsInContentOrder(t *testing.T) {
+	res := &types.GenerateResult{
+		Content: []types.ContentPart{
+			types.TextContent{Text: "a"},
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "t"},
+			types.SourceContent{ID: "s1"},
+		},
+		ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t"}},
+	}
+	m := &mockLanguageModel{generateResult: res}
+	w := WrapLanguageModel(m, []*LanguageModelMiddleware{SimulateStreamingMiddleware()}, nil, nil)
+	s, err := w.DoStream(context.Background(), &provider.GenerateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq []provider.ChunkType
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		seq = append(seq, c.Type)
+	}
+	ci, si := -1, -1
+	for i, ty := range seq {
+		if ty == provider.ChunkTypeToolCall {
+			ci = i
+		}
+		if ty == provider.ChunkTypeSource {
+			si = i
+		}
+	}
+	if ci < 0 || si < 0 || ci > si {
+		t.Fatalf("tool-call must precede the later source: %v", seq)
+	}
+}
