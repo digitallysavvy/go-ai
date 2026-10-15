@@ -336,10 +336,14 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 		}}, true
 	case "tool-approval-response":
 		approved := boolField(chunk, "approved")
-		if approved {
-			return nil, false
-		}
 		approvalID := stringField(chunk, "approvalId")
+		if approved {
+			// The renderer maps the approval id back to its tool call and
+			// shows it as executing (TS approval-responded, approved).
+			return &provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
+				ApprovalID: approvalID, ToolCallID: approvalToToolCall[approvalID], Approved: true,
+			}}, true
+		}
 		id := approvalToToolCall[approvalID]
 		if id == "" {
 			return nil, false
