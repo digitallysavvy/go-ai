@@ -39,7 +39,7 @@ func fixtureHandler(t *testing.T, name string, gotKey *string) http.HandlerFunc 
 			w.Header().Set("Content-Type", "text/event-stream")
 			for _, l := range strings.Split(string(geminiFixture(t, name+".chunks.txt")), "\n") {
 				if strings.TrimSpace(l) != "" {
-					fmt.Fprintf(w, "data: %s\n\n", l)
+					_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
 				}
 			}
 			return
@@ -131,7 +131,7 @@ func TestReasoningStreamWithThoughtParts(t *testing.T) {
 			`{"candidates":[{"content":{"role":"model","parts":[{"text":"think.","thought":true,"thoughtSignature":"SIG"}]},"index":0}]}`,
 			`{"candidates":[{"content":{"role":"model","parts":[{"text":"Answer."}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"thoughtsTokenCount":5,"totalTokenCount":10}}`,
 		} {
-			fmt.Fprintf(w, "data: %s\n\n", l)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
 		}
 	}, "gemini-2.5-pro")
 	defer closeFn()

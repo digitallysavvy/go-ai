@@ -25,7 +25,7 @@ func oneMessageSSE(id, text string) string {
 func TestStreamConcatenatedMessagesEmitOneFinishEach(t *testing.T) {
 	model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, oneMessageSSE("msg_1", "one")+oneMessageSSE("msg_2", "two"))
+		_, _ = fmt.Fprint(w, oneMessageSSE("msg_1", "one")+oneMessageSSE("msg_2", "two"))
 	})
 	defer closeFn()
 	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
@@ -54,7 +54,7 @@ func TestStreamConcatenatedMessagesEmitOneFinishEach(t *testing.T) {
 func TestStreamAlwaysStartsWithStreamStart(t *testing.T) {
 	model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, oneMessageSSE("msg_1", "one"))
+		_, _ = fmt.Fprint(w, oneMessageSSE("msg_1", "one"))
 	})
 	defer closeFn()
 	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})

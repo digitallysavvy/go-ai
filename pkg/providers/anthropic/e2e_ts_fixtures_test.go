@@ -54,9 +54,9 @@ func serveChunksFixture(name string, t *testing.T) func(http.ResponseWriter, *ht
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, l := range strings.Split(string(data), "\n") {
-			fmt.Fprintf(w, "data: %s\n\n", l)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
 		}
-		fmt.Fprint(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	}
 }
 
@@ -330,7 +330,7 @@ func TestConvertDeferredToolResultErrors(t *testing.T) {
 func TestStreamOverloadedFirstEvent(t *testing.T) {
 	model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n")
 	})
 	defer closeFn()
 	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
@@ -388,7 +388,7 @@ func TestStreamTruncatedToolInputIsEmittedRaw(t *testing.T) {
 			`{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}`,
 			`{"type":"message_stop"}`,
 		} {
-			fmt.Fprintf(w, "data: %s\n\n", l)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
 		}
 	})
 	defer closeFn()

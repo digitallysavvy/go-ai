@@ -131,15 +131,15 @@ func TestImageModelResponses(t *testing.T) {
 	}))
 	defer srv.Close()
 	im, _ := signedProvider(srv.URL).ImageModel("amazon.nova-canvas-v1:0")
-	gen := func() (*providererrors.ProviderError, error, int) {
+	gen := func() (int, error) {
 		res, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
 		n := 0
 		if res != nil {
 			n = len(res.Base64Images)
 		}
-		return nil, err, n
+		return n, err
 	}
-	if _, err, n := gen(); err != nil || n != 1 {
+	if n, err := gen(); err != nil || n != 1 {
 		t.Fatalf("success: n=%d err=%v", n, err)
 	}
 	wants := []string{
@@ -149,7 +149,7 @@ func TestImageModelResponses(t *testing.T) {
 		"Amazon Bedrock returned no images. Status: Failed",
 	}
 	for _, want := range wants {
-		_, err, _ := gen()
+		_, err := gen()
 		if err == nil || err.Error() != want {
 			t.Errorf("err = %v, want %q", err, want)
 		}

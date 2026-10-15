@@ -42,7 +42,7 @@ func TestVertexAnthropicFixtureRoundTrip(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, ":streamRawPredict") {
 			w.Header().Set("Content-Type", "text/event-stream")
 			for _, l := range strings.Split(string(anthropicFixture(t, "anthropic-tool-no-args.chunks.txt")), "\n") {
-				fmt.Fprintf(w, "data: %s\n\n", l)
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
 			}
 			return
 		}
