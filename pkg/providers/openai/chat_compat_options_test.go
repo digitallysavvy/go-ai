@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -80,5 +81,40 @@ func TestChatCompatDoesNotConvertUnmodeledOptions(t *testing.T) {
 	}
 	if body["temperature"] != 0.5 || body["max_tokens"] != float64(20) {
 		t.Errorf("reasoning-model gating applied to compat wrapper: %v", body)
+	}
+}
+
+// TS compat ends an active reasoning block before the first tool-call delta.
+func TestChatCompatStreamEndsReasoningBeforeToolCalls(t *testing.T) {
+	sse := `data: {"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{}"}}]}}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	s := newOpenAIStreamWithMetadata(io.NopCloser(strings.NewReader(sse)), false, "my.chat", nil)
+	s.compat = true
+	var seq []provider.ChunkType
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		seq = append(seq, c.Type)
+	}
+	endIdx, startIdx := -1, -1
+	for i, ty := range seq {
+		if ty == provider.ChunkTypeReasoningEnd && endIdx < 0 {
+			endIdx = i
+		}
+		if ty == provider.ChunkTypeToolInputStart && startIdx < 0 {
+			startIdx = i
+		}
+	}
+	if endIdx < 0 || startIdx < 0 || endIdx > startIdx {
+		t.Fatalf("reasoning-end must precede tool-input-start: %v", seq)
 	}
 }

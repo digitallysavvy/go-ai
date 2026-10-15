@@ -1464,6 +1464,11 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			// Tool call delta — accumulate partial arguments by index.
 			// OpenAI sends: first delta has id + name + empty/partial args;
 			// subsequent deltas for the same index carry argument fragments only.
+			// TS compat: an active reasoning block ends before tool calls start.
+			if len(choice.Delta.ToolCalls) > 0 && s.isActiveReasoning {
+				s.isActiveReasoning = false
+				emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+			}
 			for _, tc := range choice.Delta.ToolCalls {
 				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 					c := chunk
