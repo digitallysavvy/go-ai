@@ -204,7 +204,14 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		toolChoice = types.ToolChoice{}
 	}
 	if len(tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(tools)
+		// TS prepareTools: a provider-defined tool is dropped with an
+		// `unsupported` warning instead of being sent as a function tool.
+		functionTools, dropped := tool.DropProviderDefinedTools(tools, nil)
+		warnings = append(warnings, dropped...)
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
+	}
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
 	if toolChoice.Type != "" {
 		body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(toolChoice)

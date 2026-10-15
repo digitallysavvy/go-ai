@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 type nopReadCloser struct {
@@ -705,15 +706,22 @@ func TestOpenResponsesStreamHandleEvents(t *testing.T) {
 		t.Fatalf("provider metadata payload = %+v", currentMetadata)
 	}
 
-	finishChunk, ok := s.handleStreamEvent(&StreamEvent{
+	// response.completed only records the finish state; TS enqueues `finish`
+	// from flush() when the stream ends.
+	if c, ok := s.handleStreamEvent(&StreamEvent{
 		Type: "response.completed",
 		Response: &OpenResponsesResponse{
 			IncompleteDetails: &IncompleteDetails{Reason: "max_output_tokens"},
 			Usage:             &Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
 		},
-	})
-	if !ok || finishChunk.Type != provider.ChunkTypeFinish || finishChunk.Usage == nil {
-		t.Fatalf("finish chunk failed: chunk=%+v ok=%v", finishChunk, ok)
+	}); ok {
+		t.Fatalf("response.completed returned a chunk: %+v", c)
+	}
+	s.queueFlush()
+	finishChunk := s.pending[len(s.pending)-1]
+	s.pending, s.err = nil, nil
+	if finishChunk.Type != provider.ChunkTypeFinish || finishChunk.Usage == nil || finishChunk.FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("finish chunk failed: chunk=%+v", finishChunk)
 	}
 
 	// A bare "error" event is surfaced as an in-band ChunkTypeError chunk
@@ -884,9 +892,13 @@ func TestOpenResponsesStreamFlushClosesUnfinishedReasoning(t *testing.T) {
 		t.Fatalf("output_item.added did not return a chunk (ok=%v)", ok)
 	}
 
-	first, ok := s.handleStreamEvent(&StreamEvent{Type: "response.completed", Response: &OpenResponsesResponse{}})
-	if !ok {
-		t.Fatalf("response.completed did not return a chunk (ok=%v)", ok)
+	if _, ok := s.handleStreamEvent(&StreamEvent{Type: "response.completed", Response: &OpenResponsesResponse{}}); ok {
+		t.Fatalf("response.completed returned a chunk")
+	}
+	s.queueFlush()
+	first, err0 := s.Next()
+	if err0 != nil {
+		t.Fatalf("Next() error = %v", err0)
 	}
 	if first.Type != provider.ChunkTypeReasoningEnd || first.ID != "r2" {
 		t.Fatalf("first chunk after unfinished reasoning = %+v, want reasoning-end for r2", first)
@@ -945,4 +957,26 @@ func TestOpenResponsesStreamToolCallOutOfOrder(t *testing.T) {
 			t.Fatalf("tool call arguments = %+v, want x=1 from done item's raw arguments", chunk.ToolCall.Arguments)
 		}
 	})
+}
+
+// TS flush() runs when the stream ends: no terminal event still finishes
+// (other), stream-start comes first, an unparsable event is an error chunk
+// and the stream keeps going.
+func TestOpenResponsesStreamFinalizesAtEOF(t *testing.T) {
+	sse := "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"m1\",\"delta\":{\"x\":1}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"item_id\":\"m1\",\"delta\":\"hi\"}\n\n"
+	s := streaming.NewWarningsStream(newOpenResponsesStream(nopReadCloser{Reader: strings.NewReader(sse)}, []types.Warning{{Type: "other", Message: "w"}}), []types.Warning{{Type: "other", Message: "w"}})
+	var kinds []string
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		kinds = append(kinds, string(c.Type))
+	}
+	got := strings.Join(kinds, ",")
+	if got != "stream-start,text-start,error,text,finish" {
+		t.Fatalf("chunks = %s", got)
+	}
 }

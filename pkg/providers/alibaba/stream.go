@@ -115,7 +115,13 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 
 		// Parse the event data as JSON
 		var chunk alibabaStreamChunk
-		if err := json.Unmarshal([]byte(event.Data), &chunk); err != nil {
+		err = json.Unmarshal([]byte(event.Data), &chunk)
+		if err == nil {
+			// TS alibabaChatChunkSchema requires `choices`: a frame without
+			// it (for example an {"error": ...} envelope) is a parse failure.
+			err = providerutils.RequireChunkChoices([]byte(event.Data))
+		}
+		if err != nil {
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),

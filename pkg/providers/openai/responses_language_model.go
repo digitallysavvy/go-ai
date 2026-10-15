@@ -715,6 +715,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
+		warnings = append(warnings, responses.UnsupportedProviderToolWarnings(opts.Tools)...)
 		toolSchemaWarnings, err := normalizeResponsesToolSchemas(preparedTools, modelCapabilities.SupportsAsyncToolCalling)
 		if err != nil {
 			return nil, false, nil, err
@@ -2734,6 +2735,37 @@ func (s *responsesStream) Err() error {
 // queueFallbackSources enqueues citation-derived sources for url_citation /
 // file_citation annotations once the stream's complete source set is known,
 // skipping those superseded by retrieval data (TS flush()).
+// queueEOFFinish is TS flush() for a stream that ended without a terminal
+// response event: the source fallbacks, then `finish` with the default
+// finish reason (other, or error after a decode failure) and responseId
+// metadata, and the end of the stream.
+func (s *responsesStream) queueEOFFinish() {
+	s.queueFallbackSources()
+	finishReason := types.FinishReasonOther
+	if s.hadDecodeError {
+		finishReason = types.FinishReasonError
+	}
+	fields := map[string]interface{}{}
+	if s.responseID != "" {
+		fields["responseId"] = s.responseID
+	}
+	if len(s.logprobs) > 0 {
+		fields["logprobs"] = s.logprobs
+	}
+	var meta json.RawMessage
+	if len(fields) > 0 {
+		meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
+	}
+	usage := convertResponsesUsage(nil)
+	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+		Type:             provider.ChunkTypeFinish,
+		FinishReason:     finishReason,
+		Usage:            &usage,
+		ProviderMetadata: meta,
+	})
+	s.err = io.EOF
+}
+
 func (s *responsesStream) queueFallbackSources() {
 	for _, ann := range s.fallbackAnnotations {
 		if openAIAnnotationHasRetrievedSource(ann, s.hasWebSearchActionSources, s.hasFileSearchResults) {
@@ -2797,22 +2829,22 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 
 		event, err := s.parser.Next()
 		if err != nil {
-			s.err = err
 			if err == io.EOF {
-				// End of stream without a terminal event: still decide the
-				// citation-derived source fallbacks (TS flush()).
-				s.queueFallbackSources()
-				if len(s.flushQueue) > 0 {
-					continue
-				}
+				// End of stream without a terminal event: TS flush() still
+				// decides the citation-derived source fallbacks and enqueues
+				// `finish` (other, no usage).
+				s.queueEOFFinish()
+				continue
 			}
+			s.err = err
 			return nil, err
 		}
 
-		// Standard [DONE] terminator (some OpenAI SSE streams still send it).
+		// Standard [DONE] terminator (some OpenAI SSE streams still send it);
+		// TS skips it and flush() runs at the end of the stream.
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			s.queueEOFFinish()
+			continue
 		}
 		// Parse the "type" discriminator.
 		var peek responses.ResponsesStreamEvent

@@ -768,6 +768,14 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				// TS flush() runs at the end of the stream whether or not a
+				// [DONE] marker arrived: close open blocks, finalize tool
+				// calls and enqueue the finish chunk.
+				s.done = true
+				s.flushQueue = s.buildFlushChunks()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
@@ -797,7 +805,8 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		if chunk.Error != nil {
-			s.err = newMoonshotStreamProviderError(*chunk.Error, []byte(event.Data))
+			// TS: an error chunk sets the finish reason to error and enqueues
+			// the error part; the stream keeps going and flush() finishes it.
 			s.finishReason = types.FinishReasonError
 			// P1-1c part 2: attach the structured StreamProviderError (TS
 			// createMoonshotAIStreamError) so streamRetries/IsRetryable see the

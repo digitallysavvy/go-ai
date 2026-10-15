@@ -691,7 +691,13 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 				} `json:"delta"`
 			} `json:"choices"`
 		}
-		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+		err = json.Unmarshal([]byte(event.Data), &chunkData)
+		if err == nil {
+			// TS mistralChatChunkSchema requires `choices`: a frame without
+			// it (for example an {"error": ...} envelope) is a parse failure.
+			err = providerutils.RequireChunkChoices([]byte(event.Data))
+		}
+		if err != nil {
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: fmt.Sprintf("mistral: failed to parse stream chunk: %v", err),
