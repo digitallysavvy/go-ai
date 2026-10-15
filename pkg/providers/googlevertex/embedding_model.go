@@ -86,8 +86,14 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	if len(result.Responses) > 0 {
 		resp = result.Responses[0]
 	}
+	// TS does not check the number of predictions, so a response without any
+	// yields an empty embedding rather than an error.
+	var embedding []float64
+	if len(result.Embeddings) > 0 {
+		embedding = result.Embeddings[0]
+	}
 	return &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
+		Embedding: embedding,
 		Usage:     result.Usage,
 		Response:  resp,
 	}, nil
@@ -107,6 +113,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
+	if err := validateVertexEmbeddingOptions(opts); err != nil {
+		return nil, err
+	}
 	vopts := vertexEmbeddingOptions(opts)
 	if vopts.OutputDimensionality == nil && opts != nil && opts.Dimensions != nil {
 		// Top-level dimensions (TS #22338); the provider option wins.
@@ -130,18 +139,19 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		instances[i] = inst
 	}
 
-	params := map[string]interface{}{}
+	// TS always sends the parameters object, empty when no option is set, with
+	// outputDimensionality before autoTruncate.
+	params := providerutils.OrderedMap{Vals: map[string]interface{}{}}
 	if vopts.OutputDimensionality != nil {
-		params["outputDimensionality"] = *vopts.OutputDimensionality
+		params.Keys = append(params.Keys, "outputDimensionality")
+		params.Vals["outputDimensionality"] = *vopts.OutputDimensionality
 	}
 	if vopts.AutoTruncate != nil {
-		params["autoTruncate"] = *vopts.AutoTruncate
+		params.Keys = append(params.Keys, "autoTruncate")
+		params.Vals["autoTruncate"] = *vopts.AutoTruncate
 	}
 
-	body := map[string]interface{}{"instances": instances}
-	if len(params) > 0 {
-		body["parameters"] = params
-	}
+	body := map[string]interface{}{"instances": instances, "parameters": params}
 
 	path := fmt.Sprintf("/models/%s:predict", m.modelID)
 
@@ -158,11 +168,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", "vertex embedding request failed: "+err.Error(), err)
 	}
 
-	if len(response.Predictions) != len(inputs) {
-		return nil, fmt.Errorf("vertex returned %d predictions for %d inputs", len(response.Predictions), len(inputs))
-	}
-
-	embeddings := make([][]float64, len(inputs))
+	// TS maps every prediction and does not compare their number with the
+	// number of inputs.
+	embeddings := make([][]float64, len(response.Predictions))
 	var totalTokens int
 	for i, pred := range response.Predictions {
 		embeddings[i] = pred.Embeddings.Values
@@ -190,27 +198,31 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 // for gemini-embedding-2 / gemini-embedding-2-preview which do not support
 // the batch :predict endpoint (TS google-vertex-embedding-model.ts).
 func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts VertexEmbeddingProviderOptions, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
-	config := map[string]interface{}{}
+	// TS always sends embedContentConfig (empty when no option is set), with
+	// the keys in this order.
+	config := providerutils.OrderedMap{Vals: map[string]interface{}{}}
+	setConfig := func(key string, v interface{}) {
+		config.Keys = append(config.Keys, key)
+		config.Vals[key] = v
+	}
 	if vopts.OutputDimensionality != nil {
-		config["outputDimensionality"] = *vopts.OutputDimensionality
+		setConfig("outputDimensionality", *vopts.OutputDimensionality)
 	}
 	if vopts.TaskType != "" {
-		config["taskType"] = vopts.TaskType
+		setConfig("taskType", vopts.TaskType)
 	}
 	if vopts.Title != "" {
-		config["title"] = vopts.Title
+		setConfig("title", vopts.Title)
 	}
 	if vopts.AutoTruncate != nil {
-		config["autoTruncate"] = *vopts.AutoTruncate
+		setConfig("autoTruncate", *vopts.AutoTruncate)
 	}
 
 	body := map[string]interface{}{
 		"content": map[string]interface{}{
 			"parts": []map[string]interface{}{{"text": value}},
 		},
-	}
-	if len(config) > 0 {
-		body["embedContentConfig"] = config
+		"embedContentConfig": config,
 	}
 
 	path := fmt.Sprintf("/models/%s:embedContent", m.modelID)
@@ -322,4 +334,68 @@ func rawEmbeddingBody(body []byte, typed interface{}) interface{} {
 		return json.RawMessage(body)
 	}
 	return typed
+}
+
+// validateVertexEmbeddingOptions mirrors TS parseProviderOptions with
+// googleVertexEmbeddingModelOptions: the first of googleVertex, vertex and
+// google that is present is validated, and a wrong type or an unknown task
+// type is an InvalidArgumentError.
+func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
+	if opts == nil || opts.ProviderOptions == nil {
+		return nil
+	}
+	for _, key := range []string{"googleVertex", "vertex", "google"} {
+		v, ok := opts.ProviderOptions[key]
+		if !ok {
+			continue
+		}
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		bad := func(field, want string) error {
+			return &providererrors.InvalidArgumentError{
+				Field:   "providerOptions",
+				Message: fmt.Sprintf("invalid %s provider options: %s must be %s", key, field, want),
+			}
+		}
+		if x, set := m["outputDimensionality"]; set && x != nil && !isNumber(x) {
+			return bad("outputDimensionality", "a number")
+		}
+		if x, set := m["taskType"]; set && x != nil {
+			task, isString := x.(string)
+			if !isString || !validVertexTaskType(task) {
+				return bad("taskType", "one of SEMANTIC_SIMILARITY, CLASSIFICATION, CLUSTERING, RETRIEVAL_DOCUMENT, RETRIEVAL_QUERY, QUESTION_ANSWERING, FACT_VERIFICATION, CODE_RETRIEVAL_QUERY")
+			}
+		}
+		if x, set := m["title"]; set && x != nil {
+			if _, isString := x.(string); !isString {
+				return bad("title", "a string")
+			}
+		}
+		if x, set := m["autoTruncate"]; set && x != nil {
+			if _, isBool := x.(bool); !isBool {
+				return bad("autoTruncate", "a boolean")
+			}
+		}
+		return nil
+	}
+	return nil
+}
+
+func validVertexTaskType(task string) bool {
+	switch task {
+	case "SEMANTIC_SIMILARITY", "CLASSIFICATION", "CLUSTERING", "RETRIEVAL_DOCUMENT", "RETRIEVAL_QUERY",
+		"QUESTION_ANSWERING", "FACT_VERIFICATION", "CODE_RETRIEVAL_QUERY":
+		return true
+	}
+	return false
+}
+
+func isNumber(v interface{}) bool {
+	switch v.(type) {
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+		return true
+	}
+	return false
 }

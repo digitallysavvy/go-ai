@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -170,7 +171,9 @@ func TestVertexEmbeddingModel_DoEmbedMany(t *testing.T) {
 		}
 	})
 
-	t.Run("prediction mismatch", func(t *testing.T) {
+	// TS maps whatever predictions come back and never compares their number
+	// with the number of inputs.
+	t.Run("prediction count differs from input count", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"predictions":[{"embeddings":{"values":[1],"statistics":{"token_count":1}}}]}`))
 		}))
@@ -186,11 +189,80 @@ func TestVertexEmbeddingModel_DoEmbedMany(t *testing.T) {
 			t.Fatalf("New() error = %v", err)
 		}
 		m := NewEmbeddingModel(p, "text-embedding-005")
-		_, err = m.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
-		if err == nil || !strings.Contains(err.Error(), "returned 1 predictions for 2 inputs") {
+		res, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
+		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		if len(res.Embeddings) != 1 || res.Usage.InputTokens != 1 {
+			t.Fatalf("embeddings = %v, usage = %+v", res.Embeddings, res.Usage)
+		}
 	})
+}
+
+// TS always sends the parameters / embedContentConfig object (empty when no
+// option is set), and a response without predictions is not an error.
+func TestVertexEmbeddingRequestAlwaysCarriesParameters(t *testing.T) {
+	t.Parallel()
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if strings.HasSuffix(r.URL.Path, ":embedContent") {
+			_, _ = w.Write([]byte(`{"embedding":{"values":[1]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"predictions":[]}`))
+	}))
+	defer server.Close()
+	p, err := New(Config{Project: "p", Location: "us-central1", AccessToken: "t", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewEmbeddingModel(p, "text-embedding-005").DoEmbed(context.Background(), "a", nil); err != nil {
+		t.Fatalf("empty predictions must not fail: %v", err)
+	}
+	if _, err := NewEmbeddingModel(p, "gemini-embedding-2").DoEmbed(context.Background(), "a", &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"autoTruncate": false, "outputDimensionality": 8, "taskType": "CLUSTERING"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewEmbeddingModel(p, "gemini-embedding-2").DoEmbed(context.Background(), "a", nil); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`{"instances":[{"content":"a"}],"parameters":{}}`,
+		`{"content":{"parts":[{"text":"a"}]},"embedContentConfig":{"outputDimensionality":8,"taskType":"CLUSTERING","autoTruncate":false}}`,
+		`{"content":{"parts":[{"text":"a"}]},"embedContentConfig":{}}`,
+	}
+	if len(bodies) != len(want) {
+		t.Fatalf("bodies = %v", bodies)
+	}
+	for i := range want {
+		if bodies[i] != want[i] {
+			t.Errorf("body %d = %s, want %s", i, bodies[i], want[i])
+		}
+	}
+}
+
+func TestVertexEmbeddingRejectsInvalidProviderOptions(t *testing.T) {
+	t.Parallel()
+	p, err := New(Config{Project: "p", Location: "us-central1", AccessToken: "t", BaseURL: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewEmbeddingModel(p, "text-embedding-005")
+	for name, bad := range map[string]map[string]interface{}{
+		"task type":  {"taskType": "NOPE"},
+		"dimension":  {"outputDimensionality": "8"},
+		"truncate":   {"autoTruncate": "yes"},
+		"title type": {"title": 3},
+	} {
+		_, err := m.DoEmbed(context.Background(), "a", &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"vertex": bad}})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: err = %v, want InvalidArgumentError", name, err)
+		}
+	}
 }
 
 func TestVertexEmbeddingModel_DoEmbedSingle(t *testing.T) {
