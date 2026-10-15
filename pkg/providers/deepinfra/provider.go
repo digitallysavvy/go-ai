@@ -1,6 +1,7 @@
 package deepinfra
 
 import (
+	"os"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -46,6 +47,10 @@ type Config struct {
 // New creates a new DeepInfra provider
 // DeepInfra uses OpenAI-compatible API
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the DEEPINFRA_API_KEY environment variable.
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("DEEPINFRA_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultBaseURL

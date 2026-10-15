@@ -2,6 +2,7 @@ package assemblyai
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -29,6 +30,10 @@ type Config struct {
 
 // New creates a new AssemblyAI provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the ASSEMBLYAI_API_KEY environment variable.
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("ASSEMBLYAI_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.assemblyai.com/v2"

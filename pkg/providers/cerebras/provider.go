@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
@@ -35,6 +36,10 @@ type Config struct {
 // New creates a new Cerebras provider
 // Cerebras uses OpenAI-compatible API
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the CEREBRAS_API_KEY environment variable.
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("CEREBRAS_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.cerebras.ai/v1"

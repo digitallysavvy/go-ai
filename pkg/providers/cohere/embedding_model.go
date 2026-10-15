@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -78,6 +79,16 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// TS parseProviderOptions({provider: 'cohere', schema: cohereEmbeddingModelOptions})
+	// runs before the too-many-values check.
+	var parsed map[string]interface{}
+	if opts != nil {
+		var err error
+		parsed, err = providerutils.ParseProviderOptions("cohere", opts.ProviderOptions, cohereEmbeddingOptionsSchema)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
 		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
 			Provider:             m.Provider(),
@@ -90,8 +101,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return nil, err
 	}
 
-	// TS parseProviderOptions({provider: 'cohere', schema: cohereEmbeddingModelOptions}):
-	// per-call options win over the model options.
+	// Per-call options win over the model options.
 	embeddingType := m.options.EmbeddingType
 	inputType := m.options.InputType
 	truncate := m.options.Truncate
@@ -100,47 +110,18 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		d := int(*m.options.OutputDimension)
 		outputDimension = &d
 	}
-	if opts != nil {
-		if co, ok := opts.ProviderOptions["cohere"].(map[string]interface{}); ok {
-			if v, present := co["embeddingType"]; present {
-				str, isStr := v.(string)
-				if !isStr {
-					return nil, fmt.Errorf("invalid cohere provider options: embeddingType must be a string")
-				}
-				embeddingType = EmbeddingType(str)
-				if err := validateEmbeddingType(embeddingType); err != nil || embeddingType == "" {
-					return nil, fmt.Errorf("invalid cohere provider options: %s is not a supported embeddingType", str)
-				}
-			}
-			if v, present := co["inputType"]; present && v != nil {
-				str, _ := v.(string)
-				it := InputType(str)
-				if err := (&EmbeddingOptions{InputType: it}).Validate(); err != nil || it == "" {
-					return nil, fmt.Errorf("invalid cohere provider options: inputType %v is not supported", v)
-				}
-				inputType = it
-			}
-			if v, present := co["truncate"]; present && v != nil {
-				str, _ := v.(string)
-				tm := TruncateMode(str)
-				if err := (&EmbeddingOptions{Truncate: tm}).Validate(); err != nil || tm == "" {
-					return nil, fmt.Errorf("invalid cohere provider options: truncate %v is not supported", v)
-				}
-				truncate = tm
-			}
-			if v, present := co["outputDimension"]; present && v != nil {
-				f, _ := v.(float64)
-				if i, isInt := v.(int); isInt {
-					f = float64(i)
-				}
-				od := OutputDimension(int(f))
-				if err := (&EmbeddingOptions{OutputDimension: &od}).Validate(); err != nil {
-					return nil, fmt.Errorf("invalid cohere provider options: outputDimension %v is not supported", v)
-				}
-				d := int(f)
-				outputDimension = &d
-			}
-		}
+	if v, ok := parsed["embeddingType"].(string); ok {
+		embeddingType = EmbeddingType(v)
+	}
+	if v, ok := parsed["inputType"].(string); ok {
+		inputType = InputType(v)
+	}
+	if v, ok := parsed["truncate"].(string); ok {
+		truncate = TruncateMode(v)
+	}
+	if v, ok := parsed["outputDimension"]; ok {
+		d := int(reflect.ValueOf(v).Convert(reflect.TypeOf(float64(0))).Float())
+		outputDimension = &d
 	}
 	if embeddingType == "" {
 		embeddingType = EmbeddingTypeFloat

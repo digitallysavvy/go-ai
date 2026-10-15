@@ -3,6 +3,7 @@ package cohere
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -38,6 +39,10 @@ type Config struct {
 
 // New creates a new Cohere provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the COHERE_API_KEY environment variable.
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("COHERE_API_KEY")
+	}
 	baseURL := normalizeBaseURL(cfg.BaseURL)
 
 	// Create HTTP client with default headers

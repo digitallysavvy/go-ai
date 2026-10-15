@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // RerankingModel implements the provider.RerankingModel interface for Cohere
@@ -45,6 +46,10 @@ func (m *RerankingModel) ModelID() string {
 func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
 	if opts == nil {
 		opts = &provider.RerankOptions{}
+	}
+	// TS parseProviderOptions({provider: 'cohere', schema: cohereRerankingModelOptionsSchema}).
+	if _, err := providerutils.ParseProviderOptions("cohere", opts.ProviderOptions, cohereRerankingOptionsSchema); err != nil {
+		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts)
 
@@ -110,7 +115,8 @@ func (m *RerankingModel) buildRequestBodyWithWarnings(opts *provider.RerankOptio
 		body["documents"] = strs
 	}
 
-	if opts.TopN != nil && *opts.TopN > 0 {
+	// TS sends `top_n: topN` whenever it is set (a zero stays zero).
+	if opts.TopN != nil {
 		body["top_n"] = *opts.TopN
 	}
 
@@ -165,4 +171,11 @@ type cohereRerankResponse struct {
 			Version string `json:"version"`
 		} `json:"api_version"`
 	} `json:"meta,omitempty"`
+}
+
+// cohereRerankingOptionsSchema mirrors cohereRerankingModelOptionsSchema (TS
+// reranking/cohere-reranking-model-options.ts).
+var cohereRerankingOptionsSchema = providerutils.OptionSchema{
+	"maxTokensPerDoc": providerutils.OptNumber,
+	"priority":        providerutils.OptNumber,
 }

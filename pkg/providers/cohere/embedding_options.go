@@ -1,6 +1,10 @@
 package cohere
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+)
 
 // OutputDimension represents supported embedding dimensions for Cohere v3 models
 type OutputDimension int
@@ -125,4 +129,13 @@ func validateEmbeddingType(t EmbeddingType) error {
 		return nil
 	}
 	return fmt.Errorf("invalid embedding type: %s (must be float, int8, uint8, binary, or ubinary)", t)
+}
+
+// cohereEmbeddingOptionsSchema mirrors cohereEmbeddingModelOptions (TS
+// cohere-embedding-model-options.ts).
+var cohereEmbeddingOptionsSchema = providerutils.OptionSchema{
+	"embeddingType":   providerutils.OptEnum("float", "int8", "uint8", "binary", "ubinary"),
+	"inputType":       providerutils.OptEnum("search_document", "search_query", "classification", "clustering"),
+	"truncate":        providerutils.OptEnum("NONE", "START", "END"),
+	"outputDimension": providerutils.OptNumberLiterals(256, 512, 768, 1024, 1536, 2048),
 }

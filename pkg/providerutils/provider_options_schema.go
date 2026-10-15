@@ -382,3 +382,27 @@ func OptMatch(re *regexp.Regexp, message string) OptionCheck {
 		return nil
 	}
 }
+
+// OptNumberLiterals is z.union([z.literal(n), ...]) over numbers.
+func OptNumberLiterals(values ...float64) OptionCheck {
+	return func(path string, v interface{}) error {
+		if isOptNumber(v) {
+			rv := reflect.ValueOf(v)
+			var n float64
+			switch rv.Kind() {
+			case reflect.Float32, reflect.Float64:
+				n = rv.Float()
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				n = float64(rv.Int())
+			default:
+				n = float64(rv.Uint())
+			}
+			for _, want := range values {
+				if n == want {
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("Invalid input: expected one of %v (at %s)", values, path)
+	}
+}

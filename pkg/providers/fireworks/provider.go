@@ -2,6 +2,7 @@ package fireworks
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -38,6 +39,10 @@ type Config struct {
 
 // New creates a new Fireworks AI provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the FIREWORKS_API_KEY environment variable.
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("FIREWORKS_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.fireworks.ai/inference"
