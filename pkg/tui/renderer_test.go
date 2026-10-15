@@ -582,7 +582,9 @@ func TestTerminalRendererInterruptsStreamingWhileWaitingForNextChunk(t *testing.
 	// call's own goroutine -- so it may close shortly after RenderStream
 	// itself returns, not necessarily before. Poll instead of asserting it
 	// synchronously.
-	deadlineClosed := time.Now().Add(time.Second)
+	// The fixture's Next() polls for ~100 x 5ms; timer granularity on a loaded
+	// machine can stretch that past a second, so allow a generous bound.
+	deadlineClosed := time.Now().Add(5 * time.Second)
 	for {
 		stream.mu.Lock()
 		closed := stream.closed
