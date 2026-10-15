@@ -684,3 +684,17 @@ func TestOpenAIRealtimeModelLive_ContextAppendRejectsInvalidOptions(t *testing.T
 		}
 	}
 }
+
+func TestLiveSessionConfigSendsEmptyInputArray(t *testing.T) {
+	// TS: `options.input !== undefined` (an empty array is still sent).
+	session, err := buildOpenAILiveSessionConfig(provider.RealtimeSessionConfig{
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"input": []interface{}{}}},
+	}, "gpt-live-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, ok := session["input"].([]interface{})
+	if !ok || len(in) != 0 {
+		t.Fatalf("input = %#v", session["input"])
+	}
+}

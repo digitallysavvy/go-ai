@@ -206,9 +206,6 @@ func addOpenAIRealtimeSessionFields(session map[string]interface{}, config provi
 			if config.InputAudioTranscription.Model != nil {
 				model = *config.InputAudioTranscription.Model
 			}
-			if model == "" {
-				model = ""
-			}
 			transcription := map[string]interface{}{"model": model}
 			if config.InputAudioTranscription.Language != nil {
 				transcription["language"] = *config.InputAudioTranscription.Language
@@ -253,10 +250,10 @@ func audioFormatMap(f *provider.RealtimeAudioFormat) map[string]interface{} {
 func turnDetectionMap(td *provider.RealtimeTurnDetection, openaiNames bool) map[string]interface{} {
 	t := td.Type
 	if openaiNames {
-		switch t {
-		case "server-vad":
+		// TS: type === 'server-vad' ? 'server_vad' : 'semantic_vad'.
+		if t == "server-vad" {
 			t = "server_vad"
-		case "semantic-vad":
+		} else {
 			t = "semantic_vad"
 		}
 	} else {

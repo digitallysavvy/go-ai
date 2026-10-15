@@ -254,7 +254,7 @@ func buildOpenAILiveSessionConfig(config provider.RealtimeSessionConfig, modelID
 			session["delegation"] = nil
 		}
 	}
-	if len(options.Input) > 0 {
+	if options.Input != nil {
 		session["input"] = options.Input
 	}
 	if options.Store != nil {
