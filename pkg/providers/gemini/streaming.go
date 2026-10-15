@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -621,6 +622,7 @@ func (s *stream) processNonFuncPart(part Part) {
 				ID:               toolCallID,
 				ToolName:         "server:" + part.ToolCall.ToolType,
 				Arguments:        args,
+				RawArguments:     jsonorder.Text(part.toolCallArgsRaw, args),
 				ProviderExecuted: true,
 				Dynamic:          true,
 			},

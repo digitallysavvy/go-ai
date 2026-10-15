@@ -1007,3 +1007,17 @@ func TestConvertResponse_ToolInputKeepsKeyOrder(t *testing.T) {
 		t.Fatalf("content input = %#v", result.Content[0])
 	}
 }
+
+// TS stringifies part.toolCall.args as received, so the server tool call
+// input keeps the wire key order.
+func TestConvertResponse_ServerToolCallArgsKeepKeyOrder(t *testing.T) {
+	var resp Response
+	body := `{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"toolCall":{"toolType":"GOOGLE_SEARCH_WEB","id":"c1","args":{"zeta":1,"alpha":{"yy":1,"aa":2}}}}]}}]}`
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := makeTestModel("gemini-3-pro-preview").convertResponse(resp, nil)
+	if len(result.ToolCalls) != 1 || result.ToolCalls[0].RawArguments != `{"zeta":1,"alpha":{"yy":1,"aa":2}}` {
+		t.Fatalf("tool calls = %#v", result.ToolCalls)
+	}
+}
