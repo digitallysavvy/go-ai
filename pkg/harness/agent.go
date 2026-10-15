@@ -284,6 +284,7 @@ func (a *Agent) acquireSandbox(ctx context.Context, opts CreateSessionOptions, i
 		OnBootstrap: a.sandboxConfig.OnBootstrap, BootstrapHash: a.sandboxConfig.BootstrapHash,
 		SkipOnBootstrapIfMarked: true,
 	}); err != nil {
+		a.cleanupAfterStartFailure(ctx, sandboxSession, opts.SandboxSession == nil)
 		return nil, "", err
 	}
 	return sandboxSession, sessionWorkDir, nil
@@ -341,10 +342,13 @@ func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOpt
 		if recipe != nil {
 			identity := HashHarnessBootstrap(*recipe)
 			home, err := ResolveSandboxHomeDir(ctx, resumed)
-			if err != nil {
-				return nil, "", err
+			if err == nil {
+				err = ApplyBootstrapRecipe(ctx, resumed.Restricted(), *recipe, identity, StateDirectoryPath(home))
 			}
-			if err := ApplyBootstrapRecipe(ctx, resumed.Restricted(), *recipe, identity, StateDirectoryPath(home)); err != nil {
+			if err != nil {
+				// The agent owns this sandbox: do not leak it when the
+				// bootstrap fails (TS cleanupAfterStartFailure).
+				a.cleanupAfterStartFailure(ctx, resumed, true)
 				return nil, "", err
 			}
 		}
@@ -364,10 +368,11 @@ func (a *Agent) acquireSandboxSession(ctx context.Context, opts CreateSessionOpt
 	sessionWorkDir := ResolveSessionWorkDir(created.DefaultWorkingDirectory(), harness.HarnessID(), opts.SessionID, plan.WorkDir)
 	if plan.Recipe != nil && plan.RecipeIdentity != "" {
 		home, err := ResolveSandboxHomeDir(ctx, created)
-		if err != nil {
-			return nil, "", err
+		if err == nil {
+			err = ApplyBootstrapRecipe(ctx, created.Restricted(), *plan.Recipe, plan.RecipeIdentity, StateDirectoryPath(home))
 		}
-		if err := ApplyBootstrapRecipe(ctx, created.Restricted(), *plan.Recipe, plan.RecipeIdentity, StateDirectoryPath(home)); err != nil {
+		if err != nil {
+			a.cleanupAfterStartFailure(ctx, created, true)
 			return nil, "", err
 		}
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func finishScript(text string) []StreamPart {
@@ -405,5 +406,45 @@ func TestDeniedToolApprovalReason(t *testing.T) {
 				t.Fatalf("Output = %#v", mock.toolResults[0].Output)
 			}
 		})
+	}
+}
+
+// An agent-owned sandbox must be stopped when the harness bootstrap recipe
+// fails, instead of leaking (TS cleanupAfterStartFailure).
+func TestCreateSessionStopsOwnedSandboxWhenBootstrapFails(t *testing.T) {
+	sb := &mockNetworkSandbox{mockSandbox: newMockSandbox()}
+	base := sb.runFn
+	sb.runFn = func(o providerutils.SandboxProcessOptions) providerutils.SandboxRunResult {
+		if o.Command == "boom" {
+			return providerutils.SandboxRunResult{ExitCode: 1, Stderr: "no"}
+		}
+		return base(o)
+	}
+	recipe := &Bootstrap{HarnessID: "mock", BootstrapDir: ".b/mock", Commands: []BootstrapCommand{{Command: "boom"}}}
+	for _, resume := range []bool{false, true} {
+		sb.stops = 0
+		a, err := NewAgent(AgentSettings{Harness: makeHarness("mock", recipe), Sandbox: &fakeProvider{session: sb}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		opts := CreateSessionOptions{SessionID: "s"}
+		if resume {
+			st, _ := NewResumeSessionState("mock", map[string]any{})
+			opts.ResumeFrom = st
+		}
+		_, err = a.CreateSession(context.Background(), opts)
+		if resume {
+			// fakeProvider cannot resume: the capability error needs no cleanup.
+			if err == nil || !IsCapabilityUnsupportedError(err) {
+				t.Fatalf("resume err = %v", err)
+			}
+			continue
+		}
+		if err == nil || !strings.Contains(err.Error(), "Bootstrap command failed") {
+			t.Fatalf("err = %v", err)
+		}
+		if sb.stops != 1 {
+			t.Fatalf("stops = %d, want 1", sb.stops)
+		}
 	}
 }
