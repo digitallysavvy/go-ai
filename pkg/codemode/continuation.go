@@ -9,10 +9,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"golang.org/x/text/collate"
+	"golang.org/x/text/language"
 )
 
 // signatureAlgorithm is the value stored in ContinuationAuth.Alg. Mirrors
@@ -230,12 +234,13 @@ func randomHex(n int) (string, error) {
 }
 
 // canonicalJSON encodes value the way TypeScript's canonicalJson does:
-// object keys sorted lexicographically at every level, no whitespace, and
-// JSON.stringify's string escaping (no HTML-escaping of '<', '>' and '&', and
-// U+2028/U+2029 written as is). value is round-tripped through encoding/json
-// first so nested Go structs become map[string]interface{} (whose keys
-// encoding/json already sorts) and every numeric Go type collapses to
-// float64, matching JavaScript's single Number type.
+// object keys sorted with String.prototype.localeCompare (ICU root collation,
+// not code-unit order, so "a" < "B" < "c" and "_" < "a") at every level, no
+// whitespace, and JSON.stringify's string escaping (no HTML-escaping of '<',
+// '>' and '&', and U+2028/U+2029 written as is). value is round-tripped
+// through encoding/json first so nested Go structs become
+// map[string]interface{} and every numeric Go type collapses to float64,
+// matching JavaScript's single Number type.
 func canonicalJSON(value interface{}) (string, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -245,9 +250,59 @@ func canonicalJSON(value interface{}) (string, error) {
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return "", err
 	}
-	out, err := jsonstr.Marshal(generic)
-	if err != nil {
+	var sb strings.Builder
+	if err := writeCanonical(&sb, generic, collate.New(language.Und)); err != nil {
 		return "", err
 	}
-	return string(out), nil
+	return sb.String(), nil
+}
+
+func writeCanonical(sb *strings.Builder, v interface{}, c *collate.Collator) error {
+	switch t := v.(type) {
+	case []interface{}:
+		sb.WriteByte('[')
+		for i, item := range t {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			if err := writeCanonical(sb, item, c); err != nil {
+				return err
+			}
+		}
+		sb.WriteByte(']')
+	case map[string]interface{}:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if r := c.CompareString(keys[i], keys[j]); r != 0 {
+				return r < 0
+			}
+			return keys[i] < keys[j]
+		})
+		sb.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				sb.WriteByte(',')
+			}
+			kb, err := jsonstr.Marshal(k)
+			if err != nil {
+				return err
+			}
+			sb.Write(kb)
+			sb.WriteByte(':')
+			if err := writeCanonical(sb, t[k], c); err != nil {
+				return err
+			}
+		}
+		sb.WriteByte('}')
+	default:
+		b, err := jsonstr.Marshal(v)
+		if err != nil {
+			return err
+		}
+		sb.Write(b)
+	}
+	return nil
 }
