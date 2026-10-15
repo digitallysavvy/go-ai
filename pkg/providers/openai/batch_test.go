@@ -874,3 +874,97 @@ func TestOpenAIBatchSendsProviderAndCallHeaders(t *testing.T) {
 		t.Errorf("create content-type = %q", ct)
 	}
 }
+
+// Ported from the TS batch-local result conversion (convertOpenAIBatchResult):
+// it only reads output_text, so there are no sources/citations/message metadata;
+// hosted web/file search and code interpreter calls are dynamic; logprobs and
+// the response id/timestamp/model are part of the result.
+func TestOpenAIBatchResultShapeMatchesTSBatchConverter(t *testing.T) {
+	body := `{"id":"resp_1","created_at":1700000000,"model":"gpt-5.6","service_tier":"flex","output":[
+	  {"type":"file_search_call","id":"fs","queries":["q"],"results":[{"attributes":{},"file_id":"file_1","filename":"a.md","score":0.9,"text":"t"}]},
+	  {"type":"web_search_call","id":"ws","status":"completed","action":{"type":"search","query":"x"}},
+	  {"type":"message","id":"m","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[{"type":"url_citation","url":"https://a.test","title":"A","start_index":0,"end_index":2}],"logprobs":[{"token":"a","logprob":-1,"top_logprobs":[]}]}]}
+	],"usage":{"input_tokens":1,"output_tokens":2}}`
+	res, berr := convertOpenAIBatchResponseBodyBytes(json.RawMessage(body))
+	if berr != nil {
+		t.Fatalf("convert: %+v", berr)
+	}
+	var kinds []string
+	for _, part := range res.Content {
+		switch c := part.(type) {
+		case types.SourceContent:
+			t.Fatalf("batch result must not carry sources: %+v", c)
+		case types.TextContent:
+			if len(c.ProviderMetadata) != 0 || len(c.Citations) != 0 {
+				t.Fatalf("text carries metadata/citations: %+v", c)
+			}
+			kinds = append(kinds, "text")
+		case types.ToolCallContent:
+			if !c.Dynamic {
+				t.Fatalf("tool call %s not dynamic", c.ToolName)
+			}
+			kinds = append(kinds, "call:"+c.ToolName)
+		case types.ToolResultContent:
+			if !c.Dynamic {
+				t.Fatalf("tool result %s not dynamic", c.ToolName)
+			}
+			kinds = append(kinds, "result:"+c.ToolName)
+		}
+	}
+	if got := strings.Join(kinds, ","); got != "call:file_search,result:file_search,call:web_search,result:web_search,text" {
+		t.Fatalf("content order = %s", got)
+	}
+	meta, _ := res.ProviderMetadata["openai"].(map[string]interface{})
+	if meta["responseId"] != "resp_1" || meta["serviceTier"] != "flex" || meta["logprobs"] == nil {
+		t.Fatalf("metadata = %+v", meta)
+	}
+	if res.ResponseMetadata == nil || res.ResponseMetadata.ID != "resp_1" || res.ResponseMetadata.ModelID != "gpt-5.6" || res.ResponseMetadata.Timestamp.Unix() != 1700000000 {
+		t.Fatalf("response metadata = %+v", res.ResponseMetadata)
+	}
+}
+
+// TS: "appends an explicit compaction trigger to batch request input".
+func TestOpenAIBatchAppendsCompactionTrigger(t *testing.T) {
+	var jsonl []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/files" {
+			mr, _ := r.MultipartReader()
+			for {
+				part, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				if part.FormName() == "file" {
+					jsonl, _ = io.ReadAll(part)
+				}
+			}
+			_, _ = w.Write([]byte(`{"id":"file-input"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"batch_123","status":"in_progress"}`))
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	req := openaiTextBatchRequest("compact", "gpt-5.6", "")
+	req.Text.Options.Prompt = chatTestPrompt()
+	req.Text.Options.ProviderOptions = map[string]interface{}{"openai": map[string]interface{}{"compactionTrigger": true}}
+	if _, err := NewBatch(p).DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{req}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(jsonl), `{"custom_id":"compact","method":"POST","url":"/v1/responses","body":`) {
+		t.Fatalf("line key order: %s", jsonl)
+	}
+	var line struct {
+		Body struct {
+			Input []map[string]interface{} `json:"input"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal(jsonl, &line); err != nil {
+		t.Fatal(err)
+	}
+	n := len(line.Body.Input)
+	if n != 2 || line.Body.Input[n-1]["type"] != "compaction_trigger" {
+		t.Fatalf("input = %+v", line.Body.Input)
+	}
+}

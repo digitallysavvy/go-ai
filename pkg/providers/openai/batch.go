@@ -695,7 +695,59 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 	if err != nil {
 		return nil, &provider.BatchError{Message: err.Error(), Code: "invalid_response"}
 	}
+	shapeOpenAIBatchResult(genResult, resp.ResponsesAPIResponse)
 	return genResult, nil
+}
+
+// openaiBatchDynamicToolNames are the provider-executed tools TS's batch
+// converter reports as dynamic tool calls and results.
+var openaiBatchDynamicToolNames = map[string]bool{
+	"web_search":       true,
+	"file_search":      true,
+	"code_interpreter": true,
+}
+
+// shapeOpenAIBatchResult adapts the shared Responses conversion to what TS's
+// batch-local convertOpenAIBatchResult returns: no sources, citations or
+// text/message metadata (it only reads output_text), provider-executed web
+// search, file search and code interpreter calls and results marked dynamic,
+// message logprobs and the response id/timestamp/model in the result.
+func shapeOpenAIBatchResult(res *types.GenerateResult, resp responses.ResponsesAPIResponse) {
+	content := make([]types.ContentPart, 0, len(res.Content))
+	for _, part := range res.Content {
+		switch c := part.(type) {
+		case types.SourceContent:
+			continue
+		case *types.SourceContent:
+			continue
+		case types.TextContent:
+			c.ProviderMetadata, c.ProviderOptions, c.Citations = nil, nil, nil
+			part = c
+		case types.ToolCallContent:
+			if c.ProviderExecuted && openaiBatchDynamicToolNames[c.ToolName] {
+				c.Dynamic = true
+			}
+			part = c
+		case types.ToolResultContent:
+			if openaiBatchDynamicToolNames[c.ToolName] {
+				c.Dynamic = true
+			}
+			part = c
+		}
+		content = append(content, part)
+	}
+	res.Content = content
+	for i := range res.ToolCalls {
+		if res.ToolCalls[i].ProviderExecuted && openaiBatchDynamicToolNames[res.ToolCalls[i].ToolName] {
+			res.ToolCalls[i].Dynamic = true
+		}
+	}
+	if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
+		if pm, ok := res.ProviderMetadata["openai"].(map[string]interface{}); ok {
+			pm["logprobs"] = logprobs
+		}
+	}
+	res.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
 }
 
 // openaiBatchKnownOutputItemTypes are the Responses output-item types TS's
