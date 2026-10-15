@@ -91,3 +91,23 @@ func TestPermissionModeMapping_Comparable(t *testing.T) {
 		t.Fatal("PermissionModeMapping must be comparable")
 	}
 }
+
+// TS `isCompletePermissionModeMapping` also rejects malformed targets.
+func TestPermissionModeMapping_MalformedTargetIsIncomplete(t *testing.T) {
+	ok := &PermissionModeTarget{Type: PermissionTargetSessionMode, ModeID: "m"}
+	for name, bad := range map[string]*PermissionModeTarget{
+		"empty type":       {},
+		"unknown type":     {Type: "bogus", ModeID: "m"},
+		"nil option value": {Type: PermissionTargetSessionConfigOption, ConfigID: "c"},
+		"numeric value":    {Type: PermissionTargetSessionConfigOption, ConfigID: "c", Value: 1},
+	} {
+		m := &PermissionModeMapping{AllowReads: ok, AllowEdits: ok, AllowAll: bad}
+		if m.IsComplete() {
+			t.Errorf("%s: complete", name)
+		}
+	}
+	good := &PermissionModeMapping{AllowReads: ok, AllowEdits: &PermissionModeTarget{Type: PermissionTargetSessionConfigOption, ConfigID: "c", Value: true}, AllowAll: nil}
+	if !good.IsComplete() {
+		t.Error("valid mapping incomplete")
+	}
+}

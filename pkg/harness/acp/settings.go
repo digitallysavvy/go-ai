@@ -84,7 +84,30 @@ type PermissionModeMapping struct {
 // nil no-op). Mirrors TS `isCompletePermissionModeMapping`; a nil mapping is
 // not complete.
 func (m *PermissionModeMapping) IsComplete() bool {
-	return m != nil && !m.UnsetAllowReads && !m.UnsetAllowEdits && !m.UnsetAllowAll
+	return m != nil &&
+		!m.UnsetAllowReads && !m.UnsetAllowEdits && !m.UnsetAllowAll &&
+		validPermissionModeTarget(m.AllowReads) &&
+		validPermissionModeTarget(m.AllowEdits) &&
+		validPermissionModeTarget(m.AllowAll)
+}
+
+// validPermissionModeTarget mirrors TS `isPermissionModeMappingValue`: nil (an
+// explicit no-op) or a well-formed target. A session-config-option value must
+// be a string or bool.
+func validPermissionModeTarget(t *PermissionModeTarget) bool {
+	if t == nil {
+		return true
+	}
+	switch t.Type {
+	case PermissionTargetSessionMode:
+		return true
+	case PermissionTargetSessionConfigOption:
+		switch t.Value.(type) {
+		case string, bool:
+			return true
+		}
+	}
+	return false
 }
 
 func (m *PermissionModeMapping) isUnset(mode harness.PermissionMode) bool {
