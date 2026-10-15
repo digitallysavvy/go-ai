@@ -790,3 +790,87 @@ func TestOpenAIBatch_UnsupportedOutputItemTypeFailsItemWithoutStoppingStream(t *
 // decodeMultipartFields/decodeMultipartFieldsAndFile.
 
 func intPtr(v int) *int { return &v }
+
+func TestOpenAIBatchInputFileExpiresAfterOptions(t *testing.T) {
+	opts := func(key string, v interface{}) map[string]interface{} {
+		return map[string]interface{}{key: map[string]interface{}{"inputFileExpiresAfter": v}}
+	}
+	cases := []struct {
+		name     string
+		provider string
+		options  map[string]interface{}
+		want     int
+		wantErr  bool
+	}{
+		{"default", "openai", nil, 172800, false},
+		{"openai key", "openai", opts("openai", float64(3600)), 3600, false},
+		{"azure key ignored for openai", "openai", opts("azure", float64(3600)), 172800, false},
+		{"azure key wins for azure", "azure.responses", map[string]interface{}{
+			"azure":  map[string]interface{}{"inputFileExpiresAfter": float64(7200)},
+			"openai": map[string]interface{}{"inputFileExpiresAfter": float64(3600)},
+		}, 7200, false},
+		{"azure falls back to openai", "azure.responses", opts("openai", float64(3600)), 3600, false},
+		{"too small", "openai", opts("openai", float64(100)), 0, true},
+		{"too large", "openai", opts("openai", float64(2_592_001)), 0, true},
+		{"not an integer", "openai", opts("openai", 3600.5), 0, true},
+		{"not a number", "openai", opts("openai", "3600"), 0, true},
+	}
+	for _, tc := range cases {
+		got, err := openaiBatchInputFileExpiresAfter(tc.provider, tc.options)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("%s: got (%d, %v), want (%d, err=%v)", tc.name, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+// Batch calls send the provider headers merged with the per-call headers on
+// every request (file upload, batch create, status, list, cancel).
+func TestOpenAIBatchSendsProviderAndCallHeaders(t *testing.T) {
+	seen := map[string]http.Header{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen[r.Method+" "+r.URL.Path] = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/files":
+			_, _ = w.Write([]byte(`{"id":"file-input"}`))
+		case r.URL.Path == "/batches" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"data":[],"has_more":false}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"batch_123","status":"in_progress"}`))
+		}
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL, Headers: map[string]string{"X-Provider": "p", "X-Both": "provider"}})
+	b := NewBatch(p)
+	h := map[string]string{"X-Call": "c", "X-Both": "call"}
+	ctx := t.Context()
+	if _, err := b.DoStartBatch(ctx, provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{openaiTextBatchRequest("a", "gpt-5.6", "Hi")}, Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.DoGetBatchStatus(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.DoCancelBatch(ctx, provider.BatchV4OperationOptions{BatchID: "batch_123", Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.DoListBatches(ctx, provider.BatchV4ListOptions{Headers: h}); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"POST /files", "POST /batches", "GET /batches/batch_123", "POST /batches/batch_123/cancel", "GET /batches"} {
+		hd, ok := seen[key]
+		if !ok {
+			t.Errorf("no request %s (saw %v)", key, seen)
+			continue
+		}
+		if hd.Get("Authorization") != "Bearer k" || hd.Get("X-Provider") != "p" || hd.Get("X-Call") != "c" || hd.Get("X-Both") != "call" {
+			t.Errorf("%s headers = %v", key, hd)
+		}
+	}
+	if ct := seen["POST /files"].Get("Content-Type"); !strings.HasPrefix(ct, "multipart/form-data; boundary=") {
+		t.Errorf("upload content-type = %q", ct)
+	}
+	if ct := seen["POST /batches"].Get("Content-Type"); ct != "application/json" {
+		t.Errorf("create content-type = %q", ct)
+	}
+}

@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -93,7 +95,10 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		})
 	}
 
-	inputFileExpiresAfterSeconds := openaiBatchInputFileExpiresAfter(opts.ProviderOptions)
+	inputFileExpiresAfterSeconds, err := openaiBatchInputFileExpiresAfter(b.provider.Name(), opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	var fileParts bytes.Buffer
 	for _, req := range opts.Requests {
@@ -341,17 +346,53 @@ func validateOpenAISingleModel(requests []provider.BatchV4Request) error {
 }
 
 // openaiBatchInputFileExpiresAfter extracts
-// providerOptions.openai.inputFileExpiresAfter (or providerOptions.azure.*
-// for Azure-hosted OpenAI), defaulting to 48 hours.
-func openaiBatchInputFileExpiresAfter(providerOptions map[string]interface{}) int {
-	for _, key := range []string{"openai", "azure"} {
-		if opts, ok := providerOptions[key].(map[string]interface{}); ok {
-			if v, ok := opts["inputFileExpiresAfter"].(float64); ok {
-				return int(v)
-			}
-		}
+// providerOptions.<name>.inputFileExpiresAfter, defaulting to 48 hours. Like
+// TS parseBatchProviderOptions it reads "azure" first for Azure-hosted OpenAI
+// (falling back to "openai"), only "openai" otherwise, and rejects values that
+// are not integers between 3600 and 2592000.
+func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[string]interface{}) (int, error) {
+	keys := []string{"openai"}
+	if strings.Contains(providerName, "azure") {
+		keys = []string{"azure", "openai"}
 	}
-	return openaiBatchInputFileDefaultExpiresAfterSeconds
+	for _, key := range keys {
+		raw, present := providerOptions[key]
+		if !present || raw == nil {
+			continue
+		}
+		opts, ok := raw.(map[string]interface{})
+		if !ok {
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("expected an object"))
+		}
+		v, present := opts["inputFileExpiresAfter"]
+		if !present || v == nil {
+			return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+		}
+		var n float64
+		switch x := v.(type) {
+		case float64:
+			n = x
+		case int:
+			n = float64(x)
+		case int64:
+			n = float64(x)
+		default:
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be a number"))
+		}
+		if n != math.Trunc(n) || n < 3600 || n > 2_592_000 {
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be an integer between 3600 and 2592000"))
+		}
+		return int(n), nil
+	}
+	return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+}
+
+func invalidOpenAIBatchOptions(key string, cause error) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "providerOptions",
+		Message: fmt.Sprintf("invalid %s provider options", key),
+		Cause:   cause,
+	}
 }
 
 // --- Wire types -------------------------------------------------------
