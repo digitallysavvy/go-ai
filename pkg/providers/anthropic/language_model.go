@@ -1600,10 +1600,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				s.err = io.EOF
 				return nil, io.EOF
 			}
-			if err == io.EOF && s.finish != nil && !s.finishIssued {
-				s.finishIssued = true
-				return s.issueFinish(true), nil
-			}
+			// TS only finishes on message_stop (its stream has no flush), so a
+			// body that ends after message_delta ends without a finish part.
 			s.err = err
 			return nil, err
 		}
