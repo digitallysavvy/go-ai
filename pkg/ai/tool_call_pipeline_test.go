@@ -592,3 +592,19 @@ func TestToolCallInputValidator_HintedPointerForm(t *testing.T) {
 		}
 	}
 }
+
+// TS doParseToolCall sets `dynamic` only from the matched tool's type: a
+// provider-supplied dynamic flag does not leak onto a registered static tool.
+func TestParseToolCall_StaticToolDropsProviderDynamicFlag(t *testing.T) {
+	tools := []types.Tool{pipelineTestTool("testTool", nil)}
+	got, err := ParseToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall: types.ToolCall{ID: "c1", ToolName: "testTool", RawArguments: `{"value":"x"}`, Dynamic: true},
+		Tools:    tools,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Invalid || got.Dynamic {
+		t.Fatalf("expected valid static call, got invalid=%v dynamic=%v", got.Invalid, got.Dynamic)
+	}
+}

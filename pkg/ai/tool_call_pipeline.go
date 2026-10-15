@@ -277,7 +277,7 @@ func doParseToolCall(call types.ToolCall, tools []types.Tool) (types.ToolCall, e
 	if tool.Metadata != nil {
 		parsed.ToolMetadata = cloneStringAnyMap(tool.Metadata)
 	}
-	parsed.Dynamic = call.Dynamic || tool.Type == "dynamic"
+	parsed.Dynamic = tool.Type == "dynamic"
 	return parsed, nil
 }
 
