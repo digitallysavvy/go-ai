@@ -1970,9 +1970,13 @@ func convertAssistantContent(parts []types.ContentPart) LangChainMessage {
 			})
 		}
 	}
-	msg := LangChainMessage{"type": "ai", "content": strings.Join(textParts, "")}
-	if len(toolCalls) > 0 {
-		msg["tool_calls"] = toolCalls
+	// langchain-core's AIMessage always carries tool_calls and
+	// invalid_tool_calls (empty when there are none) in toDict().data.
+	msg := LangChainMessage{
+		"type":               "ai",
+		"content":            strings.Join(textParts, ""),
+		"tool_calls":         toolCalls,
+		"invalid_tool_calls": []interface{}{},
 	}
 	return wireMessage(msg)
 }
