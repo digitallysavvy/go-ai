@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 // Issue is one validation failure.
@@ -322,11 +324,36 @@ func ValidationMessage(schema Node, data string) string {
 		issues.Reset()
 		issues.Write(bad.json())
 	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, []byte(data)); err != nil {
-		compact.WriteString(data)
+	return "Type validation failed: Value: " + stringify(data) + ".\nError message: " + issues.String()
+}
+
+// stringify is JSON.stringify of the parsed frame: wire key order kept,
+// \u escapes decoded, numbers re-rendered the JS way (1.0 -> 1).
+func stringify(data string) string {
+	tree, ok := jsonorder.Parse([]byte(data))
+	if !ok {
+		return CompactJSON(data)
 	}
-	return "Type validation failed: Value: " + compact.String() + ".\nError message: " + issues.String()
+	return jsonorder.Stringify(jsNumbers(tree))
+}
+
+func jsNumbers(v interface{}) interface{} {
+	switch x := v.(type) {
+	case json.Number:
+		if f, err := x.Float64(); err == nil {
+			return f
+		}
+	case []interface{}:
+		for i := range x {
+			x[i] = jsNumbers(x[i])
+		}
+	case *jsonorder.Object:
+		for _, k := range x.Keys() {
+			e, _ := x.Get(k)
+			x.Set(k, jsNumbers(e))
+		}
+	}
+	return v
 }
 
 // IssueText returns the issue list that follows "Error message: " in a
