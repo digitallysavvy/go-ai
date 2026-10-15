@@ -878,8 +878,12 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to decode Bedrock Converse response: %w", err)
 	}
-	if verr := validateConverseUsage(resp.Usage); verr != nil {
-		return nil, invalidConverseResponseError(verr)
+	// TS validates the whole body against AmazonBedrockResponseSchema.
+	var generic interface{}
+	if err := json.Unmarshal(body, &generic); err == nil {
+		if verr := validateConverseResponse(generic); verr != nil {
+			return nil, invalidConverseResponseError(verr)
+		}
 	}
 
 	result := &types.GenerateResult{RawResponse: json.RawMessage(body)}

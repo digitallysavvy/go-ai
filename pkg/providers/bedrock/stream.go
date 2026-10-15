@@ -164,6 +164,18 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		}
 		delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.
 
+		// TS validates {payloadType: payload} against AmazonBedrockStreamSchema; a
+		// mismatch is an error part (the event is skipped) and the finish reason
+		// becomes error, like the unparsable-JSON branch above.
+		if verr := validateConverseStreamEvent(payloadType, payload); verr != nil {
+			s.finishReason = types.FinishReasonError
+			if s.includeRawChunks {
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{payloadType: payload}})
+			}
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: verr.Message, Err: invalidConverseResponseError(verr)})
+			continue
+		}
+
 		// Wrap the raw payload under its event/exception type key, mirroring TS
 		// amazon-bedrock-event-stream-response-handler.ts's
 		// `{ [payloadType]: parsedDataResult.value }`, so downstream handling
@@ -258,13 +270,6 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) {
 	if usage, ok := metadata["usage"].(map[string]interface{}); ok {
 		usageBytes, _ := json.Marshal(usage)
-		if verr := validateConverseUsage(usageBytes); verr != nil {
-			// TS reports a schema mismatch as an error part, keeps reading
-			// and ends with finish reason "error".
-			s.finishReason = types.FinishReasonError
-			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: verr.Message, Err: invalidConverseResponseError(verr)})
-			return
-		}
 		s.usage = convertBedrockConverseUsage(usageBytes)
 		s.hasUsage = true
 
