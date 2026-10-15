@@ -457,6 +457,12 @@ type openaiTranscriptionResponse struct {
 	} `json:"words"`
 }
 
+// ValidateTranscriptionProviderOptions validates providerOptions.openai for
+// transcription calls (also used by the Azure OpenAI streaming delegate).
+func ValidateTranscriptionProviderOptions(providerOptions map[string]interface{}) error {
+	return validateTranscriptionProviderOptions(providerOptions)
+}
+
 // validateTranscriptionProviderOptions mirrors TS parseProviderOptions with
 // openAITranscriptionModelOptions: a bad providerOptions.openai value throws
 // InvalidArgumentError("invalid openai provider options").
