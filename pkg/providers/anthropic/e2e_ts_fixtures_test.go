@@ -373,3 +373,43 @@ func TestUnsupportedModelTypesAreNoSuchModelErrors(t *testing.T) {
 		t.Errorf("ImageModel err = %v", err)
 	}
 }
+
+// A tool call cut off mid-JSON (max_tokens) must not fail the stream: TS emits
+// the tool-call with its raw input so the core can mark it invalid or repair
+// it, and the finish reason still arrives.
+func TestStreamTruncatedToolInputIsEmittedRaw(t *testing.T) {
+	model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, l := range []string{
+			`{"type":"message_start","message":{"id":"m1","model":"claude-sonnet-4-5","usage":{"input_tokens":3,"output_tokens":1}}}`,
+			`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}}`,
+			`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":\"San Fr"}}`,
+			`{"type":"content_block_stop","index":0}`,
+			`{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}`,
+			`{"type":"message_stop"}`,
+		} {
+			fmt.Fprintf(w, "data: %s\n\n", l)
+		}
+	})
+	defer closeFn()
+	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var call *types.ToolCall
+	var finish *provider.StreamChunk
+	for _, c := range drain(t, s) {
+		if c.Type == provider.ChunkTypeToolCall {
+			call = c.ToolCall
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finish = c
+		}
+	}
+	if call == nil || call.RawArguments != `{"city":"San Fr` || call.Arguments != nil {
+		t.Fatalf("tool call = %+v", call)
+	}
+	if finish == nil || finish.FinishReason != types.FinishReasonLength {
+		t.Fatalf("finish = %+v", finish)
+	}
+}

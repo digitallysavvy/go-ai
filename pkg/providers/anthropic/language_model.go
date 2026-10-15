@@ -2481,13 +2481,18 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// Parse the accumulated JSON into ToolCall.Arguments.
 				var args map[string]interface{}
 				inputStr := block.inputBuf.String()
+				invalidInput := ""
 				if inputStr != "" {
 					if err := json.Unmarshal([]byte(inputStr), &args); err != nil {
-						// Malformed JSON from the API: surface as error.
-						return nil, fmt.Errorf("failed to parse tool call arguments for %q: %w", block.toolName, err)
+						// Malformed or truncated input (e.g. max_tokens hit
+						// mid-call): TS emits the tool-call with the raw input
+						// text and lets the core mark it invalid / repair it,
+						// instead of failing the whole stream.
+						args = nil
+						invalidInput = inputStr
 					}
 				}
-				if args == nil {
+				if args == nil && invalidInput == "" {
 					args = map[string]interface{}{}
 				}
 				var toolsetDelta *provider.StreamChunk
@@ -2524,6 +2529,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						ID:               block.toolCallID,
 						ToolName:         block.toolName,
 						Arguments:        args,
+						RawArguments:     invalidInput,
 						ProviderExecuted: block.providerExecuted,
 						Dynamic:          block.dynamic,
 						ProviderMetadata: meta,

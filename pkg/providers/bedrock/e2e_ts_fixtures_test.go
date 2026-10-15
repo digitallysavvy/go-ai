@@ -352,3 +352,32 @@ func TestGenerateContentOrderIsResponseOrder(t *testing.T) {
 		t.Fatalf("tool call id %q != content id %q", res.ToolCalls[0].ID, call.ToolCallID)
 	}
 }
+
+// Truncated tool JSON reaches the core as raw input, never as silently empty
+// arguments.
+func TestStreamTruncatedToolInputIsEmittedRaw(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		_, _ = w.Write(buildBedrockEventStreamBody([][2]string{
+			{"contentBlockStart", `{"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"t1","name":"weather"}}}`},
+			{"contentBlockDelta", `{"contentBlockIndex":0,"delta":{"toolUse":{"input":"{\"city\":\"San Fr"}}}`},
+			{"contentBlockStop", `{"contentBlockIndex":0}`},
+			{"messageStop", `{"stopReason":"max_tokens"}`},
+		}))
+	}))
+	defer srv.Close()
+	m := newHTTPTestBedrockModel(t, srv, "anthropic.claude-3-haiku-20240307-v1:0")
+	s, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range drainChunks(t, s) {
+		if c.Type == provider.ChunkTypeToolCall {
+			if c.ToolCall.RawArguments != `{"city":"San Fr` || c.ToolCall.Arguments != nil {
+				t.Fatalf("tool call = %+v", c.ToolCall)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool call")
+}
