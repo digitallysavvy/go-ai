@@ -162,6 +162,13 @@ type HTTPTransportConfig struct {
 	// transports, TLS settings, proxy behavior, or dialers.
 	SSEClient SSEClient
 
+	// InitialProtocolVersion is the MCP protocol version sent before the
+	// client negotiates one (TS initialProtocolVersion). Empty uses
+	// LatestProtocolVersion, as TS createMcpTransport does for an `http`
+	// transport: no standing inbound SSE GET is opened and no session id is
+	// sent until the handshake selects a legacy protocol version.
+	InitialProtocolVersion string
+
 	// InitialSessionID resumes a previously established streamable HTTP
 	// session (hash 241a8c5), sent as `mcp-session-id` on every request until
 	// the server issues a new one.
@@ -249,6 +256,11 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 	streamClient := *httpClient
 	streamClient.Timeout = 0
 
+	initialProtocolVersion := config.InitialProtocolVersion
+	if initialProtocolVersion == "" {
+		initialProtocolVersion = LatestProtocolVersion
+	}
+
 	return &HTTPTransport{
 		url:                     config.URL,
 		client:                  httpClient,
@@ -259,6 +271,7 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		config:                  config.Config,
 		oauth:                   config.OAuth,
 		auth:                    newTransportAuth(config.AuthProvider, config.URL, config.AuthHTTPClient),
+		protocolVersion:         initialProtocolVersion,
 		sessionID:               config.InitialSessionID,
 		onSessionIDChange:       config.OnSessionIDChange,
 		onSessionExpired:        config.OnSessionExpired,

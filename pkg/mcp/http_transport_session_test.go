@@ -69,7 +69,7 @@ func (c *sessionSSEClient) lastRequest() *http.Request {
 func TestHTTPTransportCapturesAndEchoesSessionID(t *testing.T) {
 	sse := &sessionSSEClient{issueSessionID: "session-abc"}
 	var changedTo []string
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:               "http://localhost:9999/mcp",
 		SSEClient:         sse,
 		OnSessionIDChange: func(id string) { changedTo = append(changedTo, id) },
@@ -105,7 +105,7 @@ func TestHTTPTransportCapturesAndEchoesSessionID(t *testing.T) {
 func TestHTTPTransportExpiresSessionIDOn404(t *testing.T) {
 	sse := &sessionSSEClient{notFoundOnSessionID: "session-abc"}
 	var expired []string
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "session-abc",
@@ -131,7 +131,7 @@ func TestHTTPTransportExpiresSessionIDOn404(t *testing.T) {
 // carrying the session id.
 func TestHTTPTransportTerminatesSessionOnClose(t *testing.T) {
 	sse := &sessionSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "session-abc",
@@ -156,7 +156,7 @@ func TestHTTPTransportTerminatesSessionOnClose(t *testing.T) {
 func TestHTTPTransportSkipsTerminateSessionOnCloseWhenDisabled(t *testing.T) {
 	sse := &sessionSSEClient{}
 	disabled := false
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:                     "http://localhost:9999/mcp",
 		SSEClient:               sse,
 		InitialSessionID:        "session-abc",
@@ -178,7 +178,7 @@ func TestHTTPTransportSkipsTerminateSessionOnCloseWhenDisabled(t *testing.T) {
 // DELETE when no session was ever established.
 func TestHTTPTransportNoSessionCloseIsNoop(t *testing.T) {
 	sse := &sessionSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 	})
@@ -202,7 +202,7 @@ func TestHTTPTransportNoSessionCloseIsNoop(t *testing.T) {
 // request does carry it.
 func TestHTTPTransportOmitsSessionIDOnInitializeRequest(t *testing.T) {
 	sse := &sessionSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "saved-session",
@@ -235,7 +235,7 @@ func TestHTTPTransportOmitsSessionIDOnInitializeRequest(t *testing.T) {
 // `!this.isModernProtocol() && includeSessionId && this.sessionId`.
 func TestHTTPTransportModernProtocolOmitsSessionIDHeader(t *testing.T) {
 	sse := &sessionSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "saved-session",
@@ -259,7 +259,7 @@ func TestHTTPTransportModernProtocolOmitsSessionIDHeader(t *testing.T) {
 func TestHTTPTransportModernProtocolIgnoresResponseSessionIDHeader(t *testing.T) {
 	sse := &sessionSSEClient{issueSessionID: "session-abc"}
 	var changed []string
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:               "http://localhost:9999/mcp",
 		SSEClient:         sse,
 		OnSessionIDChange: func(id string) { changed = append(changed, id) },
@@ -287,7 +287,7 @@ func TestHTTPTransportModernProtocolIgnoresResponseSessionIDHeader(t *testing.T)
 func TestHTTPTransportModernProtocolSkips404SessionHandling(t *testing.T) {
 	sse := &errorSSEClient{status: http.StatusNotFound, body: "Not Found"}
 	var expired []string
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "session-abc",
@@ -321,7 +321,7 @@ func TestHTTPTransportModernProtocolSkips404SessionHandling(t *testing.T) {
 // close()'s `!this.isModernProtocol() && this.sessionId && ...`.
 func TestHTTPTransportModernProtocolSkipsDeleteOnClose(t *testing.T) {
 	sse := &sessionSSEClient{}
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "session-abc",

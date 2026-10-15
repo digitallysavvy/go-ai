@@ -143,7 +143,7 @@ func TestHTTPTransportInboundSSEOpensStandingGETOnConnect(t *testing.T) {
 		return resp, nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestHTTPTransportInboundSSESkippedForModernProtocol(t *testing.T) {
 		return nil, nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	transport.SetProtocolVersion(LatestProtocolVersion)
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
@@ -199,7 +199,7 @@ func TestHTTPTransportInboundSSESetProtocolVersionSwitchesLifecycle(t *testing.T
 		return resp, nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestHTTPTransportInboundSSEQueuesMessagesAndTracksLastEventID(t *testing.T)
 		return resp, nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestHTTPTransportInboundSSEHandlesInvalidJSONRPC(t *testing.T) {
 
 	var errs []error
 	var errMu sync.Mutex
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError: func(err error) {
@@ -357,7 +357,7 @@ func TestHTTPTransportInboundSSEExpiresSessionOn404(t *testing.T) {
 	var expired []string
 	var mu sync.Mutex
 	var httpErrs int32
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:              "http://localhost:9999/mcp",
 		SSEClient:        sse,
 		InitialSessionID: "expired-session",
@@ -405,7 +405,7 @@ func TestHTTPTransportInboundSSE405IsSilentAndDoesNotReconnect(t *testing.T) {
 	}
 
 	var errCount int32
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError:   func(error) { atomic.AddInt32(&errCount, 1) },
@@ -435,7 +435,7 @@ func TestHTTPTransportInboundSSEExposesStatusOnGETFailure(t *testing.T) {
 
 	var captured *MCPClientError
 	var mu sync.Mutex
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError: func(err error) {
@@ -497,7 +497,7 @@ func TestHTTPTransportInboundSSEFailsOnOKResponseWithoutBody(t *testing.T) {
 
 	var captured *MCPClientError
 	var mu sync.Mutex
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OnError: func(err error) {
@@ -556,7 +556,7 @@ func TestHTTPTransportInboundSSEReopensAfter202Accepted(t *testing.T) {
 		}
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestHTTPTransportInboundSSEUnauthorizedRefreshesTokenOnceThenRetries(t *tes
 		return resp, nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OAuth: &OAuthConfig{
@@ -652,7 +652,7 @@ func TestHTTPTransportInboundSSEUnauthorizedGivesUpAfterOneRetry(t *testing.T) {
 
 	var captured *MCPClientError
 	var mu sync.Mutex
-	transport := NewHTTPTransport(HTTPTransportConfig{
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:       "http://localhost:9999/mcp",
 		SSEClient: sse,
 		OAuth: &OAuthConfig{
@@ -712,7 +712,7 @@ func TestHTTPTransportInboundSSEReconnectsWithBackoffAndResumesLastEventID(t *te
 		return resp, nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestHTTPTransportInboundSSECloseDuringReconnectHasNoGoroutineLeak(t *testin
 		return statusResponse(http.StatusInternalServerError, ""), nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
@@ -820,7 +820,7 @@ func TestHTTPTransportInboundSSECloseCancelsActiveStreamNoLeak(t *testing.T) {
 		return resp, nil
 	}
 
-	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion, URL: "http://localhost:9999/mcp", SSEClient: sse})
 	if err := transport.Connect(t.Context()); err != nil {
 		t.Fatalf("Connect error: %v", err)
 	}
@@ -838,4 +838,32 @@ func TestHTTPTransportInboundSSECloseCancelsActiveStreamNoLeak(t *testing.T) {
 	}
 
 	eventuallyNoExtraGoroutines(t, baseline, time.Second)
+}
+
+// TS createMcpTransport defaults an `http` transport's initialProtocolVersion
+// to the modern version: no standing GET before the handshake negotiates a
+// legacy version, then setProtocolVersion(legacy) opens it.
+func TestHTTPTransportDefaultsToModernProtocolUntilNegotiated(t *testing.T) {
+	sse := &scriptedSSEClient{}
+	sse.respond = func(callNumber int, req *http.Request) (*http.Response, error) {
+		resp, _ := newSSEStreamResponse(req)
+		return resp, nil
+	}
+	transport := NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp", SSEClient: sse})
+	if err := transport.Connect(t.Context()); err != nil {
+		t.Fatalf("Connect error: %v", err)
+	}
+	defer transport.Close() //nolint:errcheck
+	if got := transport.ProtocolVersion(); got != LatestProtocolVersion {
+		t.Fatalf("initial ProtocolVersion = %q, want %q", got, LatestProtocolVersion)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := sse.callCount(); n != 0 {
+		t.Fatalf("%d requests before negotiation, want none", n)
+	}
+	transport.SetProtocolVersion(LatestLegacyProtocolVersion)
+	waitForCallCount(t, sse, 1, time.Second)
+	if req := sse.callAt(0); req.Method != http.MethodGet {
+		t.Fatalf("method = %s, want GET", req.Method)
+	}
 }
