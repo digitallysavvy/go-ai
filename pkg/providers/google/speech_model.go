@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -183,24 +184,7 @@ func parseGoogleSpeechRawBody(body []byte) (interface{}, error) {
 func (m *SpeechModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-				Status  string `json:"status"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil {
-			if payload.Error.Message != "" {
-				message = payload.Error.Message
-			}
-			code = payload.Error.Status
-		}
-		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
 	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }

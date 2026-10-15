@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
@@ -532,6 +534,10 @@ func (m *InteractionsLanguageModel) cancelInteraction(ctx context.Context, inter
 }
 
 func (m *InteractionsLanguageModel) handleError(err error) error {
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 

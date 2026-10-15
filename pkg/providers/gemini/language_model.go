@@ -339,24 +339,29 @@ func (m *LanguageModel) handleError(err error) error {
 		return providererrors.NewProviderError(m.cfg.ProviderName, 0, "", err.Error(), err)
 	}
 
-	// TS createJsonErrorResponseHandler: an empty body, or one that does not
-	// match googleErrorDataSchema, gives the HTTP status text.
-	message := http.StatusText(httpErr.StatusCode)
-	if message == "" {
-		message = err.Error()
+	return GoogleHTTPError(m.cfg.ProviderName, httpErr.StatusCode, httpErr.Headers, httpErr.Body, err)
+}
+
+// GoogleHTTPError builds the ProviderError for a failed Google API response
+// (TS googleFailedResponseHandler): the message is error.message when the body
+// matches googleErrorDataSchema, otherwise the HTTP status text.
+func GoogleHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	message := http.StatusText(status)
+	if message == "" && cause != nil {
+		message = cause.Error()
 	}
 	var data googleErrorData
-	schemaOK := parseGoogleErrorData(httpErr.Body, &data)
+	schemaOK := parseGoogleErrorData(body, &data)
 	if schemaOK {
 		message = data.Error.Message
 	} else {
 		data = googleErrorData{}
 	}
 
-	perr := providererrors.NewProviderError(m.cfg.ProviderName, httpErr.StatusCode, data.Error.Status, message, err)
-	perr.ResponseBody = string(httpErr.Body)
-	if len(httpErr.Headers) > 0 {
-		perr.ResponseHeaders = providerutils.ExtractHeaders(httpErr.Headers)
+	perr := providererrors.NewProviderError(providerName, status, data.Error.Status, message, cause)
+	perr.ResponseBody = string(body)
+	if len(headers) > 0 {
+		perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
 	}
 	if schemaOK {
 		perr.Data = data
