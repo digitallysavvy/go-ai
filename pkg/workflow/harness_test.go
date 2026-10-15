@@ -1067,8 +1067,8 @@ func TestCloseOpenExecutionParts(t *testing.T) {
 	sc.activeTextParts["t1"] = ai.UIMessageChunk{"type": "text-start", "id": "t1"}
 	sc.activeReasoningParts["r1"] = ai.UIMessageChunk{"type": "reasoning-start", "id": "r1"}
 	ps := newExecutionPartState()
-	ps.openedTextParts["t1"] = struct{}{}
-	ps.openedReasoningParts["r1"] = struct{}{}
+	ps.openedTextParts.add("t1")
+	ps.openedReasoningParts.add("r1")
 	writer := &collectingWriter{}
 
 	if err := closeOpenExecutionParts(writer, sc, ps); err != nil {
@@ -1079,7 +1079,7 @@ func TestCloseOpenExecutionParts(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunk types = %v, want %v", got, want)
 	}
-	if len(ps.openedTextParts) != 0 || len(ps.openedReasoningParts) != 0 {
+	if len(ps.openedTextParts.order) != 0 || len(ps.openedReasoningParts.order) != 0 {
 		t.Fatalf("executionPartState should be cleared, got %+v", ps)
 	}
 }
