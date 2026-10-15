@@ -340,9 +340,10 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 }
 
 // streamClient returns the client used for streaming requests. The shared
-// DefaultHTTPClient carries a whole-request timeout that would abort a stream
-// still being read, so streams use a copy of it without that timeout. A
-// caller-supplied client (or an explicit Config.Timeout) is honoured as is.
+// DefaultHTTPClient has no whole-request timeout; if one is ever set on it
+// (for example by a caller mutating DefaultHTTPClient), streams use a copy
+// without it so a stream still being read is not aborted. A caller-supplied
+// client (or an explicit Config.Timeout) is honoured as is.
 func (c *Client) streamClient() *http.Client {
 	if c.client == DefaultHTTPClient && DefaultHTTPClient.Timeout > 0 {
 		clone := *DefaultHTTPClient
