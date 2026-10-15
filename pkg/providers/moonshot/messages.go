@@ -321,7 +321,14 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 				Functionality: "file part media type " + normalized.MediaType,
 			}
 		}
-		ref, err := providerutils.ResolveProviderReference(normalized.FileData.Reference, "moonshot")
+		// TS resolves the "moonshotai" key; "moonshot" is accepted as the Go
+		// provider's own name.
+		ref, err := providerutils.ResolveProviderReference(normalized.FileData.Reference, "moonshotai")
+		if err != nil {
+			if alt, ok := normalized.FileData.Reference["moonshot"]; ok {
+				ref, err = alt, nil
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
