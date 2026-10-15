@@ -286,6 +286,15 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 
 		enqueueError := func(err error) {
 			failOutcome(err)
+			// TS handleError: an onError that throws fails the stream with
+			// that error instead of writing an error chunk.
+			defer func() {
+				if r := recover(); r != nil {
+					onErrorErr := panicToError(r)
+					failOutcome(onErrorErr)
+					reportUIStreamCallbackFailure(errCh, r)
+				}
+			}()
 			appendErrorChunk(onError, safeEnqueue, err)
 		}
 
@@ -344,6 +353,11 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			// through the stream's onError; the stream keeps going.
 			defer func() {
 				if r := recover(); r != nil {
+					defer func() {
+						if r2 := recover(); r2 != nil {
+							reportUIStreamCallbackFailure(errCh, r2)
+						}
+					}()
 					onError(panicToError(r))
 				}
 			}()
@@ -619,6 +633,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// through the stream's onError; the stream keeps going.
 			defer func() {
 				if r := recover(); r != nil {
+					defer func() {
+						if r2 := recover(); r2 != nil {
+							reportUIStreamCallbackFailure(errCh, r2)
+						}
+					}()
 					onError(panicToError(r))
 				}
 			}()

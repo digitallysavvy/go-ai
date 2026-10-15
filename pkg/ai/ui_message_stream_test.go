@@ -2973,3 +2973,16 @@ func TestUIMessageCallbackStateToolPartUpdateClearsAbsentFields(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateUIMessageStreamOnErrorPanicFailsStreamInsteadOfCrashing(t *testing.T) {
+	out, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		Execute: func(UIMessageStreamWriter) { panic("execute failed") },
+		OnError: func(error) string { panic("onError failed") },
+	})
+	for range out {
+	}
+	err := <-errCh
+	if err == nil || err.Error() != "onError failed" {
+		t.Fatalf("err = %v, want onError failed", err)
+	}
+}
