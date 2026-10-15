@@ -22,11 +22,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Deep Research agents need background mode; managed agents reject it, so
+	// the SDK sends `background` only when it is set.
+	background := true
+
 	result, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{
 		Model:  model,
 		Prompt: "Research three tradeoffs of retrieval augmented generation. Keep it brief.",
 		ProviderOptions: map[string]interface{}{
 			"google": google.GoogleInteractionsProviderOptions{
+				Background:       &background,
 				PollingTimeoutMs: 120000,
 			},
 		},

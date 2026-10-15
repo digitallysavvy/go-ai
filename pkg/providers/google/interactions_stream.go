@@ -241,9 +241,6 @@ restart:
 			s.err = err
 			return nil, err
 		}
-		if event.ID != "" {
-			s.lastEventID = event.ID
-		}
 		if streaming.IsStreamDone(event) {
 			continue
 		}
@@ -266,6 +263,10 @@ restart:
 				Err:  providererrors.NewStreamProviderError(message, "google.interactions", "", nil, nil, nil, nil),
 			})
 			goto restart
+		}
+		// TS tracks the JSON event_id (not the SSE id) for last_event_id.
+		if payload.EventID != "" {
+			s.lastEventID = payload.EventID
 		}
 		s.processEvent(payload)
 		if len(s.buffer) > 0 {

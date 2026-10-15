@@ -99,3 +99,65 @@ func TestInteractionsServiceTierFromHeader(t *testing.T) {
 		t.Fatalf("finish chunk = %#v", finish)
 	}
 }
+
+// TS getArgs: environment maps to {type:"remote", sources?, network?} for
+// agents, and is dropped with a warning on model-id calls; background is sent
+// only when set.
+func TestInteractionsEnvironmentAndBackgroundMatchTS(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	agent, _ := p.InteractionsAgent("deep-research-pro-preview-12-2025")
+	model, _ := p.Interactions(ModelGemini25Flash)
+	env := map[string]interface{}{
+		"sources": []interface{}{
+			map[string]interface{}{"type": "inline", "content": "c", "target": "/a.txt"},
+			map[string]interface{}{"type": "gcs", "source": "gs://b/o"},
+		},
+		"network": map[string]interface{}{"allowlist": []interface{}{map[string]interface{}{"domain": "example.com"}}},
+	}
+	opts := &provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "x"},
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"environment": env}},
+	}
+
+	body, warnings, _, err := agent.(*InteractionsLanguageModel).buildArgs(opts, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(body.Environment)
+	want := `{"network":{"allowlist":[{"domain":"example.com"}]},"sources":[{"content":"c","target":"/a.txt","type":"inline"},{"source":"gs://b/o","type":"gcs"}],"type":"remote"}`
+	if string(b) != want {
+		t.Fatalf("environment = %s\nwant %s", b, want)
+	}
+	if body.Background != nil || len(warnings) != 0 {
+		t.Fatalf("background = %v, warnings = %v; want none", body.Background, warnings)
+	}
+
+	body, warnings, _, err = model.(*InteractionsLanguageModel).buildArgs(opts, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.Environment != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Message, "environment is only supported when an agent is set") {
+		t.Fatalf("environment = %v, warnings = %v", body.Environment, warnings)
+	}
+	if s := interactionsEnvironment("env-123"); s != "env-123" {
+		t.Fatalf("string environment = %v", s)
+	}
+}
+
+// TS annotationsToSources de-duplicates by URL or document filename/title and
+// skips url/place citations without a url.
+func TestInteractionsAnnotationsToSourcesDeduplicates(t *testing.T) {
+	out := annotationsToSources([]interactionsAnnotation{
+		{Type: "url_citation", URL: "https://a.example", Title: "A"},
+		{Type: "url_citation", URL: "https://a.example", Title: "A again"},
+		{Type: "url_citation"},
+		{Type: "place_citation", Name: "no url"},
+		{Type: "place_citation", URL: "https://p.example", Name: "P"},
+		{Type: "file_citation", FileName: "doc.pdf"},
+		{Type: "file_citation", FileName: "doc.pdf"},
+		{Type: "file_citation", URL: "https://f.example/x", FileName: "x"},
+	})
+	if len(out) != 4 {
+		t.Fatalf("got %d sources, want 4: %#v", len(out), out)
+	}
+}

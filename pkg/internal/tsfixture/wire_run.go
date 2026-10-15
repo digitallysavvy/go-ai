@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -403,6 +404,12 @@ func wireNormalizeParts(v interface{}) interface{} {
 				continue
 			case k == "isError" && e == false:
 				continue
+			case k == "thoughtSignature" && x["type"] == "tool-call":
+				continue // Go-only field; TS carries it in providerMetadata
+			case k == "toolCallId":
+				if id, _ := e.(string); generatedWireID.MatchString(id) {
+					e = "<generated>"
+				}
 			case k == "toolName":
 				if name, _ := e.(string); ToolNameAlias[name] != "" {
 					e = ToolNameAlias[name]
@@ -424,6 +431,10 @@ func wireNormalizeParts(v interface{}) interface{} {
 	}
 	return v
 }
+
+// generatedWireID matches ids the TS tests mock ("test-id", "id-1") and ids
+// Go generates (call_...).
+var generatedWireID = regexp.MustCompile(`^(test-id|id-\d+|call_[0-9a-f]{8,})$`)
 
 func wireErrSummary(e interface{}) string {
 	m, _ := e.(map[string]interface{})
