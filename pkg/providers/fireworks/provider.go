@@ -2,9 +2,11 @@ package fireworks
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -66,6 +68,24 @@ func CreateFireworks(cfg Config) *Provider {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "fireworks"
+}
+
+// CompletionModel returns a text completion model (TS provider.completionModel,
+// an OpenAICompatibleCompletionLanguageModel with includeUsage: true).
+func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	baseURL := p.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.fireworks.ai/inference"
+	}
+	return openai.New(openai.Config{
+		APIKey:           p.config.APIKey,
+		BaseURL:          strings.TrimRight(baseURL, "/") + "/v1",
+		Headers:          p.config.Headers,
+		Name:             "fireworks",
+		OpenAICompatible: true,
+		IncludeUsage:     true,
+		UserAgentName:    "fireworks",
+	}).CompletionModel(modelID)
 }
 
 // LanguageModel returns a language model by ID

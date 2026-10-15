@@ -126,6 +126,52 @@ func ApplyOpenAICompatibleCommonRequestOptions(body map[string]interface{}, opti
 	}
 }
 
+// ApplyOpenAICompatibleCallSettings applies what TS
+// OpenAICompatibleChatLanguageModel.getArgs sends beyond the model, messages,
+// tools and max_tokens / temperature / top_p / stop: frequency_penalty,
+// presence_penalty and seed, an `unsupported` warning for topK, and the
+// provider options that are not one of the chat option fields (user,
+// reasoningEffort, textVerbosity, strictJsonSchema), which TS spreads straight
+// into the request body from providerOptions[name] and providerOptions[camel]
+// (so they can override the standardized settings). Keys TS always overwrites
+// afterwards (reasoning_effort, verbosity, messages, tools, tool_choice, stream,
+// stream_options) and the extra `exclude` keys a provider handles itself are
+// skipped.
+func ApplyOpenAICompatibleCallSettings(body map[string]interface{}, frequencyPenalty, presencePenalty *float64, seed, topK *int, providerName string, providerOptions map[string]interface{}, exclude ...string) []types.Warning {
+	var warnings []types.Warning
+	if topK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if frequencyPenalty != nil {
+		body["frequency_penalty"] = *frequencyPenalty
+	}
+	if presencePenalty != nil {
+		body["presence_penalty"] = *presencePenalty
+	}
+	if seed != nil {
+		body["seed"] = *seed
+	}
+	skip := map[string]bool{
+		"user": true, "reasoningEffort": true, "textVerbosity": true, "strictJsonSchema": true,
+		"reasoning_effort": true, "verbosity": true, "messages": true, "tools": true,
+		"tool_choice": true, "stream": true, "stream_options": true,
+	}
+	for _, k := range exclude {
+		skip[k] = true
+	}
+	passthrough := map[string]interface{}{}
+	mergeProviderOptions(passthrough, providerOptions[providerName])
+	if camel := ToOpenAICompatibleCamelCase(providerName); camel != providerName {
+		mergeProviderOptions(passthrough, providerOptions[camel])
+	}
+	for k, v := range passthrough {
+		if !skip[k] {
+			body[k] = v
+		}
+	}
+	return warnings
+}
+
 func OpenAICompatibleCommonOptionWarnings(options map[string]interface{}) []types.Warning {
 	return DeprecatedOpenAICompatibleOptionWarnings(options, map[string]string{
 		"reasoning-effort": "reasoningEffort",

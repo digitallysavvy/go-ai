@@ -74,11 +74,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/v1/chat/completions",
 		Body:    reqBody,
 		Headers: opts.Headers,
-	}, &response)
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "fireworks"); err != nil {
+		return nil, err
+	}
 	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
@@ -130,7 +133,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// AllowVideo: true -- Fireworks wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "fireworks"}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "fireworks", ThoughtSignatureKey: "fireworks"}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -156,8 +159,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -165,7 +171,20 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// Response format (TS openai-compatible chat model with
 	// supportsStructuredOutputs: true): json_schema when a schema is present,
 	// strictJsonSchema (default true) from the fireworks provider options.
-	fireworksOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	fireworksOptions, optionWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	warnings = append(warnings, optionWarnings...)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(fireworksOptions)...)
+	// Fireworks' transformRequestBody consumes thinking, reasoningHistory,
+	// promptCacheKey and serviceTier itself; every other unknown provider
+	// option is spread into the body like the shared TS chat model does.
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, opts.TopK, "fireworks", opts.ProviderOptions,
+		"thinking", "reasoningHistory", "promptCacheKey", "serviceTier")...)
+	if user, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "user"); ok {
+		body["user"] = user
+	}
+	if verbosity, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "textVerbosity", "text_verbosity", "text-verbosity"); ok {
+		body["verbosity"] = verbosity
+	}
 	if format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs: true,
 		StrictJSONSchema:  providerutils.BoolOption(fireworksOptions, "strictJsonSchema", true),
@@ -260,7 +279,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["service_tier"] = serviceTier
 	}
 
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
 func (m *LanguageModel) convertResponse(response fireworksResponse) *types.GenerateResult {

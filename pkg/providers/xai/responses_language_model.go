@@ -406,9 +406,15 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		if err := validateXAIResponsesToolArgs(opts.Tools); err != nil {
 			return nil, nil, err
 		}
-		body["tools"] = prepareXAIResponsesTools(opts.Tools)
+		preparedTools, toolWarnings := prepareXAIResponsesToolsWithWarnings(opts.Tools)
+		warnings = append(warnings, toolWarnings...)
+		body["tools"] = preparedTools
 		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = convertXAIResponsesToolChoice(opts.ToolChoice)
+			choice, choiceWarnings := resolveXAIResponsesToolChoice(opts.ToolChoice, opts.Tools)
+			warnings = append(warnings, choiceWarnings...)
+			if choice != nil {
+				body["tool_choice"] = choice
+			}
 		}
 	}
 

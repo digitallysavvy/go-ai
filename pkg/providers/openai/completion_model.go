@@ -87,6 +87,7 @@ func (m *CompletionModel) DoStream(ctx context.Context, opts *provider.GenerateO
 	}
 
 	inner := newCompletionStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
+	inner.compat = m.provider.config.OpenAICompatible
 	inner.requestBody = body
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
@@ -318,6 +319,10 @@ func (m *CompletionModel) convertCompletionResponse(response openAICompletionRes
 	if len(choice.Logprobs) > 0 && string(choice.Logprobs) != "null" {
 		result.ProviderMetadata["openai"].(map[string]interface{})["logprobs"] = json.RawMessage(choice.Logprobs)
 	}
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleCompletionLanguageModel returns no providerMetadata.
+		result.ProviderMetadata = nil
+	}
 	return result
 }
 
@@ -399,8 +404,11 @@ type completionStream struct {
 	rawFinishReason  string
 	usage            *types.Usage
 	providerMetadata map[string]interface{}
-	providerName     string
-	responseHeaders  http.Header
+	// compat is set for OpenAI-compatible hosts, whose TS completion model
+	// reports no providerMetadata.
+	compat          bool
+	providerName    string
+	responseHeaders http.Header
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -543,13 +551,16 @@ func (s *completionStream) finish() {
 	if s.textStarted {
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "0"})
 	}
-	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-		Type:             provider.ChunkTypeFinish,
-		FinishReason:     s.finishReason,
-		RawFinishReason:  s.rawFinishReason,
-		Usage:            s.usage,
-		ProviderMetadata: mustMarshalCompletionProviderMetadata(s.providerMetadata),
-	})
+	finish := &provider.StreamChunk{
+		Type:            provider.ChunkTypeFinish,
+		FinishReason:    s.finishReason,
+		RawFinishReason: s.rawFinishReason,
+		Usage:           s.usage,
+	}
+	if !s.compat {
+		finish.ProviderMetadata = mustMarshalCompletionProviderMetadata(s.providerMetadata)
+	}
+	s.flushQueue = append(s.flushQueue, finish)
 	s.err = io.EOF
 }
 

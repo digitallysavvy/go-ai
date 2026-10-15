@@ -72,11 +72,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/v1/chat/completions",
 		Body:    reqBody,
 		Headers: opts.Headers,
-	}, &response)
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "ollama"); err != nil {
+		return nil, err
+	}
 	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	// TS result.request.body: the request as sent.
@@ -116,9 +119,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		"stream": stream,
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: "ollama"})
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama"})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: "ollama"})
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama"})
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})

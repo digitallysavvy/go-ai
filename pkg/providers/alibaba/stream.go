@@ -27,6 +27,7 @@ type alibabaStream struct {
 	// Tool calls are enqueued here only when finish_reason is received (flush).
 	flushQueue        []*provider.StreamChunk
 	isActiveReasoning bool
+	endQueued         bool
 	includeRawChunks  bool
 	responseHeaders   map[string]string
 	metadataEmitted   bool
@@ -84,12 +85,18 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 		// Get next SSE event
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF && s.queueEnd() {
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 
 		// Check for stream completion
 		if streaming.IsStreamDone(event) {
+			if s.queueEnd() {
+				continue
+			}
 			s.err = io.EOF
 			return nil, io.EOF
 		}
@@ -143,18 +150,6 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
-// emitParsedChunk decides how a freshly built chunk should be delivered:
-// returned immediately (chunk, true) if nothing is queued ahead of it, or
-// appended behind the pending flushQueue (nil, false) for the caller's
-// Next() loop to continue draining.
-func (s *alibabaStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
-	if len(s.flushQueue) == 0 {
-		return chunk, true
-	}
-	s.flushQueue = append(s.flushQueue, chunk)
-	return nil, false
-}
-
 // processChunk processes a single Alibaba stream chunk. Returns
 // (*provider.StreamChunk, bool), where ok=true means Next() should return
 // the chunk immediately and ok=false means Next() should continue its loop
@@ -182,88 +177,41 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 		s.usage = convertAlibabaUsageToTypes(chunk.Usage)
 	}
 
-	// Handle reasoning content (Alibaba thinking mode)
+	// TS handles reasoning, content and tool calls independently, in that
+	// order. Chunks are appended behind anything already queued for this event.
 	if delta.ReasoningContent != "" {
-		var extra []*provider.StreamChunk
 		if !s.isActiveReasoning {
 			s.isActiveReasoning = true
-			extra = []*provider.StreamChunk{
-				{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-			}
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 		}
-		reasoningChunk := &provider.StreamChunk{
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 			Type:      provider.ChunkTypeReasoning,
 			Reasoning: delta.ReasoningContent,
 			ID:        "reasoning-0",
-		}
-		if choice.FinishReason != "" {
-			s.isActiveReasoning = false
-			s.flushQueue = append(extra, reasoningChunk, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"}, s.buildFinishChunk())
-			return nil, false
-		}
-		if len(extra) > 0 {
-			s.flushQueue = append(extra, reasoningChunk)
-			return nil, false
-		}
-		return s.emitParsedChunk(reasoningChunk)
+		})
 	}
-
-	// Handle text content - end reasoning if active
 	if delta.Content != "" {
 		if s.isActiveReasoning {
 			s.isActiveReasoning = false
-			endChunk := &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"}
-			textChunk := &provider.StreamChunk{Type: provider.ChunkTypeText, Text: delta.Content}
-			if choice.FinishReason != "" {
-				s.flushQueue = append([]*provider.StreamChunk{endChunk, textChunk}, s.buildFinishChunk())
-			} else {
-				s.flushQueue = []*provider.StreamChunk{endChunk, textChunk}
-			}
-			return nil, false
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 		}
-		if choice.FinishReason != "" {
-			textChunk := &provider.StreamChunk{
-				Type: provider.ChunkTypeText,
-				Text: delta.Content,
-			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, textChunk, s.buildFinishChunk())
-				return nil, false
-			}
-			s.flushQueue = append(s.flushQueue, s.buildFinishChunk())
-			return textChunk, true
-		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeText,
-			Text: delta.Content,
-		})
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: delta.Content})
 	}
-
-	// Handle tool call deltas — only accumulate, never emit mid-stream.
-	// Tool calls are finalized and emitted only when finish_reason is received.
+	// Tool call deltas only accumulate; the tracker finalizes at stream end
+	// (TS flush()).
 	if len(delta.ToolCalls) > 0 {
+		if s.isActiveReasoning {
+			s.isActiveReasoning = false
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+		}
 		for _, tc := range delta.ToolCalls {
 			s.accumulateToolCall(tc)
 		}
-		if choice.FinishReason != "" {
-			s.flushToolCalls()
-			return nil, false
-		}
-		return nil, false
 	}
-
-	// If we have a finish reason but no content, flush tool calls then finish.
-	if choice.FinishReason != "" {
-		s.flushToolCalls()
-		return nil, false
-	}
-
-	// Empty chunk, get next
 	return nil, false
 }
 
 // accumulateToolCall accumulates tool call data from a delta chunk.
-// Tool calls are never emitted mid-stream; call flushToolCalls() at finish_reason.
 func (s *alibabaStream) accumulateToolCall(tc alibabaToolCallDelta) {
 	for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 		c := chunk
@@ -271,27 +219,35 @@ func (s *alibabaStream) accumulateToolCall(tc alibabaToolCallDelta) {
 	}
 }
 
-// flushToolCalls enqueues all accumulated tool calls onto flushQueue followed by
-// a finish chunk. Must be called only when finish_reason is received.
-func (s *alibabaStream) flushToolCalls() {
+// queueEnd mirrors TS flush(): close the reasoning block, finalize tool calls
+// and enqueue the terminal finish part (reason "other" when no finish_reason
+// arrived). It reports whether it queued anything and queues at most once.
+func (s *alibabaStream) queueEnd() bool {
+	if s.endQueued {
+		return false
+	}
+	s.endQueued = true
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
-		s.flushQueue = append([]*provider.StreamChunk{
-			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-		}, s.flushQueue...)
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	s.flushQueue = append(s.flushQueue, s.buildFinishChunk())
+	return true
 }
 
 // buildFinishChunk creates a finish chunk with accumulated data
 func (s *alibabaStream) buildFinishChunk() *provider.StreamChunk {
+	reason := types.FinishReasonOther
+	if s.finishReason != "" {
+		reason = providerutils.MapOpenAIFinishReason(s.finishReason)
+	}
 	return &provider.StreamChunk{
 		Type:            provider.ChunkTypeFinish,
-		FinishReason:    providerutils.MapOpenAIFinishReason(s.finishReason),
+		FinishReason:    reason,
 		RawFinishReason: s.finishReason,
 		Usage:           s.usage,
 	}

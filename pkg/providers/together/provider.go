@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -86,6 +88,24 @@ func CreateTogetherAI(cfg Config) *Provider {
 // Name returns the provider name
 func (p *Provider) Name() string {
 	return "together"
+}
+
+// CompletionModel returns a text completion model (TS provider.completionModel,
+// an OpenAICompatibleCompletionLanguageModel with includeUsage: true).
+func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	baseURL := p.config.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.together.xyz"
+	}
+	return openai.New(openai.Config{
+		APIKey:           getAPIKey(p.config.APIKey),
+		BaseURL:          strings.TrimRight(baseURL, "/") + "/v1",
+		Headers:          p.config.Headers,
+		Name:             "togetherai",
+		OpenAICompatible: true,
+		IncludeUsage:     true,
+		UserAgentName:    "togetherai",
+	}).CompletionModel(modelID)
 }
 
 // LanguageModel returns a language model by ID

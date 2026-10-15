@@ -66,11 +66,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/chat/completions",
 		Body:    reqBody,
 		Headers: opts.Headers,
-	}, &response)
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), "gmicloud"); err != nil {
+		return nil, err
+	}
 	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
@@ -115,11 +118,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	if stream {
 		body["stream"] = true
+		// TS createGmicloud sets includeUsage: true.
+		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	// AllowVideo: true -- gmicloud wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "gmicloud"}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "gmicloud", ThoughtSignatureKey: "gmicloud"}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -154,8 +159,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		toolWarnings = dropped
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -166,6 +174,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// OpenAI-compatible common options (user, reasoningEffort, textVerbosity,
 	// strictJsonSchema) apply, resolved from providerOptions.gmicloud.
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("gmicloud", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, nil, nil, nil, opts.TopK, "gmicloud", opts.ProviderOptions)...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 
 	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
@@ -187,7 +196,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 
-	return body, warnings
+	return body, append(warnings, toolWarnings...)
 }
 
 func (m *LanguageModel) convertResponse(response gmicloudResponse) *types.GenerateResult {

@@ -527,8 +527,9 @@ type groqStream struct {
 	includeRawChunks  bool
 	responseHeaders   map[string]string
 	metadataEmitted   bool
-	finishEmitted     bool // a finish chunk has been queued
-	finishErrored     bool // TS finishReason={unified:"error"} after a parse/error chunk
+	finishEmitted     bool   // a finish chunk has been queued
+	finishErrored     bool   // TS finishReason={unified:"error"} after a parse/error chunk
+	finishRaw         string // finish_reason seen on the wire; the finish chunk waits for stream end
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -651,61 +652,46 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		}
 		if len(chunkData.Choices) > 0 {
 			choice := chunkData.Choices[0]
+			// TS records finish_reason before looking at the delta, so a
+			// finish_reason that shares a chunk with content still counts.
+			if choice.FinishReason != "" {
+				s.recordGroqFinish(choice.FinishReason)
+			}
 
-			// Handle reasoning content.
+			// TS handles reasoning, content and tool calls independently, in that
+			// order, so one chunk may carry several. Everything is appended
+			// behind chunks already queued for this event (response-metadata).
 			if choice.Delta.Reasoning != "" {
 				if !s.isActiveReasoning {
 					s.isActiveReasoning = true
-					s.flushQueue = append([]*provider.StreamChunk{
-						{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-						{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.Reasoning, ID: "reasoning-0"},
-					}, s.flushQueue...)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 				}
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type:      provider.ChunkTypeReasoning,
 					Reasoning: choice.Delta.Reasoning,
 					ID:        "reasoning-0",
 				})
-				if ok {
-					return chunk, nil
-				}
-				continue
 			}
-
 			if choice.Delta.Content != "" {
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
-					s.flushQueue = append([]*provider.StreamChunk{
-						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-						{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-					}, s.flushQueue...)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
-				if ok {
-					return chunk, nil
-				}
-				continue
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
 			}
-			// Tool call delta — accumulate partial arguments by index.
-			// Finalize only when finish_reason is received, never mid-stream.
+			// Tool call delta: accumulate partial arguments by index; the
+			// tracker finalizes at stream end (TS flush()).
 			if len(choice.Delta.ToolCalls) > 0 {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				}
 				for _, tc := range choice.Delta.ToolCalls {
 					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 						c := chunk
 						s.flushQueue = append(s.flushQueue, &c)
 					}
 				}
-				if choice.FinishReason != "" {
-					s.flushGroqToolCalls(choice.FinishReason)
-					continue
-				}
-				continue
-			}
-			if choice.FinishReason != "" {
-				s.flushGroqToolCalls(choice.FinishReason)
-				continue
 			}
 		}
 		continue
@@ -744,8 +730,13 @@ func (s *groqStream) queueFinishAtEnd() bool {
 		s.flushQueue = append(s.flushQueue, &c)
 	}
 	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	if s.finishRaw != "" {
+		finish.FinishReason = providerutils.MapOpenAIFinishReason(s.finishRaw)
+		finish.RawFinishReason = s.finishRaw
+	}
 	if s.finishErrored {
 		finish.FinishReason = types.FinishReasonError
+		finish.RawFinishReason = ""
 	}
 	if s.pendingUsage != nil {
 		u := convertGroqUsage(*s.pendingUsage)
@@ -755,29 +746,12 @@ func (s *groqStream) queueFinishAtEnd() bool {
 	return true
 }
 
-func (s *groqStream) flushGroqToolCalls(finishReason string) {
-	s.finishEmitted = true
+// recordGroqFinish only remembers the finish_reason: TS sets finishReason in
+// transform() and closes blocks, finalizes tool calls and enqueues `finish` in
+// flush(), so later deltas and the trailing x_groq usage still count.
+func (s *groqStream) recordGroqFinish(finishReason string) {
+	s.finishRaw = finishReason
 	s.finishErrored = false
-	if s.isActiveReasoning {
-		s.isActiveReasoning = false
-		s.flushQueue = append([]*provider.StreamChunk{
-			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-		}, s.flushQueue...)
-	}
-	for _, chunk := range s.toolCallTracker.Flush() {
-		c := chunk
-		s.flushQueue = append(s.flushQueue, &c)
-	}
-	finishChunk := &provider.StreamChunk{
-		Type:            provider.ChunkTypeFinish,
-		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
-		RawFinishReason: finishReason,
-	}
-	if s.pendingUsage != nil {
-		u := convertGroqUsage(*s.pendingUsage)
-		finishChunk.Usage = &u
-	}
-	s.flushQueue = append(s.flushQueue, finishChunk)
 }
 
 func (s *groqStream) Err() error {

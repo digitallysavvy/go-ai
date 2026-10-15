@@ -75,6 +75,7 @@ type OpenAICompatStream struct {
 	// `finish` in flush(), after every chunk (including a trailing usage-only
 	// one) has been processed.
 	finishPending       bool
+	finishErrored       bool // parse/error chunk after finish_reason
 	pendingFinishReason string
 	pendingUsage        *openAICompatStreamUsage
 
@@ -216,9 +217,9 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		var chunkData struct {
 			Choices []struct {
 				Delta struct {
-					Content          string  `json:"content"`
-					ReasoningContent *string `json:"reasoning_content"`
-					Reasoning        *string `json:"reasoning"`
+					Content          json.RawMessage `json:"content"`
+					ReasoningContent *string         `json:"reasoning_content"`
+					Reasoning        *string         `json:"reasoning"`
 					ToolCalls        []struct {
 						Index    *int    `json:"index"`
 						ID       string  `json:"id"`
@@ -245,6 +246,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			// unified "error" reason right when this fires -- so endStream must
 			// not additionally treat a later clean EOF as a "truncated stream".
 			s.streamErrored = true
+			s.finishErrored = true
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
@@ -254,6 +256,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			// Matches TS's `'error' in chunk.value` branch (line 582-586), which
 			// likewise sets finishReason to the unified "error" reason.
 			s.streamErrored = true
+			s.finishErrored = true
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: rawStreamErrorText(chunkData.Error),
@@ -339,27 +342,33 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		if len(chunkData.Choices) > 0 {
 			choice := chunkData.Choices[0]
 
-			// Text delta — emit immediately.
-			if choice.Delta.Content != "" {
+			// Content: a string or an array of text / thinking parts (TS
+			// convertOpenAICompatibleContent); thinking parts are reasoning.
+			// Chunks are queued behind anything already queued for this event
+			// so tool calls and the finish reason in the same event still run.
+			parts, err := OpenAICompatContentParts(choice.Delta.Content)
+			if err != nil {
+				s.streamErrored = true
+				s.finishErrored = true
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+				}, nil
+			}
+			for _, part := range parts {
+				if part.Reasoning {
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: part.Text, ID: "reasoning-0"})
+					continue
+				}
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
-					// Append (not prepend): see the matching comment above for
-					// the reasoning-start case.
-					s.flushQueue = append(s.flushQueue,
-						&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-						&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-					)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				chunk := &provider.StreamChunk{
-					Type: provider.ChunkTypeText,
-					Text: choice.Delta.Content,
-				}
-				if len(s.flushQueue) > 0 {
-					s.flushQueue = append(s.flushQueue, chunk)
-					continue
-				}
-				return chunk, nil
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: part.Text})
 			}
 
 			// Tool call delta — accumulate arguments by index, never emit yet.
@@ -375,20 +384,16 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 						ID:               tc.ID,
 						Name:             tc.Function.Name,
 						ArgumentsDelta:   tc.Function.Arguments,
-						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent),
+						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent, s.MetadataKey),
 					})
 					s.enqueueChunks(chunks)
 				}
-				if choice.FinishReason != nil && *choice.FinishReason != "" {
-					s.flushToolCallsAndFinish(*choice.FinishReason)
-				}
-				continue
 			}
 
-			// Finish event — flush all accumulated tool calls, then emit finish.
+			// finish_reason is recorded; tool calls and the finish part are
+			// emitted when the stream ends (TS flush()).
 			if choice.FinishReason != nil && *choice.FinishReason != "" {
-				s.flushToolCallsAndFinish(*choice.FinishReason)
-				continue
+				s.recordFinish(*choice.FinishReason)
 			}
 		}
 
@@ -417,31 +422,30 @@ func (s *OpenAICompatStream) enqueueChunks(chunks []ToolCallChunk) {
 	}
 }
 
-func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
-	if s.isActiveReasoning {
-		s.isActiveReasoning = false
-		s.flushQueue = append([]*provider.StreamChunk{
-			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-		}, s.flushQueue...)
+// withThoughtSignature mirrors the thought signature held in a finished tool
+// call's provider metadata onto ToolCall.ThoughtSignature, like the
+// non-streaming path does.
+func withThoughtSignature(c *provider.StreamChunk) *provider.StreamChunk {
+	if c.Type != provider.ChunkTypeToolCall || c.ToolCall == nil {
+		return c
 	}
-	for _, chunk := range s.toolCallTracker.Flush() {
-		c := chunk
-		s.flushQueue = append(s.flushQueue, &c)
-		if c.Type == provider.ChunkTypeError {
-			// Mirrors TS's toolCallTracker.flush() throwing on a missing
-			// function.name: the stream has already errored out here, so
-			// endStream must not additionally treat the eventual EOF as a
-			// "truncated stream", nor emit any finish chunk at all (no
-			// finish_reason ever arrives in that TS throw path either --
-			// flush() aborts before its terminal `finish` enqueue).
-			s.streamErrored = true
-			s.toolCallErrored = true
-			return
+	for _, v := range c.ToolCall.ProviderMetadata {
+		if m, ok := v.(map[string]interface{}); ok {
+			if sig, ok := m["thoughtSignature"].(string); ok && sig != "" {
+				c.ToolCall.ThoughtSignature = sig
+			}
 		}
 	}
-	// Do not enqueue the finish chunk yet: hold it until the stream truly
-	// ends (see endStream) so a trailing usage-only event can be merged in.
+	return c
+}
+
+// recordFinish remembers the finish_reason. TS openai-compatible only records
+// it in transform() and finalizes tool calls, closes blocks and enqueues
+// `finish` in flush(), so everything is deferred to endStream: deltas that
+// keep arriving after finish_reason still reach the tool call tracker.
+func (s *OpenAICompatStream) recordFinish(finishReason string) {
 	s.finishPending = true
+	s.finishErrored = false
 	s.pendingFinishReason = finishReason
 }
 
@@ -464,68 +468,69 @@ func (s *OpenAICompatStream) flushToolCallsAndFinish(finishReason string) {
 // aborting flush() before its terminal `finish` enqueue is ever reached, so
 // no finish chunk is emitted at all.
 func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error) {
-	if s.finishPending {
-		s.finishPending = false
-		finishReason := s.pendingFinishReason
-		usage := s.pendingUsage
-		s.pendingFinishReason = ""
+	if err != io.EOF {
 		s.err = err
-		return &provider.StreamChunk{
-			Type:             provider.ChunkTypeFinish,
-			FinishReason:     s.finishReasonMapper(finishReason),
-			RawFinishReason:  finishReason,
-			Usage:            convertOpenAICompatStreamUsage(usage),
-			ProviderMetadata: s.finishMetadata(usage),
-		}, nil
+		return nil, err
 	}
-	if err == io.EOF {
-		// Order matches TS flush(): close any still-open reasoning block,
-		// then forward pending tool-call fragments through the tracker,
-		// before the error/finish chunks.
-		var pending []*provider.StreamChunk
-		if s.isActiveReasoning {
-			s.isActiveReasoning = false
-			pending = append(pending, &provider.StreamChunk{
-				Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0",
-			})
-		}
-		for _, chunk := range s.toolCallTracker.Flush() {
-			c := chunk
-			pending = append(pending, &c)
-			if c.Type == provider.ChunkTypeError {
-				s.toolCallErrored = true
-			}
-		}
-		if s.toolCallErrored {
-			s.err = err
-			if len(pending) == 0 {
-				return nil, err
-			}
-			first := pending[0]
-			s.flushQueue = append(s.flushQueue, pending[1:]...)
-			return first, nil
-		}
-		if !s.streamErrored {
-			streamErr := providererrors.NewInvalidResponseDataError(nil, "Response stream ended without a finish reason.")
-			pending = append(pending, &provider.StreamChunk{
-				Type: provider.ChunkTypeError,
-				Text: streamErr.Error(),
-				Err:  streamErr,
-			})
-		}
+	// Order matches TS flush(): close any still-open reasoning block, then
+	// finalize the tool calls, before the error/finish chunks.
+	var pending []*provider.StreamChunk
+	if s.isActiveReasoning {
+		s.isActiveReasoning = false
 		pending = append(pending, &provider.StreamChunk{
-			Type:             provider.ChunkTypeFinish,
-			FinishReason:     types.FinishReasonError,
-			Usage:            convertOpenAICompatStreamUsage(s.pendingUsage),
-			ProviderMetadata: s.finishMetadata(s.pendingUsage),
+			Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0",
 		})
-		s.err = err
-		first := pending[0]
-		s.flushQueue = append(s.flushQueue, pending[1:]...)
-		return first, nil
+	}
+	for _, chunk := range s.toolCallTracker.Flush() {
+		c := chunk
+		pending = append(pending, withThoughtSignature(&c))
+		if c.Type == provider.ChunkTypeError {
+			s.toolCallErrored = true
+		}
 	}
 	s.err = err
-	return nil, err
+	if !s.toolCallErrored {
+		if s.finishPending {
+			s.finishPending = false
+			finishReason := s.pendingFinishReason
+			usage := s.pendingUsage
+			s.pendingFinishReason = ""
+			finish := &provider.StreamChunk{
+				Type:             provider.ChunkTypeFinish,
+				FinishReason:     s.finishReasonMapper(finishReason),
+				RawFinishReason:  finishReason,
+				Usage:            convertOpenAICompatStreamUsage(usage),
+				ProviderMetadata: s.finishMetadata(usage),
+			}
+			if s.finishErrored {
+				// A parse/error chunk after finish_reason: TS sets the
+				// finish reason to {unified:'error', raw: undefined}.
+				finish.FinishReason, finish.RawFinishReason = types.FinishReasonError, ""
+			}
+			pending = append(pending, finish)
+		} else {
+			if !s.streamErrored {
+				streamErr := providererrors.NewInvalidResponseDataError(nil, "Response stream ended without a finish reason.")
+				pending = append(pending, &provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: streamErr.Error(),
+					Err:  streamErr,
+				})
+			}
+			pending = append(pending, &provider.StreamChunk{
+				Type:             provider.ChunkTypeFinish,
+				FinishReason:     types.FinishReasonError,
+				Usage:            convertOpenAICompatStreamUsage(s.pendingUsage),
+				ProviderMetadata: s.finishMetadata(s.pendingUsage),
+			})
+		}
+	}
+	if len(pending) == 0 {
+		return nil, err
+	}
+	first := pending[0]
+	s.flushQueue = append(s.flushQueue, pending[1:]...)
+	return first, nil
 }
 
 // openAICompatStreamUsage mirrors the OpenAI-compatible streaming usage
@@ -636,7 +641,10 @@ func (s *OpenAICompatStream) finishMetadata(usage *openAICompatStreamUsage) json
 	return raw
 }
 
-func openAICompatToolCallMetadata(extraContent map[string]interface{}) map[string]interface{} {
+func openAICompatToolCallMetadata(extraContent map[string]interface{}, metadataKey string) map[string]interface{} {
+	if metadataKey == "" {
+		metadataKey = "google"
+	}
 	if len(extraContent) == 0 {
 		return nil
 	}
@@ -649,7 +657,7 @@ func openAICompatToolCallMetadata(extraContent map[string]interface{}) map[strin
 		return nil
 	}
 	return map[string]interface{}{
-		"google": map[string]interface{}{
+		metadataKey: map[string]interface{}{
 			"thoughtSignature": signature,
 		},
 	}

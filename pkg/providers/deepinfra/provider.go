@@ -56,6 +56,9 @@ func New(cfg Config) *Provider {
 		APIKey:  cfg.APIKey,
 		BaseURL: baseURL,
 		Headers: cfg.Headers,
+		// TS provider ids deepinfra.chat / .completion / .embedding: the
+		// name keys providerOptions and providerMetadata.
+		Name: "deepinfra",
 		// TS DeepInfraChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:                true,

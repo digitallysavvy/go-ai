@@ -2,6 +2,7 @@ package xai
 
 import (
 	"fmt"
+	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -17,9 +18,13 @@ func validateXAIResponsesToolArgs(tools []types.Tool) error {
 			fmt.Sprintf("Type validation failed for %s: %s: Too big: expected array to have <=%d items", tool, field, limit), nil)
 	}
 	for _, t := range tools {
-		switch t.Name {
+		id, isProvider := xaiProviderToolID(t)
+		if !isProvider {
+			continue
+		}
+		switch id {
 		case "xai.web_search":
-			cfg, _ := t.ProviderOptions.(WebSearchConfig)
+			cfg := xaiWebSearchArgs(t)
 			if len(cfg.AllowedDomains) > 5 {
 				return tooBig(t.Name, "allowedDomains", 5)
 			}
@@ -27,7 +32,7 @@ func validateXAIResponsesToolArgs(tools []types.Tool) error {
 				return tooBig(t.Name, "excludedDomains", 5)
 			}
 		case "xai.x_search":
-			cfg, _ := t.ProviderOptions.(XSearchConfig)
+			cfg := xaiXSearchArgs(t)
 			if len(cfg.AllowedXHandles) > 20 {
 				return tooBig(t.Name, "allowedXHandles", 20)
 			}
@@ -35,36 +40,224 @@ func validateXAIResponsesToolArgs(tools []types.Tool) error {
 				return tooBig(t.Name, "excludedXHandles", 20)
 			}
 		case "xai.image_generation":
-			cfg, _ := t.ProviderOptions.(ImageGenerationConfig)
+			cfg := xaiImageGenerationArgs(t)
 			switch cfg.Action {
 			case "", "auto", "generate", "edit":
 			default:
 				return providererrors.NewValidationError("tools",
 					fmt.Sprintf("Type validation failed for %s: action: Invalid option: expected one of \"auto\"|\"generate\"|\"edit\"", t.Name), nil)
 			}
+		case "xai.file_search":
+			// fileSearchArgsSchema: vectorStoreIds is a required array (an
+			// empty array is valid).
+			if xaiFileSearchArgs(t).VectorStoreIDs == nil {
+				return providererrors.NewValidationError("tools",
+					fmt.Sprintf("Type validation failed for %s: vectorStoreIds: Invalid input: expected array, received undefined", t.Name), nil)
+			}
 		}
 	}
 	return nil
+}
+
+// xaiProviderToolID reports whether t is an xAI provider-defined tool and its
+// id (TS tool.id). TS-shaped tools carry the id in ProviderID; Go-style tools
+// use the canonical id as Name.
+func xaiProviderToolID(t types.Tool) (string, bool) {
+	switch {
+	case t.ProviderID != "":
+		return t.ProviderID, true
+	case t.Type == "provider":
+		return t.Name, true
+	case strings.HasPrefix(t.Name, "xai."):
+		return t.Name, true
+	}
+	return "", false
+}
+
+func argStrings(args map[string]interface{}, key string) []string {
+	switch v := args[key].(type) {
+	case []string:
+		return v
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if str, ok := e.(string); ok {
+				out = append(out, str)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func argString(args map[string]interface{}, key string) string {
+	s, _ := args[key].(string)
+	return s
+}
+
+func argBoolPtr(args map[string]interface{}, key string) *bool {
+	if b, ok := args[key].(bool); ok {
+		return &b
+	}
+	return nil
+}
+
+func argStringPtr(args map[string]interface{}, key string) *string {
+	if s, ok := args[key].(string); ok {
+		return &s
+	}
+	return nil
+}
+
+// The helpers below read a provider tool's typed ProviderOptions config, or
+// the TS-style camelCase ProviderArgs of a TS-shaped tool.
+func xaiWebSearchArgs(t types.Tool) WebSearchConfig {
+	if cfg, ok := t.ProviderOptions.(WebSearchConfig); ok {
+		return cfg
+	}
+	a := t.ProviderArgs
+	return WebSearchConfig{
+		AllowedDomains:           argStrings(a, "allowedDomains"),
+		ExcludedDomains:          argStrings(a, "excludedDomains"),
+		EnableImageSearch:        argBoolPtr(a, "enableImageSearch"),
+		EnableImageUnderstanding: argBoolPtr(a, "enableImageUnderstanding"),
+	}
+}
+
+func xaiXSearchArgs(t types.Tool) XSearchConfig {
+	if cfg, ok := t.ProviderOptions.(XSearchConfig); ok {
+		return cfg
+	}
+	a := t.ProviderArgs
+	return XSearchConfig{
+		AllowedXHandles:          argStrings(a, "allowedXHandles"),
+		ExcludedXHandles:         argStrings(a, "excludedXHandles"),
+		FromDate:                 argStringPtr(a, "fromDate"),
+		ToDate:                   argStringPtr(a, "toDate"),
+		EnableImageUnderstanding: argBoolPtr(a, "enableImageUnderstanding"),
+		EnableVideoUnderstanding: argBoolPtr(a, "enableVideoUnderstanding"),
+	}
+}
+
+func xaiImageGenerationArgs(t types.Tool) ImageGenerationConfig {
+	if cfg, ok := t.ProviderOptions.(ImageGenerationConfig); ok {
+		return cfg
+	}
+	return ImageGenerationConfig{Action: argString(t.ProviderArgs, "action")}
+}
+
+func xaiFileSearchArgs(t types.Tool) FileSearchOptions {
+	if cfg, ok := t.ProviderOptions.(FileSearchOptions); ok {
+		return cfg
+	}
+	if cfg, ok := t.ProviderOptions.(FileSearchConfig); ok {
+		return FileSearchOptions(cfg)
+	}
+	out := FileSearchOptions{}
+	if _, present := t.ProviderArgs["vectorStoreIds"]; present {
+		out.VectorStoreIDs = append([]string{}, argStrings(t.ProviderArgs, "vectorStoreIds")...)
+	}
+	switch n := t.ProviderArgs["maxNumResults"].(type) {
+	case int:
+		out.MaxNumResults = n
+	case float64:
+		out.MaxNumResults = int(n)
+	}
+	return out
+}
+
+func xaiMCPArgs(t types.Tool) MCPServerOptions {
+	if cfg, ok := t.ProviderOptions.(MCPServerOptions); ok {
+		return cfg
+	}
+	a := t.ProviderArgs
+	cfg := MCPServerOptions{
+		ServerURL:         argString(a, "serverUrl"),
+		ServerLabel:       argString(a, "serverLabel"),
+		ServerDescription: argString(a, "serverDescription"),
+		AllowedTools:      argStrings(a, "allowedTools"),
+		Authorization:     argString(a, "authorization"),
+	}
+	switch h := a["headers"].(type) {
+	case map[string]string:
+		cfg.Headers = h
+	case map[string]interface{}:
+		cfg.Headers = map[string]string{}
+		for k, v := range h {
+			if str, ok := v.(string); ok {
+				cfg.Headers[k] = str
+			}
+		}
+	}
+	return cfg
 }
 
 // prepareXAIResponsesTools converts SDK tools to XAI Responses API wire format.
 // XAI provider tools are serialized using their ProviderOptions config.
 // Regular function tools become {type:"function", name, description, parameters}.
 func prepareXAIResponsesTools(tools []types.Tool) []interface{} {
+	result, _ := prepareXAIResponsesToolsWithWarnings(tools)
+	return result
+}
+
+// prepareXAIResponsesToolsWithWarnings is prepareXAIResponsesTools plus the TS
+// toolWarnings: a provider-defined tool xAI does not know is dropped with an
+// `unsupported` warning ("provider-defined tool <name>").
+func prepareXAIResponsesToolsWithWarnings(tools []types.Tool) ([]interface{}, []types.Warning) {
 	if len(tools) == 0 {
-		return nil
+		return nil, nil
 	}
+	var warnings []types.Warning
 	result := make([]interface{}, 0, len(tools))
 	for _, t := range tools {
+		if id, isProvider := xaiProviderToolID(t); isProvider {
+			if !xaiKnownProviderTools[id] {
+				warnings = append(warnings, types.Warning{
+					Type:    "unsupported",
+					Feature: "provider-defined tool " + t.Name,
+				})
+				continue
+			}
+			t.Name = id // convertXAIResponsesTool dispatches on the canonical id
+		}
 		result = append(result, convertXAIResponsesTool(t))
 	}
-	return result
+	return result, warnings
+}
+
+var xaiKnownProviderTools = map[string]bool{
+	"xai.web_search": true, "xai.x_search": true, "xai.code_execution": true,
+	"xai.view_image": true, "xai.view_x_video": true, "xai.image_generation": true,
+	"xai.file_search": true, "xai.mcp": true,
+}
+
+// resolveXAIResponsesToolChoice mirrors TS prepareResponsesTools tool choice:
+// a choice naming an unknown tool is omitted; a choice naming a provider
+// (server-side) tool is omitted with an unsupported warning because the xAI
+// API cannot force server-side tools.
+func resolveXAIResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) (interface{}, []types.Warning) {
+	if tc.Type != types.ToolChoiceTool {
+		return convertXAIResponsesToolChoice(tc), nil
+	}
+	for _, t := range tools {
+		if t.Name != tc.ToolName {
+			continue
+		}
+		if _, isProvider := xaiProviderToolID(t); isProvider {
+			return nil, []types.Warning{{
+				Type:    "unsupported",
+				Feature: fmt.Sprintf("toolChoice for server-side tool %q", t.Name),
+			}}
+		}
+		return convertXAIResponsesToolChoice(tc), nil
+	}
+	return nil, nil
 }
 
 func convertXAIResponsesTool(t types.Tool) interface{} {
 	switch t.Name {
 	case "xai.web_search":
-		cfg, _ := t.ProviderOptions.(WebSearchConfig)
+		cfg := xaiWebSearchArgs(t)
 		m := map[string]interface{}{"type": "web_search"}
 		if len(cfg.AllowedDomains) > 0 {
 			m["allowed_domains"] = cfg.AllowedDomains
@@ -81,7 +274,7 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		return m
 
 	case "xai.x_search":
-		cfg, _ := t.ProviderOptions.(XSearchConfig)
+		cfg := xaiXSearchArgs(t)
 		m := map[string]interface{}{"type": "x_search"}
 		if len(cfg.AllowedXHandles) > 0 {
 			m["allowed_x_handles"] = cfg.AllowedXHandles
@@ -114,7 +307,7 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		return map[string]interface{}{"type": "view_x_video"}
 
 	case "xai.file_search":
-		cfg, _ := t.ProviderOptions.(FileSearchOptions)
+		cfg := xaiFileSearchArgs(t)
 		m := map[string]interface{}{"type": "file_search"}
 		if len(cfg.VectorStoreIDs) > 0 {
 			m["vector_store_ids"] = cfg.VectorStoreIDs
@@ -125,7 +318,7 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		return m
 
 	case "xai.image_generation":
-		cfg, _ := t.ProviderOptions.(ImageGenerationConfig)
+		cfg := xaiImageGenerationArgs(t)
 		m := map[string]interface{}{"type": "image_generation"}
 		if cfg.Action != "" {
 			m["action"] = cfg.Action
@@ -133,7 +326,7 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		return m
 
 	case "xai.mcp":
-		cfg, _ := t.ProviderOptions.(MCPServerOptions)
+		cfg := xaiMCPArgs(t)
 		m := map[string]interface{}{"type": "mcp", "server_url": cfg.ServerURL}
 		if cfg.ServerLabel != "" {
 			m["server_label"] = cfg.ServerLabel
