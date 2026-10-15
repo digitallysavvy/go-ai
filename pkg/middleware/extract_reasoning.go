@@ -96,58 +96,39 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 				return nil, err
 			}
 
-			text := result.Text
-			if options.StartWithReasoning {
-				text = openingTag + text
-			}
-
-			// Extract all reasoning blocks
+			// Same as TS wrapGenerate: each text part containing reasoning
+			// is replaced by a reasoning part followed by the remaining text.
 			pattern := fmt.Sprintf(`(?s)%s(.*?)%s`, regexp.QuoteMeta(openingTag), regexp.QuoteMeta(closingTag))
 			re := regexp.MustCompile(pattern)
-			matches := re.FindAllStringSubmatch(text, -1)
-
-			if len(matches) == 0 {
-				return result, nil
-			}
-
-			// Collect all reasoning text
-			reasoningParts := make([]string, len(matches))
-			for i, match := range matches {
-				if len(match) > 1 {
-					reasoningParts[i] = match[1]
+			mapGenerateTextParts(result, func(part types.TextContent) []types.ContentPart {
+				text := part.Text
+				if options.StartWithReasoning {
+					text = openingTag + text
 				}
-			}
-			// reasoningText is extracted but not stored in GenerateResult (no field for it yet)
-			_ = strings.Join(reasoningParts, options.Separator)
-
-			// Remove reasoning blocks from text
-			textWithoutReasoning := text
-			for i := len(matches) - 1; i >= 0; i-- {
-				match := matches[i]
-				matchIndex := strings.Index(textWithoutReasoning, match[0])
-				if matchIndex == -1 {
-					continue
+				matches := re.FindAllStringSubmatchIndex(text, -1)
+				if len(matches) == 0 {
+					return []types.ContentPart{part}
 				}
-
-				beforeMatch := textWithoutReasoning[:matchIndex]
-				afterMatch := textWithoutReasoning[matchIndex+len(match[0]):]
-
-				separator := ""
-				if len(beforeMatch) > 0 && len(afterMatch) > 0 {
-					separator = options.Separator
+				reasoningParts := make([]string, len(matches))
+				for i, m := range matches {
+					reasoningParts[i] = text[m[2]:m[3]]
 				}
-
-				textWithoutReasoning = beforeMatch + separator + afterMatch
-			}
-
-			// Update result with separated reasoning and text
-			// Note: The Go SDK stores reasoning separately but still includes it in Text field
-			// for backwards compatibility
-			result.Text = textWithoutReasoning
-
-			// Store reasoning in a structured way (if there's a field for it in the future)
-			// For now, we've extracted it but the Go SDK doesn't have a separate Reasoning field
-			// in GenerateResult. This is primarily useful for streaming where we emit separate chunks.
+				textWithoutReasoning := text
+				for i := len(matches) - 1; i >= 0; i-- {
+					m := matches[i]
+					beforeMatch := textWithoutReasoning[:m[0]]
+					afterMatch := textWithoutReasoning[m[1]:]
+					separator := ""
+					if len(beforeMatch) > 0 && len(afterMatch) > 0 {
+						separator = options.Separator
+					}
+					textWithoutReasoning = beforeMatch + separator + afterMatch
+				}
+				return []types.ContentPart{
+					types.ReasoningContent{Text: strings.Join(reasoningParts, options.Separator)},
+					types.TextContent{Text: textWithoutReasoning},
+				}
+			})
 
 			return result, nil
 		},

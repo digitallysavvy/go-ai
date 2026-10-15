@@ -148,15 +148,144 @@ func NormalizePromptWithDownloadSupport(ctx context.Context, prompt types.Prompt
 		return types.Prompt{}, err
 	}
 	if download == nil {
-		normalized.Messages = MergeConsecutiveToolMessages(normalized.Messages)
+		normalized.Messages = MergeConsecutiveToolMessages(sniffImageMediaTypes(normalized.Messages))
 		return normalized, nil
 	}
 	messages, err := DownloadUnsupportedFileURLs(ctx, normalized.Messages, download, isURLSupported)
 	if err != nil {
 		return types.Prompt{}, err
 	}
-	normalized.Messages = MergeConsecutiveToolMessages(messages)
+	normalized.Messages = MergeConsecutiveToolMessages(sniffImageMediaTypes(messages))
 	return normalized, nil
+}
+
+// sniffImageMediaTypes mirrors the tail of TS convertPartToLanguageModelPart:
+// inline file data whose bytes carry an image signature gets that image media
+// type, replacing whatever was declared (including the bare "image" default of
+// a legacy image part). It applies to user file parts and tool-result file
+// content, not to assistant file parts. Messages are copied before changes.
+func sniffImageMediaTypes(messages []types.Message) []types.Message {
+	var out []types.Message
+	for i, message := range messages {
+		if message.Role != types.RoleUser && message.Role != types.RoleTool && message.Role != types.RoleAssistant {
+			continue
+		}
+		var parts []types.ContentPart
+		for j, part := range message.Content {
+			if !isDownloadablePart(message.Role, part) {
+				continue
+			}
+			var replaced types.ContentPart
+			switch typed := part.(type) {
+			case types.FileContent:
+				if f, ok := sniffFileContent(typed); ok {
+					replaced = f
+				}
+			case *types.FileContent:
+				if typed != nil {
+					if f, ok := sniffFileContent(*typed); ok {
+						replaced = &f
+					}
+				}
+			case types.ToolResultContent:
+				if t, ok := sniffToolResult(typed); ok {
+					replaced = t
+				}
+			case *types.ToolResultContent:
+				if typed != nil {
+					if t, ok := sniffToolResult(*typed); ok {
+						replaced = &t
+					}
+				}
+			}
+			if replaced == nil {
+				continue
+			}
+			if out == nil {
+				out = append([]types.Message(nil), messages...)
+			}
+			if parts == nil {
+				parts = append([]types.ContentPart(nil), message.Content...)
+			}
+			parts[j] = replaced
+		}
+		if parts != nil {
+			out[i].Content = parts
+		}
+	}
+	if out == nil {
+		return messages
+	}
+	return out
+}
+
+func sniffImageType(data []byte) (string, bool) {
+	if len(data) == 0 {
+		return "", false
+	}
+	return fileutil.DetectMediaTypeSignature(data, "image")
+}
+
+func sniffFileContent(f types.FileContent) (types.FileContent, bool) {
+	if f.FileData.Type != types.FileDataTypeData {
+		return f, false
+	}
+	detected, ok := sniffImageType(f.FileData.Data)
+	if !ok || (f.MediaType == detected && f.FileData.MediaType == detected) {
+		return f, false
+	}
+	f.MediaType = detected
+	f.FileData.MediaType = detected
+	if f.MimeType != "" {
+		f.MimeType = detected
+	}
+	return f, true
+}
+
+func sniffToolResult(t types.ToolResultContent) (types.ToolResultContent, bool) {
+	if t.Output == nil || t.Output.Type != types.ToolResultOutputContent {
+		return t, false
+	}
+	var blocks []types.ToolResultContentBlock
+	for i, block := range t.Output.Content {
+		var b types.FileContentBlock
+		var isPtr bool
+		switch typed := block.(type) {
+		case types.FileContentBlock:
+			b = typed
+		case *types.FileContentBlock:
+			if typed == nil {
+				continue
+			}
+			b, isPtr = *typed, true
+		default:
+			continue
+		}
+		if b.FileData.Type != types.FileDataTypeData {
+			continue
+		}
+		detected, ok := sniffImageType(b.FileData.Data)
+		if !ok || (b.MediaType == detected && b.FileData.MediaType == detected) {
+			continue
+		}
+		b.MediaType = detected
+		b.FileData.MediaType = detected
+		if blocks == nil {
+			blocks = append([]types.ToolResultContentBlock(nil), t.Output.Content...)
+		}
+		if isPtr {
+			blocks[i] = &b
+		} else {
+			blocks[i] = b
+		}
+	}
+	if blocks == nil {
+		return t, false
+	}
+	output := *t.Output
+	output.Content = blocks
+	t.Output = &output
+	return t, true
 }
 
 // NormalizeMessages rewrites message content into provider-facing v4 content.
@@ -226,10 +355,27 @@ func collectDownloadRequests(messages []types.Message, isURLSupported URLSupport
 	var requests []DownloadRequest
 	for _, message := range messages {
 		for _, part := range message.Content {
+			if !isDownloadablePart(message.Role, part) {
+				continue
+			}
 			collectContentPartDownloadRequests(part, isURLSupported, &requests)
 		}
 	}
 	return requests
+}
+
+// isDownloadablePart mirrors TS downloadAssets: file parts are downloaded only
+// from user messages, and tool-result file content only from tool and
+// assistant messages. File parts inside assistant messages are passed through
+// untouched.
+func isDownloadablePart(role types.MessageRole, part types.ContentPart) bool {
+	switch part.(type) {
+	case types.FileContent, *types.FileContent:
+		return role == types.RoleUser
+	case types.ToolResultContent, *types.ToolResultContent:
+		return role == types.RoleTool || role == types.RoleAssistant
+	}
+	return false
 }
 
 func collectContentPartDownloadRequests(part types.ContentPart, isURLSupported URLSupportChecker, requests *[]DownloadRequest) {
@@ -286,16 +432,20 @@ func applyDownloadedFiles(messages []types.Message, downloaded map[string]*Downl
 	for i, message := range messages {
 		converted := message
 		if len(message.Content) > 0 {
-			converted.Content = applyDownloadedContent(message.Content, downloaded)
+			converted.Content = applyDownloadedContent(message.Role, message.Content, downloaded)
 		}
 		out[i] = converted
 	}
 	return out
 }
 
-func applyDownloadedContent(parts []types.ContentPart, downloaded map[string]*DownloadResult) []types.ContentPart {
+func applyDownloadedContent(role types.MessageRole, parts []types.ContentPart, downloaded map[string]*DownloadResult) []types.ContentPart {
 	out := make([]types.ContentPart, len(parts))
 	for i, part := range parts {
+		if !isDownloadablePart(role, part) {
+			out[i] = part
+			continue
+		}
 		switch typed := part.(type) {
 		case types.FileContent:
 			converted := applyDownloadedFileContent(typed, downloaded)
@@ -544,6 +694,12 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 		return types.FileContent{}, err
 	}
 	part.FileData = normalized
+	if data.Type == types.FileDataTypeURL && strings.HasPrefix(data.URL, "data:") && normalized.MediaType != "" {
+		// TS: mediaType = dataUrlMediaType ?? part.mediaType, so the media
+		// type embedded in a data: URL wins over the declared one.
+		part.MediaType = normalized.MediaType
+		part.MimeType = normalized.MediaType
+	}
 	part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
 	part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
 	part.Data = nil
