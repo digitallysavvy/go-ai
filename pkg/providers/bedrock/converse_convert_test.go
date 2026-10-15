@@ -161,9 +161,9 @@ func TestBedrockToolResultContent_LegacyResultIsJSONEncoded(t *testing.T) {
 // before the invalid-character strip (RE2 \s would let them be stripped).
 func TestSanitizeDocumentNameJSWhitespace(t *testing.T) {
 	for in, want := range map[string]string{
-		"my file.pdf":     "my file",
-		"a  　 b.txt": "a b",
-		"x\vy":                 "x y",
+		"my file.pdf": "my file",
+		"a  　 b.txt":  "a b",
+		"x\vy":        "x y",
 	} {
 		if got := sanitizeDocumentName(in); got != want {
 			t.Errorf("sanitizeDocumentName(%q) = %q, want %q", in, got, want)

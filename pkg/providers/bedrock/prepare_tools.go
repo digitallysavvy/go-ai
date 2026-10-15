@@ -379,7 +379,8 @@ func bedrockAnthropicProviderToolWireName(t types.Tool) string {
 // `additionalModelRequestFields.tool_choice`. disable_parallel_tool_use is
 // passed through as given (absent when unset, false when explicitly false),
 // except with no toolChoice, where TS only sends {type:"auto"} when it is
-// truthy. A forced choice ('required' or a named tool) falls back to 'auto'
+// truthy. A forced choice (the warning text is the Anthropic provider's, as TS
+// takes it from prepareAnthropicTools) ('required' or a named tool) falls back to 'auto'
 // with an "unsupported" warning for models that reject forced tool use (e.g.
 // Claude Opus 5.5).
 func bedrockAnthropicToolChoice(toolChoice types.ToolChoice, hasToolChoice bool, disableParallelToolUse *bool, rejectsForcedToolUse bool, warnings *[]types.Warning) map[string]interface{} {
@@ -405,7 +406,7 @@ func bedrockAnthropicToolChoice(toolChoice types.ToolChoice, hasToolChoice bool,
 			*warnings = append(*warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: "toolChoice 'required' is not supported by this model because it rejects forced tool use. Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
+				Details: "toolChoice 'required' is not supported with this model or thinking configuration. Using 'auto' instead. Instruct the model to use a tool in the prompt and verify that a tool call was made.",
 			})
 			return withDisable(map[string]interface{}{"type": "auto"})
 		}
@@ -415,7 +416,7 @@ func bedrockAnthropicToolChoice(toolChoice types.ToolChoice, hasToolChoice bool,
 			*warnings = append(*warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "toolChoice",
-				Details: fmt.Sprintf("toolChoice 'tool' is not supported by this model because it rejects forced tool use. Only the '%s' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.", toolChoice.ToolName),
+				Details: fmt.Sprintf("toolChoice 'tool' is not supported with this model or thinking configuration. Only the '%s' tool is sent with 'auto' tool choice. Instruct the model to use the tool in the prompt and verify that a tool call was made.", toolChoice.ToolName),
 			})
 			return withDisable(map[string]interface{}{"type": "auto"})
 		}
