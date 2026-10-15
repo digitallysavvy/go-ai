@@ -242,6 +242,7 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		Text:             step.Text,
 		Reasoning:        reasoning.String(),
 		ToolCalls:        step.ToolCalls,
+		ToolResults:      step.ToolResults,
 		ProviderMetadata: step.ProviderMetadata,
 		Settings:         s.lt.settings,
 		RuntimeContext:   telemetryRuntimeContextFor(s.lt.settings, rc),

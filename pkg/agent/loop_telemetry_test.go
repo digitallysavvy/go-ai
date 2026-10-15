@@ -108,3 +108,37 @@ func TestGenerateAgentToolCallConcurrencyBoundsLegacyLoop(t *testing.T) {
 }
 
 func timeAfterShort() <-chan time.Time { return time.After(300 * time.Millisecond) }
+
+type stepEndToolResultsRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	steps []telemetry.TelemetryStepEndEvent
+}
+
+func (r *stepEndToolResultsRecorder) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
+	r.steps = append(r.steps, e)
+}
+
+func TestGenerateAgentStepEndTelemetryCarriesToolResults(t *testing.T) {
+	rec := &stepEndToolResultsRecorder{}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "t1", Arguments: map[string]interface{}{}}},
+	}, {Text: "done", FinishReason: types.FinishReasonStop}}}
+	a := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{Name: "t1", Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			}}},
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if _, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.steps) != 2 {
+		t.Fatalf("step-end events = %d, want 2", len(rec.steps))
+	}
+	if trs := rec.steps[0].ToolResults; len(trs) != 1 || trs[0].ToolCallID != "1" || trs[0].Result != "ok" {
+		t.Fatalf("step 0 ToolResults = %+v", trs)
+	}
+}

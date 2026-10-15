@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // Ports the callback half of TS telemetry-integration.test.ts 'drives the
@@ -133,5 +134,52 @@ func TestAgent_LifecycleCallbacksCarryTSEventData(t *testing.T) {
 	}
 	if gw, _ := end.ProviderMetadata["gateway"].(map[string]any); gw == nil {
 		t.Fatalf("end ProviderMetadata = %v", end.ProviderMetadata)
+	}
+}
+
+type stepEndRecorder struct {
+	telemetryNoop
+	mu    sync.Mutex
+	steps []telemetry.TelemetryStepEndEvent
+}
+
+func (r *stepEndRecorder) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
+	r.mu.Lock()
+	r.steps = append(r.steps, e)
+	r.mu.Unlock()
+}
+
+type telemetryNoop = telemetry.NoopTelemetryIntegration
+
+func TestAgent_StepEndTelemetryCarriesToolResults(t *testing.T) {
+	rec := &stepEndRecorder{}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "bash", Input: `{"command":"ls"}`, ProviderExecuted: true, Dynamic: true},
+				&ToolResultPart{ToolCallID: "c1", ToolName: "bash", Result: map[string]any{"output": "ok"}, Dynamic: true},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	tel := telemetry.DefaultSettings()
+	tel.Integrations = []telemetry.TelemetryIntegration{rec}
+	a, err := NewAgent(AgentSettings{Harness: mock.harness, Telemetry: tel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session}); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.steps) != 1 || len(rec.steps[0].ToolResults) != 1 || rec.steps[0].ToolResults[0].ToolCallID != "c1" {
+		t.Fatalf("step-end events = %+v", rec.steps)
 	}
 }

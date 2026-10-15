@@ -409,6 +409,17 @@ func reporterStepContent(e telemetry.TelemetryStepEndEvent) []interface{} {
 		content = append(content, (&orderedRecord{}).set("type", "tool-call").
 			set("toolCallId", tc.ID).set("toolName", tc.ToolName).set("input", tc.Arguments))
 	}
+	for _, tr := range e.ToolResults {
+		if tr.Error != nil {
+			content = append(content, (&orderedRecord{}).set("type", "tool-error").
+				set("toolCallId", tr.ToolCallID).set("toolName", tr.ToolName).
+				set("input", tr.Input).set("error", serializeReporterError(tr.Error)))
+			continue
+		}
+		content = append(content, (&orderedRecord{}).set("type", "tool-result").
+			set("toolCallId", tr.ToolCallID).set("toolName", tr.ToolName).
+			set("input", tr.Input).setOpt("output", tr.Result))
+	}
 	return content
 }
 

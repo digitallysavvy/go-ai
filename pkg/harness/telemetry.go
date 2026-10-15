@@ -357,6 +357,7 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 		Text:             step.Text,
 		Reasoning:        step.ReasoningText,
 		ToolCalls:        step.ToolCalls,
+		ToolResults:      step.ToolResults,
 		Files:            step.Files,
 		ProviderMetadata: step.ProviderMetadata,
 		RuntimeContext:   telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),

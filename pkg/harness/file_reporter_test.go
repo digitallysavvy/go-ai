@@ -583,3 +583,36 @@ func TestTraceTreeReporter_RendersTree(t *testing.T) {
 		t.Fatal("rendered twice")
 	}
 }
+
+func TestFileReporter_StepFinishOutputIncludesToolResults(t *testing.T) {
+	r, dir := newTestReporter(t, false)
+	ctx := context.Background()
+	st := reporterSettings()
+	r.OnStart(ctx, telemetry.TelemetryStartEvent{CallID: "c", Settings: st})
+	r.OnStepEnd(ctx, telemetry.TelemetryStepEndEvent{
+		CallID: "c", Settings: st,
+		ToolCalls: []types.ToolCall{{ID: "t1", ToolName: "bash", Arguments: map[string]any{"command": "ls"}}},
+		ToolResults: []types.ToolResult{
+			{ToolCallID: "t1", ToolName: "bash", Input: map[string]any{"command": "ls"}, Result: map[string]any{"ok": true}},
+			{ToolCallID: "t2", ToolName: "bash", Error: errors.New("exit 1")},
+		},
+	})
+	r.OnEnd(ctx, telemetry.TelemetryFinishEvent{CallID: "c"})
+	var out []any
+	for _, l := range readEventLines(t, dir) {
+		if l["kind"] == "step-finish" {
+			out = l["output"].([]any)
+		}
+	}
+	if len(out) != 3 {
+		t.Fatalf("output = %v", out)
+	}
+	res := out[1].(map[string]any)
+	if res["type"] != "tool-result" || res["toolCallId"] != "t1" || res["output"].(map[string]any)["ok"] != true {
+		t.Fatalf("tool-result = %v", res)
+	}
+	te := out[2].(map[string]any)
+	if te["type"] != "tool-error" || te["error"].(map[string]any)["message"] != "exit 1" {
+		t.Fatalf("tool-error = %v", te)
+	}
+}

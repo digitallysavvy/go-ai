@@ -355,6 +355,12 @@ type TelemetryStepFinishEvent struct {
 	// Integrations should check Settings.RecordOutputs before recording.
 	Files []types.GeneratedFileContent
 
+	// ToolResults are the results of the tool calls of this step (including
+	// failed calls, which carry Error), mirroring TS's step-end
+	// `toolResults`. Integrations should check Settings.RecordOutputs before
+	// recording.
+	ToolResults []types.ToolResult
+
 	// ProviderMetadata holds provider-specific response metadata for this step.
 	ProviderMetadata map[string]interface{}
 
