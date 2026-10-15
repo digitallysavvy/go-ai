@@ -25,6 +25,8 @@ The tables on this page are generated from the Go source. For usage, see the [Op
 | `Headers` | `map[string]string` | Headers are custom HTTP headers to include in requests. |
 | `ChatProviderName` | `string` | ChatProviderName overrides the provider identifier returned by ChatModel. Defaults to "openai.chat". |
 | `ChatQuery` | `map[string]string` | ChatQuery contains query parameters added to Chat Completions requests (Azure api-version). |
+| `AudioQuery` | `map[string]string` | AudioQuery contains query parameters added to speech and transcription requests (Azure api-version). |
+| `ImageQuery` | `map[string]string` | ImageQuery contains query parameters added to image generation and edit requests (Azure api-version). |
 | `CompletionProviderName` | `string` | CompletionProviderName overrides the provider identifier returned by CompletionModel. Defaults to "openai.completion". |
 | `CompletionProviderOptionsName` | `string` | CompletionProviderOptionsName selects the providerOptions/providerMetadata namespace used by completion models. Defaults to "azure" when the completion provider name contains "azure", otherwise "openai". |
 | `CompletionQuery` | `map[string]string` | CompletionQuery contains query parameters added to Completions API requests. |
