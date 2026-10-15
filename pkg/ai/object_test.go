@@ -543,8 +543,8 @@ func TestGenerateObject_ModelWithoutStructuredOutputIsStillCalled(t *testing.T) 
 		t.Fatalf("object = %#v", result.Object)
 	}
 	rf := model.GenerateCalls[0].ResponseFormat
-	if rf == nil || rf.Type != "json" || rf.Schema == nil {
-		t.Fatalf("response format = %#v, want json with schema", rf)
+	if rf == nil || rf.Type != "json_schema" || rf.Schema == nil {
+		t.Fatalf("response format = %#v, want json_schema with schema", rf)
 	}
 }
 
@@ -1069,6 +1069,31 @@ func TestStreamObject_Basic(t *testing.T) {
 		Schema: testSchema,
 	})
 
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Object == nil {
+		t.Error("expected non-nil object")
+	}
+}
+
+func TestStreamObject_ModelWithoutStructuredOutputIsStillCalled(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: false,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"result": "streamed"}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model:  model,
+		Prompt: "Stream object",
+		Schema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
