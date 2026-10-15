@@ -211,7 +211,7 @@ Converts one part to zero or more chunks. Most parts map one to one. These are t
 - `tool-call` is not translated here. `harness.Agent` validates it against the merged tool set first.
 - A failed `tool-result` from a provider-executed tool becomes a tool result with an error.
 - `file-change` and `compaction` have no chunk type of their own. Each becomes a dynamic, provider-executed tool call and tool result pair named `fileChange` or `compaction`, so the event stays visible.
-- `stream-start`, `finish-step` and `finish` return nil. `harness.Agent` owns step and turn boundaries.
+- `finish-step` and `finish` return nil. `harness.Agent` owns step and turn boundaries. `stream-start` returns nil when it carries no warnings; with warnings it becomes a stream-start chunk that records them on the step.
 
 {/* gen:fields harness.TranslateOptions */}
 

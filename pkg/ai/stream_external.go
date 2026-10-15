@@ -63,8 +63,11 @@ type ExternalStreamOptions struct {
 //     warnings) before the first content of every step, whether or not src
 //     sends ChunkTypeStreamStart (which stays internal), as TS
 //     HarnessStreamTextResult does.
-//   - A tool-result chunk with Preliminary set is forwarded to the stream but
-//     not recorded in the step.
+//   - A tool-result chunk with Preliminary set is recorded in the step like any
+//     other tool-result (content, ToolResults, response messages), exactly as
+//     TS HarnessStreamTextResult appends every tool-result part, including
+//     preliminary ones, to the step content; the final result for the same
+//     call does not supersede or replace them.
 //   - Text/reasoning/tool-call/tool-result/source/file/custom content chunks
 //     accumulate into that step exactly as they do for a normal
 //     provider.LanguageModel-driven step.
@@ -475,9 +478,10 @@ consumeLoop:
 			}
 
 		case provider.ChunkTypeToolResult:
-			// A preliminary result is a stream-only update of a generator-form
-			// tool; only its final result is recorded in the step.
-			if chunk.ToolResult != nil && !chunk.ToolResult.Preliminary {
+			// TS HarnessStreamTextResult.appendToCurrentStepContent records
+			// every tool-result part, preliminary ones included (unlike core
+			// streamText, which keeps preliminary results stream-only).
+			if chunk.ToolResult != nil {
 				step.toolResults = append(step.toolResults, *chunk.ToolResult)
 				step.content = append(step.content, toolResultContentFromToolResult(*chunk.ToolResult))
 			}
