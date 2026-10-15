@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"regexp"
 	"strings"
 
@@ -115,7 +117,7 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 		switch msg.Role {
 		case types.RoleSystem:
 			if !systemMessagesAllowed {
-				return GooglePrompt{}, fmt.Errorf("unsupported functionality: system messages are only supported at the beginning of the conversation")
+				return GooglePrompt{}, googleUnsupported("system messages are only supported at the beginning of the conversation")
 			}
 			text := googleSystemText(msg)
 			systemParts = append(systemParts, map[string]interface{}{"text": text})
@@ -336,23 +338,20 @@ type googleFile struct {
 	mediaType string
 	url       string
 	reference string
-	text      string
-	hasText   bool
-	data      []byte
+	// referenceMap is the provider reference map (TS data.reference); the
+	// legacy single-id reference stays in reference.
+	referenceMap types.ProviderReference
+	text         string
+	hasText      bool
+	data         []byte
 }
 
 func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 	f := googleFile{mediaType: firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)}
 	f.url = firstNonEmpty(file.URL, file.FileData.URL)
 	f.reference = file.Reference
-	if f.reference == "" && file.FileData.Reference != nil {
-		f.reference = file.FileData.Reference["google"]
-		if f.reference == "" {
-			for _, v := range file.FileData.Reference {
-				f.reference = v
-				break
-			}
-		}
+	if f.reference == "" && len(file.FileData.Reference) > 0 {
+		f.referenceMap = file.FileData.Reference
 	}
 	if file.Text != "" || file.FileData.Type == types.FileDataTypeText {
 		f.text = firstNonEmpty(file.Text, file.FileData.Text)
@@ -377,17 +376,28 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 	switch {
 	case f.url != "":
 		if assistant {
-			return nil, fmt.Errorf("unsupported functionality: File data URLs in assistant messages are not supported")
+			return nil, googleUnsupported("File data URLs in assistant messages are not supported")
 		}
+		// TS resolveFullMediaType throws for a top-level-only media type on a
+		// URL; Go keeps completing it from the URL extension because the image
+		// model sends reference URLs as image/* (v0.5.2 behavior).
 		return map[string]interface{}{
 			"fileData": map[string]interface{}{"mimeType": googleFullMediaType(f.mediaType, f.url), "fileUri": f.url},
 		}, nil
-	case f.reference != "":
+	case f.reference != "" || len(f.referenceMap) > 0:
 		if c.isVertexLike {
-			return nil, fmt.Errorf("unsupported functionality: file parts with provider references")
+			return nil, googleUnsupported("file parts with provider references")
+		}
+		fileURI := f.reference
+		if len(f.referenceMap) > 0 {
+			id, err := providerutils.ResolveProviderReference(f.referenceMap, "google")
+			if err != nil {
+				return nil, err
+			}
+			fileURI = id
 		}
 		return map[string]interface{}{
-			"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": f.reference},
+			"fileData": map[string]interface{}{"mimeType": f.mediaType, "fileUri": fileURI},
 		}, nil
 	case f.hasText:
 		mimeType := "text/plain"
@@ -398,9 +408,41 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString([]byte(f.text))},
 		}, nil
 	default:
+		mimeType := f.mediaType
+		if !assistant {
+			var err error
+			if mimeType, err = googleResolveFullMediaType(f.mediaType, f.data, true); err != nil {
+				return nil, err
+			}
+		}
 		return map[string]interface{}{
-			"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": base64.StdEncoding.EncodeToString(f.data)},
+			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(f.data)},
 		}, nil
+	}
+}
+
+// googleResolveFullMediaType ports TS resolveFullMediaType for a user file
+// part: a full media type is kept; a top-level type ("image", "image/*") is
+// completed by sniffing inline bytes, and fails otherwise.
+func googleResolveFullMediaType(mediaType string, data []byte, inline bool) (string, error) {
+	if isFullMediaType(mediaType) || mediaType == "" {
+		return mediaType, nil
+	}
+	if inline {
+		top, _, _ := strings.Cut(mediaType, "/")
+		if detected, ok := fileutil.DetectMediaTypeSignature(data, top); ok {
+			return detected, nil
+		}
+		return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType))
+	}
+	return "", googleUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it is not passed as inline bytes", mediaType))
+}
+
+// googleUnsupported is the UnsupportedFunctionalityError TS throws.
+func googleUnsupported(functionality string) error {
+	return &providererrors.UnsupportedFunctionalityError{
+		Functionality: functionality,
+		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
 	}
 }
 
@@ -531,7 +573,7 @@ func (c *googleConverter) convertAssistant(msg types.Message) ([]map[string]inte
 
 		case types.ReasoningFileContent:
 			if p.FileData.URL != "" {
-				return nil, fmt.Errorf("unsupported functionality: File data URLs in assistant messages are not supported")
+				return nil, googleUnsupported("File data URLs in assistant messages are not supported")
 			}
 			data := p.Data
 			if len(data) == 0 {

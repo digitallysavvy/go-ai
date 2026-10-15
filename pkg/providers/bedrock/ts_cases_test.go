@@ -67,10 +67,10 @@ func TestTSCasesChat(t *testing.T) {
 // TestTSCasesConvertMessages replays convert-to-amazon-bedrock-chat-messages.test.ts.
 func TestTSCasesConvertMessages(t *testing.T) {
 	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_messages.json.gz")
-	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, error) {
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
 		msgs, why := tsfixture.BuildPromptMessages(args[0])
 		if why != "" {
-			return nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
 		}
 		isMistral := false
 		if len(args) > 1 {
@@ -78,7 +78,7 @@ func TestTSCasesConvertMessages(t *testing.T) {
 		}
 		system, messages, err := convertToBedrockChatMessages(msgs, isMistral)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if system == nil {
 			system = []map[string]interface{}{}
@@ -86,6 +86,6 @@ func TestTSCasesConvertMessages(t *testing.T) {
 		if messages == nil {
 			messages = []map[string]interface{}{}
 		}
-		return map[string]interface{}{"system": system, "messages": messages}, nil
+		return map[string]interface{}{"system": system, "messages": messages}, nil, nil
 	}, nil)
 }

@@ -297,8 +297,9 @@ func runAsserts(t *testing.T, c Case, roots map[string]interface{}) {
 // the evaluated TS arguments and returns the Go counterpart of the function's
 // result in the TS return shape, so the assertions (expressions over result,
 // its destructured members and any returned out-parameters such as warnings)
-// can be evaluated. Cases listed in skip (by test name) are logged only.
-func RunFn(t *testing.T, cases []Case, call func(args []interface{}) (interface{}, error), skip map[string]string) {
+// can be evaluated; extra holds out-parameters (such as a warnings array the
+// TS function appends to). Cases listed in skip (by test name) are logged only.
+func RunFn(t *testing.T, cases []Case, call func(args []interface{}) (interface{}, map[string]interface{}, error), skip map[string]string) {
 	t.Helper()
 	for _, c := range cases {
 		c := c
@@ -309,7 +310,7 @@ func RunFn(t *testing.T, cases []Case, call func(args []interface{}) (interface{
 			if why, ok := skip[c.Test]; ok {
 				t.Skip(why)
 			}
-			ret, err := call(c.FnArgs)
+			ret, extra, err := call(c.FnArgs)
 			if errors.Is(err, ErrUnsupported) {
 				t.Skipf("unsupported input: %v", err)
 			}
@@ -332,6 +333,9 @@ func RunFn(t *testing.T, cases []Case, call func(args []interface{}) (interface{
 				return
 			}
 			roots := map[string]interface{}{"result": jsonValue(ret)}
+			for k, v := range extra {
+				roots[k] = jsonValue(v)
+			}
 			if m, ok := jsonValue(ret).(map[string]interface{}); ok {
 				for k, v := range m {
 					if _, taken := roots[k]; !taken {

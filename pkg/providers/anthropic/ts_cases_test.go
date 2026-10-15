@@ -2,12 +2,14 @@ package anthropic
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic/tools"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // tsProviderTool maps a TS provider tool to the Go tool. Go identifies
@@ -81,5 +83,66 @@ func TestTSCasesLanguage(t *testing.T) {
 		"should pass headers":                                                  "the TS test sets provider-level headers on createAnthropic; the harness builds a default provider",
 		"should process PDF citation responses":                                "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
 		"should process PDF citation responses in streaming":                   "the TS test's 'base64PDFdata' is not valid base64; Go decodes file data",
+	})
+}
+
+// TestTSCasesConvertPrompt replays convert-to-anthropic-prompt.test.ts.
+func TestTSCasesConvertPrompt(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/convert_prompt.json.gz")
+	tsfixture.RunFn(t, cases, func(args []interface{}) (interface{}, map[string]interface{}, error) {
+		in, _ := args[0].(map[string]interface{})
+		msgs, why := tsfixture.BuildPromptMessages(in["prompt"])
+		if why != "" {
+			return nil, nil, fmt.Errorf("%w: %s", tsfixture.ErrUnsupported, why)
+		}
+		opts := prompt.AnthropicPromptOptions{}
+		if v, ok := in["sendReasoning"].(bool); ok {
+			opts.SendReasoning = &v
+		}
+		// toolNameMapping: tool name -> provider tool name via the tool's id
+		if tm, ok := in["toolNameMapping"].(map[string]interface{}); ok {
+			if m, ok := tm["__toolNameMapping"].(map[string]interface{}); ok {
+				ids, _ := m["providerToolNames"].(map[string]interface{})
+				custom := map[string]string{}
+				tools, _ := m["tools"].([]interface{})
+				for _, tv := range tools {
+					tool, _ := tv.(map[string]interface{})
+					if tool["type"] != "provider" {
+						continue
+					}
+					if pn, ok := ids[fmt.Sprint(tool["id"])].(string); ok {
+						custom[fmt.Sprint(tool["name"])] = pn
+					}
+				}
+				opts.ToProviderToolName = func(name string) string {
+					if pn, ok := custom[name]; ok {
+						return pn
+					}
+					return name
+				}
+			}
+		}
+		out, err := prompt.ConvertToAnthropicPrompt(msgs, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		system, messages := out.System, out.Messages
+		if messages == nil {
+			messages = []map[string]interface{}{}
+		}
+		warnings := make([]interface{}, 0, len(out.Warnings))
+		for _, w := range out.Warnings {
+			warnings = append(warnings, w)
+		}
+		betas := out.Betas
+		if betas == nil {
+			betas = []string{}
+		}
+		return map[string]interface{}{
+			"prompt": map[string]interface{}{"system": system, "messages": messages},
+			"betas":  map[string]interface{}{"__set": betas},
+		}, map[string]interface{}{"warnings": warnings}, nil
+	}, map[string]string{
+		"should add PDF file parts for base64 PDFs": "the TS test passes 'base64PDFdata', which is not valid base64; Go decodes file data",
 	})
 }

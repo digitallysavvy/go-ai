@@ -136,6 +136,14 @@ function tpl(s, k) {
 
 // top-level consts (TEST_PROMPT, TEST_TOOLS, ...)
 const ctx = vm.createContext({ JSON, Date, Math, Buffer, Uint8Array, TextEncoder, URL, Object, Array, String, Number });
+if (wantAsserts) {
+  // helpers the converter tests build their arguments with, kept as plain data
+  vm.runInContext(`
+    var createToolNameMapping = (o) => ({ __toolNameMapping: { tools: (o && o.tools) || [], providerToolNames: (o && o.providerToolNames) || {} } });
+    var CacheControlValidator = function () { return { __cacheControlValidator: true }; };
+    var structuredClone = (v) => JSON.parse(JSON.stringify(v));
+  `, ctx);
+}
 {
   const re = wantAsserts ? /^(?:export )?(?:const|let) (\w+)(?::[^=]+)?\s*=\s+/gm : /^(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
   let m;
@@ -288,7 +296,7 @@ for (let i = 0; i < starts.length; i++) {
       if (cur.trim() !== '') parts.push(cur);
       fnArgSrc = parts.map(p => p.trim());
       try {
-        fnArgs = fnArgSrc.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (v === undefined ? { __undef: true } : v))));
+        fnArgs = fnArgSrc.map(a => JSON.parse(JSON.stringify(evalExpr(a), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))));
       } catch (err) { fnArgs = null; }
     }
     const aliases2 = {};
@@ -316,7 +324,7 @@ for (let i = 0; i < starts.length; i++) {
       if (ae < 0) continue;
       const argSrc = body0.slice(as + 1, ae - 1).trim();
       let arg = null, ok = true;
-      if (argSrc !== '') { try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (v === undefined ? { __undef: true } : v))); } catch (err) { ok = false; arg = argSrc; } }
+      if (argSrc !== '') { try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))); } catch (err) { ok = false; arg = argSrc; } }
       const matcher = (rejects ? 'rejects.' : '') + mm3[1];
       if (!ok && !/toThrow/.test(matcher)) continue;
       asserts2.push({ expr, matcher, not, arg: ok ? arg : null });
@@ -495,7 +503,7 @@ for (let i = 0; i < starts.length; i++) {
       const argSrc = body.slice(as + 1, ae - 1).trim();
       let arg = null, ok = true;
       if (argSrc !== '') {
-        try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (v === undefined ? { __undef: true } : v))); } catch (err) { ok = false; }
+        try { arg = JSON.parse(JSON.stringify(evalExpr(argSrc), (kk, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : (Object.prototype.toString.call(v) === '[object Set]' ? { __set: [...v] } : (v === undefined ? { __undef: true } : v)))); } catch (err) { ok = false; }
       }
       if (!ok) continue;
       asserts.push({ expr, matcher: mm3[1], not, arg });

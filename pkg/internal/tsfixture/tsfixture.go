@@ -958,7 +958,13 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 						return nil, "prompt file data bytes"
 					}
 				case "url":
-					fc.FileData = types.FileData{Type: types.FileDataTypeURL, URL: stringOf(d["url"]), MediaType: fc.MediaType}
+					// TS keeps the unparsed string of a gs: URL as originalUrl; Go never
+					// re-parses the string it was given.
+					u := stringOf(d["url"])
+					if o := stringOf(d["originalUrl"]); o != "" {
+						u = o
+					}
+					fc.FileData = types.FileData{Type: types.FileDataTypeURL, URL: u, MediaType: fc.MediaType}
 				case "reference":
 					ref := types.ProviderReference{}
 					if r, ok := d["reference"].(map[string]interface{}); ok {
