@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -63,14 +64,6 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 				AccessToken: "test-token",
 			},
 			expectedErr: "location is required for Google Vertex AI",
-		},
-		{
-			name: "missing access token",
-			config: Config{
-				Project:  "test-project",
-				Location: "us-central1",
-			},
-			expectedErr: "access token is required for Google Vertex AI",
 		},
 	}
 
@@ -457,5 +450,65 @@ func TestLanguageModel_EndpointModelID_RejectsExpressMode(t *testing.T) {
 	}
 	if _, err := p.LanguageModel("endpoints/1234"); err == nil {
 		t.Fatal("expected an error for endpoints/ model ID under Express Mode")
+	}
+}
+
+// TestNewProvider_DefaultsToApplicationDefaultCredentials matches TS
+// createVertex: with no access token, auth token or API key, requests are
+// authenticated with Application Default Credentials.
+func TestNewProvider_DefaultsToApplicationDefaultCredentials(t *testing.T) {
+	orig := defaultADCToken
+	defer func() { defaultADCToken = orig }()
+	calls := 0
+	defaultADCToken = func(ctx context.Context) (string, error) {
+		calls++
+		return "adc-token", nil
+	}
+
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{Project: "p", Location: "us-central1", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatalf("New without credentials must succeed (ADC default): %v", err)
+	}
+	m, err := p.LanguageModel("gemini-2.0-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth != "Bearer adc-token" || calls == 0 {
+		t.Fatalf("Authorization = %q, ADC calls = %d", gotAuth, calls)
+	}
+
+	tok, err := p.vertexAuthToken(context.Background())
+	if err != nil || tok != "adc-token" {
+		t.Fatalf("vertexAuthToken = %q, %v", tok, err)
+	}
+}
+
+func TestNewProvider_ADCFailureSurfacesOnRequest(t *testing.T) {
+	orig := defaultADCToken
+	defer func() { defaultADCToken = orig }()
+	defaultADCToken = func(ctx context.Context) (string, error) { return "", errors.New("adc unavailable") }
+	p, err := New(Config{Project: "p", Location: "us-central1", BaseURL: "http://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := p.LanguageModel("gemini-2.0-flash")
+	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "adc unavailable") {
+		t.Fatalf("want adc error, got %v", err)
 	}
 }

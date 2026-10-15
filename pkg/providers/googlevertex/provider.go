@@ -91,7 +91,9 @@ type Config struct {
 	AuthToken func(ctx context.Context) (string, error) `json:"-"`
 
 	// TokenSource provides OAuth2 tokens. Used when AuthToken and AccessToken
-	// are not set.
+	// are not set. When none of AuthToken, AccessToken and TokenSource is set,
+	// Application Default Credentials are used (GOOGLE_APPLICATION_CREDENTIALS,
+	// gcloud user credentials, or the metadata server), like TS createVertex.
 	TokenSource oauth2.TokenSource `json:"-"`
 
 	// BaseURL is the base URL for the Vertex AI API (optional, computed from project/location if not provided)
@@ -127,6 +129,22 @@ type cachedTokenSource struct {
 	token   string
 	expiry  time.Time
 	resolve func(ctx context.Context) (string, time.Time, error)
+}
+
+// defaultADCToken returns a cached Application Default Credentials access
+// token. It is a variable so tests can substitute it.
+var defaultADCToken = func(ctx context.Context) (string, error) {
+	return defaultMaasTokenCache.tokenFor(ctx)
+}
+
+func adcAccessToken(ctx context.Context) (string, time.Time, error) {
+	token, err := defaultADCToken(ctx)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	// defaultADCToken already caches by expiry; keep this short so the
+	// per-provider cache re-asks it frequently.
+	return token, time.Now().Add(1 * time.Minute), nil
 }
 
 func (c *cachedTokenSource) tokenFor(ctx context.Context) (string, error) {
@@ -181,9 +199,9 @@ func New(cfg Config) (*Provider, error) {
 		if cfg.Location == "" {
 			return nil, fmt.Errorf("location is required for Google Vertex AI")
 		}
-		if cfg.AccessToken == "" && cfg.AuthToken == nil && cfg.TokenSource == nil {
-			return nil, fmt.Errorf("access token is required for Google Vertex AI")
-		}
+		// With no AuthToken, AccessToken or TokenSource, authentication falls
+		// back to Application Default Credentials, resolved lazily on the
+		// first request (TS createVertex defaults to google-auth-library).
 		if baseURL == "" {
 			// Location is interpolated directly into the request host
 			// (https://{location}-aiplatform.googleapis.com/...), so only a
@@ -230,7 +248,7 @@ func New(cfg Config) (*Provider, error) {
 					}
 					return token.AccessToken, token.Expiry, nil
 				}
-				return "", time.Time{}, fmt.Errorf("access token is required for Google Vertex AI")
+				return adcAccessToken(ctx)
 			},
 		}
 		baseTransport := stdhttp.RoundTripper(stdhttp.DefaultTransport)
@@ -419,7 +437,8 @@ func (p *Provider) AnthropicModel(modelID string, settings ...*anthropicprovider
 
 // vertexAuthToken resolves a bearer token for any Vertex-authenticated
 // sub-request using this provider's configured credentials (AuthToken,
-// AccessToken, or TokenSource, in that order). Despite living on the path
+// AccessToken, or TokenSource, in that order, then Application Default
+// Credentials). Despite living on the path
 // used to wire up the Anthropic sub-provider, it is provider-generic --
 // also used by the Gemini live transcription WebSocket handshake (see
 // gemini_transcription_stream.go) -- since Vertex's OAuth Bearer auth is
@@ -441,7 +460,7 @@ func (p *Provider) vertexAuthToken(ctx context.Context) (string, error) {
 		}
 		return token.AccessToken, nil
 	}
-	return "", fmt.Errorf("access token is required for Google Vertex AI")
+	return defaultADCToken(ctx)
 }
 
 // EmbeddingModel returns an embedding model by ID

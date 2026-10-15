@@ -42,8 +42,8 @@ func TestVertexSerializeAndDeserializeModel(t *testing.T) {
 	}
 
 	_, err = deserializeModel(serialized)
-	if err == nil {
-		t.Fatal("expected deserializeModel() to fail because serialized config omits auth tokens")
+	if err != nil {
+		t.Fatalf("expected deserializeModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -253,8 +253,8 @@ func TestVertexSerializeAndDeserializeGeminiTranscriptionModel(t *testing.T) {
 	// The credential is stripped by design (see the transcription test
 	// above), so deserializing the auto-serialized config fails; a manual
 	// config with accessToken restored proves the rest round-trips.
-	if _, err := deserializeTranscriptionModel(serialized); err == nil {
-		t.Fatal("expected deserializeTranscriptionModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeTranscriptionModel(serialized); err != nil {
+		t.Fatalf("deserializeTranscriptionModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -318,8 +318,8 @@ func TestVertexSerializeAndDeserializeSpeechModel_GeminiTTS(t *testing.T) {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
-	if _, err := deserializeSpeechModel(serialized); err == nil {
-		t.Fatal("expected deserializeSpeechModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeSpeechModel(serialized); err != nil {
+		t.Fatalf("deserializeSpeechModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -382,8 +382,8 @@ func TestVertexSerializeAndDeserializeSpeechModel_CloudTTS(t *testing.T) {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
-	if _, err := deserializeSpeechModel(serialized); err == nil {
-		t.Fatal("expected deserializeSpeechModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeSpeechModel(serialized); err != nil {
+		t.Fatalf("deserializeSpeechModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
@@ -491,8 +491,8 @@ func TestVertexSerializeAndDeserializeInteractionsModel(t *testing.T) {
 		t.Fatalf("access token must be omitted from serializable config: %#v", serialized.Config)
 	}
 
-	if _, err := deserializeInteractionsModel(serialized); err == nil {
-		t.Fatal("expected deserializeInteractionsModel() to fail because serialized config omits auth tokens")
+	if _, err := deserializeInteractionsModel(serialized); err != nil {
+		t.Fatalf("deserializeInteractionsModel() must succeed (credentials default to ADC): %v", err)
 	}
 
 	manual := provider.SerializedModel{
