@@ -1494,8 +1494,10 @@ func max(a, b int) int {
 	return b
 }
 
-// TestStreamTextToolExecutionOrderPreserved verifies that multiple tool call chunks
-// are executed in the order they were received from the stream.
+// TestStreamTextToolExecutionOrderPreserved verifies that with sequential
+// execution (ToolCallConcurrency 1) multiple tool call chunks are executed in
+// the order they were received from the stream. The default runs a step's
+// calls concurrently (TS #22135), so start order is not deterministic there.
 func TestStreamTextToolExecutionOrderPreserved(t *testing.T) {
 	t.Parallel()
 
@@ -1530,11 +1532,13 @@ func TestStreamTextToolExecutionOrderPreserved(t *testing.T) {
 
 	done := make(chan struct{})
 	maxSteps := 1
+	sequential := 1
 	_, err := StreamText(context.Background(), StreamTextOptions{
-		Model:    model,
-		Prompt:   "Run all tools",
-		Tools:    tools,
-		MaxSteps: &maxSteps,
+		Model:               model,
+		Prompt:              "Run all tools",
+		Tools:               tools,
+		MaxSteps:            &maxSteps,
+		ToolCallConcurrency: &sequential,
 		OnFinish: func(r *StreamTextResult) {
 			close(done)
 		},

@@ -102,9 +102,9 @@ func TestNew_BaseURLFromEnvironment(t *testing.T) {
 
 	run := func(p *Provider) {
 		t.Helper()
-		model, _ := p.EvaluationModel("jev-latest")
-		if _, err := model.DoEvaluate(t.Context(), provider.EvaluationCallOptions{State: "test", Questions: nativeQuestions()}); err != nil {
-			t.Fatalf("DoEvaluate: %v", err)
+		model, _ := p.DecisionModel("jev-latest")
+		if _, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()}); err != nil {
+			t.Fatalf("DoDecide: %v", err)
 		}
 	}
 
