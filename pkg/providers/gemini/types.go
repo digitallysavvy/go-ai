@@ -64,6 +64,10 @@ type UsageMetadata struct {
 	// through as usage.raw and providerMetadata.usageMetadata, so fields the
 	// SDK does not model survive.
 	raw map[string]interface{}
+
+	// summed is set when the counts combine several responses (long decode
+	// continuation); the typed fields then win over the wire object.
+	summed bool
 }
 
 type usageMetadataFields UsageMetadata
@@ -87,6 +91,11 @@ func (u *UsageMetadata) UnmarshalJSON(data []byte) error {
 // MarshalJSON reproduces the wire object when one was received, otherwise the
 // typed fields.
 func (u UsageMetadata) MarshalJSON() ([]byte, error) {
+	if u.raw != nil && !u.summed {
+		// Exactly what the API sent, including keys nested inside the
+		// token-detail entries that the typed fields do not model.
+		return json.Marshal(u.raw)
+	}
 	typed, err := json.Marshal(usageMetadataFields(u))
 	if err != nil || u.raw == nil {
 		return typed, err
@@ -341,6 +350,7 @@ func addUsageMetadata(a, b *UsageMetadata) *UsageMetadata {
 		return a
 	}
 	out := *b
+	out.summed = true
 	out.PromptTokenCount = a.PromptTokenCount + b.PromptTokenCount
 	out.CandidatesTokenCount = a.CandidatesTokenCount + b.CandidatesTokenCount
 	out.ToolUsePromptTokenCount = a.ToolUsePromptTokenCount + b.ToolUsePromptTokenCount

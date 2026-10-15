@@ -568,6 +568,7 @@ func (s *stream) processNonFuncPart(part Part) {
 					ID:               toolCallID,
 					ToolName:         s.tnm.toCustomToolName("code_execution"),
 					Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
+					RawArguments:     executableCodeInput(part.ExecutableCode.Language, part.ExecutableCode.Code),
 					ProviderExecuted: true,
 				},
 			})

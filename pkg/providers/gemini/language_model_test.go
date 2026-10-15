@@ -986,3 +986,24 @@ func TestConvertResponse_InlineDataCarriesItsThoughtSignature(t *testing.T) {
 		t.Fatalf("file = %#v", result.Content[1])
 	}
 }
+
+// TS stringifies function-call args and executableCode in wire/schema order.
+func TestConvertResponse_ToolInputKeepsKeyOrder(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"functionCall":{"name":"lookup","id":"c1","args":{"zeta":1,"alpha":{"y":2,"x":3}}}},
+		{"executableCode":{"code":"print(1)","language":"PYTHON"}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	if got := result.ToolCalls[0].RawArguments; got != `{"zeta":1,"alpha":{"y":2,"x":3}}` {
+		t.Fatalf("function call input = %s", got)
+	}
+	if got := result.ToolCalls[1].RawArguments; got != `{"language":"PYTHON","code":"print(1)"}` {
+		t.Fatalf("code execution input = %s", got)
+	}
+	if c, ok := result.Content[0].(types.ToolCallContent); !ok || c.Input != result.ToolCalls[0].RawArguments {
+		t.Fatalf("content input = %#v", result.Content[0])
+	}
+}

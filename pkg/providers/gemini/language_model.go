@@ -389,6 +389,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 				ID:               toolCallID,
 				ToolName:         tnm.toCustomToolName("code_execution"),
 				Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
+				RawArguments:     executableCodeInput(part.ExecutableCode.Language, part.ExecutableCode.Code),
 				ProviderExecuted: true,
 			})
 			continue
@@ -436,7 +437,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			tc := types.TextContent{Text: marshalJSONCompact(args)}
+			tc := types.TextContent{Text: completeCallArgsJSON(part.FunctionCall)}
 			if part.ThoughtSignature != "" {
 				tc.ProviderMetadata, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
 					"thoughtSignature": part.ThoughtSignature,
@@ -467,6 +468,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 				ID:               toolCallID,
 				ToolName:         part.FunctionCall.Name,
 				Arguments:        args,
+				RawArguments:     completeCallArgsJSON(part.FunctionCall),
 				ProviderMetadata: providerMetadata,
 				ThoughtSignature: part.ThoughtSignature,
 			})
@@ -648,6 +650,12 @@ func rawOrNull(raw json.RawMessage) json.RawMessage {
 }
 
 // toolCallContentOf is the ordered-content form of a ToolCall.
+// executableCodeInput is JSON.stringify(part.executableCode): the parsed
+// object has its schema key order, language then code.
+func executableCodeInput(language, code string) string {
+	return `{"language":` + marshalJSONCompact(language) + `,"code":` + marshalJSONCompact(code) + `}`
+}
+
 func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	var meta json.RawMessage
 	if len(tc.ProviderMetadata) > 0 {
@@ -656,6 +664,7 @@ func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	return types.ToolCallContent{
 		ToolCallID:       tc.ID,
 		ToolName:         tc.ToolName,
+		Input:            tc.RawArguments,
 		Arguments:        tc.Arguments,
 		ProviderExecuted: tc.ProviderExecuted,
 		ProviderMetadata: meta,
