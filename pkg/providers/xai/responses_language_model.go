@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"regexp"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -224,30 +223,13 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 	}
 
-	if err := validateXAIResponsesFileParts(opts.Prompt); err != nil {
-		return nil, warnings, err
-	}
-
-	input, _, err := responses.ConvertPromptToInputWithOptions(opts.Prompt, "system", responses.ConvertOptions{
-		PassThroughUnsupportedFiles: true,
-		// Row 72eee24: use providerOptions.xai (not .openai) for xAI-specific
-		// input conversion options such as imageDetail on file parts.
-		ProviderOptionsName: "xai",
-	})
+	// TS convertToXaiResponsesInput: a converter of its own (xAI item ids,
+	// reasoning replay, verbatim tool errors, no inline non-image files).
+	input, inputWarnings, err := responses.ConvertPromptToXAIInput(opts.Prompt)
 	if err != nil {
 		return nil, warnings, err
 	}
-	// xAI function_call input items carry id (the xai itemId, else the call
-	// id) and status "completed" (TS convertToXaiResponsesInput).
-	for i, item := range input {
-		if fc, ok := item.(responses.FunctionCallItem); ok {
-			if fc.ID == "" {
-				fc.ID = fc.CallID
-			}
-			fc.Status = "completed"
-			input[i] = fc
-		}
-	}
+	warnings = append(warnings, inputWarnings...)
 
 	body := map[string]interface{}{
 		"model": m.modelID,
@@ -421,45 +403,6 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	return body, warnings, nil
 }
 
-func validateXAIResponsesFileParts(prompt types.Prompt) error {
-	for _, msg := range prompt.Messages {
-		if msg.Role != types.RoleUser {
-			continue
-		}
-		for _, part := range msg.Content {
-			file, ok := part.(types.FileContent)
-			if !ok {
-				continue
-			}
-			mediaType := xaiFileMediaType(file)
-			fileData := file.FileData
-			switch {
-			case fileData.Type == types.FileDataTypeText || file.Text != "":
-				return fmt.Errorf("xAI Responses API does not support text file parts")
-			case fileData.Type == types.FileDataTypeData && !isXAIImageMediaType(mediaType):
-				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
-			case fileData.Type == "" && len(file.Data) > 0 && !isXAIImageMediaType(mediaType):
-				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
-			}
-		}
-	}
-	return nil
-}
-
-func xaiFileMediaType(file types.FileContent) string {
-	if file.FileData.MediaType != "" {
-		return file.FileData.MediaType
-	}
-	if file.MediaType != "" {
-		return file.MediaType
-	}
-	return file.MimeType
-}
-
-func isXAIImageMediaType(mediaType string) bool {
-	return strings.HasPrefix(mediaType, "image/") || mediaType == "image"
-}
-
 // convertXAIResponsesToolChoice maps a types.ToolChoice to the Responses API format.
 func convertXAIResponsesToolChoice(tc types.ToolChoice) interface{} {
 	switch tc.Type {
@@ -482,6 +425,18 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	result := &types.GenerateResult{
 		Usage:       convertXAIResponsesUsage(resp.Usage),
 		RawResponse: resp,
+	}
+	if resp.Usage == nil {
+		// TS doGenerate: a response without usage reports explicit zeros.
+		zero := int64(0)
+		z := func() *int64 { v := zero; return &v }
+		result.Usage = types.Usage{
+			InputTokens:   z(),
+			OutputTokens:  z(),
+			TotalTokens:   z(),
+			InputDetails:  &types.InputTokenDetails{NoCacheTokens: z(), CacheReadTokens: z(), CacheWriteTokens: z()},
+			OutputDetails: &types.OutputTokenDetails{TextTokens: z(), ReasoningTokens: z()},
+		}
 	}
 	if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
 		result.ProviderMetadata = map[string]interface{}{
@@ -652,7 +607,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					rc.ProviderMetadata = raw
 				}
 			}
-			result.Content = append(result.Content, rc)
+			// TS: a reasoning part is emitted only when it has text or
+			// encrypted content.
+			if reasoningText != "" || item.EncryptedContent != "" {
+				result.Content = append(result.Content, rc)
+			}
 
 		case "web_search_call", "x_search_call", "code_interpreter_call",
 			"code_execution_call", "view_image_call", "view_x_video_call",
@@ -791,7 +750,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	if hasFunctionCall {
 		result.FinishReason = types.FinishReasonToolCalls
 	} else {
-		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, resp.IncompleteDetails)
+		// TS doGenerate maps response.status alone: an "incomplete" status is
+		// "other" here (incomplete_details only drives the streaming path).
+		result.FinishReason = mapXAIResponsesFinishReason(resp.Status, nil)
 	}
 	result.RawFinishReason = resp.Status
 
@@ -807,6 +768,7 @@ func resolveProviderToolNames(tools []types.Tool) map[string]string {
 		"xai.web_search": true, "xai.x_search": true,
 		"xai.code_execution": true, "xai.file_search": true,
 		"xai.mcp": true, "xai.view_image": true, "xai.view_x_video": true,
+		"xai.image_generation": true,
 	}
 	names := make(map[string]string)
 	for _, t := range tools {

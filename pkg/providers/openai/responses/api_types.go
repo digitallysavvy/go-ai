@@ -202,6 +202,9 @@ type CustomToolCallOutputPart struct {
 
 	// FileID is a provider file reference (input_file with uploaded file id).
 	FileID string `json:"file_id,omitempty"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // CompactionEvent is received in the Responses API SSE stream when the server
@@ -475,6 +478,10 @@ type UserMessage struct {
 type UserTextPart struct {
 	Type string `json:"type"` // "input_text"
 	Text string `json:"text"`
+
+	// PromptCacheBreakpoint is the per-part providerOptions.<name>.
+	// promptCacheBreakpoint value ({mode: "explicit"}), forwarded verbatim.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // UserImageURLPart is an image content part in a user message.
@@ -482,12 +489,18 @@ type UserImageURLPart struct {
 	Type     string `json:"type"` // "input_image"
 	ImageURL string `json:"image_url"`
 	Detail   string `json:"detail,omitempty"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // UserFilePart references a file by URL in a user message.
 type UserFilePart struct {
 	Type    string `json:"type"` // "input_file"
 	FileURL string `json:"file_url"`
+
+	// PromptCacheBreakpoint is the per-part prompt cache breakpoint.
+	PromptCacheBreakpoint interface{} `json:"prompt_cache_breakpoint,omitempty"`
 }
 
 // FunctionCallOutputItem sends a function tool result back to the Responses API.
@@ -801,6 +814,7 @@ type OutputItemAddedEvent struct {
 // OutputTextDeltaEvent carries an incremental text chunk.
 type OutputTextDeltaEvent struct {
 	Type        string `json:"type"` // "response.output_text.delta"
+	ItemID      string `json:"item_id,omitempty"`
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
 

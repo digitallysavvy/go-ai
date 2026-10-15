@@ -380,6 +380,14 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		isReasoning = *forceReasoning
 	}
 
+	// TS: resolvedReasoningEffort = openaiOptions.reasoningEffort ??
+	// (isCustomReasoning(reasoning) ? reasoning : undefined), resolved once so
+	// the top-level `reasoning` value goes through the same GPT-6+ check.
+	reasoningEffortOption := reasoningEffort
+	if reasoningEffort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		reasoningEffort = string(*opts.Reasoning)
+	}
+
 	// GPT-6+ models restrict reasoning effort to a fixed set; drop and warn
 	// on anything else (row 17e489e).
 	if reasoningEffort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
@@ -433,6 +441,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		ProviderToolNames:                    openAIProviderToolNames(opts.Tools),
 		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
+		IncludePromptCacheBreakpoint:         true,
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
 		IsReasoningModel:                     isReasoning,
 		WebSearchToolName:                    responsesWebSearchToolName(opts.Tools),
@@ -529,30 +538,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["stream"] = true
 	}
 
-	// Reasoning effort (from top-level Reasoning param or provider options).
-	effort := ""
-	if opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			effort = "none"
-		case types.ReasoningMinimal:
-			effort = "minimal"
-		case types.ReasoningLow:
-			effort = "low"
-		case types.ReasoningMedium:
-			effort = "medium"
-		case types.ReasoningHigh:
-			effort = "high"
-		case types.ReasoningXHigh:
-			effort = "xhigh"
-		case types.ReasoningMax:
-			effort = "max"
-		}
-	}
-	// Provider-level reasoningEffort overrides the top-level param.
-	if reasoningEffort != "" {
-		effort = reasoningEffort
-	}
+	effort := reasoningEffort
 	resolvedReasoningSummary := reasoningSummary
 	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
 		resolvedReasoningSummary = "detailed"
@@ -575,7 +561,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 		body["reasoning"] = reasoning
 	} else if !isReasoning {
-		if reasoningEffort != "" {
+		if reasoningEffortOption != "" {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningEffort",
@@ -603,6 +589,23 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				Details: "reasoningContext is not supported for non-reasoning models",
 			})
 		}
+	}
+
+	// Build the include list in TS order (user include, logprobs, web search
+	// sources, code interpreter outputs, then reasoning.encrypted_content when
+	// store=false on a reasoning model so multi-turn works without server-side
+	// persistence).
+	if responsesTopLogprobsIncluded(topLogprobs) {
+		includeFields = appendUnique(includeFields, "message.output_text.logprobs")
+	}
+	if includeWebSearchSources && (hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview")) {
+		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
+	}
+	if hasTool(opts.Tools, "openai.code_interpreter") {
+		includeFields = appendUnique(includeFields, "code_interpreter_call.outputs")
+	}
+	if !store && isReasoning {
+		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
 	}
 
 	// Temperature and top_p: forbidden for reasoning models except GPT-5.1 and
@@ -653,6 +656,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				}
 			}
 			includeFields = filtered
+			if len(filtered) == 0 {
+				// TS: an emptied include list becomes undefined.
+				includeExplicit = false
+			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "logprobs",
@@ -736,21 +743,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 	}
 
-	// Build include list — always add reasoning.encrypted_content when
-	// store=false and we have a reasoning model, so multi-turn works without
-	// server-side persistence.
-	if !store && isReasoning {
-		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
-	}
-	if includeWebSearchSources && (hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview")) {
-		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
-	}
-	if hasTool(opts.Tools, "openai.code_interpreter") {
-		includeFields = appendUnique(includeFields, "code_interpreter_call.outputs")
-	}
-	if topLogprobs != nil {
-		includeFields = appendUnique(includeFields, "message.output_text.logprobs")
-	}
 	if len(includeFields) > 0 {
 		body["include"] = includeFields
 	} else if hasNilProviderOption(openaiOpts, "include") {
@@ -902,6 +894,10 @@ func intFromInterface(value interface{}) (int, bool) {
 	return 0, false
 }
 
+// responsesTopLogprobs mirrors TS: a number is sent verbatim as top_logprobs
+// (including 0), true maps to TOP_LOGPROBS_MAX (20). Only a non-zero value
+// also adds the message.output_text.logprobs include (see
+// responsesTopLogprobsIncluded).
 func responsesTopLogprobs(value interface{}) (interface{}, bool) {
 	switch v := value.(type) {
 	case bool:
@@ -909,25 +905,23 @@ func responsesTopLogprobs(value interface{}) (interface{}, bool) {
 			return 20, true
 		}
 	case int:
-		if v > 0 {
-			return v, true
-		}
+		return v, true
 	case int64:
-		if v > 0 {
-			return v, true
-		}
+		return int(v), true
 	case float64:
-		if v > 0 {
-			return v, true
-		}
+		return int(v), true
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
-			if i > 0 {
-				return i, true
-			}
+			return int(i), true
 		}
 	}
 	return nil, false
+}
+
+// responsesTopLogprobsIncluded is TS's `if (topLogprobs)` truthiness check.
+func responsesTopLogprobsIncluded(v interface{}) bool {
+	n, ok := v.(int)
+	return ok && n != 0
 }
 
 func responsesContextManagement(value interface{}) []map[string]interface{} {
@@ -1346,7 +1340,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		if err := json.Unmarshal(rawItem, &peek); err != nil {
 			continue
 		}
-		if isResponsesFunctionCallType(peek.Type) {
+		if responsesItemIsFunctionCall(peek.Type, rawItem, false) {
 			hasFunctionCall = true
 		}
 
@@ -2362,12 +2356,28 @@ func mapWebSearchOutput(action *WebSearchAction) map[string]interface{} {
 	return result
 }
 
-// isResponsesFunctionCallType reports whether a Responses output item is a
-// client-side tool call, which TS counts as hasFunctionCall.
-func isResponsesFunctionCallType(itemType string) bool {
+// responsesItemIsFunctionCall reports whether a Responses output item is a
+// client-side tool call, which TS counts as hasFunctionCall. A computer_call
+// without a call_id is executed server-side and does not count; streaming
+// only counts an apply_patch_call once its status is "completed" (doGenerate
+// counts every apply_patch_call).
+func responsesItemIsFunctionCall(itemType string, raw json.RawMessage, streaming bool) bool {
 	switch itemType {
-	case "function_call", "custom_tool_call", "computer_call", "apply_patch_call":
+	case "function_call", "custom_tool_call":
 		return true
+	case "computer_call":
+		var item struct {
+			CallID *string `json:"call_id"`
+		}
+		return json.Unmarshal(raw, &item) == nil && item.CallID != nil
+	case "apply_patch_call":
+		if !streaming {
+			return true
+		}
+		var item struct {
+			Status string `json:"status"`
+		}
+		return json.Unmarshal(raw, &item) == nil && item.Status == "completed"
 	}
 	return false
 }
@@ -2542,6 +2552,9 @@ type responsesStream struct {
 	// instead of whatever response.completed/incomplete would otherwise
 	// report, so callers don't see a false "stop"/"length" outcome.
 	hadDecodeError bool
+	// sawErrorEvent records a provider "error" event (TS sets the finish
+	// reason's raw value to 'error' for it).
+	sawErrorEvent bool
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -2765,9 +2778,14 @@ func (s *responsesStream) queueEOFFinish() {
 		meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
 	}
 	usage := convertResponsesUsage(nil)
+	rawFinishReason := ""
+	if s.sawErrorEvent {
+		rawFinishReason = "error"
+	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     finishReason,
+		RawFinishReason:  rawFinishReason,
 		Usage:            &usage,
 		ProviderMetadata: meta,
 	})
@@ -2784,6 +2802,27 @@ func (s *responsesStream) queueFallbackSources() {
 		}
 	}
 	s.fallbackAnnotations = nil
+
+	// TS flush(): a suppressed (undeclared "parallel") tool call that never
+	// reached output_item.done still surfaces its buffered input.
+	indices := make([]int, 0, len(s.toolAccum))
+	for idx, accum := range s.toolAccum {
+		if accum.suppressInputStreaming {
+			indices = append(indices, idx)
+		}
+	}
+	sort.Ints(indices)
+	for _, idx := range indices {
+		accum := s.toolAccum[idx]
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:     provider.ChunkTypeToolInputStart,
+			ToolCall: &types.ToolCall{ID: accum.id, ToolName: accum.name},
+		})
+		for _, d := range accum.bufferedInputDeltas {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: accum.id, Text: d})
+		}
+		delete(s.toolAccum, idx)
+	}
 }
 
 // emitParsedChunk decides how a freshly built chunk should be delivered: if
@@ -3048,6 +3087,21 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					ProviderMetadata: meta,
 				})
 				continue
+			case "computer_call":
+				// TS: tool-input-start under call_id ?? id; the input and
+				// tool-input-end follow at output_item.done.
+				computerCallID := e.Item.ID
+				if e.Item.CallID != "" {
+					computerCallID = e.Item.CallID
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:       computerCallID,
+						ToolName: openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
+					},
+				})
+				continue
 			case "file_search_call":
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeToolCall,
@@ -3201,16 +3255,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if s.logprobsEnabled && len(e.Logprobs) > 0 && string(e.Logprobs) != "null" {
 				s.logprobs = append(s.logprobs, normalizeResponsesLogprobs(e.Logprobs))
 			}
-			if e.Delta == "" {
-				continue
-			}
+			// TS enqueues text-delta unconditionally (even for ""), keyed by
+			// resolveOutputItemId(item_id, output_index).
 			s.markOutputStarted()
 			if eventRawChunk != nil {
 				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeText,
-				ID:   s.firstItemIDByOutputIndex[e.OutputIndex],
+				ID:   s.resolveOutputItemID(e.OutputIndex, e.ItemID),
 				Text: e.Delta,
 			})
 			if ok {
@@ -3609,6 +3662,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// finish reason to "error", regardless of what this event reports.
 			if s.hadDecodeError {
 				finishReason = types.FinishReasonError
+				rawFinishReason = ""
+				if s.sawErrorEvent {
+					rawFinishReason = "error" // TS: raw 'error' after an error event
+				}
 			}
 			s.markOutputStarted()
 			if eventRawChunk != nil {
@@ -3702,7 +3759,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// constructs), enqueued before the terminal finish chunk. Previously
 			// Go only emitted the finish chunk here and silently dropped the
 			// error entirely (P1-1c part 2).
-			if e.Response.Error != nil {
+			if e.Response.Error != nil && !s.hadDecodeError {
+				s.hadDecodeError = true
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: e.Response.Error.Message,
@@ -3736,6 +3794,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
 				return nil, s.err
 			}
+			// TS encounteredStreamError: a later response.completed must not
+			// replace the error finish reason.
+			s.hadDecodeError = true
+			s.sawErrorEvent = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: e.Message,
@@ -3795,7 +3857,7 @@ func openAIResponsesRawChunk(data string) *provider.StreamChunk {
 // All other item types were emitted incrementally and need no action here.
 func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
 	itemType := s.itemTypes[e.OutputIndex]
-	if isResponsesFunctionCallType(itemType) {
+	if responsesItemIsFunctionCall(itemType, e.Item, true) {
 		s.hasFunctionCall = true
 	}
 
@@ -4008,8 +4070,6 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					indices = append(indices, idx)
 				}
 			}
-		} else {
-			indices = []int{0}
 		}
 		sort.Ints(indices)
 		if len(indices) == 0 {
@@ -4120,6 +4180,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			})
 		}
 		computerArgs, computerRawArgs := computerCallArguments(item)
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: *item.CallID, Text: computerRawArgs},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: *item.CallID, ToolCall: &types.ToolCall{
+				ID:       *item.CallID,
+				ToolName: openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
+			}},
+		)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{

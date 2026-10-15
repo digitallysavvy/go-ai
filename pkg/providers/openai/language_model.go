@@ -149,10 +149,14 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
-		ID:        response.ID,
-		Timestamp: time.Unix(response.Created, 0).UTC(),
-		ModelID:   response.Model,
-		Headers:   result.ResponseHeaders,
+		ID:      response.ID,
+		ModelID: response.Model,
+		Headers: result.ResponseHeaders,
+	}
+	// TS getResponseMetadata: `created || undefined` -- a missing/zero
+	// timestamp stays unset instead of becoming the Unix epoch.
+	if response.Created != 0 {
+		result.ResponseMetadata.Timestamp = time.Unix(response.Created, 0).UTC()
 	}
 	return result, nil
 }
@@ -205,6 +209,17 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	capabilities := GetLanguageModelCapabilities(m.modelID)
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleChatLanguageModel has no model-id capability
+		// logic: no developer role, sampling-parameter removal, GPT-6 effort
+		// restrictions or service-tier gating.
+		capabilities = LanguageModelCapabilities{
+			SystemMessageMode:              "system",
+			SupportsFlexProcessing:         true,
+			SupportsPriorityProcessing:     true,
+			SupportsNonReasoningParameters: true,
+		}
+	}
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -233,12 +248,20 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if m.provider.config.OpenAICompatible {
 		resolved, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.fileReferenceProvider(), opts.ProviderOptions)
 		warnings = append(warnings, resolveWarnings...)
-		merged := make(map[string]interface{}, len(openaiOpts)+len(resolved))
+		// Only the options TS OpenAICompatibleChatLanguageModel models itself
+		// (user, reasoningEffort, textVerbosity; strictJsonSchema is read
+		// separately) are interpreted from the provider-named maps; every
+		// other key there is passed through to the body verbatim (below), not
+		// also converted into the OpenAI-only snake_case fields. The legacy
+		// "openai" key keeps its v0.5.2 native handling.
+		merged := make(map[string]interface{}, len(openaiOpts)+3)
 		for k, v := range openaiOpts {
 			merged[k] = v
 		}
-		for k, v := range resolved {
-			merged[k] = v
+		for _, k := range []string{"user", "reasoningEffort", "textVerbosity"} {
+			if v, ok := resolved[k]; ok {
+				merged[k] = v
+			}
 		}
 		openaiOpts = merged
 		compatPassthrough = resolved
@@ -739,11 +762,19 @@ func chatStringSliceContains(list []string, s string) bool {
 	return false
 }
 
+// convertUsage converts the wire usage with the model's token accounting.
+func (m *LanguageModel) convertUsage(usage openAIUsage) types.Usage {
+	if m.provider.config.OpenAICompatible {
+		return convertCompatUsage(usage)
+	}
+	return convertOpenAIUsage(usage)
+}
+
 // convertResponse converts an OpenAI response to GenerateResult
 // Updated in v6.0 to support detailed usage tracking
 func (m *LanguageModel) convertResponse(response openAIResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
-		Usage:       convertOpenAIUsage(response.Usage),
+		Usage:       m.convertUsage(response.Usage),
 		RawResponse: response,
 	}
 
@@ -885,6 +916,12 @@ func (m *LanguageModel) chatProviderMetadata(details *struct {
 // convertOpenAIUsage converts OpenAI usage to detailed Usage struct
 // Implements the v6.0 detailed token tracking with cache and reasoning tokens
 func convertOpenAIUsage(usage openAIUsage) types.Usage {
+	// TS: a response without a usage object yields the null usage (unknown
+	// token counts), not zero tokens.
+	if usage.rawWire == nil && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 &&
+		usage.PromptTokensDetails == nil && usage.CompletionTokensDetails == nil {
+		return types.Usage{}
+	}
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
 	totalTokens := int64(usage.TotalTokens)
@@ -975,6 +1012,24 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	return result
 }
 
+// convertCompatUsage is convertOpenAIUsage with the openai-compatible
+// accounting (TS convertOpenAICompatibleChatUsage): cache_write_tokens is not
+// modeled, so noCache is prompt - cached, and usage.raw is the loose object.
+func convertCompatUsage(usage openAIUsage) types.Usage {
+	u := convertOpenAIUsage(usage)
+	if u.InputDetails != nil && u.InputTokens != nil {
+		u.InputDetails.CacheWriteTokens = nil
+		if u.InputDetails.CacheReadTokens != nil {
+			noCache := *u.InputTokens - *u.InputDetails.CacheReadTokens
+			u.InputDetails.NoCacheTokens = &noCache
+		}
+	}
+	if usage.rawFull != nil {
+		u.Raw = usage.rawFull
+	}
+	return u
+}
+
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
 	// Try to parse as OpenAI error response
@@ -1017,8 +1072,11 @@ type openAIUsage struct {
 		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
 
-	// rawWire is the usage object exactly as the API sent it (TS usage.raw).
+	// rawWire is the usage object as the TS OpenAI chat schema keeps it
+	// (unmodeled keys stripped); rawFull is the object exactly as sent, which
+	// the loose openai-compatible schema keeps (TS usage.raw).
 	rawWire map[string]interface{}
+	rawFull map[string]interface{}
 }
 
 // UnmarshalJSON decodes the usage and keeps the wire object so Usage.Raw is
@@ -1031,8 +1089,9 @@ func (u *openAIUsage) UnmarshalJSON(b []byte) error {
 	}
 	*u = openAIUsage(p)
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil {
+	if json.Unmarshal(b, &raw) == nil && raw != nil {
 		u.rawWire = filterChatUsageRaw(raw)
+		u.rawFull = raw
 	}
 	return nil
 }
@@ -1178,6 +1237,7 @@ type openAIStream struct {
 	// trailing usage-only chunk (stream_options.include_usage) can be merged
 	// into it, as TS does in flush().
 	finishRaw         string
+	finishSeen        bool // a choice carried a non-null finish_reason
 	finishErrored     bool // TS finishReason={unified:'error'} after an unparsable/error chunk
 	finished          bool
 	isActiveReasoning bool
@@ -1223,8 +1283,11 @@ func (s *openAIStream) contentParts(raw json.RawMessage) []streaming.CompatConte
 		parts, _ := streaming.OpenAICompatContentParts(raw)
 		return parts
 	}
+	// TS OpenAIChatLanguageModel: `delta.content != null` opens the text
+	// block and emits a text-delta, even for the empty string OpenAI sends in
+	// its role chunk (the TS test expects { delta: '' } first).
 	var text string
-	if json.Unmarshal(raw, &text) != nil || text == "" {
+	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &text) != nil {
 		return nil
 	}
 	return []streaming.CompatContentPart{{Text: text}}
@@ -1438,6 +1501,11 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			// Tool call delta — accumulate partial arguments by index.
 			// OpenAI sends: first delta has id + name + empty/partial args;
 			// subsequent deltas for the same index carry argument fragments only.
+			// TS compat: an active reasoning block ends before tool calls start.
+			if len(choice.Delta.ToolCalls) > 0 && s.isActiveReasoning {
+				s.isActiveReasoning = false
+				emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+			}
 			for _, tc := range choice.Delta.ToolCalls {
 				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 					c := chunk
@@ -1475,6 +1543,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				}
 				s.outputStarted = true
 				s.finishErrored = false
+				s.finishSeen = true
 				s.finishRaw = *choice.FinishReason
 			}
 		}
@@ -1561,6 +1630,17 @@ func (s *openAIStream) endStream() {
 		s.finished = true
 		s.flushPendingMetadata()
 		s.closeBlocksAndToolCalls()
+		if s.compat && !s.finishSeen && !s.finishErrored {
+			// TS OpenAICompatibleChatLanguageModel flush(): a stream that
+			// ends without any finish_reason is an invalid response.
+			msg := "Response stream ended without a finish reason."
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  providererrors.NewInvalidResponseDataError(nil, msg),
+			})
+			s.finishErrored = true
+		}
 		finish := &provider.StreamChunk{
 			Type:            provider.ChunkTypeFinish,
 			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
@@ -1575,7 +1655,11 @@ func (s *openAIStream) endStream() {
 			RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 		}
 		if s.usage != nil {
-			u := convertOpenAIUsage(*s.usage)
+			convert := convertOpenAIUsage
+			if s.compat {
+				convert = convertCompatUsage
+			}
+			u := convert(*s.usage)
 			finish.Usage = &u
 			details = s.usage.CompletionTokensDetails
 		}
