@@ -1666,6 +1666,18 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 		s.rawEmitted = false
 
+		// TS createEventSourceResponseHandler yields {success:false} for a
+		// frame that is not valid JSON, and doStream turns it into an `error`
+		// part and keeps reading (it never ends the stream).
+		if strings.TrimSpace(event.Data) != "" && !json.Valid([]byte(event.Data)) {
+			message := "JSON parsing failed: Text: " + event.Data + "."
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewStreamProviderError(message, "anthropic", "", nil, nil, nil, nil),
+			}, nil
+		}
+
 		// Anthropic uses different event types
 		switch event.Event {
 		case "ping":
