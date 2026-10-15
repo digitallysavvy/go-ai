@@ -216,8 +216,13 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			// TS openai-compatible chat: `toolCall.id || generateId()`.
+			id := tc.ID
+			if id == "" {
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
