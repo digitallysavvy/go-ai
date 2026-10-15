@@ -125,7 +125,7 @@ func ToUIMessageChunk(part ModelCallStreamPart) (ai.UIMessageChunk, bool) {
 				"type":       "tool-input-error",
 				"toolCallId": tc.ID,
 				"toolName":   tc.ToolName,
-				"input":      tc.Arguments,
+				"input":      ai.InvalidToolCallInput(*tc),
 				"errorText":  errorText,
 			}, true
 		}
