@@ -126,3 +126,29 @@ func TestMCPClientInitializationAborted(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TS has no default request timeout: with RequestTimeoutMS unset a pending
+// request is bounded only by the call's context.
+func TestMCPClientHasNoDefaultRequestTimeout(t *testing.T) {
+	tr := newLifecycleTransport(ServerCapabilities{Tools: &ToolsCapability{}})
+	tr.onRequest = func(*MCPMessage) {}
+	client := NewMCPClient(tr, MCPClientConfig{})
+	if client.config.RequestTimeoutMS != 0 {
+		t.Fatalf("RequestTimeoutMS = %d, want 0", client.config.RequestTimeoutMS)
+	}
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close() //nolint:errcheck
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := client.ListTools(ctx)
+	var timeoutErr *TimeoutError
+	if errors.As(err, &timeoutErr) {
+		t.Fatalf("got a request timeout error %v; only the context should end the call", err)
+	}
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || mcpErr.Message != "Request was aborted" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
+	}
+}

@@ -293,7 +293,6 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, initTimeout, errInitTimeout)
 		defer cancel()
-		ctx = WithRequestOptions(ctx, RequestOptions{TimeoutMS: int(initTimeout / time.Millisecond)})
 	}
 	fail := func(err error) error {
 		// TS init() closes the transport and the client when the handshake
