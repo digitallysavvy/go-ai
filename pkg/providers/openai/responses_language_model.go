@@ -2073,10 +2073,6 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 	return map[string]interface{}{providerName: openai}
 }
 
-func openAIResponsesReasoningMetadata(providerName, itemID string) json.RawMessage {
-	return openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, "")
-}
-
 // openAIResponsesReasoningMetadataWithEncrypted mirrors the TS reasoning
 // providerMetadata {itemId, reasoningEncryptedContent: encrypted_content ?? null}.
 func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, encrypted string) json.RawMessage {

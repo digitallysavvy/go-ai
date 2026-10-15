@@ -89,13 +89,13 @@ func (c Case) handler() http.HandlerFunc {
 				if strings.TrimSpace(l) == "" {
 					continue
 				}
-				fmt.Fprintf(w, "data: %s\n\n", l)
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", l)
 			}
-			io.WriteString(w, "data: [DONE]\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		case "chunks":
 			w.Header().Set("Content-Type", "text/event-stream")
 			for _, ch := range r.Chunks {
-				io.WriteString(w, ch)
+				_, _ = io.WriteString(w, ch)
 			}
 		}
 	}
@@ -499,7 +499,7 @@ func Normalize(v interface{}) interface{} {
 	}
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
-	case reflect.Map, reflect.Slice, reflect.Struct, reflect.Ptr:
+	case reflect.Map, reflect.Slice, reflect.Struct, reflect.Pointer:
 		b, _ := json.Marshal(v)
 		var r interface{}
 		_ = json.Unmarshal(b, &r)
