@@ -339,7 +339,11 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 					parts = append(parts, UserFilePart{Type: "input_file", FileURL: fileURL})
 				}
 			case types.FileDataTypeReference:
-				reference := firstNonEmpty(providerReferenceString(p.FileData.Reference, providerName), p.Reference)
+				reference, refErr := resolveProviderReferenceStrict(p.FileData.Reference, providerName)
+				if refErr != nil {
+					return UserMessage{}, refErr
+				}
+				reference = firstNonEmpty(reference, p.Reference)
 				if reference == "" {
 					continue
 				}
@@ -1258,6 +1262,24 @@ func openAIProviderOptionsName(opts ConvertOptions) string {
 		return opts.ProviderOptionsName
 	}
 	return "openai"
+}
+
+// resolveProviderReferenceStrict mirrors TS resolveProviderReference: a
+// reference that names other providers but not providerName is an error
+// (NoSuchProviderReferenceError) instead of silently borrowing another
+// provider's file ID. An empty reference, or the legacy single-ID form keyed
+// by "", resolves without error.
+func resolveProviderReferenceStrict(reference types.ProviderReference, providerName string) (string, error) {
+	if len(reference) == 0 {
+		return "", nil
+	}
+	if ref := reference[providerName]; ref != "" {
+		return ref, nil
+	}
+	if ref := reference[""]; ref != "" && len(reference) == 1 {
+		return ref, nil
+	}
+	return "", &providererrors.NoSuchProviderReferenceError{Provider: providerName, Reference: reference}
 }
 
 func providerReferenceString(reference types.ProviderReference, providerName string) string {
