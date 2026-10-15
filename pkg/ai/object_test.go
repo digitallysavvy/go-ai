@@ -522,24 +522,29 @@ func TestGenerateObject_CrossModeValidation(t *testing.T) {
 	}
 }
 
-func TestGenerateObject_StructuredOutputUnsupported(t *testing.T) {
+// TS generateObject has no capability check: the call always carries
+// responseFormat {type: json, schema} and the provider decides how to honor it.
+func TestGenerateObject_ModelWithoutStructuredOutputIsStillCalled(t *testing.T) {
 	t.Parallel()
 
-	model := &testutil.MockLanguageModel{StructuredSupport: false}
-
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: false,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: `{"name":"a"}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
 
-	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		Model:  model,
-		Prompt: "Generate",
-		Schema: testSchema,
-	})
-
-	if err == nil {
-		t.Fatal("expected error for unsupported structured output")
-	}
-	if err.Error() != "model does not support structured output" {
+	result, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Prompt: "Generate", Schema: testSchema})
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if m, ok := result.Object.(map[string]interface{}); !ok || m["name"] != "a" {
+		t.Fatalf("object = %#v", result.Object)
+	}
+	rf := model.GenerateCalls[0].ResponseFormat
+	if rf == nil || rf.Type != "json" || rf.Schema == nil {
+		t.Fatalf("response format = %#v, want json with schema", rf)
 	}
 }
 

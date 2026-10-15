@@ -740,9 +740,6 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, err
 	}
 
-	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
-		return nil, fmt.Errorf("model does not support structured output")
-	}
 
 	// TS generate-object.ts tags every call's headers with `ai/${VERSION}`
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
@@ -1637,9 +1634,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	opts.MaxRetries = maxRetries
 	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
 		return nil, err
-	}
-	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
-		return nil, fmt.Errorf("model does not support structured output")
 	}
 
 	// Generate call ID and extract telemetry info for callback events.
