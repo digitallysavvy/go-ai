@@ -408,11 +408,19 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	if i.opts.Headers {
-		for _, attr := range headerAttributes(e.Headers) {
-			span.SetAttributes(attr)
+	// TS baseSupplementalAttributes (runtime context and headers), reused
+	// by the nested model-call span.
+	var baseSupp []attribute.KeyValue
+	if i.opts.RuntimeContext {
+		if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
+			baseSupp = append(baseSupp, attrs...)
+			ctx = context.WithValue(ctx, genAIRuntimeContextKey{}, attrs)
 		}
 	}
+	if i.opts.Headers {
+		baseSupp = append(baseSupp, headerAttributes(e.Headers)...)
+	}
+	span.SetAttributes(baseSupp...)
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if i.opts.experimentalDecision() && recordInputs {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
@@ -422,12 +430,6 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 			span.SetAttributes(attr)
 		}
 	}
-	if i.opts.RuntimeContext {
-		if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
-			span.SetAttributes(attrs...)
-			ctx = context.WithValue(ctx, genAIRuntimeContextKey{}, attrs)
-		}
-	}
 	// H5: record this integration's own root span by CallID, so
 	// OnDecideEnd/OnDecisionModelCallStart can find it instead of relying
 	// on trace.SpanFromContext(ctx).
@@ -435,6 +437,7 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 		st := genAIState(e.CallID)
 		st.mu.Lock()
 		st.rootSpan = span
+		st.baseSupp = baseSupp
 		st.mu.Unlock()
 	}
 	return ctx
@@ -473,11 +476,19 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 		spanName += " " + e.ModelID
 	}
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
+	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
+		SpanType:      SpanTypeDecision,
+		OperationType: e.OperationID,
+		CallID:        e.CallID,
+	}); len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
 	span.SetAttributes(
 		attribute.String("gen_ai.operation.name", "decide"),
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
+	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if i.opts.experimentalDecision() && recordInputs {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {

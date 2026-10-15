@@ -540,3 +540,48 @@ func TestOpenTelemetryDecideSpans_DeprecatedExperimentalEvaluationOption(t *test
 		t.Fatal("expected ai.decision.state with the deprecated ExperimentalEvaluation option")
 	}
 }
+
+// TS experimental_onDecisionModelCallStart spreads the root's
+// baseSupplementalAttributes (headers) and calls enrichSpan with spanType
+// experimental_decision.
+func TestOpenTelemetryDecideSpans_ChildCarriesBaseSupplementalAndEnrich(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	var gotType SpanType
+	integration := NewOpenTelemetry(OpenTelemetryOptions{
+		Tracer:  tp.Tracer("genai-decide-test"),
+		Headers: true,
+		EnrichSpan: func(_ context.Context, o EnrichSpanOptions) map[string]interface{} {
+			if o.SpanType == SpanTypeDecision {
+				gotType = o.SpanType
+			}
+			return nil
+		},
+	})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
+		Settings: settings, CallID: "call-b", OperationID: "ai.decide", ModelProvider: "openai.chat", ModelID: "gpt-5",
+		Headers: map[string]string{"x-a": "1"},
+	})
+	integration.OnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{
+		Settings: settings, CallID: "call-b", OperationID: "ai.decide.doDecide", ModelProvider: "openai.chat", ModelID: "gpt-5",
+	})
+	integration.OnDecisionModelCallEnd(ctx, DecisionModelCallEndEvent{
+		DecisionModelCallStartEvent: DecisionModelCallStartEvent{Settings: settings, CallID: "call-b"},
+	})
+	integration.OnDecideEnd(ctx, DecideEndEvent{DecideStartEvent: DecideStartEvent{Settings: settings, CallID: "call-b"}})
+
+	if gotType != SpanTypeDecision {
+		t.Fatalf("enrichSpan never saw %q", SpanTypeDecision)
+	}
+	spans := findSpans(rec, "decide gpt-5")
+	if len(spans) != 2 {
+		t.Fatalf("spans = %d", len(spans))
+	}
+	for _, s := range spans {
+		if v, ok := attrValue(s, "ai.request.headers.x-a"); !ok || v.(string) != "1" {
+			t.Errorf("span %s missing header attr", s.Name())
+		}
+	}
+}
