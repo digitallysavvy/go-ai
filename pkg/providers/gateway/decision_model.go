@@ -70,11 +70,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewayDecisionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{

@@ -44,9 +44,8 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		return nil, err
 	}
 
-	headers := internalhttp.MergeHeaders(m.provider.headers, m.getModelConfigHeaders())
+	headers := internalhttp.MergeHeaders(m.provider.headers, opts.Headers, m.getModelConfigHeaders())
 	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	headers = internalhttp.MergeHeaders(headers, opts.Headers)
 	// The handshake carries auth on both channels, matching TS
 	// createAuthHeaders: the raw Authorization/ai-gateway-auth-method headers
 	// alongside the ai-gateway-auth.<token> subprotocol below.

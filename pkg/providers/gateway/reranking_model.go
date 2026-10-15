@@ -52,12 +52,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewayRerankResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
