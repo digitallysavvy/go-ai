@@ -223,8 +223,29 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		additionalModelRequestFields[k] = v
 	}
 
-	if anthropicBetaRaw, ok := amazonBedrockOptions["anthropicBeta"].([]interface{}); ok && len(anthropicBetaRaw) > 0 {
-		additionalModelRequestFields["anthropic_beta"] = anthropicBetaRaw
+	// TS: anthropic_beta = [...providerOptions.anthropicBeta, ...tool betas]
+	// whenever either is present. A caller may supply []string or
+	// []interface{}.
+	{
+		var existing []interface{}
+		switch v := amazonBedrockOptions["anthropicBeta"].(type) {
+		case []interface{}:
+			existing = append(existing, v...)
+		case []string:
+			for _, b := range v {
+				existing = append(existing, b)
+			}
+		}
+		if len(existing) > 0 || len(prepared.Betas) > 0 {
+			merged := existing
+			if merged == nil {
+				merged = []interface{}{}
+			}
+			for _, b := range prepared.Betas {
+				merged = append(merged, b)
+			}
+			additionalModelRequestFields["anthropic_beta"] = merged
+		}
 	}
 
 	thinkingType := ""

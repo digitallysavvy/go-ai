@@ -29,6 +29,15 @@ var providerToolBetas = map[string]string{
 	"anthropic.advisor_20260301":        BetaHeaderAdvisorTool,
 }
 
+// ProviderToolBeta returns the anthropic-beta flag a provider-defined tool
+// (e.g. "anthropic.computer_20250124") requires, if any. Hosts that forward
+// Anthropic tools through another transport (Amazon Bedrock) use it to build
+// the equivalent anthropic_beta list.
+func ProviderToolBeta(toolName string) (string, bool) {
+	b, ok := providerToolBetas[toolName]
+	return b, ok
+}
+
 // BetaHeaderStructuredOutputs is added for function tools when the model
 // supports native structured output (strict tools).
 const BetaHeaderStructuredOutputs = "structured-outputs-2025-11-13"
