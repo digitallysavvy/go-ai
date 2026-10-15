@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 func userMsg(text string) types.Message {
@@ -112,5 +113,73 @@ func TestWorkflowStreamRetainsModelFilesAndSources(t *testing.T) {
 	msg := step.Response.Messages[0]
 	if len(msg.Content) != 2 {
 		t.Fatalf("assistant message = %+v", msg)
+	}
+}
+
+// toolLoopModel asks for a tool call for the first n steps, then answers.
+type toolLoopModel struct {
+	wfMockModel
+	n     int
+	calls int
+}
+
+func (m *toolLoopModel) DoGenerate(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+	m.calls++
+	if m.calls <= m.n {
+		return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c", ToolName: "t1", Arguments: map[string]interface{}{}}}}, nil
+	}
+	return &types.GenerateResult{Text: "Done.", FinishReason: types.FinishReasonStop}, nil
+}
+
+func (m *toolLoopModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+	m.calls++
+	if m.calls <= m.n {
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c", ToolName: "t1", Arguments: map[string]interface{}{}}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		}), nil
+	}
+	return testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "Done."},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}), nil
+}
+
+// TS workflow-agent-contract.test.ts: only generate() defaults to
+// isStepCount(20); stream() is unbounded unless stopWhen is set.
+func TestWorkflowDefaultStopWhenAppliesToGenerateNotStream(t *testing.T) {
+	tool := types.Tool{Name: "t1", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		return "ok", nil
+	}}
+	newAgent := func(n int) *WorkflowAgent {
+		a, err := NewWorkflowAgent(WorkflowAgent{Model: &toolLoopModel{n: n}, Tools: []types.Tool{tool}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	gen, err := newAgent(21).GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gen.Steps) != 20 {
+		t.Fatalf("generate steps = %d, want 20", len(gen.Steps))
+	}
+	st, err := newAgent(21).StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.ConsumeStream()
+	steps := st.Steps()
+	if len(steps) != 22 || steps[len(steps)-1].Text != "Done." {
+		t.Fatalf("stream steps = %d, want 22 ending in Done.", len(steps))
+	}
+	st, err = newAgent(21).StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "hi", StopWhen: []ai.StopCondition{ai.IsStepCount(2)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.ConsumeStream()
+	if n := len(st.Steps()); n != 2 {
+		t.Fatalf("explicit stream limit steps = %d, want 2", n)
 	}
 }

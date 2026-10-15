@@ -38,7 +38,9 @@ agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
 Tools can be supplied as either a `[]types.Tool` or a TypeScript-style keyed `ToolSet`
 using `map[string]types.Tool`; missing tool names are filled from the map key.
 `MaxSteps` is intentionally not part of `WorkflowAgent`; use `StopWhen` with
-`ai.IsStepCount(n)`.
+`ai.IsStepCount(n)`. When `StopWhen` is empty, `Generate` stops after 20 steps but
+`Stream` runs until the model stops calling tools (the same defaults as the TypeScript
+`WorkflowAgent`); set `StopWhen` on the agent or the call to bound a stream.
 
 ## Generate
 

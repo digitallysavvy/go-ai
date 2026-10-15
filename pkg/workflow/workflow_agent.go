@@ -130,11 +130,18 @@ type WorkflowAgent struct {
 	AllowSystemInMessages bool
 	Tools                 []types.Tool
 	ToolSet               map[string]types.Tool
-	StopWhen              []ai.StopCondition
-	Output                interface{}
-	Telemetry             *ai.TelemetrySettings
-	ID                    string
-	Prompt                string
+	// StopWhen is the default stop condition. When empty NewWorkflowAgent sets
+	// IsStepCount(20), which applies to Generate; Stream is unbounded unless
+	// StopWhen is set explicitly on the agent or the call (TS: only generate
+	// defaults to isStepCount(20)).
+	StopWhen  []ai.StopCondition
+	Output    interface{}
+	Telemetry *ai.TelemetrySettings
+	ID        string
+	Prompt    string
+
+	// stopWhenDefaulted records that StopWhen was filled in by NewWorkflowAgent.
+	stopWhenDefaulted bool
 
 	OnStart              StartCallback
 	OnStepStart          StepStartCallback
@@ -376,6 +383,7 @@ func NewWorkflowAgent(cfg WorkflowAgent) (*WorkflowAgent, error) {
 	}
 	if len(cfg.StopWhen) == 0 {
 		cfg.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		cfg.stopWhenDefaulted = true
 	}
 	return &cfg, nil
 }
@@ -1096,7 +1104,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx contex
 	}
 }
 
-func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) *agent.ToolLoopAgent {
+func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions, streaming bool) *agent.ToolLoopAgent {
 	system := w.System
 	if w.Instructions != nil {
 		if normalized, err := normalizeInstructions(w.Instructions); err == nil && normalized != "" {
@@ -1120,6 +1128,11 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		}
 	}
 	stopWhen := w.StopWhen
+	if streaming && w.stopWhenDefaulted {
+		// TS only defaults generate() to isStepCount(20); stream() runs until
+		// the model stops calling tools.
+		stopWhen = []ai.StopCondition{func(ai.StopConditionState) string { return "" }}
+	}
 	if len(govr.StopWhen) > 0 {
 		stopWhen = govr.StopWhen
 	}
@@ -1448,7 +1461,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			prevStepEnd(c, e)
 		}
 	}
-	a := w.makeAgent(WorkflowStreamOptions{}, opts)
+	a := w.makeAgent(WorkflowStreamOptions{}, opts, false)
 	system := opts.System
 	if opts.Instructions != nil {
 		if normalized, err := normalizeInstructions(opts.Instructions); err == nil {
@@ -1617,7 +1630,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 		return nil, ctx.Err()
 	}
-	a := w.makeAgent(opts, WorkflowGenerateOptions{})
+	a := w.makeAgent(opts, WorkflowGenerateOptions{}, true)
 	system := opts.System
 	if opts.Instructions != nil {
 		if normalized, err := normalizeInstructions(opts.Instructions); err == nil {
