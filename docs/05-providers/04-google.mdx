@@ -123,6 +123,8 @@ Google Gemini TTS is exposed through `Provider.SpeechModel` and `Provider.Speech
 | gemini-2.5-flash-preview-tts | `google.ModelGemini25FlashTTS` |
 | gemini-2.5-pro-preview-tts | `google.ModelGemini25ProTTS` |
 | gemini-3.1-flash-tts-preview | `google.ModelGemini31FlashTTSPreview` |
+| gemini-3.8-flash-tts | `google.ModelGemini38FlashTTS` |
+| gemini-3.8-flash-lite-tts | `google.ModelGemini38FlashLiteTTS` |
 
 ```go
 speechModel, err := googleProvider.SpeechModel(google.ModelGemini25FlashTTS)
@@ -143,6 +145,24 @@ fmt.Println(result.Audio.MediaType)
 ```
 
 Gemini TTS defaults to the `Kore` voice when no voice is supplied. Use `ProviderOptions["google"]` with `google.GoogleSpeechModelOptions` to pass Gemini-specific speech options such as multi-speaker voice configuration.
+
+Models outside the `gemini-2.5-*` and `gemini-3.1-*` families (Gemini 3.8 TTS and later) use structured speech. `Instructions` become each turn's `style`, `GoogleSpeechModelOptions.Turns` replaces the top-level text with an ordered transcript, and each turn can carry `SpeechMetadata` with a `Speaker` and a `Style`. With `MultiSpeakerVoiceConfig` every turn must name a configured speaker. `OutputFormat` accepts `wav`, `pcm`, `mulaw` and `alaw` (or the `audio/*` forms) on these models and `wav` or `pcm` on the older ones. The 2.5 and 3.1 models take directions in the prompt instead, so `Turns` and `SpeechMetadata` are rejected for them. Custom voices (`voice_*`, `voicekey_*`) are not supported.
+
+```go skip-compile
+style := "whisper"
+result, err := ai.GenerateSpeech(ctx, ai.GenerateSpeechOptions{
+    Model: speechModel, // gemini-3.8-flash-tts
+    Text:  "",          // empty when Turns is used
+    ProviderOptions: map[string]interface{}{
+        "google": google.GoogleSpeechModelOptions{
+            Turns: []google.GoogleSpeechTurn{
+                {Text: "Hello there."},
+                {Text: "Psst, over here.", SpeechMetadata: &google.GoogleSpeechMetadata{Style: &style}},
+            },
+        },
+    },
+})
+```
 
 ### Realtime Models
 
