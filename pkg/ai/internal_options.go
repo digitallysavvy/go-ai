@@ -24,6 +24,13 @@ type InternalOptions struct {
 	// WorkflowAgent; plain GenerateText/StreamText stop the loop like TS
 	// generateText/streamText.
 	ContinueOnMissingProviderResult bool
+
+	// StopOnStreamError makes a step whose stream carried an error part end
+	// the run without executing or answering that step's tool calls, like TS
+	// WorkflowAgent's hasTerminalError (the loop is done; the error is
+	// reported once). Plain StreamText keeps executing tools after an error
+	// part, as TS streamText does. Used by WorkflowAgent.
+	StopOnStreamError bool
 }
 
 // providerResultFinishAllowed reports whether TS WorkflowAgent processes the
