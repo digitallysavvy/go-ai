@@ -108,7 +108,7 @@ func TestMissingAPIKeyErrorsAtRequestTime(t *testing.T) {
 	}
 	err = gen()
 	var le *providererrors.LoadAPIKeyError
-	if !errors.As(err, &le) || called {
+	if _, wrapped := err.(*providererrors.LoadAPIKeyError); !wrapped || !errors.As(err, &le) || called {
 		t.Fatalf("err = %v called = %v", err, called)
 	}
 	want := "Anthropic API key is missing. Pass it using the 'apiKey' parameter or the ANTHROPIC_API_KEY environment variable."

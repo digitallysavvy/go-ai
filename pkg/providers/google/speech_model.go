@@ -182,6 +182,10 @@ func parseGoogleSpeechRawBody(body []byte) (interface{}, error) {
 }
 
 func (m *SpeechModel) handleError(err error) error {
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)

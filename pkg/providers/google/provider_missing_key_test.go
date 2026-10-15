@@ -40,6 +40,9 @@ func TestMissingAPIKeyErrorsAtRequestTime(t *testing.T) {
 	if err := gen(); !errors.As(err, &le) || sent != 0 {
 		t.Fatalf("err = %v sent = %d", err, sent)
 	}
+	if _, direct := gen().(*providererrors.LoadAPIKeyError); !direct {
+		t.Fatalf("error is wrapped: %T", gen())
+	}
 	if le.Message != "Google Generative AI API key is missing. Pass it using the 'apiKey' parameter or the GOOGLE_GENERATIVE_AI_API_KEY environment variable." {
 		t.Fatalf("message = %q", le.Message)
 	}

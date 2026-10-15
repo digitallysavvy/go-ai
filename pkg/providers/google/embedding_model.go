@@ -641,6 +641,10 @@ func parseEmbeddingContentPart(raw interface{}) (EmbeddingPart, error) {
 
 // handleError converts various errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		// Preserve the HTTP status and headers so retries follow the TS

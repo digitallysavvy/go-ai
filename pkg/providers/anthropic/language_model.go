@@ -657,6 +657,10 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			// call (TS: `mcpToolCalls[part.tool_use_id].toolName` /
 			// `.providerMetadata`), and mark the result dynamic like TS.
 			call := mcpToolCalls[content.ToolUseID]
+			if call.toolName == "" && co.rawBatchCitations {
+				// TS batch converter: toolCall?.toolName ?? 'mcp'.
+				call.toolName = "mcp"
+			}
 			trc := types.ToolResultContent{
 				ToolCallID: content.ToolUseID,
 				ToolName:   call.toolName,
@@ -1168,6 +1172,10 @@ func anthropicStreamErrorMetadata(errType string) (statusCode int, isRetryable b
 func (m *LanguageModel) handleError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS throws LoadAPIKeyError unwrapped
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
