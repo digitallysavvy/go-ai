@@ -243,3 +243,37 @@ func TestCompatChatRequestSettings(t *testing.T) {
 		})
 	}
 }
+
+// TS config includeUsage: true (togetherai, fireworks, gmicloud) sends
+// stream_options.include_usage on streaming requests.
+func TestCompatChatStreamIncludesUsage(t *testing.T) {
+	for _, f := range compatFactories() {
+		if f.name == "zai" || f.name == "ollama" {
+			continue
+		}
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			var body map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer srv.Close()
+			s, err := f.mk(srv.URL).DoStream(context.Background(), &provider.GenerateOptions{Prompt: compatPrompt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for {
+				if _, err := s.Next(); err != nil {
+					break
+				}
+			}
+			so, _ := body["stream_options"].(map[string]interface{})
+			if so["include_usage"] != true {
+				t.Fatalf("stream_options = %v", body["stream_options"])
+			}
+		})
+	}
+}

@@ -118,6 +118,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	if stream {
 		body["stream"] = true
+		// TS createGmicloud sets includeUsage: true.
+		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	// AllowVideo: true -- gmicloud wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
