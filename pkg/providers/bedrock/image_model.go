@@ -298,7 +298,12 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 
 	images := make([][]byte, 0, len(response.Images))
 	for _, image := range response.Images {
-		images = append(images, []byte(image))
+		// Image/Images carry decoded bytes; Base64Images keeps the wire strings.
+		data, err := base64.StdEncoding.DecodeString(image)
+		if err != nil {
+			data = []byte(image) // not valid base64: keep the wire text as-is
+		}
+		images = append(images, data)
 	}
 	return &types.ImageResult{
 		Image:        images[0],

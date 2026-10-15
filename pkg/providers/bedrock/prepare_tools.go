@@ -20,7 +20,11 @@ type bedrockToolConfig struct {
 type preparedTools struct {
 	ToolConfig      bedrockToolConfig
 	AdditionalTools map[string]interface{}
-	Warnings        []types.Warning
+	// Betas are the anthropic-beta flags required by Anthropic provider-defined
+	// tools (TS prepareTools().betas); the caller merges them into
+	// additionalModelRequestFields.anthropic_beta.
+	Betas    []string
+	Warnings []types.Warning
 }
 
 // bedrockUnsupportedWebToolIDs lists Anthropic web-tool provider IDs that
@@ -125,6 +129,13 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		// Bedrock only forwards a `tool_choice` for Anthropic provider-defined
 		// tools; the tool spec itself is sent through the standard toolConfig
 		// via bedrockAnthropicProviderTool.
+		// TS passes every provider tool (not only providerToolsForRequest) to
+		// the Anthropic prepareTools, so all of their betas apply.
+		for _, tool := range providerTools {
+			if b, ok := anthropic.ProviderToolBeta(tool.Name); ok {
+				result.Betas = appendUnique(result.Betas, b)
+			}
+		}
 		for _, tool := range providerToolsForRequest {
 			if spec := bedrockAnthropicProviderTool(tool); spec != nil {
 				bedrockTools = append(bedrockTools, map[string]interface{}{"toolSpec": spec})
@@ -495,4 +506,13 @@ func typeIncludesObject(t interface{}) bool {
 		}
 	}
 	return false
+}
+
+func appendUnique(list []string, v string) []string {
+	for _, e := range list {
+		if e == v {
+			return list
+		}
+	}
+	return append(list, v)
 }

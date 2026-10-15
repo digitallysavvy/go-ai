@@ -59,6 +59,50 @@ type UsageMetadata struct {
 	CacheTokensDetails         []tokenDetail `json:"cacheTokensDetails,omitempty"`
 	CandidatesTokensDetails    []tokenDetail `json:"candidatesTokensDetails,omitempty"`
 	ToolUsePromptTokensDetails []tokenDetail `json:"toolUsePromptTokensDetails,omitempty"`
+
+	// raw is the usage object exactly as the API sent it. TS passes it
+	// through as usage.raw and providerMetadata.usageMetadata, so fields the
+	// SDK does not model survive.
+	raw map[string]interface{}
+}
+
+type usageMetadataFields UsageMetadata
+
+// UnmarshalJSON decodes the typed fields and keeps the wire object.
+func (u *UsageMetadata) UnmarshalJSON(data []byte) error {
+	var fields struct {
+		usageMetadataFields
+	}
+	if err := json.Unmarshal(data, &fields.usageMetadataFields); err != nil {
+		return err
+	}
+	*u = UsageMetadata(fields.usageMetadataFields)
+	var raw map[string]interface{}
+	if json.Unmarshal(data, &raw) == nil {
+		u.raw = raw
+	}
+	return nil
+}
+
+// MarshalJSON reproduces the wire object when one was received, otherwise the
+// typed fields.
+func (u UsageMetadata) MarshalJSON() ([]byte, error) {
+	typed, err := json.Marshal(usageMetadataFields(u))
+	if err != nil || u.raw == nil {
+		return typed, err
+	}
+	merged := make(map[string]interface{}, len(u.raw))
+	for k, v := range u.raw {
+		merged[k] = v
+	}
+	// Typed fields win (they are the summed values after a continuation).
+	var overlay map[string]interface{}
+	if json.Unmarshal(typed, &overlay) == nil {
+		for k, v := range overlay {
+			merged[k] = v
+		}
+	}
+	return json.Marshal(merged)
 }
 
 // promptFeedbackBlockReason extracts the blockReason field from a raw
@@ -308,6 +352,15 @@ func addUsageMetadata(a, b *UsageMetadata) *UsageMetadata {
 	}
 	if out.ServiceTier == "" {
 		out.ServiceTier = a.ServiceTier
+	}
+	if a.raw != nil || b.raw != nil {
+		merged := map[string]interface{}{}
+		for _, src := range []map[string]interface{}{a.raw, b.raw} {
+			for k, v := range src {
+				merged[k] = v
+			}
+		}
+		out.raw = merged
 	}
 	out.PromptTokensDetails = addTokenDetails(a.PromptTokensDetails, b.PromptTokensDetails)
 	out.CacheTokensDetails = addTokenDetails(a.CacheTokensDetails, b.CacheTokensDetails)

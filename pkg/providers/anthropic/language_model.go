@@ -184,6 +184,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
 	stream.requestBody = body
+	stream.includeRawChunks = opts.IncludeRawChunks
 	stream.citationDocuments = extractCitationDocuments(opts.Prompt.Messages)
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
@@ -755,23 +756,7 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	}
 
 	// Store raw usage for provider-specific details
-	result.Raw = map[string]interface{}{
-		"input_tokens":  usage.InputTokens,
-		"output_tokens": usage.OutputTokens,
-	}
-
-	if usage.CacheCreationInputTokens > 0 {
-		result.Raw["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
-	}
-	if usage.CacheReadInputTokens > 0 {
-		result.Raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
-	}
-	if len(usage.Iterations) > 0 {
-		result.Raw["iterations"] = usage.Iterations
-	}
-	if usage.OutputTokensDetails != nil {
-		result.Raw["output_tokens_details"] = usage.OutputTokensDetails
-	}
+	result.Raw = anthropicRawUsage(usage)
 
 	return result
 }
@@ -944,6 +929,13 @@ func mapAnthropicContextManagementResponse(contextManagement *ContextManagementR
 }
 
 func anthropicRawUsage(usage anthropicUsage) map[string]interface{} {
+	if usage.Raw != nil {
+		out := make(map[string]interface{}, len(usage.Raw))
+		for k, v := range usage.Raw {
+			out[k] = v
+		}
+		return out
+	}
 	raw := map[string]interface{}{
 		"input_tokens":  usage.InputTokens,
 		"output_tokens": usage.OutputTokens,
@@ -1073,11 +1065,7 @@ func (m *LanguageModel) handleError(err error) error {
 		if m.provider.config.TransformErrorBody != nil {
 			body = m.provider.config.TransformErrorBody(body)
 		}
-		var parsed anthropicErrorBody
-		if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && (parsed.Error.Type != "" || parsed.Error.Message != "") {
-			return providererrors.NewProviderError(m.provider.Name(), statusErr.StatusCode, parsed.Error.Type, parsed.Error.Message, err)
-		}
-		return providererrors.NewProviderError(m.provider.Name(), statusErr.StatusCode, "", string(body), err)
+		return anthropicHTTPError(m.provider.Name(), statusErr.StatusCode, statusErr.Headers, body, err)
 	}
 	msg := err.Error()
 	// HTTP errors from the internal client look like "HTTP NNN: <body>"
@@ -1188,6 +1176,26 @@ type anthropicUsage struct {
 	Iterations []UsageIteration `json:"iterations,omitempty"`
 	// OutputTokensDetails carries thinking_tokens (reasoning share of output).
 	OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
+	// Raw is the usage object exactly as the API sent it (TS passes
+	// response.usage through as Usage.raw and providerMetadata.anthropic.usage,
+	// including fields such as service_tier, server_tool_use, cache_creation
+	// and inference_geo). Nil when the usage was built without a wire object.
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the full wire object in Raw.
+func (u *anthropicUsage) UnmarshalJSON(data []byte) error {
+	type plain anthropicUsage
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*u = anthropicUsage(p)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 type anthropicOutputTokensDetails struct {
@@ -1311,6 +1319,13 @@ type anthropicStream struct {
 	cacheReadTokens  int64
 	cacheWriteTokens int64
 	usage            anthropicUsage
+	// includeRawChunks emits a ChunkTypeRaw chunk (the parsed SSE payload)
+	// ahead of everything an event produces, like TS options.includeRawChunks.
+	includeRawChunks bool
+	rawEmitted       bool
+	// heldEvent is an event whose raw chunk was just returned; it is
+	// processed on the next Next call.
+	heldEvent *streaming.SSEEvent
 	// In-flight content blocks, keyed by SSE index.
 	// Populated by content_block_start; removed on content_block_stop.
 	contentBlocks map[int]*streamContentBlock
@@ -1444,7 +1459,13 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		// Get next SSE event
-		event, err := s.parser.Next()
+		var event *streaming.SSEEvent
+		var err error
+		if s.heldEvent != nil {
+			event, s.heldEvent = s.heldEvent, nil
+		} else {
+			event, err = s.parser.Next()
+		}
 		if err != nil {
 			if s.spliced {
 				// A spliced stream ends without a finish chunk: TS never
@@ -1462,11 +1483,31 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			return nil, err
 		}
 
+		// TS's JSON event-stream parser drops the "[DONE]" sentinel.
+		if s.heldEvent == nil && event.Data == "[DONE]" {
+			continue
+		}
+
+		// TS ignores SSE event names and dispatches on the payload's `type`.
+		// Transports that rebuild the stream without `event:` lines (Bedrock's
+		// event-stream to SSE adapter) rely on this.
+		if event.Event == "" {
+			event.Event = sseEventTypeFromPayload(event.Data)
+		}
+
 		// Once a spliced-stream error chunk has been emitted, every remaining
 		// event is silently discarded (TS hasInvalidMessageSequence guard).
 		if s.spliced {
 			continue
 		}
+
+		// TS emits the raw chunk (even for pings) before handling the event.
+		if s.includeRawChunks && s.heldEvent == nil && !s.rawEmitted {
+			s.heldEvent = event
+			s.rawEmitted = true
+			return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawSSEPayload(event.Data)}, nil
+		}
+		s.rawEmitted = false
 
 		// Anthropic uses different event types
 		switch event.Event {
@@ -1909,6 +1950,16 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				s.inputTokens = int64(msg.Message.Usage.InputTokens)
 				s.cacheReadTokens = int64(msg.Message.Usage.CacheReadInputTokens)
 				s.cacheWriteTokens = int64(msg.Message.Usage.CacheCreationInputTokens)
+				// TS: rawUsage = {...message_start.message.usage}.
+				var startRaw struct {
+					Message struct {
+						Usage map[string]interface{} `json:"usage"`
+					} `json:"message"`
+				}
+				s.usage.Raw = nil
+				if json.Unmarshal([]byte(event.Data), &startRaw) == nil && startRaw.Message.Usage != nil {
+					s.usage.Raw = startRaw.Message.Usage
+				}
 				s.usage.InputTokens = msg.Message.Usage.InputTokens
 				s.usage.OutputTokens = msg.Message.Usage.OutputTokens
 				s.usage.CacheReadInputTokens = msg.Message.Usage.CacheReadInputTokens
@@ -2411,6 +2462,18 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if delta.Usage.OutputTokensDetails != nil {
 				s.usage.OutputTokensDetails = delta.Usage.OutputTokensDetails
 			}
+			// TS: rawUsage = {...rawUsage, ...message_delta.usage}.
+			var deltaRaw struct {
+				Usage map[string]interface{} `json:"usage"`
+			}
+			if json.Unmarshal([]byte(event.Data), &deltaRaw) == nil && len(deltaRaw.Usage) > 0 {
+				if s.usage.Raw == nil {
+					s.usage.Raw = map[string]interface{}{}
+				}
+				for k, v := range deltaRaw.Usage {
+					s.usage.Raw[k] = v
+				}
+			}
 
 			if delta.Delta.StopReason != "" {
 				var finishReason types.FinishReason
@@ -2767,4 +2830,45 @@ func messageStartChunk(data string) *provider.StreamChunk {
 			ProviderMetadata: metadata,
 		},
 	}
+}
+
+// rawSSEPayload decodes an SSE data payload to the value a raw chunk carries
+// (the parsed JSON, or the text itself when it is not valid JSON).
+func rawSSEPayload(data string) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return data
+	}
+	return raw
+}
+
+// anthropicHTTPError builds the ProviderError for a failed Anthropic HTTP
+// response: the message is error.message of the API error body (TS
+// anthropicFailedResponseHandler), falling back to the raw body, and the
+// response headers and body are kept like TS APICallError.
+func anthropicHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	var perr *providererrors.ProviderError
+	var parsed anthropicErrorBody
+	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && (parsed.Error.Type != "" || parsed.Error.Message != "") {
+		perr = providererrors.NewProviderError(providerName, status, parsed.Error.Type, parsed.Error.Message, cause)
+	} else {
+		perr = providererrors.NewProviderError(providerName, status, "", string(body), cause)
+	}
+	perr.ResponseBody = string(body)
+	if len(headers) > 0 {
+		perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
+	}
+	return perr
+}
+
+// sseEventTypeFromPayload returns the payload's top-level "type" string, or
+// "" when the data is not a JSON object with one.
+func sseEventTypeFromPayload(data string) string {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(data), &probe) != nil {
+		return ""
+	}
+	return probe.Type
 }

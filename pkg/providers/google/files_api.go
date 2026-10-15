@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -32,7 +33,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
 	headers := internalhttp.MergeHeaders(map[string]string{
 		"x-goog-api-key": f.provider.APIKey(),
-	}, f.provider.config.Headers)
+	}, f.provider.config.Headers, opts.Headers)
 
 	displayName := ""
 	pollIntervalMs := int64(2000)
@@ -41,11 +42,11 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		if v, ok := google["displayName"].(string); ok {
 			displayName = v
 		}
-		if v, ok := google["pollIntervalMs"].(float64); ok && v > 0 {
-			pollIntervalMs = int64(v)
+		if v, ok := googleFilesNumber(google["pollIntervalMs"]); ok && v > 0 {
+			pollIntervalMs = v
 		}
-		if v, ok := google["pollTimeoutMs"].(float64); ok && v > 0 {
-			pollTimeoutMs = int64(v)
+		if v, ok := googleFilesNumber(google["pollTimeoutMs"]); ok && v > 0 {
+			pollTimeoutMs = v
 		}
 	}
 
@@ -119,6 +120,11 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		pollResp, err := f.provider.client.HTTPClient().Do(pollReq)
 		if err != nil {
 			return nil, err
+		}
+		if pollResp.StatusCode >= 400 {
+			b, _ := io.ReadAll(pollResp.Body)
+			_ = pollResp.Body.Close()
+			return nil, f.provider.handleFilesError(pollResp.StatusCode, pollResp.Header, b)
 		}
 		var polled googleFileResource
 		if err := json.NewDecoder(pollResp.Body).Decode(&polled); err != nil {
@@ -206,4 +212,47 @@ func googleFilePath(name string) string {
 		return "files/" + providerutils.EncodePathSegment(rest)
 	}
 	return providerutils.EncodePathSegment(name)
+}
+
+// googleFilesNumber reads a numeric provider option given as any Go number type.
+func googleFilesNumber(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int:
+		return int64(n), true
+	case int32:
+		return int64(n), true
+	case int64:
+		return n, true
+	case float32:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return i, err == nil
+	}
+	return 0, false
+}
+
+// handleFilesError builds the ProviderError for a failed Files API response
+// (TS googleFailedResponseHandler: error.message, status as the code).
+func (p *Provider) handleFilesError(status int, headers http.Header, body []byte) error {
+	var payload struct {
+		Error struct {
+			Message string `json:"message"`
+			Status  string `json:"status"`
+		} `json:"error"`
+	}
+	message := string(body)
+	code := ""
+	if json.Unmarshal(body, &payload) == nil {
+		if payload.Error.Message != "" {
+			message = payload.Error.Message
+		}
+		code = payload.Error.Status
+	}
+	perr := providererrors.NewProviderError("google", status, code, message, nil)
+	perr.ResponseBody = string(body)
+	perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
+	return perr
 }

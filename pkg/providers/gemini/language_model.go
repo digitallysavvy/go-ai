@@ -170,6 +170,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, m.handleError(err)
 	}
 	stream := newStream(httpResp.Body, m.cfg, newToolNameMapping(opts.Tools), httpResp.Header, m.ModelID())
+	stream.includeRawChunks = opts.IncludeRawChunks
 	stream.requestBody = reqBody
 	stream.continueFn = func(token string) (io.ReadCloser, error) {
 		next := make(map[string]interface{}, len(reqBody)+1)

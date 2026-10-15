@@ -307,8 +307,12 @@ func TestImageModel_DoGenerate_Error_EmptyResponse(t *testing.T) {
 		Prompt: "Test",
 	})
 
-	assert.Error(t, err)
-	assert.Nil(t, result)
+	// TS returns an empty images array (not an error) so generateImage can
+	// retry or raise NoImageGeneratedError.
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Empty(t, result.Images)
+	assert.Nil(t, result.IsRetryable)
 }
 
 func TestImageModel_DoGenerate_Error_InvalidStatus(t *testing.T) {
@@ -906,4 +910,57 @@ func TestExtractGoogleStringOption(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func imageServer(t *testing.T, respond string, onBody func(map[string]interface{})) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if onBody != nil {
+			onBody(body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(respond))
+	}))
+}
+
+// TS returns every image part, merges the caller's imageConfig with the call's
+// aspectRatio and forces responseModalities to IMAGE.
+func TestImageModel_DoGenerate_MultipleImagesAndImageConfigMerge(t *testing.T) {
+	var gen map[string]interface{}
+	server := imageServer(t, `{"candidates":[{"finishReason":"STOP","content":{"parts":[
+		{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}},
+		{"text":"caption"},
+		{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}}]}`, func(b map[string]interface{}) {
+		gen, _ = b["generationConfig"].(map[string]interface{})
+	})
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:      "x",
+		AspectRatio: "16:9",
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+			"responseModalities": []string{"TEXT"},
+			"imageConfig":        map[string]interface{}{"imageSize": "2K"},
+		}},
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.Images, 2)
+	assert.Len(t, result.Base64Images, 2)
+	assert.Equal(t, 2, result.Usage.ImageCount)
+	assert.Len(t, result.ProviderMetadata["google"].(map[string]interface{})["images"], 2)
+	assert.Equal(t, []interface{}{"IMAGE"}, gen["responseModalities"])
+	assert.Equal(t, map[string]interface{}{"imageSize": "2K", "aspectRatio": "16:9"}, gen["imageConfig"])
+}
+
+func TestImageModel_DoGenerate_ContentFilterIsTerminal(t *testing.T) {
+	server := imageServer(t, `{"candidates":[{"finishReason":"IMAGE_SAFETY","content":{"parts":[]}}]}`, nil)
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	require.NoError(t, err)
+	assert.Empty(t, result.Images)
+	require.NotNil(t, result.IsRetryable)
+	assert.False(t, *result.IsRetryable)
 }

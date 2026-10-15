@@ -71,6 +71,9 @@ func TestProviderError_IsRetryable(t *testing.T) {
 	}{
 		{status: 0, want: true},
 		{status: 400, want: false},
+		{status: 404, want: false},
+		{status: 408, want: true},
+		{status: 409, want: true},
 		{status: 429, want: true},
 		{status: 500, want: true},
 		{status: 503, want: true},

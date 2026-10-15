@@ -8,10 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -37,6 +40,10 @@ type interactionsStream struct {
 	lastEventID     string
 	resumable       bool
 	finished        bool
+
+	// includeRawChunks emits a ChunkTypeRaw chunk with the parsed SSE payload
+	// ahead of the chunks each event produces (TS includeRawChunks).
+	includeRawChunks bool
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -99,11 +106,38 @@ func newInteractionsEventStream(ctx context.Context, client *internalhttp.Client
 	}
 }
 
-func newSynthesizedInteractionsStream(response interactionsResponse, warnings []types.Warning, headers http.Header) provider.TextStream {
+// parseInteractionsCreated parses an Interactions `created` timestamp; the
+// zero time means absent or invalid (TS drops an unparsable date).
+func parseInteractionsCreated(created string) time.Time {
+	if created == "" {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func newSynthesizedInteractionsStream(response interactionsResponse, warnings []types.Warning, headers http.Header, includeRawChunks bool) provider.TextStream {
 	content, _, hasFunctionCall := (&InteractionsLanguageModel{}).parseOutputs(response.Steps, normalizedInteractionID(response.ID))
-	chunks := make([]*provider.StreamChunk, 0, len(content)+2)
+	chunks := make([]*provider.StreamChunk, 0, len(content)+4)
 	if len(warnings) > 0 {
 		chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: warnings})
+	}
+	// TS replays response-metadata and (optionally) the raw response before
+	// the content parts.
+	chunks = append(chunks, &provider.StreamChunk{
+		Type: provider.ChunkTypeResponseMetadata,
+		ResponseMetadata: &provider.ResponseMetadata{
+			ID:        normalizedInteractionID(response.ID),
+			Timestamp: parseInteractionsCreated(response.Created),
+			ModelID:   response.Model,
+			Headers:   providerutils.ExtractHeaders(headers),
+		},
+	})
+	if includeRawChunks {
+		chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: response})
 	}
 	for i, part := range content {
 		id := fmt.Sprintf("%s:%d", firstNonEmpty(response.ID, "interaction"), i)
@@ -195,10 +229,25 @@ restart:
 		if streaming.IsStreamDone(event) {
 			continue
 		}
+		if s.includeRawChunks {
+			var raw interface{}
+			if json.Unmarshal([]byte(event.Data), &raw) != nil {
+				raw = event.Data
+			}
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
+		}
 		var payload interactionsEvent
 		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
-			s.err = fmt.Errorf("failed to parse interactions stream event: %w", err)
-			return nil, s.err
+			// TS: an unparsable chunk marks the interaction failed, is
+			// surfaced as an error part and reading continues.
+			message := fmt.Sprintf("failed to parse interactions stream event: %v", err)
+			s.finishStatus = InteractionStatusFailed
+			s.buffer = append(s.buffer, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewStreamProviderError(message, "google.interactions", "", nil, nil, nil, nil),
+			})
+			goto restart
 		}
 		s.processEvent(payload)
 		if len(s.buffer) > 0 {
@@ -269,9 +318,10 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			s.buffer = append(s.buffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{
-					ID:      normalizedInteractionID(event.Interaction.ID),
-					ModelID: event.Interaction.Model,
-					Headers: s.responseHeaders,
+					ID:        normalizedInteractionID(event.Interaction.ID),
+					Timestamp: parseInteractionsCreated(event.Interaction.Created),
+					ModelID:   event.Interaction.Model,
+					Headers:   s.responseHeaders,
 				},
 			})
 		}

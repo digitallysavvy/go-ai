@@ -223,8 +223,29 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		additionalModelRequestFields[k] = v
 	}
 
-	if anthropicBetaRaw, ok := amazonBedrockOptions["anthropicBeta"].([]interface{}); ok && len(anthropicBetaRaw) > 0 {
-		additionalModelRequestFields["anthropic_beta"] = anthropicBetaRaw
+	// TS: anthropic_beta = [...providerOptions.anthropicBeta, ...tool betas]
+	// whenever either is present. A caller may supply []string or
+	// []interface{}.
+	{
+		var existing []interface{}
+		switch v := amazonBedrockOptions["anthropicBeta"].(type) {
+		case []interface{}:
+			existing = append(existing, v...)
+		case []string:
+			for _, b := range v {
+				existing = append(existing, b)
+			}
+		}
+		if len(existing) > 0 || len(prepared.Betas) > 0 {
+			merged := existing
+			if merged == nil {
+				merged = []interface{}{}
+			}
+			for _, b := range prepared.Betas {
+				merged = append(merged, b)
+			}
+			additionalModelRequestFields["anthropic_beta"] = merged
+		}
 	}
 
 	thinkingType := ""
@@ -764,7 +785,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
+		return nil, bedrockConverseGenerateAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
 	result, err := m.convertConverseResponse(respBody, args.UsesJSONInstruction, args.UsesJSONResponseTool)
@@ -1076,6 +1097,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		contentBlocks:        map[int]*bedrockStreamContentBlock{},
 		finishReason:         types.FinishReasonOther,
 		requestBody:          args.Body,
+		includeRawChunks:     opts.IncludeRawChunks,
 	}
 	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
 		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {

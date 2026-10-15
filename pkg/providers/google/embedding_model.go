@@ -250,13 +250,12 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return nil, err
 	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
-		return nil, providererrors.NewProviderError(
-			m.Provider(),
-			0,
-			"too_many_embedding_values_for_call",
-			fmt.Sprintf("too many embedding values for model %s: got %d, max %d", m.modelID, len(inputs), m.MaxEmbeddingsPerCall()),
-			nil,
-		)
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
 	}
 	if len(inputs) == 1 {
 		one, err := m.DoEmbed(ctx, inputs[0], opts)

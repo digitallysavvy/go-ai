@@ -236,7 +236,10 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		genConfig := reqBody["generationConfig"].(map[string]interface{})
 		imageConfig := genConfig["imageConfig"].(map[string]interface{})
 		assert.Equal(t, "9:16", imageConfig["aspectRatio"])
-		assert.Equal(t, "low", genConfig["thinkingBudget"])
+		// Options go through the language model: thinkingConfig lands in
+		// generationConfig and labels at the request top level.
+		assert.Equal(t, map[string]interface{}{"thinkingBudget": float64(128)}, genConfig["thinkingConfig"])
+		assert.Equal(t, map[string]interface{}{"team": "art"}, reqBody["labels"])
 
 		response := vertexGeminiImageResponse{
 			Candidates: []struct {
@@ -292,7 +295,8 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		},
 		ProviderOptions: map[string]interface{}{
 			"googleVertex": map[string]interface{}{
-				"thinkingBudget": "low",
+				"thinkingConfig": map[string]interface{}{"thinkingBudget": 128},
+				"labels":         map[string]interface{}{"team": "art"},
 			},
 		},
 	})
@@ -387,9 +391,11 @@ func TestImageModel_DoGenerate_Error_EmptyResponse(t *testing.T) {
 		Prompt: "Test",
 	})
 
-	assert.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "no image in response")
+	// An empty response is returned as an empty result (TS), not an error.
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Empty(t, result.Images)
+	assert.Nil(t, result.IsRetryable)
 }
 
 func TestImageModel_DoGenerate_Error_HTTPError(t *testing.T) {
@@ -915,4 +921,48 @@ func TestExtractVertexOptions(t *testing.T) {
 // Helper function
 func intPtr(i int) *int {
 	return &i
+}
+
+func TestImageModel_DoGenerate_MultipleImagesMergeConfigAndContentFilter(t *testing.T) {
+	var gen map[string]interface{}
+	var headerSeen string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gen, _ = body["generationConfig"].(map[string]interface{})
+		headerSeen = r.Header.Get("X-Custom")
+		w.Header().Set("Content-Type", "application/json")
+		if gen["seed"] == float64(7) {
+			_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"IMAGE_SAFETY","content":{"parts":[]}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[
+			{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgo="}},
+			{"inlineData":{"mimeType":"image/png","data":"AAAA"}}]}}]}`))
+	}))
+	defer server.Close()
+	prov, _ := New(Config{Project: "p", Location: "us-central1", AccessToken: "t", BaseURL: server.URL})
+	model := NewImageModel(prov, "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:      "x",
+		AspectRatio: "16:9",
+		Headers:     map[string]string{"X-Custom": "yes"},
+		ProviderOptions: map[string]interface{}{"vertex": map[string]interface{}{
+			"responseModalities": []string{"TEXT"},
+			"imageConfig":        map[string]interface{}{"imageSize": "2K"},
+		}},
+	})
+	require.NoError(t, err)
+	assert.Len(t, result.Images, 2)
+	assert.Equal(t, 2, result.Usage.ImageCount)
+	assert.Equal(t, "yes", headerSeen, "per-call headers must reach the request")
+	assert.Equal(t, []interface{}{"IMAGE"}, gen["responseModalities"])
+	assert.Equal(t, map[string]interface{}{"imageSize": "2K", "aspectRatio": "16:9"}, gen["imageConfig"])
+
+	seed := 7
+	filtered, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x", Seed: &seed})
+	require.NoError(t, err)
+	assert.Empty(t, filtered.Images)
+	require.NotNil(t, filtered.IsRetryable)
+	assert.False(t, *filtered.IsRetryable)
 }

@@ -463,7 +463,9 @@ func TestDoStream_RequestMetadataForwardedToTopLevel(t *testing.T) {
 	}
 }
 
-func TestDoGenerate_ErrorResponseUsesTypeAndMessage(t *testing.T) {
+// TS doGenerate's inline error handler uses only error.message (no type
+// prefix); the streaming and other endpoints use the shared "type: message".
+func TestDoGenerate_ErrorResponseUsesMessageOnly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		_, _ = w.Write([]byte(`{"message":"model not found","type":"ValidationException"}`))
@@ -475,8 +477,8 @@ func TestDoGenerate_ErrorResponseUsesTypeAndMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "ValidationException: model not found") {
-		t.Fatalf("error = %v, want %q", err, "ValidationException: model not found")
+	if !strings.Contains(err.Error(), "model not found") || strings.Contains(err.Error(), "ValidationException") {
+		t.Fatalf("error = %v, want the bare message", err)
 	}
 }
 

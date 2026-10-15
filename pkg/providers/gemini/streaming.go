@@ -28,6 +28,10 @@ type stream struct {
 	// reading the next SSE event, enabling one SSE event → many chunks.
 	chunkBuffer []*provider.StreamChunk
 
+	// includeRawChunks emits a ChunkTypeRaw chunk with the parsed SSE payload
+	// ahead of the chunks it produces (TS options.includeRawChunks).
+	includeRawChunks bool
+
 	// Block boundary state, tracked across SSE events.
 	// Mirrors currentTextBlockId / currentReasoningBlockId in the TS SDK.
 	currentTextBlockID      string
@@ -200,6 +204,14 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			return nil, io.EOF
 		}
 
+		if s.includeRawChunks {
+			var raw interface{}
+			if json.Unmarshal([]byte(event.Data), &raw) != nil {
+				raw = event.Data
+			}
+			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
+		}
+
 		var chunkData Response
 		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
 			// TS google-language-model.ts: `if (!chunk.success) { controller
@@ -209,11 +221,17 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			// the stream. Previously Go returned this as a terminal Next()
 			// error, ending the stream outright (P1-1c part 2).
 			message := fmt.Sprintf("failed to parse stream chunk: %v", err)
-			return &provider.StreamChunk{
+			errChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: message,
 				Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
-			}, nil
+			}
+			if len(s.chunkBuffer) > 0 {
+				// A raw chunk precedes the error.
+				s.chunkBuffer = append(s.chunkBuffer, errChunk)
+				continue
+			}
+			return errChunk, nil
 		}
 
 		s.processSSEEvent(chunkData)

@@ -66,6 +66,10 @@ type bedrockConverseStream struct {
 	contentBlocks map[int]*bedrockStreamContentBlock
 	queue         []*provider.StreamChunk
 
+	// includeRawChunks emits a ChunkTypeRaw chunk ({payloadType: payload},
+	// TS rawValue) ahead of the parts each event produces.
+	includeRawChunks bool
+
 	startEmitted    bool
 	finishReason    types.FinishReason
 	rawFinishReason string
@@ -152,7 +156,11 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// is not aborted — and mark finishReason as error in case the stream
 			// ends (via decoder EOF) before any later messageStop overwrites it.
 			s.finishReason = types.FinishReasonError
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse Amazon Bedrock stream event: %v", err)}, nil
+			if s.includeRawChunks {
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: string(event.Data)})
+			}
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse Amazon Bedrock stream event: %v", err)})
+			continue
 		}
 		delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.
 
@@ -161,6 +169,9 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		// `{ [payloadType]: parsedDataResult.value }`, so downstream handling
 		// matches the documented AmazonBedrockStreamSchema shape.
 		value := map[string]interface{}{payloadType: payload}
+		if s.includeRawChunks {
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: value})
+		}
 
 		switch payloadType {
 		case "internalServerException", "modelStreamErrorException", "serviceUnavailableException", "throttlingException", "validationException":
@@ -204,7 +215,8 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// `...getAmazonBedrockStreamErrorMetadata(type)`) — leave Code nil
 			// rather than duplicating the exception type into it.
 			chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, payload)
-			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr}, nil
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr})
+			continue
 
 		case "messageStop":
 			if stopReason, ok := payload["stopReason"].(string); ok {
