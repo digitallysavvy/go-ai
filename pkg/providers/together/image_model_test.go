@@ -79,10 +79,10 @@ func TestImageModelBuildRequestBodyAndConvertResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("multi-image response conversion failed: %v", err)
 	}
-	if string(res.Image) != "Zmlyc3Q=" || res.Base64Image != "Zmlyc3Q=" {
+	if string(res.Image) != "first" || res.Base64Image != "Zmlyc3Q=" {
 		t.Fatalf("first image fields = image %q base64 %q", string(res.Image), res.Base64Image)
 	}
-	if len(res.Images) != 2 || string(res.Images[1]) != "c2Vjb25k" {
+	if len(res.Images) != 2 || string(res.Images[1]) != "second" {
 		t.Fatalf("images = %+v, want both returned images", res.Images)
 	}
 	if len(res.Base64Images) != 2 || res.Base64Images[1] != "c2Vjb25k" {
@@ -123,7 +123,7 @@ func TestImageModelDoGenerate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate success path error = %v", err)
 	}
-	if string(okRes.Image) != "Zm9v" || okRes.MimeType != "image/png" {
+	if string(okRes.Image) != "foo" || okRes.MimeType != "image/png" {
 		t.Fatalf("unexpected success response: %+v", okRes)
 	}
 	if okRes.Base64Image != "Zm9v" || len(okRes.Images) != 1 || len(okRes.Base64Images) != 1 {
