@@ -208,6 +208,8 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 				ID:        tc.ID,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
+				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
+				RawArguments: tc.Function.Arguments,
 			}
 		}
 	}

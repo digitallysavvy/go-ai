@@ -783,6 +783,8 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 					ID:        id,
 					ToolName:  tc.Function.Name,
 					Arguments: args,
+					// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
+					RawArguments: tc.Function.Arguments,
 				}
 				if m.provider.config.OpenAICompatible && tc.ExtraContent != nil && tc.ExtraContent.Google != nil &&
 					tc.ExtraContent.Google.ThoughtSignature != nil && *tc.ExtraContent.Google.ThoughtSignature != "" {

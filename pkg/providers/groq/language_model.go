@@ -335,6 +335,8 @@ func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateR
 				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
+				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).
+				RawArguments: tc.Function.Arguments,
 			}
 		}
 	}
