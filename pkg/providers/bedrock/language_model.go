@@ -234,15 +234,18 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	// []interface{}.
 	{
 		var existing []interface{}
+		betaProvided := false // TS: an empty (truthy) anthropicBeta array still sets anthropic_beta
 		switch v := amazonBedrockOptions["anthropicBeta"].(type) {
 		case []interface{}:
+			betaProvided = true
 			existing = append(existing, v...)
 		case []string:
+			betaProvided = true
 			for _, b := range v {
 				existing = append(existing, b)
 			}
 		}
-		if len(existing) > 0 || len(prepared.Betas) > 0 {
+		if betaProvided || len(prepared.Betas) > 0 {
 			merged := existing
 			if merged == nil {
 				merged = []interface{}{}
@@ -650,7 +653,13 @@ func injectBedrockJSONInstruction(messages []types.Message, schema interface{}) 
 	}
 	lines = append(lines, "JSON schema:", schemaJSON, suffix)
 
+	// TS spreads the existing system message ({...messages[0]}), keeping its
+	// providerOptions (e.g. a cachePoint); only the content is replaced.
 	newSystem := types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: strings.Join(lines, "\n")}}}
+	if hasSystem {
+		newSystem = messages[0]
+		newSystem.Content = []types.ContentPart{types.TextContent{Text: strings.Join(lines, "\n")}}
+	}
 
 	if hasSystem {
 		out := make([]types.Message, 0, len(messages))
@@ -1049,7 +1058,10 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	} else {
 		metadataPayload["stopSequence"] = nil
 	}
-	if len(metadataPayload) > 1 || metadataPayload["stopSequence"] != nil {
+	// TS emits providerMetadata whenever trace, usage, performanceConfig,
+	// serviceTier, the json-tool flag or a stop sequence is present; usage is a
+	// required response field, so it is always emitted (stopSequence: null).
+	if usageMap != nil || len(metadataPayload) > 1 || metadataPayload["stopSequence"] != nil {
 		result.ProviderMetadata = map[string]interface{}{
 			"amazonBedrock": metadataPayload,
 			"bedrock":       metadataPayload,
