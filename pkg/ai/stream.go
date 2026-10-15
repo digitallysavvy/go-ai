@@ -2578,8 +2578,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// in-step, or when a deferred provider tool has not yet delivered its result.
 		hasLocalToolCalls := false
 		for _, call := range stepToolCalls {
-			tool := toolsByName[call.ToolName]
-			if tool != nil && !tool.ProviderExecuted {
+			if isClientToolCall(call, toolsByName) {
 				hasLocalToolCalls = true
 				break
 			}

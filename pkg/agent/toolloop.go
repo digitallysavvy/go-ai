@@ -449,6 +449,8 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		OnChunk:                        opts.OnChunk,
 		InitialStreamChunks:            opts.InitialStreamChunks,
 		ExperimentalTransform:          opts.ExperimentalTransform,
+		OnError:                        opts.OnError,
+		OnAbortEvent:                   agentAbortEvent(opts.OnAbort),
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
 		OnToolExecutionStart:           cbs.onToolCallStart,
@@ -2623,4 +2625,13 @@ func hasUnresolvedLocalAgentToolCalls(calls []types.ToolCall, tools []types.Tool
 		}
 	}
 	return false
+}
+
+// agentAbortEvent adapts AgentStreamOptions.OnAbort (completed steps only) to
+// the stable ai.StreamTextOptions.OnAbortEvent callback.
+func agentAbortEvent(onAbort func(ctx context.Context, steps []types.StepResult)) ai.OnAbortCallback {
+	if onAbort == nil {
+		return nil
+	}
+	return func(ctx context.Context, e ai.GenerateTextAbortEvent) { onAbort(ctx, e.Steps) }
 }

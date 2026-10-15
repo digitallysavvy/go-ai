@@ -96,11 +96,15 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `ToolSet` | `map[string]types.Tool` |  |
 | `StopWhen` | `[]ai.StopCondition` |  |
 | `Telemetry` | `*ai.TelemetrySettings` |  |
+| `ActiveTools` | `[]string` |  |
 | `RuntimeContext` | `interface{}` |  |
 | `ToolsContext` | `map[string]interface{}` |  |
 | `Include` | `*ai.IncludeOptions` |  |
 | `ExperimentalSandbox` | `interface{}` |  |
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
+| `ToolChoice` | `types.ToolChoice` | ToolChoice overrides the agent's ToolChoice for this call (TS `toolChoice`). |
+| `Output` | `interface{}` | Output overrides the agent's Output specification for this call (TS `output`). |
+| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that runs after the agent-level PrepareStep (TS per-call `prepareStep`). |
 | `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
 | `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
@@ -142,6 +146,9 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `Include` | `*ai.IncludeOptions` |  |
 | `ExperimentalSandbox` | `interface{}` |  |
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
+| `ToolChoice` | `types.ToolChoice` | ToolChoice overrides the agent's ToolChoice for this call (TS `toolChoice`). |
+| `Output` | `interface{}` | Output overrides the agent's Output specification for this call (TS `output`). |
+| `PrepareStep` | `PrepareStepHook` | PrepareStep is a per-call step hook that runs after the agent-level PrepareStep (TS per-call `prepareStep`). |
 | `RepairToolCall` | `ai.ToolCallRepairFunction` | RepairToolCall attempts to repair tool calls that fail to parse. |
 | `ExperimentalRepairToolCall` | `ai.ToolCallRepairFunction` | ExperimentalRepairToolCall is a deprecated alias for RepairToolCall. Deprecated: use RepairToolCall. |
 | `ExperimentalToolApprovalSecret` | `[]byte` | ExperimentalToolApprovalSecret overrides the agent's approval secret. |
@@ -173,6 +180,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | Field | Type | Description |
 | --- | --- | --- |
 | (embedded) | `*agent.AgentResult` | Embedded. |
+| `ResponseMessages` | `[]types.Message` | ResponseMessages are the messages this run added to the conversation: first the tool message holding the results of any tool approvals the run resumed (executed before the first model call), then each step's assistant and tool messages. Append them to the input messages to continue the conversation (TS result.response.messages). |
 
 {/* /gen:fields */}
 

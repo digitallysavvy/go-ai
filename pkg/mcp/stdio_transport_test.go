@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestValidateStdioCommandForGOOS mirrors TS createChildProcess's Windows
@@ -120,10 +122,15 @@ func TestStdioTransportSendAndReceiveWhenNotConnected(t *testing.T) {
 	}
 }
 
-func TestStdioTransportReceiveInvalidJSON(t *testing.T) {
+// A stdout line that is not JSON-RPC (servers print logs there) is reported
+// through OnError and skipped; later valid messages are still delivered (TS
+// calls onerror and keeps reading).
+func TestStdioTransportSkipsInvalidJSONLines(t *testing.T) {
+	var reported []error
 	transport := NewStdioTransport(StdioTransportConfig{
 		Command: "sh",
-		Args:    []string{"-c", "printf 'not-json\\n'"},
+		Args:    []string{"-c", `printf 'not-json\n\n{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		OnError: func(err error) { reported = append(reported, err) },
 	})
 
 	if err := transport.Connect(context.Background()); err != nil {
@@ -131,12 +138,84 @@ func TestStdioTransportReceiveInvalidJSON(t *testing.T) {
 	}
 	defer func() { _ = transport.Close() }()
 
-	_, err := transport.Receive(context.Background())
-	if err == nil {
-		t.Fatal("expected Receive() unmarshal error")
-	}
-	if !strings.Contains(err.Error(), "failed to unmarshal message") {
+	msg, err := transport.Receive(context.Background())
+	if err != nil {
 		t.Fatalf("Receive() error = %v", err)
+	}
+	if msg.ID == nil {
+		t.Fatalf("message = %+v", msg)
+	}
+	if len(reported) != 1 || !strings.Contains(reported[0].Error(), "failed to unmarshal message") {
+		t.Fatalf("reported = %v", reported)
+	}
+}
+
+// The child must outlive the context passed to Connect.
+func TestStdioTransportChildOutlivesConnectContext(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		Args:    []string{"-c", `sleep 0.3; printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := transport.Connect(ctx); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	cancel()
+	defer func() { _ = transport.Close() }()
+	if _, err := transport.Receive(context.Background()); err != nil {
+		t.Fatalf("child was killed with the Connect context: %v", err)
+	}
+}
+
+type countingWriter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.n += len(p)
+	return len(p), nil
+}
+
+// StdioTransportConfig.Stderr (TS StdioConfig.stderr) receives the child's
+// stderr, and a chatty child never blocks on it.
+func TestStdioTransportStderrWriter(t *testing.T) {
+	w := &countingWriter{}
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		// ~1 MiB on stderr (far more than the pipe buffer), then a message.
+		Args:   []string{"-c", `head -c 1048576 /dev/zero >&2; printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		Stderr: w,
+	})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := transport.Receive(ctx); err != nil {
+		t.Fatalf("Receive() error = %v (child blocked on stderr?)", err)
+	}
+	_ = transport.Close()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.n != 1048576 {
+		t.Fatalf("stderr writer received %d bytes, want 1048576", w.n)
+	}
+}
+
+// With no Stderr option the child's stderr is inherited from the parent
+// process (TS default 'inherit').
+func TestStdioTransportInheritsStderrByDefault(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{Command: "true"})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transport.Close() }()
+	if transport.cmd.Stderr != os.Stderr {
+		t.Fatalf("cmd.Stderr = %v, want os.Stderr", transport.cmd.Stderr)
 	}
 }
 

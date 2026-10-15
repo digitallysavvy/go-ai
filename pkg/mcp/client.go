@@ -75,6 +75,13 @@ type MCPClient struct {
 	events        *MCPEvents
 	managedEvents ManagedMCPEvents
 	eventsErr     error
+
+	// connLost is closed when the receive loop ends because the transport
+	// failed or closed under the client (TS onClose: every pending request
+	// is rejected with "Connection closed" instead of waiting for its
+	// timeout).
+	connLost     chan struct{}
+	connLostOnce sync.Once
 }
 
 // MCPClientConfig contains configuration for the MCP client
@@ -128,6 +135,12 @@ type MCPClientConfig struct {
 	// DefaultMCPClient.onRequestMessage's this.onError(error) call).
 	OnError func(error) `json:"-"`
 
+	// InitialInitializeResult, when set, is reused as the server's initialize
+	// result from a previous MCP session: Connect starts the transport and
+	// applies it without sending an initialize request or the initialized
+	// notification (TS initialInitializeResult).
+	InitialInitializeResult *InitializeResult `json:"-"`
+
 	// ExperimentalEvents configures experimental MCP events (webhook
 	// subscriptions with a Store, or managed subscriptions with an Adapter).
 	// Experimental: may change in any release.
@@ -179,6 +192,8 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 		ctx:    ctx,
 		cancel: cancel,
 		config: config,
+
+		connLost: make(chan struct{}),
 	}
 	client.setupEvents(transport, config.ExperimentalEvents)
 	return client
@@ -272,13 +287,35 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 	// Start message receiver
 	go c.receiveLoop()
 
+	if err := c.handshake(ctx); err != nil {
+		// TS init() closes the transport and the client when the handshake
+		// fails, so a failed Connect never leaves a live subprocess,
+		// connection or receive goroutine behind.
+		_ = c.Close()
+		return err
+	}
+	c.initialized = true
+	return nil
+}
+
+// handshake negotiates the protocol with the server (or applies a cached
+// initialize result).
+func (c *MCPClient) handshake(ctx context.Context) error {
+	if c.config.InitialInitializeResult != nil {
+		result := *c.config.InitialInitializeResult
+		if !isSupportedProtocolVersion(result.ProtocolVersion) {
+			return fmt.Errorf("failed to initialize: server's protocol version is not supported: %s", result.ProtocolVersion)
+		}
+		c.applyInitializeResult(result)
+		return nil
+	}
+
 	if c.supportsProtocolVersionDiscovery() {
 		discovered, err := c.tryProtocolDiscovery(ctx)
 		if err != nil {
 			return fmt.Errorf("protocol discovery failed: %w", err)
 		}
 		if discovered {
-			c.initialized = true
 			return nil
 		}
 	}
@@ -290,9 +327,21 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 	if err := c.initialize(ctx); err != nil {
 		return fmt.Errorf("failed to initialize: %w", err)
 	}
-
-	c.initialized = true
 	return nil
+}
+
+// applyInitializeResult records a validated initialize result and tells the
+// transport which protocol version was negotiated (TS applyInitializeResult).
+func (c *MCPClient) applyInitializeResult(result InitializeResult) {
+	c.serverInfo = result.ServerInfo
+	c.serverCapability = result.Capabilities
+	c.serverInstructions = result.Instructions
+	c.protocolEra = "legacy"
+	c.protocolVersion = result.ProtocolVersion
+	c.setInitializeResult(result)
+	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
+		versionTransport.SetProtocolVersion(result.ProtocolVersion)
+	}
 }
 
 // supportsProtocolVersionDiscovery reports whether protocol-version
@@ -385,11 +434,10 @@ func (c *MCPClient) InitializeResult() InitializeResult {
 func (c *MCPClient) Close() error {
 	c.cancel()
 
-	// Close all pending requests
+	// Pending calls observe the cancelled client context and return; their
+	// channels are never closed here because the receive loop may still be
+	// sending a response on one of them.
 	c.pendingMu.Lock()
-	for _, ch := range c.pending {
-		close(ch)
-	}
 	c.pending = make(map[interface{}]chan *MCPMessage)
 	c.pendingMu.Unlock()
 
@@ -412,15 +460,7 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 		return fmt.Errorf("server's protocol version is not supported: %s", result.ProtocolVersion)
 	}
 
-	c.serverInfo = result.ServerInfo
-	c.serverCapability = result.Capabilities
-	c.serverInstructions = result.Instructions
-	c.protocolEra = "legacy"
-	c.protocolVersion = result.ProtocolVersion
-	c.setInitializeResult(result)
-	if versionTransport, ok := c.transport.(ProtocolVersionTransport); ok {
-		versionTransport.SetProtocolVersion(result.ProtocolVersion)
-	}
+	c.applyInitializeResult(result)
 
 	// Send initialized notification
 	if err := c.notify(ctx, "notifications/initialized", nil); err != nil {
@@ -572,6 +612,7 @@ func (c *MCPClient) GetSerializableTools(ctx context.Context) (*ListToolsResult,
 	if err := c.call(ctx, "tools/list", params, &result); err != nil {
 		return nil, fmt.Errorf("failed to get serializable tools: %w", err)
 	}
+	c.prepareToolDefinitions(&result, true)
 
 	return &result, nil
 }
@@ -675,20 +716,32 @@ func isRetryableMCPTransportError(err error) bool {
 	return false
 }
 
-// ListResources lists all available resources from the MCP server
+// ListResources lists the first page of resources from the MCP server. Use
+// ListResourcesWithCursor to follow NextCursor.
 func (c *MCPClient) ListResources(ctx context.Context) ([]MCPResource, error) {
+	result, err := c.ListResourcesWithCursor(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	return result.Resources, nil
+}
+
+// ListResourcesWithCursor lists one page of resources, honoring an explicit
+// pagination cursor (empty requests the first page), and returns the full
+// result including NextCursor (TS listResources({ params: { cursor } })).
+func (c *MCPClient) ListResourcesWithCursor(ctx context.Context, cursor string) (*ListResourcesResult, error) {
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
 
-	params := ListResourcesParams{}
+	params := ListResourcesParams{Cursor: cursor}
 	var result ListResourcesResult
 
 	if err := c.call(ctx, "resources/list", params, &result); err != nil {
 		return nil, fmt.Errorf("failed to list resources: %w", err)
 	}
 
-	return result.Resources, nil
+	return &result, nil
 }
 
 // ReadResource reads a resource from the MCP server
@@ -725,20 +778,32 @@ func (c *MCPClient) ListResourceTemplates(ctx context.Context) (*ListResourceTem
 	return &result, nil
 }
 
-// ListPrompts lists all available prompts from the MCP server
+// ListPrompts lists the first page of prompts from the MCP server. Use
+// ListPromptsWithCursor to follow NextCursor.
 func (c *MCPClient) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
+	result, err := c.ListPromptsWithCursor(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	return result.Prompts, nil
+}
+
+// ListPromptsWithCursor lists one page of prompts, honoring an explicit
+// pagination cursor (empty requests the first page), and returns the full
+// result including NextCursor (TS experimental_listPrompts({ params })).
+func (c *MCPClient) ListPromptsWithCursor(ctx context.Context, cursor string) (*ListPromptsResult, error) {
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
 
-	params := ListPromptsParams{}
+	params := ListPromptsParams{Cursor: cursor}
 	var result ListPromptsResult
 
 	if err := c.call(ctx, "prompts/list", params, &result); err != nil {
 		return nil, fmt.Errorf("failed to list prompts: %w", err)
 	}
 
-	return result.Prompts, nil
+	return &result, nil
 }
 
 // GetPrompt gets a prompt from the MCP server
@@ -811,6 +876,16 @@ func (c *MCPClient) ServerInstructions() string {
 
 // call makes a JSON-RPC call and waits for the response
 func (c *MCPClient) call(ctx context.Context, method string, params interface{}, result interface{}) error {
+	select {
+	case <-c.ctx.Done():
+		return NewMCPClientError(0, "Attempted to send a request from a closed client", nil)
+	case <-c.connLost:
+		return NewMCPClientError(0, "Attempted to send a request from a closed client", nil)
+	default:
+	}
+	if err := c.assertCapability(method); err != nil {
+		return err
+	}
 	id := c.idGen.Next()
 	preparedParams, err := c.prepareRequestParams(method, params)
 	if err != nil {
@@ -876,9 +951,36 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 	case <-ctx.Done():
 		return ctx.Err()
 
+	case <-c.connLost:
+		return NewMCPClientError(0, "Connection closed", nil)
+
 	case <-c.ctx.Done():
 		return fmt.Errorf("client closed")
 	}
+}
+
+// assertCapability rejects a request for a feature the server did not
+// advertise, with the TS error text (mcp-client.ts assertCapability).
+func (c *MCPClient) assertCapability(method string) error {
+	var missing string
+	switch method {
+	case "tools/list", "tools/call":
+		if c.serverCapability.Tools == nil {
+			missing = "tools"
+		}
+	case "resources/list", "resources/read", "resources/templates/list":
+		if c.serverCapability.Resources == nil {
+			missing = "resources"
+		}
+	case "prompts/list", "prompts/get":
+		if c.serverCapability.Prompts == nil {
+			missing = "prompts"
+		}
+	}
+	if missing != "" {
+		return NewMCPClientError(0, "Server does not support "+missing, nil)
+	}
+	return nil
 }
 
 // notify sends a JSON-RPC notification (no response expected)
@@ -905,6 +1007,9 @@ func (c *MCPClient) receiveLoop() {
 			// Connection closed or error
 			if c.config.EnableLogging {
 				fmt.Printf("MCP receive error: %v\n", err)
+			}
+			if c.ctx.Err() == nil {
+				c.connLostOnce.Do(func() { close(c.connLost) })
 			}
 			return
 		}

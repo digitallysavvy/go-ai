@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
@@ -212,11 +214,22 @@ type WorkflowGenerateOptions struct {
 	ToolSet                     map[string]types.Tool
 	StopWhen                    []ai.StopCondition
 	Telemetry                   *ai.TelemetrySettings
+	ActiveTools                 []string
 	RuntimeContext              interface{}
 	ToolsContext                map[string]interface{}
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+
+	// ToolChoice overrides the agent's ToolChoice for this call (TS
+	// `toolChoice`).
+	ToolChoice types.ToolChoice
+	// Output overrides the agent's Output specification for this call (TS
+	// `output`).
+	Output interface{}
+	// PrepareStep is a per-call step hook that runs after the agent-level
+	// PrepareStep (TS per-call `prepareStep`).
+	PrepareStep PrepareStepHook
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
@@ -271,6 +284,16 @@ type WorkflowStreamOptions struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+
+	// ToolChoice overrides the agent's ToolChoice for this call (TS
+	// `toolChoice`).
+	ToolChoice types.ToolChoice
+	// Output overrides the agent's Output specification for this call (TS
+	// `output`).
+	Output interface{}
+	// PrepareStep is a per-call step hook that runs after the agent-level
+	// PrepareStep (TS per-call `prepareStep`).
+	PrepareStep PrepareStepHook
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
@@ -317,7 +340,16 @@ type WorkflowStreamOptions struct {
 }
 
 // WorkflowResult is the final non-streaming workflow result.
-type WorkflowResult struct{ *agent.AgentResult }
+type WorkflowResult struct {
+	*agent.AgentResult
+
+	// ResponseMessages are the messages this run added to the conversation:
+	// first the tool message holding the results of any tool approvals the
+	// run resumed (executed before the first model call), then each step's
+	// assistant and tool messages. Append them to the input messages to
+	// continue the conversation (TS result.response.messages).
+	ResponseMessages []types.Message
+}
 
 // IsLoopFinished reports whether the workflow ended naturally.
 func (r *WorkflowResult) IsLoopFinished() bool {
@@ -386,8 +418,16 @@ func orderedTools(tools []types.Tool, toolSet map[string]types.Tool) []types.Too
 	if len(toolSet) == 0 {
 		return tools
 	}
+	// Go maps have no insertion order; sort by key so the tool list sent to
+	// the model is deterministic across runs (stable prompts, cacheable).
+	names := make([]string, 0, len(toolSet))
+	for name := range toolSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	out := make([]types.Tool, 0, len(toolSet))
-	for name, tool := range toolSet {
+	for _, name := range names {
+		tool := toolSet[name]
 		if tool.Name == "" {
 			tool.Name = name
 		}
@@ -522,6 +562,10 @@ type workflowApprovalResumeOptions struct {
 	// toolCallConcurrency bounds concurrent approved tool executions; 0 means
 	// unbounded.
 	toolCallConcurrency int
+	// initialResponse, when non-nil, receives the tool message holding the
+	// resumed approvals' results (TS initialResponseMessages), so generate can
+	// report it as the first response message.
+	initialResponse *[]types.Message
 }
 
 // processWorkflowApprovalResume resolves tool approvals from the last tool
@@ -758,7 +802,11 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		}
 	}
 	if len(localResults) > 0 {
-		cleaned = append(cleaned, types.Message{Role: types.RoleTool, Content: localResults})
+		toolMessage := types.Message{Role: types.RoleTool, Content: localResults}
+		cleaned = append(cleaned, toolMessage)
+		if opts.initialResponse != nil {
+			*opts.initialResponse = append(*opts.initialResponse, toolMessage)
+		}
 	}
 	if len(localResults) > 0 || deniedChunks > 0 {
 		prefixChunks = append(prefixChunks,
@@ -958,10 +1006,27 @@ type prepareCallContext struct {
 	timeout             *ai.TimeoutConfig
 	initialInstructions string
 	initialMessages     []types.Message
+	// prepareStep is the per-call PrepareStep hook (runs after w.PrepareStep).
+	prepareStep PrepareStepHook
+}
+
+// hookFailedModel stands in for the real model on a step whose PrepareCall or
+// PrepareStep hook returned an error: the model call fails with that error.
+type hookFailedModel struct {
+	provider.LanguageModel
+	err error
+}
+
+func (m *hookFailedModel) DoGenerate(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+	return nil, m.err
+}
+
+func (m *hookFailedModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+	return nil, m.err
 }
 
 func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-	if w.PrepareCall == nil && w.PrepareStep == nil && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
+	if w.PrepareCall == nil && w.PrepareStep == nil && pctx.prepareStep == nil && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
 		return nil
 	}
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
@@ -975,15 +1040,37 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx contex
 			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
 			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
 		}
-		if w.PrepareStep != nil {
-			if mutated, err := w.PrepareStep(ctx, opts); err == nil {
-				opts = mutated
+		// A hook error fails the run (TS prepareStep/prepareCall rejections
+		// propagate): PrepareCallConfig cannot carry an error, so the step's
+		// model is swapped for one that returns it.
+		failStep := func(err error) agent.PrepareCallConfig {
+			base := c.Model
+			if base == nil {
+				base = w.Model
 			}
+			c.Model = &hookFailedModel{LanguageModel: base, err: err}
+			return c
+		}
+		if w.PrepareStep != nil {
+			mutated, err := w.PrepareStep(ctx, opts)
+			if err != nil {
+				return failStep(err)
+			}
+			opts = mutated
+		}
+		if pctx.prepareStep != nil {
+			mutated, err := pctx.prepareStep(ctx, opts)
+			if err != nil {
+				return failStep(err)
+			}
+			opts = mutated
 		}
 		if w.PrepareCall != nil {
-			if mutated, err := w.PrepareCall(ctx, opts); err == nil {
-				opts = mutated
+			mutated, err := w.PrepareCall(ctx, opts)
+			if err != nil {
+				return failStep(err)
 			}
+			opts = mutated
 		}
 		c.System, c.AllowSystemInMessages, c.Messages, c.Tools, c.ToolChoice, c.CallOptions = opts.System, opts.AllowSystemInMessages, opts.Messages, opts.Tools, opts.ToolChoice, opts.CallOptions
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
@@ -1147,8 +1234,31 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if len(ovr.Messages) > 0 {
 		initialMessages = ovr.Messages
 	}
+	activeTools := govr.ActiveTools
+	if ovr.ActiveTools != nil {
+		activeTools = ovr.ActiveTools
+	}
+	prepareStep := govr.PrepareStep
+	if ovr.PrepareStep != nil {
+		prepareStep = ovr.PrepareStep
+	}
+	toolChoice := w.ToolChoice
+	if govr.ToolChoice.Type != "" {
+		toolChoice = govr.ToolChoice
+	}
+	if ovr.ToolChoice.Type != "" {
+		toolChoice = ovr.ToolChoice
+	}
+	output := w.Output
+	if govr.Output != nil {
+		output = govr.Output
+	}
+	if ovr.Output != nil {
+		output = ovr.Output
+	}
 	pctx := prepareCallContext{
-		activeTools:         ovr.ActiveTools,
+		prepareStep:         prepareStep,
+		activeTools:         activeTools,
 		stopWhen:            stopWhen,
 		download:            download,
 		maxRetries:          maxRetries,
@@ -1163,9 +1273,9 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
 		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: version.WithUserAgentSuffix(w.Headers, "ai-sdk-agent/workflow"), Reasoning: w.Reasoning,
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
-		ToolChoice:                     w.ToolChoice,
+		ToolChoice:                     toolChoice,
 		ToolCallConcurrency:            toolCallConcurrency,
-		Output:                         w.Output,
+		Output:                         output,
 		Telemetry:                      telemetry,
 		Include:                        include,
 		ExperimentalSandbox:            sandbox,
@@ -1265,7 +1375,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
+	var initialResponseMessages []types.Message
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
+		initialResponse:     &initialResponseMessages,
 		messages:            opts.Messages,
 		tools:               effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts),
 		runtimeContext:      firstNonNil(opts.RuntimeContext, w.RuntimeContext),
@@ -1295,6 +1407,20 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 		return nil, ctx.Err()
 	}
+	// Collect completed steps so OnAbort can report them (the agent loop
+	// returns no partial result on error).
+	var stepsMu sync.Mutex
+	var completedSteps []types.StepResult
+	prevStepEnd := resolveStepEnd(opts.OnStepEnd, opts.OnStepFinish)
+	opts.OnStepFinish = nil
+	opts.OnStepEnd = func(c context.Context, e ai.OnStepFinishEvent) {
+		stepsMu.Lock()
+		completedSteps = append(completedSteps, stepResultFromFinishEvent(e))
+		stepsMu.Unlock()
+		if prevStepEnd != nil {
+			prevStepEnd(c, e)
+		}
+	}
 	a := w.makeAgent(WorkflowStreamOptions{}, opts)
 	system := opts.System
 	if opts.Instructions != nil {
@@ -1302,13 +1428,16 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			system = normalized
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil {
-			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
+			stepsMu.Lock()
+			steps := append([]types.StepResult(nil), completedSteps...)
+			stepsMu.Unlock()
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Steps: steps})
 			if onAbort != nil {
-				onAbort(ctx, nil)
+				onAbort(ctx, steps)
 			}
 		} else {
 			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
@@ -1332,7 +1461,35 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			TotalTokens:  result.Usage.TotalTokens,
 		},
 	})
-	return &WorkflowResult{AgentResult: result}, nil
+	responseMessages := append([]types.Message(nil), initialResponseMessages...)
+	for _, step := range result.Steps {
+		responseMessages = append(responseMessages, step.Response.Messages...)
+	}
+	return &WorkflowResult{AgentResult: result, ResponseMessages: responseMessages}, nil
+}
+
+// stepResultFromFinishEvent converts a step-end event to the StepResult handed
+// to OnAbort.
+func stepResultFromFinishEvent(e ai.OnStepFinishEvent) types.StepResult {
+	return types.StepResult{
+		CallID:             e.CallID,
+		StepNumber:         e.StepNumber,
+		Model:              e.Model,
+		Text:               e.Text,
+		Reasoning:          e.Reasoning,
+		ReasoningText:      e.ReasoningText,
+		Files:              e.Files,
+		ToolCalls:          e.ToolCalls,
+		StaticToolCalls:    e.StaticToolCalls,
+		DynamicToolCalls:   e.DynamicToolCalls,
+		ToolResults:        e.ToolResults,
+		StaticToolResults:  e.StaticToolResults,
+		DynamicToolResults: e.DynamicToolResults,
+		FinishReason:       e.FinishReason,
+		RawFinishReason:    e.RawFinishReason,
+		Usage:              e.Usage,
+		Warnings:           e.Warnings,
+	}
 }
 
 // workflowModelInfo returns the model's provider and model id, or two empty
@@ -1441,10 +1598,14 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,
+		// Mid-stream error chunks and aborts reach OnError/OnAbort too (TS
+		// fires them from the stream pipeline, not only before it starts).
+		OnError: mergeError(w.OnError, opts.OnError),
+		OnAbort: onAbort,
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {

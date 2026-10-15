@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -52,6 +53,14 @@ type HTTPTransport struct {
 	client    *http.Client
 	sseClient SSEClient
 
+	// streamClient is client without the overall http.Client.Timeout, which
+	// would also cut off a long-lived text/event-stream body (the standing
+	// inbound GET, or a POST response that streams while a slow tool runs).
+	// requestTimeout bounds POSTs until their response headers arrive (and
+	// for the whole exchange when the response is not an event stream).
+	streamClient   *http.Client
+	requestTimeout time.Duration
+
 	// Message queue for receiving
 	receiveMu    sync.Mutex
 	receiveQueue []*MCPMessage
@@ -65,6 +74,7 @@ type HTTPTransport struct {
 	config TransportConfig
 
 	// OAuth
+	auth       *transportAuth
 	oauth      *OAuthConfig
 	refreshMu  sync.Mutex
 	refreshCh  chan struct{}
@@ -113,6 +123,10 @@ type HTTPTransport struct {
 	postSSEWG sync.WaitGroup
 }
 
+// errMCPRequestTimeout is the cancellation cause of a POST that exceeded the
+// transport's request timeout.
+var errMCPRequestTimeout = errors.New("mcp: request timeout")
+
 // HTTPTransportConfig contains configuration for HTTP transport
 type HTTPTransportConfig struct {
 	// URL is the URL of the MCP server
@@ -123,6 +137,18 @@ type HTTPTransportConfig struct {
 
 	// OAuth configuration (optional)
 	OAuth *OAuthConfig
+
+	// AuthProvider enables the MCP OAuth flow: its tokens are sent as a
+	// bearer token, and a 401 response runs Auth once (shared by concurrent
+	// requests) before the request is retried. Matches TS HttpMCPTransport's
+	// authProvider. When Auth cannot complete without user interaction the
+	// request fails with *UnauthorizedError (also reported through OnError).
+	AuthProvider OAuthClientProvider `json:"-"`
+
+	// AuthHTTPClient is the HTTP client used for the OAuth discovery,
+	// registration and token requests Auth makes (TS passes the transport's
+	// fetch). Nil uses Auth's default client.
+	AuthHTTPClient *http.Client `json:"-"`
 
 	// Config is the base transport configuration
 	Config TransportConfig
@@ -222,13 +248,19 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		terminateSessionOnClose = *config.TerminateSessionOnClose
 	}
 
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+
 	return &HTTPTransport{
 		url:                     config.URL,
 		client:                  httpClient,
+		streamClient:            &streamClient,
+		requestTimeout:          httpClient.Timeout,
 		sseClient:               config.SSEClient,
 		receiveQueue:            make([]*MCPMessage, 0),
 		config:                  config.Config,
 		oauth:                   config.OAuth,
+		auth:                    newTransportAuth(config.AuthProvider, config.URL, config.AuthHTTPClient),
 		sessionID:               config.InitialSessionID,
 		onSessionIDChange:       config.OnSessionIDChange,
 		onSessionExpired:        config.OnSessionExpired,
@@ -452,7 +484,22 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// draining it. release must run exactly once the derived context is no
 	// longer needed; handedOff tracks whether that responsibility moved to a
 	// background goroutine (the SSE-reader case) instead of happening here.
-	reqCtx, release := t.deriveRequestContext(ctx)
+	reqCtx, releaseBase := t.deriveRequestContext(ctx)
+	// The request timeout (the http.Client timeout would also cut off a
+	// streamed response body) is enforced by a timer that is disarmed once an
+	// event-stream response starts.
+	reqCtx, timeoutCancel := context.WithCancelCause(reqCtx)
+	var timeoutTimer *time.Timer
+	if t.requestTimeout > 0 && t.sseClient == nil {
+		timeoutTimer = time.AfterFunc(t.requestTimeout, func() { timeoutCancel(errMCPRequestTimeout) })
+	}
+	release := func() {
+		if timeoutTimer != nil {
+			timeoutTimer.Stop()
+		}
+		timeoutCancel(nil)
+		releaseBase()
+	}
 	handedOff := false
 	defer func() {
 		if !handedOff {
@@ -488,21 +535,27 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	if err := t.auth.setBearer(ctx, req.Header); err != nil {
+		return fail(NewTransportError("failed to load OAuth tokens", err))
+	}
 
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
-		client := SSEClient(t.client)
+		client := SSEClient(t.streamClient)
 		if t.sseClient != nil {
 			client = t.sseClient
 		}
 		resp, err = client.Do(req)
 		if err != nil {
+			if errors.Is(context.Cause(reqCtx), errMCPRequestTimeout) {
+				return fail(NewTransportError("failed to send request", fmt.Errorf("request timed out after %s: %w", t.requestTimeout, context.DeadlineExceeded)))
+			}
 			return fail(NewTransportError("failed to send request", err))
 		}
 		if resp == nil {
 			return fail(NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
-		if resp.StatusCode != http.StatusUnauthorized || !t.oauthConfigured() || attempt == 1 {
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || (!t.oauthConfigured() && !t.auth.enabled()) {
 			break
 		}
 		// A nil Body here is not the case this fix cares about (see the
@@ -510,10 +563,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// intermediate 401 response is discarded and retried regardless of
 		// its body.
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 		}
-		if err := t.refreshOAuthToken(ctx); err != nil {
+		if t.auth.enabled() {
+			if err := t.auth.authorize(ctx, resp); err != nil {
+				return fail(err)
+			}
+		} else if err := t.refreshOAuthToken(ctx); err != nil {
 			return fail(NewTransportError("failed to refresh OAuth token", err))
 		}
 		req, err = http.NewRequestWithContext(reqCtx, "POST", t.url, bytes.NewReader(data))
@@ -526,6 +583,9 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if err := t.auth.setBearer(ctx, req.Header); err != nil {
+			return fail(NewTransportError("failed to load OAuth tokens", err))
 		}
 	}
 
@@ -543,7 +603,19 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		var body []byte
 		if resp.Body != nil {
 			defer resp.Body.Close() //nolint:errcheck
-			body, _ = io.ReadAll(resp.Body)
+			body = readErrorBody(resp.Body)
+		}
+		// Matches TS send(): when the failed response to a request carries a
+		// JSON-RPC error, deliver it as the request's response (a null id is
+		// filled in with the request id) instead of an HTTP transport error.
+		if message.ID != nil && len(body) > 0 {
+			if msgs, perr := parseMCPHTTPJSONMessages(body); perr == nil && len(msgs) == 1 && msgs[0].Error != nil {
+				if msgs[0].ID == nil {
+					msgs[0].ID = message.ID
+				}
+				t.queueReceivedMessages(msgs)
+				return nil
+			}
 		}
 		errMessage := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		// Matches TS send()'s two distinct 404 suffixes: a request that
@@ -606,7 +678,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp.Body != nil {
 			defer resp.Body.Close() //nolint:errcheck
 			var readErr error
-			body, readErr = io.ReadAll(resp.Body)
+			body, readErr = readResponseBody(resp.Body)
 			if readErr != nil {
 				return fail(NewTransportError("failed to read response", readErr))
 			}
@@ -650,6 +722,9 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			return nil
 		}
 		handedOff = true
+		if timeoutTimer != nil {
+			timeoutTimer.Stop()
+		}
 		go func() {
 			defer t.postSSEWG.Done()
 			t.readMCPHTTPSSEMessages(reqCtx, release, resp.Body)
@@ -974,8 +1049,14 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
+	if err := t.auth.setBearer(connCtx, req.Header); err != nil {
+		connCancel()
+		t.reportError(NewTransportError("failed to load OAuth tokens", err))
+		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
+		return
+	}
 
-	client := SSEClient(t.client)
+	client := SSEClient(t.streamClient)
 	if t.sseClient != nil {
 		client = t.sseClient
 	}
@@ -1003,12 +1084,18 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 
 	// 401: run the OAuth refresh once (reusing the single-flight path used by
 	// send()), then retry, matching TS's authorizeOnce()-guarded retry.
-	if resp.StatusCode == http.StatusUnauthorized && t.oauthConfigured() && !triedAuth {
+	if resp.StatusCode == http.StatusUnauthorized && (t.oauthConfigured() || t.auth.enabled()) && !triedAuth {
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 		}
-		if err := t.refreshOAuthToken(connCtx); err != nil {
+		if t.auth.enabled() {
+			if err := t.auth.authorize(connCtx, resp); err != nil {
+				connCancel()
+				t.reportError(err)
+				return
+			}
+		} else if err := t.refreshOAuthToken(connCtx); err != nil {
 			connCancel()
 			t.reportError(NewTransportError("failed to refresh OAuth token", err))
 			return
@@ -1036,7 +1123,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
 		var body []byte
 		if resp.Body != nil {
-			body, _ = io.ReadAll(resp.Body)
+			body = readErrorBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {

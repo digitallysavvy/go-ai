@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -31,9 +33,15 @@ type StdioTransport struct {
 	reader *bufio.Scanner
 	writer *bufio.Writer
 
-	// State
+	// State. mu guards connected/reader/writer; writeMu serializes writes so
+	// a Send blocked on a full pipe never holds mu (Close must stay able to
+	// take it, close stdin and kill the child).
 	connected bool
 	mu        sync.Mutex
+	writeMu   sync.Mutex
+
+	onError func(error)
+	stderrW io.Writer
 
 	// Configuration
 	config TransportConfig
@@ -59,6 +67,17 @@ type StdioTransportConfig struct {
 
 	// Config is the base transport configuration
 	Config TransportConfig
+
+	// Stderr receives the child's stderr (TS StdioConfig.stderr). Nil
+	// inherits the parent's stderr (os.Stderr), TS's default 'inherit'. Use
+	// io.Discard to drop it. When Config.EnableLogging is set and Stderr is
+	// nil, stderr lines are logged as "MCP stderr: ..." instead.
+	Stderr io.Writer `json:"-"`
+
+	// OnError, when set, receives non-fatal diagnostics such as a stdout line
+	// that is not a valid JSON-RPC message (TS onerror). Such lines are
+	// skipped instead of ending the connection.
+	OnError func(error) `json:"-"`
 }
 
 // validateStdioCommandForWindows rejects stdio commands/args containing CR or
@@ -92,6 +111,8 @@ func NewStdioTransport(config StdioTransportConfig) *StdioTransport {
 		env:        config.Env,
 		workingDir: config.WorkingDir,
 		config:     config.Config,
+		onError:    config.OnError,
+		stderrW:    config.Stderr,
 	}
 }
 
@@ -108,8 +129,11 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 		return err
 	}
 
-	// Create command
-	t.cmd = exec.CommandContext(ctx, t.command, t.args...)
+	// Create command. Deliberately not exec.CommandContext: the child's
+	// lifetime is the transport's (Close), not that of the context passed to
+	// Connect, which callers routinely cancel once setup is done (TS start()
+	// has no such signal).
+	t.cmd = exec.Command(t.command, t.args...)
 	// Mirrors TS createChildProcess: the child's env is the caller-supplied
 	// Env merged with a safe allowlist of inherited parent env vars, not a
 	// blind inherit of the whole parent environment.
@@ -132,9 +156,19 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 		return NewTransportError("failed to create stdout pipe", err)
 	}
 
-	t.stderr, err = t.cmd.StderrPipe()
-	if err != nil {
-		return NewTransportError("failed to create stderr pipe", err)
+	// stderr: an explicit writer or the inherited os.Stderr is wired straight
+	// to the process (exec drains it); only logging mode needs a pipe.
+	t.stderr = nil
+	logStderr := t.stderrW == nil && t.config.EnableLogging
+	if logStderr {
+		t.stderr, err = t.cmd.StderrPipe()
+		if err != nil {
+			return NewTransportError("failed to create stderr pipe", err)
+		}
+	} else if t.stderrW != nil {
+		t.cmd.Stderr = t.stderrW
+	} else {
+		t.cmd.Stderr = os.Stderr
 	}
 
 	// Start the command
@@ -146,12 +180,11 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 	t.reader = bufio.NewScanner(t.stdout)
 	// Increase buffer size for large messages
 	buf := make([]byte, 0, 64*1024)
-	t.reader.Buffer(buf, 1024*1024) // 1MB max
+	t.reader.Buffer(buf, mcpMaxResponseBodyBytes) // tool results (images) can be large
 
 	t.writer = bufio.NewWriter(t.stdin)
 
-	// Start stderr logger
-	if t.config.EnableLogging {
+	if logStderr {
 		go t.logStderr()
 	}
 
@@ -192,9 +225,11 @@ func (t *StdioTransport) Close() error {
 // Send sends a message to the MCP server
 func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 	t.mu.Lock()
-	defer t.mu.Unlock()
+	connected := t.connected
+	writer := t.writer
+	t.mu.Unlock()
 
-	if !t.connected {
+	if !connected {
 		return NewTransportError("not connected", nil)
 	}
 
@@ -208,16 +243,19 @@ func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 		fmt.Printf("MCP Send: %s\n", string(data))
 	}
 
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+
 	// Write message followed by newline
-	if _, err := t.writer.Write(data); err != nil {
+	if _, err := writer.Write(data); err != nil {
 		return NewTransportError("failed to write message", err)
 	}
-	if err := t.writer.WriteByte('\n'); err != nil {
+	if err := writer.WriteByte('\n'); err != nil {
 		return NewTransportError("failed to write newline", err)
 	}
 
 	// Flush
-	if err := t.writer.Flush(); err != nil {
+	if err := writer.Flush(); err != nil {
 		return NewTransportError("failed to flush", err)
 	}
 
@@ -241,28 +279,38 @@ func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
 		return nil, NewTransportError("not connected", nil)
 	}
 
-	// Read line
-	if !reader.Scan() {
-		err := reader.Err()
-		if err == nil {
-			err = io.EOF
+	for {
+		// Read line
+		if !reader.Scan() {
+			err := reader.Err()
+			if err == nil {
+				err = io.EOF
+			}
+			return nil, err
 		}
-		return nil, err
+
+		line := reader.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+
+		if t.config.EnableLogging {
+			fmt.Printf("MCP Receive: %s\n", string(line))
+		}
+
+		// Parse JSON. A line that is not a JSON-RPC message (servers often
+		// print log output on stdout) is reported and skipped, as TS does,
+		// rather than ending the connection.
+		var message MCPMessage
+		if err := unmarshalSafeJSON(line, &message); err != nil {
+			if t.onError != nil {
+				t.onError(NewTransportError("failed to unmarshal message", err))
+			}
+			continue
+		}
+
+		return &message, nil
 	}
-
-	line := reader.Bytes()
-
-	if t.config.EnableLogging {
-		fmt.Printf("MCP Receive: %s\n", string(line))
-	}
-
-	// Parse JSON
-	var message MCPMessage
-	if err := unmarshalSafeJSON(line, &message); err != nil {
-		return nil, NewTransportError("failed to unmarshal message", err)
-	}
-
-	return &message, nil
 }
 
 // IsConnected returns true if the transport is connected

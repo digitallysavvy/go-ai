@@ -59,6 +59,13 @@ func (c *MCPToolConverter) ConvertToGoAIToolsWithSchemas(ctx context.Context, sc
 // TypeScript toolsFromDefinitions. Passing nil schemas uses automatic schema
 // discovery; a non-nil schemas map filters to own matching tool names.
 func (c *MCPToolConverter) ToolsFromDefinitions(mcpTools []MCPTool, schemas map[string]MCPToolSchema) ([]types.Tool, error) {
+	// TS toolsFromDefinitions runs prepareToolDefinitions, so definitions
+	// fetched earlier (e.g. cached via GetSerializableTools) still register
+	// their x-mcp-header bindings and drop tools with invalid annotations.
+	prepared := ListToolsResult{Tools: append([]MCPTool(nil), mcpTools...)}
+	c.client.prepareToolDefinitions(&prepared, false)
+	mcpTools = prepared.Tools
+
 	goaiTools := make([]types.Tool, 0, len(mcpTools))
 	for _, mcpTool := range mcpTools {
 		var toolSchema *MCPToolSchema

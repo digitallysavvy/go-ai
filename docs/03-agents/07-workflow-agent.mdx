@@ -78,6 +78,20 @@ agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
 })
 ```
 
+### Per-call options
+
+Both `WorkflowGenerateOptions` and `WorkflowStreamOptions` accept `ToolChoice`, `ActiveTools`, `Output` and
+`PrepareStep`, which override the agent's values for that call (a per-call `PrepareStep` runs after the
+agent's). `ToolSet` entries reach the model sorted by name, so the tool list is stable between runs.
+
+`OnAbort` receives the steps completed before the abort (generate and stream). `OnError` and `OnAbort` fire for failures that happen while a stream is being consumed (provider error chunks,
+cancellation), not only before it starts.
+
+### Continuing the conversation
+
+`WorkflowResult.ResponseMessages` holds the messages the run added: first the tool message with the results of any
+approvals the run resumed, then each step's assistant and tool messages. Append them to the input messages for the next turn.
+
 ### Telemetry and runtime context
 
 Workflow telemetry events carry only the runtime context keys you opt in to with
