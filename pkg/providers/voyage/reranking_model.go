@@ -92,7 +92,28 @@ func toVoyageDocuments(docs interface{}) ([]string, []types.Warning) {
 		}
 		return out, []types.Warning{{
 			Type:    "compatibility",
-			Message: "Object documents are converted to strings.",
+			Feature: "object documents",
+			Details: "Object documents are converted to strings.",
+		}}
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		objects := false
+		for _, item := range v {
+			if str, ok := item.(string); ok {
+				out = append(out, str)
+				continue
+			}
+			objects = true
+			raw, _ := json.Marshal(item)
+			out = append(out, string(raw))
+		}
+		if !objects {
+			return out, nil
+		}
+		return out, []types.Warning{{
+			Type:    "compatibility",
+			Feature: "object documents",
+			Details: "Object documents are converted to strings.",
 		}}
 	default:
 		return []string{}, nil
