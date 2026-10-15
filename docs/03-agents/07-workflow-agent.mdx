@@ -69,10 +69,6 @@ example when the tools have side effects that must not overlap. A value below 1 
 finish in, and queued calls are not started once the context is cancelled. Tool execution callbacks can
 run concurrently, so guard shared state with a mutex.
 
-Within model steps, `StreamWithOptions` honors the bound today. `GenerateWithOptions` still executes a
-step's tool calls one at a time (the agent's generate loop does not yet run them concurrently), so
-there the option only takes effect for approval resumes and for a bound of 1.
-
 ```go
 one := 1
 agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
