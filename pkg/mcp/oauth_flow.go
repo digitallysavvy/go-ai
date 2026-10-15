@@ -652,7 +652,7 @@ type ExchangeOAuthAuthorizationParams struct {
 	CodeVerifier            string
 	RedirectURI             string
 	Resource                *url.URL
-	AddClientAuthentication func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error
+	AddClientAuthentication func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error
 	HTTPClient              *http.Client
 }
 
@@ -704,7 +704,7 @@ type RefreshOAuthAuthorizationParams struct {
 	ClientInformation       OAuthClientInformation
 	RefreshToken            string
 	Resource                *url.URL
-	AddClientAuthentication func(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error
+	AddClientAuthentication func(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error
 	HTTPClient              *http.Client
 }
 

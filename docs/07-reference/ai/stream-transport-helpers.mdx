@@ -251,6 +251,7 @@ type ChatTransport interface {
 | `MessageID` | `string` | MessageID is the id of the message being responded to, when known. |
 | `Trigger` | `string` | Trigger describes why SendMessages was called (for example "submit-message" or "regenerate-message"), matching the TypeScript ChatTransport's `trigger` field. |
 | `Messages` | `[]types.Message` | Messages is the full message history sent to the transport. |
+| `Body` | `map[string]interface{}` | Body holds extra request body fields (TS ChatRequestOptions.body). The workflow chat transport merges them into the default POST body after "messages". |
 
 {/* /gen:fields */}
 
