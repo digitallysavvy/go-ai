@@ -1065,11 +1065,7 @@ func (m *LanguageModel) handleError(err error) error {
 		if m.provider.config.TransformErrorBody != nil {
 			body = m.provider.config.TransformErrorBody(body)
 		}
-		var parsed anthropicErrorBody
-		if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && (parsed.Error.Type != "" || parsed.Error.Message != "") {
-			return providererrors.NewProviderError(m.provider.Name(), statusErr.StatusCode, parsed.Error.Type, parsed.Error.Message, err)
-		}
-		return providererrors.NewProviderError(m.provider.Name(), statusErr.StatusCode, "", string(body), err)
+		return anthropicHTTPError(m.provider.Name(), statusErr.StatusCode, statusErr.Headers, body, err)
 	}
 	msg := err.Error()
 	// HTTP errors from the internal client look like "HTTP NNN: <body>"
@@ -2832,4 +2828,23 @@ func rawSSEPayload(data string) interface{} {
 		return data
 	}
 	return raw
+}
+
+// anthropicHTTPError builds the ProviderError for a failed Anthropic HTTP
+// response: the message is error.message of the API error body (TS
+// anthropicFailedResponseHandler), falling back to the raw body, and the
+// response headers and body are kept like TS APICallError.
+func anthropicHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
+	var perr *providererrors.ProviderError
+	var parsed anthropicErrorBody
+	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && (parsed.Error.Type != "" || parsed.Error.Message != "") {
+		perr = providererrors.NewProviderError(providerName, status, parsed.Error.Type, parsed.Error.Message, cause)
+	} else {
+		perr = providererrors.NewProviderError(providerName, status, "", string(body), cause)
+	}
+	perr.ResponseBody = string(body)
+	if len(headers) > 0 {
+		perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
+	}
+	return perr
 }

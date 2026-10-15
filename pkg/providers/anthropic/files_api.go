@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
+	"net/textproto"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -23,7 +25,16 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", chooseFilename(opts.Filename))
+	// The part carries the media type like TS's typed Blob; CreateFormFile
+	// would label every upload application/octet-stream.
+	partHeader := textproto.MIMEHeader{}
+	partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="%s"`, escapeMultipartQuotes(chooseFilename(opts.Filename))))
+	if opts.MediaType != "" {
+		partHeader.Set("Content-Type", opts.MediaType)
+	} else {
+		partHeader.Set("Content-Type", "application/octet-stream")
+	}
+	part, err := writer.CreatePart(partHeader)
 	if err != nil {
 		return nil, err
 	}
@@ -38,16 +49,16 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Method: "POST",
 		Path:   "/files",
 		Body:   &body,
-		Headers: map[string]string{
+		Headers: internalhttp.MergeHeaders(map[string]string{
 			"Content-Type":   writer.FormDataContentType(),
 			"anthropic-beta": BetaHeaderFilesAPI,
-		},
+		}, opts.Headers),
 	})
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("anthropic files upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 
 	var out struct {
@@ -89,3 +100,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		Warnings:          []types.Warning{},
 	}, nil
 }
+
+var multipartQuoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
+
+func escapeMultipartQuotes(s string) string { return multipartQuoteEscaper.Replace(s) }

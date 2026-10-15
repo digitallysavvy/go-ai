@@ -54,7 +54,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("anthropic skills upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 
 	var out struct {
@@ -125,7 +125,7 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 	// error instead, matching TS's anthropicFailedResponseHandler, which
 	// throws on any non-2xx response from this endpoint.
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("anthropic skill version metadata fetch failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 	var out struct {
 		Name        string `json:"name"`
