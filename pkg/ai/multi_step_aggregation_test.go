@@ -282,11 +282,16 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	if got, want := len(result.FinalStep.Warnings), 1; got != want {
 		t.Fatalf("len(result.FinalStep.Warnings) = %d, want %d", got, want)
 	}
-	if got, want := len(finishEvent.Sources), 1; got != want {
-		t.Fatalf("len(finishEvent.Sources) = %d, want final-step sources only", got)
+	// TS onEnd aggregates across steps (usage: totalUsage, flattened content,
+	// toolCalls, toolResults, sources); the final step is event.FinalStep.
+	if got, want := len(finishEvent.Sources), 2; got != want {
+		t.Fatalf("len(finishEvent.Sources) = %d, want all-step sources", got)
 	}
-	if finishEvent.Sources[0].ID != "src-2" {
-		t.Fatalf("finishEvent.Sources = %+v, want final-step source", finishEvent.Sources)
+	if finishEvent.Sources[0].ID != "src-1" || finishEvent.Sources[1].ID != "src-2" {
+		t.Fatalf("finishEvent.Sources = %+v, want sources of every step", finishEvent.Sources)
+	}
+	if len(finishEvent.FinalStep.Sources) != 1 || finishEvent.FinalStep.Sources[0].ID != "src-2" {
+		t.Fatalf("finishEvent.FinalStep.Sources = %+v, want final-step source", finishEvent.FinalStep.Sources)
 	}
 	if got, want := len(finishEvent.Files), 2; got != want {
 		t.Fatalf("len(finishEvent.Files) = %d, want all-step files", got)
@@ -297,14 +302,17 @@ func TestGenerateTextAggregatesFilesSourcesWarningsAcrossSteps(t *testing.T) {
 	if got := len(result.ToolCalls); got != 1 {
 		t.Fatalf("len(result.ToolCalls) = %d, want all-step tool calls", got)
 	}
-	if got := len(finishEvent.ToolCalls); got != 0 {
-		t.Fatalf("len(finishEvent.ToolCalls) = %d, want final-step tool calls only", got)
+	if got := len(finishEvent.ToolCalls); got != 1 {
+		t.Fatalf("len(finishEvent.ToolCalls) = %d, want all-step tool calls", got)
+	}
+	if got := len(finishEvent.FinalStep.ToolCalls); got != 0 {
+		t.Fatalf("len(finishEvent.FinalStep.ToolCalls) = %d, want final-step tool calls only", got)
 	}
 	if got := len(result.ToolResults); got != 1 {
 		t.Fatalf("len(result.ToolResults) = %d, want all-step tool results", got)
 	}
-	if got := len(finishEvent.ToolResults); got != 0 {
-		t.Fatalf("len(finishEvent.ToolResults) = %d, want final-step tool results only", got)
+	if got := len(finishEvent.ToolResults); got != 1 {
+		t.Fatalf("len(finishEvent.ToolResults) = %d, want all-step tool results", got)
 	}
 	if finishResult == nil {
 		t.Fatal("OnFinish did not receive result")

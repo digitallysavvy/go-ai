@@ -965,25 +965,25 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		a.config.OnFinish(result)
 	}
 
-	// Aggregate all tool calls across steps for the finish event
-	var allToolCalls []types.ToolCall
-	for _, s := range result.Steps {
-		allToolCalls = append(allToolCalls, s.ToolCalls...)
-	}
-
-	// CB-T23: Emit OnFinishEvent
-	ai.Notify(ctx, ai.OnFinishEvent{
+	// CB-T23: Emit OnFinishEvent. Like the TS onEnd event, it aggregates
+	// content, tool calls, results, sources, files and warnings across steps.
+	finishEvent := ai.OnFinishEvent{
 		Text:                result.Text,
-		ToolCalls:           allToolCalls,
-		ToolResults:         result.ToolResults,
 		FinishReason:        result.FinishReason,
 		Steps:               result.Steps,
 		TotalUsage:          result.Usage,
-		Warnings:            result.Warnings,
 		ExperimentalContext: a.config.ExperimentalContext,
 		RuntimeContext:      a.runtimeContext(),
 		ToolsContext:        a.config.ToolsContext,
-	}, cbs.onFinish)
+	}
+	finishEvent.SetAggregatesFromSteps(result.Steps, append(append([]types.Message(nil), resumed.ResponseMessages...), responseMessagesOf(result.Steps)...))
+	if len(finishEvent.ToolResults) == 0 {
+		finishEvent.ToolResults = result.ToolResults
+	}
+	if len(finishEvent.Warnings) == 0 {
+		finishEvent.Warnings = result.Warnings
+	}
+	ai.Notify(ctx, finishEvent, cbs.onFinish)
 
 	return result, nil
 }
@@ -2676,4 +2676,12 @@ func (t *toolTimings) snapshot() map[string]int64 {
 		out[k] = v
 	}
 	return out
+}
+
+func responseMessagesOf(steps []types.StepResult) []types.Message {
+	var messages []types.Message
+	for _, step := range steps {
+		messages = append(messages, step.Response.Messages...)
+	}
+	return messages
 }

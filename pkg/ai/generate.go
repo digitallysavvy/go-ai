@@ -1852,7 +1852,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		lastDynamicResults = last.DynamicToolResults
 		lastSources = last.Sources
 	}
-	Notify(ctx, OnFinishEvent{
+	finishEvent := OnFinishEvent{
 		CallID:             callID,
 		StepNumber:         lastStepNum,
 		Model:              lastModel,
@@ -1890,7 +1890,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
 		Output:              result.Output,
-	}, onEndEvent)
+	}
+	finishEvent.SetAggregatesFromSteps(result.Steps, result.ResponseMessages)
+	Notify(ctx, finishEvent, onEndEvent)
 
 	// Apply retention settings (v6.0.60)
 	// Exclude request/response bodies based on retention settings

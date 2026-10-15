@@ -3105,7 +3105,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if len(stepsForEvent) == 0 {
 		stepsForEvent = []types.StepResult{lastStep}
 	}
-	Notify(ctx, OnFinishEvent{
+	finishEvent := OnFinishEvent{
 		CallID:             r.cbCallID,
 		StepNumber:         lastStep.StepNumber,
 		Model:              lastStep.Model,
@@ -3138,7 +3138,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
 		Output:              r.outputResult,
-	}, r.cbOnEndEvent)
+	}
+	finishEvent.SetAggregatesFromSteps(stepsForEvent, responseMessagesWithInitial(r.initialResponseMessages, stepsForEvent))
+	Notify(ctx, finishEvent, r.cbOnEndEvent)
 }
 
 func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
@@ -4025,7 +4027,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	if r.cbOnEnd != nil {
 		r.cbOnEnd(r)
 	}
-	Notify(ctx, OnFinishEvent{
+	finishEvent := OnFinishEvent{
 		CallID:             r.cbCallID,
 		StepNumber:         step.StepNumber,
 		Model:              step.Model,
@@ -4060,7 +4062,9 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
 		Output:              r.outputResult,
-	}, r.cbOnEndEvent)
+	}
+	finishEvent.SetAggregatesFromSteps(finishEvent.Steps, responseMessagesWithInitial(r.initialResponseMessages, finishEvent.Steps))
+	Notify(ctx, finishEvent, r.cbOnEndEvent)
 
 	return r.text, nil
 }
