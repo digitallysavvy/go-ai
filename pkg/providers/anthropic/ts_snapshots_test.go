@@ -21,6 +21,7 @@ type tsPart struct {
 	Type         string `json:"type"`
 	ToolName     string `json:"toolName"`
 	ToolCallID   string `json:"toolCallId"`
+	Input        string `json:"input"`
 	Kind         string `json:"kind"`
 	FinishReason *struct {
 		Raw     string `json:"raw"`
@@ -93,6 +94,49 @@ func goStreamSeq(chunks []*provider.StreamChunk) []string {
 			continue
 		}
 		out = append(out, name)
+	}
+	return out
+}
+
+// callFacts lists "id=<toolCallId> input=<canonical json>" for every tool call.
+func tsCallFacts(parts []tsPart) []string {
+	var out []string
+	for _, p := range parts {
+		if p.Type == "tool-call" {
+			out = append(out, callFact(p.ToolCallID, strings.ReplaceAll(p.Input, `\\`, `\`)))
+		}
+	}
+	return out
+}
+
+func callFact(id, input string) string {
+	var v interface{}
+	if json.Unmarshal([]byte(input), &v) != nil {
+		return "id=" + id
+	}
+	b, _ := json.Marshal(v) //nolint:errcheck // value came from Unmarshal
+	return "id=" + id + " input=" + string(b)
+}
+
+func goCallFacts(content []types.ContentPart, chunks []*provider.StreamChunk) []string {
+	var out []string
+	add := func(id string, args map[string]interface{}, raw string) {
+		b, _ := json.Marshal(args) //nolint:errcheck // decoded map
+		in := string(b)
+		if raw != "" {
+			in = raw
+		}
+		out = append(out, callFact(id, in))
+	}
+	for _, c := range content {
+		if tc, ok := c.(types.ToolCallContent); ok {
+			add(tc.ToolCallID, tc.Arguments, "")
+		}
+	}
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolCall && c.ToolCall != nil {
+			add(c.ToolCall.ID, c.ToolCall.Arguments, c.ToolCall.RawArguments)
+		}
 	}
 	return out
 }
@@ -202,6 +246,9 @@ func TestTSSnapshotsDrivenThroughGo(t *testing.T) {
 				if strings.Join(got, ",") != strings.Join(want, ",") {
 					t.Fatalf("content\n got %v\nwant %v", got, want)
 				}
+				if g, w := goCallFacts(res.Content, nil), tsCallFacts(snap.Parts); strings.Join(g, "\n") != strings.Join(w, "\n") {
+					t.Fatalf("tool calls\n got %v\nwant %v", g, w)
+				}
 				return
 			}
 			m, closeFn := fixtureModel(t, serveChunksFixture(sc.fixture, t))
@@ -217,6 +264,9 @@ func TestTSSnapshotsDrivenThroughGo(t *testing.T) {
 			}
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Fatalf("stream\n got %v\nwant %v", got, want)
+			}
+			if g, w := goCallFacts(nil, chunks), tsCallFacts(snap.Parts); strings.Join(g, "\n") != strings.Join(w, "\n") {
+				t.Fatalf("tool calls\n got %v\nwant %v", g, w)
 			}
 			var gotFin []*provider.StreamChunk
 			for _, c := range chunks {
