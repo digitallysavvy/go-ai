@@ -34,6 +34,8 @@ math-agent
 computer-use
 code-execution
 tool-search
+# Root-level `go build` of a provider package (e.g. ./pkg/providers/typesafeai)
+/typesafeai
 
 # Code coverage profiles and other test artifacts
 *.out
