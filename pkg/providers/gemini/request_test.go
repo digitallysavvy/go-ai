@@ -173,10 +173,10 @@ func TestBuildRequest_ThresholdSafetySettings(t *testing.T) {
 	body, _ = buildReq(t, makeTestModel("gemini-2.5-flash"), &provider.GenerateOptions{
 		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
 			"threshold":      "BLOCK_LOW_AND_ABOVE",
-			"safetySettings": []interface{}{map[string]interface{}{"category": "X", "threshold": "Y"}},
+			"safetySettings": []interface{}{map[string]interface{}{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"}},
 		}},
 	}, false)
-	if got := jsonString(t, body["safetySettings"]); got != `[{"category":"X","threshold":"Y"}]` {
+	if got := jsonString(t, body["safetySettings"]); got != `[{"category":"HARM_CATEGORY_HATE_SPEECH","threshold":"BLOCK_NONE"}]` {
 		t.Errorf("explicit safetySettings must win: %s", got)
 	}
 }
