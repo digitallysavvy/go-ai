@@ -26,7 +26,7 @@ func ProviderTool(id string, args map[string]interface{}) (types.Tool, bool) {
 	case "anthropic.text_editor_20250124":
 		return tools.TextEditor20250124(), len(args) == 0
 	case "anthropic.text_editor_20250429":
-		return tools.TextEditor20250429(), len(args) == 0
+		return tools.TextEditor20250429(), len(args) == 0 //nolint:staticcheck // the TS id is still supported
 	case "anthropic.memory_20250818":
 		return tools.Memory20250818(), len(args) == 0
 	case "anthropic.code_execution_20250522":

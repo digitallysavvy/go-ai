@@ -54,15 +54,9 @@ func (m *LanguageModel) providerOptionsNames() []string {
 	return []string{"google"}
 }
 
-// getProviderOpts returns the first matching provider options map from
-// GenerateOptions.ProviderOptions using the configured key precedence order.
-func (m *LanguageModel) getProviderOpts(opts *provider.GenerateOptions) map[string]interface{} {
-	v, _ := m.getProviderOptsNamed(opts)
-	return v
-}
-
-// getProviderOptsNamed is getProviderOpts plus the key the options were found
-// under (for error messages).
+// getProviderOptsNamed returns the first matching provider options map from
+// GenerateOptions.ProviderOptions using the configured key precedence order,
+// plus the key it was found under (for error messages).
 func (m *LanguageModel) getProviderOptsNamed(opts *provider.GenerateOptions) (map[string]interface{}, string) {
 	if opts == nil || opts.ProviderOptions == nil {
 		return nil, ""
