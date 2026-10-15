@@ -775,6 +775,19 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
 			}
 
+			// WorkflowAgent: a provider-executed call with no result gets an
+			// empty text result (TS resolveProviderToolResult) instead of the
+			// pending marker, so the loop continues with a text output.
+			if callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult {
+				for _, synthetic := range ai.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, a.config.Model.Provider(), a.config.Model.ModelID()) {
+					for i := range toolResults {
+						if toolResults[i].ToolCallID == synthetic.ToolCallID && toolResults[i].ProviderExecuted && toolResults[i].Result == nil && toolResults[i].Error == nil {
+							toolResults[i].Result = synthetic.Result
+							toolResults[i].ModelOutput = synthetic.ModelOutput
+						}
+					}
+				}
+			}
 			stepToolResults = toolResults
 			stepResult.Performance.ToolExecutionMs = timings.snapshot()
 			// TS toolResults holds only tool-result content parts; approval

@@ -400,6 +400,45 @@ func (r *WorkflowResult) IsLoopFinished() bool {
 // WorkflowStreamResult wraps the streaming result.
 type WorkflowStreamResult struct{ *ai.StreamTextResult }
 
+// skipOutput reports whether TS WorkflowAgent's stream mode would not parse
+// the structured output: it parses the last step's text only when the text is
+// non-empty (whatever the finish reason, including tool-calls) and at least one
+// step ran. Core streamText parses unconditionally, so an empty final text
+// (for example a tool-calls finish) would otherwise surface a parse error the
+// workflow agent never produces.
+func (r *WorkflowStreamResult) skipOutput() bool {
+	steps := r.StreamTextResult.Steps()
+	return len(steps) == 0 || steps[len(steps)-1].Text == ""
+}
+
+// Output returns the parsed structured output, nil when TS would not parse it
+// (see skipOutput).
+func (r *WorkflowStreamResult) Output() any {
+	if r.skipOutput() {
+		return nil
+	}
+	return r.StreamTextResult.Output()
+}
+
+// OutputErr returns the output parse error, nil when TS would not parse the
+// output (see skipOutput).
+func (r *WorkflowStreamResult) OutputErr() error {
+	if r.skipOutput() {
+		return nil
+	}
+	return r.StreamTextResult.OutputErr()
+}
+
+// Err returns the error that ended the stream. Like TS stream mode, where an
+// output parse failure fails the run unless an earlier error already did, it
+// falls back to the output parse error.
+func (r *WorkflowStreamResult) Err() error {
+	if err := r.StreamTextResult.Err(); err != nil {
+		return err
+	}
+	return r.OutputErr()
+}
+
 // NewWorkflowAgent validates and creates a WorkflowAgent.
 func NewWorkflowAgent(cfg WorkflowAgent) (*WorkflowAgent, error) {
 	if cfg.Model == nil {
@@ -1533,7 +1572,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			system = normalized
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
@@ -1704,7 +1743,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,
@@ -1741,6 +1780,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 // an error: the caller's context ended, or the failure is a cancellation or a
 // timeout such as the agent's own Timeout (TS classifies AbortError and
 // TimeoutError as aborts, so onAbort fires and onError does not).
+// workflowInternalOptions makes the loop continue after a provider-executed
+// tool call with no result (TS WorkflowAgent warns and sends an empty result).
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true}
+
 func isWorkflowAbort(ctx context.Context, err error) bool {
 	if ctx != nil && ctx.Err() != nil {
 		return true

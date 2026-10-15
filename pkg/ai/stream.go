@@ -2330,6 +2330,22 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.finishReason = types.FinishReasonOther
 		}
+		// WorkflowAgent: answer provider-executed calls that got no result with
+		// an empty text result, as if the provider had streamed it, so the loop
+		// continues (TS resolveProviderToolResult).
+		injectedProviderResult := false
+		if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && !transformStopped {
+			for _, call := range missingProviderResultCalls(stepToolCalls, toolsByName, func(id string) bool {
+				_, ok := streamedToolResults[id]
+				return ok
+			}) {
+				synthetic := emptyProviderResult(call, stepProvider, stepModelID)
+				streamedToolResults[call.ID] = synthetic
+				stepContent = append(stepContent, toolResultContentFromToolResult(synthetic))
+				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &synthetic}})
+				injectedProviderResult = true
+			}
+		}
 		// The consumer-visible per-step finish signal is ChunkTypeFinishStep,
 		// pushed once this step's tool calls/results have also been forwarded
 		// (see below) — mirroring TS's finish-step, which is enqueued in
@@ -2796,7 +2812,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				break
 			}
 		}
-		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 {
+		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 && !injectedProviderResult {
 			break
 		}
 		// Tool calls left unexecuted (unsafe finish reason) stop the loop.
