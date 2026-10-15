@@ -1742,8 +1742,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// tool with SupportsDeferredResults has not yet delivered its result.
 		hasLocalToolCalls := false
 		for _, call := range genResult.ToolCalls {
-			tool := toolsByName[call.ToolName]
-			if tool != nil && !tool.ProviderExecuted {
+			if isClientToolCall(call, toolsByName) {
 				hasLocalToolCalls = true
 				break
 			}
@@ -1955,14 +1954,25 @@ func (e *toolResultModelOutputError) Unwrap() error {
 
 // hasUnresolvedLocalToolCalls reports whether a locally executed tool call
 // of the step has neither a result nor an approval outcome.
+// isClientToolCall reports whether a tool call is one the SDK must answer
+// itself (TS: toolCall.providerExecuted !== true). That includes calls to
+// tools that do not exist or whose input was invalid: they are answered with
+// an error result and the loop continues so the model can recover.
+func isClientToolCall(call types.ToolCall, toolsByName map[string]*types.Tool) bool {
+	if call.ProviderExecuted {
+		return false
+	}
+	tool := toolsByName[call.ToolName]
+	return tool == nil || !tool.ProviderExecuted
+}
+
 func hasUnresolvedLocalToolCalls(calls []types.ToolCall, toolsByName map[string]*types.Tool, results []types.ToolResult) bool {
 	resolved := make(map[string]bool, len(results))
 	for _, result := range results {
 		resolved[result.ToolCallID] = true
 	}
 	for _, call := range calls {
-		tool := toolsByName[call.ToolName]
-		if tool == nil || tool.ProviderExecuted {
+		if !isClientToolCall(call, toolsByName) {
 			continue
 		}
 		if !resolved[call.ID] {
