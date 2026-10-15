@@ -697,10 +697,7 @@ func TestCompactionDeltaNullContent(t *testing.T) {
 	}
 
 	// Next call should return EOF
-	_, err = stream.Next()
-	if err != io.EOF {
-		t.Errorf("expected io.EOF after message_stop, got: %v", err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
 // TestCompactionDeltaWithContent verifies compaction_delta with non-null content is emitted
@@ -724,10 +721,7 @@ func TestCompactionDeltaWithContent(t *testing.T) {
 	}
 
 	// Next → EOF
-	_, err = stream.Next()
-	if err != io.EOF {
-		t.Errorf("expected io.EOF, got: %v", err)
-	}
+	expectFinishOtherThenEOF(t, stream)
 }
 
 // --- compaction_delta content emission tests ---

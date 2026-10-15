@@ -2770,6 +2770,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			// TS emits one finish part per message_stop and keeps reading, so a
 			// stream of several concatenated messages yields one finish each.
 			// The stream ends when the underlying body does.
+			if s.finish == nil && !s.finishIssued {
+				// message_stop without a preceding message_delta: TS still
+				// finishes, with its initial finish reason {unified: other}.
+				s.finish = &provider.StreamChunk{
+					Type:         provider.ChunkTypeFinish,
+					FinishReason: types.FinishReasonOther,
+				}
+			}
 			if s.finish != nil && !s.finishIssued {
 				s.finishIssued = true
 				return s.issueFinish(false), nil

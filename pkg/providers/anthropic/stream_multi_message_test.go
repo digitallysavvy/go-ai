@@ -66,3 +66,29 @@ func TestStreamAlwaysStartsWithStreamStart(t *testing.T) {
 		t.Fatalf("first chunk = %+v", chunks[0])
 	}
 }
+
+// TS finishes on message_stop even when no message_delta came before it, with
+// finish reason `other`.
+func TestStreamMessageStopWithoutDeltaFinishesOther(t *testing.T) {
+	model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"+
+			"data: {\"type\":\"message_stop\"}\n\n")
+	})
+	defer closeFn()
+	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fin *provider.StreamChunk
+	n := 0
+	for _, c := range drain(t, s) {
+		if c.Type == provider.ChunkTypeFinish {
+			fin = c
+			n++
+		}
+	}
+	if n != 1 || fin.FinishReason != types.FinishReasonOther || fin.Usage == nil {
+		t.Fatalf("finish = %+v (count %d)", fin, n)
+	}
+}
