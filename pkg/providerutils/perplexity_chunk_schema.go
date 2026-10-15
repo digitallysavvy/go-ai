@@ -26,11 +26,11 @@ var (
 	zPplxItem zNode = func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
 		m, ok := v.(map[string]interface{})
 		if !ok {
-			return &ChunkSchemaError{path: path, code: "invalid_union", message: "Invalid input"}
+			return &ChunkSchemaError{Path: path, Code: "invalid_union", Message: "Invalid input"}
 		}
 		t, isStr := m["type"].(string)
 		if !isStr {
-			return &ChunkSchemaError{path: path, code: "invalid_union", message: "Invalid input"}
+			return &ChunkSchemaError{Path: path, Code: "invalid_union", Message: "Invalid input"}
 		}
 		if n, handled := zPplxHandledItems[t]; handled {
 			return n(v, present, path)

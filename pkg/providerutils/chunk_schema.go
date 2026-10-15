@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -18,206 +19,37 @@ import (
 // (unknown keys pass), `nullish` means absent or null, `optional` means absent
 // only, and `nullable` means the key must be present but may be null.
 //
-// NOTE: anthropic/chunk_schema.go and gemini/chunk_schema.go carry their own
-// copies of these combinators; they should be deduped into one shared package.
+// The combinators are shared with anthropic/chunk_schema.go and
+// gemini/chunk_schema.go through pkg/internal/zodlite.
 
-// ChunkSchemaError is a frame that failed a TS zod chunk schema.
-type ChunkSchemaError struct {
-	path    []interface{}
-	code    string
-	message string
-}
+// ChunkSchemaError is a frame that failed a TS zod chunk schema. It is the
+// shared zodlite issue; Error() renders "path: message".
+type ChunkSchemaError = zodlite.Issue
 
-func (e *ChunkSchemaError) Error() string {
-	var b strings.Builder
-	for i, p := range e.path {
-		switch x := p.(type) {
-		case string:
-			if i > 0 {
-				b.WriteByte('.')
-			}
-			b.WriteString(x)
-		case int:
-			b.WriteByte('[')
-			b.WriteString(strconv.Itoa(x))
-			b.WriteByte(']')
-		}
-	}
-	if b.Len() == 0 {
-		return e.message
-	}
-	return b.String() + ": " + e.message
-}
+// The combinators live in pkg/internal/zodlite (shared with the anthropic and
+// gemini chunk schemas).
+type (
+	zNode = zodlite.Node
+	zFld  = zodlite.Field
+)
 
-type zNode func(v interface{}, present bool, path []interface{}) *ChunkSchemaError
-
-func zType(v interface{}, present bool) string {
-	switch v.(type) {
-	case nil:
-		if !present {
-			return "undefined"
-		}
-		return "null"
-	case string:
-		return "string"
-	case float64:
-		return "number"
-	case bool:
-		return "boolean"
-	case []interface{}:
-		return "array"
-	case map[string]interface{}:
-		return "object"
-	}
-	return "unknown"
-}
-
-func zBad(expected string, v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-	return &ChunkSchemaError{path: path, code: "invalid_type", message: "Invalid input: expected " + expected + ", received " + zType(v, present)}
-}
-
-func zStr(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-	if _, ok := v.(string); !ok {
-		return zBad("string", v, present, path)
-	}
-	return nil
-}
-
-func zNum(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-	if _, ok := v.(float64); !ok {
-		return zBad("number", v, present, path)
-	}
-	return nil
-}
-
-func zAny(interface{}, bool, []interface{}) *ChunkSchemaError { return nil }
-
-func zEnum(values ...string) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		if s, ok := v.(string); ok {
-			for _, w := range values {
-				if s == w {
-					return nil
-				}
-			}
-		}
-		quoted := make([]string, len(values))
-		for i, w := range values {
-			b, _ := json.Marshal(w)
-			quoted[i] = string(b)
-		}
-		return &ChunkSchemaError{path: path, code: "invalid_value", message: "Invalid option: expected one of " + strings.Join(quoted, "|")}
-	}
-}
-
-func zNullish(n zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		if !present || v == nil {
-			return nil
-		}
-		return n(v, present, path)
-	}
-}
-
-func zNullable(n zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		if present && v == nil {
-			return nil
-		}
-		return n(v, present, path)
-	}
-}
-
-func zOptional(n zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		if !present {
-			return nil
-		}
-		return n(v, present, path)
-	}
-}
-
-func zArr(n zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		a, ok := v.([]interface{})
-		if !ok {
-			return zBad("array", v, present, path)
-		}
-		for i, e := range a {
-			if bad := n(e, true, append(append([]interface{}{}, path...), i)); bad != nil {
-				return bad
-			}
-		}
-		return nil
-	}
-}
-
-// zRec is z.record(z.string(), n).
-func zRec(n zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return zBad("record", v, present, path)
-		}
-		for k, e := range m {
-			if bad := n(e, true, append(append([]interface{}{}, path...), k)); bad != nil {
-				return bad
-			}
-		}
-		return nil
-	}
-}
-
-type zFld struct {
-	key  string
-	node zNode
-}
-
-func fl(key string, n zNode) zFld { return zFld{key, n} }
-
-func zObj(fields ...zFld) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return zBad("object", v, present, path)
-		}
-		for _, f := range fields {
-			fv, fp := m[f.key]
-			if bad := f.node(fv, fp, append(append([]interface{}{}, path...), f.key)); bad != nil {
-				return bad
-			}
-		}
-		return nil
-	}
-}
-
-func zUnionOf(nodes ...zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		for _, n := range nodes {
-			if n(v, present, path) == nil {
-				return nil
-			}
-		}
-		return &ChunkSchemaError{path: path, code: "invalid_union", message: "Invalid input"}
-	}
-}
-
-// zDiscType is z.discriminatedUnion('type', ...): an unknown or absent
-// discriminator is an invalid_union issue at the `type` path.
-func zDiscType(variants map[string]zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return zBad("object", v, present, path)
-		}
-		t, _ := m["type"].(string)
-		n, known := variants[t]
-		if !known {
-			return &ChunkSchemaError{path: append(append([]interface{}{}, path...), "type"), code: "invalid_union", message: "Invalid input"}
-		}
-		return n(v, present, path)
-	}
-}
+var (
+	zType     = zodlite.JSType
+	zBad      = zodlite.Invalid
+	zStr      = zodlite.String
+	zNum      = zodlite.Number
+	zAny      = zodlite.Unknown
+	zEnum     = zodlite.Enum
+	zNullish  = zodlite.Nullish
+	zNullable = zodlite.Nullable
+	zOptional = zodlite.Optional
+	zArr      = zodlite.Array
+	zRec      = zodlite.RecordOf
+	fl        = zodlite.F
+	zObj      = zodlite.Object
+	zUnionOf  = zodlite.Union
+	zDiscType = zodlite.Disc
+)
 
 func zLit(want string) zNode { return zEnum(want) }
 
@@ -602,11 +434,11 @@ func ChunkParseFailure(data string, cause error) (string, error) {
 	}
 	issue := map[string]interface{}{"code": "custom", "path": []interface{}{}, "message": "Invalid input"}
 	if se, ok := cause.(*ChunkSchemaError); ok {
-		path := se.path
+		path := se.Path
 		if path == nil {
 			path = []interface{}{}
 		}
-		issue = map[string]interface{}{"code": se.code, "path": path, "message": se.message}
+		issue = map[string]interface{}{"code": se.Code, "path": path, "message": se.Message}
 	} else if cause != nil {
 		issue["message"] = cause.Error()
 	}

@@ -273,7 +273,7 @@ func ValidateResponsesChunk(data []byte) error {
 		return zBad("object", value, true, nil)
 	}
 	if _, ok := m["type"].(string); !ok {
-		return &ChunkSchemaError{path: []interface{}{"type"}, code: "invalid_type", message: "Invalid input: expected string, received " + zType(m["type"], m["type"] != nil || hasKey(m, "type"))}
+		return &ChunkSchemaError{Path: []interface{}{"type"}, Code: "invalid_type", Message: "Invalid input: expected string, received " + zType(m["type"], m["type"] != nil || hasKey(m, "type"))}
 	}
 	if !isModeledResponsesChunk(m) {
 		return nil
@@ -283,7 +283,7 @@ func ValidateResponsesChunk(data []byte) error {
 		if zRespErrNested(value, true, nil) == nil || zRespErrFlat(value, true, nil) == nil {
 			return nil
 		}
-		return &ChunkSchemaError{code: "custom", message: "Known response chunk failed schema validation"}
+		return &ChunkSchemaError{Code: "custom", Message: "Known response chunk failed schema validation"}
 	}
 	if bad := zRespModeled[t](value, true, nil); bad != nil {
 		return bad

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -18,6 +19,29 @@ type Issue struct {
 	Path    []interface{}
 	Code    string
 	Message string
+}
+
+// Error renders the issue as "path.to[0].key: message" (just the message when
+// the path is empty), so an Issue can be used as an error value.
+func (i *Issue) Error() string {
+	var b strings.Builder
+	for n, p := range i.Path {
+		switch x := p.(type) {
+		case string:
+			if n > 0 {
+				b.WriteByte('.')
+			}
+			b.WriteString(x)
+		case int:
+			b.WriteByte('[')
+			b.WriteString(strconv.Itoa(x))
+			b.WriteByte(']')
+		}
+	}
+	if b.Len() == 0 {
+		return i.Message
+	}
+	return b.String() + ": " + i.Message
 }
 
 // Node validates one value; present is false when the object key is absent.
@@ -84,6 +108,28 @@ func Literal(want string) Node {
 			return nil
 		}
 		return &Issue{Path: path, Code: "invalid_value", Message: fmt.Sprintf("Invalid input: expected %q", want)}
+	}
+}
+
+// Enum is z.enum(values...): one of the listed strings.
+func Enum(values ...string) Node {
+	return func(v interface{}, present bool, path []interface{}) *Issue {
+		if s, ok := v.(string); ok {
+			for _, w := range values {
+				if s == w {
+					return nil
+				}
+			}
+		}
+		quoted := make([]string, len(values))
+		for i, w := range values {
+			b, _ := json.Marshal(w)
+			quoted[i] = string(b)
+		}
+		if len(values) == 1 { // zod v4 en locale: a single value reads like a literal
+			return &Issue{Path: path, Code: "invalid_value", Message: "Invalid input: expected " + quoted[0]}
+		}
+		return &Issue{Path: path, Code: "invalid_value", Message: "Invalid option: expected one of " + strings.Join(quoted, "|")}
 	}
 }
 
@@ -165,6 +211,22 @@ func Record(v interface{}, present bool, path []interface{}) *Issue {
 		return Invalid("record", v, present, path)
 	}
 	return nil
+}
+
+// RecordOf is z.record(z.string(), n).
+func RecordOf(n Node) Node {
+	return func(v interface{}, present bool, path []interface{}) *Issue {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return Invalid("record", v, present, path)
+		}
+		for k, e := range m {
+			if bad := n(e, true, append(append([]interface{}{}, path...), k)); bad != nil {
+				return bad
+			}
+		}
+		return nil
+	}
 }
 
 // Union is z.union: the first matching node wins.

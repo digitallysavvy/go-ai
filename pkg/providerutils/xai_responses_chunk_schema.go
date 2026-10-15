@@ -132,7 +132,7 @@ func ValidateXAIResponsesChunk(data []byte) error {
 	t, _ := m["type"].(string)
 	node, known := zXaiChunk[t]
 	if !known {
-		return &ChunkSchemaError{path: []interface{}{"type"}, code: "invalid_union", message: "Invalid input"}
+		return &ChunkSchemaError{Path: []interface{}{"type"}, Code: "invalid_union", Message: "Invalid input"}
 	}
 	if bad := node(value, true, nil); bad != nil {
 		return bad
