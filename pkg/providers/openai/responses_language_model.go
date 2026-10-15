@@ -380,6 +380,14 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		isReasoning = *forceReasoning
 	}
 
+	// TS: resolvedReasoningEffort = openaiOptions.reasoningEffort ??
+	// (isCustomReasoning(reasoning) ? reasoning : undefined), resolved once so
+	// the top-level `reasoning` value goes through the same GPT-6+ check.
+	reasoningEffortOption := reasoningEffort
+	if reasoningEffort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		reasoningEffort = string(*opts.Reasoning)
+	}
+
 	// GPT-6+ models restrict reasoning effort to a fixed set; drop and warn
 	// on anything else (row 17e489e).
 	if reasoningEffort != "" && modelCapabilities.SupportedReasoningEfforts != nil &&
@@ -529,30 +537,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["stream"] = true
 	}
 
-	// Reasoning effort (from top-level Reasoning param or provider options).
-	effort := ""
-	if opts.Reasoning != nil {
-		switch *opts.Reasoning {
-		case types.ReasoningNone:
-			effort = "none"
-		case types.ReasoningMinimal:
-			effort = "minimal"
-		case types.ReasoningLow:
-			effort = "low"
-		case types.ReasoningMedium:
-			effort = "medium"
-		case types.ReasoningHigh:
-			effort = "high"
-		case types.ReasoningXHigh:
-			effort = "xhigh"
-		case types.ReasoningMax:
-			effort = "max"
-		}
-	}
-	// Provider-level reasoningEffort overrides the top-level param.
-	if reasoningEffort != "" {
-		effort = reasoningEffort
-	}
+	effort := reasoningEffort
 	resolvedReasoningSummary := reasoningSummary
 	if !reasoningSummarySet && resolvedReasoningSummary == "" && effort != "" && effort != "none" {
 		resolvedReasoningSummary = "detailed"
@@ -575,7 +560,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 		body["reasoning"] = reasoning
 	} else if !isReasoning {
-		if reasoningEffort != "" {
+		if reasoningEffortOption != "" {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "reasoningEffort",
@@ -603,6 +588,23 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				Details: "reasoningContext is not supported for non-reasoning models",
 			})
 		}
+	}
+
+	// Build the include list in TS order (user include, logprobs, web search
+	// sources, code interpreter outputs, then reasoning.encrypted_content when
+	// store=false on a reasoning model so multi-turn works without server-side
+	// persistence).
+	if responsesTopLogprobsIncluded(topLogprobs) {
+		includeFields = appendUnique(includeFields, "message.output_text.logprobs")
+	}
+	if includeWebSearchSources && (hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview")) {
+		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
+	}
+	if hasTool(opts.Tools, "openai.code_interpreter") {
+		includeFields = appendUnique(includeFields, "code_interpreter_call.outputs")
+	}
+	if !store && isReasoning {
+		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
 	}
 
 	// Temperature and top_p: forbidden for reasoning models except GPT-5.1 and
@@ -653,6 +655,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				}
 			}
 			includeFields = filtered
+			if len(filtered) == 0 {
+				// TS: an emptied include list becomes undefined.
+				includeExplicit = false
+			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "logprobs",
@@ -736,21 +742,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		}
 	}
 
-	// Build include list — always add reasoning.encrypted_content when
-	// store=false and we have a reasoning model, so multi-turn works without
-	// server-side persistence.
-	if !store && isReasoning {
-		includeFields = appendUnique(includeFields, "reasoning.encrypted_content")
-	}
-	if includeWebSearchSources && (hasTool(opts.Tools, "openai.web_search") || hasTool(opts.Tools, "openai.web_search_preview")) {
-		includeFields = appendUnique(includeFields, "web_search_call.action.sources")
-	}
-	if hasTool(opts.Tools, "openai.code_interpreter") {
-		includeFields = appendUnique(includeFields, "code_interpreter_call.outputs")
-	}
-	if topLogprobs != nil {
-		includeFields = appendUnique(includeFields, "message.output_text.logprobs")
-	}
 	if len(includeFields) > 0 {
 		body["include"] = includeFields
 	} else if hasNilProviderOption(openaiOpts, "include") {
@@ -902,6 +893,10 @@ func intFromInterface(value interface{}) (int, bool) {
 	return 0, false
 }
 
+// responsesTopLogprobs mirrors TS: a number is sent verbatim as top_logprobs
+// (including 0), true maps to TOP_LOGPROBS_MAX (20). Only a non-zero value
+// also adds the message.output_text.logprobs include (see
+// responsesTopLogprobsIncluded).
 func responsesTopLogprobs(value interface{}) (interface{}, bool) {
 	switch v := value.(type) {
 	case bool:
@@ -909,25 +904,23 @@ func responsesTopLogprobs(value interface{}) (interface{}, bool) {
 			return 20, true
 		}
 	case int:
-		if v > 0 {
-			return v, true
-		}
+		return v, true
 	case int64:
-		if v > 0 {
-			return v, true
-		}
+		return int(v), true
 	case float64:
-		if v > 0 {
-			return v, true
-		}
+		return int(v), true
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
-			if i > 0 {
-				return i, true
-			}
+			return int(i), true
 		}
 	}
 	return nil, false
+}
+
+// responsesTopLogprobsIncluded is TS's `if (topLogprobs)` truthiness check.
+func responsesTopLogprobsIncluded(v interface{}) bool {
+	n, ok := v.(int)
+	return ok && n != 0
 }
 
 func responsesContextManagement(value interface{}) []map[string]interface{} {
