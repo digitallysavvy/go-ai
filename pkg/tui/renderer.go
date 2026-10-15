@@ -304,8 +304,18 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 	interrupt := make(chan struct{}, 1)
+	// listenerDone is closed when the stream-key listener has returned. The
+	// renderer waits for it before it paints the final status, so a key the
+	// user presses after "Done" is read by waitForExit, never swallowed (or
+	// raced over the shared key reader) by a listener that is still winding down.
+	listenerDone := make(chan struct{})
 	if _, ok := r.input.(TerminalKeyReader); ok || isTerminalInput(r.input) {
-		go r.listenForStreamKeys(streamCtx, cancelStream, interrupt, options)
+		go func() {
+			defer close(listenerDone)
+			r.listenForStreamKeys(streamCtx, cancelStream, interrupt, options)
+		}()
+	} else {
+		close(listenerDone)
 	}
 
 	for {
@@ -363,6 +373,9 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 		r.paintLocked("", false, true, contextSize)
 		r.mu.Unlock()
 	}
+
+	cancelStream()
+	<-listenerDone
 
 	finalStep := result.Stream.FinalStep()
 	r.mu.Lock()
