@@ -110,7 +110,7 @@ func runOpenAIStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: falls through every branch to the final
 		// `return s.Next()` (now `continue`).
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
@@ -167,7 +167,7 @@ func runCompletionStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// No "choices" field: the main body falls through to the trailing
 		// `return s.Next()` (now `continue`).
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"text":"hello"}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")

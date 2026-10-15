@@ -379,3 +379,32 @@ func TestDoStreamReasoningContent(t *testing.T) {
 		t.Fatalf("reasoning deltas = %q, %q", chunks[3].Reasoning, chunks[4].Reasoning)
 	}
 }
+
+// TS huggingfaceResponsesChunkSchema ends in a loose {type: string} fallback:
+// unknown typed frames pass, but a JSON frame without a string `type` fails the
+// parse and becomes an error part with finishReason "error".
+func TestDoStreamFrameWithoutTypeIsAnError(t *testing.T) {
+	for _, frame := range []string{`{"foo":1}`, `{}`, `{"type":5}`, `null`} {
+		model, _ := newTestModel(t, sseHandler([]string{"data:" + frame + "\n\n"}), "m")
+		stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: testPrompt})
+		if err != nil {
+			t.Fatalf("DoStream: %v", err)
+		}
+		chunks := collectChunks(t, stream)
+		_ = stream.Close()
+		if findChunk(chunks, provider.ChunkTypeError) == nil {
+			t.Errorf("%s: expected an error chunk", frame)
+		}
+		if f := findChunk(chunks, provider.ChunkTypeFinish); f == nil || f.FinishReason != types.FinishReasonError {
+			t.Errorf("%s: finish = %#v, want finishReason error", frame, f)
+		}
+	}
+	// An unknown but typed frame is accepted.
+	model, _ := newTestModel(t, sseHandler([]string{"data:{\"type\":\"response.something_new\"}\n\n"}), "m")
+	stream, _ := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: testPrompt})
+	chunks := collectChunks(t, stream)
+	_ = stream.Close()
+	if findChunk(chunks, provider.ChunkTypeError) != nil {
+		t.Error("unknown typed frame must not error")
+	}
+}

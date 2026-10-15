@@ -823,6 +823,18 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			return errChunk, nil
 		}
 
+		// TS moonshotAIChatChunkSchema: a frame that is not an error needs a
+		// `choices` array.
+		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{}); err != nil {
+			s.finishReason = types.FinishReasonError
+			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("failed to parse stream chunk: %v", err)}
+			if len(s.flushQueue) > 0 {
+				s.flushQueue = append(s.flushQueue, errChunk)
+				continue
+			}
+			return errChunk, nil
+		}
+
 		if s.isFirstChunk {
 			s.isFirstChunk = false
 			meta := &provider.ResponseMetadata{ID: chunk.ID, ModelID: chunk.Model}

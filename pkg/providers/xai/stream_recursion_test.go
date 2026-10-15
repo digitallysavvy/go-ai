@@ -50,7 +50,7 @@ func runXAIResponsesStreamRecursionChild() {
 	sb.Grow(n*32 + 256)
 	for i := 0; i < n; i++ {
 		// Unrecognized event type: hits Next()'s `default: continue` branch.
-		sb.WriteString(`data: {"type":"response.unrecognized_event"}` + "\n\n")
+		sb.WriteString(`data: {"type":"response.content_part.added"}` + "\n\n")
 	}
 	sb.WriteString(`data: {"type":"response.output_text.delta","output_index":0,"delta":"hello"}` + "\n\n")
 

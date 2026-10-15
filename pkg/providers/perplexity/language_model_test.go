@@ -1351,3 +1351,27 @@ func TestPerplexityDoStream_PreservesNativeToolTracesInRawChunks(t *testing.T) {
 		t.Fatalf("finish = %+v, want stop/completed", finish)
 	}
 }
+
+// TS perplexityAgentChunkSchema requires `type: z.string()`: a frame without it
+// fails the parse and becomes an error part with finishReason "error".
+func TestPerplexityDoStream_FrameWithoutTypeIsAnError(t *testing.T) {
+	_, model := newPerplexityTestServer(t, streamHandler(t, []map[string]interface{}{{"foo": 1}}, nil))
+	stream, err := model.DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	var sawError bool
+	var finish *provider.StreamChunk
+	for _, c := range collectChunks(t, stream) {
+		switch c.Type {
+		case provider.ChunkTypeError:
+			sawError = true
+		case provider.ChunkTypeFinish:
+			finish = c
+		}
+	}
+	if !sawError || finish == nil || finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("sawError=%v finish=%+v, want an error part and finish reason error", sawError, finish)
+	}
+}

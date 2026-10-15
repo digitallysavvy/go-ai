@@ -981,7 +981,7 @@ func runOpenAICompatStreamRecursionChild() {
 	for i := 0; i < n; i++ {
 		// An empty event (no choices, no usage, no error) hits the "Empty or
 		// unrecognised event — skip and fetch the next one" branch.
-		sb.WriteString("data: {}\n\n")
+		sb.WriteString("data: {\"choices\":[]}\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")

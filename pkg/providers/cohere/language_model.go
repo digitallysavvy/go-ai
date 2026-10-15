@@ -704,6 +704,14 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 
+		if err := validateCohereChunk([]byte(event.Data)); err != nil {
+			s.finishErrored = true
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+			}, nil
+		}
+
 		switch ev.Type {
 		case "message-start":
 			var start struct {

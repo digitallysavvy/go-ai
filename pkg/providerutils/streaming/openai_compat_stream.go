@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // OpenAICompatStream implements the accumulate-and-flush streaming pattern for
@@ -265,6 +266,18 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: rawStreamErrorText(chunkData.Error),
+			}, nil
+		}
+
+		// TS chunkBaseSchema (a union with the error schema): a frame that is
+		// neither an error nor a chat chunk with a `choices` array fails the
+		// schema parse, which is an error part plus finishReason "error".
+		if err := providerutils.ValidateChatChunk([]byte(eventData), providerutils.ChatChunkShape{}); err != nil {
+			s.streamErrored = true
+			s.finishErrored = true
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
 			}, nil
 		}
 

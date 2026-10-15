@@ -665,6 +665,15 @@ func (s *perplexityAgentStream) processEvent(data string) {
 		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: err.Error()})
 		return
 	}
+	// TS perplexityAgentChunkSchema requires `type: z.string()`.
+	var typeProbe struct {
+		Type *string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(data), &typeProbe); err != nil || typeProbe.Type == nil {
+		s.finishReason = types.FinishReasonError
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: "type: Invalid input: expected string"})
+		return
+	}
 
 	switch chunk.Type {
 	case "response.created", "response.in_progress":

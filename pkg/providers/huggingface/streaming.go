@@ -131,6 +131,20 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		}, nil
 	}
 
+	// TS huggingfaceResponsesChunkSchema ends in `z.object({type: z.string()})
+	// .loose()`: every frame must be an object with a string `type`, anything
+	// else fails the parse and becomes an error part.
+	if _, ok := raw["type"].(string); !ok {
+		err := errors.New("type: Invalid input: expected string")
+		s.finishReason = types.FinishReasonError
+		s.rawFinishReason = ""
+		return &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: err.Error(),
+			Err:  providererrors.NewStreamProviderError(err.Error(), s.providerName, "", nil, nil, nil, nil),
+		}, nil
+	}
+
 	if streamErr := createHFStreamError(raw, s.providerName); streamErr != nil {
 		s.finishReason = types.FinishReasonError
 		if streamErr.Code != nil {

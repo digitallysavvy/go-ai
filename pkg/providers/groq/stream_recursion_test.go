@@ -54,7 +54,7 @@ func runGroqStreamRecursionChild() {
 		// No "id"/"model"/"created" (no response-metadata) and no "choices":
 		// falls through every branch to the final `return s.Next()` (now
 		// `continue`).
-		sb.WriteString(`data: {}` + "\n\n")
+		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
 	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
