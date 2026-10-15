@@ -448,3 +448,68 @@ func TestCreateSessionStopsOwnedSandboxWhenBootstrapFails(t *testing.T) {
 		}
 	}
 }
+
+// A persisted resume-session state may not carry top-level pending tool lists;
+// unfinished turns are stored as continueFrom (TS validateLifecycleStateData).
+func TestDecodeLifecycleStateRejectsTopLevelPendingToolState(t *testing.T) {
+	for _, tc := range []struct{ field, want string }{
+		{"pendingToolApprovals", "cannot contain pending tool approvals"},
+		{"pendingToolResults", "cannot contain pending tool results"},
+	} {
+		raw := `{"type":"resume-session","harnessId":"mock","specificationVersion":"harness-v1","data":{},"` + tc.field + `":[]}`
+		_, err := DecodeLifecycleState([]byte(raw))
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !IsHarnessError(err) {
+			t.Fatalf("%s: err = %v", tc.field, err)
+		}
+	}
+}
+
+// A host call rejected for invalid input while the turn is being suspended is
+// reported once on the stream and stored as a completed pending result.
+func TestSuspendedTurnReportsRejectedHostCallOnce(t *testing.T) {
+	finish := make(chan struct{})
+	var once sync.Once
+	restricted := types.Tool{
+		Name: "restricted", Parameters: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}, "required": []any{"city"}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			t.Error("rejected call executed")
+			return nil, nil
+		},
+	}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{&StreamStartPart{}, &ToolCallPart{ToolCallID: "c1", ToolName: "restricted", Input: `{"city":42}`}}
+		},
+		promptDone: func() <-chan struct{} { return finish },
+		doSuspendTurn: func(context.Context) (*ContinueTurnState, error) {
+			once.Do(func() { close(finish) })
+			return NewContinueTurnState("mock", map[string]any{})
+		},
+	})
+	a, session := newTestAgent(t, mock, map[string]types.Tool{"restricted": restricted}, Callbacks{}, nil)
+	res, err := a.Stream(context.Background(), agent.AgentStreamOptions{AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continueFrom, err := session.SuspendTurn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolErrors := 0
+	for {
+		c, err := res.Stream().Next()
+		if err != nil {
+			break
+		}
+		if c.Type == "tool-result" && c.ToolResult != nil && c.ToolResult.Error != nil {
+			toolErrors++
+		}
+	}
+	if toolErrors != 1 {
+		t.Fatalf("tool errors on the stream = %d, want 1", toolErrors)
+	}
+	if len(continueFrom.PendingToolResults) != 1 || continueFrom.PendingToolResults[0].CompletedResult == nil ||
+		continueFrom.PendingToolResults[0].CompletedResult.IsError == nil || !*continueFrom.PendingToolResults[0].CompletedResult.IsError {
+		t.Fatalf("PendingToolResults = %+v", continueFrom.PendingToolResults)
+	}
+}

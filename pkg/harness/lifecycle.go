@@ -224,12 +224,20 @@ func (*ContinueTurnState) lifecycleStateType() string  { return LifecycleStateCo
 // DecodeLifecycleState parses persisted lifecycle JSON (produced by a Go or
 // TS host) into its concrete variant and validates it.
 func DecodeLifecycleState(data []byte) (LifecycleState, error) {
-	typ, _, err := ReadTagged(data)
+	typ, fields, err := ReadTagged(data)
 	if err != nil {
 		return nil, err
 	}
 	switch typ {
 	case LifecycleStateResumeSession:
+		// Unfinished turns live in `continueFrom`; a top-level pending list
+		// is a malformed state (TS validateLifecycleStateData).
+		if _, ok := fields["pendingToolApprovals"]; ok {
+			return nil, NewHarnessError("Resume session state cannot contain pending tool approvals; unfinished turns must be stored as `continueFrom`.", nil)
+		}
+		if _, ok := fields["pendingToolResults"]; ok {
+			return nil, NewHarnessError("Resume session state cannot contain pending tool results; unfinished turns must be stored as `continueFrom`.", nil)
+		}
 		var s ResumeSessionState
 		if err := json.Unmarshal(data, &s); err != nil {
 			return nil, err

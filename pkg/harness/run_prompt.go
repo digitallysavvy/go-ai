@@ -596,6 +596,9 @@ func (d *turnDriver) run() {
 			return
 		}
 		d.publishSuspendedOutcomes()
+		// Results buffered for the step (e.g. a rejected host call) reach the
+		// consumer's stream even though the step itself is dropped.
+		d.flushBufferedResultChunks()
 		if !finished {
 			d.discardCurrentStep()
 		}
