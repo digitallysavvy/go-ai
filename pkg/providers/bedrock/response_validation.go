@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"fmt"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -395,4 +396,144 @@ func streamDeltaMatches(d map[string]interface{}) bool {
 // response body does not match the schema.
 func invalidConverseResponseError(cause error) error {
 	return providererrors.NewProviderError("amazon-bedrock", 0, "", "Invalid JSON response", cause)
+}
+
+// validateRerankResponse ports amazonBedrockRerankingResponseSchema.
+func validateRerankResponse(body []byte) error {
+	var generic interface{}
+	if err := json.Unmarshal(body, &generic); err != nil {
+		return providererrors.NewProviderError("amazon-bedrock", 0, "", "Invalid JSON response", err)
+	}
+	if verr := checkRerankResponse(generic); verr != nil {
+		return invalidConverseResponseError(verr)
+	}
+	return nil
+}
+
+func checkRerankResponse(body interface{}) *providererrors.ValidationError {
+	root, bad := asObject(body, "")
+	if bad != nil {
+		return bad.validation()
+	}
+	arr, ok := root["results"].([]interface{})
+	if !ok {
+		return issue("results", "expected array").validation()
+	}
+	for i, e := range arr {
+		p := schemaPath("results").index(i)
+		o, bad := asObject(e, p)
+		if bad != nil {
+			return bad.validation()
+		}
+		if bad := firstIssue(reqNumber(o, "index", p), reqNumber(o, "relevanceScore", p)); bad != nil {
+			return bad.validation()
+		}
+	}
+	if bad := nullishNumberOptionalString(root, "nextToken"); bad != nil {
+		return bad.validation()
+	}
+	return nil
+}
+
+// nullishNumberOptionalString is z.string().optional(): absent passes, null does not.
+func nullishNumberOptionalString(m map[string]interface{}, k string) *schemaIssue {
+	if v, present := m[k]; present {
+		if _, ok := v.(string); !ok {
+			return issue(schemaPath(k), "expected string")
+		}
+	}
+	return nil
+}
+
+// checkImageResponse ports amazonBedrockImageResponseSchema.
+func checkImageResponse(body interface{}) *providererrors.ValidationError {
+	root, bad := asObject(body, "")
+	if bad != nil {
+		return bad.validation()
+	}
+	if v, present := root["images"]; present {
+		arr, ok := v.([]interface{})
+		if !ok {
+			return issue("images", "expected array").validation()
+		}
+		for i, e := range arr {
+			if _, ok := e.(string); !ok {
+				return issue(schemaPath("images").index(i), "expected string").validation()
+			}
+		}
+	}
+	for _, k := range []string{"id", "status"} {
+		if bad := nullishNumberOptionalString(root, k); bad != nil {
+			return bad.validation()
+		}
+	}
+	if v, present := root["details"]; present {
+		if _, ok := v.(map[string]interface{}); !ok {
+			return issue("details", "expected object").validation()
+		}
+	}
+	return nil
+}
+
+func isNumberArray(v interface{}) bool {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return false
+	}
+	for _, e := range arr {
+		if _, ok := e.(float64); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// checkEmbeddingResponse ports AmazonBedrockEmbeddingResponseSchema, a union
+// of the Titan, Nova, Cohere v3 and Cohere v4 response shapes.
+func checkEmbeddingResponse(body interface{}) *providererrors.ValidationError {
+	root, bad := asObject(body, "")
+	if bad != nil {
+		return bad.validation()
+	}
+	if _, ok := root["inputTextTokenCount"].(float64); ok && isNumberArray(root["embedding"]) {
+		return nil // Titan
+	}
+	switch emb := root["embeddings"].(type) {
+	case []interface{}:
+		allNova, allNumbers := true, true
+		for _, e := range emb {
+			o, ok := e.(map[string]interface{})
+			if !ok {
+				allNova = false
+			} else if _, isStr := o["embeddingType"].(string); !isStr || !isNumberArray(o["embedding"]) {
+				allNova = false
+			}
+			if !isNumberArray(e) {
+				allNumbers = false
+			}
+		}
+		if allNova {
+			if v, present := root["inputTokenCount"]; !present {
+				return nil
+			} else if _, ok := v.(float64); ok {
+				return nil // Nova
+			}
+		}
+		if allNumbers {
+			return nil // Cohere v3 (an empty array also matches here)
+		}
+	case map[string]interface{}:
+		if f, ok := emb["float"].([]interface{}); ok {
+			all := true
+			for _, e := range f {
+				if !isNumberArray(e) {
+					all = false
+				}
+			}
+			if all {
+				return nil // Cohere v4
+			}
+		}
+	}
+	return issue("", "invalid input").validation()
 }

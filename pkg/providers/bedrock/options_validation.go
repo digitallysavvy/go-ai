@@ -150,3 +150,125 @@ func isNumber(v interface{}) bool {
 	}
 	return false
 }
+
+// firstAmazonBedrockOptions returns the key and value TS parseProviderOptions
+// reads: `amazonBedrock` first, then the legacy `bedrock` key.
+func firstAmazonBedrockOptions(providerOptions map[string]interface{}) (string, interface{}) {
+	for _, key := range []string{"amazonBedrock", "bedrock"} {
+		if providerOptions[key] != nil {
+			return key, providerOptions[key]
+		}
+	}
+	return "", nil
+}
+
+// validateEmbeddingProviderOptions mirrors the zod validation TS runs on the
+// embedding providerOptions (amazonBedrockEmbeddingModelOptionsSchema): a
+// wrong type or an out-of-set value fails with an InvalidArgumentError.
+func validateEmbeddingProviderOptions(providerOptions map[string]interface{}) error {
+	key, v := firstAmazonBedrockOptions(providerOptions)
+	if key == "" {
+		return nil
+	}
+	if err := validateAmazonBedrockEmbeddingOptions(v); err != nil {
+		return invalidProviderOptions(key, err)
+	}
+	return nil
+}
+
+func validateAmazonBedrockEmbeddingOptions(v interface{}) error {
+	opts, ok := v.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("expected object, received %T", v)
+	}
+	if err := checkNumberLiteral(opts, "dimensions", 1024, 512, 256); err != nil {
+		return err
+	}
+	if err := checkBool(opts, "normalize"); err != nil {
+		return err
+	}
+	if err := checkNumberLiteral(opts, "embeddingDimension", 256, 384, 1024, 3072); err != nil {
+		return err
+	}
+	if err := checkEnum(opts, "embeddingPurpose", "GENERIC_INDEX", "TEXT_RETRIEVAL", "IMAGE_RETRIEVAL", "VIDEO_RETRIEVAL", "DOCUMENT_RETRIEVAL", "AUDIO_RETRIEVAL", "GENERIC_RETRIEVAL", "CLASSIFICATION", "CLUSTERING"); err != nil {
+		return err
+	}
+	if err := checkEnum(opts, "inputType", "search_document", "search_query", "classification", "clustering"); err != nil {
+		return err
+	}
+	if err := checkEnum(opts, "truncate", "NONE", "START", "END"); err != nil {
+		return err
+	}
+	return checkNumberLiteral(opts, "outputDimension", 256, 512, 1024, 1536)
+}
+
+// validateImageProviderOptions mirrors the zod validation TS runs on the image
+// providerOptions (amazonBedrockImageModelOptionsSchema).
+func validateImageProviderOptions(providerOptions map[string]interface{}) error {
+	key, v := firstAmazonBedrockOptions(providerOptions)
+	if key == "" {
+		return nil
+	}
+	opts, ok := v.(map[string]interface{})
+	if !ok {
+		return invalidProviderOptions(key, fmt.Errorf("expected object, received %T", v))
+	}
+	checks := []error{
+		checkEnum(opts, "quality", "standard", "premium"),
+		checkString(opts, "negativeText"),
+		checkNumber(opts, "cfgScale"),
+		checkEnum(opts, "style", "3D_ANIMATED_FAMILY_FILM", "DESIGN_SKETCH", "FLAT_VECTOR_ILLUSTRATION", "GRAPHIC_NOVEL_ILLUSTRATION", "MAXIMALISM", "MIDCENTURY_RETRO", "PHOTOREALISM", "SOFT_DIGITAL_PAINTING"),
+		checkEnum(opts, "taskType", "TEXT_IMAGE", "IMAGE_VARIATION", "INPAINTING", "OUTPAINTING", "BACKGROUND_REMOVAL"),
+		checkString(opts, "maskPrompt"),
+		checkEnum(opts, "outPaintingMode", "DEFAULT", "PRECISE"),
+		checkNumber(opts, "similarityStrength"),
+	}
+	for _, err := range checks {
+		if err != nil {
+			return invalidProviderOptions(key, err)
+		}
+	}
+	return nil
+}
+
+func checkString(m map[string]interface{}, key string) error {
+	if v, ok := m[key]; ok && v != nil {
+		if _, isStr := v.(string); !isStr {
+			return fmt.Errorf("%s: expected string, received %T", key, v)
+		}
+	}
+	return nil
+}
+
+func checkBool(m map[string]interface{}, key string) error {
+	if v, ok := m[key]; ok && v != nil {
+		if _, isBool := v.(bool); !isBool {
+			return fmt.Errorf("%s: expected boolean, received %T", key, v)
+		}
+	}
+	return nil
+}
+
+func checkNumber(m map[string]interface{}, key string) error {
+	if v, ok := m[key]; ok && v != nil && !isNumber(v) {
+		return fmt.Errorf("%s: expected number, received %T", key, v)
+	}
+	return nil
+}
+
+func checkNumberLiteral(m map[string]interface{}, key string, allowed ...float64) error {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	if isNumber(v) {
+		if f, ok := toFloat64(v); ok {
+			for _, a := range allowed {
+				if f == a {
+					return nil
+				}
+			}
+		}
+	}
+	return fmt.Errorf("%s: invalid option %v, expected one of %v", key, v, allowed)
+}
