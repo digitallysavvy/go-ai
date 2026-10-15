@@ -16,16 +16,10 @@
 // `experimental_userMessageResponses` on its hello.
 //
 // Deferred versus TS (see the Sep-23-2026 WG7 report for the full rationale):
-//   - Native subscription credential discovery reads the same
-//     `~/.claude/.credentials.json` file TS reads (subscription.go), including
-//     OAuth refresh and write-back. The macOS Keychain fallback TS also has is
-//     NOT ported: this SDK's sandbox providers (pkg/harness/sandbox/local, the
-//     Vercel provider) run Linux containers, where `/usr/bin/security` does
-//     not exist, and TS itself only takes that fallback when
-//     `CLAUDE_CONFIG_DIR` is unset/default, so it is a secondary path even in
-//     TS. Linux's Secret Service / Windows Credential Manager equivalents are
-//     for the *host* Claude CLI config, not this adapter's discovery, so they
-//     are not applicable here either.
+//   - Native subscription credential discovery reads `~/.claude/.credentials.json`
+//     (or `$CLAUDE_CONFIG_DIR`) and, on macOS with the default config dir, the
+//     "Claude Code-credentials" Keychain item, refreshing and writing back as
+//     TS does (subscription.go).
 package claudecode
 
 import (
