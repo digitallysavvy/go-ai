@@ -20,8 +20,9 @@ import (
 // Maps stay sorted (deterministic) because they carry no order.
 
 // RawJSONObject returns v as raw JSON when it is a json.RawMessage (or
-// []byte) holding a JSON object, boolean or other valid JSON value, or an
-// *schema.OrderedSchema (its source-order JSON).
+// []byte) holding a JSON object, boolean or other valid JSON value, an
+// *schema.OrderedSchema (its source-order JSON) or a jsonorder.Hinted (its
+// source-order JSON).
 func RawJSONObject(v interface{}) (json.RawMessage, bool) {
 	var raw []byte
 	switch x := v.(type) {
@@ -30,6 +31,23 @@ func RawJSONObject(v interface{}) (json.RawMessage, bool) {
 	case []byte:
 		raw = x
 	case *schema.OrderedSchema:
+		if x == nil {
+			return nil, false
+		}
+		b, err := x.MarshalJSON()
+		if err != nil {
+			return nil, false
+		}
+		raw = b
+	case jsonorder.Hinted:
+		// A decoded schema plus the ordered tree of its source JSON (what MCP
+		// tool definitions carry): its marshaled form is the source order.
+		b, err := x.MarshalJSON()
+		if err != nil {
+			return nil, false
+		}
+		raw = b
+	case *jsonorder.Hinted:
 		if x == nil {
 			return nil, false
 		}

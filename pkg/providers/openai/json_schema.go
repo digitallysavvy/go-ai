@@ -1,14 +1,12 @@
 package openai
 
 import (
-	"encoding/json"
 	"regexp"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // NormalizeOpenAIJSONSchema is a Go port of TypeScript's
@@ -63,7 +61,9 @@ func NormalizeOpenAISchemaValue(schema interface{}) (interface{}, []types.Warnin
 			return schema, nil, nil
 		}
 		return NormalizeOpenAIJSONSchema(s)
-	case json.RawMessage, []byte, *jsonschema.OrderedSchema:
+	default:
+		// Raw JSON, an *schema.OrderedSchema or a jsonorder.Hinted: normalized
+		// on the decoded object, then put back in the source key order.
 		raw, ok := providerutils.RawJSONObject(s)
 		if !ok {
 			return schema, nil, nil
@@ -78,7 +78,6 @@ func NormalizeOpenAISchemaValue(schema interface{}) (interface{}, []types.Warnin
 		}
 		return providerutils.OrderLike(normalized, raw), warnings, nil
 	}
-	return schema, nil, nil
 }
 
 // normalizeOpenAIChatToolSchemas normalizes the "parameters" schema of each
