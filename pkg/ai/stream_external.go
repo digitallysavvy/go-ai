@@ -59,6 +59,12 @@ type ExternalStreamOptions struct {
 // output is within a single step, plus an explicit step boundary:
 //   - provider.ChunkTypeStreamStart opens a step (its Warnings, if any, are
 //     recorded).
+//   - The public full stream carries a ChunkTypeStartStep (with the step's
+//     warnings) before the first content of every step, whether or not src
+//     sends ChunkTypeStreamStart (which stays internal), as TS
+//     HarnessStreamTextResult does.
+//   - A tool-result chunk with Preliminary set is forwarded to the stream but
+//     not recorded in the step.
 //   - Text/reasoning/tool-call/tool-result/source/file/custom content chunks
 //     accumulate into that step exactly as they do for a normal
 //     provider.LanguageModel-driven step.
@@ -273,6 +279,7 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 	var accumulatedText []string
 	stepNumber := 0
 	step := &externalStepAccum{}
+	stepStarted := false
 
 	// lastStepText/hasPublishedPartial/lastPartialJSON support r.outputSpec
 	// (see ExternalStreamOptions.Output doc): lastStepText is the most
@@ -350,6 +357,7 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 
 		stepNumber++
 		step = &externalStepAccum{}
+		stepStarted = false
 	}
 
 consumeLoop:
@@ -375,6 +383,24 @@ consumeLoop:
 			r.status = StreamStatusStreaming
 		}
 		r.mu.Unlock()
+		// TS HarnessStreamTextResult.startStep(): the first part of every step
+		// (and an otherwise empty step's finish-step) is preceded by a
+		// 'start-step' part carrying the step's warnings. The source's
+		// stream-start is internal, so the step opener is synthesized here for
+		// the public stream and the UI conversion alike.
+		if chunk.Type == provider.ChunkTypeStartStep {
+			stepStarted = true
+		} else if !stepStarted && opensExternalStep(chunk, step, stepNumber) {
+			stepStarted = true
+			warnings := append([]types.Warning{}, step.warnings...)
+			startStep := provider.StreamChunk{Type: provider.ChunkTypeStartStep, Warnings: warnings}
+			if r.uiChunkBuf != nil {
+				r.uiChunkBuf.push(startStep)
+			}
+			if r.chunkBuf != nil {
+				r.chunkBuf.push(startStep)
+			}
+		}
 		if r.uiChunkBuf != nil {
 			r.uiChunkBuf.push(*chunk)
 		}
@@ -446,7 +472,9 @@ consumeLoop:
 			}
 
 		case provider.ChunkTypeToolResult:
-			if chunk.ToolResult != nil {
+			// A preliminary result is a stream-only update of a generator-form
+			// tool; only its final result is recorded in the step.
+			if chunk.ToolResult != nil && !chunk.ToolResult.Preliminary {
 				step.toolResults = append(step.toolResults, *chunk.ToolResult)
 				step.content = append(step.content, toolResultContentFromToolResult(*chunk.ToolResult))
 			}
@@ -661,4 +689,20 @@ func reasoningText(reasoning []types.ReasoningContent) string {
 		}
 	}
 	return strings.Join(parts, "")
+}
+
+// opensExternalStep reports whether chunk is the first step content of an
+// external stream's step, i.e. whether a 'start-step' part must precede it.
+// Lifecycle markers and a pure turn-closing finish (no content since the last
+// step boundary) do not open a step; error/abort chunks end the stream.
+func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, stepNumber int) bool {
+	switch chunk.Type {
+	case provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata,
+		provider.ChunkTypeFirstChunk, provider.ChunkTypeStreamFinish,
+		provider.ChunkTypeError, provider.ChunkTypeAbort, provider.ChunkTypeRaw:
+		return false
+	case provider.ChunkTypeFinish:
+		return !step.isEmpty() || stepNumber == 0
+	}
+	return true
 }
