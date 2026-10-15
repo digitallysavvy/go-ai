@@ -5,6 +5,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -75,8 +76,13 @@ func (a *sandboxProcessAdapter) Wait() (providerutils.SandboxProcessResult, erro
 	return providerutils.SandboxProcessResult{ExitCode: code}, nil
 }
 
+// Kill terminates the command. TS calls `command.kill()` without the spawn
+// abort signal, so a kill after the spawn context was cancelled (the usual
+// cleanup order) must still reach the sandbox.
 func (a *sandboxProcessAdapter) Kill() error {
-	return a.proc.Kill(a.ctx)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(a.ctx), 30*time.Second)
+	defer cancel()
+	return a.proc.Kill(ctx)
 }
 
 // ReadFile reads path, returning nil when it does not exist.

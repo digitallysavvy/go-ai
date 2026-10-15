@@ -272,3 +272,18 @@ func TestSessionSpawnKillDelegatesToCommand(t *testing.T) {
 		t.Fatalf("expected kill to succeed, got %v", err)
 	}
 }
+
+func TestSessionSpawnKillAfterSpawnContextCancelled(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	sbx := newTestSandbox(t, f, "sbx_kill_cancelled")
+	ctx, cancel := context.WithCancel(context.Background())
+	proc, err := NewSession(sbx).Spawn(ctx, providerutils.SandboxProcessOptions{Command: "sleep 10"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if err := proc.Kill(); err != nil {
+		t.Fatalf("kill after spawn context cancelled must still reach the sandbox, got %v", err)
+	}
+}

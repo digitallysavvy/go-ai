@@ -107,3 +107,25 @@ func TestReadWindowsCredentialManagerPassword(t *testing.T) {
 		t.Fatal("empty")
 	}
 }
+
+func TestWriteMacOSKeychainPasswordKeepsSecretOutOfArgs(t *testing.T) {
+	old := ExecFileInput
+	t.Cleanup(func() { ExecFileInput = old })
+	var gotName string
+	var gotArgs []string
+	var gotInput string
+	ExecFileInput = func(_ context.Context, name string, args []string, input string, _ []string) error {
+		gotName, gotArgs, gotInput = name, args, input
+		return nil
+	}
+	if err := WriteMacOSKeychainPassword(context.Background(), "Claude Code-credentials", `us"er`, "s3cret"); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "/usr/bin/security" || len(gotArgs) != 1 || gotArgs[0] != "-i" {
+		t.Fatalf("cmd = %s %v", gotName, gotArgs)
+	}
+	want := "add-generic-password -U -s \"Claude Code-credentials\" -a \"us\\\"er\" -X 733363726574\n"
+	if gotInput != want {
+		t.Fatalf("input = %q, want %q", gotInput, want)
+	}
+}

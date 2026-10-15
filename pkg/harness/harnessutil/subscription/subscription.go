@@ -10,7 +10,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"os/exec"
@@ -145,4 +147,94 @@ func ReadWindowsCredentialManagerPassword(ctx context.Context, targetName string
 		return ""
 	}
 	return out
+}
+
+// ExecFileInputFunc runs a program with arguments (no shell), feeding input
+// on stdin. env == nil inherits the host environment.
+type ExecFileInputFunc func(ctx context.Context, name string, args []string, input string, env []string) error
+
+// ExecFileInput is the stdin-feeding process runner used by the credential
+// store writers; replaceable in tests. Mirrors TS `runCommandWithInput`: a
+// non-zero exit returns an error carrying stderr.
+var ExecFileInput ExecFileInputFunc = func(ctx context.Context, name string, args []string, input string, env []string) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
+	cmd.Stdin = strings.NewReader(input)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := stderr.String(); msg != "" {
+			return errors.New(msg)
+		}
+		return err
+	}
+	return nil
+}
+
+func securityQuote(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `"`, `\"`)
+	return `"` + value + `"`
+}
+
+// WriteMacOSKeychainPassword stores (or updates) a generic password through
+// `security -i`, feeding the hex-encoded value on stdin so the secret never
+// appears in the process arguments. Mirrors the TS Codex keyring writer.
+func WriteMacOSKeychainPassword(ctx context.Context, service, account, value string) error {
+	command := "add-generic-password -U -s " + securityQuote(service) + " -a " + securityQuote(account) +
+		" -X " + hex.EncodeToString([]byte(value)) + "\n"
+	return ExecFileInput(ctx, "/usr/bin/security", []string{"-i"}, command, nil)
+}
+
+// WriteLinuxSecretServicePassword stores a secret with `secret-tool store`,
+// matching the attributes the Rust `keyring` crate (used by Codex) writes.
+func WriteLinuxSecretServicePassword(ctx context.Context, service, account, value string) error {
+	return ExecFileInput(ctx, "secret-tool", []string{
+		"store", "--label", account + "@" + service + ":default",
+		"service", service, "username", account, "target", "default", "application", "rust-keyring",
+	}, value, nil)
+}
+
+const windowsCredentialWriteSource = `
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class CodexCredentialManager {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public struct Credential {
+    public UInt32 Flags; public UInt32 Type; public string TargetName;
+    public string Comment; public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public UInt32 CredentialBlobSize; public IntPtr CredentialBlob;
+    public UInt32 Persist; public UInt32 AttributeCount; public IntPtr Attributes;
+    public string TargetAlias; public string UserName;
+  }
+  [DllImport("advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool CredWrite(ref Credential credential, UInt32 flags);
+  public static void Write(string target, string userName, string value) {
+    byte[] bytes = Encoding.Unicode.GetBytes(value);
+    IntPtr blob = Marshal.AllocHGlobal(bytes.Length);
+    try {
+      Marshal.Copy(bytes, 0, blob, bytes.Length);
+      Credential credential = new Credential {
+        Type = 1, TargetName = target, CredentialBlobSize = (UInt32)bytes.Length,
+        CredentialBlob = blob, Persist = 3, UserName = userName
+      };
+      if (!CredWrite(ref credential, 0)) throw new System.ComponentModel.Win32Exception();
+    } finally { Marshal.FreeHGlobal(blob); }
+  }
+}`
+
+// WriteWindowsCredentialManagerPassword stores a generic credential via
+// PowerShell + CredWriteW. The value is fed on stdin; source, target and user
+// name travel in the environment, never interpolated into the command.
+func WriteWindowsCredentialManagerPassword(ctx context.Context, targetName, userName, value string) error {
+	script := `Add-Type -TypeDefinition $env:AI_SDK_CODEX_CREDENTIAL_SOURCE; $value = [Console]::In.ReadToEnd(); [CodexCredentialManager]::Write($env:AI_SDK_CODEX_CREDENTIAL_TARGET, $env:AI_SDK_CODEX_CREDENTIAL_USER, $value)`
+	env := append(os.Environ(),
+		"AI_SDK_CODEX_CREDENTIAL_SOURCE="+windowsCredentialWriteSource,
+		"AI_SDK_CODEX_CREDENTIAL_TARGET="+targetName,
+		"AI_SDK_CODEX_CREDENTIAL_USER="+userName,
+	)
+	return ExecFileInput(ctx, "powershell.exe", []string{"-NoProfile", "-NonInteractive", "-Command", script}, value, env)
 }

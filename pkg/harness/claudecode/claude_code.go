@@ -131,7 +131,10 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	authMode := resolveAuthenticationMode(settings.Auth, harnessutil.ProcessEnv())
-	authEnv := resolveAuthenticationEnvironment(ctx, settings.Auth, harnessutil.ProcessEnv())
+	authEnv, err := resolveAuthenticationEnvironment(ctx, settings.Auth, harnessutil.ProcessEnv())
+	if err != nil {
+		return nil, err
+	}
 	claudeEnv := map[string]string{}
 	for k, v := range authEnv {
 		claudeEnv[k] = v

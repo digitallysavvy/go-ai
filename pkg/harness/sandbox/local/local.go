@@ -6,8 +6,18 @@
 // tested without a remote sandbox: bridges bind 0.0.0.0/127.0.0.1 on the host
 // and GetPortEndpoint returns `ws://127.0.0.1:<port>`.
 //
-// It provides NO isolation: commands run as the current user with full host
-// network and filesystem access. Use it for development and tests only.
+// WARNING: it provides NO isolation and is NOT a security boundary. Use it
+// for development and tests only.
+//   - Commands run as the current user with full host network and filesystem
+//     access; file paths are not confined to the session directory (absolute
+//     and ".." paths are accepted).
+//   - Commands inherit the FULL host environment, including API keys and
+//     other secrets. To restrict it, set Options.HostEnv to the names of the
+//     host variables to pass through (for example PATH); everything else is
+//     dropped. Options.Env adds variables on top either way.
+//   - Stop kills the process group of every command that is still running,
+//     but background children that outlive their shell are not tracked and
+//     can survive Stop/Destroy.
 //
 // Layout per session (under Options.RootDir):
 //
@@ -50,6 +60,12 @@ type Options struct {
 
 	// Shell runs commands. Defaults to /bin/sh.
 	Shell string
+
+	// HostEnv limits which host environment variables commands inherit. Nil
+	// (the default) inherits the entire host environment, including secrets
+	// such as API keys. A non-nil slice (even empty) inherits only the named
+	// variables; HOME is always set to the session home.
+	HostEnv []string
 
 	// Env is added to every command's environment (after the host
 	// environment and HOME, before per-command env).
@@ -141,6 +157,19 @@ func (p *Provider) open(id string, create bool) (*Session, bool, error) {
 	if statErr != nil && !fresh {
 		return nil, false, statErr
 	}
+	// The session directory holds HOME (credentials written by adapters) and
+	// is usually under a shared temp dir, so keep it owner-only.
+	if err := os.MkdirAll(p.opts.RootDir, 0o700); err != nil {
+		return nil, false, err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, false, err
+	}
+	if fresh {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			return nil, false, err
+		}
+	}
 	for _, d := range []string{workDir, homeDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, false, err
@@ -161,6 +190,7 @@ func (p *Provider) open(id string, create bool) (*Session, bool, error) {
 		homeDir:   filepath.ToSlash(absHome),
 		shell:     p.opts.Shell,
 		env:       p.opts.Env,
+		hostEnv:   p.opts.HostEnv,
 		host:      p.opts.Host,
 		ports:     append([]int(nil), p.opts.Ports...),
 		keepFiles: p.opts.KeepFiles,
@@ -176,6 +206,7 @@ type Session struct {
 	homeDir   string
 	shell     string
 	env       map[string]string
+	hostEnv   []string
 	host      string
 	keepFiles bool
 
@@ -254,13 +285,11 @@ func (s *Session) Stop(context.Context) error {
 
 // Destroy stops the session and removes its directory (unless KeepFiles).
 func (s *Session) Destroy(ctx context.Context) error {
-	if err := s.Stop(ctx); err != nil {
-		return err
-	}
+	stopErr := s.Stop(ctx)
 	if s.keepFiles {
-		return nil
+		return stopErr
 	}
-	return os.RemoveAll(s.dir)
+	return errors.Join(stopErr, os.RemoveAll(s.dir))
 }
 
 // Restricted returns a filesystem/process-only view of the same sandbox.
@@ -278,6 +307,19 @@ func (s *Session) resolve(p string) string {
 
 func (s *Session) environment(extra map[string]string) []string {
 	env := os.Environ()
+	if s.hostEnv != nil {
+		allowed := make(map[string]struct{}, len(s.hostEnv))
+		for _, name := range s.hostEnv {
+			allowed[name] = struct{}{}
+		}
+		env = env[:0:0]
+		for _, kv := range os.Environ() {
+			name, _, _ := strings.Cut(kv, "=")
+			if _, ok := allowed[name]; ok {
+				env = append(env, kv)
+			}
+		}
+	}
 	env = append(env, "HOME="+s.homeDir)
 	for k, v := range s.env {
 		env = append(env, k+"="+v)
@@ -325,7 +367,13 @@ func (s *Session) Spawn(ctx context.Context, opts providerutils.SandboxProcessOp
 	p := &process{cmd: cmd, stdout: stdout, stderr: stderr, done: make(chan struct{}), exitCode: -1}
 	s.mu.Lock()
 	s.procs[p] = struct{}{}
+	raced := s.stopped
 	s.mu.Unlock()
+	if raced {
+		// Stop ran between the stopped check and registration; it did not
+		// see this process, so kill it here.
+		_ = p.Kill()
+	}
 	go func() {
 		select {
 		case <-ctx.Done():

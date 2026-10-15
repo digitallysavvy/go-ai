@@ -3,13 +3,23 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 )
+
+func TestMain(m *testing.M) {
+	// Never touch the developer machine's real Keychain from tests.
+	claudeGOOS = "linux"
+	os.Exit(m.Run())
+}
 
 // TS claude-code-subscription.test.ts: no credential file present.
 func TestReadClaudeCodeSubscription_NoFile(t *testing.T) {
@@ -161,4 +171,81 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 	return data
+}
+
+func useFakeKeychain(t *testing.T, items map[string]string) *[]string {
+	t.Helper()
+	oldGOOS, oldRead, oldIn := claudeGOOS, subscription.ExecFile, subscription.ExecFileInput
+	var writes []string
+	claudeGOOS = "darwin"
+	subscription.ExecFile = func(_ context.Context, name string, args []string, _ []string) (string, error) {
+		if name == "/usr/bin/security" && len(args) > 0 && args[0] == "find-generic-password" {
+			if v, ok := items[args[2]]; ok {
+				return v + "\n", nil
+			}
+		}
+		return "", errors.New("not found")
+	}
+	subscription.ExecFileInput = func(_ context.Context, _ string, _ []string, input string, _ []string) error {
+		writes = append(writes, input)
+		return nil
+	}
+	t.Cleanup(func() { claudeGOOS, subscription.ExecFile, subscription.ExecFileInput = oldGOOS, oldRead, oldIn })
+	return &writes
+}
+
+// TS readClaudeCredentialStore: on macOS a missing credentials file falls
+// back to the "Claude Code-credentials" Keychain item.
+func TestReadClaudeCodeSubscription_MacOSKeychainFallback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	useFakeKeychain(t, map[string]string{
+		"Claude Code-credentials": `{"claudeAiOauth":{"accessToken":"kc-token","refreshToken":"r","expiresAt":99999999999999}}`,
+	})
+	env, ok := readClaudeCodeSubscription(context.Background())
+	if !ok || env["CLAUDE_CODE_OAUTH_TOKEN"] != "kc-token" {
+		t.Fatalf("keychain credential not used: %v ok=%v", env, ok)
+	}
+}
+
+// The Keychain is only consulted for the default config dir, and only on macOS.
+func TestReadClaudeCodeSubscription_KeychainSkippedForCustomDirOrOtherOS(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	items := map[string]string{
+		"Claude Code-credentials": `{"claudeAiOauth":{"accessToken":"kc-token","refreshToken":"r","expiresAt":99999999999999}}`,
+	}
+	useFakeKeychain(t, items)
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	if _, ok := readClaudeCodeSubscription(context.Background()); ok {
+		t.Fatal("custom CLAUDE_CONFIG_DIR must not use the Keychain")
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	claudeGOOS = "linux"
+	if _, ok := readClaudeCodeSubscription(context.Background()); ok {
+		t.Fatal("non-macOS must not use the Keychain")
+	}
+}
+
+func TestResolveAuthenticationEnvironment_RefreshFailureFailsStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	old := claudeTokenURL
+	claudeTokenURL = srv.URL
+	t.Cleanup(func() { claudeTokenURL = old })
+	dir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cred := `{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(cred), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveAuthenticationEnvironment(context.Background(), harness.Authentication{}, map[string]string{}); err == nil {
+		t.Fatal("expected the refresh failure to be returned")
+	}
 }
