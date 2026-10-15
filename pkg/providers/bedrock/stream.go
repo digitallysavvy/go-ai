@@ -258,6 +258,13 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) {
 	if usage, ok := metadata["usage"].(map[string]interface{}); ok {
 		usageBytes, _ := json.Marshal(usage)
+		if verr := validateConverseUsage(usageBytes); verr != nil {
+			// TS reports a schema mismatch as an error part, keeps reading
+			// and ends with finish reason "error".
+			s.finishReason = types.FinishReasonError
+			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: verr.Message, Err: invalidConverseResponseError(verr)})
+			return
+		}
 		s.usage = convertBedrockConverseUsage(usageBytes)
 		s.hasUsage = true
 

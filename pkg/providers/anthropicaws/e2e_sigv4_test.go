@@ -96,3 +96,24 @@ func TestMissingCredentialsFailBeforeSending(t *testing.T) {
 		t.Fatalf("err = %v, request sent = %v", err, hit)
 	}
 }
+
+// TS loads the region at request time on the SigV4 path and fails when it is
+// missing, even with a custom baseURL; nothing is sent.
+func TestSigV4MissingRegionFailsBeforeSending(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer srv.Close()
+	p, err := New(Config{WorkspaceID: "wrkspc_1", BaseURL: srv.URL + "/v1", AccessKeyID: "AKID", SecretAccessKey: "secret", HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := p.LanguageModel("claude-sonnet-4-6")
+	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err == nil || !strings.Contains(err.Error(), "region setting is missing") {
+		t.Fatalf("err = %v, want the missing region error", err)
+	}
+	if called {
+		t.Fatal("a request without a region must not be sent")
+	}
+}

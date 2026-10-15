@@ -75,15 +75,23 @@ func init() {
 		RawSchemas:      true,
 		RootBase:        true,
 		LanguageResults: true,
-		SkipStream:      "the recording keeps the Bedrock binary event-stream frames as text; stream parsing is replayed by the case suites",
+		SkipStream:      "the recording keeps the Bedrock binary event-stream frames of test-server responses as text chunks; stream parsing is replayed by the case suites",
 		ProviderTool:    anthropicWireTool,
 		Skip: map[string]string{
 			"~should combine user-provided and tool-generated betas in body":              "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~should not include anthropic-beta in HTTP headers":                          "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~anthropic_beta in additionalModelRequestFields when using extended context": "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~should work with partial headers":                                           "the TS test signs the request with SigV4 and a signed header; Go uses the bearer token here",
+			"~should stream text through the encoded Converse route":                      "the TS test file mocks the event-stream response handler and feeds it JSON lines; Go reads real frames",
+			"~surfaces event stream decoding failures":                                    "the TS test fails while reading the stream (checksum); the recording carries no stream-read error",
 			"~Cohere models behind application inference profile ARNs":                    "modelFamily is a per-model setting in the TS test",
 			"~should properly combine headers from all sources":                           "the TS test signs the request with SigV4 and a signed header; Go uses the bearer token here",
+		},
+		LanguageFor: func(p provider.Provider, m tsfixture.WireModel) (provider.LanguageModel, error) {
+			if family, _ := m.Config["modelFamily"].(string); family != "" { // a per-model TS setting
+				return p.(*bedrock.Provider).LanguageModelWithOptions(m.ModelID, &bedrock.ModelOptions{ModelFamily: family})
+			}
+			return p.LanguageModel(m.ModelID)
 		},
 		SkipModel: func(m tsfixture.WireModel) string {
 			if m.Cls != "AmazonBedrockChatLanguageModel" && m.Cls != "AmazonBedrockImageModel" && m.Cls != "AmazonBedrockEmbeddingModel" && m.Cls != "AmazonBedrockRerankingModel" {
