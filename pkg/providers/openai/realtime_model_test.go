@@ -326,3 +326,61 @@ func TestRealtimeSessionConfigInputTranscription(t *testing.T) {
 		t.Fatalf("audio = %s", b)
 	}
 }
+
+// Ported from openai-realtime-factory.test.ts.
+func TestRealtimeFactoryRoutingAndTokenErrors(t *testing.T) {
+	p := New(Config{APIKey: "test-key", Name: "custom"})
+	str := func(s string) *string { return &s }
+	routes := []struct {
+		model string
+		api   *string
+		live  bool
+	}{
+		{"gpt-live-1", nil, true}, {"gpt-realtime", nil, false}, {"unknown", nil, false}, {"gpt-live", nil, false},
+		{"gpt-live-1-preview", nil, false}, {"prefix-gpt-live-1", nil, false}, {"GPT-LIVE-1", nil, false},
+		{"not-yet-released", str("live"), true}, {"gpt-realtime", str("live"), true}, {"gpt-live-1", str("realtime"), false},
+	}
+	for _, r := range routes {
+		var opts []OpenAIRealtimeModelOptions
+		if r.api != nil {
+			opts = append(opts, OpenAIRealtimeModelOptions{API: r.api})
+		}
+		m, err := p.ExperimentalRealtimeModel(r.model, opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, isLive := m.(*OpenAIRealtimeModelLive)
+		if isLive != r.live || m.ModelID() != r.model || m.SpecificationVersion() != "v4" {
+			t.Errorf("%s %v: live=%v", r.model, r.api, isLive)
+		}
+		wantProvider := "custom.realtime"
+		if r.live {
+			wantProvider = "custom.live"
+		}
+		if m.Provider() != wantProvider {
+			t.Errorf("%s: provider %q, want %q", r.model, m.Provider(), wantProvider)
+		}
+	}
+	for _, bad := range []string{"invalid", ""} {
+		if _, err := p.ExperimentalRealtimeModel("unknown", OpenAIRealtimeModelOptions{API: str(bad)}); err == nil || !strings.Contains(err.Error(), `OpenAI realtime api must be "live" or "realtime".`) {
+			t.Errorf("api %q: %v", bad, err)
+		}
+	}
+	// Live credentials are rejected without a request.
+	if _, err := p.GetRealtimeToken(context.Background(), provider.RealtimeFactoryGetTokenOptions{Model: "gpt-live-1"}); err == nil || !strings.Contains(err.Error(), "Use server WebSocket setup via GetServerWebSocketConfig()") {
+		t.Errorf("live token: %v", err)
+	}
+}
+
+func TestOpenAIRealtimeClientSecretHTTPErrorMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("Unknown model"))
+	}))
+	defer srv.Close()
+	model := NewRealtimeModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "not-yet-released")
+	_, err := model.DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	if err == nil || !strings.Contains(err.Error(), "OpenAI realtime client secret request failed: 404 Unknown model") {
+		t.Fatalf("err = %v", err)
+	}
+}

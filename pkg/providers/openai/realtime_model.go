@@ -139,7 +139,10 @@ func (m *OpenAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 		return provider.ClientSecretResult{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.ClientSecretResult{}, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
+		// TS: `OpenAI realtime client secret request failed: ${status} ${text}`.
+		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		return provider.ClientSecretResult{}, providererrors.NewProviderError("openai", 0, "",
+			fmt.Sprintf("OpenAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
 	}
 	var data struct {
 		Value     string `json:"value"`
