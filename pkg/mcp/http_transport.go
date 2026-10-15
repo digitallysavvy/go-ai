@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -51,6 +52,14 @@ type HTTPTransport struct {
 	// HTTP client
 	client    *http.Client
 	sseClient SSEClient
+
+	// streamClient is client without the overall http.Client.Timeout, which
+	// would also cut off a long-lived text/event-stream body (the standing
+	// inbound GET, or a POST response that streams while a slow tool runs).
+	// requestTimeout bounds POSTs until their response headers arrive (and
+	// for the whole exchange when the response is not an event stream).
+	streamClient   *http.Client
+	requestTimeout time.Duration
 
 	// Message queue for receiving
 	receiveMu    sync.Mutex
@@ -112,6 +121,10 @@ type HTTPTransport struct {
 	// exit" requirement (TS has no equivalent: JS has no goroutines to leak).
 	postSSEWG sync.WaitGroup
 }
+
+// errMCPRequestTimeout is the cancellation cause of a POST that exceeded the
+// transport's request timeout.
+var errMCPRequestTimeout = errors.New("mcp: request timeout")
 
 // HTTPTransportConfig contains configuration for HTTP transport
 type HTTPTransportConfig struct {
@@ -222,9 +235,14 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 		terminateSessionOnClose = *config.TerminateSessionOnClose
 	}
 
+	streamClient := *httpClient
+	streamClient.Timeout = 0
+
 	return &HTTPTransport{
 		url:                     config.URL,
 		client:                  httpClient,
+		streamClient:            &streamClient,
+		requestTimeout:          httpClient.Timeout,
 		sseClient:               config.SSEClient,
 		receiveQueue:            make([]*MCPMessage, 0),
 		config:                  config.Config,
@@ -452,7 +470,22 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// draining it. release must run exactly once the derived context is no
 	// longer needed; handedOff tracks whether that responsibility moved to a
 	// background goroutine (the SSE-reader case) instead of happening here.
-	reqCtx, release := t.deriveRequestContext(ctx)
+	reqCtx, releaseBase := t.deriveRequestContext(ctx)
+	// The request timeout (the http.Client timeout would also cut off a
+	// streamed response body) is enforced by a timer that is disarmed once an
+	// event-stream response starts.
+	reqCtx, timeoutCancel := context.WithCancelCause(reqCtx)
+	var timeoutTimer *time.Timer
+	if t.requestTimeout > 0 && t.sseClient == nil {
+		timeoutTimer = time.AfterFunc(t.requestTimeout, func() { timeoutCancel(errMCPRequestTimeout) })
+	}
+	release := func() {
+		if timeoutTimer != nil {
+			timeoutTimer.Stop()
+		}
+		timeoutCancel(nil)
+		releaseBase()
+	}
 	handedOff := false
 	defer func() {
 		if !handedOff {
@@ -491,12 +524,15 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
-		client := SSEClient(t.client)
+		client := SSEClient(t.streamClient)
 		if t.sseClient != nil {
 			client = t.sseClient
 		}
 		resp, err = client.Do(req)
 		if err != nil {
+			if errors.Is(context.Cause(reqCtx), errMCPRequestTimeout) {
+				return fail(NewTransportError("failed to send request", fmt.Errorf("request timed out after %s: %w", t.requestTimeout, context.DeadlineExceeded)))
+			}
 			return fail(NewTransportError("failed to send request", err))
 		}
 		if resp == nil {
@@ -662,6 +698,9 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			return nil
 		}
 		handedOff = true
+		if timeoutTimer != nil {
+			timeoutTimer.Stop()
+		}
 		go func() {
 			defer t.postSSEWG.Done()
 			t.readMCPHTTPSSEMessages(reqCtx, release, resp.Body)
@@ -987,7 +1026,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		}
 	}
 
-	client := SSEClient(t.client)
+	client := SSEClient(t.streamClient)
 	if t.sseClient != nil {
 		client = t.sseClient
 	}

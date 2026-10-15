@@ -27,6 +27,9 @@ type SSETransport struct {
 	endpoint  *url.URL
 	client    *http.Client
 	sseClient SSEClient
+	// streamClient is client without http.Client.Timeout, which would cut the
+	// long-lived event stream off after the request timeout.
+	streamClient *http.Client
 
 	receiveMu    sync.Mutex
 	receiveQueue []*MCPMessage
@@ -92,10 +95,13 @@ func NewSSETransport(config SSETransportConfig) *SSETransport {
 	}
 
 	baseURL, _ := url.Parse(config.URL)
+	streamClient := *httpClient
+	streamClient.Timeout = 0
 	return &SSETransport{
 		url:          config.URL,
 		baseURL:      baseURL,
 		client:       httpClient,
+		streamClient: &streamClient,
 		sseClient:    config.SSEClient,
 		receiveQueue: make([]*MCPMessage, 0),
 		config:       config.Config,
@@ -124,7 +130,7 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	}
 	t.applyHeaders(ctx, req, map[string]string{"Accept": "text/event-stream"})
 
-	client := SSEClient(t.client)
+	client := SSEClient(t.streamClient)
 	if t.sseClient != nil {
 		client = t.sseClient
 	}
@@ -369,6 +375,16 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 			return
 		}
 		if err != nil {
+			t.mu.Lock()
+			aborted := t.cancel == nil // closed intentionally via Close
+			t.connected = false
+			t.endpoint = nil
+			if !aborted {
+				t.streamErr = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+			} else {
+				t.streamErr = io.EOF
+			}
+			t.mu.Unlock()
 			if !readySent {
 				ready <- NewTransportError("failed to read SSE event", err)
 			}
