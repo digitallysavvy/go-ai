@@ -266,3 +266,13 @@ func TestStdioTransportReceiveCloseRace(t *testing.T) {
 	_ = tr.Close()
 	wg.Wait()
 }
+
+// TS StdioMCPTransport sets supportsProtocolVersionDiscovery = true, so the
+// client probes server/discover over stdio too.
+func TestStdioTransportSupportsProtocolVersionDiscovery(t *testing.T) {
+	var transport Transport = NewStdioTransport(StdioTransportConfig{Command: "true"})
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if !client.supportsProtocolVersionDiscovery() {
+		t.Fatal("stdio transport must support protocol version discovery")
+	}
+}

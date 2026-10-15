@@ -130,7 +130,7 @@ type MCPClientConfig struct {
 	// 2026-07-28 `server/discover` method before falling back to the legacy
 	// `initialize` handshake (hash e6a9927). Default true. Only takes effect
 	// when the transport implements ProtocolVersionDiscoveryTransport and
-	// reports support (only HTTPTransport does today).
+	// reports support (HTTPTransport and StdioTransport).
 	ProtocolVersionDiscovery *bool
 
 	// OnError, when set, receives non-fatal diagnostics the client would
