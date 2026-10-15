@@ -180,7 +180,7 @@ func TestPromptCacheRetentionWithStreaming(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		// Send chunk
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"}}]}\n\n"))
 		// Send done
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -583,9 +583,9 @@ func TestDoStreamFinishReasonMapping(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 
 				// Send a text chunk first
-				_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"Hi"}}]}` + "\n\n"))
+				_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}` + "\n\n"))
 				// Send finish chunk with the OpenAI finish reason
-				_, _ = w.Write([]byte(fmt.Sprintf(`data: {"choices":[{"delta":{},"finish_reason":"%s"}]}`, tt.openAIFinishReason) + "\n\n"))
+				_, _ = w.Write([]byte(fmt.Sprintf(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"%s"}]}`, tt.openAIFinishReason) + "\n\n"))
 				// Send done
 				_, _ = w.Write([]byte("data: [DONE]\n\n"))
 			}))
@@ -641,7 +641,7 @@ func TestDoStream_ImplementsStreamRequestBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -687,15 +687,15 @@ func TestDoStreamToolCallChunks(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		// A short text delta
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"Sure!"}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"content":"Sure!"}}]}` + "\n\n"))
 		// First tool call delta: id + name + empty args
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}` + "\n\n"))
 		// Second tool call delta: partial arguments
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":"}}]}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"location\":"}}]}}]}` + "\n\n"))
 		// Third tool call delta: remaining arguments
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"New York\"}"}}]}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"New York\"}"}}]}}]}` + "\n\n"))
 		// Finish with tool_calls reason
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -767,11 +767,11 @@ func TestDoStreamToolCallDeltaNullType(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 
 		// First delta carries id + name with a null "type" field.
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_nulltype","type":null,"function":{"name":"greet","arguments":""}}]}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_nulltype","type":null,"function":{"name":"greet","arguments":""}}]}}]}` + "\n\n"))
 		// Second delta has partial arguments and omits "type" entirely.
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"name\":\"world\"}"}}]}}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"name\":\"world\"}"}}]}}]}` + "\n\n"))
 		// Finish
-		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer server.Close()
@@ -814,7 +814,7 @@ func TestDoStreamToolCallDeltaNullType(t *testing.T) {
 }
 
 func TestDoStreamToolCallAndFinishSameChunk(t *testing.T) {
-	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_same","type":"function","function":{"name":"calc","arguments":"{\"op\":\"add\"}"}}]},"finish_reason":"tool_calls"}]}
+	sseData := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_same","type":"function","function":{"name":"calc","arguments":"{\"op\":\"add\"}"}}]},"finish_reason":"tool_calls"}]}
 
 data: [DONE]
 
@@ -840,9 +840,9 @@ data: [DONE]
 }
 
 func TestOpenAIStreamIncludeRawChunksMatchesTypeScript(t *testing.T) {
-	sseData := `data: {"id":"raw-1","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+	sseData := `data: {"id":"raw-1","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
-data: {"id":"raw-2","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"delta":{},"finish_reason":"stop"}]}
+data: {"id":"raw-2","created":1702657020,"model":"gpt-3.5-turbo-0613","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 
@@ -958,7 +958,7 @@ data: [DONE]
 // rate_limit_exceeded infers statusCode 429 (discriminator match) and is
 // retryable per isRetryableStatusCode.
 func TestOpenAIStreamMidStreamErrorAttachesStructuredPayload(t *testing.T) {
-	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+	sseData := `data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}
 
 data: {"error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}
 
@@ -1020,7 +1020,7 @@ data: [DONE]
 // isRetryableStreamError's special case: insufficient_quota is never
 // retryable even though its inferred statusCode (429) normally would be.
 func TestOpenAIStreamMidStreamInsufficientQuotaNeverRetryable(t *testing.T) {
-	sseData := `data: {"choices":[{"delta":{"content":"hi"}}]}
+	sseData := `data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}
 
 data: {"error":{"message":"You exceeded your quota","type":"insufficient_quota","code":"insufficient_quota"}}
 

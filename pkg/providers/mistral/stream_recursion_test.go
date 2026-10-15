@@ -50,7 +50,7 @@ func runMistralStreamRecursionChild() {
 		// continue }`.
 		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}` + "\n\n")
 
 	s := newMistralStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per choices-less event -- 300,000 deep

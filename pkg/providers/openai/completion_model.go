@@ -493,7 +493,7 @@ func (s *completionStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		// TS openaiCompletionChunkSchema: choices[] with required text and index.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ChoiceTextRequired: true}); err != nil {
+		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ChoiceTextRequired: true, ChoiceIndexRequired: true}); err != nil {
 			s.finishReason = types.FinishReasonError
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,

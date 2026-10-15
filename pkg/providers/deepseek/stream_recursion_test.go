@@ -52,7 +52,7 @@ func runDeepseekStreamRecursionChild() {
 		// `return s.Next()` (now `continue`).
 		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
 
 	s := newDeepseekStream(io.NopCloser(strings.NewReader(sb.String())))

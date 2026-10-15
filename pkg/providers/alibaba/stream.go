@@ -119,7 +119,7 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 		if err == nil {
 			// TS alibabaChatChunkSchema requires `choices`: a frame without
 			// it (for example an {"error": ...} envelope) is a parse failure.
-			err = providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{DeltaRequired: true, ToolCallFunctionOptional: true})
+			err = providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{DeltaRequired: true, ChoiceIndexRequired: true, ToolCallFunctionOptional: true})
 		}
 		if err != nil {
 			errorChunk := &provider.StreamChunk{

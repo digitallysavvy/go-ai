@@ -2671,7 +2671,7 @@ func TestResponsesLanguageModel_NullUsageYieldsNilUsageFields(t *testing.T) {
 // "type" discriminator) produces a helpful error instead of being silently
 // skipped.
 func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.T) {
-	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"}}]}
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}
 
 `)), false)
 	defer stream.Close() //nolint:errcheck

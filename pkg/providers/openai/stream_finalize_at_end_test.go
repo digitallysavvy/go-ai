@@ -26,8 +26,8 @@ func drainOpenAI(t *testing.T, sse string) []*provider.StreamChunk {
 // the finish part in flush(), so deltas and x_groq usage after finish_reason
 // still count; a finish_reason that shares a chunk with content is recorded.
 func TestOpenAIStream_FinalizesAtStreamEnd(t *testing.T) {
-	sse := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"f","arguments":"{\"a\":"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}` + "\n\n" +
+	sse := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"f","arguments":"{\"a\":"}}]},"finish_reason":"tool_calls"}]}` + "\n\n" +
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}` + "\n\n" +
 		"data: [DONE]\n\n"
 	chunks := drainOpenAI(t, sse)
 	var call *provider.StreamChunk
@@ -49,7 +49,7 @@ func TestOpenAIStream_FinalizesAtStreamEnd(t *testing.T) {
 }
 
 func TestOpenAIStream_FinishReasonSharingChunkWithContent(t *testing.T) {
-	sse := `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"length"}]}` + "\n\n" + "data: [DONE]\n\n"
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"length"}]}` + "\n\n" + "data: [DONE]\n\n"
 	chunks := drainOpenAI(t, sse)
 	last := chunks[len(chunks)-1]
 	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonLength {

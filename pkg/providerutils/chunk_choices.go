@@ -34,13 +34,24 @@ type ChatChunkShape struct {
 	// ToolCallFunctionOptional: delta.tool_calls[].function may be absent
 	// (alibaba); otherwise it must be an object.
 	ToolCallFunctionOptional bool
+	// ChoiceIndexRequired: choices[].index must be a JSON number (openai chat
+	// and completion, groq, mistral, alibaba; nullish or absent elsewhere).
+	ChoiceIndexRequired bool
+	// ToolCallIndexRequired: delta.tool_calls[].index must be a JSON number
+	// (openai chat, groq, deepseek; nullish or absent elsewhere).
+	ToolCallIndexRequired bool
+}
+
+// isJSONNumber reports whether raw is a JSON number (zod z.number()).
+func isJSONNumber(raw json.RawMessage) bool {
+	return len(raw) > 0 && (raw[0] == '-' || (raw[0] >= '0' && raw[0] <= '9'))
 }
 
 // ValidateChatChunk mirrors the structural part of the TS zod chunk schemas for
 // a streamed chat-completion frame: `choices` is an array of objects, and the
 // per-shape required choice/delta/tool-call members are present with the right
-// JSON kind. The numeric `index` members that some TS schemas require are not
-// enforced (real servers always send them; being lenient there is harmless).
+// JSON kind. The numeric `index` members that some TS schemas require are enforced
+// through ChoiceIndexRequired / ToolCallIndexRequired.
 // A non-nil error is the equivalent of TS's safeParse failure.
 func ValidateChatChunk(data []byte, shape ChatChunkShape) error {
 	var top struct {
@@ -60,6 +71,9 @@ func ValidateChatChunk(data []byte, shape ChatChunkShape) error {
 		var choice map[string]json.RawMessage
 		if err := json.Unmarshal(rawChoice, &choice); err != nil || choice == nil {
 			return fmt.Errorf("choices[%d]: Invalid input: expected object", i)
+		}
+		if shape.ChoiceIndexRequired && !isJSONNumber(choice["index"]) {
+			return fmt.Errorf("choices[%d].index: Invalid input: expected number", i)
 		}
 		if shape.ChoiceTextRequired {
 			if t := choice["text"]; len(t) == 0 || t[0] != '"' {
@@ -90,6 +104,9 @@ func ValidateChatChunk(data []byte, shape ChatChunkShape) error {
 			var call map[string]json.RawMessage
 			if err := json.Unmarshal(rawCall, &call); err != nil || call == nil {
 				return fmt.Errorf("choices[%d].delta.tool_calls[%d]: Invalid input: expected object", i, j)
+			}
+			if shape.ToolCallIndexRequired && !isJSONNumber(call["index"]) {
+				return fmt.Errorf("choices[%d].delta.tool_calls[%d].index: Invalid input: expected number", i, j)
 			}
 			fn, hasFn := call["function"]
 			if !hasFn || string(fn) == "null" {

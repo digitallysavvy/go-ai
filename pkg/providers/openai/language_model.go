@@ -1325,7 +1325,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 
 		// TS openaiChatChunkSchema: choices[] with a required index and
 		// tool_calls[].index; a frame failing the schema is an error part.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{}); err != nil {
+		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ChoiceIndexRequired: true, ToolCallIndexRequired: true}); err != nil {
 			s.queueRawChunk(event.Data)
 			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -107,5 +108,93 @@ func TestChatStreamChunkSchemaValidation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TS requires numeric `index` members on choices (openai chat/completion, groq,
+// mistral, alibaba) and tool_calls (openai chat, groq, deepseek); absent index
+// fails the zod parse. Providers whose schemas make them nullish or absent
+// (deepseek/moonshot choices, compat chat) must keep accepting the frame.
+func TestChatStreamIndexMembers(t *testing.T) {
+	type mk func(u string) (provider.LanguageModel, error)
+	openaiChat := func(u string) (provider.LanguageModel, error) {
+		return openai.New(openai.Config{APIKey: "k", BaseURL: u}).ChatModel("gpt-4o")
+	}
+	groqM := func(u string) (provider.LanguageModel, error) {
+		return groq.New(groq.Config{APIKey: "k", BaseURL: u}).LanguageModel("m")
+	}
+	deepseekM := func(u string) (provider.LanguageModel, error) {
+		return deepseek.New(deepseek.Config{APIKey: "k", BaseURL: u}).LanguageModel("deepseek-chat")
+	}
+	mistralM := func(u string) (provider.LanguageModel, error) {
+		return mistral.New(mistral.Config{APIKey: "k", BaseURL: u}).LanguageModel("m")
+	}
+	alibabaM := func(u string) (provider.LanguageModel, error) {
+		return alibaba.New(alibaba.Config{APIKey: "k", BaseURL: u}).LanguageModel("qwen-plus")
+	}
+	moonshotM := func(u string) (provider.LanguageModel, error) {
+		return moonshot.New(moonshot.Config{APIKey: "k", BaseURL: u}).LanguageModel("m")
+	}
+	togetherM := func(u string) (provider.LanguageModel, error) {
+		return together.New(together.Config{APIKey: "k", BaseURL: u}).LanguageModel("m")
+	}
+	completion := func(u string) (provider.LanguageModel, error) {
+		return openai.New(openai.Config{APIKey: "k", BaseURL: u}).CompletionModel("gpt-3.5-turbo-instruct")
+	}
+	noChoiceIdx := `{"choices":[{"delta":{"content":"a"}}]}`
+	noCallIdx := `{"choices":[{"index":0,"delta":{"tool_calls":[{"id":"c","function":{"name":"f","arguments":"{}"}}]}}]}`
+	noCallIdxNoChoiceIdx := `{"choices":[{"delta":{"tool_calls":[{"id":"c","function":{"name":"f","arguments":"{}"}}]}}]}`
+	cases := []struct {
+		name    string
+		f       mk
+		frame   string
+		wantErr bool
+	}{
+		{"openai/choice", openaiChat, noChoiceIdx, true},
+		{"openai/toolcall", openaiChat, noCallIdx, true},
+		{"completion/choice", completion, `{"choices":[{"text":"a"}]}`, true},
+		{"groq/choice", groqM, noChoiceIdx, true},
+		{"groq/toolcall", groqM, noCallIdx, true},
+		{"mistral/choice", mistralM, noChoiceIdx, true},
+		{"alibaba/choice", alibabaM, noChoiceIdx, true},
+		{"deepseek/choice-optional", deepseekM, noChoiceIdx, false},
+		{"deepseek/toolcall", deepseekM, noCallIdxNoChoiceIdx, true},
+		{"moonshot/choice-optional", moonshotM, noChoiceIdx, false},
+		{"moonshot/toolcall-optional", moonshotM, noCallIdxNoChoiceIdx, false},
+		{"together/choice-optional", togetherM, noChoiceIdx, false},
+		{"together/toolcall-optional", togetherM, noCallIdxNoChoiceIdx, false},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", c.frame)
+				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer srv.Close()
+			m, err := c.f(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := m.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close() //nolint:errcheck
+			sawError := false
+			for {
+				ch, err := s.Next()
+				if err != nil {
+					break
+				}
+				if ch.Type == provider.ChunkTypeError && strings.Contains(ch.Text, "failed to parse stream chunk") {
+					sawError = true
+				}
+			}
+			if sawError != c.wantErr {
+				t.Fatalf("frame %s: error chunk = %v, want %v", c.frame, sawError, c.wantErr)
+			}
+		})
 	}
 }

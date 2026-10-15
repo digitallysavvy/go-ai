@@ -50,8 +50,8 @@ func collectChat(t *testing.T, sse string, cfg Config) ([]*provider.StreamChunk,
 
 func TestChatStreamMergesTrailingUsageAndMetadata(t *testing.T) {
 	sse := strings.Join([]string{
-		`data: {"id":"c1","model":"gpt-4o","created":1,"choices":[{"delta":{"content":"Hi","annotations":[{"type":"url_citation","url_citation":{"url":"https://a.test","title":"A"}}]},"finish_reason":null,"logprobs":{"content":[{"token":"Hi"}]}}]}`,
-		`data: {"choices":[{"delta":{"content":"!"},"finish_reason":"stop"}]}`,
+		`data: {"id":"c1","model":"gpt-4o","created":1,"choices":[{"index":0,"delta":{"content":"Hi","annotations":[{"type":"url_citation","url_citation":{"url":"https://a.test","title":"A"}}]},"finish_reason":null,"logprobs":{"content":[{"token":"Hi"}]}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"content":"!"},"finish_reason":"stop"}]}`,
 		`data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8,"completion_tokens_details":{"reasoning_tokens":1,"accepted_prediction_tokens":2,"rejected_prediction_tokens":0}}}`,
 		`data: [DONE]`, ``,
 	}, "\n\n")
@@ -92,8 +92,8 @@ func TestChatStreamMergesTrailingUsageAndMetadata(t *testing.T) {
 
 func TestChatStreamCompatReasoningAndUsageOptIn(t *testing.T) {
 	sse := strings.Join([]string{
-		`data: {"choices":[{"delta":{"reasoning_content":"think"}}]}`,
-		`data: {"choices":[{"delta":{"content":"ans"},"finish_reason":"stop"}]}`,
+		`data: {"choices":[{"index":0,"delta":{"reasoning_content":"think"}}]}`,
+		`data: {"choices":[{"index":0,"delta":{"content":"ans"},"finish_reason":"stop"}]}`,
 		`data: [DONE]`, ``,
 	}, "\n\n")
 	chunks, body := collectChat(t, sse, Config{OpenAICompatible: true, Name: "My-Host"})
