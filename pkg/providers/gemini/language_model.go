@@ -334,20 +334,30 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 	var lastServerToolCallID string
 
 	for _, part := range candidate.Content.Parts {
-		// Thought inlineData → ReasoningFileContent.
-		if part.Thought && part.InlineData != nil {
-			result.Content = append(result.Content, types.ReasoningFileContent{
-				MediaType: part.InlineData.MimeType,
-				Data:      decodeInlineData(part.InlineData.Data),
-			})
-			continue
-		}
-		// Non-thought inlineData → GeneratedFileContent.
+		// inlineData parts carry their own thoughtSignature in
+		// providerMetadata.google (TS: hasThoughtSignature ? wrap(...)).
 		if part.InlineData != nil {
-			result.Content = append(result.Content, types.GeneratedFileContent{
-				MediaType: part.InlineData.MimeType,
-				Data:      decodeInlineData(part.InlineData.Data),
-			})
+			var fileMeta json.RawMessage
+			if part.ThoughtSignature != "" {
+				fileMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+					"thoughtSignature": part.ThoughtSignature,
+				}))
+			}
+			if part.Thought {
+				// Thought inlineData → ReasoningFileContent.
+				result.Content = append(result.Content, types.ReasoningFileContent{
+					MediaType:        part.InlineData.MimeType,
+					Data:             decodeInlineData(part.InlineData.Data),
+					ProviderMetadata: fileMeta,
+				})
+			} else {
+				// Non-thought inlineData → GeneratedFileContent.
+				result.Content = append(result.Content, types.GeneratedFileContent{
+					MediaType:        part.InlineData.MimeType,
+					Data:             decodeInlineData(part.InlineData.Data),
+					ProviderMetadata: fileMeta,
+				})
+			}
 			continue
 		}
 		// Thought text → ReasoningContent.

@@ -665,21 +665,32 @@ func (s *stream) processNonFuncPart(part Part) {
 	if part.InlineData != nil {
 		s.closeOpenBlocks()
 		data := decodeInlineData(part.InlineData.Data)
+		// TS: providerMetadata carries the part's own thoughtSignature.
+		var fileMeta json.RawMessage
+		if part.ThoughtSignature != "" {
+			fileMeta, _ = json.Marshal(s.cfg.wrapProviderMetadata(map[string]interface{}{
+				"thoughtSignature": part.ThoughtSignature,
+			}))
+		}
 		if part.Thought {
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeReasoningFile,
 				ReasoningFileContent: &types.ReasoningFileContent{
-					MediaType: part.InlineData.MimeType,
-					Data:      data,
+					MediaType:        part.InlineData.MimeType,
+					Data:             data,
+					ProviderMetadata: fileMeta,
 				},
+				ProviderMetadata: fileMeta,
 			})
 		} else {
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeFile,
 				GeneratedFileContent: &types.GeneratedFileContent{
-					MediaType: part.InlineData.MimeType,
-					Data:      data,
+					MediaType:        part.InlineData.MimeType,
+					Data:             data,
+					ProviderMetadata: fileMeta,
 				},
+				ProviderMetadata: fileMeta,
 			})
 		}
 		return

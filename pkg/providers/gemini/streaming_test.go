@@ -822,3 +822,32 @@ func runGeminiStreamRecursionChild() {
 	}
 	fmt.Println("BF5_CHILD_OK")
 }
+
+// TS puts an inlineData part's own thoughtSignature in providerMetadata.google
+// for streamed file and reasoning-file parts.
+func TestStream_InlineDataCarriesItsThoughtSignature(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aGk="},"thought":true,"thoughtSignature":"img_sig1"},{"inlineData":{"mimeType":"image/jpeg","data":"aGk="},"thoughtSignature":"img_sig2"}]},"finishReason":"STOP"}]}`))
+	defer s.Close() //nolint:errcheck
+	var rf, f *provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch c.Type {
+		case provider.ChunkTypeReasoningFile:
+			rf = c
+		case provider.ChunkTypeFile:
+			f = c
+		}
+	}
+	if rf == nil || !strings.Contains(string(rf.ProviderMetadata), `"thoughtSignature":"img_sig1"`) {
+		t.Fatalf("reasoning-file chunk = %#v", rf)
+	}
+	if f == nil || !strings.Contains(string(f.ProviderMetadata), `"thoughtSignature":"img_sig2"`) {
+		t.Fatalf("file chunk = %#v", f)
+	}
+}

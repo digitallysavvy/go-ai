@@ -965,3 +965,24 @@ func TestProviderExecutedToolCallDoesNotMakeToolCallsFinish(t *testing.T) {
 		t.Fatalf("finish reason = %q, want stop", result.FinishReason)
 	}
 }
+
+// TS puts an inlineData part's own thoughtSignature in providerMetadata.google
+// for both file and reasoning-file parts.
+func TestConvertResponse_InlineDataCarriesItsThoughtSignature(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"inlineData":{"mimeType":"image/png","data":"aGk="},"thought":true,"thoughtSignature":"img_sig1"},
+		{"inlineData":{"mimeType":"image/jpeg","data":"aGk="},"thoughtSignature":"img_sig2"}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	rf, ok := result.Content[0].(types.ReasoningFileContent)
+	if !ok || !strings.Contains(string(rf.ProviderMetadata), `"thoughtSignature":"img_sig1"`) {
+		t.Fatalf("reasoning file = %#v", result.Content[0])
+	}
+	f, ok := result.Content[1].(types.GeneratedFileContent)
+	if !ok || !strings.Contains(string(f.ProviderMetadata), `"thoughtSignature":"img_sig2"`) {
+		t.Fatalf("file = %#v", result.Content[1])
+	}
+}
