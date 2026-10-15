@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -1471,7 +1472,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil {
+		if isWorkflowAbort(ctx, err) {
 			stepsMu.Lock()
 			steps := append([]types.StepResult(nil), completedSteps...)
 			stepsMu.Unlock()
@@ -1481,9 +1482,10 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			}
 		} else {
 			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-		}
-		if onError := mergeError(w.OnError, opts.OnError); onError != nil {
-			onError(ctx, err)
+			// An abort reaches onAbort only, never onError (TS).
+			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
+				onError(ctx, err)
+			}
 		}
 		return nil, err
 	}
@@ -1649,16 +1651,16 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil {
+		if isWorkflowAbort(ctx, err) {
 			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
 			if onAbort != nil {
 				onAbort(ctx, nil)
 			}
 		} else {
 			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
-		}
-		if onError := mergeError(w.OnError, opts.OnError); onError != nil {
-			onError(ctx, err)
+			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
+				onError(ctx, err)
+			}
 		}
 		return nil, err
 	}
@@ -1669,6 +1671,17 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		ModelID:        modelID,
 	})
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
+}
+
+// isWorkflowAbort reports whether a failed run counts as an abort rather than
+// an error: the caller's context ended, or the failure is a cancellation or a
+// timeout such as the agent's own Timeout (TS classifies AbortError and
+// TimeoutError as aborts, so onAbort fires and onError does not).
+func isWorkflowAbort(ctx context.Context, err error) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // newWorkflowCallID returns the call ID shared by one WorkflowAgent run's
