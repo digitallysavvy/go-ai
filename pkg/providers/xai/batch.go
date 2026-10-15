@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	stdhttp "net/http"
 	"net/textproto"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -290,9 +289,7 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		query["limit"] = strconv.Itoa(*opts.Limit)
 	}
 	if opts.Cursor != "" {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(opts.Cursor)
+		query["pagination_token"] = opts.Cursor
 	}
 
 	var page xaiBatchListResponseWire
@@ -507,9 +504,7 @@ func (s *xaiBatchResultsStream) fetchPage() error {
 	s.started = true
 	query := map[string]string{"limit": strconv.Itoa(xaiBatchResultsPageSize)}
 	if s.nextToken != nil {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(*s.nextToken)
+		query["pagination_token"] = *s.nextToken
 	}
 
 	var page xaiBatchResultsPageWire

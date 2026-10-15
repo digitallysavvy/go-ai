@@ -15,7 +15,7 @@ type SkillsAPI struct {
 }
 
 func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptions) (*types.UploadSkillResult, error) {
-	var warnings []types.Warning
+	warnings := []types.Warning{}
 	if opts.DisplayTitle != "" {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "displayTitle"})
 	}

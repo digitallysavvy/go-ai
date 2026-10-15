@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"strings"
 	"sync"
 	"time"
@@ -211,6 +212,17 @@ func (c *Client) snapshot() (string, map[string]string) {
 	return c.baseURL, headers
 }
 
+// encodeQuery is URLSearchParams.toString() for a parameter map: keys and
+// values percent-encoded (space as +), in sorted key order so the URL is
+// deterministic.
+func encodeQuery(q map[string]string) string {
+	values := make(neturl.Values, len(q))
+	for k, v := range q {
+		values.Set(k, v)
+	}
+	return values.Encode()
+}
+
 // Do performs an HTTP request
 func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	baseURL, defaultHeaders := c.snapshot()
@@ -218,15 +230,7 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Build full URL
 	url := baseURL + req.Path
 	if len(req.Query) > 0 {
-		url += "?"
-		first := true
-		for k, v := range req.Query {
-			if !first {
-				url += "&"
-			}
-			url += fmt.Sprintf("%s=%s", k, v)
-			first = false
-		}
+		url += "?" + encodeQuery(req.Query)
 	}
 
 	// Serialize body if present
@@ -360,15 +364,7 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	// Build full URL
 	url := baseURL + req.Path
 	if len(req.Query) > 0 {
-		url += "?"
-		first := true
-		for k, v := range req.Query {
-			if !first {
-				url += "&"
-			}
-			url += fmt.Sprintf("%s=%s", k, v)
-			first = false
-		}
+		url += "?" + encodeQuery(req.Query)
 	}
 
 	// Serialize body if present
