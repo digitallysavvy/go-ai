@@ -4017,8 +4017,6 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					indices = append(indices, idx)
 				}
 			}
-		} else {
-			indices = []int{0}
 		}
 		sort.Ints(indices)
 		if len(indices) == 0 {

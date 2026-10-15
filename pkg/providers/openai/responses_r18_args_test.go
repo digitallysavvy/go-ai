@@ -136,3 +136,24 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compu
 		t.Fatalf("doStream computer finish = %q, want stop", got)
 	}
 }
+
+// TS output_item.done for a reasoning item emits reasoning-end only for an
+// activeReasoning entry created at output_item.added.
+func TestResponsesReasoningDoneWithoutAddedEmitsNoEnd(t *testing.T) {
+	sse := `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"enc","summary":[]}}
+
+data: {"type":"response.completed","response":{"id":"r","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)
+	defer stream.Close() //nolint:errcheck
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeReasoningEnd {
+			t.Fatalf("unexpected reasoning-end %+v", c)
+		}
+	}
+}
