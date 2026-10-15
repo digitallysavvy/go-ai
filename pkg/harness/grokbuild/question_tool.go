@@ -3,6 +3,7 @@ package grokbuild
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strconv"
 	"strings"
 
@@ -213,16 +214,59 @@ func questionFingerprint(req *grokBuildQuestionRequest) string {
 func questionID(index int) string { return "question-" + strconv.Itoa(index+1) }
 func optionID(index int) string   { return "option-" + strconv.Itoa(index+1) }
 
+// positionalIDIndex mirrors TS positionalIdIndex: `Number(suffix) - 1` must be
+// a non-negative integer. JS Number() semantics apply to the suffix: it is
+// whitespace-trimmed, empty is 0, and decimal ("2.0", "1e0") and 0x/0o/0b
+// integer forms are accepted.
 func positionalIDIndex(id, prefix string) (int, bool) {
 	if !strings.HasPrefix(id, prefix) {
 		return 0, false
 	}
-	n, err := strconv.Atoi(id[len(prefix):])
-	if err != nil {
+	n, ok := jsNumber(id[len(prefix):])
+	if !ok {
 		return 0, false
 	}
 	index := n - 1
-	return index, index >= 0
+	if index != math.Trunc(index) || index < 0 || index > math.MaxInt32 {
+		return 0, false
+	}
+	return int(index), true
+}
+
+func jsNumber(s string) (float64, bool) {
+	s = strings.Trim(s, " \t\n\r\v\f\u00a0\ufeff\u2028\u2029")
+	if s == "" {
+		return 0, true
+	}
+	if len(s) > 2 && s[0] == '0' {
+		base := 0
+		switch s[1] {
+		case 'x', 'X':
+			base = 16
+		case 'o', 'O':
+			base = 8
+		case 'b', 'B':
+			base = 2
+		}
+		if base != 0 {
+			u, err := strconv.ParseUint(s[2:], base, 53)
+			if err != nil || strings.ContainsAny(s[2:], "_+-") {
+				return 0, false
+			}
+			return float64(u), true
+		}
+	}
+	// Reject Go-only float syntax (underscores, hex floats, inf/nan words).
+	for _, c := range s {
+		if !(c >= '0' && c <= '9' || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') {
+			return 0, false
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+		return 0, false
+	}
+	return f, true
 }
 
 // validGrokBuildQuestionRequestShape enforces the zod schema's required

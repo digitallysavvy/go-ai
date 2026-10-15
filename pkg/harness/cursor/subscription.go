@@ -20,7 +20,7 @@ func ResolveSubscriptionEnvironment(ctx context.Context, auth AuthenticationMode
 	if harnessutil.IsAuthenticationEnvironment(auth) {
 		return auth.Environment, nil
 	}
-	if !harnessutil.ShouldResolveNativeSubscription(auth.Mode, env, env["CURSOR_API_KEY"] != "") {
+	if !harnessutil.ShouldResolveNativeSubscription(auth.Mode, env, envHas(env, "CURSOR_API_KEY")) {
 		return env, nil
 	}
 	token, err := ReadSubscription(ctx, ReadSubscriptionOptions{Env: env})
@@ -116,4 +116,11 @@ func parseAccessToken(text []byte) string {
 	}
 	token, _ := parsed["accessToken"].(string)
 	return token
+}
+
+// envHas mirrors TS `env.X != null`: a variable that is set to the empty
+// string still counts as a direct credential.
+func envHas(env map[string]string, key string) bool {
+	_, ok := env[key]
+	return ok
 }

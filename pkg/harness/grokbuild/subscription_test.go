@@ -3,6 +3,7 @@ package grokbuild
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -137,5 +138,64 @@ func TestReadSubscription_RefreshesExpiring(t *testing.T) {
 	}
 	if !strings.Contains(string(persisted), "new-refresh") {
 		t.Errorf("persisted file missing new-refresh: %s", persisted)
+	}
+}
+
+// TS rewrites auth.json with JSON.stringify(spread records): scope and field
+// order are preserved, so the next read selects the same scope.
+func TestReadSubscription_RefreshPreservesKeyOrder(t *testing.T) {
+	grokHome := t.TempDir()
+	authPath := filepath.Join(grokHome, "auth.json")
+	exp := time.Now().Add(60 * time.Second).UnixMilli()
+	other := "https://other.example::not-xai"
+	text := fmt.Sprintf(`{"z-first":{"b":1,"a":2},%q:{"key":"k","refresh_token":"r","expires_at":%d,"zeta":true,"email":"<a&b>"},%q:{"x":1}}`, testScope, exp, other)
+	if err := os.WriteFile(authPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_, _ = w.Write([]byte(`{"token_endpoint":"https://auth.x.ai/oauth2/token"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`))
+	}))
+	defer server.Close()
+	if _, err := ReadSubscription(context.Background(), ReadSubscriptionOptions{
+		Env: map[string]string{"GROK_HOME": grokHome}, HTTPClient: rewriteHostClient(t, server.URL),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, _ := os.ReadFile(authPath)
+	s := string(persisted)
+	idx := func(sub string) int { return strings.Index(s, sub) }
+	if !(idx(`"z-first"`) < idx(`"`+testScope+`"`) && idx(`"`+testScope+`"`) < idx(`"`+other+`"`)) {
+		t.Errorf("scope order not preserved:\n%s", s)
+	}
+	if !(idx(`"b": 1`) < idx(`"a": 2`)) || !(idx(`"key"`) < idx(`"refresh_token"`) && idx(`"refresh_token"`) < idx(`"expires_at"`) && idx(`"expires_at"`) < idx(`"zeta"`)) {
+		t.Errorf("field order not preserved:\n%s", s)
+	}
+	if !strings.Contains(s, `"email": "<a&b>"`) || !strings.Contains(s, "new-access") || !strings.HasSuffix(s, "}\n") {
+		t.Errorf("unexpected file:\n%s", s)
+	}
+}
+
+// TS `env.XAI_API_KEY != null`: a set-but-empty key is a direct credential,
+// so the native subscription is not consulted.
+func TestResolveSubscriptionEnvironment_EmptyKeyIsDirect(t *testing.T) {
+	env := map[string]string{"XAI_API_KEY": "", "GROK_HOME": t.TempDir()}
+	got, err := ResolveSubscriptionEnvironment(context.Background(), ResolveSubscriptionEnvironmentOptions{Env: env})
+	if err != nil || len(got) != len(env) {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}
+
+func TestCredentialBrokering_NullishSemantics(t *testing.T) {
+	trs, err := CredentialBrokeringErr(map[string]string{"XAI_API_KEY": "host", "GROK_CLI_CHAT_PROXY_BASE_URL": ""}, map[string]string{"XAI_API_KEY": "sbx"}, nil)
+	if err != nil || len(trs) != 1 {
+		t.Fatalf("%v %v", trs, err)
+	}
+	if trs[0].Transform.Headers["X-XAI-Token-Auth"] != "xai-grok-cli" {
+		t.Fatalf("set-but-empty proxy URL must still add the token header: %+v", trs[0].Transform.Headers)
 	}
 }

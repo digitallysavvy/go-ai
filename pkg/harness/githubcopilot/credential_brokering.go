@@ -27,7 +27,7 @@ func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string) ([]harne
 func credentialBrokering(env, sandboxEnv, headers map[string]string, lenient bool) ([]harness.RequestTransformation, error) {
 	var transformations []harness.RequestTransformation
 
-	githubHost := normalizeGitHubHost(firstNonEmpty(env["COPILOT_GH_HOST"], env["GH_HOST"], "github.com"))
+	githubHost := normalizeGitHubHost(firstPresent(env, "github.com", "COPILOT_GH_HOST", "GH_HOST"))
 	githubHosts := []string{githubHost, "*." + githubHost}
 	if githubHost == "github.com" {
 		githubHosts = append(githubHosts, "githubcopilot.com", "*.githubcopilot.com")
@@ -91,13 +91,4 @@ func credentialBrokering(env, sandboxEnv, headers map[string]string, lenient boo
 	}
 
 	return transformations, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
