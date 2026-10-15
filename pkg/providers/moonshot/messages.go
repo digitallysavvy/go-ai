@@ -159,7 +159,8 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				}
 			}
 
-			hasToolCalls := len(msg.ToolCalls) > 0
+			toolCalls := providerutils.AssistantToolCalls(msg)
+			hasToolCalls := len(toolCalls) > 0
 			assistantMsg := map[string]interface{}{"role": "assistant"}
 			if hasToolCalls {
 				if text.Len() > 0 {
@@ -180,7 +181,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				assistantMsg["reasoning_content"] = reasoning.String()
 			}
 			if hasToolCalls {
-				assistantMsg["tool_calls"] = moonshotWireToolCalls(msg.ToolCalls)
+				assistantMsg["tool_calls"] = moonshotWireToolCalls(toolCalls)
 			}
 			out = append(out, assistantMsg)
 

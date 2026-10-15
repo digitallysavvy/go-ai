@@ -436,8 +436,8 @@ func deepseekConvertAssistantMessage(msg types.Message, index, lastUserMessageIn
 	}
 
 	entry := map[string]interface{}{"role": "assistant", "content": text.String()}
-	if len(msg.ToolCalls) > 0 {
-		entry["tool_calls"] = deepseekToolCallsWire(msg.ToolCalls)
+	if toolCalls := providerutils.AssistantToolCalls(msg); len(toolCalls) > 0 {
+		entry["tool_calls"] = deepseekToolCallsWire(toolCalls)
 	}
 
 	switch {

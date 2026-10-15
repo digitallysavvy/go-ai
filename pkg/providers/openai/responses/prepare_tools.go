@@ -8,6 +8,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // PrepareTools converts SDK tools to the OpenAI Responses API tool format.
@@ -792,6 +793,14 @@ func defaultFunctionParameters(parameters interface{}) interface{} {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		}
+	}
+	if ordered, ok := parameters.(*jsonschema.OrderedSchema); ok {
+		// Keeps the source key order on the wire; a schema without a type
+		// gets the default object type like a map does.
+		if _, hasType := ordered.JSONSchema()["type"]; hasType {
+			return ordered
+		}
+		parameters = ordered.JSONSchema()
 	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
 		if _, hasType := schema["type"]; !hasType {

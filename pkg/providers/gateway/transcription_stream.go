@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
@@ -48,7 +47,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// TS: combineHeaders(config.headers (auth included), options.headers,
 	// model headers, o11y) — so a per-call Authorization / auth-method /
 	// team header wins, and the subprotocols derive from the merged set.
-	headers := internalhttp.MergeHeaders(
+	headers := mergeHeadersFold(
 		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
 		m.provider.headers, opts.Headers, m.getModelConfigHeaders(),
 	)
@@ -97,6 +96,24 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		RequestBody: startFrame,
 		Response:    &provider.TranscriptionStreamResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID},
 	}, nil
+}
+
+// mergeHeadersFold merges header layers, later layers winning, with header
+// names compared case-insensitively (a per-call "authorization" replaces the
+// default "Authorization" instead of sitting beside it).
+func mergeHeadersFold(layers ...map[string]string) map[string]string {
+	out := make(map[string]string)
+	for _, layer := range layers {
+		for k, v := range layer {
+			for existing := range out {
+				if strings.EqualFold(existing, k) {
+					delete(out, existing)
+				}
+			}
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // gatewayHeaderValue looks a header up case-insensitively (TS normalizeHeaders).

@@ -8,6 +8,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // NormalizeOpenAIJSONSchema is a Go port of TypeScript's
@@ -62,7 +63,7 @@ func NormalizeOpenAISchemaValue(schema interface{}) (interface{}, []types.Warnin
 			return schema, nil, nil
 		}
 		return NormalizeOpenAIJSONSchema(s)
-	case json.RawMessage, []byte:
+	case json.RawMessage, []byte, *jsonschema.OrderedSchema:
 		raw, ok := providerutils.RawJSONObject(s)
 		if !ok {
 			return schema, nil, nil

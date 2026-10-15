@@ -2,6 +2,7 @@ package moonshot
 
 import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // moonshotFunctionTool is the wire shape Moonshot expects for a function tool
@@ -40,7 +41,7 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 			continue
 		}
 
-		normalized, err := NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(tool.Parameters))
+		normalized, err := normalizeMFJSKeepingOrder(tool.Parameters)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -111,4 +112,24 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 		}
 	}
 	return parameters
+}
+
+// normalizeMFJSKeepingOrder normalizes tool parameters for MFJS. Raw JSON
+// (json.RawMessage) and *schema.OrderedSchema parameters are decoded for the
+// normalization and written back in their source key order, like the JS
+// object TS normalizes.
+func normalizeMFJSKeepingOrder(parameters interface{}) (interface{}, error) {
+	raw, isRaw := providerutils.RawJSONObject(parameters)
+	if isRaw {
+		if m := providerutils.DecodeRawJSONObject(raw); m != nil {
+			parameters = m
+		} else {
+			isRaw = false
+		}
+	}
+	normalized, err := NormalizeJSONSchemaForMFJS(moonshotDefaultObjectSchema(parameters))
+	if err != nil || !isRaw {
+		return normalized, err
+	}
+	return providerutils.OrderLike(normalized, raw), nil
 }

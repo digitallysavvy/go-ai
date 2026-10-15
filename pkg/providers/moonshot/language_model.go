@@ -321,9 +321,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	var responseFormat map[string]interface{}
 	var responseFormatType string
 	if providerutils.IsJSONResponseFormat(opts.ResponseFormat) {
-		schemaVal := providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema)
+		schemaVal := providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema)
 		if opts.ResponseFormat.Type == "json_object" {
 			schemaVal = nil
+		}
+		var schemaRaw json.RawMessage
+		if raw, ok := providerutils.RawJSONObject(schemaVal); ok {
+			if decoded := providerutils.DecodeRawJSONObject(raw); decoded != nil {
+				schemaRaw, schemaVal = raw, decoded
+			}
 		}
 		schemaMap, _ := schemaVal.(map[string]interface{})
 		if SupportsStructuredOutputs(m.modelID) && schemaMap != nil {
@@ -337,6 +343,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			normalized, err := NormalizeJSONSchemaForMFJS(cleaned)
 			if err != nil {
 				return nil, nil, err
+			}
+			if schemaRaw != nil {
+				normalized = providerutils.OrderLike(normalized, schemaRaw)
 			}
 			strict := true
 			if modelOpts.HasStrictJSONSchema {

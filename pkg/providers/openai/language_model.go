@@ -624,7 +624,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	} else {
 		if responseFormat != nil && responseFormat.Type == "json" {
-			if rawSchema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema); rawSchema != nil {
+			if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(responseFormat.Schema); rawSchema != nil {
 				{
 					normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
 					if normErr != nil {
