@@ -68,6 +68,7 @@ The adapter interface is in [Harness adapters](./adapters.mdx).
 | `ProviderMetadata` | `ProviderMetadata` |  |
 | `NativeName` | `string` | NativeName is the runtime's native name when it differs from ToolName. |
 | `StepToolCallCount` | `*int` | StepToolCallCount is the total tool calls in the current model step, when known up front. Must be a positive integer when set. Deprecated: ignored by the host since TS #23260. Parallel approvals and client tool results are collected by pausing at the step's next finish-step instead, so adapters no longer need to populate it. |
+| `ProviderExecutedOmitted` | `bool` | ProviderExecutedOmitted is set by DecodeStreamPart when the wire frame carried no `providerExecuted` key. A Go bool cannot tell "absent" from false, but TS defaults a builtin approval's providerExecuted to true when the tool call left it undefined (`rawToolCall?.providerExecuted ?? true`). Never serialized. |
 
 {/* /gen:fields */}
 
