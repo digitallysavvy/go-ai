@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
@@ -180,7 +181,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		// Function tool.
 		// TS forwards the tool's inputSchema untouched (only the
 		// responseFormat schema is sanitized), so do the same.
-		m := map[string]interface{}{"name": t.Name, "input_schema": t.Parameters}
+		m := map[string]interface{}{"name": t.Name, "input_schema": providerutils.ResponseFormatJSONSchema(t.Parameters)}
 		if t.Description != "" {
 			m["description"] = t.Description
 		}

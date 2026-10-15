@@ -512,7 +512,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		tools := append(append([]types.Tool{}, opts.Tools...), types.Tool{
 			Name:        "json",
 			Description: "Respond with a JSON object.",
-			Parameters:  opts.ResponseFormat.Schema,
+			Parameters:  providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema),
 		})
 		disable := true
 		prepared = prepareTools(prepareToolsOptions{

@@ -43,7 +43,7 @@ func NewJSONResponseTool(format *provider.ResponseFormat, tools []types.Tool) ty
 		Type:        types.ToolTypeFunction,
 		Name:        name,
 		Description: description,
-		Parameters:  format.Schema,
+		Parameters:  ResponseFormatJSONSchema(format.Schema),
 	}
 }
 
