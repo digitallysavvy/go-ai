@@ -132,8 +132,17 @@ func ResolveSerializableTools(defs map[string]SerializableToolDef) []types.Tool 
 	if len(defs) == 0 {
 		return nil
 	}
+	// A Go map has no order; TS keeps the record's insertion order. Sorting by
+	// key gives a stable tool order (it is part of the request, so it keeps
+	// prompt caches warm), like orderedTools does for a ToolSet.
+	names := make([]string, 0, len(defs))
+	for name := range defs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	tools := make([]types.Tool, 0, len(defs))
-	for name, def := range defs {
+	for _, name := range names {
+		def := defs[name]
 		toolName := def.Name
 		if toolName == "" {
 			toolName = name

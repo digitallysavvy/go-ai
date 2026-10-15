@@ -242,3 +242,20 @@ func TestSerializeToolSetRecordsOwnValidator(t *testing.T) {
 		t.Fatalf("unexpected: %v", err)
 	}
 }
+
+func TestResolveSerializableToolsOrderIsStable(t *testing.T) {
+	defs := map[string]SerializableToolDef{}
+	for _, n := range []string{"zeta", "alpha", "mid", "beta", "omega", "gamma"} {
+		defs[n] = SerializableToolDef{Name: n}
+	}
+	want := []string{"alpha", "beta", "gamma", "mid", "omega", "zeta"}
+	for i := 0; i < 20; i++ {
+		var got []string
+		for _, tool := range ResolveSerializableTools(defs) {
+			got = append(got, tool.Name)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("tool order = %v, want %v", got, want)
+		}
+	}
+}
