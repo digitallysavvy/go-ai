@@ -74,6 +74,8 @@ result, err := coder.Generate(ctx, agent.AgentGenerateOptions{
 | `Sandbox` | `SandboxProvider` | Sandbox is the provider used to create or resume network sandbox sessions. When nil, every CreateSession call must provide an existing sandbox session. |
 | `SandboxConfig` | `AgentSandboxConfig` | SandboxConfig is the sandbox working-directory and lifecycle-hook configuration. |
 | `Telemetry` | `*telemetry.Options` | Telemetry configures OpenTelemetry span/attribute reporting for every turn this agent runs, via pkg/telemetry's dispatch pattern (see run_prompt.go's telemetry.go): a turn span nests step spans, which nest model-call and tool-execution spans. Nil disables it. Mirrors TS `HarnessAgentSettings.telemetry`. |
+| `Debug` | `*DebugConfig` | Debug configures diagnostics: bridge log forwarding (sandbox console lines and structured debug events) and the HARNESS_DEBUG stderr default. Set &DebugConfig\{Enabled: &true\} to turn it on in code; the HARNESS_DEBUG, HARNESS_DEBUG_LEVEL and HARNESS_DEBUG_SUBSYSTEMS env vars fill any unset field. Mirrors TS `HarnessAgentSettings.debug`. |
+| `OnLog` | `func(Diagnostic)` | OnLog is a programmatic sink for forwarded bridge diagnostics. It receives every captured console line and structured event, normalized, independent of the stderr default. Only called when diagnostics are enabled via Debug or HARNESS_DEBUG. Mirrors TS `onLog`. |
 
 {/* /gen:fields */}
 
@@ -427,6 +429,61 @@ The `askUserQuestions` tool lets the runtime ask the user a question and wait fo
 ## Telemetry and diagnostics
 
 `AgentSettings.Telemetry` takes a `*telemetry.Options`. A turn span contains step spans, which contain model-call and tool-execution spans.
+
+### Diagnostics
+
+Set `AgentSettings.Debug` (or the `HARNESS_DEBUG`, `HARNESS_DEBUG_LEVEL` and `HARNESS_DEBUG_SUBSYSTEMS` env vars, which only fill fields the setting leaves unset) to forward the bridge's sandbox console lines and structured debug events. Each `harness.Diagnostic` goes to stderr, to `AgentSettings.OnLog`, and to every integration in `Telemetry.Integrations` that implements `harness.DiagnosticConsumer`. With diagnostics disabled, `DoStart` receives a nil `Observability`.
+
+```go
+enabled := true
+agent, err := harness.NewAgent(harness.AgentSettings{
+	Harness: h,
+	Debug:   &harness.DebugConfig{Enabled: &enabled, Level: harness.DebugLevelInfo},
+	OnLog:   func(d harness.Diagnostic) { log.Printf("%s %s", d.Subsystem, d.Message) },
+})
+```
+
+### File reporter
+
+`harness.NewFileReporter` returns a telemetry integration that appends a unified `events.jsonl` with the turn, step and tool lifecycle plus forwarded diagnostics. It needs no collector. Register it in `Telemetry.Integrations` and close it when you are done.
+
+```go
+reporter, err := harness.NewFileReporter(harness.FileReporterOptions{Dir: "./logs", FailOnly: true})
+if err != nil {
+	return err
+}
+defer reporter.Close()
+
+tel := telemetry.DefaultSettings() // RecordInputs and RecordOutputs on
+tel.Integrations = []telemetry.TelemetryIntegration{reporter}
+agent, err := harness.NewAgent(harness.AgentSettings{Harness: h, Telemetry: tel})
+```
+
+Each line is a JSON object with `ts` (epoch ms) and `kind`: `turn-start`, `step-start`, `tool-start`, `tool-end`, `step-finish`, `turn-finish`, `error`, `turn-abort` or `diagnostic`. Records are buffered per turn and written when the turn ends. With `FailOnly`, a turn is written only if it recorded an error-level diagnostic, a failed tool or an `error`; a clean turn is skipped. Diagnostics attach to the most recently started open turn, or are written alone when none is open. `turn-start` carries `input` and `step-finish` carries `output` (text, reasoning, files, tool calls, tool results and tool errors) unless the call's `telemetry.Options` has `RecordInputs` or `RecordOutputs` false. Errors are written as `{name, message}`, where `name` is the Go error type.
+
+The directory is created with mode 0700 and the file with 0600. `FileName` must be a plain file name inside `Dir`. Writes are best-effort and never fail a turn; `reporter.Err()` returns the first write error. `Close` writes any turn still open (not with `FailOnly`) and closes the file, and records after `Close` are dropped.
+
+### Trace tree reporter
+
+`harness.NewTraceTreeReporter` returns a telemetry integration that renders an ASCII tree of each turn (turn, steps, tools, with durations) to `TraceTreeReporterOptions.Write` when the turn ends. It writes to stderr by default. It is for local debugging when no OpenTelemetry backend is wired up.
+
+{/* gen:fields harness.FileReporterOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Dir` | `string` | Dir is the directory for the events file (created if absent). Required. |
+| `FailOnly` | `bool` | FailOnly buffers a turn's records in memory and writes them only if the turn produced an error (an error-level diagnostic, a failed tool, or an error finish). Default false (write everything). |
+| `FileName` | `string` | FileName is the file name within Dir. Default "events.jsonl". It must be a plain file name, not a path that leaves Dir. |
+
+{/* /gen:fields */}
+
+{/* gen:fields harness.TraceTreeReporterOptions */}
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `Write` | `func(chunk string)` | Write receives the rendered tree. Default writes to os.Stderr. |
+
+{/* /gen:fields */}
 
 | Name | Description |
 | --- | --- |

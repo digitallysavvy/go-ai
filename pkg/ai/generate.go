@@ -1703,6 +1703,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				Text:             genResult.Text,
 				Reasoning:        stepTelReasoning.String(),
 				ToolCalls:        genResult.ToolCalls,
+				ToolResults:      stepResult.ToolResults,
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
 				Performance:      languageModelCallPerformance(performance),

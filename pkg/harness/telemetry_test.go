@@ -496,3 +496,82 @@ func TestAgent_TelemetryAbortDoesNotRecordErrorStatus(t *testing.T) {
 		t.Fatalf("ai.harness span status = %v, want anything but codes.Error for an abort", got)
 	}
 }
+
+type countingIntegration struct {
+	telemetry.NoopTelemetryIntegration
+	mu    sync.Mutex
+	calls []string
+}
+
+func (c *countingIntegration) note(s string) {
+	c.mu.Lock()
+	c.calls = append(c.calls, s)
+	c.mu.Unlock()
+}
+func (c *countingIntegration) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
+	c.note("start")
+	return ctx
+}
+func (c *countingIntegration) OnStepStart(ctx context.Context, _ telemetry.TelemetryStepStartEvent) context.Context {
+	c.note("stepStart")
+	return ctx
+}
+func (c *countingIntegration) OnEnd(context.Context, telemetry.TelemetryFinishEvent) { c.note("end") }
+func (c *countingIntegration) OnError(context.Context, telemetry.TelemetryErrorEvent) {
+	c.note("error")
+}
+func (c *countingIntegration) ExecuteTool(ctx context.Context, name string, args map[string]interface{}, execute func(context.Context, map[string]interface{}) (interface{}, error)) (interface{}, error) {
+	c.note("executeTool")
+	return execute(ctx, args)
+}
+
+// TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration mirrors
+// TS telemetry-integration.test.ts 'fires no telemetry when settings.telemetry
+// is unset': createTurnLifecycle builds no dispatcher when telemetry is null,
+// so an integration registered globally must not see the turn.
+func TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration(t *testing.T) {
+	rec := &countingIntegration{}
+	telemetry.ClearTelemetryIntegrations()
+	telemetry.RegisterTelemetryIntegration(rec)
+	t.Cleanup(telemetry.ClearTelemetryIntegrations)
+
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "Hello."},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, err := NewAgent(AgentSettings{Harness: mock.harness})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session}); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	n := len(rec.calls)
+	rec.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("global integration saw %v with Telemetry unset", rec.calls)
+	}
+
+	// Control: the same agent with Telemetry set does reach the integration.
+	a2, _ := NewAgent(AgentSettings{Harness: mock.harness, Telemetry: telemetry.DefaultSettings()})
+	session2, _ := a2.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+	if _, err := a2.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "hi", HarnessSession: session2}); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.calls) == 0 {
+		t.Fatal("control: integration saw nothing with Telemetry set")
+	}
+}

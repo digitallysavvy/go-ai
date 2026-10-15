@@ -229,6 +229,7 @@ func (a *Agent) CreateSession(ctx context.Context, opts CreateSessionOptions) (*
 		Headers: a.headers, SessionID: sessionID, ResumeFrom: validatedResumeFrom, ContinueFrom: effectiveContinueFrom,
 		PermissionMode: a.permissionMode, BuiltinToolFiltering: a.builtinToolFiltering,
 		SandboxSession: sandboxSession, SessionWorkDir: sessionWorkDir,
+		Observability: buildObservability(a.settings),
 	}
 	underlying, err := a.settings.Harness.DoStart(ctx, startOpts)
 	if err != nil {
