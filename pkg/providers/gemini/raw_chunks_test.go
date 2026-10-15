@@ -1,0 +1,70 @@
+package gemini
+
+import (
+	"io"
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+)
+
+func drain(t *testing.T, s *stream) []*provider.StreamChunk {
+	t.Helper()
+	var out []*provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err == io.EOF {
+			return out
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, c)
+	}
+}
+
+// TS emits {type:'raw', rawValue} for every SSE chunk (valid or not) ahead of
+// the parts it produces when includeRawChunks is set.
+func TestStreamIncludeRawChunks(t *testing.T) {
+	payloads := []string{
+		`{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`,
+		`not json`,
+		`{"candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`,
+	}
+	s := newTestStream(sseStream(payloads...))
+	s.includeRawChunks = true
+	chunks := drain(t, s)
+
+	var raws []interface{}
+	for i, c := range chunks {
+		if c.Type == provider.ChunkTypeRaw {
+			raws = append(raws, c.Raw)
+			if i+1 < len(chunks) && chunks[i+1].Type == provider.ChunkTypeRaw {
+				t.Fatalf("consecutive raw chunks: %v", chunkTypes(chunks))
+			}
+		}
+	}
+	if len(raws) != 3 {
+		t.Fatalf("raw chunks = %d, want 3: %v", len(raws), chunkTypes(chunks))
+	}
+	if _, ok := raws[0].(map[string]interface{}); !ok {
+		t.Fatalf("raw[0] = %#v, want parsed object", raws[0])
+	}
+	if raws[1] != "not json" {
+		t.Fatalf("raw[1] = %#v, want the unparsable text", raws[1])
+	}
+	// The raw chunk for the malformed payload precedes its error chunk.
+	for i, c := range chunks {
+		if c.Type == provider.ChunkTypeError {
+			if i == 0 || chunks[i-1].Type != provider.ChunkTypeRaw {
+				t.Fatalf("error chunk not preceded by raw: %v", chunkTypes(chunks))
+			}
+		}
+	}
+
+	off := newTestStream(sseStream(payloads...))
+	for _, c := range drain(t, off) {
+		if c.Type == provider.ChunkTypeRaw {
+			t.Fatal("raw chunk without includeRawChunks")
+		}
+	}
+}
