@@ -189,6 +189,14 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	warnings = append(warnings, msgWarnings...)
 	body["messages"] = convertedMessages
 
+	// TS getArgs: topK and seed are not supported by DeepSeek.
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
+
 	if opts.MaxTokens != nil {
 		body["max_tokens"] = *opts.MaxTokens
 	}

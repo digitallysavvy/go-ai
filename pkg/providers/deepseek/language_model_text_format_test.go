@@ -71,3 +71,23 @@ func TestMessageAndFilePartProviderOptionsValidated(t *testing.T) {
 		t.Fatalf("messages = %#v", body["messages"])
 	}
 }
+
+func TestTopKAndSeedWarned(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "deepseek-chat")
+	tk, seed := 5, 7
+	body, warnings, err := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, TopK: &tk, Seed: &seed}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["seed"]; ok {
+		t.Fatalf("seed must not be sent: %#v", body)
+	}
+	var topK, seedW bool
+	for _, w := range warnings {
+		topK = topK || (w.Type == "unsupported" && w.Feature == "topK")
+		seedW = seedW || (w.Type == "unsupported" && w.Feature == "seed")
+	}
+	if !topK || !seedW {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+}

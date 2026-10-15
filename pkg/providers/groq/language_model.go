@@ -178,6 +178,18 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
+	// TS sends frequency_penalty / presence_penalty and warns that topK is
+	// unsupported.
+	if opts.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *opts.FrequencyPenalty
+	}
+	if opts.PresencePenalty != nil {
+		body["presence_penalty"] = *opts.PresencePenalty
+	}
+	var topKWarnings []types.Warning
+	if opts.TopK != nil {
+		topKWarnings = append(topKWarnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
 	// Groq rejects JSON response formatting together with function tools, so
 	// structured output is requested through a synthetic JSON response tool
 	// (TS #21989).
@@ -200,7 +212,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
-	warnings = append(toolPrepWarnings, warnings...)
+	warnings = append(topKWarnings, warnings...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// Map top-level Reasoning to Groq reasoning_effort. An explicit
 	// providerOptions.groq.reasoningEffort always wins (applied below via
@@ -260,7 +272,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningFormat", "reasoning_format", "reasoning-format"); ok {
 		body["reasoning_format"] = reasoningFormat
 	}
-	return body, warnings
+	// TS: warnings: [...warnings, ...toolWarnings].
+	return body, append(warnings, toolPrepWarnings...)
 }
 
 // jsonResponseToolName returns the name of the synthetic JSON response tool
