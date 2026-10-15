@@ -91,3 +91,39 @@ func TestBedrockReplayedToolInputKeepsKeyOrderAndLegacyToolCalls(t *testing.T) {
 		t.Fatalf("want 2 ordered tool inputs (content part + legacy ToolCalls), got %d in %s", got, b)
 	}
 }
+
+// TS prepareAnthropicTools always returns {type:"auto"} for an explicit auto
+// choice and {type:"none"} for none, and passes disable_parallel_tool_use
+// through as given (an explicit false stays false).
+func TestBedrockAnthropicProviderToolChoiceMatchesTS(t *testing.T) {
+	yes, no := true, false
+	bash := anthropictools.Bash20250124()
+	cases := []struct {
+		name    string
+		choice  types.ToolChoice
+		hasPick bool
+		disable *bool
+		want    string
+	}{
+		{"auto", types.ToolChoice{Type: types.ToolChoiceAuto}, true, nil, `{"type":"auto"}`},
+		{"auto disable", types.ToolChoice{Type: types.ToolChoiceAuto}, true, &yes, `{"disable_parallel_tool_use":true,"type":"auto"}`},
+		{"auto explicit false", types.ToolChoice{Type: types.ToolChoiceAuto}, true, &no, `{"disable_parallel_tool_use":false,"type":"auto"}`},
+		{"none", types.ToolChoice{Type: types.ToolChoiceNone}, true, nil, `{"type":"none"}`},
+		{"required", types.RequiredToolChoice(), true, nil, `{"type":"any"}`},
+		{"no choice", types.ToolChoice{}, false, nil, `null`},
+		{"no choice false", types.ToolChoice{}, false, &no, `null`},
+		{"no choice disable", types.ToolChoice{}, false, &yes, `{"disable_parallel_tool_use":true,"type":"auto"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := prepareBedrockTools([]types.Tool{bash}, tc.choice, tc.hasPick, "anthropic.claude-3-5-sonnet-20241022-v2:0", "", nil, tc.disable, false)
+			var got interface{}
+			if res.AdditionalTools != nil {
+				got = res.AdditionalTools["tool_choice"]
+			}
+			if s := wireSchemaJSON(t, got); s != tc.want {
+				t.Fatalf("tool_choice = %s, want %s", s, tc.want)
+			}
+		})
+	}
+}

@@ -78,7 +78,6 @@ func init() {
 		SkipStream:      "the recording keeps the Bedrock binary event-stream frames as text; stream parsing is replayed by the case suites",
 		ProviderTool:    anthropicWireTool,
 		Skip: map[string]string{
-			"~should handle Anthropic provider-defined tools":                             "the TS test mocks prepareAnthropicTools, and Go sends its own tool JSON schema (property descriptions) where TS sends the zod schema",
 			"~should combine user-provided and tool-generated betas in body":              "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~should not include anthropic-beta in HTTP headers":                          "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~anthropic_beta in additionalModelRequestFields when using extended context": "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
@@ -109,7 +108,6 @@ func init() {
 		Skip: map[string]string{
 			"~Vertex Anthropic labels >":                                     "provider-level headers are not captured in the recording config, and the labels JSON keeps the TS object key order, which a Go map cannot",
 			"~tools and thinking config for":                                 "the TS test sets Authorization as a provider-level header, which the recording does not carry",
-			"~predict dimensions >":                                          "the TS fixture returns two predictions for one value and TS does not check; Go rejects a count mismatch",
 			"~should pass headers and user agent":                            "provider-level headers are not captured in the recording config",
 			"~GoogleVertexEmbeddingModel > should pass headers correctly":    "provider-level headers are not captured in the recording config",
 			"~should preserve local JSON Schema references in tool requests": "the TS test creates the provider with apiKey (express mode), which the recording does not carry",
