@@ -61,7 +61,7 @@ func TestTSReplay_ApprovalAndFilteringCapabilities(t *testing.T) {
 	target := &PermissionModeTarget{Type: PermissionTargetSessionMode, ModeID: "full"}
 	for name, pm := range map[string]*PermissionModeMapping{
 		"complete":   {AllowReads: target, AllowEdits: target, AllowAll: target},
-		"incomplete": {AllowAll: target, Unset: []harness.PermissionMode{harness.PermissionModeAllowReads, harness.PermissionModeAllowEdits}},
+		"incomplete": {AllowAll: target, UnsetAllowReads: true, UnsetAllowEdits: true},
 		"none":       nil,
 	} {
 		h, err := CreateACP(testSettings(func(s *Settings) { s.PermissionModeMapping = pm }))
