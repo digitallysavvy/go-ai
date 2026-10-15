@@ -954,9 +954,35 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	if a.config.OnChainEnd != nil {
 		a.config.OnChainEnd(result)
 	}
-	if result.Output == nil {
+	// CB-T23: the OnFinishEvent. Like the TS onEnd event, it aggregates
+	// content, tool calls, results, sources, files and warnings across steps.
+	emitFinishEvent := func() {
+		finishEvent := ai.OnFinishEvent{
+			Text:                result.Text,
+			FinishReason:        result.FinishReason,
+			Steps:               result.Steps,
+			TotalUsage:          result.Usage,
+			ExperimentalContext: a.config.ExperimentalContext,
+			RuntimeContext:      a.runtimeContext(),
+			ToolsContext:        a.config.ToolsContext,
+		}
+		finishEvent.SetAggregatesFromSteps(result.Steps, append(append([]types.Message(nil), resumed.ResponseMessages...), responseMessagesOf(result.Steps)...))
+		if len(finishEvent.ToolResults) == 0 {
+			finishEvent.ToolResults = result.ToolResults
+		}
+		if len(finishEvent.Warnings) == 0 {
+			finishEvent.Warnings = result.Warnings
+		}
+		ai.Notify(ctx, finishEvent, cbs.onFinish)
+	}
+	// TS parses the output only for a stop finish, or a non-tool-calls finish
+	// that produced text, and only after onEnd has run: a parse failure
+	// rejects after the end event, and a tool-calls finish leaves the output
+	// unset instead of failing the call.
+	if result.Output == nil && (a.config.Output == nil || shouldParseAgentOutput(result.FinishReason, result.Text)) {
 		output, err := parseAgentOutput(ctx, a.config.Output, result)
 		if err != nil {
+			emitFinishEvent()
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(err)
 			}
@@ -970,25 +996,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		a.config.OnFinish(result)
 	}
 
-	// CB-T23: Emit OnFinishEvent. Like the TS onEnd event, it aggregates
-	// content, tool calls, results, sources, files and warnings across steps.
-	finishEvent := ai.OnFinishEvent{
-		Text:                result.Text,
-		FinishReason:        result.FinishReason,
-		Steps:               result.Steps,
-		TotalUsage:          result.Usage,
-		ExperimentalContext: a.config.ExperimentalContext,
-		RuntimeContext:      a.runtimeContext(),
-		ToolsContext:        a.config.ToolsContext,
-	}
-	finishEvent.SetAggregatesFromSteps(result.Steps, append(append([]types.Message(nil), resumed.ResponseMessages...), responseMessagesOf(result.Steps)...))
-	if len(finishEvent.ToolResults) == 0 {
-		finishEvent.ToolResults = result.ToolResults
-	}
-	if len(finishEvent.Warnings) == 0 {
-		finishEvent.Warnings = result.Warnings
-	}
-	ai.Notify(ctx, finishEvent, cbs.onFinish)
+	emitFinishEvent()
 
 	return result, nil
 }
@@ -1426,6 +1434,15 @@ func responseFormatForOutput(ctx context.Context, output interface{}) (*provider
 		return p.ResponseFormat(ctx)
 	}
 	return nil, nil
+}
+
+// shouldParseAgentOutput mirrors TS: parse on a stop finish, or on any other
+// finish except tool-calls when the final step produced text.
+func shouldParseAgentOutput(finishReason types.FinishReason, text string) bool {
+	if finishReason == types.FinishReasonStop {
+		return true
+	}
+	return finishReason != types.FinishReasonToolCalls && text != ""
 }
 
 func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResult) (interface{}, error) {

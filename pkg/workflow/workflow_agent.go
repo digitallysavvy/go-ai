@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -130,11 +131,18 @@ type WorkflowAgent struct {
 	AllowSystemInMessages bool
 	Tools                 []types.Tool
 	ToolSet               map[string]types.Tool
-	StopWhen              []ai.StopCondition
-	Output                interface{}
-	Telemetry             *ai.TelemetrySettings
-	ID                    string
-	Prompt                string
+	// StopWhen is the default stop condition. When empty NewWorkflowAgent sets
+	// IsStepCount(20), which applies to Generate; Stream is unbounded unless
+	// StopWhen is set explicitly on the agent or the call (TS: only generate
+	// defaults to isStepCount(20)).
+	StopWhen  []ai.StopCondition
+	Output    interface{}
+	Telemetry *ai.TelemetrySettings
+	ID        string
+	Prompt    string
+
+	// stopWhenDefaulted records that StopWhen was filled in by NewWorkflowAgent.
+	stopWhenDefaulted bool
 
 	OnStart              StartCallback
 	OnStepStart          StepStartCallback
@@ -205,6 +213,21 @@ type WorkflowAgent struct {
 
 // WorkflowGenerateOptions configures a single generate invocation.
 type WorkflowGenerateOptions struct {
+	// Per-call generation settings (TS Partial<GenerationSettings>). A value
+	// set here replaces the agent's; Headers and ProviderOptions replace as a
+	// whole.
+	Temperature      *float64
+	MaxTokens        *int
+	TopP             *float64
+	TopK             *int
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	StopSequences    []string
+	Seed             *int
+	Headers          map[string]string
+	Reasoning        *types.ReasoningLevel
+	ProviderOptions  map[string]interface{}
+
 	Prompt                      string
 	Messages                    []types.Message
 	System                      string
@@ -268,6 +291,21 @@ type WorkflowGenerateOptions struct {
 
 // WorkflowStreamOptions configures a single stream invocation.
 type WorkflowStreamOptions struct {
+	// Per-call generation settings (TS Partial<GenerationSettings>). A value
+	// set here replaces the agent's; Headers and ProviderOptions replace as a
+	// whole.
+	Temperature      *float64
+	MaxTokens        *int
+	TopP             *float64
+	TopK             *int
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	StopSequences    []string
+	Seed             *int
+	Headers          map[string]string
+	Reasoning        *types.ReasoningLevel
+	ProviderOptions  map[string]interface{}
+
 	Prompt                string
 	Messages              []types.Message
 	System                string
@@ -376,6 +414,7 @@ func NewWorkflowAgent(cfg WorkflowAgent) (*WorkflowAgent, error) {
 	}
 	if len(cfg.StopWhen) == 0 {
 		cfg.StopWhen = []ai.StopCondition{ai.IsStepCount(20)}
+		cfg.stopWhenDefaulted = true
 	}
 	return &cfg, nil
 }
@@ -486,6 +525,35 @@ func resolveToolCallConcurrency(values ...*int) (int, error) {
 		return *v, nil
 	}
 	return 0, nil
+}
+
+// callSetting picks the first non-nil setting: the stream call, then the
+// generate call, then the agent default.
+func callSetting[T any](values ...*T) *T {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func callSlice[T any](values ...[]T) []T {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func callMap[K comparable, V any](values ...map[K]V) map[K]V {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
 }
 
 func firstNonNil(values ...interface{}) interface{} {
@@ -1096,7 +1164,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx contex
 	}
 }
 
-func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) *agent.ToolLoopAgent {
+func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions, streaming bool) *agent.ToolLoopAgent {
 	system := w.System
 	if w.Instructions != nil {
 		if normalized, err := normalizeInstructions(w.Instructions); err == nil && normalized != "" {
@@ -1120,6 +1188,11 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		}
 	}
 	stopWhen := w.StopWhen
+	if streaming && w.stopWhenDefaulted {
+		// TS only defaults generate() to isStepCount(20); stream() runs until
+		// the model stops calling tools.
+		stopWhen = []ai.StopCondition{func(ai.StopConditionState) string { return "" }}
+	}
 	if len(govr.StopWhen) > 0 {
 		stopWhen = govr.StopWhen
 	}
@@ -1297,9 +1370,14 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: stopWhen,
 		AllowSystemInMessages: allowSystemInMessages,
 		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx),
-		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
-		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: version.WithUserAgentSuffix(w.Headers, "ai-sdk-agent/workflow"), Reasoning: w.Reasoning,
-		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
+		Temperature: callSetting(ovr.Temperature, govr.Temperature, w.Temperature), MaxTokens: callSetting(ovr.MaxTokens, govr.MaxTokens, w.MaxTokens),
+		TopP: callSetting(ovr.TopP, govr.TopP, w.TopP), TopK: callSetting(ovr.TopK, govr.TopK, w.TopK),
+		FrequencyPenalty: callSetting(ovr.FrequencyPenalty, govr.FrequencyPenalty, w.FrequencyPenalty),
+		PresencePenalty:  callSetting(ovr.PresencePenalty, govr.PresencePenalty, w.PresencePenalty),
+		StopSequences:    callSlice(ovr.StopSequences, govr.StopSequences, w.StopSequences), Seed: callSetting(ovr.Seed, govr.Seed, w.Seed),
+		Headers:       version.WithUserAgentSuffix(callMap(ovr.Headers, govr.Headers, w.Headers), "ai-sdk-agent/workflow"),
+		Reasoning:     callSetting(ovr.Reasoning, govr.Reasoning, w.Reasoning),
+		SendReasoning: w.SendReasoning, ProviderOptions: callMap(ovr.ProviderOptions, govr.ProviderOptions, w.ProviderOptions), RuntimeContext: runtimeContext, ToolsContext: toolsContext,
 		ToolChoice:                     toolChoice,
 		ToolCallConcurrency:            toolCallConcurrency,
 		Output:                         output,
@@ -1448,7 +1526,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			prevStepEnd(c, e)
 		}
 	}
-	a := w.makeAgent(WorkflowStreamOptions{}, opts)
+	a := w.makeAgent(WorkflowStreamOptions{}, opts, false)
 	system := opts.System
 	if opts.Instructions != nil {
 		if normalized, err := normalizeInstructions(opts.Instructions); err == nil {
@@ -1458,7 +1536,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil {
+		if isWorkflowAbort(ctx, err) {
 			stepsMu.Lock()
 			steps := append([]types.StepResult(nil), completedSteps...)
 			stepsMu.Unlock()
@@ -1468,9 +1546,10 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			}
 		} else {
 			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-		}
-		if onError := mergeError(w.OnError, opts.OnError); onError != nil {
-			onError(ctx, err)
+			// An abort reaches onAbort only, never onError (TS).
+			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
+				onError(ctx, err)
+			}
 		}
 		return nil, err
 	}
@@ -1617,7 +1696,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 		return nil, ctx.Err()
 	}
-	a := w.makeAgent(opts, WorkflowGenerateOptions{})
+	a := w.makeAgent(opts, WorkflowGenerateOptions{}, true)
 	system := opts.System
 	if opts.Instructions != nil {
 		if normalized, err := normalizeInstructions(opts.Instructions); err == nil {
@@ -1636,16 +1715,16 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {
-		if ctx != nil && ctx.Err() != nil {
+		if isWorkflowAbort(ctx, err) {
 			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
 			if onAbort != nil {
 				onAbort(ctx, nil)
 			}
 		} else {
 			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
-		}
-		if onError := mergeError(w.OnError, opts.OnError); onError != nil {
-			onError(ctx, err)
+			if onError := mergeError(w.OnError, opts.OnError); onError != nil {
+				onError(ctx, err)
+			}
 		}
 		return nil, err
 	}
@@ -1656,6 +1735,17 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		ModelID:        modelID,
 	})
 	return &WorkflowStreamResult{StreamTextResult: stream}, nil
+}
+
+// isWorkflowAbort reports whether a failed run counts as an abort rather than
+// an error: the caller's context ended, or the failure is a cancellation or a
+// timeout such as the agent's own Timeout (TS classifies AbortError and
+// TimeoutError as aborts, so onAbort fires and onError does not).
+func isWorkflowAbort(ctx context.Context, err error) bool {
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // newWorkflowCallID returns the call ID shared by one WorkflowAgent run's

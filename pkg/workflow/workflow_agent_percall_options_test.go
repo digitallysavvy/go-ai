@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -114,5 +115,55 @@ func TestWorkflowPrepareHookErrorFailsTheRun(t *testing.T) {
 				t.Fatal("the real model was called despite the hook error")
 			}
 		})
+	}
+}
+
+// TS workflow-agent.test.ts "should allow stream options to override
+// constructor generation settings": per-call Partial<GenerationSettings>
+// replace the agent's, for stream and generate; unset ones keep the agent's.
+func TestWorkflowPerCallGenerationSettingsOverrideAgent(t *testing.T) {
+	temp, topP, seed := 0.7, 0.9, 42
+	callTemp, callMax := 0.3, 500
+	low, none := types.ReasoningLevel("low"), types.ReasoningLevel("none")
+	run := func(t *testing.T, stream bool) *provider.GenerateOptions {
+		t.Helper()
+		m := &wfMockModel{}
+		a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Temperature: &temp, TopP: &topP, Seed: &seed, Reasoning: &low,
+			Headers: map[string]string{"x-agent": "1"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stream {
+			st, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "p", Temperature: &callTemp, MaxTokens: &callMax, Reasoning: &none,
+				Headers: map[string]string{"x-call": "2"}, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"a": 1}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = st.ConsumeStream()
+		} else {
+			if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "p", Temperature: &callTemp, MaxTokens: &callMax, Reasoning: &none,
+				Headers: map[string]string{"x-call": "2"}, ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"a": 1}}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return m.opts[0]
+	}
+	for _, stream := range []bool{true, false} {
+		o := run(t, stream)
+		if o.Temperature == nil || *o.Temperature != 0.3 || o.MaxTokens == nil || *o.MaxTokens != 500 {
+			t.Fatalf("stream=%v temperature/maxTokens = %v/%v", stream, o.Temperature, o.MaxTokens)
+		}
+		if o.TopP == nil || *o.TopP != 0.9 || o.Seed == nil || *o.Seed != 42 {
+			t.Fatalf("stream=%v agent topP/seed lost: %v/%v", stream, o.TopP, o.Seed)
+		}
+		if o.Reasoning == nil || *o.Reasoning != "none" {
+			t.Fatalf("stream=%v reasoning = %v", stream, o.Reasoning)
+		}
+		if o.Headers["x-call"] != "2" || o.Headers["x-agent"] != "" || !strings.Contains(o.Headers["user-agent"], "ai-sdk-agent/workflow") {
+			t.Fatalf("stream=%v headers = %v", stream, o.Headers)
+		}
+		if o.ProviderOptions["openai"] == nil {
+			t.Fatalf("stream=%v providerOptions = %v", stream, o.ProviderOptions)
+		}
 	}
 }

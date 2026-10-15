@@ -38,7 +38,9 @@ agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
 Tools can be supplied as either a `[]types.Tool` or a TypeScript-style keyed `ToolSet`
 using `map[string]types.Tool`; missing tool names are filled from the map key.
 `MaxSteps` is intentionally not part of `WorkflowAgent`; use `StopWhen` with
-`ai.IsStepCount(n)`.
+`ai.IsStepCount(n)`. When `StopWhen` is empty, `Generate` stops after 20 steps but
+`Stream` runs until the model stops calling tools (the same defaults as the TypeScript
+`WorkflowAgent`); set `StopWhen` on the agent or the call to bound a stream.
 
 ## Generate
 
@@ -82,10 +84,15 @@ agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
 
 Both `WorkflowGenerateOptions` and `WorkflowStreamOptions` accept `ToolChoice`, `ActiveTools`, `Output` and
 `PrepareStep`, which override the agent's values for that call (a per-call `PrepareStep` runs after the
-agent's). `ToolSet` entries reach the model sorted by name, so the tool list is stable between runs.
+agent's). `ToolSet` entries (and `ResolveSerializableTools` results) reach the model sorted by name, so the tool list is stable between runs.
+
+Both option structs also accept the generation settings `Temperature`, `MaxTokens`, `TopP`, `TopK`,
+`FrequencyPenalty`, `PresencePenalty`, `StopSequences`, `Seed`, `Headers`, `Reasoning` and `ProviderOptions`.
+A value set on the call replaces the agent's (`Headers` and `ProviderOptions` replace as a whole).
 
 `OnAbort` receives the steps completed before the abort (generate and stream). `OnError` and `OnAbort` fire for failures that happen while a stream is being consumed (provider error chunks,
-cancellation), not only before it starts.
+cancellation), not only before it starts. A timeout (the agent's `Timeout`, or a context deadline) counts as an
+abort like a cancellation: `OnAbort` fires and `OnError` does not.
 
 ### Continuing the conversation
 
