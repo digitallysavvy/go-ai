@@ -113,9 +113,14 @@ func TestStreamText_ReturnsBeforeSlowResumedToolExecution(t *testing.T) {
 func TestStreamText_CloseInterruptsInFlightBootstrap(t *testing.T) {
 	t.Parallel()
 
+	// The retry wrapper does not start a provider call once the context is
+	// already cancelled, so the model may legitimately never be entered when
+	// Close wins the race; when it is entered it must be cancelled.
+	entered := make(chan struct{}, 1)
 	unblocked := make(chan struct{})
 	model := &testutil.MockLanguageModel{
 		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			entered <- struct{}{}
 			<-ctx.Done()
 			close(unblocked)
 			return nil, ctx.Err()
@@ -136,9 +141,13 @@ func TestStreamText_CloseInterruptsInFlightBootstrap(t *testing.T) {
 	}
 
 	select {
-	case <-unblocked:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close() did not cancel the in-flight provider request")
+	case <-entered:
+		select {
+		case <-unblocked:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Close() did not cancel the in-flight provider request")
+		}
+	default:
 	}
 
 	errCh := make(chan error, 1)

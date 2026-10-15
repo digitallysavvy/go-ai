@@ -507,8 +507,19 @@ func transportError(err error) error {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return err
 	}
-	return fmt.Errorf("Cannot connect to API: %w", err) //nolint:staticcheck // matches TS SDK's exact error text
+	return &connectError{err: err}
 }
+
+// connectError is a failure to reach the API (TS: an APICallError with
+// isRetryable=true built by handleFetchError). The cause stays wrapped for
+// errors.Is/As.
+type connectError struct{ err error }
+
+func (e *connectError) Error() string { return "Cannot connect to API: " + e.err.Error() }
+func (e *connectError) Unwrap() error { return e.err }
+
+// IsRetryable reports true: TS retries connection failures.
+func (e *connectError) IsRetryable() bool { return true }
 
 // StatusProviderError builds a *providererrors.ProviderError for a non-2xx
 // provider response, mirroring the TS APICallError a failedResponseHandler

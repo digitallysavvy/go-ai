@@ -142,11 +142,11 @@ func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts
 	var result *types.GenerateResult
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
-		InitialDelay: 10 * time.Millisecond,
-		MaxDelay:     50 * time.Millisecond,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
-		ShouldRetry:  retryutil.IsRetryable,
+		ShouldRetry:  isGatewayCallRetryable,
 	}, func(retryCtx context.Context) error {
 		var err error
 		result, err = model.DoGenerate(retryCtx, opts)
@@ -163,11 +163,11 @@ func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *
 	var stream provider.TextStream
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
-		InitialDelay: 10 * time.Millisecond,
-		MaxDelay:     50 * time.Millisecond,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
-		ShouldRetry:  retryutil.IsRetryable,
+		ShouldRetry:  isGatewayCallRetryable,
 	}, func(retryCtx context.Context) error {
 		var err error
 		stream, err = model.DoStream(retryCtx, opts)
