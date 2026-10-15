@@ -577,6 +577,12 @@ type ToolResultContent struct {
 	// Optional error if tool execution failed
 	Error string `json:"error,omitempty"`
 
+	// IsError is the TS tool-result isError flag of a provider-executed
+	// result: nil when the provider did not say, true or false when it did
+	// (an explicit false stays distinguishable from unset). Error carries the
+	// error text of a failed result.
+	IsError *bool `json:"isError,omitempty"`
+
 	// Structured output (takes precedence over Result)
 	// Use this for rich tool outputs with multiple content blocks
 	Output *ToolResultOutput `json:"output,omitempty"`
@@ -618,6 +624,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Input            map[string]interface{} `json:"input,omitempty"`
 		Result           interface{}            `json:"result,omitempty"`
 		Error            string                 `json:"error,omitempty"`
+		IsError          *bool                  `json:"isError,omitempty"`
 		Output           *ToolResultOutput      `json:"output,omitempty"`
 		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
@@ -634,6 +641,7 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 		Input:            t.Input,
 		Result:           t.Result,
 		Error:            t.Error,
+		IsError:          t.IsError,
 		Output:           t.Output,
 		ProviderExecuted: t.ProviderExecuted,
 		ProviderOptions:  t.ProviderOptions,

@@ -419,7 +419,9 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			if m, ok := v.(map[string]interface{}); ok {
 				if x.Error != "" {
 					delete(m, "error")
-					m["isError"] = true
+					if x.IsError == nil {
+						m["isError"] = true
+					}
 				}
 				// TS tool results are always provider executed and say so
 				// nowhere.
@@ -534,6 +536,9 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 		case provider.ChunkTypeToolResult:
 			if tr := c.ToolResult; tr != nil {
 				o["toolCallId"], o["toolName"], o["result"] = tr.ToolCallID, tr.ToolName, tr.Result
+				if tr.IsError != nil {
+					o["isError"] = *tr.IsError
+				}
 				if tr.Dynamic {
 					o["dynamic"] = true
 				}

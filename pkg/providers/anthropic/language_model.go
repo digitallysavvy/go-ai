@@ -618,9 +618,10 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				ProviderExecuted: true,
 				ProviderMetadata: callerMetadataJSON(content.Caller),
 			}
-			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_search_tool_result_error", content.IsError); ok {
+			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_search_tool_result_error", isTrue(content.IsError)); ok {
 				trc.Result = errResult
 				trc.Error = fmt.Sprintf("%v", errResult["errorCode"])
+				trc.IsError = trueFlag()
 			} else if len(content.Content) > 0 {
 				mapped, sources := convertWebSearchToolResult(content.Content)
 				trc.Result = mapped
@@ -642,9 +643,10 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				ProviderExecuted: true,
 				ProviderMetadata: callerMetadataJSON(content.Caller),
 			}
-			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_fetch_tool_result_error", content.IsError); ok {
+			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_fetch_tool_result_error", isTrue(content.IsError)); ok {
 				trc.Result = errResult
 				trc.Error = fmt.Sprintf("%v", errResult["errorCode"])
+				trc.IsError = trueFlag()
 			} else if len(content.Content) > 0 {
 				trc.Result = convertWebFetchToolResult(content.Content)
 			}
@@ -668,10 +670,11 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			if len(content.Content) > 0 {
 				json.Unmarshal(content.Content, &parsed) //nolint:errcheck
 			}
-			if content.IsError {
+			// TS: isError: part.is_error, result: part.content (both kept).
+			trc.IsError = content.IsError
+			trc.Result = parsed
+			if isTrue(content.IsError) {
 				trc.Error = fmt.Sprintf("%v", parsed)
-			} else {
-				trc.Result = parsed
 			}
 			byBlock[blockIdx] = append(byBlock[blockIdx], trc)
 		case "code_execution_tool_result", "bash_code_execution_tool_result",
@@ -690,6 +693,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			}
 			if dr.IsError {
 				trc.Error = dr.ErrorCode
+				trc.IsError = trueFlag()
 			}
 			byBlock[blockIdx] = append(byBlock[blockIdx], trc)
 		}
@@ -1395,7 +1399,7 @@ type anthropicContent struct {
 	// Deferred provider tool result fields (web_search_tool_result, code_execution_tool_result, etc.)
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	IsError   *bool           `json:"is_error,omitempty"`
 	// FileID is set on "container_upload" blocks (the uploaded file made
 	// available in the code execution container).
 	FileID string `json:"file_id,omitempty"`
@@ -1684,7 +1688,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					ServerName string `json:"server_name"`
 					// mcp_tool_result / web_search_tool_result / web_fetch_tool_result fields
 					ToolUseID string          `json:"tool_use_id"`
-					IsError   bool            `json:"is_error"`
+					IsError   *bool           `json:"is_error"`
 					Content   json.RawMessage `json:"content"`
 					// compaction fields
 					Signature string `json:"signature"`
@@ -1895,10 +1899,11 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				if len(start.ContentBlock.Content) > 0 {
 					json.Unmarshal(start.ContentBlock.Content, &mcpResultContent) //nolint:errcheck
 				}
-				if start.ContentBlock.IsError {
+				// TS: isError: part.is_error, result: part.content (both kept).
+				tr.IsError = start.ContentBlock.IsError
+				tr.Result = mcpResultContent
+				if isTrue(start.ContentBlock.IsError) {
 					tr.Error = fmt.Errorf("mcp tool error: %v", mcpResultContent)
-				} else {
-					tr.Result = mcpResultContent
 				}
 				// Track so content_block_stop is a clean no-op.
 				s.contentBlocks[start.Index] = &streamContentBlock{
@@ -1926,6 +1931,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}
 				if dr.IsError {
 					tr.Error = fmt.Errorf("%s", dr.ErrorCode)
+					tr.IsError = trueFlag()
 				}
 				return &provider.StreamChunk{
 					Type:       provider.ChunkTypeToolResult,
@@ -1992,9 +1998,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					ProviderExecuted: true,
 					ProviderMetadata: anthropicCallerMetadata(start.ContentBlock.Caller),
 				}
-				if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_fetch_tool_result_error", start.ContentBlock.IsError); ok {
+				if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_fetch_tool_result_error", isTrue(start.ContentBlock.IsError)); ok {
 					tr.Result = errResult
 					tr.Error = fmt.Errorf("%v", errResult["errorCode"])
+					tr.IsError = trueFlag()
 				} else if len(start.ContentBlock.Content) > 0 {
 					tr.Result = convertWebFetchToolResult(start.ContentBlock.Content)
 					if doc, ok := extractWebFetchCitationDocument(start.ContentBlock.Content); ok {
@@ -2023,9 +2030,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					ProviderMetadata: anthropicCallerMetadata(start.ContentBlock.Caller),
 				}
 				var webSearchSources []types.SourceContent
-				if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_search_tool_result_error", start.ContentBlock.IsError); ok {
+				if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_search_tool_result_error", isTrue(start.ContentBlock.IsError)); ok {
 					tr.Result = errResult
 					tr.Error = fmt.Errorf("%v", errResult["errorCode"])
+					tr.IsError = trueFlag()
 				} else if len(start.ContentBlock.Content) > 0 {
 					mapped, sources := convertWebSearchToolResult(start.ContentBlock.Content)
 					tr.Result = mapped
@@ -2987,3 +2995,7 @@ func mapStopReason(stopReason string, isJSONResponseFromTool bool) types.FinishR
 		return types.FinishReasonOther
 	}
 }
+
+func isTrue(b *bool) bool { return b != nil && *b }
+
+func trueFlag() *bool { b := true; return &b }
