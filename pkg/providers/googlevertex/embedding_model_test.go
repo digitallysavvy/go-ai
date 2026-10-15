@@ -3,12 +3,14 @@ package googlevertex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestVertexEmbeddingModel_MetadataAndCapabilities(t *testing.T) {
@@ -86,7 +88,8 @@ func TestVertexEmbeddingModel_DoEmbedMany(t *testing.T) {
 
 		inputs := make([]string, m.MaxEmbeddingsPerCall()+1)
 		_, err = m.DoEmbedMany(context.Background(), inputs, nil)
-		if err == nil || !strings.Contains(err.Error(), "too many embedding values") {
+		var tm *providererrors.TooManyEmbeddingValuesForCallError
+		if !errors.As(err, &tm) || tm.MaxEmbeddingsPerCall != 250 {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})

@@ -7,6 +7,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -97,7 +98,12 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return &types.EmbeddingsResult{Embeddings: [][]float64{}, Usage: types.EmbeddingUsage{}}, nil
 	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
-		return nil, fmt.Errorf("too many embedding values: %d exceeds max %d per call", len(inputs), m.MaxEmbeddingsPerCall())
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
 	}
 
 	vopts := vertexEmbeddingOptions(opts)

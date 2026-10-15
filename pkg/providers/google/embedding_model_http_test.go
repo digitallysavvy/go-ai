@@ -186,7 +186,7 @@ func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 		}
 	})
 
-	t.Run("too many values returns provider error", func(t *testing.T) {
+	t.Run("too many values returns TooManyEmbeddingValuesForCallError", func(t *testing.T) {
 		p := New(Config{APIKey: "test-key"})
 		m := NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding001)
 		inputs := make([]string, m.MaxEmbeddingsPerCall()+1)
@@ -194,12 +194,12 @@ func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error")
 		}
-		var pe *providererrors.ProviderError
-		if !errors.As(err, &pe) {
-			t.Fatalf("expected ProviderError, got %T", err)
+		var tm *providererrors.TooManyEmbeddingValuesForCallError
+		if !errors.As(err, &tm) {
+			t.Fatalf("expected TooManyEmbeddingValuesForCallError, got %T", err)
 		}
-		if pe.ErrorCode != "too_many_embedding_values_for_call" {
-			t.Fatalf("error code = %q", pe.ErrorCode)
+		if tm.MaxEmbeddingsPerCall != 100 || tm.ModelID != EmbeddingModelGeminiEmbedding001 {
+			t.Fatalf("error fields = %+v", tm)
 		}
 	})
 }
