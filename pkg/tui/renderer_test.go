@@ -815,3 +815,40 @@ func (s *blockingTextStream) Close() error {
 	s.closed = true
 	return nil
 }
+
+// TS waitForExit is skipped only for `waitForExit: false`; continueSession does
+// not skip it.
+func TestTerminalRendererContinueSessionStillWaitsForExit(t *testing.T) {
+	input := newTestKeyInput()
+	out := &recordingWriter{}
+	useSync := false
+	frame := NewTerminalFrameBuffer(out, TerminalFrameBufferOptions{UseSynchronizedUpdates: &useSync})
+	source := NewStreamRenderSourceFromTextStream(
+		testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, ID: "text-1", Text: "complete"},
+			{Type: provider.ChunkTypeFinish},
+		}),
+		nil,
+		types.StepResult{},
+	)
+	renderer := NewTerminalRenderer(TerminalRendererOptions{Input: input, Output: out, FrameBuffer: frame, Columns: 56, Rows: 16})
+	done := make(chan error, 1)
+	go func() {
+		_, err := renderer.RenderStream(context.Background(), AgentTUIStreamResult{Stream: source}, TerminalSessionOptions{ContinueSession: true})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("RenderStream returned (%v) without waiting for the exit key", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	input.Push(TerminalKey{Type: TerminalKeyCtrlC})
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RenderStream error = %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("RenderStream did not exit after the exit key")
+	}
+}

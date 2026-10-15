@@ -3,6 +3,7 @@ package langchain
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -121,5 +122,29 @@ func TestLangSmithDeploymentTransportHTTPFailure(t *testing.T) {
 	_, gotErrs := drain(t, chunks, errs)
 	if len(gotErrs) != 1 || gotErrs[0].Error() != "HTTP 401: bad key" {
 		t.Fatalf("errors: %v", gotErrs)
+	}
+}
+
+func TestLangSmithDeploymentTransportUpdatesInterruptThrowsGraphInterrupt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "event: updates\ndata: {\"node\":{\"x\":1}}\n\n")
+		_, _ = io.WriteString(w, "event: updates\ndata: {\"__interrupt__\":[{\"value\":\"ok?\",\"id\":\"i1\"}]}\n\n")
+		_, _ = io.WriteString(w, "event: values\ndata: {\"messages\":[]}\n\n")
+	}))
+	defer server.Close()
+	var seen error
+	transport := NewLangSmithDeploymentTransport(LangSmithDeploymentTransportOptions{URL: server.URL})
+	chunks, errs := transport.SendMessagesWithCallbacks(context.Background(), nil, &StreamCallbacks{OnError: func(err error) error { seen = err; return nil }})
+	got, gotErrs := drain(t, chunks, errs)
+	if len(gotErrs) != 0 {
+		t.Fatalf("errors: %v", gotErrs)
+	}
+	last := got[len(got)-1]
+	if last["type"] != "error" || !strings.Contains(fmt.Sprint(last["errorText"]), `"value": "ok?"`) {
+		t.Fatalf("chunks = %v", got)
+	}
+	var gi *GraphInterruptError
+	if !errors.As(seen, &gi) || gi.Interrupts == nil {
+		t.Fatalf("OnError error = %T %v, want *GraphInterruptError", seen, seen)
 	}
 }
