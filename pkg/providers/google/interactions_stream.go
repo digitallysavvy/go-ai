@@ -12,6 +12,7 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -47,6 +48,11 @@ type interactionsStream struct {
 	// ahead of the chunks each event produces (TS includeRawChunks).
 	includeRawChunks bool
 
+	// emittedSources de-duplicates sources across the whole stream (TS
+	// emittedSourceKeys): a citation that reappears in later annotation
+	// deltas or tool results is surfaced once.
+	emittedSources map[string]bool
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -64,6 +70,7 @@ type interactionOpenBlock struct {
 	toolCallID   string
 	toolName     string
 	args         map[string]interface{}
+	argsRaw      json.RawMessage
 	argsString   string
 	signature    string
 	data         string
@@ -364,10 +371,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		switch block.Type {
 		case "text":
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: id})
-			for _, source := range annotationsToSources(block.Annotations) {
-				source := source.(types.SourceContent)
-				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &source})
-			}
+			s.emitSources(annotationsToSources(block.Annotations))
 		case "thought":
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: id})
 			for _, item := range block.Summary {
@@ -376,17 +380,46 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 				}
 			}
 		case "model_output":
+			// TS: step.start often carries only the type; content[0], when
+			// present, promotes the block eagerly (text -> text-start plus
+			// its annotation sources, image -> an image block emitted at
+			// step.stop). Anything else stays pending until a delta says.
 			open.kind = "pending_model_output"
+			var inner []interactionsContentBlock
+			if len(block.ContentRaw) > 0 {
+				_ = json.Unmarshal(block.ContentRaw, &inner)
+			}
+			if len(inner) > 0 {
+				switch initial := inner[0]; initial.Type {
+				case "text":
+					open.kind = "text"
+					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: id})
+					s.emitSources(annotationsToSources(initial.Annotations))
+				case "image":
+					open.kind = "image"
+					open.data, open.mimeType, open.uri = initial.Data, initial.MimeType, initial.URI
+				}
+			}
 		case "function_call":
+			// TS: the tool name defaults to 'unknown' and tool-input-start
+			// is always enqueued at step.start.
 			s.hasFunction = true
 			open.argsString = ""
-			if open.toolName != "" {
-				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}})
-				open.startEmitted = true
+			if open.toolName == "" {
+				open.toolName = "unknown"
 			}
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}})
+			open.startEmitted = true
 		default:
+			// Built-in tool steps never count as client function calls (TS
+			// hasFunctionCall is only set by function_call steps).
 			if isBuiltinInteractionsToolCall(block.Type) {
-				s.hasFunction = true
+				open.toolName = builtinToolName(*block)
+				if args, ok := objectArguments(block.Arguments); ok {
+					open.args, open.argsRaw = args, block.Arguments
+				}
+			} else if isBuiltinInteractionsToolResult(block.Type) {
+				open.toolName = builtinResultToolName(*block)
 			}
 		}
 	case "step.delta":
@@ -398,66 +431,32 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			return
 		}
 		delta := event.Delta
+		textShaped := delta.Type == "text" || delta.Type == "text_annotation" || delta.Type == "text_annotation_delta"
+		// A pending model_output block is promoted to text on the first
+		// text-shaped delta.
+		if open.kind == "pending_model_output" && textShaped {
+			open.kind = "text"
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: open.id})
+		}
+		// Image and video deltas carry their whole payload: TS emits the
+		// file part inline, whether or not a text block is open at the same
+		// index (a model_output step can interleave text and files).
+		if delta.Type == "image" && (open.kind == "pending_model_output" || open.kind == "text" || open.kind == "image") {
+			s.emitFile(delta.Data, delta.URI, delta.MimeType, "image/png")
+			if open.kind == "image" {
+				open.data, open.uri = "", ""
+			}
+			return
+		}
+		if delta.Type == "video" && (open.kind == "pending_model_output" || open.kind == "text") {
+			s.emitFile(delta.Data, delta.URI, delta.MimeType, "video/mp4")
+			return
+		}
 		switch {
-		case open.kind == "pending_model_output":
-			switch delta.Type {
-			case "text":
-				open.kind = "text"
-				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: open.id})
-				if delta.Text != "" {
-					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: open.id, Text: delta.Text})
-				}
-			case "text_annotation":
-				open.kind = "text"
-				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: open.id})
-				for _, sourcePart := range annotationsToSources(delta.Annotations) {
-					source := sourcePart.(types.SourceContent)
-					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &source})
-				}
-			case "image":
-				open.kind = "image"
-				open.data = firstNonEmpty(delta.Data, open.data)
-				open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
-				open.uri = firstNonEmpty(delta.URI, open.uri)
-			case "video":
-				open.kind = "video"
-				open.data = firstNonEmpty(delta.Data, open.data)
-				open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
-				open.uri = firstNonEmpty(delta.URI, open.uri)
-			}
-		case open.kind == "text" && delta.Type == "text":
-			if delta.Text != "" {
-				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: open.id, Text: delta.Text})
-			}
-		case open.kind == "text" && delta.Type == "text_annotation":
-			for _, sourcePart := range annotationsToSources(delta.Annotations) {
-				source := sourcePart.(types.SourceContent)
-				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &source})
-			}
-		case open.kind == "thought":
-			if delta.Type == "thought_summary" {
-				if len(delta.ContentRaw) > 0 {
-					var contentBlock interactionsContentBlock
-					if err := json.Unmarshal(delta.ContentRaw, &contentBlock); err == nil && contentBlock.Type == "text" && contentBlock.Text != "" {
-						s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: open.id, Reasoning: contentBlock.Text})
-					}
-				}
-				if delta.Text != "" {
-					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: open.id, Reasoning: delta.Text})
-				}
-			}
-			if delta.Type == "thought_signature" && delta.Signature != "" {
-				open.signature = delta.Signature
-			}
-		case open.kind == "image" && delta.Type == "image":
-			open.data = firstNonEmpty(delta.Data, open.data)
-			open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
-			open.uri = firstNonEmpty(delta.URI, open.uri)
-		case open.kind == "video" && delta.Type == "video":
-			open.data = firstNonEmpty(delta.Data, open.data)
-			open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
-			open.uri = firstNonEmpty(delta.URI, open.uri)
 		case open.kind == "processing_call" || open.kind == "processing_result":
+			if delta.Type != open.kind {
+				break
+			}
 			if delta.Signature != "" {
 				open.signature = delta.Signature
 			}
@@ -467,36 +466,63 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if open.kind == "processing_result" && delta.CallID != "" {
 				open.callID = delta.CallID
 			}
-		case open.kind == "function_call" && delta.Type == "arguments_delta":
-			s.hasFunction = true
-			var fragment string
-			if err := json.Unmarshal(delta.Arguments, &fragment); err == nil {
-				open.argsString += fragment
-				if !open.startEmitted && open.toolName != "" {
-					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}})
-					open.startEmitted = true
-				}
-				if fragment != "" && open.startEmitted {
-					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}, Text: fragment})
+		case open.kind == "text" && delta.Type == "text":
+			if delta.Text != "" {
+				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: open.id, Text: delta.Text})
+			}
+		case open.kind == "text" && (delta.Type == "text_annotation" || delta.Type == "text_annotation_delta"):
+			s.emitSources(annotationsToSources(delta.Annotations))
+		case (open.kind == "image" && delta.Type == "image") || (open.kind == "video" && delta.Type == "video"):
+			// Legacy top-level image/video steps (not in the TS schema)
+			// accumulate and are emitted at step.stop.
+			open.data = firstNonEmpty(delta.Data, open.data)
+			open.mimeType = firstNonEmpty(delta.MimeType, open.mimeType)
+			open.uri = firstNonEmpty(delta.URI, open.uri)
+		case open.kind == "thought":
+			if delta.Type == "thought_summary" && len(delta.ContentRaw) > 0 {
+				var contentBlock interactionsContentBlock
+				if err := json.Unmarshal(delta.ContentRaw, &contentBlock); err == nil && contentBlock.Type == "text" && contentBlock.Text != "" {
+					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: open.id, Reasoning: contentBlock.Text})
 				}
 			}
-		default:
-			if delta.Type == open.blockType {
-				open.toolCallID = firstNonEmpty(delta.ID, open.toolCallID)
-				open.toolName = firstNonEmpty(delta.Name, open.toolName)
-				open.callID = firstNonEmpty(delta.CallID, open.callID)
-				if len(delta.Arguments) > 0 {
-					var args map[string]interface{}
-					if err := json.Unmarshal(delta.Arguments, &args); err == nil {
-						open.args = args
-					}
-				}
-				if delta.Result != nil {
-					open.result = delta.Result
-				}
-				if delta.IsError != nil {
-					open.isError = *delta.IsError
-				}
+			if delta.Type == "thought_signature" && delta.Signature != "" {
+				open.signature = delta.Signature
+			}
+		case open.kind == "function_call" && delta.Type == "arguments_delta":
+			var fragment string
+			if err := json.Unmarshal(delta.Arguments, &fragment); err == nil && fragment != "" {
+				open.argsString += fragment
+				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}, Text: fragment})
+			}
+			if delta.ID != "" {
+				open.toolCallID = delta.ID
+			}
+			if delta.Signature != "" {
+				open.signature = delta.Signature
+			}
+			s.hasFunction = true
+		case isBuiltinInteractionsToolCall(open.blockType) && delta.Type == open.blockType:
+			if delta.ID != "" {
+				open.toolCallID = delta.ID
+			}
+			if args, ok := objectArguments(delta.Arguments); ok {
+				open.args, open.argsRaw = args, delta.Arguments
+			}
+			if delta.Name != "" && open.blockType == "mcp_server_tool_call" {
+				open.toolName = delta.Name
+			}
+		case isBuiltinInteractionsToolResult(open.blockType) && delta.Type == open.blockType:
+			if delta.CallID != "" {
+				open.callID = delta.CallID
+			}
+			if delta.Result != nil {
+				open.result = delta.Result
+			}
+			if delta.IsError != nil {
+				open.isError = *delta.IsError
+			}
+			if delta.Name != "" && open.blockType == "mcp_server_tool_result" {
+				open.toolName = delta.Name
 			}
 		}
 	case "step.stop":
@@ -510,12 +536,25 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		s.stopBlock(open)
 		delete(s.open, *event.Index)
 	case "interaction.status_update", "interaction.in_progress", "interaction.requires_action":
-		s.finishStatus = event.Status
+		// TS: a status-less event keeps the interaction going, except that
+		// requires_action implies its own status.
+		switch {
+		case event.Status != "":
+			s.finishStatus = event.Status
+		case event.EventType == "interaction.requires_action":
+			s.finishStatus = InteractionStatusRequiresAction
+		default:
+			s.finishStatus = InteractionStatusInProgress
+		}
 	case "interaction.completed":
 		if event.Interaction != nil {
 			s.completed = true
-			s.finishStatus = event.Interaction.Status
-			s.usage = event.Interaction.Usage
+			if event.Interaction.Status != "" {
+				s.finishStatus = event.Interaction.Status
+			}
+			if event.Interaction.Usage != nil {
+				s.usage = event.Interaction.Usage
+			}
 			if event.Interaction.ServiceTier != "" {
 				s.serviceTier = event.Interaction.ServiceTier
 			}
@@ -561,25 +600,9 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 	case "thought":
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: open.id, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)})
 	case "image":
-		if open.data != "" {
-			data, _ := base64.StdEncoding.DecodeString(open.data)
-			meta := providerMetaRaw("", s.interactionID)
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: firstNonEmpty(open.mimeType, "image/png"), Data: data, ProviderMetadata: meta}, ProviderMetadata: meta})
-		} else if open.uri != "" {
-			meta := providerMetaRaw("", s.interactionID)
-			fileData := types.FileData{Type: types.FileDataTypeURL, URL: open.uri, MediaType: firstNonEmpty(open.mimeType, "image/png")}
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: fileData.MediaType, FileData: fileData, URL: open.uri, ProviderMetadata: meta}, ProviderMetadata: meta})
-		}
+		s.emitFile(open.data, open.uri, open.mimeType, "image/png")
 	case "video":
-		if open.data != "" {
-			data, _ := base64.StdEncoding.DecodeString(open.data)
-			meta := providerMetaRaw("", s.interactionID)
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: firstNonEmpty(open.mimeType, "video/mp4"), Data: data, ProviderMetadata: meta}, ProviderMetadata: meta})
-		} else if open.uri != "" {
-			meta := providerMetaRaw("", s.interactionID)
-			fileData := types.FileData{Type: types.FileDataTypeURL, URL: open.uri, MediaType: firstNonEmpty(open.mimeType, "video/mp4")}
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: fileData.MediaType, FileData: fileData, URL: open.uri, ProviderMetadata: meta}, ProviderMetadata: meta})
-		}
+		s.emitFile(open.data, open.uri, open.mimeType, "video/mp4")
 	case "processing_call":
 		meta := processingMeta(open.signature, s.interactionID, open.toolCallID, "")
 		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeCustom, CustomContent: &types.CustomContent{Kind: "google.processing_call", ProviderMetadata: meta}, ProviderMetadata: meta})
@@ -598,12 +621,6 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		if argsJSON == "" {
 			argsJSON = jsonStringify(args)
 		}
-		if open.toolName == "" {
-			open.toolName = "unknown"
-		}
-		if !open.startEmitted {
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}})
-		}
 		s.buffer = append(s.buffer,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: open.toolCallID}},
 			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName, Arguments: args, RawArguments: argsJSON, ThoughtSignature: open.signature, ProviderMetadata: providerMetaMap(open.signature, s.interactionID)}, ProviderMetadata: providerMetaRaw(open.signature, s.interactionID)},
@@ -612,15 +629,12 @@ func (s *interactionsStream) stopBlock(open *interactionOpenBlock) {
 		// step ended before any delta revealed the content type — no output to emit
 	default:
 		if isBuiltinInteractionsToolCall(open.blockType) {
-			argsJSON := jsonStringify(defaultMap(open.args))
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: firstNonEmpty(open.toolName, stringsTrimCall(open.blockType)), Arguments: defaultMap(open.args), RawArguments: argsJSON, ProviderExecuted: true}})
+			argsJSON := jsonorder.Text(open.argsRaw, open.args)
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName, Arguments: defaultMap(open.args), RawArguments: argsJSON, ProviderExecuted: true}})
 		} else if isBuiltinInteractionsToolResult(open.blockType) {
 			block := interactionsContentBlock{Type: open.blockType, CallID: open.callID, Name: open.toolName, Result: open.result}
-			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: open.callID, ToolName: firstNonEmpty(open.toolName, stringsTrimResult(open.blockType)), Result: open.result, ProviderExecuted: true}})
-			for _, sourcePart := range builtinToolResultSources(block) {
-				source := sourcePart.(types.SourceContent)
-				s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &source})
-			}
+			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: open.callID, ToolName: open.toolName, Result: open.result, ProviderExecuted: true}})
+			s.emitSources(builtinToolResultSources(block))
 		}
 	}
 }
@@ -670,21 +684,6 @@ func defaultMap(v map[string]interface{}) map[string]interface{} {
 	return v
 }
 
-func stringsTrimCall(v string) string {
-	return stringsTrimSuffix(v, "_call")
-}
-
-func stringsTrimResult(v string) string {
-	return stringsTrimSuffix(v, "_result")
-}
-
-func stringsTrimSuffix(v, suffix string) string {
-	if len(v) >= len(suffix) && v[len(v)-len(suffix):] == suffix {
-		return v[:len(v)-len(suffix)]
-	}
-	return v
-}
-
 type sliceTextStream struct {
 	chunks []*provider.StreamChunk
 	err    error
@@ -717,3 +716,51 @@ func (s *sliceTextStream) Err() error {
 }
 
 func (s *sliceTextStream) Close() error { return nil }
+
+// objectArguments reports whether raw is a JSON object (TS: arguments != null
+// && typeof arguments === 'object') and decodes it.
+func objectArguments(raw json.RawMessage) (map[string]interface{}, bool) {
+	var args map[string]interface{}
+	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil || args == nil {
+		return nil, false
+	}
+	return args, true
+}
+
+// emitSources queues source parts, skipping any already surfaced on this
+// stream (TS sourceKey: url, else filename ?? title of a document).
+func (s *interactionsStream) emitSources(parts []types.ContentPart) {
+	for _, part := range parts {
+		source, ok := part.(types.SourceContent)
+		if !ok {
+			continue
+		}
+		key := "url:" + source.URL
+		if source.SourceType != "url" {
+			key = "doc:" + firstNonEmpty(source.Filename, source.Title)
+		}
+		if s.emittedSources[key] {
+			continue
+		}
+		if s.emittedSources == nil {
+			s.emittedSources = map[string]bool{}
+		}
+		s.emittedSources[key] = true
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: &source})
+	}
+}
+
+// emitFile queues a generated file from inline data or a URI (TS: data wins
+// over uri, neither emits nothing).
+func (s *interactionsStream) emitFile(data, uri, mimeType, defaultMime string) {
+	meta := providerMetaRaw("", s.interactionID)
+	mediaType := firstNonEmpty(mimeType, defaultMime)
+	switch {
+	case data != "":
+		decoded, _ := base64.StdEncoding.DecodeString(data)
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: mediaType, Data: decoded, ProviderMetadata: meta}, ProviderMetadata: meta})
+	case uri != "":
+		fileData := types.FileData{Type: types.FileDataTypeURL, URL: uri, MediaType: mediaType}
+		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeFile, GeneratedFileContent: &types.GeneratedFileContent{MediaType: mediaType, FileData: fileData, URL: uri, ProviderMetadata: meta}, ProviderMetadata: meta})
+	}
+}

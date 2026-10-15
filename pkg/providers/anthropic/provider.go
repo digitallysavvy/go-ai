@@ -42,8 +42,16 @@ type Config struct {
 	// the maximum bytes per result row (TS `batchResultDownloads`).
 	BatchResultDownloads providerutils.BatchResultDownloads
 
-	// APIKey is the Anthropic API key
+	// APIKey is the Anthropic API key. When it is empty (and AuthToken is not
+	// set) the direct Anthropic provider falls back to the ANTHROPIC_API_KEY
+	// environment variable like TS loadApiKey; providers built on top of this
+	// one (Vertex, Bedrock, AWS, MiniMax) never read it.
 	APIKey string
+
+	// AuthToken authenticates with an `Authorization: Bearer` header instead
+	// of an API key (TS authToken). Setting both APIKey and AuthToken makes
+	// New panic with an InvalidArgumentError, like the TS constructor throws.
+	AuthToken string
 
 	// Name overrides the provider name returned by Provider.Name() and
 	// LanguageModel.Provider(). Defaults to "anthropic".
@@ -167,10 +175,13 @@ func New(cfg Config) *Provider {
 	}
 
 	// Create HTTP client with default headers
-	headers := map[string]string{}
-	if cfg.APIKey != "" {
-		headers["x-api-key"] = cfg.APIKey
+	if cfg.APIKey != "" && cfg.AuthToken != "" {
+		panic(&providererrors.InvalidArgumentError{
+			Field:   "apiKey/authToken",
+			Message: "Both apiKey and authToken were provided. Please use only one authentication method.",
+		})
 	}
+	headers := authHeadersFor(cfg)
 	if !cfg.OmitAPIVersionHeader {
 		headers["anthropic-version"] = apiVersion
 	}
@@ -195,6 +206,28 @@ func New(cfg Config) *Provider {
 		client: client,
 	}
 }
+
+// authHeadersFor returns the authentication header of cfg: a bearer token when
+// AuthToken is set, otherwise x-api-key (see Config.APIKey for the
+// ANTHROPIC_API_KEY fallback).
+func authHeadersFor(cfg Config) map[string]string {
+	headers := map[string]string{}
+	apiKey := cfg.APIKey
+	if apiKey == "" && cfg.AuthToken == "" && cfg.UserAgentName == "" && !cfg.NoUserAgentTag {
+		// The plain Anthropic provider reads ANTHROPIC_API_KEY (TS loadApiKey);
+		// wrapper providers always set UserAgentName or NoUserAgentTag and must
+		// not forward an Anthropic key to another service.
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if cfg.AuthToken != "" {
+		headers["Authorization"] = "Bearer " + cfg.AuthToken
+	} else if apiKey != "" {
+		headers["x-api-key"] = apiKey
+	}
+	return headers
+}
+
+func (p *Provider) authHeaders() map[string]string { return authHeadersFor(p.config) }
 
 // NormalizeBaseURL validates and normalizes an Anthropic base URL (TS
 // normalizeBaseURL): whitespace-only values are rejected, a trailing slash is

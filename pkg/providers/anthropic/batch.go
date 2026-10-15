@@ -341,8 +341,8 @@ func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map
 // provider's default headers.
 func (b *Batch) rawRequestHeaders(extra map[string]string) map[string]string {
 	headers := map[string]string{}
-	if b.provider.config.APIKey != "" {
-		headers["x-api-key"] = b.provider.config.APIKey
+	for k, v := range b.provider.authHeaders() {
+		headers[k] = v
 	}
 	if !b.provider.config.OmitAPIVersionHeader {
 		apiVersion := b.provider.config.APIVersion

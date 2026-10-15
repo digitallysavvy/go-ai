@@ -135,6 +135,9 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 		opts = &provider.ImageGenerateOptions{}
 	}
 	warnings := []types.Warning{}
+	if err := validateImageProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	options, err := parseBedrockImageOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, nil, err
@@ -274,6 +277,12 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 		Details map[string]interface{} `json:"details"`
 	}
 
+	var generic interface{}
+	if json.Unmarshal(body, &generic) == nil {
+		if verr := checkImageResponse(generic); verr != nil {
+			return nil, invalidConverseResponseError(verr)
+		}
+	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}

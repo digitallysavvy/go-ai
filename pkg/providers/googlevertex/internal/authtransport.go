@@ -24,6 +24,11 @@ type AuthTransport struct {
 // RoundTrip implements http.RoundTripper.
 func (t *AuthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
+	// A caller-supplied Authorization header wins, like TS where the user's
+	// headers are spread after the generated bearer token.
+	if clone.Header.Get("Authorization") != "" {
+		return t.Base.RoundTrip(clone)
+	}
 	token, err := t.TokenFunc(req.Context())
 	if err != nil {
 		return nil, err

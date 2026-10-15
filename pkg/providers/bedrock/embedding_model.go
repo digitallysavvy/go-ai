@@ -97,6 +97,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	var reqBody map[string]interface{}
 	embeddingOptions := m.options
 	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
 		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(opts.ProviderOptions))
 	}
 
@@ -236,9 +239,17 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	if err := validateEmbeddingResponse(respBody); err != nil {
+		return nil, err
+	}
+
 	// Parse response based on model type
 	var embedding []float64
 	var inputTokens int
+	// TS picks the token count by response shape: Titan and Nova report it in
+	// the body, the Cohere shapes only in the x-amzn-bedrock-input-token-count
+	// header.
+	tokensFromHeader := false
 
 	var parsed struct {
 		Embedding           []float64       `json:"embedding"`
@@ -273,6 +284,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		var cohereV3 [][]float64
 		if err := json.Unmarshal(parsed.Embeddings, &cohereV3); err == nil && len(cohereV3) > 0 {
 			embedding = cohereV3[0]
+			tokensFromHeader = true
 			break
 		}
 
@@ -281,6 +293,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		}
 		if err := json.Unmarshal(parsed.Embeddings, &cohereV4); err == nil && len(cohereV4.Float) > 0 {
 			embedding = cohereV4.Float[0]
+			tokensFromHeader = true
 			break
 		}
 	}
@@ -288,7 +301,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("no embeddings in response")
 	}
 	tokens := float64(inputTokens)
-	if family == EmbeddingModelFamilyCohere {
+	if tokensFromHeader {
 		if headerTokens, err := strconv.Atoi(resp.Header.Get("x-amzn-bedrock-input-token-count")); err == nil {
 			inputTokens = headerTokens
 			tokens = float64(headerTokens)
@@ -495,6 +508,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	embeddingOptions := m.options
 	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
 		embeddingOptions = mergeEmbeddingOptions(embeddingOptions, bedrockEmbeddingOptions(opts.ProviderOptions))
 	}
 	if embeddingOptions != nil && embeddingOptions.CohereOptions != nil {
@@ -563,6 +579,9 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	if err := validateEmbeddingResponse(respBody); err != nil {
+		return nil, err
+	}
 	var parsed struct {
 		Embeddings json.RawMessage `json:"embeddings"`
 	}
@@ -606,4 +625,17 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 		},
 		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(resp.Header)}},
 	}, nil
+}
+
+// validateEmbeddingResponse is the schema check TS createJsonResponseHandler
+// runs on the embedding response; a mismatch is an APICallError.
+func validateEmbeddingResponse(body []byte) error {
+	var generic interface{}
+	if err := json.Unmarshal(body, &generic); err != nil {
+		return providererrors.NewProviderError("amazon-bedrock", 0, "", "Invalid JSON response", err)
+	}
+	if verr := checkEmbeddingResponse(generic); verr != nil {
+		return invalidConverseResponseError(verr)
+	}
+	return nil
 }

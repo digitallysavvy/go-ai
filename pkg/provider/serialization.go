@@ -555,7 +555,7 @@ func jsonFieldName(field reflect.StructField) string {
 
 func isSensitiveConfigField(key string) bool {
 	switch key {
-	case "APIKey", "apiKey", "AccessToken", "accessToken", "AWSAccessKeyID", "awsAccessKeyID",
+	case "APIKey", "apiKey", "AuthToken", "authToken", "AccessToken", "accessToken", "AWSAccessKeyID", "awsAccessKeyID",
 		"AWSSecretAccessKey", "awsSecretAccessKey", "SessionToken", "sessionToken",
 		"HTTPClient", "httpClient":
 		return true

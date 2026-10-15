@@ -44,7 +44,6 @@ type stream struct {
 	hasToolCalls bool
 
 	// Code execution state. TS parses these parts for both Google and Vertex.
-	codeExecCount  int
 	lastCodeExecID string
 
 	// lastServerToolCallID associates a server-executed built-in tool's
@@ -60,7 +59,7 @@ type stream struct {
 	lastFinishMessage      string
 	lastPromptFeedback     json.RawMessage
 	lastUsageMetadata      *UsageMetadata
-	// lastServiceTier accumulates serviceTier across chunks; last non-empty value wins.
+	// lastServiceTier is the last top-level chunk serviceTier (fallback only).
 	lastServiceTier string
 
 	// activeStreamingToolCalls is a LIFO stack of in-progress streamed
@@ -81,6 +80,7 @@ type stream struct {
 	httpHeaders             http.Header
 	modelID                 string
 	emittedResponseMetadata bool
+	emittedResponseID       bool
 
 	// finishReason/hasFinished hold the terminal finish reason. TS only
 	// enqueues the 'finish' chunk once, from the stream's flush handler, not
@@ -307,8 +307,13 @@ func (s *stream) finalizeOnce() bool {
 // s.chunkBuffer. Mirrors the TS SDK TransformStream transform handler; the
 // 'finish' chunk itself is only enqueued once, from flush (see Next/EOF).
 func (s *stream) processSSEEvent(chunkData Response) {
-	if !s.emittedResponseMetadata {
+	// TS emits response-metadata on the first chunk that carries a
+	// responseId. Go also emits one on the first chunk without an id (it
+	// carries the model id and headers), so a responseId that only shows up
+	// in a later chunk gets its own response-metadata chunk.
+	if !s.emittedResponseMetadata || (!s.emittedResponseID && chunkData.ResponseID != "") {
 		s.emittedResponseMetadata = true
+		s.emittedResponseID = chunkData.ResponseID != ""
 		headers := providerutils.ExtractHeaders(s.httpHeaders)
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type: provider.ChunkTypeResponseMetadata,
@@ -323,10 +328,8 @@ func (s *stream) processSSEEvent(chunkData Response) {
 
 	if chunkData.UsageMetadata != nil {
 		s.lastUsageMetadata = chunkData.UsageMetadata
-		if chunkData.UsageMetadata.ServiceTier != "" {
-			s.lastServiceTier = chunkData.UsageMetadata.ServiceTier
-		}
-	} else if chunkData.ServiceTier != "" {
+	}
+	if chunkData.ServiceTier != "" {
 		s.lastServiceTier = chunkData.ServiceTier
 	}
 
@@ -553,8 +556,14 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		meta["usageMetadata"] = json.RawMessage("null")
 	}
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
-	if s.lastServiceTier != "" {
-		if st, err := json.Marshal(s.lastServiceTier); err == nil {
+	// TS: usage?.serviceTier of the final (merged) usage metadata; the
+	// top-level chunk serviceTier is only a Go fallback for older responses.
+	serviceTier := s.lastServiceTier
+	if s.lastUsageMetadata != nil && s.lastUsageMetadata.ServiceTier != "" {
+		serviceTier = s.lastUsageMetadata.ServiceTier
+	}
+	if serviceTier != "" {
+		if st, err := json.Marshal(serviceTier); err == nil {
 			meta["serviceTier"] = st
 		}
 	} else {
@@ -581,8 +590,9 @@ func (s *stream) processNonFuncPart(part Part) {
 	// Code execution. TS parses these for both Google and Vertex.
 	{
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
-			s.codeExecCount++
-			toolCallID := fmt.Sprintf("code-exec-%d", s.codeExecCount)
+			// TS: generateId() -- a fixed counter would repeat the same id in
+			// every step of a multi-step run.
+			toolCallID := s.generateID()
 			s.lastCodeExecID = toolCallID
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
