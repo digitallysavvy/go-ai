@@ -928,3 +928,19 @@ func expectFinishOtherThenEOF(t *testing.T, s provider.TextStream) {
 		t.Fatalf("expected io.EOF, got: %v", err)
 	}
 }
+
+// TS maps toolConfiguration as {allowed_tools, enabled}: an explicit empty
+// allowed-tools list and an empty configuration object are both preserved.
+func TestMCPServersWireKeepsEmptyToolConfiguration(t *testing.T) {
+	empty := []string{}
+	out := mcpServersWire([]MCPServerConfig{
+		{Type: "url", Name: "a", URL: "https://a", ToolConfiguration: &MCPToolConfiguration{AllowedTools: empty}},
+		{Type: "url", Name: "b", URL: "https://b", ToolConfiguration: &MCPToolConfiguration{}},
+	})
+	if tc, ok := out[0]["tool_configuration"].(map[string]interface{}); !ok || tc["allowed_tools"] == nil {
+		t.Fatalf("allowed_tools dropped: %#v", out[0])
+	}
+	if tc, ok := out[1]["tool_configuration"].(map[string]interface{}); !ok || len(tc) != 0 {
+		t.Fatalf("empty tool_configuration dropped: %#v", out[1])
+	}
+}

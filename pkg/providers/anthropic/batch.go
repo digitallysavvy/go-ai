@@ -275,7 +275,11 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return nil, err
 	}
 	if isTrusted(resultsURL) {
-		for k, v := range b.rawRequestHeaders(opts.Headers) {
+		rawHeaders, err := b.rawRequestHeaders(opts.Headers)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range rawHeaders {
 			httpReq.Header.Set(k, v)
 		}
 	}
@@ -339,9 +343,17 @@ func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map
 // the batches API. Duplicates the header construction in New() because
 // *http.Client (returned by Client.HTTPClient()) does not carry the
 // provider's default headers.
-func (b *Batch) rawRequestHeaders(extra map[string]string) map[string]string {
+func (b *Batch) rawRequestHeaders(extra map[string]string) (map[string]string, error) {
 	headers := map[string]string{}
 	for k, v := range b.provider.authHeaders() {
+		headers[k] = v
+	}
+	// A missing API key fails the request like TS getBatchHeaders/loadApiKey.
+	lazy, err := requestAuthHeaders(b.provider.config)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range lazy {
 		headers[k] = v
 	}
 	if !b.provider.config.OmitAPIVersionHeader {
@@ -357,7 +369,7 @@ func (b *Batch) rawRequestHeaders(extra map[string]string) map[string]string {
 	for k, v := range extra {
 		headers[k] = v
 	}
-	return headers
+	return headers, nil
 }
 
 // anthropicBatchProviderBetas extracts providerOptions.anthropic.anthropicBeta

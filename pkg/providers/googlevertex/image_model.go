@@ -2,6 +2,7 @@ package googlevertex
 
 import (
 	"context"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -129,9 +130,8 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if lmResult.Usage.OutputTokens != nil {
 		usage.OutputTokens = int(*lmResult.Usage.OutputTokens)
 	}
-	if lmResult.Usage.TotalTokens != nil {
-		usage.TotalTokens = int(*lmResult.Usage.TotalTokens)
-	}
+	// TS: totalTokens = (inputTokens.total ?? 0) + (outputTokens.total ?? 0).
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	imagesMeta := make([]map[string]interface{}, len(out.Images))
 	for i := range imagesMeta {
 		imagesMeta[i] = map[string]interface{}{}
@@ -146,7 +146,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 			"googleVertex": map[string]interface{}{"images": imagesMeta},
 			"vertex":       map[string]interface{}{"images": imagesMeta},
 		},
-		Response: lmResult.ResponseMetadata,
+		Response: googleImageResponseMetadata(m.modelID, lmResult.ResponseHeaders),
 	}
 	if len(out.Images) > 0 {
 		result.Image = out.Images[0]
@@ -276,4 +276,10 @@ type vertexGeminiImageResponse struct {
 type vertexGeminiInlineData struct {
 	MimeType string `json:"mimeType"`
 	Data     string `json:"data"` // base64-encoded
+}
+
+// googleImageResponseMetadata is the TS image-model response: the call time,
+// this model's id and the HTTP headers of the underlying generate call.
+func googleImageResponseMetadata(modelID string, headers map[string]string) *types.ResponseMetadata {
+	return &types.ResponseMetadata{Timestamp: time.Now(), ModelID: modelID, Headers: headers}
 }

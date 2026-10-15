@@ -3,8 +3,12 @@ package google
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -232,5 +236,152 @@ func TestInteractionsConvertBareTopLevelMediaTypeSniffsBytes(t *testing.T) {
 	}}}}, GoogleInteractionsProviderOptions{})
 	if err == nil || !strings.Contains(err.Error(), "must specify subtype since it could not be auto-detected") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS only knows model_output/thought/function_call/processing/built-in steps:
+// a top-level text/image/video step is an unknown block that emits nothing,
+// in streaming and in parseOutputs.
+func TestInteractionsTopLevelContentStepsAreIgnored(t *testing.T) {
+	chunks := runInteractionsEvents(t,
+		`{"event_type":"step.start","index":0,"step":{"type":"text","text":"x"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hi"}}`,
+		`{"event_type":"step.stop","index":0}`,
+		`{"event_type":"step.start","index":1,"step":{"type":"image"}}`,
+		`{"event_type":"step.delta","index":1,"delta":{"type":"image","data":"AAEC"}}`,
+		`{"event_type":"step.stop","index":1}`,
+		`{"event_type":"interaction.completed","interaction":{"id":"v1","status":"completed"}}`,
+	)
+	for _, c := range chunks {
+		switch c.Type {
+		case provider.ChunkTypeStreamStart, provider.ChunkTypeFinish:
+		default:
+			t.Fatalf("unexpected chunk %v", c.Type)
+		}
+	}
+	content, _, _ := (&InteractionsLanguageModel{}).parseOutputs([]interactionsContentBlock{{Type: "text", Text: "x"}, {Type: "image", Data: "AAEC"}}, "v1")
+	if len(content) != 0 {
+		t.Fatalf("content = %#v", content)
+	}
+}
+
+// TS generateId: every source gets its own id (no repeating "source-N").
+func TestInteractionsSourceIDsAreUnique(t *testing.T) {
+	chunks := runInteractionsEvents(t,
+		`{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text_annotation","annotations":[{"type":"url_citation","url":"https://a.example"}]}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text_annotation","annotations":[{"type":"url_citation","url":"https://b.example"}]}}`,
+		`{"event_type":"step.stop","index":0}`,
+	)
+	seen := map[string]bool{}
+	n := 0
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeSource {
+			n++
+			if c.SourceContent.ID == "" || seen[c.SourceContent.ID] {
+				t.Fatalf("source id %q empty or repeated", c.SourceContent.ID)
+			}
+			seen[c.SourceContent.ID] = true
+		}
+	}
+	if n != 2 {
+		t.Fatalf("sources = %d", n)
+	}
+	ids := 0
+	gen := func() string { ids++; return "gen-" + string(rune('0'+ids)) }
+	out := annotationsToSources([]interactionsAnnotation{{Type: "url_citation", URL: "https://a.example"}}, gen)
+	if out[0].(types.SourceContent).ID != "gen-1" {
+		t.Fatalf("configured generator unused: %#v", out)
+	}
+}
+
+// TS flush emits the finish part once, at the end of the stream: an error
+// event does not finish early or close open blocks.
+func TestInteractionsErrorEventFinishesAtStreamEnd(t *testing.T) {
+	chunks := runInteractionsEvents(t,
+		`{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"a"}}`,
+		`{"event_type":"error","error":{"message":"boom","code":"X"}}`,
+	)
+	var types []provider.ChunkType
+	for _, c := range chunks {
+		types = append(types, c.Type)
+	}
+	want := []provider.ChunkType{provider.ChunkTypeStreamStart, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeError, provider.ChunkTypeFinish}
+	if len(types) != len(want) {
+		t.Fatalf("chunks = %v", types)
+	}
+	for i := range want {
+		if types[i] != want[i] {
+			t.Fatalf("chunks = %v", types)
+		}
+	}
+}
+
+// TS streamGoogleInteractionEvents stops after a terminal `error` event: the
+// background stream must not reconnect when the connection then closes.
+func TestInteractionsBackgroundStreamDoesNotReconnectAfterError(t *testing.T) {
+	var gets atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gets.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"event_type\":\"error\",\"error\":{\"message\":\"boom\"}}\n\n")
+	}))
+	defer server.Close()
+	client := New(Config{APIKey: "k", BaseURL: server.URL}).client
+	stream, err := newInteractionsStream(context.Background(), client, "v1", nil, nil, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	chunks := drainInteractions(t, stream)
+	if gets.Load() != 1 {
+		t.Fatalf("GET count = %d, want 1", gets.Load())
+	}
+	if last := chunks[len(chunks)-1]; last.Type != provider.ChunkTypeFinish {
+		t.Fatalf("last chunk = %v", last.Type)
+	}
+}
+
+// TS joins every text summary item with a newline, empty items included.
+func TestInteractionsThoughtTextKeepsEmptySummaryItems(t *testing.T) {
+	got := thoughtText([]interactionsContentBlock{{Type: "text", Text: "a"}, {Type: "text", Text: ""}, {Type: "text", Text: "b"}, {Type: "image"}})
+	if got != "a\n\nb" {
+		t.Fatalf("thoughtText = %q", got)
+	}
+}
+
+// TS synthesizeGoogleInteractionsAgentStream: ids count only text/reasoning
+// blocks and use "agent" for a missing interaction id, tool inputs stream
+// (start, one delta, end) before the call, and the finish metadata has no
+// outputTokensByModality.
+func TestSynthesizedInteractionsStreamMatchesTSReplay(t *testing.T) {
+	model := &InteractionsLanguageModel{}
+	resp := interactionsResponse{Status: InteractionStatusCompleted, Usage: &interactionsUsage{OutputTokensByModality: []interactionsModalityTokens{{Modality: "text", Tokens: func() *int64 { n := int64(3); return &n }()}}}}
+	resp.Steps = []interactionsContentBlock{
+		{Type: "function_call", ID: "c1", Name: "lookup", Arguments: []byte(`{"q":"x"}`)},
+		{Type: "model_output", ContentRaw: []byte(`[{"type":"text","text":"hi"}]`)},
+	}
+	var seq []provider.ChunkType
+	var textID string
+	var finishMeta string
+	for _, c := range drainInteractions(t, newSynthesizedInteractionsStream(model, resp, nil, nil, false)) {
+		seq = append(seq, c.Type)
+		if c.Type == provider.ChunkTypeTextStart {
+			textID = c.ID
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finishMeta = string(c.ProviderMetadata)
+		}
+	}
+	want := []provider.ChunkType{provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata, provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd, provider.ChunkTypeToolCall, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, provider.ChunkTypeFinish}
+	if fmt.Sprint(seq) != fmt.Sprint(want) {
+		t.Fatalf("sequence = %v", seq)
+	}
+	if textID != "agent:0" {
+		t.Fatalf("text id = %q, want agent:0 (tool calls do not advance the counter)", textID)
+	}
+	if strings.Contains(finishMeta, "outputTokensByModality") {
+		t.Fatalf("finish metadata = %s", finishMeta)
 	}
 }

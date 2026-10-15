@@ -18,6 +18,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// googleFilesMaxResponseBytes bounds the metadata and error bodies read from
+// the Files API endpoints (the uploaded content itself is the request body).
+const googleFilesMaxResponseBytes = 8 << 20
+
 type FilesAPI struct {
 	provider *Provider
 }
@@ -33,11 +37,13 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		baseURL = DefaultBaseURL
 	}
 	baseOrigin := strings.TrimSuffix(baseURL, "/v1beta")
-	headers := internalhttp.MergeHeaders(map[string]string{
-		"x-goog-api-key": f.provider.APIKey(),
-	}, f.provider.config.Headers, opts.Headers)
+	keyHeaders, err := f.provider.apiKeyHeaders()
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(keyHeaders, f.provider.config.Headers, opts.Headers)
 
-	displayName := ""
+	var displayName *string
 	pollIntervalMs := int64(2000)
 	pollTimeoutMs := int64(300000)
 	if raw, present := opts.ProviderOptions["google"]; present && raw != nil {
@@ -52,7 +58,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 			if !isStr {
 				return nil, invalidGoogleFilesOptions(fmt.Errorf("displayName: expected string, received %T", v))
 			}
-			displayName = s
+			displayName = &s
 		}
 		for _, f := range []struct {
 			key string
@@ -74,8 +80,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 
 	initBody := map[string]interface{}{"file": map[string]interface{}{}}
-	if displayName != "" {
-		initBody["file"] = map[string]interface{}{"display_name": displayName}
+	// TS: `displayName != null` -- an empty string is still sent.
+	if displayName != nil {
+		initBody["file"] = map[string]interface{}{"display_name": *displayName}
 	}
 	payload, _ := json.Marshal(initBody)
 	initReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, baseOrigin+"/upload/v1beta/files", bytes.NewReader(payload))
@@ -93,7 +100,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 400 {
-		b, _ := io.ReadAll(resp.Body)
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to initiate resumable upload: %d %s", resp.StatusCode, string(b)))
 	}
 	uploadURL := resp.Header.Get("x-goog-upload-url")
@@ -111,13 +118,13 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
-		b, _ := io.ReadAll(uploadResp.Body)
+		b, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
 		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to upload file data: %d %s", uploadResp.StatusCode, string(b)))
 	}
 	var uploadResult struct {
 		File googleFileResource `json:"file"`
 	}
-	if err := json.NewDecoder(uploadResp.Body).Decode(&uploadResult); err != nil {
+	if err := json.NewDecoder(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes)).Decode(&uploadResult); err != nil {
 		return nil, err
 	}
 	file := uploadResult.File
@@ -145,12 +152,12 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 			return nil, err
 		}
 		if pollResp.StatusCode >= 400 {
-			b, _ := io.ReadAll(pollResp.Body)
+			b, _ := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))
 			_ = pollResp.Body.Close()
 			return nil, f.provider.handleFilesError(pollResp.StatusCode, pollResp.Header, b)
 		}
 		var polled googleFileResource
-		if err := json.NewDecoder(pollResp.Body).Decode(&polled); err != nil {
+		if err := json.NewDecoder(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes)).Decode(&polled); err != nil {
 			_ = pollResp.Body.Close()
 			return nil, err
 		}

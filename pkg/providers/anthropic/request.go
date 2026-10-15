@@ -466,7 +466,10 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	if len(o.Safeguards) > 0 {
 		betas.add(BetaHeaderDangerousToolUse)
 	}
-	if o.ContextManagement != nil && len(o.ContextManagement.Edits) > 0 {
+	if o.Compaction != nil {
+		betas.add(BetaHeaderCompaction)
+	}
+	if o.ContextManagement != nil {
 		betas.add(BetaHeaderContextManagement)
 		for _, edit := range o.ContextManagement.Edits {
 			if _, ok := edit.(*CompactEdit); ok {
@@ -474,9 +477,6 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 				break
 			}
 		}
-	}
-	if o.Compaction != nil {
-		betas.add(BetaHeaderCompaction)
 	}
 	if o.Container != nil && len(o.Container.Skills) > 0 {
 		betas.add(BetaHeaderCodeExecution20250825, BetaHeaderSkills, BetaHeaderFilesAPI)
@@ -648,15 +648,15 @@ func mcpServersWire(servers []MCPServerConfig) []map[string]interface{} {
 		}
 		if s.ToolConfiguration != nil {
 			tc := map[string]interface{}{}
-			if len(s.ToolConfiguration.AllowedTools) > 0 {
+			// TS maps an explicit empty allowedTools list ("no tools") as is and
+			// sends an empty tool_configuration object.
+			if s.ToolConfiguration.AllowedTools != nil {
 				tc["allowed_tools"] = s.ToolConfiguration.AllowedTools
 			}
 			if s.ToolConfiguration.Enabled != nil {
 				tc["enabled"] = *s.ToolConfiguration.Enabled
 			}
-			if len(tc) > 0 {
-				srv["tool_configuration"] = tc
-			}
+			srv["tool_configuration"] = tc
 		}
 		out[i] = srv
 	}

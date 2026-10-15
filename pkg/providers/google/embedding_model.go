@@ -468,7 +468,9 @@ func addEmbeddingModelOptions(body map[string]interface{}, opts GoogleEmbeddingP
 func parseEmbeddingProviderOptions(opts *provider.EmbedModelOptions) (GoogleEmbeddingProviderOptions, error) {
 	out, err := parseEmbeddingProviderOptionsRaw(opts)
 	if err != nil {
-		return out, err
+		// TS parseProviderOptions: InvalidArgumentError "invalid google
+		// provider options" wrapping the schema failure.
+		return out, invalidGoogleFilesOptions(err)
 	}
 	if out.OutputDimensionality == nil && out.outputDimensionality == nil && opts != nil && opts.Dimensions != nil {
 		d := *opts.Dimensions
@@ -639,6 +641,10 @@ func parseEmbeddingContentPart(raw interface{}) (EmbeddingPart, error) {
 
 // handleError converts various errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		// Preserve the HTTP status and headers so retries follow the TS

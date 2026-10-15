@@ -51,7 +51,7 @@ func getLiveTranscriptionWebSocketURL(baseURL, apiKey string) string {
 // per-call options.headers -- the same tagged getHeaders() closure used for
 // REST calls, not a freshly rebuilt untagged header set.
 func (m *TranscriptionModel) baseTranscriptionHeaders() map[string]string {
-	return m.prov.client.Headers()
+	return m.prov.headersSnapshot()
 }
 
 // extractGoogleAPIKeyHeader pulls the x-goog-api-key header value out of a

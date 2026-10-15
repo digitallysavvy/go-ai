@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -23,7 +24,7 @@ func TestInteractionsSchemaSchemaReachesTheWire(t *testing.T) {
 		var m map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&m)
 		raw, _ = json.Marshal(m)
-		_, _ = fmt.Fprint(w, `{"id":"v1","status":"completed","model":"gemini-2.5-flash","steps":[{"type":"text","text":"{}"}],"usage":{}}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1","status":"completed","model":"gemini-2.5-flash","steps":[{"type":"model_output","content":[{"type":"text","text":"{}"}]}],"usage":{}}`)
 	}))
 	defer server.Close()
 	model, err := New(Config{APIKey: "k", BaseURL: server.URL}).Interactions(ModelGemini25Flash)
@@ -59,7 +60,7 @@ func TestInteractionsServiceTierFromHeader(t *testing.T) {
 			_, _ = fmt.Fprint(w, "data: {\"event_type\":\"interaction.complete\",\"interaction\":{\"id\":\"v1\",\"status\":\"completed\",\"usage\":{}}}\n\n")
 			return
 		}
-		_, _ = fmt.Fprint(w, `{"id":"v1","status":"completed","model":"gemini-2.5-flash","steps":[{"type":"model_output","content":[{"type":"text","text":"hi"}]}],"usage":{}}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1","status":"completed","model":"gemini-2.5-flash","steps":[{"type":"model_output","content":[{"type":"model_output","content":[{"type":"text","text":"hi"}]}]}],"usage":{}}`)
 	}))
 	defer server.Close()
 	model, err := New(Config{APIKey: "k", BaseURL: server.URL}).Interactions(ModelGemini25Flash)
@@ -157,7 +158,7 @@ func TestInteractionsAnnotationsToSourcesDeduplicates(t *testing.T) {
 		{Type: "file_citation", FileName: "doc.pdf"},
 		{Type: "file_citation", FileName: "doc.pdf"},
 		{Type: "file_citation", URL: "https://f.example/x", FileName: "x"},
-	})
+	}, streaming.GenerateID)
 	if len(out) != 4 {
 		t.Fatalf("got %d sources, want 4: %#v", len(out), out)
 	}
@@ -169,7 +170,7 @@ func TestInteractionsOrderedSchemaKeepsOrder(t *testing.T) {
 	var raw []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ = io.ReadAll(r.Body)
-		_, _ = fmt.Fprint(w, `{"id":"v1","status":"completed","model":"gemini-2.5-flash","steps":[{"type":"text","text":"{}"}],"usage":{}}`)
+		_, _ = fmt.Fprint(w, `{"id":"v1","status":"completed","model":"gemini-2.5-flash","steps":[{"type":"model_output","content":[{"type":"text","text":"{}"}]}],"usage":{}}`)
 	}))
 	defer server.Close()
 	model, err := New(Config{APIKey: "k", BaseURL: server.URL}).Interactions(ModelGemini25Flash)

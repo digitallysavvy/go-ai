@@ -76,18 +76,18 @@ func TestInteractionsStreamIncludeRawChunksAndMalformedEvent(t *testing.T) {
 func TestSynthesizedInteractionsStreamMetadataAndRaw(t *testing.T) {
 	t.Parallel()
 	resp := interactionsResponse{ID: "v1", Created: "2026-01-02T03:04:05Z", Model: "deep-research", Status: InteractionStatusCompleted}
-	chunks := drainInteractions(t, newSynthesizedInteractionsStream(resp, nil, nil, true))
-	if len(chunks) < 3 || chunks[0].Type != provider.ChunkTypeResponseMetadata || chunks[1].Type != provider.ChunkTypeRaw {
+	chunks := drainInteractions(t, newSynthesizedInteractionsStream(&InteractionsLanguageModel{}, resp, nil, nil, true))
+	if len(chunks) < 4 || chunks[0].Type != provider.ChunkTypeStreamStart || chunks[1].Type != provider.ChunkTypeResponseMetadata || chunks[2].Type != provider.ChunkTypeRaw {
 		var ts []provider.ChunkType
 		for _, c := range chunks {
 			ts = append(ts, c.Type)
 		}
-		t.Fatalf("chunk order = %v, want response-metadata, raw, ..., finish", ts)
+		t.Fatalf("chunk order = %v, want stream-start, response-metadata, raw, ..., finish", ts)
 	}
-	if chunks[0].ResponseMetadata.ID != "v1" || chunks[0].ResponseMetadata.ModelID != "deep-research" || chunks[0].ResponseMetadata.Timestamp.IsZero() {
-		t.Fatalf("metadata = %#v", chunks[0].ResponseMetadata)
+	if chunks[1].ResponseMetadata.ID != "v1" || chunks[1].ResponseMetadata.ModelID != "deep-research" || chunks[1].ResponseMetadata.Timestamp.IsZero() {
+		t.Fatalf("metadata = %#v", chunks[1].ResponseMetadata)
 	}
-	for _, c := range drainInteractions(t, newSynthesizedInteractionsStream(resp, nil, nil, false)) {
+	for _, c := range drainInteractions(t, newSynthesizedInteractionsStream(&InteractionsLanguageModel{}, resp, nil, nil, false)) {
 		if c.Type == provider.ChunkTypeRaw {
 			t.Fatal("raw chunk without includeRawChunks")
 		}

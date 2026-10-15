@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"strconv"
 	"strings"
 
@@ -483,6 +484,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 	content := make([]types.ContentPart, 0, len(outputs))
 	toolCalls := make([]types.ToolCall, 0)
 	hasFunctionCall := false
+	gen := m.generateID
 	for _, block := range outputs {
 		switch block.Type {
 		case "user_input":
@@ -497,7 +499,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				switch inner.Type {
 				case "text":
 					content = append(content, types.TextContent{Text: inner.Text, ProviderMetadata: meta})
-					content = append(content, annotationsToSources(inner.Annotations)...)
+					content = append(content, annotationsToSources(inner.Annotations, gen)...)
 				case "image":
 					if inner.Data != "" {
 						data, _ := base64.StdEncoding.DecodeString(inner.Data)
@@ -516,30 +518,17 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 					}
 				}
 			}
-		case "text":
-			meta := providerMetaRaw("", interactionID)
-			content = append(content, types.TextContent{Text: block.Text, ProviderMetadata: meta})
-			content = append(content, annotationsToSources(block.Annotations)...)
 		case "thought":
 			meta := providerMetaRaw(block.Signature, interactionID)
 			content = append(content, types.ReasoningContent{Text: thoughtText(block.Summary), Signature: block.Signature, ProviderMetadata: meta})
-		case "image":
-			meta := providerMetaRaw("", interactionID)
-			if block.Data != "" {
-				data, _ := base64.StdEncoding.DecodeString(block.Data)
-				content = append(content, types.GeneratedFileContent{MediaType: firstNonEmpty(block.MimeType, "image/png"), Data: data, ProviderMetadata: meta})
-			} else if block.URI != "" {
-				mediaType := firstNonEmpty(block.MimeType, "image/png")
-				content = append(content, types.GeneratedFileContent{MediaType: mediaType, FileData: types.FileData{Type: types.FileDataTypeURL, URL: block.URI, MediaType: mediaType}, URL: block.URI, ProviderMetadata: meta})
-			}
 		case "processing_call":
-			processingID := firstNonEmpty(block.ID, fmt.Sprintf("processing_%d", len(content)+1))
+			processingID := firstNonEmpty(block.ID, gen())
 			content = append(content, types.CustomContent{
 				Kind:             "google.processing_call",
 				ProviderMetadata: processingMeta(block.Signature, interactionID, processingID, ""),
 			})
 		case "processing_result":
-			processingCallID := firstNonEmpty(block.CallID, fmt.Sprintf("processing_%d", len(content)+1))
+			processingCallID := firstNonEmpty(block.CallID, gen())
 			content = append(content, types.CustomContent{
 				Kind:             "google.processing_result",
 				ProviderMetadata: processingMeta(block.Signature, interactionID, "", processingCallID),
@@ -581,7 +570,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				if args == nil {
 					args = map[string]interface{}{}
 				}
-				id := firstNonEmpty(block.ID, fmt.Sprintf("call_%d", len(toolCalls)+1))
+				id := firstNonEmpty(block.ID, gen())
 				argsJSON := jsonorder.Text(block.Arguments, args)
 				content = append(content, types.ToolCallContent{
 					ToolCallID:       id,
@@ -601,11 +590,11 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 			}
 			if isBuiltinInteractionsToolResult(block.Type) {
 				content = append(content, types.ToolResultContent{
-					ToolCallID: block.CallID,
+					ToolCallID: firstNonEmpty(block.CallID, gen()),
 					ToolName:   builtinResultToolName(block),
 					Result:     block.Result,
 				})
-				content = append(content, builtinToolResultSources(block)...)
+				content = append(content, builtinToolResultSources(block, gen)...)
 			}
 		}
 	}
@@ -708,7 +697,7 @@ func reasoningSummary(text string) interface{} {
 func thoughtText(summary []interactionsContentBlock) string {
 	var parts []string
 	for _, item := range summary {
-		if item.Type == "text" && item.Text != "" {
+		if item.Type == "text" {
 			parts = append(parts, item.Text)
 		}
 	}
@@ -786,18 +775,17 @@ func builtinResultToolName(block interactionsContentBlock) string {
 
 // annotationsToSources maps the annotations of one text block to sources,
 // de-duplicated by URL or document filename/title (TS annotationsToSources).
-func annotationsToSources(annotations []interactionsAnnotation) []types.ContentPart {
+func annotationsToSources(annotations []interactionsAnnotation, generateID func() string) []types.ContentPart {
 	out := make([]types.ContentPart, 0)
 	seen := map[string]bool{}
-	for i, ann := range annotations {
-		id := fmt.Sprintf("source-%d", i+1)
+	for _, ann := range annotations {
 		var src types.SourceContent
 		switch ann.Type {
 		case "url_citation":
 			if ann.URL == "" {
 				continue
 			}
-			src = types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Title}
+			src = types.SourceContent{SourceType: "url", ID: generateID(), URL: ann.URL, Title: ann.Title}
 		case "file_citation":
 			// TS: url ?? document_uri ?? file_name
 			uri := firstNonEmpty(ann.URL, ann.DocumentURI, ann.FileName)
@@ -805,16 +793,16 @@ func annotationsToSources(annotations []interactionsAnnotation) []types.ContentP
 				continue
 			}
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-				src = types.SourceContent{SourceType: "url", ID: id, URL: uri, Title: ann.FileName}
+				src = types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: ann.FileName}
 			} else {
 				filename := firstNonEmpty(ann.FileName, baseName(uri))
-				src = types.SourceContent{SourceType: "document", ID: id, MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(ann.FileName, filename, uri), Filename: filename}
+				src = types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(ann.FileName, filename, uri), Filename: filename}
 			}
 		case "place_citation":
 			if ann.URL == "" {
 				continue
 			}
-			src = types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Name}
+			src = types.SourceContent{SourceType: "url", ID: generateID(), URL: ann.URL, Title: ann.Name}
 		default:
 			continue
 		}
@@ -831,34 +819,33 @@ func annotationsToSources(annotations []interactionsAnnotation) []types.ContentP
 	return out
 }
 
-func builtinToolResultSources(block interactionsContentBlock) []types.ContentPart {
+func builtinToolResultSources(block interactionsContentBlock, generateID func() string) []types.ContentPart {
 	entries, ok := block.Result.([]interface{})
 	if !ok {
 		return nil
 	}
 	out := make([]types.ContentPart, 0)
-	for i, raw := range entries {
+	for _, raw := range entries {
 		entry, ok := raw.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		id := fmt.Sprintf("source-%d", i+1)
 		switch block.Type {
 		case "url_context_result":
 			urlValue, _ := entry["url"].(string)
 			status, _ := entry["status"].(string)
 			if urlValue != "" && (status == "" || status == "success") {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: urlValue})
+				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: urlValue})
 			}
 		case "google_search_result":
 			urlValue, _ := entry["url"].(string)
 			title, _ := entry["title"].(string)
 			if urlValue != "" {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: urlValue, Title: title})
+				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: urlValue, Title: title})
 			}
 		case "google_maps_result":
 			places, _ := entry["places"].([]interface{})
-			for j, rawPlace := range places {
+			for _, rawPlace := range places {
 				place, ok := rawPlace.(map[string]interface{})
 				if !ok {
 					continue
@@ -866,7 +853,7 @@ func builtinToolResultSources(block interactionsContentBlock) []types.ContentPar
 				urlValue, _ := place["url"].(string)
 				name, _ := place["name"].(string)
 				if urlValue != "" {
-					out = append(out, types.SourceContent{SourceType: "url", ID: fmt.Sprintf("%s-%d", id, j+1), URL: urlValue, Title: name})
+					out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: urlValue, Title: name})
 				}
 			}
 		case "file_search_result":
@@ -884,9 +871,9 @@ func builtinToolResultSources(block interactionsContentBlock) []types.ContentPar
 				continue
 			}
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: uri, Title: title})
+				out = append(out, types.SourceContent{SourceType: "url", ID: generateID(), URL: uri, Title: title})
 			} else {
-				out = append(out, types.SourceContent{SourceType: "document", ID: id, MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(title, fileName, baseName(uri), uri), Filename: firstNonEmpty(fileName, baseName(uri))})
+				out = append(out, types.SourceContent{SourceType: "document", ID: generateID(), MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(title, fileName, baseName(uri), uri), Filename: firstNonEmpty(fileName, baseName(uri))})
 			}
 		}
 	}
@@ -992,4 +979,13 @@ func resolveInteractionMediaType(mediaType string, data []byte, dataString strin
 		Functionality: functionality,
 		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
 	}
+}
+
+// generateID returns a fresh id for fallback tool-call, processing and source
+// ids (TS config.generateId()): the configured generator, else a random id.
+func (m *InteractionsLanguageModel) generateID() string {
+	if m != nil && m.cfg.GenerateID != nil {
+		return m.cfg.GenerateID()
+	}
+	return streaming.GenerateID()
 }

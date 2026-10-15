@@ -330,6 +330,10 @@ func (m *LanguageModel) generateID() string {
 // Google {error:{code,message,status,details}} JSON body when present
 // (TS googleFailedResponseHandler / createJsonErrorResponseHandler).
 func (m *LanguageModel) handleError(err error) error {
+	var loadKeyErr *providererrors.LoadAPIKeyError
+	if errors.As(err, &loadKeyErr) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var httpErr *internalhttp.HTTPStatusError
 	var existing *providererrors.ProviderError
 	if errors.As(err, &existing) && existing.Message == "Invalid JSON response" {
