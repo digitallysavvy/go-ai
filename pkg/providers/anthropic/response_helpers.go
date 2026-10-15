@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -26,6 +27,19 @@ func anthropicCallerMetadata(caller map[string]interface{}) map[string]interface
 		return nil
 	}
 	return map[string]interface{}{"anthropic": map[string]interface{}{"caller": info}}
+}
+
+// callerMetadataJSON is anthropicCallerMetadata as raw JSON, for content parts.
+func callerMetadataJSON(caller map[string]interface{}) json.RawMessage {
+	meta := anthropicCallerMetadata(caller)
+	if meta == nil {
+		return nil
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // toToolsetMemberInput injects the toolset member name as the action
@@ -63,9 +77,11 @@ func serverToolUseCall(content anthropicContent, toolNameMap map[string]string, 
 		}
 		tc.ToolName = mapAnthropicToolName("code_execution", toolNameMap)
 		tc.Arguments = args
+		tc.RawArguments = jsonorder.Input(content.RawInput, input).WithLead("type", content.Name).String()
 		tc.Dynamic = markCodeExecutionDynamic
 	case "web_search", "code_execution", "web_fetch":
 		args := input
+		ordered := jsonorder.Input(content.RawInput, input)
 		if content.Name == "code_execution" {
 			_, hasCode := input["code"]
 			_, hasType := input["type"]
@@ -74,14 +90,17 @@ func serverToolUseCall(content anthropicContent, toolNameMap map[string]string, 
 				for k, v := range input {
 					args[k] = v
 				}
+				ordered = ordered.WithLead("type", "programmatic-tool-call")
 			}
 			tc.Dynamic = markCodeExecutionDynamic
 		}
 		tc.ToolName = mapAnthropicToolName(content.Name, toolNameMap)
 		tc.Arguments = args
+		tc.RawArguments = ordered.String()
 	case "tool_search_tool_regex", "tool_search_tool_bm25", "advisor":
 		tc.ToolName = mapAnthropicToolName(content.Name, toolNameMap)
 		tc.Arguments = input
+		tc.RawArguments = inputText(content.RawInput, input)
 	default:
 		return types.ToolCall{}, false
 	}
@@ -140,6 +159,7 @@ func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 		ToolCallID:       tc.ID,
 		ToolName:         tc.ToolName,
 		Arguments:        tc.Arguments,
+		Input:            tc.RawArguments,
 		ProviderExecuted: tc.ProviderExecuted,
 		ProviderMetadata: meta,
 		Dynamic:          tc.Dynamic,

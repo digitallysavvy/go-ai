@@ -210,67 +210,26 @@ func TestStream_LiveWebSearchToolResultError(t *testing.T) {
 	expectFinishOtherThenEOF(t, stream)
 }
 
-// AR2 item 2: mcp_tool_use was missing from the message_start pre-population
-// loop, so a deferred MCP tool call arriving in message_start.message.content
-// (e.g. on a resumed/compacted stream) was silently dropped: no tool-call
-// chunk, and s.mcpToolCalls was never populated for a paired mcp_tool_result
-// to resolve against. Mirrors the live content_block_start "mcp_tool_use"
-// case (TestMCPToolUseStreamingEmitsImmediately) but via message_start.
-func TestStream_MessageStartPrePopulatedMCPToolUse(t *testing.T) {
+// TS handles only tool_use blocks in message_start.message.content, so a
+// pre-populated mcp_tool_use is ignored: no tool-call chunk is emitted for it.
+func TestStream_MessageStartIgnoresPrePopulatedMCPToolUse(t *testing.T) {
 	sseData := "" +
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"mcp_tool_use\",\"id\":\"mcp_1\",\"name\":\"lookup\",\"server_name\":\"weather\",\"input\":{\"city\":\"Paris\"}}],\"model\":\"claude-3-haiku-20240307\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":17,\"output_tokens\":1}}}\n\n" +
-		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"mcp_tool_result\",\"tool_use_id\":\"mcp_1\",\"is_error\":false,\"content\":\"sunny\"}}\n\n" +
-		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":3}}\n\n" +
 		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
-	skipMessageStartChunk(t, stream)
-
-	callChunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() tool-call error: %v", err)
-	}
-	if callChunk.Type != provider.ChunkTypeToolCall {
-		t.Fatalf("chunk.Type = %v, want ChunkTypeToolCall", callChunk.Type)
-	}
-	tc := callChunk.ToolCall
-	if tc == nil || tc.ID != "mcp_1" || tc.ToolName != "lookup" {
-		t.Fatalf("ToolCall = %+v", tc)
-	}
-	if !tc.ProviderExecuted || !tc.Dynamic {
-		t.Errorf("ToolCall providerExecuted/dynamic = %v/%v, want true/true", tc.ProviderExecuted, tc.Dynamic)
-	}
-	if tc.Arguments["city"] != "Paris" {
-		t.Errorf("Arguments = %v", tc.Arguments)
-	}
-	callMeta, _ := tc.ProviderMetadata["anthropic"].(map[string]interface{})
-	if callMeta["type"] != "mcp-tool-use" || callMeta["serverName"] != "weather" {
-		t.Errorf("ToolCall.ProviderMetadata = %+v", tc.ProviderMetadata)
-	}
-
-	resultChunk, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() tool-result error: %v", err)
-	}
-	if resultChunk.Type != provider.ChunkTypeToolResult {
-		t.Fatalf("chunk.Type = %v, want ChunkTypeToolResult", resultChunk.Type)
-	}
-	tr := resultChunk.ToolResult
-	if tr.ToolCallID != "mcp_1" {
-		t.Errorf("ToolCallID = %q, want mcp_1", tr.ToolCallID)
-	}
-	if tr.ToolName != "lookup" {
-		t.Errorf("ToolName = %q, want lookup (resolved from the pre-populated mcp_tool_use)", tr.ToolName)
-	}
-	if !tr.Dynamic {
-		t.Error("ToolResult.Dynamic should be true")
-	}
-	resultMeta, _ := tr.ProviderMetadata["anthropic"].(map[string]interface{})
-	if resultMeta["type"] != "mcp-tool-use" || resultMeta["serverName"] != "weather" {
-		t.Errorf("ToolResult.ProviderMetadata = %+v, want same as the pre-populated call's", tr.ProviderMetadata)
-	}
-	if tr.Result != "sunny" {
-		t.Errorf("Result = %v, want sunny", tr.Result)
+	for {
+		c, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if c.Type == provider.ChunkTypeToolCall || c.Type == provider.ChunkTypeToolResult {
+			t.Fatalf("message_start mcp_tool_use produced %v; TS ignores it", c.Type)
+		}
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
 // providerToolBetas maps Anthropic provider tool IDs to the beta flag the TS
@@ -169,7 +168,12 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		}
 
 		// Function tool.
-		m := tool.ToAnthropicFormat([]types.Tool{t})[0]
+		// TS forwards the tool's inputSchema untouched (only the
+		// responseFormat schema is sanitized), so do the same.
+		m := map[string]interface{}{"name": t.Name, "input_schema": t.Parameters}
+		if t.Description != "" {
+			m["description"] = t.Description
+		}
 		if cc := validator.GetCacheControl(toolCacheControlOptions(t), "tool definition", true); cc != nil {
 			m["cache_control"] = cc
 		}

@@ -135,7 +135,7 @@ function tpl(s, k) {
 // top-level consts (TEST_PROMPT, TEST_TOOLS, ...)
 const ctx = vm.createContext({ JSON, Date, Math, Buffer, Uint8Array, TextEncoder, URL, Object, Array, String, Number });
 {
-  const re = /^[ \t]*(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
+  const re = /^(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
   let m;
   while ((m = re.exec(src))) {
     const k = m.index + m[0].length;
@@ -157,8 +157,54 @@ const starts = [];
 let m;
 while ((m = re.exec(src))) starts.push({ idx: m.index, name: m[4], line: ' '.repeat(m[1].split('\n').pop().length) + 'it' });
 
+// Nested consts (a describe-local TEST_PROMPT shadowing the module one) are
+// evaluated per case when their scope still encloses the test.
+const nestedDecls = [];
+{
+  const reN = /^([ \t]+)(?:const|let) (\w+)(?::[^=]+)? = /gm;
+  let mN;
+  while ((mN = reN.exec(src))) {
+    const k = mN.index + mN[0].length;
+    let j = k;
+    while (j < src.length && /\s/.test(src[j])) j++;
+    let end;
+    if ('{[('.includes(src[j])) end = balanced(src, j); else end = src.indexOf('\n', j);
+    if (end < 0) continue;
+    let e2 = end;
+    while (e2 < src.length && src[e2] !== ';' && src[e2] !== '\n') e2++;
+    nestedDecls.push({ pos: mN.index, indent: mN[1].length, name: mN[2], expr: src.slice(k, e2) });
+  }
+}
+// A declaration is visible to a test when the block that declares it (from
+// the previous less-indented line to the next one) contains the test, wherever
+// in that block it sits: the test body runs after the whole block has run.
+const srcLines = src.split('\n');
+const lineStart = [];
+{ let off = 0; for (const l of srcLines) { lineStart.push(off); off += l.length + 1; } }
+function lineOf(pos) { let lo = 0, hi = lineStart.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStart[mid] <= pos) lo = mid; else hi = mid - 1; } return lo; }
+const indentOfLine = l => /^[ \t]*/.exec(l)[0].length;
+for (const d of nestedDecls) {
+  const ln = lineOf(d.pos);
+  let open = ln - 1;
+  while (open >= 0 && (srcLines[open].trim() === '' || indentOfLine(srcLines[open]) >= d.indent)) open--;
+  let close = ln + 1;
+  while (close < srcLines.length && (srcLines[close].trim() === '' || indentOfLine(srcLines[close]) >= d.indent)) close++;
+  d.openPos = open >= 0 ? lineStart[open] : 0;
+  d.closePos = close < srcLines.length ? lineStart[close] : src.length;
+}
+function scopedDecls(testIdx, testIndent) {
+  return nestedDecls
+    .filter(d => d.indent <= testIndent && d.openPos <= testIdx && testIdx < d.closePos)
+    .sort((x, y) => x.indent - y.indent || x.pos - y.pos);
+}
+
 const out = [];
 for (let i = 0; i < starts.length; i++) {
+  const saved = {};
+  for (const d of scopedDecls(starts[i].idx, starts[i].line.length - 2)) {
+    if (!(d.name in saved)) saved[d.name] = ctx[d.name];
+    try { vm.runInContext(`var ${d.name} = (${stripTS(d.expr)})`, ctx); } catch (e) { /* keep module value */ }
+  }
   let body0 = src.slice(starts[i].idx, i + 1 < starts.length ? starts[i + 1].idx : src.length);
   { const op = body0.indexOf('('); const e = op >= 0 ? balanced(body0, op) : -1; if (e > 0) body0 = body0.slice(0, e); }
   const name = starts[i].name;
@@ -220,7 +266,8 @@ for (let i = 0; i < starts.length; i++) {
     }
   }
 
-  const mid = body.match(/(?:\.chat|\.deepseek|chatModel|languageModel|responses|\.completion|chatModelFor|createModel|\.responsesModel)\(\s*['"]([^'"]+)['"]/);
+  const mid = body.match(/(?:\.chat|\.deepseek|chatModel|languageModel|responses|\.completion|chatModelFor|createModel|\.responsesModel)\(\s*['"]([^'"]+)['"]/) ||
+    body.match(/\bprovider\(\s*['"]([^'"]+)['"]/) || body.match(/\bmodelId:\s*['"]([^'"]+)['"]/);
   const call = body.match(/do(Generate|Stream)\(/);
   let callArgs = null, callKind = null, callObj = null;
   if (call) {
@@ -238,7 +285,7 @@ for (let i = 0; i < starts.length; i++) {
   while ((mm = reI.exec(body))) {
     const s0 = mm.index + mm[0].length;
     const k = tpl(body, s0);
-    exps.push({ expr: mm[1].trim(), snap: parseSnap(dedent(body.slice(s0, k))) });
+    exps.push({ expr: mm[1].trim(), snap: parseSnap(dedent(body.slice(s0, k).replace(/\\([\\`$])/g, '$1'))) });
   }
   // external snapshots are keyed "<describe path> > <name> <n>"
   const pathNames = [];
@@ -275,6 +322,7 @@ for (let i = 0; i < starts.length; i++) {
     const ms = [...pre.matchAll(/^describe\(\s*(['"`])(.*?)\1/gm)];
     if (ms.length) topDescribe = ms[ms.length - 1][2];
   }
+  for (const n of Object.keys(saved)) { if (saved[n] === undefined) delete ctx[n]; else ctx[n] = saved[n]; }
   if (exps.length) out.push({ test: name, response, callKind, callArgs, call: callObj, modelId: mid ? mid[1] : null, suspect, topDescribe, exps });
 }
 console.log(JSON.stringify(out));

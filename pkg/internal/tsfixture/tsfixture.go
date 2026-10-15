@@ -40,12 +40,12 @@ type Case struct {
 
 // Response is the canned wire response.
 type Response struct {
-	Kind   string      `json:"kind"` // json | chunks | fixture-json | fixture-chunks
-	Body   interface{} `json:"body"`
-	Chunks []string    `json:"chunks"`
-	Name   string      `json:"name"`
-	Raw    string      `json:"raw"` // fixture file content
-	Error  string      `json:"error"`
+	Kind   string          `json:"kind"` // json | chunks | fixture-json | fixture-chunks
+	Body   json.RawMessage `json:"body"` // raw, to keep the key order of the wire body
+	Chunks []string        `json:"chunks"`
+	Name   string          `json:"name"`
+	Raw    string          `json:"raw"` // fixture file content
+	Error  string          `json:"error"`
 }
 
 // Expectation is one snapshot assertion.
@@ -73,13 +73,34 @@ var simpleCall = regexp.MustCompile(`^\{ prompt: [A-Z_]+,?( includeRawChunks: fa
 // Simple reports whether the TS call used only the default prompt.
 func (c Case) Simple() bool { return simpleCall.MatchString(c.CallArgs) }
 
+// StreamBodyEncoder, when set, turns the canned stream lines (one JSON
+// document per line) into the response body and content type. Providers whose
+// stream is not SSE (Amazon Bedrock's AWS event stream) set it.
+var StreamBodyEncoder func(lines []string) (contentType string, body []byte)
+
 func (c Case) handler() http.HandlerFunc {
 	r := c.Response
 	return func(w http.ResponseWriter, req *http.Request) {
+		if StreamBodyEncoder != nil && (r.Kind == "chunks" || r.Kind == "fixture-chunks") {
+			var lines []string
+			src := r.Chunks
+			if r.Kind == "fixture-chunks" {
+				src = strings.Split(r.Raw, "\n")
+			}
+			for _, l := range src {
+				if l = strings.TrimSpace(l); l != "" {
+					lines = append(lines, l)
+				}
+			}
+			ct, body := StreamBodyEncoder(lines)
+			w.Header().Set("Content-Type", ct)
+			_, _ = w.Write(body)
+			return
+		}
 		switch r.Kind {
 		case "json":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(r.Body)
+			_, _ = w.Write(r.Body)
 		case "fixture-json":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, r.Raw)
@@ -291,7 +312,24 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			if m, ok := v.(map[string]interface{}); ok {
 				m["input"] = in
 			}
+		case types.ReasoningContent:
+			// TS carries the signature and redacted data in providerMetadata
+			// only; Go also keeps its pre-v0.6 fields.
+			if m, ok := v.(map[string]interface{}); ok {
+				delete(m, "signature")
+				delete(m, "redacted_data")
+			}
 		case types.ToolResultContent:
+			// TS marks a failed result isError; Go carries the error text.
+			if m, ok := v.(map[string]interface{}); ok {
+				if x.Error != "" {
+					delete(m, "error")
+					m["isError"] = true
+				}
+				// TS tool results are always provider executed and say so
+				// nowhere.
+				delete(m, "providerExecuted")
+			}
 			// A provider-executed call that only exists in ToolCalls is
 			// reported right before its result.
 			if !have[x.ToolCallID] {
@@ -337,10 +375,10 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				if m.ID != "" {
 					o["id"] = m.ID
 				}
-				if m.ModelID != "" {
+				if m.ModelID != "" && !DropResponseModelID {
 					o["modelId"] = m.ModelID
 				}
-				if !m.Timestamp.IsZero() {
+				if !m.Timestamp.IsZero() && !DropResponseTimestamp {
 					o["timestamp"] = m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
 				}
 			}
@@ -358,6 +396,7 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 			setPM(o, c.ProviderMetadata)
 		case provider.ChunkTypeToolInputStart:
 			o["id"] = id
+			setPM(o, c.ProviderMetadata)
 			if c.ToolCall != nil {
 				o["toolName"] = c.ToolCall.ToolName
 				if c.ToolCall.ProviderExecuted {
@@ -369,8 +408,10 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 			}
 		case provider.ChunkTypeToolInputDelta:
 			o["id"], o["delta"] = id, c.Text
+			setPM(o, c.ProviderMetadata)
 		case provider.ChunkTypeToolInputEnd:
 			o["id"] = id
+			setPM(o, c.ProviderMetadata)
 		case provider.ChunkTypeToolCall:
 			if tc := c.ToolCall; tc != nil {
 				o["toolCallId"], o["toolName"] = tc.ID, tc.ToolName
@@ -391,11 +432,16 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				}
 				if len(tc.ProviderMetadata) > 0 {
 					o["providerMetadata"] = tc.ProviderMetadata
+				} else {
+					setPM(o, c.ProviderMetadata)
 				}
 			}
 		case provider.ChunkTypeToolResult:
 			if tr := c.ToolResult; tr != nil {
 				o["toolCallId"], o["toolName"], o["result"] = tr.ToolCallID, tr.ToolName, tr.Result
+				if len(tr.ProviderMetadata) > 0 {
+					o["providerMetadata"] = tr.ProviderMetadata
+				}
 			}
 		case provider.ChunkTypeToolApprovalRequest:
 			if r := c.ToolApprovalRequest; r != nil {
@@ -419,6 +465,11 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				o["usage"] = UsageToTS(*c.Usage)
 			}
 			setPM(o, c.ProviderMetadata)
+		case provider.ChunkTypeCustom:
+			if cc := c.CustomContent; cc != nil {
+				o["kind"] = cc.Kind
+				setPM(o, cc.ProviderMetadata)
+			}
 		case provider.ChunkTypeError:
 			o["error"] = c.Text
 		case provider.ChunkTypeRaw:
@@ -429,11 +480,24 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 	return out
 }
 
-var generatedID = regexp.MustCompile(`^(id-\d+|call_[0-9a-f]{16})$`)
+var generatedID = regexp.MustCompile(`^(id-\d+|test-id(-\d+)?|call_[0-9a-f]{16})$`)
 
 // MetadataKeyAlias renames provider-metadata keys of the TS snapshot (e.g. the
 // tests' "test-provider") to the key the Go provider under test reports.
 var MetadataKeyAlias map[string]string
+
+// ToolNameAlias renames tool names reported by the Go provider (for example
+// the "anthropic.code_execution_20250825" id Go uses as a provider tool's
+// name) to the name the TS test registered them under.
+var ToolNameAlias map[string]string
+
+// DropResponseTimestamp omits the response-metadata timestamp from stream
+// parts, for providers where TS reports none.
+var DropResponseTimestamp bool
+
+// DropResponseModelID omits the response-metadata model id from stream parts,
+// for providers where TS reports none there.
+var DropResponseModelID bool
 
 // Normalize drops TS "undefined" markers and nil/empty noise so the two sides
 // compare structurally.
@@ -455,9 +519,17 @@ func Normalize(v interface{}) interface{} {
 			if k == "id" && x["type"] == "source" {
 				continue // generated ids differ
 			}
-			if k == "toolCallId" {
+			if k == "toolCallId" || (k == "id" && strings.HasPrefix(fmt.Sprint(x["type"]), "tool-input")) {
 				if id, _ := e.(string); generatedID.MatchString(id) {
 					continue // generated ids differ
+				}
+			}
+			if k == "isError" && e == false {
+				continue // an explicit false is the same as unset
+			}
+			if k == "toolName" {
+				if name, _ := e.(string); ToolNameAlias[name] != "" {
+					e = ToolNameAlias[name]
 				}
 			}
 			n := Normalize(e)
@@ -596,7 +668,7 @@ func CanonStream(parts []interface{}) []interface{} {
 			}
 		case "response-metadata":
 			// Go providers add a headers-only metadata chunk (no wire id).
-			if _, ok := m["id"]; !ok {
+			if id, ok := m["id"]; !ok || Normalize(id) == nil {
 				continue
 			}
 		case "text-delta":
@@ -793,6 +865,30 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 					tc.ProviderExecuted = pe
 				}
 				msg.Content = append(msg.Content, tc)
+			case "file":
+				fc := types.FileContent{MediaType: stringOf(p["mediaType"]), Filename: stringOf(p["filename"]), ProviderOptions: po}
+				d, _ := p["data"].(map[string]interface{})
+				switch d["type"] {
+				case "data":
+					if str, ok := d["data"].(string); ok {
+						fc.FileData = types.FileData{Type: types.FileDataTypeData, DataString: str, MediaType: fc.MediaType}
+					} else {
+						return nil, "prompt file data bytes"
+					}
+				case "url":
+					fc.FileData = types.FileData{Type: types.FileDataTypeURL, URL: stringOf(d["url"]), MediaType: fc.MediaType}
+				case "reference":
+					ref := types.ProviderReference{}
+					if r, ok := d["reference"].(map[string]interface{}); ok {
+						for k, v := range r {
+							ref[k] = stringOf(v)
+						}
+					}
+					fc.FileData = types.FileData{Type: types.FileDataTypeReference, Reference: ref, MediaType: fc.MediaType}
+				default:
+					return nil, fmt.Sprintf("prompt file data %v", d["type"])
+				}
+				msg.Content = append(msg.Content, fc)
 			case "tool-result":
 				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: p["toolName"].(string), ProviderOptions: po}
 				if out, ok := p["output"].(map[string]interface{}); ok {
@@ -835,4 +931,9 @@ func readCaseFile(path string) ([]byte, error) {
 		err = cerr
 	}
 	return b, err
+}
+
+func stringOf(v interface{}) string {
+	s, _ := v.(string)
+	return s
 }

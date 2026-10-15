@@ -449,13 +449,10 @@ func TestDoGenerate_WebFetchCitationDocument(t *testing.T) {
 	}
 }
 
-// TestStream_WebFetchCitationDocument is the streaming counterpart of
-// TestDoGenerate_WebFetchCitationDocument: the web_fetch_tool_result arrives
-// pre-populated in message_start (as it does after a compaction/resume), and
-// the citing text block streams live afterward. The citation document list
-// must grow from the pre-populated tool result before the live text block's
-// citations_delta is processed, mirroring TS's single ordered content loop.
-func TestStream_WebFetchCitationDocument(t *testing.T) {
+// TestStream_WebFetchResultInMessageStartIsIgnored: TS only handles tool_use
+// blocks in message_start, so a pre-populated web_fetch_tool_result neither
+// emits a result nor adds a citation document.
+func TestStream_WebFetchResultInMessageStartIsIgnored(t *testing.T) {
 	sseData := "" +
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"web_fetch_tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":" + webFetchResultContent("Fetched Report", "application/pdf") + "}],\"model\":\"claude-3-haiku-20240307\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":17,\"output_tokens\":1}}}\n\n" +
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
@@ -483,16 +480,7 @@ func TestStream_WebFetchCitationDocument(t *testing.T) {
 			src = c.SourceContent
 		}
 	}
-	if src == nil {
-		t.Fatal("expected a source chunk for the page_location citation against the web-fetched document")
-	}
-	if src.SourceType != "document" {
-		t.Errorf("SourceType = %q, want document", src.SourceType)
-	}
-	if src.Title != "Fetched Report" {
-		t.Errorf("Title = %q, want Fetched Report", src.Title)
-	}
-	if src.MediaType != "application/pdf" {
-		t.Errorf("MediaType = %q, want application/pdf", src.MediaType)
+	if src != nil {
+		t.Fatalf("message_start web_fetch_tool_result must not provide a citation document, got %+v", src)
 	}
 }
