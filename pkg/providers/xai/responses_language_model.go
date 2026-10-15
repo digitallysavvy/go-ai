@@ -403,6 +403,9 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 
 	// Tools.
 	if len(opts.Tools) > 0 {
+		if err := validateXAIResponsesToolArgs(opts.Tools); err != nil {
+			return nil, nil, err
+		}
 		body["tools"] = prepareXAIResponsesTools(opts.Tools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = convertXAIResponsesToolChoice(opts.ToolChoice)
