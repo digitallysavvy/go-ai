@@ -204,6 +204,26 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
 	}
 
+	// OpenAI-compatible wrappers (baseten, deepinfra, vertex MaaS, ...) read
+	// options from openaiCompatible / <providerName> / <camelCaseName> like
+	// TS OpenAICompatibleChatLanguageModel; the legacy "openai" key keeps
+	// working underneath. Unknown keys from the provider-named maps are
+	// forwarded to the request body (TS passes them through).
+	var compatPassthrough map[string]interface{}
+	if m.provider.config.OpenAICompatible {
+		resolved, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.fileReferenceProvider(), opts.ProviderOptions)
+		warnings = append(warnings, resolveWarnings...)
+		merged := make(map[string]interface{}, len(openaiOpts)+len(resolved))
+		for k, v := range openaiOpts {
+			merged[k] = v
+		}
+		for k, v := range resolved {
+			merged[k] = v
+		}
+		openaiOpts = merged
+		compatPassthrough = resolved
+	}
+
 	// reasoningSummary is a Responses API option; the chat options schema has
 	// no field for it, so it would otherwise be silently dropped. Warn
 	// instead (TS commit 5b8e63bad8, #21178). The message is provider-neutral
@@ -594,6 +614,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// Maps to top-level "verbosity" in the Chat Completions API.
 	if v, ok := openaiOpts["textVerbosity"].(string); ok {
 		body["verbosity"] = v
+	}
+
+	for k, v := range compatPassthrough {
+		switch k {
+		case "user", "reasoningEffort", "textVerbosity", "strictJsonSchema",
+			"messages", "tools", "tool_choice", "reasoning_effort", "verbosity", "stream", "stream_options":
+			continue
+		}
+		body[k] = v
 	}
 
 	if m.provider.config.TransformRequestBody != nil {

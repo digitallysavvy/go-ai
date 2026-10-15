@@ -152,6 +152,13 @@ type cerebrasOptionsContextKey struct{}
 func transformCerebrasRequestBody(body map[string]interface{}) map[string]interface{} {
 	renameReasoningContent(body)
 	renameMaxTokens(body)
+	// The shared chat model forwards unknown providerOptions.cerebras keys
+	// verbatim (TS passthrough); TS's transform destructures these camelCase
+	// keys out again and re-adds them as snake_case, which
+	// cerebrasTransformTransport does per call.
+	for _, k := range []string{"parallelToolCalls", "topLogprobs", "logitBias", "serviceTier", "reasoningFormat", "promptCacheKey"} {
+		delete(body, k)
+	}
 	return body
 }
 
