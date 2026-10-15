@@ -755,23 +755,7 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 	}
 
 	// Store raw usage for provider-specific details
-	result.Raw = map[string]interface{}{
-		"input_tokens":  usage.InputTokens,
-		"output_tokens": usage.OutputTokens,
-	}
-
-	if usage.CacheCreationInputTokens > 0 {
-		result.Raw["cache_creation_input_tokens"] = usage.CacheCreationInputTokens
-	}
-	if usage.CacheReadInputTokens > 0 {
-		result.Raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
-	}
-	if len(usage.Iterations) > 0 {
-		result.Raw["iterations"] = usage.Iterations
-	}
-	if usage.OutputTokensDetails != nil {
-		result.Raw["output_tokens_details"] = usage.OutputTokensDetails
-	}
+	result.Raw = anthropicRawUsage(usage)
 
 	return result
 }
@@ -944,6 +928,13 @@ func mapAnthropicContextManagementResponse(contextManagement *ContextManagementR
 }
 
 func anthropicRawUsage(usage anthropicUsage) map[string]interface{} {
+	if usage.Raw != nil {
+		out := make(map[string]interface{}, len(usage.Raw))
+		for k, v := range usage.Raw {
+			out[k] = v
+		}
+		return out
+	}
 	raw := map[string]interface{}{
 		"input_tokens":  usage.InputTokens,
 		"output_tokens": usage.OutputTokens,
@@ -1188,6 +1179,26 @@ type anthropicUsage struct {
 	Iterations []UsageIteration `json:"iterations,omitempty"`
 	// OutputTokensDetails carries thinking_tokens (reasoning share of output).
 	OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
+	// Raw is the usage object exactly as the API sent it (TS passes
+	// response.usage through as Usage.raw and providerMetadata.anthropic.usage,
+	// including fields such as service_tier, server_tool_use, cache_creation
+	// and inference_geo). Nil when the usage was built without a wire object.
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the full wire object in Raw.
+func (u *anthropicUsage) UnmarshalJSON(data []byte) error {
+	type plain anthropicUsage
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*u = anthropicUsage(p)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 type anthropicOutputTokensDetails struct {
@@ -1909,6 +1920,16 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				s.inputTokens = int64(msg.Message.Usage.InputTokens)
 				s.cacheReadTokens = int64(msg.Message.Usage.CacheReadInputTokens)
 				s.cacheWriteTokens = int64(msg.Message.Usage.CacheCreationInputTokens)
+				// TS: rawUsage = {...message_start.message.usage}.
+				var startRaw struct {
+					Message struct {
+						Usage map[string]interface{} `json:"usage"`
+					} `json:"message"`
+				}
+				s.usage.Raw = nil
+				if json.Unmarshal([]byte(event.Data), &startRaw) == nil && startRaw.Message.Usage != nil {
+					s.usage.Raw = startRaw.Message.Usage
+				}
 				s.usage.InputTokens = msg.Message.Usage.InputTokens
 				s.usage.OutputTokens = msg.Message.Usage.OutputTokens
 				s.usage.CacheReadInputTokens = msg.Message.Usage.CacheReadInputTokens
@@ -2410,6 +2431,18 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			if delta.Usage.OutputTokensDetails != nil {
 				s.usage.OutputTokensDetails = delta.Usage.OutputTokensDetails
+			}
+			// TS: rawUsage = {...rawUsage, ...message_delta.usage}.
+			var deltaRaw struct {
+				Usage map[string]interface{} `json:"usage"`
+			}
+			if json.Unmarshal([]byte(event.Data), &deltaRaw) == nil && len(deltaRaw.Usage) > 0 {
+				if s.usage.Raw == nil {
+					s.usage.Raw = map[string]interface{}{}
+				}
+				for k, v := range deltaRaw.Usage {
+					s.usage.Raw[k] = v
+				}
 			}
 
 			if delta.Delta.StopReason != "" {
