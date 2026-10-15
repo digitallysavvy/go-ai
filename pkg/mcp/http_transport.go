@@ -770,23 +770,28 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 	if len(trimmed) == 0 {
 		return nil, nil
 	}
+	// TS validateJSONRPCMessage runs on the body, or on each element of an
+	// array body, and throws on a message that is not JSON-RPC.
 	if trimmed[0] == '[' {
-		var batch []MCPMessage
+		var batch []json.RawMessage
 		if err := unmarshalSafeJSON(trimmed, &batch); err != nil {
 			return nil, err
 		}
 		messages := make([]*MCPMessage, 0, len(batch))
-		for i := range batch {
-			msg := batch[i]
-			messages = append(messages, &msg)
+		for _, raw := range batch {
+			msg, err := parseMCPMessage(raw)
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, msg)
 		}
 		return messages, nil
 	}
-	var responseMsg MCPMessage
-	if err := unmarshalSafeJSON(trimmed, &responseMsg); err != nil {
+	msg, err := parseMCPMessage(trimmed)
+	if err != nil {
 		return nil, err
 	}
-	return []*MCPMessage{&responseMsg}, nil
+	return []*MCPMessage{msg}, nil
 }
 
 // readMCPHTTPSSEMessages parses a text/event-stream response returned from a
@@ -822,12 +827,12 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release cont
 		if event.Event != "" && event.Event != "message" {
 			continue
 		}
-		var msg MCPMessage
-		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+		msg, err := parseMCPMessage([]byte(event.Data))
+		if err != nil {
 			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
 			continue
 		}
-		t.queueReceivedMessages([]*MCPMessage{&msg})
+		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
 }
 
@@ -1194,12 +1199,12 @@ func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel
 		if event.Event != "" && event.Event != "message" {
 			continue
 		}
-		var msg MCPMessage
-		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+		msg, err := parseMCPMessage([]byte(event.Data))
+		if err != nil {
 			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
 			continue
 		}
-		t.queueReceivedMessages([]*MCPMessage{&msg})
+		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
 }
 
