@@ -115,11 +115,10 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse response: %v", err))
 	}
-	if createResp.Code != 0 {
-		return nil, NewError(createResp.Code, createResp.Message, "")
-	}
+	// TS has no `code != 0` check on a 2xx response; a missing task_id is
+	// reported with the (schema-parsed) response.
 	if createResp.Data == nil || createResp.Data.TaskID == "" {
-		return nil, NewVideoGenerationError("no task ID in response")
+		return nil, newVideoGenerationErrorText("No task_id returned from KlingAI API. Response: " + zodStringify(submitResp.Body, klingaiCreateSpec))
 	}
 
 	operation, _ := json.Marshal(klingaiOperation{TaskID: createResp.Data.TaskID, EndpointPath: endpointPath})
@@ -170,27 +169,19 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		Headers:   flattenKlingAIHeaders(result.Headers),
 	}
 
-	if statusResp.Code != 0 {
-		return &provider.VideoModelV3OperationStatusResult{
-			Status:   provider.VideoOperationStatusError,
-			Error:    statusResp.Message,
-			Response: responseInfo,
-		}, nil
-	}
-	if statusResp.Data == nil {
-		return &provider.VideoModelV3OperationStatusResult{
-			Status:   provider.VideoOperationStatusError,
-			Error:    "no data in status response",
-			Response: responseInfo,
-		}, nil
+	// TS reads `statusResponse.data?.task_status` only: a non-zero `code` or
+	// a missing `data` is not an error, the task is still pending.
+	taskStatus, taskStatusMsg := "", ""
+	if statusResp.Data != nil {
+		taskStatus, taskStatusMsg = statusResp.Data.TaskStatus, statusResp.Data.TaskStatusMsg
 	}
 
-	switch statusResp.Data.TaskStatus {
+	switch taskStatus {
 	case "succeed":
-		return m.buildCompletedStatusResult(&statusResp, op.TaskID, responseInfo)
+		return m.buildCompletedStatusResult(&statusResp, op.TaskID, responseInfo, result.Data)
 
 	case "failed":
-		msg := statusResp.Data.TaskStatusMsg
+		msg := taskStatusMsg
 		if msg == "" {
 			msg = "Unknown error"
 		}
@@ -212,9 +203,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 // a completed operation result, returning an error (mirroring TS's thrown
 // AISDKError from buildCompletedResult) when the task carries no videos or
 // no valid video URLs at all.
-func (m *VideoModel) buildCompletedStatusResult(resp *taskStatusResponse, taskID string, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedStatusResult(resp *taskStatusResponse, taskID string, responseInfo provider.VideoModelV3ResponseInfo, rawBody []byte) (*provider.VideoModelV3OperationStatusResult, error) {
 	if resp.Data == nil || resp.Data.TaskResult == nil || len(resp.Data.TaskResult.Videos) == 0 {
-		return nil, NewVideoGenerationError("No videos were returned in the response.")
+		return nil, newVideoGenerationErrorText("No videos in response. Response: " + zodStringify(rawBody, klingaiStatusSpec))
 	}
 
 	videos := []provider.VideoModelV3VideoData{}
@@ -236,7 +227,7 @@ func (m *VideoModel) buildCompletedStatusResult(resp *taskStatusResponse, taskID
 	}
 
 	if len(videos) == 0 {
-		return nil, NewVideoGenerationError("No valid video URLs in response.")
+		return nil, newVideoGenerationErrorText("No valid video URLs in response")
 	}
 
 	return &provider.VideoModelV3OperationStatusResult{

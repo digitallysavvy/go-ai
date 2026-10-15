@@ -96,7 +96,7 @@ func TestKlingAIVideoModelHelperBranches(t *testing.T) {
 		ModelID:   model.modelID,
 		Headers:   map[string]string{"X-Req": "abc"},
 	}
-	resp, err := model.buildCompletedStatusResult(&status, "task-1", responseInfo)
+	resp, err := model.buildCompletedStatusResult(&status, "task-1", responseInfo, nil)
 	if err != nil {
 		t.Fatalf("buildCompletedStatusResult() error = %v", err)
 	}

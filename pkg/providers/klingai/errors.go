@@ -99,3 +99,9 @@ func NewMissingVideoOptionsError(field string) *Error {
 		Message:   fmt.Sprintf("%s is required for motion control", field),
 	}
 }
+
+// newVideoGenerationErrorText is a KLINGAI_VIDEO_GENERATION_ERROR whose whole
+// text is the TS AISDKError message (no "Video generation failed" prefix).
+func newVideoGenerationErrorText(message string) *Error {
+	return &Error{Code: 500, ErrorCode: "KLINGAI_VIDEO_GENERATION_ERROR", Message: message}
+}
