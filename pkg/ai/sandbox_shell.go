@@ -8,11 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 
-	"golang.org/x/text/encoding/htmlindex"
-	"golang.org/x/text/transform"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ShellSandbox executes commands through the local shell. It is the default
@@ -155,22 +153,7 @@ func (s *ShellSandbox) ReadTextFile(ctx context.Context, opts SandboxReadTextFil
 	if err != nil {
 		return nil, err
 	}
-	if opts.StartLine != nil || opts.EndLine != nil {
-		lines := strings.Split(text, "\n")
-		start := 1
-		if opts.StartLine != nil && *opts.StartLine > 1 {
-			start = *opts.StartLine
-		}
-		end := len(lines)
-		if opts.EndLine != nil && *opts.EndLine < end {
-			end = *opts.EndLine
-		}
-		if start > end || start > len(lines) {
-			empty := ""
-			return &empty, nil
-		}
-		text = strings.Join(lines[start-1:end], "\n")
-	}
+	text = providerutils.ExtractLines(text, opts.StartLine, opts.EndLine)
 	return &text, nil
 }
 
@@ -210,30 +193,11 @@ func (s *ShellSandbox) WriteTextFile(ctx context.Context, opts SandboxWriteTextF
 }
 
 func decodeSandboxText(data []byte, encodingLabel string) (string, error) {
-	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
-		return string(data), nil
-	}
-	enc, err := htmlindex.Get(encodingLabel)
-	if err != nil {
-		return "", err
-	}
-	decoded, _, err := transform.Bytes(enc.NewDecoder(), data)
-	if err != nil {
-		return "", err
-	}
-	return string(decoded), nil
+	return providerutils.DecodeSandboxText(data, encodingLabel)
 }
 
 func encodeSandboxText(text string, encodingLabel string) ([]byte, error) {
-	if encodingLabel == "" || strings.EqualFold(encodingLabel, "utf-8") || strings.EqualFold(encodingLabel, "utf8") {
-		return []byte(text), nil
-	}
-	enc, err := htmlindex.Get(encodingLabel)
-	if err != nil {
-		return nil, err
-	}
-	encoded, _, err := transform.Bytes(enc.NewEncoder(), []byte(text))
-	return encoded, err
+	return providerutils.EncodeSandboxText(text, encodingLabel)
 }
 
 type shellSandboxProcess struct {

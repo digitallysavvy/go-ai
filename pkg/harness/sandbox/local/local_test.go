@@ -71,6 +71,26 @@ func TestSessionFilesResolveRelativeToWorkDir(t *testing.T) {
 	if err != nil || got == nil || *got != "l2\nl3" {
 		t.Fatal(got, err)
 	}
+	// TS extractLines preserves CRLF line endings and honours encoding.
+	if err := s.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{Path: "crlf.txt", Content: "a\r\nb\r\nc\r\nd"}); err != nil {
+		t.Fatal(err)
+	}
+	three := 3
+	crlf, err := s.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: "crlf.txt", StartLine: &two, EndLine: &three})
+	if err != nil || crlf == nil || *crlf != "b\r\nc" {
+		t.Fatalf("crlf slice: %v %v", crlf, err)
+	}
+	if err := s.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{Path: "l1.txt", Content: "caf\u00e9", Encoding: "latin1"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.ReadBinaryFile(ctx, "l1.txt")
+	if err != nil || string(raw) != "caf\xe9" {
+		t.Fatalf("latin1 write: %q %v", raw, err)
+	}
+	dec, err := s.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: "l1.txt", Encoding: "latin1"})
+	if err != nil || dec == nil || *dec != "caf\u00e9" {
+		t.Fatalf("latin1 read: %v %v", dec, err)
+	}
 	missing, err := s.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: "nope"})
 	if err != nil || missing != nil {
 		t.Fatal("missing files read as nil")
