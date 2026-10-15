@@ -284,6 +284,15 @@ type ShellNetworkPolicy struct {
 }
 ```
 
+#### Shell results
+
+`local_shell_call`, `shell_call` and `shell_call_output` output items are decoded
+in both `DoGenerate` and `DoStream`. The call becomes a tool call named after the
+declared tool (`shell`/`local_shell` by default). With a hosted container
+environment (`container_auto` or `container_reference`) the call is
+provider-executed and its output arrives as a tool result
+(`{output: [{stdout, stderr, outcome}]}`); otherwise your tool executes it.
+
 ### Apply Patch Tool
 
 Enables the model to create, update, or delete files using unified diffs.
