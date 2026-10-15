@@ -41,6 +41,7 @@ var BuiltinTools = map[string]harness.BuiltinTool{
 				)),
 			},
 		},
+		"required": []string{"_toolName"},
 	}),
 	"readTodos": tool("readTodos", "readTodosToolCall", harness.BuiltinToolUseKindReadonly, "Read TODOs",
 		obj(nil, map[string]any{})),

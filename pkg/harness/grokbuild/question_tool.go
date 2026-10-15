@@ -44,6 +44,9 @@ var AskUserQuestions = acp.AskUserQuestionsSettings{
 // JSON-decoded (Go `any`, TS `unknown`), so parsing is a round trip through
 // JSON to apply the schema's shape/required-field checks.
 func parseGrokBuildQuestionRequest(nativeRequest any) (*grokBuildQuestionRequest, bool) {
+	if !validGrokBuildQuestionRequestShape(nativeRequest) {
+		return nil, false
+	}
 	data, err := json.Marshal(nativeRequest)
 	if err != nil {
 		return nil, false
@@ -162,7 +165,8 @@ func toNativeAnswers(req *grokBuildQuestionRequest, output *harness.QuestionsToo
 		if !ok {
 			continue
 		}
-		var labels []string
+		// Non-nil: TS flatMap yields [] (JSON `[]`), never null.
+		labels := []string{}
 		for _, id := range answer.OptionIDs {
 			idx, ok := positionalIDIndex(id, "option-")
 			if !ok || idx < 0 || idx >= len(q.Options) {
@@ -219,4 +223,50 @@ func positionalIDIndex(id, prefix string) (int, bool) {
 	}
 	index := n - 1
 	return index, index >= 0
+}
+
+// validGrokBuildQuestionRequestShape enforces the zod schema's required
+// fields and types (json.Unmarshal alone accepts missing fields, nulls and
+// absent arrays, which `safeParse` rejects).
+func validGrokBuildQuestionRequestShape(v any) bool {
+	root, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	isStr := func(m map[string]any, k string) bool { _, ok := m[k].(string); return ok }
+	if !isStr(root, "sessionId") || !isStr(root, "toolCallId") || !isStr(root, "mode") {
+		return false
+	}
+	questions, ok := root["questions"].([]any)
+	if !ok {
+		return false
+	}
+	// nullable().optional(): absent or null or the typed value.
+	optional := func(m map[string]any, k string, typed func(any) bool) bool {
+		val, present := m[k]
+		return !present || val == nil || typed(val)
+	}
+	for _, q := range questions {
+		qm, ok := q.(map[string]any)
+		if !ok || !isStr(qm, "question") {
+			return false
+		}
+		options, ok := qm["options"].([]any)
+		if !ok {
+			return false
+		}
+		for _, o := range options {
+			om, ok := o.(map[string]any)
+			if !ok || !isStr(om, "label") || !isStr(om, "description") {
+				return false
+			}
+			if !optional(om, "preview", func(x any) bool { _, ok := x.(string); return ok }) {
+				return false
+			}
+		}
+		if !optional(qm, "multi_select", func(x any) bool { _, ok := x.(bool); return ok }) {
+			return false
+		}
+	}
+	return true
 }

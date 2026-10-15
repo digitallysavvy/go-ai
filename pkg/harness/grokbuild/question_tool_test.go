@@ -115,3 +115,37 @@ func TestFromNativeRequest_InvalidRequest(t *testing.T) {
 		t.Errorf("expected nil for an invalid native request, got %+v", part)
 	}
 }
+
+// zod requires every field; json.Unmarshal alone would accept these.
+func TestFromNativeRequest_MissingRequiredFields(t *testing.T) {
+	for name, raw := range map[string]string{
+		"no toolCallId": `{"sessionId":"s","mode":"default","questions":[]}`,
+		"no questions":  `{"sessionId":"s","toolCallId":"c","mode":"default"}`,
+		"no options":    `{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q"}]}`,
+		"no label":      `{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"q","options":[{"description":"d"}]}]}`,
+		"bad multi":     `{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"q","options":[],"multi_select":"yes"}]}`,
+	} {
+		if part := AskUserQuestions.FromNativeRequest(toAny(t, []byte(raw)), nil); part != nil {
+			t.Errorf("%s: expected nil, got %+v", name, part)
+		}
+	}
+	ok := `{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"q","options":[{"label":"l","description":"d","preview":null}],"multi_select":null}]}`
+	if AskUserQuestions.FromNativeRequest(toAny(t, []byte(ok)), nil) == nil {
+		t.Error("nullable preview/multi_select must be accepted")
+	}
+}
+
+// TS flatMap yields [] (not null) for an answer with no selected options.
+func TestToNativeResponse_EmptyAnswerIsEmptyArray(t *testing.T) {
+	toolResult := types.ToolResultContent{
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]any{
+			"action":  "answered",
+			"answers": map[string]any{"question-1": map[string]any{"optionIds": []any{}}},
+		}},
+	}
+	got := AskUserQuestions.ToNativeResponse(toAny(t, nativeRequestJSON), toolResult)
+	data, _ := json.Marshal(got)
+	if want := `{"answers":{"Which framework?":[]},"outcome":"accepted"}`; string(data) != want {
+		t.Errorf("got %s want %s", data, want)
+	}
+}

@@ -214,3 +214,18 @@ func TestBuildConfig_DeclaresImageContent(t *testing.T) {
 		t.Errorf("NonTextContentTypes = %v, want [image]", got)
 	}
 }
+
+// TS declares `_toolName: z.literal(...)` (required) on updateTodos like the
+// other dynamic-shaped built-ins.
+func TestBuiltinToolsDiscriminatorRequired(t *testing.T) {
+	for _, name := range []string{"updateTodos", "createPlan", "task", "generateImage"} {
+		req, _ := BuiltinTools[name].Parameters.(map[string]any)["required"].([]string)
+		found := false
+		for _, r := range req {
+			found = found || r == "_toolName"
+		}
+		if !found {
+			t.Errorf("%s: _toolName must be required, got %v", name, req)
+		}
+	}
+}
