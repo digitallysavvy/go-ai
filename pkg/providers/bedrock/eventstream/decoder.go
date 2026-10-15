@@ -16,6 +16,9 @@ import (
 	"io"
 )
 
+// maxFrameLength is the AWS event-stream maximum message size (16 MiB).
+const maxFrameLength = 16 << 20
+
 // Event is a single decoded event-stream message.
 type Event struct {
 	// MessageType is the value of the ":message-type" header, typically
@@ -59,6 +62,12 @@ func (d *Decoder) Next() (*Event, error) {
 			totalLength := binary.BigEndian.Uint32(d.buf[0:4])
 			if totalLength < 16 {
 				return nil, fmt.Errorf("amazon bedrock event-stream: invalid frame length %d", totalLength)
+			}
+			// The event-stream spec caps a message at 16 MiB; refuse larger
+			// declared frames instead of buffering an attacker-chosen length
+			// (custom base URLs make the peer untrusted).
+			if totalLength > maxFrameLength {
+				return nil, fmt.Errorf("amazon bedrock event-stream: frame length %d exceeds the %d byte limit", totalLength, maxFrameLength)
 			}
 			// Compare in uint64 so a totalLength near the uint32 max can
 			// never wrap around when compared against the buffered length.
