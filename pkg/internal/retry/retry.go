@@ -22,7 +22,9 @@ type Config struct {
 	// Initial delay between retries (default: 1 second)
 	InitialDelay time.Duration
 
-	// Maximum delay between retries (default: 60 seconds)
+	// Maximum delay between retries (default: 60 seconds via DefaultConfig;
+	// zero or negative means no cap, as TS retryWithExponentialBackoff has
+	// none)
 	MaxDelay time.Duration
 
 	// Backoff multiplier (default: 2 for exponential backoff)
@@ -84,10 +86,7 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 		// Check if context is cancelled before attempting
 		select {
 		case <-ctx.Done():
-			if lastErr != nil {
-				return fmt.Errorf("context cancelled after %d attempts: %w", attempt, lastErr)
-			}
-			return ctx.Err()
+			return context.Cause(ctx)
 		default:
 		}
 
@@ -107,17 +106,19 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 		errs = append(errs, err)
 		attempt++
 
+		// If we've exhausted retries, return the error. TS checks this before
+		// shouldRetry, so a non-retryable error on the last allowed attempt
+		// still reports maxRetriesExceeded.
+		if attempt > cfg.MaxRetries {
+			return newRetryError(providererrors.RetryReasonMaxRetriesExceeded, errs)
+		}
+
 		// Check if we should retry this error
 		if cfg.ShouldRetry != nil && !cfg.ShouldRetry(err) {
 			if attempt == 1 {
 				return err
 			}
 			return newRetryError(providererrors.RetryReasonErrorNotRetryable, errs)
-		}
-
-		// If we've exhausted retries, return the error
-		if attempt > cfg.MaxRetries {
-			return newRetryError(providererrors.RetryReasonMaxRetriesExceeded, errs)
 		}
 
 		// Calculate delay with exponential backoff, respecting retry headers
@@ -129,7 +130,8 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("context cancelled after %d attempts: %w", attempt, lastErr)
+			// TS delay() rejects with the abort reason, not the last error.
+			return context.Cause(ctx)
 		case <-timer.C:
 			// Continue to next attempt
 		}
@@ -147,7 +149,7 @@ func calculateDelay(attempt int, cfg Config, err error) time.Duration {
 	delay := float64(cfg.InitialDelay) * math.Pow(cfg.Multiplier, float64(attempt-1))
 
 	// Cap at max delay
-	if delay > float64(cfg.MaxDelay) {
+	if cfg.MaxDelay > 0 && delay > float64(cfg.MaxDelay) {
 		delay = float64(cfg.MaxDelay)
 	}
 

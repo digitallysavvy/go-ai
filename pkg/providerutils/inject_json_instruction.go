@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 
@@ -55,8 +56,12 @@ func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts In
 		lines = append(lines, schemaPrefix)
 	}
 	if hasSchema {
-		if b, err := json.Marshal(schema); err == nil {
-			lines = append(lines, string(b))
+		// JSON.stringify does not HTML-escape <, > and &; json.Marshal does.
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(schema); err == nil {
+			lines = append(lines, strings.TrimSuffix(buf.String(), "\n"))
 		}
 	}
 	if schemaSuffix != "" {

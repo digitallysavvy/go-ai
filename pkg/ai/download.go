@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
@@ -109,16 +110,38 @@ func CreateURLDownloadWithMetadata(options *DownloadOptions) URLDownloadWithMeta
 func CreateDownload(options *DownloadOptions) DownloadFunction {
 	urlDownload := CreateURLDownloadWithMetadata(options)
 	return func(ctx context.Context, requests []DownloadRequest) ([]*DownloadResult, error) {
+		// TS createDefaultDownloadFunction downloads with Promise.all: all
+		// requests run concurrently, results keep request order, and the
+		// first failure is returned (cancelling the rest).
 		results := make([]*DownloadResult, len(requests))
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var (
+			wg       sync.WaitGroup
+			once     sync.Once
+			firstErr error
+		)
 		for i, request := range requests {
 			if request.IsURLSupportedByModel {
 				continue
 			}
-			result, err := urlDownload(ctx, request.URL)
-			if err != nil {
-				return nil, err
-			}
-			results[i] = result
+			wg.Add(1)
+			go func(i int, request DownloadRequest) {
+				defer wg.Done()
+				result, err := urlDownload(runCtx, request.URL)
+				if err != nil {
+					once.Do(func() {
+						firstErr = err
+						cancel()
+					})
+					return
+				}
+				results[i] = result
+			}(i, request)
+		}
+		wg.Wait()
+		if firstErr != nil {
+			return nil, firstErr
 		}
 		return results, nil
 	}

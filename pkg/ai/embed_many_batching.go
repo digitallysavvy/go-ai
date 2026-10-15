@@ -24,7 +24,6 @@ func withEmbedRetry(ctx context.Context, maxRetries int, fn func(ctx context.Con
 	return retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,

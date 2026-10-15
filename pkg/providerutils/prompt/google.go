@@ -783,7 +783,7 @@ func serializeFunctionResponseContent(value interface{}) interface{} {
 	if !containsJSONSchemaReference(value) {
 		return value
 	}
-	encoded, err := json.Marshal(value)
+	encoded, err := marshalJSONLikeJS(value)
 	if err != nil {
 		return value
 	}
@@ -924,7 +924,7 @@ func fileBlockToContent(b types.FileContentBlock) types.FileContent {
 }
 
 func googleJSONText(v interface{}) string {
-	data, err := json.Marshal(v)
+	data, err := marshalJSONLikeJS(v)
 	if err != nil {
 		return fmt.Sprint(v)
 	}

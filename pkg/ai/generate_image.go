@@ -309,7 +309,6 @@ func doGenerateImageWithRetry(ctx context.Context, model provider.ImageModel, op
 		err = retryutil.Do(ctx, retryutil.Config{
 			MaxRetries:   retries,
 			InitialDelay: 2 * time.Second,
-			MaxDelay:     60 * time.Second,
 			Multiplier:   2,
 			Jitter:       false,
 			ShouldRetry: func(err error) bool {

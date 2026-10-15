@@ -784,7 +784,9 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		assert.Equal(t, "aW5saW5l", inline["data"])
 		fileData := parts[2].(map[string]interface{})["fileData"].(map[string]interface{})
 		assert.Equal(t, "https://example.com/ref.png", fileData["fileUri"])
-		assert.Equal(t, "image/*", fileData["mimeType"])
+		// "image/*" is not a full media type (TS isFullMediaType), so the
+		// converter resolves it from the URL extension.
+		assert.Equal(t, "image/png", fileData["mimeType"])
 
 		genConfig := reqBody["generationConfig"].(map[string]interface{})
 		imageConfig := genConfig["imageConfig"].(map[string]interface{})

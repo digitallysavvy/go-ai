@@ -424,7 +424,7 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			argsJSON, _ := json.Marshal(args)
+			argsJSON, _ := marshalJSONLikeJS(args)
 			arguments = string(argsJSON)
 		}
 		result = append(result, map[string]interface{}{

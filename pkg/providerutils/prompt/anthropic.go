@@ -1857,7 +1857,7 @@ func stringValue(v interface{}) string {
 
 // jsonStringify mirrors JSON.stringify for tool output values.
 func jsonStringify(v interface{}) string {
-	data, err := json.Marshal(v)
+	data, err := marshalJSONLikeJS(v)
 	if err != nil {
 		return fmt.Sprintf("%v", v)
 	}

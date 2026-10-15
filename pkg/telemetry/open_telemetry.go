@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sync"
@@ -592,8 +593,17 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			attribute.String("gen_ai.tool.call.id", tc.ToolCallID),
 			attribute.String("gen_ai.tool.type", "extension"),
 		)
+		// TS: gen_ai.tool.call.arguments is an input (recordInputs gate).
+		if recordInputs := e.Settings == nil || e.Settings.RecordInputs; recordInputs {
+			if args, ok := toolCallArgumentsJSON(tc); ok {
+				toolSpan.SetAttributes(attribute.String("gen_ai.tool.call.arguments", args))
+			}
+		}
 		switch out := finalOutputs[tc.ToolCallID].(type) {
 		case types.ToolResultContent:
+			if !recordOutputs {
+				break
+			}
 			if b, err := json.Marshal(toolResultResponseValue(out)); err == nil {
 				toolSpan.SetAttributes(attribute.String("gen_ai.tool.call.result", string(b)))
 			}
@@ -869,6 +879,12 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 		attribute.String("gen_ai.tool.name", e.ToolName),
 		attribute.String("gen_ai.tool.type", "function"),
 	)
+	// TS: gen_ai.tool.call.arguments is an input (recordInputs gate).
+	if e.Settings == nil || e.Settings.RecordInputs {
+		if b, err := json.Marshal(e.Args); err == nil {
+			child.SetAttributes(attribute.String("gen_ai.tool.call.arguments", string(b)))
+		}
+	}
 	if i.opts.RuntimeContext {
 		if attrs, ok := ctx.Value(genAIRuntimeContextKey{}).([]attribute.KeyValue); ok {
 			child.SetAttributes(attrs...)
@@ -912,8 +928,33 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 	if e.Error != nil {
 		span.RecordError(e.Error)
 		span.SetStatus(codes.Error, e.Error.Error())
+	} else if e.Settings == nil || e.Settings.RecordOutputs {
+		// TS: gen_ai.tool.call.result is an output (recordOutputs gate).
+		if b, err := json.Marshal(e.Result); err == nil {
+			span.SetAttributes(attribute.String("gen_ai.tool.call.result", string(b)))
+		}
 	}
 	span.End()
+}
+
+// toolCallArgumentsJSON returns the JSON text TS records as
+// gen_ai.tool.call.arguments (JSON.stringify of the parsed tool input).
+func toolCallArgumentsJSON(tc types.ToolCallContent) (string, bool) {
+	if tc.Arguments != nil {
+		b, err := json.Marshal(tc.Arguments)
+		return string(b), err == nil
+	}
+	if tc.Input == "" {
+		return "", false
+	}
+	if json.Valid([]byte(tc.Input)) {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(tc.Input)); err == nil {
+			return compact.String(), true
+		}
+	}
+	b, err := json.Marshal(tc.Input)
+	return string(b), err == nil
 }
 
 // OnToolCallStart/OnToolCallFinish are the deprecated Go names, kept for

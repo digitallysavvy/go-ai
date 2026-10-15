@@ -318,6 +318,21 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			onStepEnd(stepEvent)
 		}
 		processAndEnqueue := func(part UIMessageChunk) {
+			// TS handleUIMessageStreamFinish: a start chunk without a
+			// messageId gets the response message id (the continued
+			// assistant message's id, else the generated one).
+			if part["type"] == "start" {
+				if id, _ := part["messageId"].(string); id == "" {
+					if responseID := stringValue(uiState.message["id"]); responseID != "" {
+						injected := make(UIMessageChunk, len(part)+1)
+						for k, v := range part {
+							injected[k] = v
+						}
+						injected["messageId"] = responseID
+						part = injected
+					}
+				}
+			}
 			uiState.apply(part, onError)
 			if part["type"] == "finish-step" {
 				callOnStepFinish()

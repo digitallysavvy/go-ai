@@ -2889,3 +2889,22 @@ func TestToUIMessageStream_FinishStepMetadataPrecedesBoundaryAndIsInStepSnapshot
 		t.Fatalf("steps = %d, step snapshot metadata = %#v", steps, stepMetadata)
 	}
 }
+
+func TestCreateUIMessageStreamInjectsMessageIDIntoStartChunk(t *testing.T) {
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		GenerateMessageID: func() string { return "gen-1" },
+		Execute: func(w UIMessageStreamWriter) {
+			w.Write(UIMessageChunk{"type": "start"})
+			w.Write(UIMessageChunk{"type": "start", "messageId": "explicit"})
+		},
+	})
+	var ids []interface{}
+	for c := range chunks {
+		ids = append(ids, c["messageId"])
+	}
+	for range errs {
+	}
+	if len(ids) != 2 || ids[0] != "gen-1" || ids[1] != "explicit" {
+		t.Fatalf("ids=%v", ids)
+	}
+}

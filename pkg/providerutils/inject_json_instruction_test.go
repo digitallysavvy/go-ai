@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -174,5 +175,12 @@ func TestInjectJSONInstructionIntoMessages_CustomPrefixSuffix(t *testing.T) {
 	want := "Generate data\n\nCustom schema:\n" + basicSchemaJSON + "\nFollow this format exactly."
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestInjectJSONInstructionDoesNotHTMLEscapeSchema(t *testing.T) {
+	got := InjectJSONInstruction("", map[string]interface{}{"description": "a < b && c > d"}, InjectJSONInstructionOptions{})
+	if !strings.Contains(got, `{"description":"a < b && c > d"}`) {
+		t.Fatalf("got %q", got)
 	}
 }

@@ -142,6 +142,7 @@ func (s *simulatedStream) buildChunks() {
 	}
 
 	sawTextContent := false
+	emittedCalls := map[string]bool{}
 	for _, part := range s.result.Content {
 		switch p := part.(type) {
 		case types.TextContent:
@@ -185,9 +186,16 @@ func (s *simulatedStream) buildChunks() {
 			part := p
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &part})
 		case types.ToolCallContent:
-			// Deliberately not emitted here: GenerateResult.ToolCalls (used
-			// below) is the flat mirror of every ToolCallContent entry, so
-			// handling it in this switch too would duplicate the chunk.
+			// Emitted in content order (TS enqueues every other part as is).
+			// The flat GenerateResult.ToolCalls entry carries the full
+			// provider-facing call; calls missing from Content follow below.
+			for i := range s.result.ToolCalls {
+				if s.result.ToolCalls[i].ID == p.ToolCallID && !emittedCalls[p.ToolCallID] {
+					emittedCalls[p.ToolCallID] = true
+					chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &s.result.ToolCalls[i]})
+					break
+				}
+			}
 		}
 	}
 
@@ -205,6 +213,9 @@ func (s *simulatedStream) buildChunks() {
 
 	// Emit tool calls
 	for i := range s.result.ToolCalls {
+		if emittedCalls[s.result.ToolCalls[i].ID] {
+			continue
+		}
 		chunks = append(chunks, &provider.StreamChunk{
 			Type:     provider.ChunkTypeToolCall,
 			ToolCall: &s.result.ToolCalls[i],
