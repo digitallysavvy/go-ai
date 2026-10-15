@@ -63,8 +63,15 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 	}
 }
 
+// vertexXaiProviderKey is the provider key used to resolve file references
+// (TS createOpenAICompatible name 'googleVertex.xai' -> 'googleVertex').
+const vertexXaiProviderKey = "googleVertex"
+
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, vertexXaiProviderKey); err != nil {
+		return nil, err
+	}
 	warnings := m.checkUnsupportedOptions(opts)
 	reqBody := m.buildRequestBody(opts, false)
 	var response vertexXaiResponse
@@ -87,6 +94,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, vertexXaiProviderKey); err != nil {
+		return nil, err
+	}
 	warnings := m.checkUnsupportedOptions(opts)
 	reqBody := m.buildRequestBody(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
@@ -130,9 +140,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages)
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey})
 	}
 	if opts.Prompt.System != "" {
 		messages, _ := body["messages"].([]map[string]interface{})
