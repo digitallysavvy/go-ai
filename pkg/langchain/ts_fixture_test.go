@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -166,5 +168,126 @@ func TestTSAdapterCases(t *testing.T) {
 				t.Fatalf("chunks differ\n got: %s\nwant: %s", gj, wj)
 			}
 		})
+	}
+}
+
+// Replays utils.test.ts processLangGraphEvent / processModelChunk /
+// source-chunk cases: a sequence of events on one shared state, optionally
+// seeded like the TS test does (state.emittedToolCalls.add(...)), with the
+// chunks that satisfy the TS assertions after each call.
+func TestTSUtilsCases(t *testing.T) {
+	var cases []struct {
+		Name   string                 `json:"name"`
+		Model  bool                   `json:"model"`
+		Seed   map[string]interface{} `json:"seed"`
+		State0 map[string]interface{} `json:"state0"`
+		Calls  []struct {
+			Event    interface{}   `json:"event"`
+			Expected []interface{} `json:"expected"`
+		} `json:"calls"`
+	}
+	readGz(t, "testdata/tscases/utils_cases.json.gz", &cases)
+	if len(cases) < 60 {
+		t.Fatalf("only %d cases loaded", len(cases))
+	}
+	for _, c := range cases {
+		t.Run(c.Name, func(t *testing.T) {
+			st := newEventState()
+			seedTSState(t, st, c.Seed)
+			if c.Model {
+				s0 := c.State0
+				st.streamStarted, _ = s0["started"].(bool)
+				mid, _ := s0["messageId"].(string)
+				st.streamMessageID = mid
+				if v, _ := s0["reasoningStarted"].(bool); v {
+					st.streamReasoningStarted = true
+					st.streamReasoningID = mid
+				}
+				if v, _ := s0["textStarted"].(bool); v {
+					st.streamTextStarted = true
+					st.streamTextID = mid
+				}
+			}
+			for i, call := range c.Calls {
+				var chunks []interface{}
+				var raw interface{} = call.Event
+				if c.Model {
+					chunks = jsonNormalize(t, processModelChunk(st, raw))
+				} else {
+					chunks = jsonNormalize(t, processLangGraphEvent(st, ParseLangGraphEvent(raw.([]interface{}))))
+				}
+				want := call.Expected
+				if want == nil {
+					want = []interface{}{}
+				}
+				gj, _ := json.Marshal(chunks)
+				wj, _ := json.Marshal(want)
+				// Generated HITL ids carry Date.now(); the expectation was
+				// recorded at another time.
+				gj = hitlIDTime.ReplaceAll(gj, []byte("hitl-$1-N"))
+				wj = hitlIDTime.ReplaceAll(wj, []byte("hitl-$1-N"))
+				if string(gj) != string(wj) {
+					t.Fatalf("call %d chunks differ\n got: %s\nwant: %s", i, gj, wj)
+				}
+			}
+		})
+	}
+}
+
+var hitlIDTime = regexp.MustCompile(`hitl-([A-Za-z0-9_]+)-\d+`)
+
+func jsonNormalize(t *testing.T, chunks interface{}) []interface{} {
+	t.Helper()
+	b, err := json.Marshal(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []interface{}
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out == nil {
+		out = []interface{}{}
+	}
+	return out
+}
+
+// seedTSState applies the pre-populated Sets/Maps of a TS test's mock state.
+func seedTSState(t *testing.T, st *eventState, seed map[string]interface{}) {
+	t.Helper()
+	for name, v := range seed {
+		arr, _ := v.([]interface{})
+		for _, it := range arr {
+			switch name {
+			case "emittedToolCalls":
+				st.emittedToolCalls[it.(string)] = true
+			case "emittedImages":
+				st.emittedImages[it.(string)] = true
+			case "emittedReasoningIds":
+				st.emittedReasoningIDs[it.(string)] = true
+			case "messageSeen":
+				p := it.([]interface{})
+				ms := &messageSeenState{}
+				m := p[1].(map[string]interface{})
+				ms.text, _ = m["text"].(bool)
+				ms.reasoning, _ = m["reasoning"].(bool)
+				st.messageSeen[p[0].(string)] = ms
+				st.messageOrder = append(st.messageOrder, p[0].(string))
+			case "currentStepsByNamespace":
+				p := it.([]interface{})
+				st.currentStepsByNamespace[p[0].(string)] = int(p[1].(float64))
+			case "emittedToolCallsByKey":
+				// The key is `name:JSON.stringify(args)` in TS key order; Go
+				// keys use sorted-key JSON.
+				p := it.([]interface{})
+				key := p[0].(string)
+				i := strings.Index(key, ":")
+				var args interface{}
+				_ = json.Unmarshal([]byte(key[i+1:]), &args)
+				st.emittedToolCallsByKey[toolCallKey(key[:i], args)] = p[1].(string)
+			default:
+				t.Fatalf("unhandled seed %s", name)
+			}
+		}
 	}
 }
