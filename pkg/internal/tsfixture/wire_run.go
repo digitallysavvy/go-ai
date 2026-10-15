@@ -49,7 +49,10 @@ type WireSuite struct {
 	Provider func(base string, m WireModel) (provider.Provider, error)
 	// language builds a language model for a TS class name.
 	Language func(p provider.Provider, cls, id string) (provider.LanguageModel, error)
-	Skip     map[string]string
+	// LanguageFor, when set, builds the language model from the whole
+	// recorded TS model (class, id and plain settings such as modelFamily).
+	LanguageFor func(p provider.Provider, m WireModel) (provider.LanguageModel, error)
+	Skip        map[string]string
 	// rootBase passes the bare server URL as the base URL for Go providers
 	// whose default base is the host root (the paths carry the API version).
 	RootBase bool
@@ -74,7 +77,8 @@ type WireSuite struct {
 	// raw JSON (keeping the TS key order) instead of a Go map.
 	RawSchemas bool
 	// SkipStream is a reason to skip tests that stream (doStream calls) when
-	// the recording cannot carry the response body (binary frames).
+	// the recording carries the response as text chunks (binary frames
+	// recorded as text); a response recorded as a binary body is replayed.
 	SkipStream string
 	// SkipModel returns a reason to skip a test that calls a model this suite
 	// does not replay (for example a model another suite covers).
@@ -165,7 +169,7 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		if kind == "" {
 			skip(fmt.Sprintf("unsupported TS call %s on %s", c.Method, c.Model.Cls))
 		}
-		if s.SkipStream != "" && c.Method == "doStream" {
+		if s.SkipStream != "" && c.Method == "doStream" && wireServesChunks(w) {
 			skip(s.SkipStream)
 		}
 		if s.SkipModel != nil {
@@ -232,6 +236,18 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 }
 
 var errWireSkip = errors.New("skip")
+
+// wireServesChunks reports whether a recorded test serves a response as text
+// chunks (the test server records them as strings, which cannot carry binary
+// frames); responses recorded as binary bodies replay faithfully.
+func wireServesChunks(w WireTest) bool {
+	for _, h := range w.HTTP {
+		if h.Response != nil && h.Response.Type == "stream-chunks" {
+			return true
+		}
+	}
+	return false
+}
 
 // WireKind classifies a recorded call.
 func WireKind(c WireCall) string {
@@ -331,7 +347,9 @@ func RunWireCall(ctx context.Context, srv *WireServer, s WireSuite, p provider.P
 		}
 		var m provider.LanguageModel
 		var err error
-		if s.Language != nil {
+		if s.LanguageFor != nil {
+			m, err = s.LanguageFor(p, c.Model)
+		} else if s.Language != nil {
 			m, err = s.Language(p, c.Model.Cls, c.Model.ModelID)
 		} else {
 			m, err = p.LanguageModel(c.Model.ModelID)

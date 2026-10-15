@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -178,7 +179,7 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 				"type":      "function_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
-				"arguments": args,
+				"arguments": orderedArguments(args, p.Input),
 				"signature": emptyToNil(firstNonEmpty(googleOptString(p.ProviderOptions, "signature"), p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
 			}))
 		case types.CustomContent:
@@ -236,7 +237,7 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			"type":      "function_call",
 			"id":        call.ID,
 			"name":      call.ToolName,
-			"arguments": args,
+			"arguments": orderedArguments(args, call.RawArguments),
 			"signature": emptyToNil(firstNonEmpty(call.ThoughtSignature, signatureFromMetadataMap(call.ProviderMetadata))),
 		}))
 	}
@@ -933,4 +934,18 @@ func googleOptString(opts map[string]interface{}, key string) string {
 // parts that came back from this provider carry it in providerMetadata.
 func partMatchesInteraction(opts map[string]interface{}, meta json.RawMessage, interactionID string) bool {
 	return googleOptString(opts, "interactionId") == interactionID || googleInteractionID(meta) == interactionID
+}
+
+// orderedArguments returns args so that it marshals with the key order of raw,
+// the wire text of the tool input (TS replays the parsed input as is). Go maps
+// have no order; without raw JSON args is returned unchanged.
+func orderedArguments(args map[string]interface{}, raw string) interface{} {
+	if raw == "" || len(args) == 0 {
+		return args
+	}
+	hint, ok := jsonorder.Parse([]byte(raw))
+	if !ok {
+		return args
+	}
+	return jsonorder.Hinted{V: args, Hint: hint}
 }

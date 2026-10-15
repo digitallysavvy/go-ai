@@ -211,12 +211,18 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 
+	// TS loads the region first, at request time, and fails when it is
+	// missing even if a custom baseURL made it unnecessary for routing.
+	region := firstNonEmpty(t.region, os.Getenv("AWS_REGION"))
+	if region == "" {
+		return nil, fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable")
+	}
 	creds, err := t.credentials(req.Context())
 	if err != nil {
 		return nil, err
 	}
 	t.setLastCredentials(creds)
-	signAWSRequest(req, body, t.region, creds)
+	signAWSRequest(req, body, region, creds)
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return t.base.RoundTrip(req)
 }

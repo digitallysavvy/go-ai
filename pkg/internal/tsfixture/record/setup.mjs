@@ -61,6 +61,65 @@ globalThis.__recHttpResponse = (rec, response) => {
   rec.response = r;
 };
 
+// Some TS tests inject a mock `fetch` into the model config instead of using the
+// test server. Wrap config.fetch once so those exchanges are recorded in the
+// same shape the test server hook writes (marked mockFetch).
+function recordMockFetch(cfg) {
+  if (!cfg || typeof cfg.fetch !== 'function' || cfg.fetch.__recWrapped) return;
+  const orig = cfg.fetch;
+  const wrapped = async function (input, init) {
+    const c = globalThis.__recCur;
+    let rec = null;
+    if (c) {
+      try {
+        const req = typeof Request !== 'undefined' && input instanceof Request ? input : null;
+        const url = req ? req.url : input instanceof URL ? input.href : String(input);
+        const headers = {};
+        const h = init?.headers ?? req?.headers;
+        if (h) {
+          if (typeof h.forEach === 'function' && !Array.isArray(h)) h.forEach((v, k) => { headers[String(k).toLowerCase()] = v; });
+          else if (Array.isArray(h)) for (const [k, v] of h) headers[String(k).toLowerCase()] = v;
+          else for (const k of Object.keys(h)) headers[k.toLowerCase()] = h[k];
+        }
+        rec = { routeUrl: url, method: init?.method ?? req?.method ?? 'GET', url, headers, mockFetch: true };
+        const body = init?.body;
+        if (typeof body === 'string') rec.bodyB64 = Buffer.from(body).toString('base64');
+        else if (body instanceof Uint8Array || body instanceof ArrayBuffer) rec.bodyB64 = Buffer.from(body).toString('base64');
+        c.http.push(rec);
+      } catch (e) { rec = null; }
+    }
+    const res = await orig.apply(this, arguments);
+    // The wrapped fetch may end in the test server, whose hook already
+    // recorded the exchange: keep that one only.
+    if (rec && globalThis.__recCur) {
+      const list = globalThis.__recCur.http;
+      const i = list.indexOf(rec);
+      if (i >= 0 && list.slice(i + 1).some(x => !x.mockFetch)) {
+        list.splice(i, 1);
+        rec = null;
+      }
+    }
+    if (rec) {
+      try {
+        const clone = res.clone();
+        const rh = {};
+        res.headers.forEach((v, k) => { rh[k] = v; });
+        const ct = res.headers.get('content-type') ?? '';
+        if (!res.ok) rec.response = { type: 'error', status: res.status, headers: rh, body: await clone.text() };
+        else if (ct.includes('event-stream')) rec.response = { type: 'stream-chunks', headers: rh, chunks: [await clone.text()] };
+        else if (ct.includes('json')) {
+          const text = await clone.text();
+          try { rec.response = { type: 'json-value', headers: rh, body: JSON.parse(text) }; }
+          catch (e) { rec.response = { type: 'binary', headers: rh, bodyB64: Buffer.from(text).toString('base64') }; }
+        } else rec.response = { type: 'binary', headers: rh, bodyB64: Buffer.from(await clone.arrayBuffer()).toString('base64') };
+      } catch (e) { /* unreadable: the replay skips the test */ }
+    }
+    return res;
+  };
+  wrapped.__recWrapped = true;
+  try { cfg.fetch = wrapped; } catch (e) { /* frozen config */ }
+}
+
 const names = ['doGenerate','doStream','doEmbed','doRerank','doStart','doStatus','doDecide','doGetBatchResults','doStartBatch','doGetBatchStatus','doCancelBatch','doCreateClientSecret','doCreateWebRTCSession','parseServerEvent','serializeClientEvent'];
 let instSeq = 0;
 for (const n of names) {
@@ -71,8 +130,8 @@ for (const n of names) {
       try {
         rec.model = { modelId: this.modelId, provider: this.provider, cls: this.constructor?.name };
         if (n === 'parseServerEvent' || n === 'serializeClientEvent') { if (!this.__recInst) Object.defineProperty(this, '__recInst', { value: ++instSeq, enumerable: false }); rec.model.inst = this.__recInst; }
-        if (this.config) {
-          const c = this.config;
+        if (this.config ?? this.model?.config) { // a decision model wraps a language model
+          const c = this.config ?? this.model.config;
           rec.model.config = { provider: c.provider, baseURL: c.baseURL };
           // plain settings (booleans, numbers, strings, string lists) that change behavior
           for (const k of Object.keys(c)) {
@@ -86,6 +145,7 @@ for (const n of names) {
         }
       } catch (e) {}
       if (cur) cur.calls.push(rec);
+      try { recordMockFetch(this.config ?? this.model?.config); } catch (e) {} // decision models wrap a language model
       let r;
       try { r = this[n](...args); } catch (e) { rec.error = ser(e); throw e; }
       if (r && typeof r.then === 'function') {

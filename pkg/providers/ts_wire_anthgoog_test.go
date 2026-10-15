@@ -25,11 +25,20 @@ func init() {
 		BatchPrefix:     "/v1",
 		LanguageResults: true,
 		Skip: map[string]string{
-			"~should not strip temperature":                                                "the TS test passes topK 0.1; Go TopK is an int",
-			"AnthropicLanguageModel > doGenerate > should send the model id and settings":  "the TS test passes topK 0.1; Go TopK is an int",
-			"~when transformRequestBody is provided":                                       "the transform is code in the TS test; Go has Config.TransformRequestBody",
-			"~starts a batch from prepared requests and combines batch and inferred betas": "provider-level headers are not captured in the batch recording config",
-			"~forwards operation headers and the abort signal while retrieving results":    "provider-level headers are not captured in the batch recording config",
+			"~should not strip temperature":                                                 "the TS test passes topK 0.1; Go TopK is an int",
+			"AnthropicLanguageModel > doGenerate > should send the model id and settings":   "the TS test passes topK 0.1; Go TopK is an int",
+			"~when transformRequestBody is provided":                                        "the transform is code in the TS test; Go has Config.TransformRequestBody",
+			"~starts a batch from prepared requests and combines batch and inferred betas":  "provider-level headers are not captured in the batch recording config",
+			"~forwards operation headers and the abort signal while retrieving results":     "provider-level headers are not captured in the batch recording config",
+			"uses native Messages output with portable constraints and configured settings": "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"allows provider options to enable thinking for decide":                         "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"selects native structured output automatically for supported models":           "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"supports the existing JSON-tool fallback through provider options":             "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"rejects refusal even with valid JSON":                                          "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"rejects max_tokens even with valid JSON":                                       "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"validates score bounds locally":                                                "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"decides Boolean alongside Choice and Score using outputFormat":                 "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"decides Boolean alongside Choice and Score using jsonTool":                     "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
 		},
 		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 			cfg := anthropic.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}
@@ -52,11 +61,18 @@ func init() {
 		LanguageResults: true,
 		Skip: map[string]string{
 			"~starts a batch with inline requests when the creation body is under 20 MB": "the TS test mocks generateId (display name) and sets provider-level headers the recording does not carry",
-			"~async headers handling":                                                 "the TS test configures headers as (async) functions, which the recording does not carry",
-			"~GoogleBatch > starts an inline image generation batch":                  "the TS test mocks generateId (batch display name)",
-			"~GoogleBatch > omits webhook configuration for inline input":             "the TS test mocks generateId (batch display name)",
-			"~GoogleBatch > surfaces Google HTTP errors from starting a batch":        "the TS test mocks generateId (batch display name)",
-			"~tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
+			"~async headers handling":                                                       "the TS test configures headers as (async) functions, which the recording does not carry",
+			"~GoogleBatch > starts an inline image generation batch":                        "the TS test mocks generateId (batch display name)",
+			"~GoogleBatch > omits webhook configuration for inline input":                   "the TS test mocks generateId (batch display name)",
+			"~GoogleBatch > surfaces Google HTTP errors from starting a batch":              "the TS test mocks generateId (batch display name)",
+			"~tool-call + tool-result message pair through the request body (step 2)":       "tool result JSON arrives as a Go map, which has no key order",
+			"uses Gemini structured output and forwards thinking options and cancellation":  "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"defaults to the minimum thinking level through the provider reasoning mapping": "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"ignores thought text while counting reasoning tokens in usage":                 "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"rejects SAFETY even with valid JSON":                                           "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"rejects MAX_TOKENS even with valid JSON":                                       "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"validates score bounds locally":                                                "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
+			"decides Boolean alongside Choice and Score in one Gemini request":              "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item)",
 		},
 		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 			return google.New(google.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}), nil
@@ -75,16 +91,23 @@ func init() {
 		RawSchemas:      true,
 		RootBase:        true,
 		LanguageResults: true,
-		SkipStream:      "the recording keeps the Bedrock binary event-stream frames as text; stream parsing is replayed by the case suites",
+		SkipStream:      "the recording keeps the Bedrock binary event-stream frames of test-server responses as text chunks; stream parsing is replayed by the case suites",
 		ProviderTool:    anthropicWireTool,
 		Skip: map[string]string{
-			"~should handle Anthropic provider-defined tools":                             "the TS test mocks prepareAnthropicTools, and Go sends its own tool JSON schema (property descriptions) where TS sends the zod schema",
 			"~should combine user-provided and tool-generated betas in body":              "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~should not include anthropic-beta in HTTP headers":                          "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~anthropic_beta in additionalModelRequestFields when using extended context": "the TS test mocks prepareAnthropicTools and leaks anthropicBeta into the body (accepted TS bug)",
 			"~should work with partial headers":                                           "the TS test signs the request with SigV4 and a signed header; Go uses the bearer token here",
+			"~should stream text through the encoded Converse route":                      "the TS test file mocks the event-stream response handler and feeds it JSON lines; Go reads real frames",
+			"~surfaces event stream decoding failures":                                    "the TS test fails while reading the stream (checksum); the recording carries no stream-read error",
 			"~Cohere models behind application inference profile ARNs":                    "modelFamily is a per-model setting in the TS test",
 			"~should properly combine headers from all sources":                           "the TS test signs the request with SigV4 and a signed header; Go uses the bearer token here",
+		},
+		LanguageFor: func(p provider.Provider, m tsfixture.WireModel) (provider.LanguageModel, error) {
+			if family, _ := m.Config["modelFamily"].(string); family != "" { // a per-model TS setting
+				return p.(*bedrock.Provider).LanguageModelWithOptions(m.ModelID, &bedrock.ModelOptions{ModelFamily: family})
+			}
+			return p.LanguageModel(m.ModelID)
 		},
 		SkipModel: func(m tsfixture.WireModel) string {
 			if m.Cls != "AmazonBedrockChatLanguageModel" && m.Cls != "AmazonBedrockImageModel" && m.Cls != "AmazonBedrockEmbeddingModel" && m.Cls != "AmazonBedrockRerankingModel" {
@@ -109,7 +132,6 @@ func init() {
 		Skip: map[string]string{
 			"~Vertex Anthropic labels >":                                     "provider-level headers are not captured in the recording config, and the labels JSON keeps the TS object key order, which a Go map cannot",
 			"~tools and thinking config for":                                 "the TS test sets Authorization as a provider-level header, which the recording does not carry",
-			"~predict dimensions >":                                          "the TS fixture returns two predictions for one value and TS does not check; Go rejects a count mismatch",
 			"~should pass headers and user agent":                            "provider-level headers are not captured in the recording config",
 			"~GoogleVertexEmbeddingModel > should pass headers correctly":    "provider-level headers are not captured in the recording config",
 			"~should preserve local JSON Schema references in tool requests": "the TS test creates the provider with apiKey (express mode), which the recording does not carry",

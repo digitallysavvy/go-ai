@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/internal/media"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1108,9 +1109,13 @@ func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]
 // anthropicToolCall is the unified view of a tool-call part, from either a
 // ToolCallContent part or the legacy Message.ToolCalls field.
 type anthropicToolCall struct {
-	id               string
-	toolName         string
-	input            interface{}
+	id       string
+	toolName string
+	input    interface{}
+	// inputRaw is the wire text of the input when the part carries it
+	// (ToolCallContent.Input / ToolCall.RawArguments). Go maps have no key
+	// order, so the converter takes the order of the keys from it.
+	inputRaw         string
 	providerExecuted bool
 	providerOptions  map[string]interface{}
 }
@@ -1132,6 +1137,7 @@ func toolCallFromContent(p types.ToolCallContent) anthropicToolCall {
 		id:               p.ToolCallID,
 		toolName:         p.ToolName,
 		input:            input,
+		inputRaw:         p.Input,
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  opts,
 	}
@@ -1150,6 +1156,7 @@ func toolCallFromLegacy(p types.ToolCall) anthropicToolCall {
 		id:               p.ID,
 		toolName:         p.ToolName,
 		input:            input,
+		inputRaw:         p.RawArguments,
 		providerExecuted: p.ProviderExecuted,
 		providerOptions:  p.ProviderMetadata,
 	}
@@ -1408,7 +1415,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 				"type":        "mcp_tool_use",
 				"id":          part.id,
 				"name":        part.toolName,
-				"input":       inputOrEmpty(part.input),
+				"input":       orderedInput(inputOrEmpty(part.input), part.inputRaw),
 				"server_name": serverName,
 			}
 			setIfNotNil(block, "cache_control", cacheControl)
@@ -1417,15 +1424,15 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		case providerToolName == "code_execution" &&
 			(inputType == "bash_code_execution" || inputType == "text_editor_code_execution"):
 			// code execution sub-tools: map back to the sub-tool name.
-			serverToolUse(inputType, withoutKey(inputMap, "type"))
+			serverToolUse(inputType, orderedInput(withoutKey(inputMap, "type"), part.inputRaw))
 
 		case providerToolName == "code_execution" && inputType == "programmatic-tool-call":
 			// Strip the synthetic 'programmatic-tool-call' discriminator.
-			serverToolUse("code_execution", withoutKey(inputMap, "type"))
+			serverToolUse("code_execution", orderedInput(withoutKey(inputMap, "type"), part.inputRaw))
 
 		case providerToolName == "code_execution" || providerToolName == "web_fetch" || providerToolName == "web_search",
 			providerToolName == "tool_search_tool_regex" || providerToolName == "tool_search_tool_bm25":
-			serverToolUse(providerToolName, part.input)
+			serverToolUse(providerToolName, orderedInput(part.input, part.inputRaw))
 
 		case providerToolName == "advisor":
 			// The advisor server_tool_use.input is always {}.
@@ -1460,7 +1467,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 			"id":           part.id,
 			"name":         name,
 			"toolset_name": toolsetName,
-			"input":        rawInput,
+			"input":        orderedInput(rawInput, part.inputRaw),
 		}
 		if caller != nil {
 			block["caller"] = caller
@@ -1474,7 +1481,7 @@ func (c *anthropicConverter) convertToolCall(content *[]map[string]interface{}, 
 		"type":  "tool_use",
 		"id":    part.id,
 		"name":  part.toolName,
-		"input": toAnthropicToolInput(part.input),
+		"input": orderedInput(toAnthropicToolInput(part.input), part.inputRaw),
 	}
 	if caller != nil {
 		block["caller"] = caller
@@ -1796,6 +1803,21 @@ func toAnthropicToolInput(input interface{}) map[string]interface{} {
 	default:
 		return map[string]interface{}{"rawInvalidInput": v}
 	}
+}
+
+// orderedInput returns v so that it marshals with the key order of raw, the
+// wire text of the tool input it was decoded from (TS keeps the parsed input
+// as is, so a replayed tool call has the key order the model produced). Go maps
+// have none; without raw (or when raw is not JSON) v is returned unchanged.
+func orderedInput(v interface{}, raw string) interface{} {
+	if raw == "" || v == nil {
+		return v
+	}
+	hint, ok := jsonorder.Parse([]byte(raw))
+	if !ok {
+		return v
+	}
+	return jsonorder.Hinted{V: v, Hint: hint}
 }
 
 func inputOrEmpty(input interface{}) interface{} {

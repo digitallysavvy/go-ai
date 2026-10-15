@@ -493,6 +493,7 @@ type googleToolCall struct {
 	id               string
 	toolName         string
 	input            interface{}
+	inputRaw         string // wire text of the input; gives the key order
 	providerExecuted bool
 	opts             map[string]interface{}
 	thoughtSignature string
@@ -538,7 +539,7 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 			}
 		}
 		return googleToolCall{
-			id: p.ToolCallID, toolName: p.ToolName, input: input, providerExecuted: p.ProviderExecuted,
+			id: p.ToolCallID, toolName: p.ToolName, input: input, inputRaw: p.Input, providerExecuted: p.ProviderExecuted,
 			opts: c.readProviderOpts(p.ProviderOptions, p.ProviderMetadata), thoughtSignature: p.ThoughtSignature,
 		}, true
 	case types.ToolCall:
@@ -551,7 +552,7 @@ func (c *googleConverter) toolCallFrom(part interface{}) (googleToolCall, bool) 
 			}
 		}
 		return googleToolCall{
-			id: p.ID, toolName: p.ToolName, input: input, providerExecuted: p.ProviderExecuted,
+			id: p.ID, toolName: p.ToolName, input: input, inputRaw: p.RawArguments, providerExecuted: p.ProviderExecuted,
 			opts: c.readProviderOpts(nil, p.ProviderMetadata), thoughtSignature: p.ThoughtSignature,
 		}, true
 	}
@@ -686,14 +687,14 @@ func (c *googleConverter) assistantToolCall(tc googleToolCall, hasSigned *bool) 
 	var part map[string]interface{}
 	if isServerToolCall {
 		part = map[string]interface{}{
-			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": tc.input, "id": serverToolCallID},
+			"toolCall": map[string]interface{}{"toolType": serverToolType, "args": orderedInput(tc.input, tc.inputRaw), "id": serverToolCallID},
 		}
 	} else {
 		args := tc.input
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		fc := map[string]interface{}{"name": tc.toolName, "args": args}
+		fc := map[string]interface{}{"name": tc.toolName, "args": orderedInput(args, tc.inputRaw)}
 		if c.opts.IncludeFunctionCallIDs && tc.id != "" {
 			fc["id"] = tc.id
 		}

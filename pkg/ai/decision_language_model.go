@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -129,8 +130,14 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 	}
 
 	properties := make(map[string]interface{}, len(entries))
-	rubrics := make(map[string]interface{}, len(entries))
+	// The rubrics are model-visible text: keep q0, q1, ... q10 in question
+	// order (a Go map would sort q10 before q2) and the TS key order inside.
+	rubrics := providerutils.OrderedMap{Vals: make(map[string]interface{}, len(entries))}
 	optionKeysByIndex := make([][]string, len(entries))
+	setRubric := func(key string, rubric interface{}) {
+		rubrics.Keys = append(rubrics.Keys, key)
+		rubrics.Vals[key] = rubric
+	}
 
 	for i, en := range entries {
 		key := fmt.Sprintf("q%d", i)
@@ -149,12 +156,13 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 			for j, label := range optionKeys {
 				code := fmt.Sprintf("c%d", j)
 				enumValues[j] = code
-				criteriaWire[code] = map[string]interface{}{"label": label, "description": criteria[label]}
+				criteriaWire[code] = providerutils.OrderedMap{
+					Keys: []string{"label", "description"},
+					Vals: map[string]interface{}{"label": label, "description": criteria[label]},
+				}
 			}
 			properties[key] = map[string]interface{}{"type": "string", "enum": enumValues}
-			rubrics[key] = map[string]interface{}{
-				"id": en.id, "type": "choice", "instructions": en.question.Instructions, "criteria": criteriaWire,
-			}
+			setRubric(key, decisionRubric(en.id, "choice", en.question.Instructions, criteriaWire, true))
 		case "score":
 			criteria, _ := en.question.Criteria.([]interface{})
 			properties[key] = map[string]interface{}{
@@ -164,23 +172,17 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 					len(criteria)-1,
 				),
 			}
-			rubrics[key] = map[string]interface{}{
-				"id": en.id, "type": "score", "instructions": en.question.Instructions, "criteria": criteria,
-			}
+			setRubric(key, decisionRubric(en.id, "score", en.question.Instructions, criteria, true))
 		case "boolean":
 			properties[key] = map[string]interface{}{
 				"type":        "number",
 				"description": "Estimated probability that the answer is true, from 0 to 1 inclusive. 0 means certainly false and 1 means certainly true.",
 			}
-			wire := map[string]interface{}{"id": en.id, "type": "boolean", "instructions": en.question.Instructions}
-			if en.question.Criteria != nil {
-				wire["criteria"] = en.question.Criteria
-			}
-			rubrics[key] = wire
+			setRubric(key, decisionRubric(en.id, "boolean", en.question.Instructions, en.question.Criteria, en.question.Criteria != nil))
 		}
 	}
 
-	rubricPayload, err := jsonstr.Marshal(map[string]interface{}{"questions": rubrics})
+	rubricPayload, err := jsonstr.Marshal(providerutils.OrderedMap{Keys: []string{"questions"}, Vals: map[string]interface{}{"questions": rubrics}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode decision prompt: %w", err)
 	}
@@ -339,4 +341,18 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 func isImageMediaType(mediaType string) bool {
 	top, _, _ := strings.Cut(mediaType, "/")
 	return top == "image"
+}
+
+// decisionRubric is one question of the decision prompt, with the TS key order
+// (id, type, instructions, criteria).
+func decisionRubric(id, questionType string, instructions, criteria interface{}, withCriteria bool) providerutils.OrderedMap {
+	r := providerutils.OrderedMap{
+		Keys: []string{"id", "type", "instructions"},
+		Vals: map[string]interface{}{"id": id, "type": questionType, "instructions": instructions},
+	}
+	if withCriteria {
+		r.Keys = append(r.Keys, "criteria")
+		r.Vals["criteria"] = criteria
+	}
+	return r
 }

@@ -289,12 +289,16 @@ func (b *Batch) prepareImageBatchRequest(req *provider.ImageBatchV4Request) (map
 
 	warnings := googleImageWarnings(&opts)
 
+	content, err := googleGeminiImageContent(&opts)
+	if err != nil {
+		return nil, nil, err
+	}
 	providerOptions, googleSearch := geminiImageProviderOptions(&opts)
 	lmOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{
 				Role:    types.RoleUser,
-				Content: googleGeminiImageContent(&opts),
+				Content: content,
 			}},
 		},
 		Seed:            opts.Seed,

@@ -71,11 +71,11 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("failed to initiate resumable upload: %d %s", resp.StatusCode, string(b))
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to initiate resumable upload: %d %s", resp.StatusCode, string(b)))
 	}
 	uploadURL := resp.Header.Get("x-goog-upload-url")
 	if uploadURL == "" {
-		return nil, fmt.Errorf("no upload URL returned from initiation request")
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", "No upload URL returned from initiation request")
 	}
 
 	uploadReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(content))
@@ -89,7 +89,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
 		b, _ := io.ReadAll(uploadResp.Body)
-		return nil, fmt.Errorf("failed to upload file data: %d %s", uploadResp.StatusCode, string(b))
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_ERROR", fmt.Sprintf("Failed to upload file data: %d %s", uploadResp.StatusCode, string(b)))
 	}
 	var uploadResult struct {
 		File googleFileResource `json:"file"`
@@ -102,7 +102,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	start := time.Now()
 	for file.State == "PROCESSING" {
 		if time.Since(start) > time.Duration(pollTimeoutMs)*time.Millisecond {
-			return nil, fmt.Errorf("file processing timed out after %dms", pollTimeoutMs)
+			return nil, googleFilesError("GOOGLE_FILES_UPLOAD_TIMEOUT", fmt.Sprintf("File processing timed out after %dms", pollTimeoutMs))
 		}
 		// select on ctx.Done() during the wait (not a plain time.Sleep), so
 		// cancellation/timeout is honored promptly instead of being delayed
@@ -135,7 +135,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		file = polled
 	}
 	if file.State == "FAILED" {
-		return nil, fmt.Errorf("file processing failed for %s", file.Name)
+		return nil, googleFilesError("GOOGLE_FILES_UPLOAD_FAILED", fmt.Sprintf("File processing failed for %s", file.Name))
 	}
 
 	warnings := []types.Warning{}
@@ -143,13 +143,19 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "filename"})
 	}
 
+	// TS reads displayName and sizeBytes as optional: absent ones are left
+	// out of the metadata rather than sent as empty strings.
 	meta := map[string]interface{}{
-		"name":        file.Name,
-		"displayName": file.DisplayName,
-		"mimeType":    file.MimeType,
-		"sizeBytes":   file.SizeBytes,
-		"state":       file.State,
-		"uri":         file.URI,
+		"name":     file.Name,
+		"mimeType": file.MimeType,
+		"state":    file.State,
+		"uri":      file.URI,
+	}
+	if file.DisplayName != "" {
+		meta["displayName"] = file.DisplayName
+	}
+	if file.SizeBytes != "" {
+		meta["sizeBytes"] = file.SizeBytes
 	}
 	if file.CreateTime != "" {
 		meta["createTime"] = file.CreateTime
@@ -175,6 +181,12 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		ProviderMetadata:  map[string]interface{}{"google": meta},
 		Warnings:          warnings,
 	}, nil
+}
+
+// googleFilesError is the AISDKError TS throws for a failed upload; Name is
+// carried as the error code.
+func googleFilesError(name, message string) error {
+	return providererrors.NewProviderError("google", 0, name, message, nil)
 }
 
 type googleFileResource struct {

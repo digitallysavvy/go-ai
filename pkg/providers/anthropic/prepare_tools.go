@@ -181,7 +181,7 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		// Function tool.
 		// TS forwards the tool's inputSchema untouched (only the
 		// responseFormat schema is sanitized), so do the same.
-		m := map[string]interface{}{"name": t.Name, "input_schema": providerutils.ResponseFormatJSONSchema(t.Parameters)}
+		m := map[string]interface{}{"name": t.Name, "input_schema": providerutils.ResponseFormatJSONSchemaOrdered(t.Parameters)}
 		if t.Description != "" {
 			m["description"] = t.Description
 		}

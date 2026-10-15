@@ -292,7 +292,7 @@ func TestMCPToolResultResponseParsed_ResolvesPairedToolName(t *testing.T) {
 			{
 				Type:      "mcp_tool_result",
 				ToolUseID: "mcp_123",
-				IsError:   false,
+				IsError:   nil,
 				Content:   json.RawMessage(`"sunny"`),
 			},
 		},

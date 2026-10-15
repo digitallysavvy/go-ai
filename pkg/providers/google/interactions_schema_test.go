@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -159,5 +160,34 @@ func TestInteractionsAnnotationsToSourcesDeduplicates(t *testing.T) {
 	})
 	if len(out) != 4 {
 		t.Fatalf("got %d sources, want 4: %#v", len(out), out)
+	}
+}
+
+// A schema.OrderedSchema keeps its property order in the interactions
+// response_format and tool parameters.
+func TestInteractionsOrderedSchemaKeepsOrder(t *testing.T) {
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		_, _ = fmt.Fprint(w, `{"id":"v1","status":"completed","model":"gemini-2.5-flash","steps":[{"type":"text","text":"{}"}],"usage":{}}`)
+	}))
+	defer server.Close()
+	model, err := New(Config{APIKey: "k", BaseURL: server.URL}).Interactions(ModelGemini25Flash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordered, err := schema.NewOrderedSchema([]byte(`{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt:         types.Prompt{Text: "x"},
+		ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: ordered},
+		Tools:          []types.Tool{{Name: "t", Type: types.ToolTypeFunction, Parameters: ordered}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), `"properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}`); n != 2 {
+		t.Fatalf("property order kept %d times, want 2: %s", n, raw)
 	}
 }

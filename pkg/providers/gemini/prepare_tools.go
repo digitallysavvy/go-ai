@@ -36,7 +36,7 @@ func defaultToolSchema(parameters interface{}) interface{} {
 	if parameters == nil {
 		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 	}
-	return providerutils.ResponseFormatJSONSchema(parameters)
+	return providerutils.ResponseFormatJSONSchemaOrdered(parameters)
 }
 
 // prepareTools ports TS prepareTools (google-prepare-tools.ts).

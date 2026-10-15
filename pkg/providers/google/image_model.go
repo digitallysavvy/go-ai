@@ -133,12 +133,16 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if opts.Mask != nil {
 		return nil, providererrors.NewProviderError("google", 0, "", "Gemini image models do not support mask-based image editing.", nil)
 	}
+	content, err := googleGeminiImageContent(opts)
+	if err != nil {
+		return nil, err
+	}
 	providerOptions, googleSearch := geminiImageProviderOptions(opts)
 	lmOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{
 				Role:    types.RoleUser,
-				Content: googleGeminiImageContent(opts),
+				Content: content,
 			}},
 		},
 		Seed:            opts.Seed,
@@ -207,12 +211,24 @@ func rawFinishReason(raw interface{}) string {
 	return resp.Candidates[0].FinishReason
 }
 
-func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.ContentPart {
+// googleGeminiImageContent builds the single user message of a Gemini image
+// call. A URL file is sent by TS as a file part with media type "image/*",
+// which the Google prompt conversion rejects (resolveFullMediaType needs a
+// subtype and cannot detect one without inline bytes), so image editing with
+// URL inputs throws an UnsupportedFunctionalityError there.
+func googleGeminiImageContent(opts *provider.ImageGenerateOptions) ([]types.ContentPart, error) {
 	parts := []types.ContentPart{}
 	if opts.Prompt != "" {
 		parts = append(parts, types.TextContent{Text: opts.Prompt})
 	}
 	for _, file := range opts.Files {
+		if file.URL != "" {
+			functionality := `file of media type "image/*" must specify subtype since it is not passed as inline bytes`
+			return nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: functionality,
+				Message:       "'" + functionality + "' functionality not supported.",
+			}
+		}
 		mediaType := file.MediaType
 		if mediaType == "" {
 			mediaType = "image/*"
@@ -221,10 +237,9 @@ func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.Conte
 			Data:      file.Data,
 			MediaType: mediaType,
 			MimeType:  mediaType,
-			URL:       file.URL,
 		})
 	}
-	return parts
+	return parts, nil
 }
 
 func geminiImageProviderOptions(opts *provider.ImageGenerateOptions) (map[string]interface{}, interface{}) {

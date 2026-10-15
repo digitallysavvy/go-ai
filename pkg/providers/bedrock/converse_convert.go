@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"regexp"
 	"strings"
@@ -676,6 +677,7 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 
 			for msgIdx, msg := range block.Messages {
 				isLastMessage := msgIdx == len(block.Messages)-1
+				msg.Content = withLegacyToolCalls(msg)
 				hasReasoning := false
 				for _, part := range msg.Content {
 					if _, ok := part.(types.ReasoningContent); ok {
@@ -727,7 +729,7 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 							"toolUse": map[string]interface{}{
 								"toolUseId": normalizeToolCallID(p.ToolCallID, isMistral),
 								"name":      sanitizeToolName(p.ToolName),
-								"input":     toBedrockToolInput(p.Input, p.Arguments),
+								"input":     orderedToolInput(toBedrockToolInput(p.Input, p.Arguments), p.Input),
 							},
 						})
 					case types.ToolResultContent:
@@ -1012,4 +1014,50 @@ func bedrockUnsupported(functionality, message string) error {
 		message = fmt.Sprintf("'%s' functionality not supported.", functionality)
 	}
 	return &providererrors.UnsupportedFunctionalityError{Functionality: functionality, Message: message}
+}
+
+// orderedToolInput returns v so that it marshals with the key order of raw, the
+// wire text of the tool input (TS keeps the parsed input, so a replayed tool
+// call keeps the key order the model produced). Go maps have no order.
+func orderedToolInput(v map[string]interface{}, raw string) interface{} {
+	if raw == "" {
+		return v
+	}
+	hint, ok := jsonorder.Parse([]byte(raw))
+	if !ok {
+		return v
+	}
+	return jsonorder.Hinted{V: v, Hint: hint}
+}
+
+// withLegacyToolCalls returns the content of an assistant message with the
+// legacy Message.ToolCalls entries that are not already ToolCallContent parts
+// appended, as the Anthropic and Google converters do.
+func withLegacyToolCalls(msg types.Message) []types.ContentPart {
+	if msg.Role != types.RoleAssistant || len(msg.ToolCalls) == 0 {
+		return msg.Content
+	}
+	seen := map[string]bool{}
+	for _, part := range msg.Content {
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			seen[p.ToolCallID] = true
+		case *types.ToolCallContent:
+			if p != nil {
+				seen[p.ToolCallID] = true
+			}
+		}
+	}
+	out := make([]types.ContentPart, 0, len(msg.Content)+len(msg.ToolCalls))
+	out = append(out, msg.Content...)
+	for _, tc := range msg.ToolCalls {
+		if tc.ID != "" && seen[tc.ID] {
+			continue
+		}
+		out = append(out, types.ToolCallContent{
+			ToolCallID: tc.ID, ToolName: tc.ToolName, Input: tc.RawArguments, Arguments: tc.Arguments,
+			ProviderExecuted: tc.ProviderExecuted,
+		})
+	}
+	return out
 }

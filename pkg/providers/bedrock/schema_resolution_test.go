@@ -84,3 +84,40 @@ func TestBedrockEmptyToolDescriptionAndEmptyStopSequences(t *testing.T) {
 		t.Fatalf("no stopSequences warning: %v", args.Warnings)
 	}
 }
+
+// A schema.OrderedSchema keeps its property order for the native schema, the
+// instruction text and function tools.
+func TestOrderedSchemaKeepsOrderOnTheWire(t *testing.T) {
+	ordered, err := schema.NewOrderedSchema([]byte(`{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `"properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}`
+	for name, modelID := range map[string]string{
+		"native":      "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		"instruction": "us.anthropic.claude-3-haiku-20240307-v1:0",
+	} {
+		args, err := newBedrockModelWithID(modelID).getArgs(&provider.GenerateOptions{
+			Prompt:         types.Prompt{Text: "hi"},
+			ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: ordered},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(args.Body)
+		if !strings.Contains(string(b), want) && !strings.Contains(strings.ReplaceAll(string(b), `\"`, `"`), want) {
+			t.Errorf("%s: property order lost: %s", name, b)
+		}
+	}
+	args, err := newBedrockModelWithID("us.anthropic.claude-sonnet-4-5-20250929-v1:0").getArgs(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools:  []types.Tool{{Name: "t", Type: types.ToolTypeFunction, Parameters: ordered}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(args.Body["toolConfig"])
+	if !strings.Contains(string(b), want) {
+		t.Errorf("function tool property order lost: %s", b)
+	}
+}

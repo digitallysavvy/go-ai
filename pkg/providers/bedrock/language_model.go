@@ -203,7 +203,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 			Type:        types.ToolTypeFunction,
 			Name:        "json",
 			Description: "Respond with a JSON object.",
-			Parameters:  providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema),
+			Parameters:  providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema),
 		}
 	}
 
@@ -454,7 +454,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	}
 
 	if useJSONInstructionForStructuredOutput {
-		filteredMessages = injectBedrockJSONInstruction(filteredMessages, providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema))
+		filteredMessages = injectBedrockJSONInstruction(filteredMessages, providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema))
 	}
 
 	isMistral := isMistralModel(m.modelID)
@@ -877,6 +877,9 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	var resp bedrockConverseResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to decode Bedrock Converse response: %w", err)
+	}
+	if verr := validateConverseUsage(resp.Usage); verr != nil {
+		return nil, invalidConverseResponseError(verr)
 	}
 
 	result := &types.GenerateResult{RawResponse: json.RawMessage(body)}

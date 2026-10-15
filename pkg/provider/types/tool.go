@@ -553,6 +553,10 @@ type ToolResult struct {
 	// Error if tool execution failed
 	Error error `json:"error,omitempty"`
 
+	// IsError is the TS tool-result isError flag of a provider-executed
+	// result: nil when the provider did not say, true or false when it did.
+	IsError *bool `json:"isError,omitempty"`
+
 	// ApprovalStatus captures approval-driven outcomes such as denied or
 	// user-approval pending tool calls.
 	ApprovalStatus ToolApprovalStatus `json:"approvalStatus,omitempty"`

@@ -226,6 +226,25 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// UnmarshalJSON decodes the part and keeps the wire form of toolCall.args.
+func (p *Part) UnmarshalJSON(b []byte) error {
+	type plain Part
+	var v plain
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*p = Part(v)
+	var aux struct {
+		ToolCall *struct {
+			Args json.RawMessage `json:"args"`
+		} `json:"toolCall"`
+	}
+	if json.Unmarshal(b, &aux) == nil && aux.ToolCall != nil && len(aux.ToolCall.Args) > 0 && string(aux.ToolCall.Args) != "null" {
+		p.toolCallArgsRaw = aux.ToolCall.Args
+	}
+	return nil
+}
+
 // Part represents a single part in a Gemini content block.
 // ExecutableCode and CodeExecutionResult are populated only by Google Generative AI,
 // not by Vertex AI. Both fields are safe to include in the shared type — JSON
@@ -260,7 +279,10 @@ type Part struct {
 		Args     map[string]interface{} `json:"args,omitempty"`
 		ID       string                 `json:"id"`
 	} `json:"toolCall,omitempty"`
-	ToolResponse *struct {
+	// toolCallArgsRaw is the wire text of ToolCall.Args, which keeps the key
+	// order JSON.stringify(part.toolCall.args) has in TS.
+	toolCallArgsRaw json.RawMessage
+	ToolResponse    *struct {
 		ToolType string                 `json:"toolType"`
 		Response map[string]interface{} `json:"response,omitempty"`
 		ID       string                 `json:"id"`
