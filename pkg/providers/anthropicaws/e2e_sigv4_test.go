@@ -117,3 +117,30 @@ func TestSigV4MissingRegionFailsBeforeSending(t *testing.T) {
 		t.Fatal("a request without a region must not be sent")
 	}
 }
+
+// The API key is read at request time: ANTHROPIC_AWS_API_KEY set after the
+// provider was created is used, and no SigV4 credentials are needed.
+func TestAPIKeyFromEnvReadAtRequestTime(t *testing.T) {
+	var gotKey, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		gotKey, gotAuth = r.Header.Get("x-api-key"), r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, okMessage)
+	}))
+	defer srv.Close()
+	t.Setenv("ANTHROPIC_AWS_API_KEY", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	p, err := New(Config{Region: "us-east-1", WorkspaceID: "w", BaseURL: srv.URL, HTTPClient: srv.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_AWS_API_KEY", "late-key")
+	m, _ := p.LanguageModel("claude-sonnet-4-6")
+	if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if gotKey != "late-key" || gotAuth != "" {
+		t.Fatalf("x-api-key=%q Authorization=%q", gotKey, gotAuth)
+	}
+}

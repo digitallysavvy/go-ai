@@ -87,23 +87,21 @@ func New(cfg Config) (*Provider, error) {
 		"anthropic-workspace-id": workspaceID,
 	}, cfg.Headers)
 
-	apiKey := firstNonEmpty(cfg.APIKey, os.Getenv("ANTHROPIC_AWS_API_KEY"))
-	httpClient := cfg.HTTPClient
-	var transport *sigV4Transport
-	if apiKey != "" {
-		headers["x-api-key"] = apiKey
-	} else {
-		transport = &sigV4Transport{
-			base:               baseRoundTripper(httpClient),
-			region:             region,
-			accessKeyID:        cfg.AccessKeyID,
-			secretAccessKey:    cfg.SecretAccessKey,
-			sessionToken:       cfg.SessionToken,
-			credentialProvider: cfg.CredentialProvider,
-		}
-		httpClient = cloneHTTPClient(httpClient)
-		httpClient.Transport = transport
+	// The API key is resolved per request (providerutils.APIKeyOrEnv, the
+	// lookup half of TS loadApiKey) so ANTHROPIC_AWS_API_KEY set or rotated
+	// after the provider was created is honored; with no key, requests are
+	// SigV4-signed.
+	httpClient := cloneHTTPClient(cfg.HTTPClient)
+	transport := &sigV4Transport{
+		base:               baseRoundTripper(cfg.HTTPClient),
+		region:             region,
+		apiKey:             cfg.APIKey,
+		accessKeyID:        cfg.AccessKeyID,
+		secretAccessKey:    cfg.SecretAccessKey,
+		sessionToken:       cfg.SessionToken,
+		credentialProvider: cfg.CredentialProvider,
 	}
+	httpClient.Transport = transport
 
 	inner := anthropic.New(anthropic.Config{
 		Name:          "anthropic-aws.messages",
@@ -172,6 +170,7 @@ func (p *Provider) LastSigningCredentials() Credentials {
 type sigV4Transport struct {
 	base               http.RoundTripper
 	region             string
+	apiKey             string
 	accessKeyID        string
 	secretAccessKey    string
 	sessionToken       string
@@ -200,6 +199,11 @@ func (t *sigV4Transport) setLastCredentials(creds Credentials) {
 }
 
 func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if key := providerutils.APIKeyOrEnv(t.apiKey, "ANTHROPIC_AWS_API_KEY"); key != "" {
+		req = req.Clone(req.Context())
+		req.Header.Set("x-api-key", key)
+		return t.base.RoundTrip(req)
+	}
 	if req.Method != http.MethodPost || req.Body == nil {
 		return t.base.RoundTrip(req)
 	}
