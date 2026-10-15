@@ -646,7 +646,10 @@ func (s *conversationStream) handle(data string) {
 		// TS validates every event against a closed discriminated union; an
 		// unknown event type is a parse error that fails the stream.
 		s.hasError = true
-		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("mistral: unknown conversation stream event type %q", ev.Type)})
+		msg, perr := providerutils.ChunkParseFailure(data, &providerutils.ChunkSchemaError{
+			Code: "invalid_union", Path: []interface{}{"type"}, Message: "Invalid input",
+		})
+		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 	}
 }
 

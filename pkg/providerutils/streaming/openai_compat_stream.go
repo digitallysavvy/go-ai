@@ -2,7 +2,6 @@ package streaming
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"time"
 
@@ -370,9 +369,11 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			if err != nil {
 				s.streamErrored = true
 				s.finishErrored = true
+				msg, perr := providerutils.ChunkParseFailure(eventData, err)
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
-					Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
+					Text: msg,
+					Err:  perr,
 				}, nil
 			}
 			for _, part := range parts {

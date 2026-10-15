@@ -3,6 +3,7 @@ package mistral
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -741,4 +743,24 @@ func TestConversationPrepareToolsForcesFunctionToolWhenSearchAvailable(t *testin
 	if tools[0]["type"] != "function" || fn["name"] != "weather" {
 		t.Errorf("tools = %v", tools)
 	}
+}
+
+// TS validates every event against a closed discriminated union: an unknown
+// event type is a chunk parse failure and must carry a typed error.
+func TestConversationUnknownEventTypeCarriesValidationError(t *testing.T) {
+	_, p := newConvRecorder(t, "text/event-stream", sse(
+		`{"type":"conversation.bogus"}`,
+	))
+	chunks := streamWith(t, p, &provider.GenerateOptions{Prompt: whoWon()})
+	for _, c := range chunks {
+		if c.Type != provider.ChunkTypeError {
+			continue
+		}
+		var ve *providererrors.ValidationError
+		if !errors.As(c.Err, &ve) {
+			t.Fatalf("Err = %T %v, want ValidationError", c.Err, c.Err)
+		}
+		return
+	}
+	t.Fatalf("no error chunk in %v", chunkTypes(chunks))
 }
