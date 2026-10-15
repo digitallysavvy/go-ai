@@ -16,10 +16,11 @@ import (
 // every other method, calls onRequest. Receive blocks on in until the test
 // closes it.
 type lifecycleTransport struct {
-	in        chan *MCPMessage
-	initial   InitializeResult
-	failInit  bool
-	onRequest func(msg *MCPMessage)
+	in         chan *MCPMessage
+	initial    InitializeResult
+	failInit   bool
+	silentInit bool
+	onRequest  func(msg *MCPMessage)
 
 	mu      sync.Mutex
 	sent    []string
@@ -61,6 +62,9 @@ func (t *lifecycleTransport) Send(_ context.Context, msg *MCPMessage) error {
 	t.sent = append(t.sent, msg.Method)
 	t.mu.Unlock()
 	if msg.Method == "initialize" {
+		if t.silentInit {
+			return nil
+		}
 		if t.failInit {
 			resp := &MCPMessage{JSONRpc: "2.0", ID: msg.ID, Error: &MCPError{Code: -32000, Message: "nope"}}
 			t.in <- resp

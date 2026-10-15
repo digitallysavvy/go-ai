@@ -30,6 +30,7 @@ OAuth helpers are in [MCP OAuth](./oauth.mdx). Message and capability types are 
 | `ClientVersion` | `string` | ClientVersion is the version of the client |
 | `Capabilities` | `ClientCapabilities` | Capabilities are optional client capabilities advertised during initialize. |
 | `RequestTimeoutMS` | `int` | RequestTimeoutMS is the timeout for individual requests in milliseconds Default: 30000 (30 seconds) |
+| `InitializationOptions` | `*RequestOptions` | InitializationOptions bounds Connect (TS initializationOptions): TimeoutMS / MaxTotalTimeoutMS limit the whole handshake, which then fails with "MCP client initialization timed out after &lt;n&gt;ms". A cancelled Connect context fails with "MCP client initialization was aborted". |
 | `EnableLogging` | `bool` | EnableLogging enables client-level logging |
 | `MaxRetries` | `int` | MaxRetries is the maximum number of times a failed "tools/call" request is retried with exponential backoff, matching TypeScript's MCPClient maxRetries option (TS prepareMaxRetries). Default: 0 (no retries). A negative value makes Connect return an error (TS throws MCPClientError "maxRetries must be &gt;= 0" from the constructor; Go has no fallible constructor, so the check runs at Connect instead). Only transient failures are retried: HTTP status 408/409/429/&gt;=500 and transport-level connection errors (refused/reset/timeout/broken pipe/ closed). JSON-RPC application errors (a non-zero MCPClientError.Code) and successful results with IsError=true are never retried. |
 | `ProtocolVersionDiscovery` | `*bool` | ProtocolVersionDiscovery controls whether the client probes the 2026-07-28 `server/discover` method before falling back to the legacy `initialize` handshake (hash e6a9927). Default true. Only takes effect when the transport implements ProtocolVersionDiscoveryTransport and reports support (only HTTPTransport does today). |
@@ -580,15 +581,23 @@ func main() {}
 
 Managed adapters receive a `context.Context` instead of TS request options: cancel it or set a deadline to bound a call. Cancelling does not cancel an already accepted remote subscription.
 
+## Request options
+
+`mcp.WithRequestOptions(ctx, mcp.RequestOptions{TimeoutMS, MaxTotalTimeoutMS})` puts per-request limits on a context. The client call made with it uses the smaller of the two as its timeout instead of `RequestTimeoutMS` (TS `RequestOptions`). Cancelling the context is the TS `signal`: the call fails with `Request was aborted`, and `errors.Is(err, context.Canceled)` still matches.
+
+`MCPClientConfig.InitializationOptions` bounds `Connect` the same way. It fails with `MCP client initialization timed out after <n>ms`, or `MCP client initialization was aborted` when the `Connect` context is cancelled.
+
+A response with no `id`, or with an `id` no request is waiting for, is reported to `MCPClientConfig.OnError` as `Protocol error: Received a response without a message ID: ...` (or `... for an unknown message ID: ...`).
+
 ## Errors
 
 | Type or value | Description |
 | --- | --- |
-| `*mcp.MCPClientError` | An error from the client. `Code` is the JSON-RPC error code. `StatusCode` is the HTTP status for transport failures. |
+| `*mcp.MCPClientError` | An error from the client. `Error()` is the server's message with no prefix, as in TS. `Code` is the JSON-RPC error code, `Data` its data, `Cause` the wrapped error. `StatusCode` is the HTTP status for transport failures. |
 | `mcp.NewMCPClientError(code, message, data, opts...)` | Creates one. |
 | `mcp.MCPClientErrorOption` | Option for `NewMCPClientError`: `mcp.WithMCPHTTPResponse`, `mcp.WithMCPHTTPResponseBody`, `mcp.WithMCPHTTPStatus`, `mcp.WithMCPHTTPURL`. |
 | `*mcp.MCPError` | A protocol error payload. |
-| `*mcp.TimeoutError`, `mcp.NewTimeoutError(operation)` | A request timed out. |
+| `*mcp.TimeoutError`, `mcp.NewTimeoutError(operation)` | A request timed out: `Request timed out after <n>ms`. |
 | `*mcp.UnauthorizedError` | The server answered 401 and the transport's `AuthProvider` could not obtain a token without user interaction. |
 | `*mcp.TransportError`, `mcp.NewTransportError(message, cause)` | A transport-level failure. |
 | `mcp.ErrParseError`, `mcp.ErrInvalidRequest`, `mcp.ErrMethodNotFound`, `mcp.ErrInvalidParams`, `mcp.ErrInternalError`, `mcp.ErrToolNotFound`, `mcp.ErrToolExecutionFail`, `mcp.ErrResourceNotFound`, `mcp.ErrUnauthorized` | Sentinel `*MCPClientError` values. |

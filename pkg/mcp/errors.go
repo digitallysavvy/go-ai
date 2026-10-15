@@ -15,19 +15,23 @@ type MCPClientError struct {
 	StatusCode   int
 	URL          string
 	ResponseBody string
+
+	// Cause is the underlying error (TS `cause`), for example the context
+	// error behind "Request was aborted". It is reachable with errors.Is and
+	// errors.As.
+	Cause error
 }
 
+// Error returns the bare message, like the TS MCPClientError: for a JSON-RPC
+// error that is the server's own error text, without a code prefix. Use Code
+// and Data for the structured fields.
 func (e *MCPClientError) Error() string {
-	if e.Code == 0 && e.StatusCode != 0 {
-		return e.Message
-	}
-	if e.Code == 0 {
-		return e.Message
-	}
-	if e.Data != nil {
-		return fmt.Sprintf("MCP error %d: %s (data: %v)", e.Code, e.Message, e.Data)
-	}
-	return fmt.Sprintf("MCP error %d: %s", e.Code, e.Message)
+	return e.Message
+}
+
+// Unwrap returns Cause.
+func (e *MCPClientError) Unwrap() error {
+	return e.Cause
 }
 
 // MCPClientErrorOption configures optional fields on MCPClientError.
@@ -120,9 +124,15 @@ func NewTransportError(message string, cause error) *TransportError {
 // TimeoutError represents a timeout error
 type TimeoutError struct {
 	Operation string
+	// TimeoutMS is the elapsed limit. When set, the message is the TS one,
+	// "Request timed out after <n>ms".
+	TimeoutMS int
 }
 
 func (e *TimeoutError) Error() string {
+	if e.TimeoutMS > 0 {
+		return fmt.Sprintf("Request timed out after %dms", e.TimeoutMS)
+	}
 	return fmt.Sprintf("timeout: %s", e.Operation)
 }
 
