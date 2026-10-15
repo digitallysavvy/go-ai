@@ -270,3 +270,30 @@ func (cmr *ContextManagementResponse) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
+
+// wireContextManagement is the request body form of the option: the API names
+// the clear_tool_uses and compact fields in snake_case (TS maps clearAtLeast
+// to clear_at_least, and so on); MarshalJSON keeps the camelCase option names
+// so the type round-trips through UnmarshalJSON.
+func wireContextManagement(cm *ContextManagement) (map[string]interface{}, error) {
+	edits := make([]map[string]interface{}, 0, len(cm.Edits))
+	for _, edit := range cm.Edits {
+		m, err := marshalEdit(edit)
+		if err != nil {
+			return nil, err
+		}
+		for from, to := range map[string]string{
+			"clearAtLeast":         "clear_at_least",
+			"clearToolInputs":      "clear_tool_inputs",
+			"excludeTools":         "exclude_tools",
+			"pauseAfterCompaction": "pause_after_compaction",
+		} {
+			if v, ok := m[from]; ok {
+				delete(m, from)
+				m[to] = v
+			}
+		}
+		edits = append(edits, m)
+	}
+	return map[string]interface{}{"edits": edits}, nil
+}

@@ -36,16 +36,24 @@ type Case struct {
 	CallArgs    string                 `json:"callArgs"`
 	Call        map[string]interface{} `json:"call"`
 	Exps        []Expectation          `json:"exps"`
+	Asserts     []Assertion            `json:"asserts"`
+	// FnArgs are the evaluated arguments of the function a function-level test
+	// calls (extractor --fn=NAME); FnArgSrc are their TS source.
+	FnArgs   []interface{}     `json:"fnArgs"`
+	FnArgSrc []string          `json:"fnArgSrc"`
+	Aliases  map[string]string `json:"aliases"`
 }
 
 // Response is the canned wire response.
 type Response struct {
-	Kind   string      `json:"kind"` // json | chunks | fixture-json | fixture-chunks
-	Body   interface{} `json:"body"`
-	Chunks []string    `json:"chunks"`
-	Name   string      `json:"name"`
-	Raw    string      `json:"raw"` // fixture file content
-	Error  string      `json:"error"`
+	Kind   string          `json:"kind"`   // json | chunks | fixture-json | fixture-chunks
+	Body   json.RawMessage `json:"body"`   // raw, to keep the key order of the wire body
+	Chunks []interface{}   `json:"chunks"` // SSE text, or JSON events that are sent as data: lines
+	Name   string          `json:"name"`
+	Raw    string          `json:"raw"` // fixture file content
+	Error  string          `json:"error"`
+	// Headers the TS test server sent with the response.
+	Headers map[string]string `json:"headers"`
 }
 
 // Expectation is one snapshot assertion.
@@ -73,13 +81,49 @@ var simpleCall = regexp.MustCompile(`^\{ prompt: [A-Z_]+,?( includeRawChunks: fa
 // Simple reports whether the TS call used only the default prompt.
 func (c Case) Simple() bool { return simpleCall.MatchString(c.CallArgs) }
 
+var evalPathSnapshots bool
+
+// EvalPathSnapshots makes Run also compare snapshots of arbitrary expressions
+// (request headers, aliased values, nested result fields) that earlier suites
+// skipped. It is off by default so those suites keep their original coverage;
+// a test opts in for its own run.
+func EvalPathSnapshots(t *testing.T) {
+	t.Helper()
+	evalPathSnapshots = true
+	t.Cleanup(func() { evalPathSnapshots = false })
+}
+
+// StreamBodyEncoder, when set, turns the canned stream lines (one JSON
+// document per line) into the response body and content type. Providers whose
+// stream is not SSE (Amazon Bedrock's AWS event stream) set it.
+var StreamBodyEncoder func(lines []string) (contentType string, body []byte)
+
 func (c Case) handler() http.HandlerFunc {
 	r := c.Response
 	return func(w http.ResponseWriter, req *http.Request) {
+		for k, v := range r.Headers {
+			w.Header().Set(k, v)
+		}
+		if StreamBodyEncoder != nil && (r.Kind == "chunks" || r.Kind == "fixture-chunks") {
+			var lines []string
+			src := r.chunkStrings()
+			if r.Kind == "fixture-chunks" {
+				src = strings.Split(r.Raw, "\n")
+			}
+			for _, l := range src {
+				if l = strings.TrimSpace(l); l != "" {
+					lines = append(lines, l)
+				}
+			}
+			ct, body := StreamBodyEncoder(lines)
+			w.Header().Set("Content-Type", ct)
+			_, _ = w.Write(body)
+			return
+		}
 		switch r.Kind {
 		case "json":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(r.Body)
+			_, _ = w.Write(r.Body)
 		case "fixture-json":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, r.Raw)
@@ -94,7 +138,7 @@ func (c Case) handler() http.HandlerFunc {
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 		case "chunks":
 			w.Header().Set("Content-Type", "text/event-stream")
-			for _, ch := range r.Chunks {
+			for _, ch := range r.chunkStrings() {
 				_, _ = io.WriteString(w, ch)
 			}
 		}
@@ -105,21 +149,37 @@ func (c Case) handler() http.HandlerFunc {
 // with the TS snapshot. Cases listed in skip (by test name) are logged only.
 func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.LanguageModel, skip map[string]string) {
 	t.Helper()
+	seen := map[string]int{}
 	for _, c := range cases {
 		c := c
 		if c.Response == nil || c.Response.Error != "" || c.Call == nil || c.Suspect {
 			continue
 		}
+		// repeated test names get the "#01", "#02" suffix t.Run gives them; a
+		// skip entry for the plain name covers all of them, "name#01" only
+		// the second
+		occurrence := seen[c.Test]
+		seen[c.Test]++
+		suffixed := c.Test
+		if occurrence > 0 {
+			suffixed = fmt.Sprintf("%s#%02d", c.Test, occurrence)
+		}
 		t.Run(c.Test, func(t *testing.T) {
-			if why, ok := skip[c.Test]; ok {
+			if why, ok := skip[suffixed]; ok {
+				t.Skip(why)
+			}
+			if why, ok := skip[c.Test]; ok && occurrence > 0 {
 				t.Skip(why)
 			}
 			var reqBody interface{}
+			var reqs []request
 			h := c.handler()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if reqBody == nil {
-					b, _ := io.ReadAll(r.Body)
-					_ = json.Unmarshal(b, &reqBody)
+				b, _ := io.ReadAll(r.Body)
+				rq := newRequest(b, r.Header, "http://"+r.Host+r.URL.RequestURI(), r.Method)
+				reqs = append(reqs, rq)
+				if len(reqs) == 1 {
+					reqBody = rq.body
 				}
 				h(w, r)
 			}))
@@ -133,12 +193,25 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 			var content interface{}
 			var stream []interface{}
 			var res *types.GenerateResult
+			resultMap := map[string]interface{}{}
 			if c.CallKind == "stream" {
 				s, err := m.DoStream(ctx, opts)
 				if err != nil {
 					t.Fatalf("DoStream: %v", err)
 				}
-				stream = CanonStream(StreamToTS(drain(s)))
+				chunks := drain(s)
+				raw := StreamToTS(chunks)
+				stream = CanonStream(raw)
+				resultMap["stream"] = raw
+				if rb, ok := s.(provider.StreamRequestBody); ok {
+					resultMap["request"] = map[string]interface{}{"body": rb.RequestBody()}
+				}
+				for _, ch := range chunks {
+					if ch.Type == provider.ChunkTypeResponseMetadata && ch.ResponseMetadata != nil && len(ch.ResponseMetadata.Headers) > 0 {
+						resultMap["response"] = map[string]interface{}{"headers": lowerHeaders(ch.ResponseMetadata.Headers)}
+						break
+					}
+				}
 			} else {
 				var err error
 				res, err = m.DoGenerate(ctx, opts)
@@ -146,6 +219,37 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					t.Fatalf("DoGenerate: %v", err)
 				}
 				content = GenerateContentToTS(res)
+				resultMap["content"] = content
+				resultMap["usage"] = UsageToTS(res.Usage)
+				resultMap["finishReason"] = map[string]interface{}{"raw": nilIfEmpty(res.RawFinishReason), "unified": string(res.FinishReason)}
+				warnings := make([]interface{}, 0, len(res.Warnings))
+				for _, w := range res.Warnings {
+					v := jsonValue(w)
+					if m, ok := v.(map[string]interface{}); ok && m["type"] != "other" {
+						delete(m, "message") // Go also mirrors details there for old callers
+					}
+					warnings = append(warnings, v)
+				}
+				resultMap["warnings"] = warnings
+				resultMap["providerMetadata"] = res.ProviderMetadata
+				resultMap["request"] = map[string]interface{}{"body": res.RawRequest}
+				resp := map[string]interface{}{"headers": lowerHeaders(res.ResponseHeaders)}
+				if m := res.ResponseMetadata; m != nil {
+					if m.ID != "" {
+						resp["id"] = m.ID
+					}
+					if m.ModelID != "" {
+						resp["modelId"] = m.ModelID
+					}
+					if !m.Timestamp.IsZero() {
+						resp["timestamp"] = m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
+					}
+				}
+				resultMap["response"] = resp
+			}
+			roots := map[string]interface{}{
+				"result": resultMap,
+				"server": map[string]interface{}{"calls": reqs},
 			}
 			for _, e := range c.Exps {
 				var got interface{}
@@ -168,7 +272,17 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 				case (e.Expr == "result.finishReason" || e.Expr == "response.finishReason") && res != nil:
 					got = map[string]interface{}{"raw": nilIfEmpty(res.RawFinishReason), "unified": string(res.FinishReason)}
 				default:
-					continue
+					if e.Expr == "result" || e.Expr == "response" {
+						continue // whole-result snapshots include wire details Go does not expose
+					}
+					if !evalPathSnapshots {
+						continue
+					}
+					v, ok := evalPath(roots, c.Aliases, e.Expr)
+					if !ok {
+						continue
+					}
+					got = jsonValue(v)
 				}
 				snap := e.Snap
 				if m, ok := snap.(map[string]interface{}); ok && m["__err"] != nil {
@@ -182,6 +296,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					t.Errorf("%s: mismatch vs TS snapshot (- TS, + Go):\n%s", e.Expr, d)
 				}
 			}
+			runAsserts(t, c, roots)
 		})
 	}
 }
@@ -291,7 +406,24 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 			if m, ok := v.(map[string]interface{}); ok {
 				m["input"] = in
 			}
+		case types.ReasoningContent:
+			// TS carries the signature and redacted data in providerMetadata
+			// only; Go also keeps its pre-v0.6 fields.
+			if m, ok := v.(map[string]interface{}); ok {
+				delete(m, "signature")
+				delete(m, "redacted_data")
+			}
 		case types.ToolResultContent:
+			// TS marks a failed result isError; Go carries the error text.
+			if m, ok := v.(map[string]interface{}); ok {
+				if x.Error != "" {
+					delete(m, "error")
+					m["isError"] = true
+				}
+				// TS tool results are always provider executed and say so
+				// nowhere.
+				delete(m, "providerExecuted")
+			}
 			// A provider-executed call that only exists in ToolCalls is
 			// reported right before its result.
 			if !have[x.ToolCallID] {
@@ -337,10 +469,10 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				if m.ID != "" {
 					o["id"] = m.ID
 				}
-				if m.ModelID != "" {
+				if m.ModelID != "" && !DropResponseModelID {
 					o["modelId"] = m.ModelID
 				}
-				if !m.Timestamp.IsZero() {
+				if !m.Timestamp.IsZero() && !DropResponseTimestamp {
 					o["timestamp"] = m.Timestamp.UTC().Format("2006-01-02T15:04:05.000Z")
 				}
 			}
@@ -358,6 +490,7 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 			setPM(o, c.ProviderMetadata)
 		case provider.ChunkTypeToolInputStart:
 			o["id"] = id
+			setPM(o, c.ProviderMetadata)
 			if c.ToolCall != nil {
 				o["toolName"] = c.ToolCall.ToolName
 				if c.ToolCall.ProviderExecuted {
@@ -369,8 +502,10 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 			}
 		case provider.ChunkTypeToolInputDelta:
 			o["id"], o["delta"] = id, c.Text
+			setPM(o, c.ProviderMetadata)
 		case provider.ChunkTypeToolInputEnd:
 			o["id"] = id
+			setPM(o, c.ProviderMetadata)
 		case provider.ChunkTypeToolCall:
 			if tc := c.ToolCall; tc != nil {
 				o["toolCallId"], o["toolName"] = tc.ID, tc.ToolName
@@ -391,11 +526,19 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				}
 				if len(tc.ProviderMetadata) > 0 {
 					o["providerMetadata"] = tc.ProviderMetadata
+				} else {
+					setPM(o, c.ProviderMetadata)
 				}
 			}
 		case provider.ChunkTypeToolResult:
 			if tr := c.ToolResult; tr != nil {
 				o["toolCallId"], o["toolName"], o["result"] = tr.ToolCallID, tr.ToolName, tr.Result
+				if tr.Dynamic {
+					o["dynamic"] = true
+				}
+				if len(tr.ProviderMetadata) > 0 {
+					o["providerMetadata"] = tr.ProviderMetadata
+				}
 			}
 		case provider.ChunkTypeToolApprovalRequest:
 			if r := c.ToolApprovalRequest; r != nil {
@@ -419,6 +562,11 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 				o["usage"] = UsageToTS(*c.Usage)
 			}
 			setPM(o, c.ProviderMetadata)
+		case provider.ChunkTypeCustom:
+			if cc := c.CustomContent; cc != nil {
+				o["kind"] = cc.Kind
+				setPM(o, cc.ProviderMetadata)
+			}
 		case provider.ChunkTypeError:
 			o["error"] = c.Text
 		case provider.ChunkTypeRaw:
@@ -429,11 +577,28 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 	return out
 }
 
-var generatedID = regexp.MustCompile(`^(id-\d+|call_[0-9a-f]{16})$`)
+var generatedID = regexp.MustCompile(`^(id-\d+|test-id(-\d+)?|call_[0-9a-f]{16})$`)
 
 // MetadataKeyAlias renames provider-metadata keys of the TS snapshot (e.g. the
 // tests' "test-provider") to the key the Go provider under test reports.
 var MetadataKeyAlias map[string]string
+
+// ToolNameAlias renames tool names reported by the Go provider (for example
+// the "anthropic.code_execution_20250825" id Go uses as a provider tool's
+// name) to the name the TS test registered them under.
+var ToolNameAlias map[string]string
+
+// PromptToolNameAlias maps the tool names a TS prompt uses to the names the Go
+// provider knows the tools by (the reverse of ToolNameAlias).
+var PromptToolNameAlias map[string]string
+
+// DropResponseTimestamp omits the response-metadata timestamp from stream
+// parts, for providers where TS reports none.
+var DropResponseTimestamp bool
+
+// DropResponseModelID omits the response-metadata model id from stream parts,
+// for providers where TS reports none there.
+var DropResponseModelID bool
 
 // Normalize drops TS "undefined" markers and nil/empty noise so the two sides
 // compare structurally.
@@ -455,9 +620,17 @@ func Normalize(v interface{}) interface{} {
 			if k == "id" && x["type"] == "source" {
 				continue // generated ids differ
 			}
-			if k == "toolCallId" {
+			if k == "toolCallId" || (k == "id" && strings.HasPrefix(fmt.Sprint(x["type"]), "tool-input")) {
 				if id, _ := e.(string); generatedID.MatchString(id) {
 					continue // generated ids differ
+				}
+			}
+			if k == "isError" && e == false {
+				continue // an explicit false is the same as unset
+			}
+			if k == "toolName" {
+				if name, _ := e.(string); ToolNameAlias[name] != "" {
+					e = ToolNameAlias[name]
 				}
 			}
 			n := Normalize(e)
@@ -563,7 +736,7 @@ func Diff(path string, want, got interface{}) string {
 }
 
 func trunc(s string) string {
-	if len(s) > 300 {
+	if os.Getenv("TSFIXTURE_FULL") == "" && len(s) > 300 {
 		return s[:300] + "..."
 	}
 	return s
@@ -596,7 +769,7 @@ func CanonStream(parts []interface{}) []interface{} {
 			}
 		case "response-metadata":
 			// Go providers add a headers-only metadata chunk (no wire id).
-			if _, ok := m["id"]; !ok {
+			if id, ok := m["id"]; !ok || Normalize(id) == nil {
 				continue
 			}
 		case "text-delta":
@@ -658,7 +831,19 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 		}
 		return nil
 	}
-	for k, v := range call {
+	// tools first: their hook may register names the prompt refers to
+	keys := make([]string, 0, len(call))
+	for k := range call {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if (keys[i] == "tools") != (keys[j] == "tools") {
+			return keys[i] == "tools"
+		}
+		return keys[i] < keys[j]
+	})
+	for _, k := range keys {
+		v := call[k]
 		switch k {
 		case "prompt":
 			msgs, why := buildPrompt(v)
@@ -714,41 +899,13 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 			rf.Description, _ = m["description"].(string)
 			o.ResponseFormat = rf
 		case "toolChoice":
-			m := v.(map[string]interface{})
-			t, _ := m["type"].(string)
-			o.ToolChoice = types.ToolChoice{Type: types.ToolChoiceType(t)}
-			o.ToolChoice.ToolName, _ = m["toolName"].(string)
+			o.ToolChoice = BuildToolChoice(v)
 		case "tools":
-			for _, tv := range v.([]interface{}) {
-				m := tv.(map[string]interface{})
-				tool := types.Tool{}
-				tool.Name, _ = m["name"].(string)
-				tool.Description, _ = m["description"].(string)
-				if m["type"] == "provider" {
-					tool.Type = "provider"
-					tool.ProviderID, _ = m["id"].(string)
-					a, _ := m["args"].(map[string]interface{})
-					if ProviderToolHook != nil {
-						ht, ok := ProviderToolHook(tool.ProviderID, tool.Name, a)
-						if !ok {
-							return nil, "provider tool args (typed config in Go)"
-						}
-						tool = ht
-					} else if len(a) > 0 {
-						return nil, "provider tool args (typed config in Go)"
-					}
-					tool.ProviderExecuted = true
-				} else {
-					tool.Parameters = m["inputSchema"]
-					if sv, ok := m["strict"].(bool); ok {
-						tool.Strict = &sv
-					}
-					if po, ok := m["providerOptions"].(map[string]interface{}); ok {
-						tool.ProviderOptions = po
-					}
-				}
-				o.Tools = append(o.Tools, tool)
+			tools, why := BuildTools(v)
+			if why != "" {
+				return nil, why
 			}
+			o.Tools = append(o.Tools, tools...)
 		default:
 			return nil, "option " + k
 		}
@@ -780,7 +937,7 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 				msg.Content = append(msg.Content, types.ReasoningContent{Text: p["text"].(string), ProviderOptions: po})
 			case "tool-call":
 				in := p["input"]
-				tc := types.ToolCallContent{ToolCallID: p["toolCallId"].(string), ToolName: p["toolName"].(string), ProviderOptions: po}
+				tc := types.ToolCallContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
 				if str, ok := in.(string); ok {
 					tc.Input = str
 					_ = json.Unmarshal([]byte(str), &tc.Arguments)
@@ -793,17 +950,45 @@ func buildPrompt(v interface{}) ([]types.Message, string) {
 					tc.ProviderExecuted = pe
 				}
 				msg.Content = append(msg.Content, tc)
-			case "tool-result":
-				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: p["toolName"].(string), ProviderOptions: po}
-				if out, ok := p["output"].(map[string]interface{}); ok {
-					o := &types.ToolResultOutput{Type: types.ToolResultOutputType(out["type"].(string))}
-					switch o.Type {
-					case types.ToolResultOutputText, types.ToolResultOutputJSON, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
-						o.Value = out["value"]
-					default:
-						return nil, "tool-result output " + string(o.Type)
+			case "file":
+				fc := types.FileContent{MediaType: stringOf(p["mediaType"]), Filename: stringOf(p["filename"]), ProviderOptions: po}
+				d, _ := p["data"].(map[string]interface{})
+				switch d["type"] {
+				case "data":
+					if str, ok := d["data"].(string); ok {
+						fc.FileData = types.FileData{Type: types.FileDataTypeData, DataString: str, MediaType: fc.MediaType}
+					} else {
+						return nil, "prompt file data bytes"
 					}
-					tr.Output = o
+				case "url":
+					// TS keeps the unparsed string of a gs: URL as originalUrl; Go never
+					// re-parses the string it was given.
+					u := stringOf(d["url"])
+					if o := stringOf(d["originalUrl"]); o != "" {
+						u = o
+					}
+					fc.FileData = types.FileData{Type: types.FileDataTypeURL, URL: u, MediaType: fc.MediaType}
+				case "reference":
+					ref := types.ProviderReference{}
+					if r, ok := d["reference"].(map[string]interface{}); ok {
+						for k, v := range r {
+							ref[k] = stringOf(v)
+						}
+					}
+					fc.FileData = types.FileData{Type: types.FileDataTypeReference, Reference: ref, MediaType: fc.MediaType}
+				default:
+					return nil, fmt.Sprintf("prompt file data %v", d["type"])
+				}
+				msg.Content = append(msg.Content, fc)
+			case "tool-result":
+				tr := types.ToolResultContent{ToolCallID: p["toolCallId"].(string), ToolName: promptToolName(p["toolName"].(string)), ProviderOptions: po}
+				if out, ok := p["output"].(map[string]interface{}); ok {
+					b, _ := json.Marshal(out)
+					var o types.ToolResultOutput
+					if err := json.Unmarshal(b, &o); err != nil {
+						return nil, "tool-result output " + fmt.Sprint(out["type"])
+					}
+					tr.Output = &o
 				}
 				msg.Content = append(msg.Content, tr)
 			default:
@@ -835,4 +1020,103 @@ func readCaseFile(path string) ([]byte, error) {
 		err = cerr
 	}
 	return b, err
+}
+
+func stringOf(v interface{}) string {
+	s, _ := v.(string)
+	return s
+}
+
+func lowerHeaders(h map[string]string) map[string]interface{} {
+	out := map[string]interface{}{}
+	for k, v := range h {
+		lk := strings.ToLower(k)
+		if lk == "date" || lk == "content-length" {
+			continue // added by the Go test server / transport, not by the TS mock
+		}
+		out[lk] = v
+	}
+	return out
+}
+
+func promptToolName(name string) string {
+	if n, ok := PromptToolNameAlias[name]; ok {
+		return n
+	}
+	return name
+}
+
+// BuildPromptMessages converts the JSON form of a TS prompt to Go messages. It
+// returns a reason when the prompt uses a part the harness cannot build.
+func BuildPromptMessages(v interface{}) ([]types.Message, string) {
+	return buildPrompt(v)
+}
+
+// BuildToolChoice converts the JSON form of a TS toolChoice.
+func BuildToolChoice(v interface{}) types.ToolChoice {
+	m, _ := v.(map[string]interface{})
+	t, _ := m["type"].(string)
+	tc := types.ToolChoice{Type: types.ToolChoiceType(t)}
+	tc.ToolName, _ = m["toolName"].(string)
+	return tc
+}
+
+// BuildTools converts the JSON form of a TS tools list to Go tools. It returns
+// a reason when a provider tool cannot be built.
+func BuildTools(v interface{}) ([]types.Tool, string) {
+	var out []types.Tool
+	list, _ := v.([]interface{})
+	for _, tv := range list {
+		m := tv.(map[string]interface{})
+		tool := types.Tool{}
+		tool.Name, _ = m["name"].(string)
+		tool.Description, _ = m["description"].(string)
+		if m["type"] == "provider" {
+			tool.Type = "provider"
+			tool.ProviderID, _ = m["id"].(string)
+			a, _ := m["args"].(map[string]interface{})
+			if ProviderToolHook != nil {
+				ht, ok := ProviderToolHook(tool.ProviderID, tool.Name, a)
+				if !ok {
+					return nil, "provider tool args (typed config in Go)"
+				}
+				tool = ht
+			} else if len(a) > 0 {
+				return nil, "provider tool args (typed config in Go)"
+			}
+			tool.ProviderExecuted = true
+		} else {
+			tool.Parameters = m["inputSchema"]
+			if sv, ok := m["strict"].(bool); ok {
+				tool.Strict = &sv
+			}
+			if po, ok := m["providerOptions"].(map[string]interface{}); ok {
+				tool.ProviderOptions = po
+			}
+			if exs, ok := m["inputExamples"].([]interface{}); ok {
+				for _, ev := range exs {
+					em, _ := ev.(map[string]interface{})
+					in, _ := em["input"].(map[string]interface{})
+					tool.InputExamples = append(tool.InputExamples, types.ToolInputExample{Input: in})
+				}
+			}
+		}
+		out = append(out, tool)
+	}
+	return out, ""
+}
+
+// chunkStrings renders the canned stream chunks as wire text: a string is sent
+// as is, a JSON event becomes a data: line.
+func (r *Response) chunkStrings() []string {
+	out := make([]string, 0, len(r.Chunks))
+	for _, c := range r.Chunks {
+		if s, ok := c.(string); ok {
+			out = append(out, s)
+			continue
+		}
+		b, _ := json.Marshal(c)
+		out = append(out, "data: "+string(b)+"\n\n")
+	}
+	return out
 }

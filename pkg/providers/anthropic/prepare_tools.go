@@ -2,11 +2,11 @@ package anthropic
 
 import (
 	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
 // providerToolBetas maps Anthropic provider tool IDs to the beta flag the TS
@@ -54,6 +54,9 @@ type prepareToolsOptions struct {
 }
 
 type preparedTools struct {
+	// err is a validation failure of a provider tool's arguments (TS
+	// AI_TypeValidationError from validateTypes).
+	err        error
 	tools      []map[string]interface{}
 	toolChoice map[string]interface{}
 	warnings   []types.Warning
@@ -129,6 +132,12 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		// max_uses, ... ) and win over the plain builtin table entry.
 		if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {
 			if _, builtin := anthropicBuiltinToolTypes[t.Name]; builtin {
+				if v, ok := t.ProviderOptions.(interface{ Validate() error }); ok {
+					if err := v.Validate(); err != nil {
+						out.err = &providererrors.TypeValidationError{Field: "args", Message: err.Error(), Cause: err}
+						return out
+					}
+				}
 				wire = append(wire, mapper.ToAnthropicAPIMap())
 				if b, ok := providerToolBetas[t.Name]; ok {
 					addBeta(b)
@@ -169,7 +178,12 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		}
 
 		// Function tool.
-		m := tool.ToAnthropicFormat([]types.Tool{t})[0]
+		// TS forwards the tool's inputSchema untouched (only the
+		// responseFormat schema is sanitized), so do the same.
+		m := map[string]interface{}{"name": t.Name, "input_schema": t.Parameters}
+		if t.Description != "" {
+			m["description"] = t.Description
+		}
 		if cc := validator.GetCacheControl(toolCacheControlOptions(t), "tool definition", true); cc != nil {
 			m["cache_control"] = cc
 		}

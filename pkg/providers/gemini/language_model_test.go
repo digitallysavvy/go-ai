@@ -610,13 +610,13 @@ func TestBuildRequestBody_ServiceTier(t *testing.T) {
 		Prompt: types.Prompt{Text: "Hello"},
 		ProviderOptions: map[string]interface{}{
 			"google": map[string]interface{}{
-				"serviceTier": "SERVICE_TIER_FLEX",
+				"serviceTier": "flex",
 			},
 		},
 	}
 	body := m.buildRequestBody(opts, false)
-	if body["serviceTier"] != "SERVICE_TIER_FLEX" {
-		t.Errorf("serviceTier = %v, want %q", body["serviceTier"], "SERVICE_TIER_FLEX")
+	if body["serviceTier"] != "flex" {
+		t.Errorf("serviceTier = %v, want %q", body["serviceTier"], "flex")
 	}
 }
 
@@ -639,7 +639,7 @@ func TestBuildRequest_VertexPayGoHeaders(t *testing.T) {
 			"vertex": map[string]interface{}{
 				"sharedRequestType": "priority",
 				"requestType":       "shared",
-				"serviceTier":       "SERVICE_TIER_FLEX",
+				"serviceTier":       "flex",
 			},
 		},
 	}

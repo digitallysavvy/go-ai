@@ -30,6 +30,7 @@ func TestEndToEndStreamThroughEventStream(t *testing.T) {
 			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`,
 			`{"type":"content_block_stop","index":0}`,
 			`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+			`{"type":"message_stop"}`,
 		} {
 			_, _ = w.Write(bedrockChunk(t, ev))
 		}
@@ -69,8 +70,8 @@ func TestEndToEndStreamThroughEventStream(t *testing.T) {
 	if text != "Hello" || !finish {
 		t.Fatalf("text=%q finish=%v raws=%d", text, finish, raws)
 	}
-	if raws != 5 {
-		t.Fatalf("raws = %d, want 5", raws)
+	if raws != 6 {
+		t.Fatalf("raws = %d, want 6", raws)
 	}
 }
 

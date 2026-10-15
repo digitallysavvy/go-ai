@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"io"
 	"math"
 	"net/http"
@@ -560,7 +561,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			if usesJsonResponseTool && content.Name == "json" {
 				// jsonTool mode: the model responded via the synthetic json tool.
 				// Extract the tool input as the structured text result.
-				result.Text = jsonStringify(content.Input)
+				result.Text = inputText(content.RawInput, content.Input)
 				isJsonResponseFromTool = true
 			} else if content.ToolsetName != "" {
 				// Toolset member calls (e.g. the computer toolset) map to the
@@ -573,6 +574,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 					ID:               content.ID,
 					ToolName:         mapAnthropicToolName(content.ToolsetName, toolNameMap),
 					Arguments:        toToolsetMemberInput(content.Name, content.Input),
+					RawArguments:     jsonorder.Input(content.RawInput, content.Input).WithLead("action", content.Name).String(),
 					ProviderMetadata: map[string]interface{}{"anthropic": meta},
 				})
 			} else {
@@ -580,6 +582,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 					ID:               content.ID,
 					ToolName:         mapAnthropicToolName(content.Name, toolNameMap),
 					Arguments:        content.Input,
+					RawArguments:     inputText(content.RawInput, content.Input),
 					ProviderMetadata: anthropicCallerMetadata(content.Caller),
 				})
 			}
@@ -597,6 +600,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				ID:               content.ID,
 				ToolName:         content.Name,
 				Arguments:        content.Input,
+				RawArguments:     inputText(content.RawInput, content.Input),
 				ProviderExecuted: true,
 				Dynamic:          true,
 				ProviderMetadata: meta,
@@ -608,6 +612,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				ToolCallID:       content.ToolUseID,
 				ToolName:         mapAnthropicToolName(providerToolResultName(content.Type), toolNameMap),
 				ProviderExecuted: true,
+				ProviderMetadata: callerMetadataJSON(content.Caller),
 			}
 			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_search_tool_result_error", content.IsError); ok {
 				trc.Result = errResult
@@ -631,6 +636,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				ToolCallID:       content.ToolUseID,
 				ToolName:         mapAnthropicToolName(providerToolResultName(content.Type), toolNameMap),
 				ProviderExecuted: true,
+				ProviderMetadata: callerMetadataJSON(content.Caller),
 			}
 			if errResult, ok := parseAnthropicWebToolResultError(content.Content, "web_fetch_tool_result_error", content.IsError); ok {
 				trc.Result = errResult
@@ -842,7 +848,8 @@ func convertAnthropicUsage(usage anthropicUsage) types.Usage {
 
 	// usage.output_tokens_details.thinking_tokens is the reasoning share of
 	// the output tokens (TS convertAnthropicUsage); text is the remainder.
-	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &outputTokens}
+	// Without thinking_tokens TS leaves text and reasoning undefined.
+	result.OutputDetails = &types.OutputTokenDetails{}
 	if usage.OutputTokensDetails != nil && usage.OutputTokensDetails.ThinkingTokens != nil {
 		reasoning := int64(*usage.OutputTokensDetails.ThinkingTokens)
 		text := outputTokens - reasoning
@@ -1330,16 +1337,18 @@ func anthropicMCPToolUseMetadata(serverName string) map[string]interface{} {
 
 // anthropicContent represents content in an Anthropic response
 type anthropicContent struct {
-	Type      string                 `json:"type"` // "text", "tool_use", "thinking", "redacted_thinking", "*_tool_result"
-	Text      string                 `json:"text,omitempty"`
-	ID        string                 `json:"id,omitempty"`
-	Name      string                 `json:"name,omitempty"`
-	From      map[string]interface{} `json:"from,omitempty"`
-	To        map[string]interface{} `json:"to,omitempty"`
-	Input     map[string]interface{} `json:"input,omitempty"`
-	Thinking  string                 `json:"thinking,omitempty"`  // For "thinking" type
-	Signature string                 `json:"signature,omitempty"` // For "thinking" type
-	Data      string                 `json:"data,omitempty"`      // For "redacted_thinking" type
+	Type  string                 `json:"type"` // "text", "tool_use", "thinking", "redacted_thinking", "*_tool_result"
+	Text  string                 `json:"text,omitempty"`
+	ID    string                 `json:"id,omitempty"`
+	Name  string                 `json:"name,omitempty"`
+	From  map[string]interface{} `json:"from,omitempty"`
+	To    map[string]interface{} `json:"to,omitempty"`
+	Input map[string]interface{} `json:"input,omitempty"`
+	// RawInput is the wire form of Input (see anthropicContent.UnmarshalJSON).
+	RawInput  json.RawMessage `json:"-"`
+	Thinking  string          `json:"thinking,omitempty"`  // For "thinking" type
+	Signature string          `json:"signature,omitempty"` // For "thinking" type
+	Data      string          `json:"data,omitempty"`      // For "redacted_thinking" type
 	// Citations holds the raw citation objects attached to a "text" content
 	// block (page_location, char_location, content_block_location,
 	// search_result_location, web_search_result_location, ...). Kept as raw
@@ -1591,10 +1600,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				s.err = io.EOF
 				return nil, io.EOF
 			}
-			if err == io.EOF && s.finish != nil && !s.finishIssued {
-				s.finishIssued = true
-				return s.issueFinish(true), nil
-			}
+			// TS only finishes on message_stop (its stream has no flush), so a
+			// body that ends after message_delta ends without a finish part.
 			s.err = err
 			return nil, err
 		}
@@ -1640,7 +1647,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					Type        string                 `json:"type"`
 					ID          string                 `json:"id"`
 					Name        string                 `json:"name"`
-					Input       map[string]interface{} `json:"input"` // non-empty for programmatic deferred tool calls
+					Input       json.RawMessage        `json:"input"` // non-empty for programmatic deferred tool calls
 					ToolsetName string                 `json:"toolset_name"`
 					Caller      map[string]interface{} `json:"caller"`
 					// mcp_tool_use fields
@@ -1683,8 +1690,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// Serialize it as the initial buffer content so content_block_stop
 				// emits the correct arguments even with no following deltas.
 				var initialInput string
-				if len(start.ContentBlock.Input) > 0 {
-					initialInput = jsonStringify(start.ContentBlock.Input)
+				if startInput := jsonorder.Input(start.ContentBlock.Input, nil); startInput.Len() > 0 {
+					initialInput = startInput.String()
 				}
 				block := &streamContentBlock{
 					blockType:    "tool-call",
@@ -1784,8 +1791,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				default:
 					// Dynamic web tools provide their input here; other tools
 					// stream it via deltas, so only non-empty input is used.
-					if len(start.ContentBlock.Input) > 0 {
-						block.inputBuf.WriteString(jsonStringify(start.ContentBlock.Input))
+					if startInput := jsonorder.Input(start.ContentBlock.Input, nil); startInput.Len() > 0 {
+						block.inputBuf.WriteString(startInput.String())
 						block.firstDelta = false
 					}
 				}
@@ -1807,10 +1814,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			case "mcp_tool_use":
 				// MCP tool calls have their full input pre-populated in content_block_start.
 				// Emit immediately as a tool call chunk (no input_json_delta accumulation needed).
-				input := start.ContentBlock.Input
-				if input == nil {
-					input = map[string]interface{}{}
+				input := map[string]interface{}{}
+				if len(start.ContentBlock.Input) > 0 {
+					_ = json.Unmarshal(start.ContentBlock.Input, &input)
+					if input == nil {
+						input = map[string]interface{}{}
+					}
 				}
+				mcpInput := jsonorder.Input(start.ContentBlock.Input, nil).String()
 				// Track tool call ID → tool name for mcp_tool_result lookup, and the
 				// full toolName/providerMetadata pair so the paired mcp_tool_result
 				// can resolve the same values (TS mcpToolCalls[part.id]).
@@ -1830,6 +1841,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						ID:               start.ContentBlock.ID,
 						ToolName:         start.ContentBlock.Name,
 						Arguments:        input,
+						RawArguments:     mcpInput,
 						ProviderExecuted: true,
 						Dynamic:          true,
 						ProviderMetadata: mcpMeta,
@@ -1948,6 +1960,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					ToolCallID:       start.ContentBlock.ToolUseID,
 					ToolName:         toolName,
 					ProviderExecuted: true,
+					ProviderMetadata: anthropicCallerMetadata(start.ContentBlock.Caller),
 				}
 				if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_fetch_tool_result_error", start.ContentBlock.IsError); ok {
 					tr.Result = errResult
@@ -1977,6 +1990,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					ToolCallID:       start.ContentBlock.ToolUseID,
 					ToolName:         toolName,
 					ProviderExecuted: true,
+					ProviderMetadata: anthropicCallerMetadata(start.ContentBlock.Caller),
 				}
 				var webSearchSources []types.SourceContent
 				if errResult, ok := parseAnthropicWebToolResultError(start.ContentBlock.Content, "web_search_tool_result_error", start.ContentBlock.IsError); ok {
@@ -2059,19 +2073,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						Iterations               []UsageIteration `json:"iterations,omitempty"`
 					} `json:"usage"`
 					Container *anthropicContainerResponse `json:"container,omitempty"`
-					Content   []struct {
-						Type   string                 `json:"type"`
-						ID     string                 `json:"id"`
-						Name   string                 `json:"name"`
-						Input  map[string]interface{} `json:"input"`
-						Caller map[string]interface{} `json:"caller,omitempty"`
-						// mcp_tool_use fields
-						ServerName string `json:"server_name,omitempty"`
-						// Deferred provider tool result fields
-						ToolUseID string          `json:"tool_use_id,omitempty"`
-						Content   json.RawMessage `json:"content,omitempty"`
-						IsError   bool            `json:"is_error,omitempty"`
-					} `json:"content"`
+					Content   []anthropicContent          `json:"content"`
 				} `json:"message"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &msg); err == nil {
@@ -2122,17 +2124,15 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// reflect the message rather than the requested model. The
 				// headers and timestamp ride along because consumers that keep
 				// only the last response-metadata chunk would otherwise lose them.
-				if msg.Message.ID != "" || msg.Message.Model != "" {
-					s.pending = append(s.pending, &provider.StreamChunk{
-						Type: provider.ChunkTypeResponseMetadata,
-						ResponseMetadata: &provider.ResponseMetadata{
-							ID:        msg.Message.ID,
-							ModelID:   msg.Message.Model,
-							Headers:   s.responseHeaders,
-							Timestamp: s.responseTimestamp,
-						},
-					})
-				}
+				s.pending = append(s.pending, &provider.StreamChunk{
+					Type: provider.ChunkTypeResponseMetadata,
+					ResponseMetadata: &provider.ResponseMetadata{
+						ID:        msg.Message.ID,
+						ModelID:   msg.Message.Model,
+						Headers:   s.responseHeaders,
+						Timestamp: s.responseTimestamp,
+					},
+				})
 				s.pending = append(s.pending, messageStartChunk(event.Data))
 				if v := rawJSONValue(msg.Message.InputTransformations); v != nil {
 					s.inputTransformations = v
@@ -2165,191 +2165,32 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					s.container = msg.Message.Container
 				}
 
-				// Buffer chunks for each pre-populated content block.
-				// tool_use blocks become tool call chunks (or text in jsonTool mode).
-				// Deferred provider tool result blocks (web_search_tool_result, etc.)
-				// become ChunkTypeToolResult chunks so pendingDeferredToolCalls clears.
+				// Programmatic tool calling: pre-populated tool_use blocks. TS
+				// handles tool_use only here; other pre-populated blocks (mcp,
+				// web search, results) are ignored.
 				for _, part := range msg.Message.Content {
-					switch part.Type {
-					case "tool_use":
-						args := part.Input
-						if args == nil {
-							args = map[string]interface{}{}
-						}
-						if s.usesJsonResponseTool && part.Name == "json" {
-							// jsonTool mode: emit the tool input as a text chunk.
-							s.isJsonResponseFromTool = true
-							s.pending = append(s.pending, &provider.StreamChunk{
-								Type: provider.ChunkTypeText,
-								Text: jsonStringify(args),
-							})
-						} else {
-							// TS emits the full tool-input sequence for a tool_use
-							// block pre-populated in message_start, then the call
-							// with its caller metadata.
-							toolName := mapAnthropicToolName(part.Name, s.toolNameMap)
-							inputJSON := jsonStringify(args)
-							s.pending = append(s.pending,
-								&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: part.ID, ToolName: toolName}},
-								&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: part.ID, Text: inputJSON},
-								&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: part.ID}},
-								&provider.StreamChunk{
-									Type: provider.ChunkTypeToolCall,
-									ToolCall: &types.ToolCall{
-										ID:               part.ID,
-										ToolName:         toolName,
-										Arguments:        args,
-										ProviderMetadata: anthropicCallerMetadata(part.Caller),
-									},
-								})
-						}
-					case "mcp_tool_use":
-						// Pre-populated deferred MCP tool call (TS content_block_start
-						// "mcp_tool_use" case, mirrored here for parity with the other
-						// deferred block types already handled in this loop). Track the
-						// call's toolName/providerMetadata in s.mcpToolCalls so a paired
-						// mcp_tool_result elsewhere in this same content array (or a
-						// later content_block_start) can resolve them.
-						input := part.Input
-						if input == nil {
-							input = map[string]interface{}{}
-						}
-						s.serverToolCallNames[part.ID] = part.Name
-						mcpMeta := anthropicMCPToolUseMetadata(part.ServerName)
-						s.mcpToolCalls[part.ID] = mcpToolCallInfo{
-							toolName:         part.Name,
-							providerMetadata: mcpMeta,
-						}
-						s.pending = append(s.pending, &provider.StreamChunk{
+					if part.Type != "tool_use" {
+						continue
+					}
+					args := part.Input
+					if args == nil {
+						args = map[string]interface{}{}
+					}
+					inputJSON := inputText(part.RawInput, args)
+					s.pending = append(s.pending,
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: part.ID, ToolName: part.Name}},
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: part.ID, Text: inputJSON},
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: part.ID}},
+						&provider.StreamChunk{
 							Type: provider.ChunkTypeToolCall,
 							ToolCall: &types.ToolCall{
 								ID:               part.ID,
 								ToolName:         part.Name,
-								Arguments:        input,
-								ProviderExecuted: true,
-								Dynamic:          true,
-								ProviderMetadata: mcpMeta,
+								Arguments:        args,
+								RawArguments:     inputJSON,
+								ProviderMetadata: anthropicCallerMetadata(part.Caller),
 							},
 						})
-					case "web_search_tool_result":
-						// Remap snake_case wire fields to camelCase and emit source chunks.
-						toolName := s.serverToolCallNames[part.ToolUseID]
-						if toolName == "" {
-							toolName = providerToolResultName(part.Type)
-						}
-						tr := &types.ToolResult{
-							ToolCallID:       part.ToolUseID,
-							ToolName:         toolName,
-							ProviderExecuted: true,
-						}
-						var webSearchSources []types.SourceContent
-						if errResult, ok := parseAnthropicWebToolResultError(part.Content, "web_search_tool_result_error", part.IsError); ok {
-							tr.Result = errResult
-							tr.Error = fmt.Errorf("%v", errResult["errorCode"])
-						} else if len(part.Content) > 0 {
-							mapped, sources := convertWebSearchToolResult(part.Content)
-							tr.Result = mapped
-							webSearchSources = sources
-							if len(sources) > 0 {
-								s.hasWebSearchResults = true
-							}
-						}
-						s.pending = append(s.pending, &provider.StreamChunk{
-							Type:       provider.ChunkTypeToolResult,
-							ToolResult: tr,
-						})
-						for _, src := range webSearchSources {
-							s2 := src
-							s.pending = append(s.pending, &provider.StreamChunk{
-								Type:          provider.ChunkTypeSource,
-								SourceContent: &s2,
-							})
-						}
-					case "web_fetch_tool_result":
-						// Remap snake_case wire fields (retrieved_at, media_type) to camelCase.
-						toolName := s.serverToolCallNames[part.ToolUseID]
-						if toolName == "" {
-							toolName = providerToolResultName(part.Type)
-						}
-						tr := &types.ToolResult{
-							ToolCallID:       part.ToolUseID,
-							ToolName:         toolName,
-							ProviderExecuted: true,
-						}
-						if errResult, ok := parseAnthropicWebToolResultError(part.Content, "web_fetch_tool_result_error", part.IsError); ok {
-							tr.Result = errResult
-							tr.Error = fmt.Errorf("%v", errResult["errorCode"])
-						} else if len(part.Content) > 0 {
-							tr.Result = convertWebFetchToolResult(part.Content)
-							// Grow the citation document list in stream order so a later
-							// page_location/char_location citation (in a subsequent text
-							// block) can resolve against this fetched document, mirroring
-							// TS's inline `citationDocuments.push(...)` in the same
-							// content_block_start switch (anthropic-language-model.ts:2228).
-							if doc, ok := extractWebFetchCitationDocument(part.Content); ok {
-								s.citationDocuments = append(s.citationDocuments, doc)
-							}
-						}
-						s.pending = append(s.pending, &provider.StreamChunk{
-							Type:       provider.ChunkTypeToolResult,
-							ToolResult: tr,
-						})
-					case "mcp_tool_result":
-						// Resolve toolName/providerMetadata from the paired mcp_tool_use
-						// call (populated when it was streamed, potentially in an
-						// earlier compaction iteration of this same connection), and
-						// mark the result dynamic like TS.
-						call := s.mcpToolCalls[part.ToolUseID]
-						toolName := call.toolName
-						if toolName == "" {
-							toolName = s.serverToolCallNames[part.ToolUseID]
-						}
-						tr := &types.ToolResult{
-							ToolCallID:       part.ToolUseID,
-							ToolName:         toolName,
-							Dynamic:          true,
-							ProviderMetadata: call.providerMetadata,
-						}
-						if part.IsError {
-							var errContent interface{}
-							if len(part.Content) > 0 {
-								json.Unmarshal(part.Content, &errContent) //nolint:errcheck
-							}
-							tr.Error = fmt.Errorf("%v", errContent)
-						} else {
-							if len(part.Content) > 0 {
-								var result interface{}
-								json.Unmarshal(part.Content, &result) //nolint:errcheck
-								tr.Result = result
-							}
-						}
-						s.pending = append(s.pending, &provider.StreamChunk{
-							Type:       provider.ChunkTypeToolResult,
-							ToolResult: tr,
-						})
-					case "code_execution_tool_result", "bash_code_execution_tool_result",
-						"text_editor_code_execution_tool_result", "tool_search_tool_result",
-						"advisor_tool_result":
-						// Deferred provider tool results pre-populated in message_start.
-						// Emit as ChunkTypeToolResult so the SDK can clear pendingDeferredToolCalls.
-						dr, ok := convertDeferredToolResult(part.Type, part.Content, s.toolNameMap, s.serverToolProviderNames[part.ToolUseID])
-						if !ok {
-							break
-						}
-						tr := &types.ToolResult{
-							ToolCallID:       part.ToolUseID,
-							ToolName:         dr.ToolName,
-							Result:           dr.Result,
-							ProviderExecuted: part.Type == "advisor_tool_result",
-						}
-						if dr.IsError {
-							tr.Error = fmt.Errorf("%s", dr.ErrorCode)
-						}
-						s.pending = append(s.pending, &provider.StreamChunk{
-							Type:       provider.ChunkTypeToolResult,
-							ToolResult: tr,
-						})
-					}
 				}
 			}
 			continue
@@ -2532,10 +2373,20 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				if args == nil && invalidInput == "" {
 					args = map[string]interface{}{}
 				}
+				// finalInput is the tool-call input text TS reports: the
+				// accumulated wire text, '{}' when empty, with the toolset
+				// member / programmatic type injected in wire key order.
+				finalInput := inputStr
+				if finalInput == "" {
+					finalInput = "{}"
+				}
 				var toolsetDelta *provider.StreamChunk
 				if block.toolsetName != "" {
 					args = toToolsetMemberInput(block.memberName, args)
-					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: jsonStringify(args)}
+					if invalidInput == "" {
+						finalInput = jsonorder.Input(json.RawMessage(finalInput), nil).WithLead("action", block.memberName).String()
+					}
+					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: finalInput}
 				}
 				if block.providerToolName == "code_execution" {
 					_, hasCode := args["code"]
@@ -2546,6 +2397,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 							withType[k] = v
 						}
 						args = withType
+						if invalidInput == "" {
+							finalInput = jsonorder.Input(json.RawMessage(finalInput), nil).WithLead("type", "programmatic-tool-call").String()
+						}
 					}
 				}
 				var meta map[string]interface{}
@@ -2565,7 +2419,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						ID:               block.toolCallID,
 						ToolName:         block.toolName,
 						Arguments:        args,
-						RawArguments:     invalidInput,
+						RawArguments:     finalInput,
 						ProviderExecuted: block.providerExecuted,
 						Dynamic:          block.dynamic,
 						ProviderMetadata: meta,
@@ -2961,7 +2815,7 @@ type webFetchResultWire struct {
 	RetrievedAt string `json:"retrieved_at"`
 	Content     struct {
 		Type      string      `json:"type"`
-		Title     string      `json:"title"`
+		Title     *string     `json:"title"`
 		Citations interface{} `json:"citations"`
 		Source    struct {
 			Type      string `json:"type"`
@@ -2989,13 +2843,17 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 		json.Unmarshal(raw, &fallback) //nolint:errcheck
 		return fallback
 	}
+	var title interface{}
+	if wire.Content.Title != nil {
+		title = *wire.Content.Title
+	}
 	return map[string]interface{}{
 		"type":        wire.Type,
 		"url":         wire.URL,
 		"retrievedAt": wire.RetrievedAt,
 		"content": map[string]interface{}{
 			"type":      wire.Content.Type,
-			"title":     wire.Content.Title,
+			"title":     title,
 			"citations": wire.Content.Citations,
 			"source": map[string]interface{}{
 				"type":      wire.Content.Source.Type,

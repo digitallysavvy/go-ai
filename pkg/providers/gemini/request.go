@@ -54,18 +54,19 @@ func (m *LanguageModel) providerOptionsNames() []string {
 	return []string{"google"}
 }
 
-// getProviderOpts returns the first matching provider options map from
-// GenerateOptions.ProviderOptions using the configured key precedence order.
-func (m *LanguageModel) getProviderOpts(opts *provider.GenerateOptions) map[string]interface{} {
+// getProviderOptsNamed returns the first matching provider options map from
+// GenerateOptions.ProviderOptions using the configured key precedence order,
+// plus the key it was found under (for error messages).
+func (m *LanguageModel) getProviderOptsNamed(opts *provider.GenerateOptions) (map[string]interface{}, string) {
 	if opts == nil || opts.ProviderOptions == nil {
-		return nil
+		return nil, ""
 	}
 	for _, key := range m.cfg.ProviderOptionsKeys {
 		if v, ok := opts.ProviderOptions[key].(map[string]interface{}); ok {
-			return v
+			return v, key
 		}
 	}
-	return nil
+	return nil, ""
 }
 
 func otherWarning(message string) types.Warning {
@@ -87,7 +88,12 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	headers := map[string]string{}
 	warnings := []types.Warning{}
 	isVertex := m.isVertex()
-	provOpts := m.getProviderOpts(opts)
+	provOpts, optsName := m.getProviderOptsNamed(opts)
+	if provOpts != nil {
+		if err := validateLanguageModelOptions(optsName, provOpts); err != nil {
+			return nil, nil, nil, err
+		}
+	}
 	providerName := m.cfg.ProviderName
 
 	for _, t := range opts.Tools {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"io"
 	"net/http"
 	"net/url"
@@ -68,6 +69,10 @@ type converseArgs struct {
 // getArgs ports TS amazon-bedrock-chat-language-model.ts#getArgs.
 func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, error) {
 	warnings := []types.Warning{}
+
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 
 	amazonBedrockOptions := cloneMap(bedrockProviderOptions(opts))
 	anthropicOptions := bedrockProviderOptionMap(opts.ProviderOptions, "anthropic")
@@ -947,8 +952,14 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 		if part.ToolUse != nil {
 			if usesJSONResponseTool && part.ToolUse.Name == "json" {
 				isJSONResponseFromTool = true
-				result.Text = string(part.ToolUse.Input)
-				ordered = append(ordered, types.TextContent{Text: result.Text})
+				// TS: text = JSON.stringify(toolUse.input), appended after any
+				// text the model produced before the tool call.
+				jsonText := jsonorder.Text(part.ToolUse.Input, nil)
+				if len(ordered) > 0 {
+					hasNonText = true // several text parts: keep the ordered content
+				}
+				result.Text += jsonText
+				ordered = append(ordered, types.TextContent{Text: jsonText})
 				continue
 			}
 			var args map[string]interface{}
@@ -974,6 +985,10 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 			ordered = append(ordered, types.ToolCallContent{ToolCallID: call.ID, ToolName: call.ToolName, Arguments: args})
 			hasNonText = true
 		}
+	}
+	// TS reports every text block (and every citation text) as its own part.
+	if len(ordered) > 1 {
+		hasNonText = true
 	}
 	if hasNonText {
 		result.Content = ordered
@@ -1062,6 +1077,10 @@ func mapBedrockFinishReason(stopReason string, isJSONResponseFromTool bool) type
 
 // convertBedrockConverseUsage ports TS convert-amazon-bedrock-usage.ts.
 func convertBedrockConverseUsage(raw json.RawMessage) types.Usage {
+	// TS createNullLanguageModelUsage: nothing is known without a usage object.
+	if len(raw) == 0 || string(raw) == "null" {
+		return types.Usage{}
+	}
 	var usage struct {
 		InputTokens           int `json:"inputTokens"`
 		OutputTokens          int `json:"outputTokens"`

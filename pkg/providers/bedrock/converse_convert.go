@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"regexp"
 	"strings"
 	"unicode/utf16"
@@ -142,7 +144,7 @@ func bedrockImageFormat(mediaType string) (string, error) {
 	case "image/webp":
 		return "webp", nil
 	default:
-		return "", fmt.Errorf("unsupported image mime type: %s, expected one of: image/jpeg, image/png, image/gif, image/webp", mediaType)
+		return "", bedrockUnsupported("image mime type: "+mediaType, "Unsupported image mime type: "+mediaType+", expected one of: image/jpeg, image/png, image/gif, image/webp")
 	}
 }
 
@@ -167,7 +169,7 @@ func bedrockDocumentFormat(mediaType string) (string, error) {
 	case "text/markdown":
 		return "md", nil
 	default:
-		return "", fmt.Errorf("unsupported file mime type: %s, expected one of: application/pdf, text/csv, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.ms-excel, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/html, text/plain, text/markdown", mediaType)
+		return "", bedrockUnsupported("file mime type: "+mediaType, "Unsupported file mime type: "+mediaType+", expected one of: application/pdf, text/csv, application/msword, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.ms-excel, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, text/html, text/plain, text/markdown")
 	}
 }
 
@@ -194,7 +196,7 @@ func bedrockVideoFormat(mediaType string) (string, error) {
 	case "video/3gpp":
 		return "three_gp", nil
 	default:
-		return "", fmt.Errorf("unsupported video mime type: %s", mediaType)
+		return "", bedrockUnsupported("video mime type: "+mediaType, "Unsupported video mime type: "+mediaType+", expected one of: video/x-matroska, video/quicktime, video/mp4, video/webm, video/x-flv, video/mpeg, video/mpg, video/wmv, video/x-ms-wmv, video/3gpp")
 	}
 }
 
@@ -270,7 +272,7 @@ func fileContentPayload(file types.FileContent) bedrockFilePayload {
 
 func toolResultFileContentPayload(block types.FileContentBlock) (string, bedrockFilePayload, error) {
 	if block.Reference != "" || block.FileData.Type == types.FileDataTypeReference {
-		return "", bedrockFilePayload{}, fmt.Errorf("unsupported tool result file data of type: reference")
+		return "", bedrockFilePayload{}, bedrockUnsupported(`tool result file data of type "reference"`, "")
 	}
 	mediaType := block.MediaType
 	if mediaType == "" {
@@ -283,7 +285,7 @@ func toolResultFileContentPayload(block types.FileContentBlock) (string, bedrock
 	}
 	if url != "" {
 		if !strings.HasPrefix(url, "s3://") {
-			return "", bedrockFilePayload{}, fmt.Errorf("unsupported tool result file data of type: url")
+			return "", bedrockFilePayload{}, bedrockUnsupported(`tool result file data of type "url"`, "")
 		}
 		return mediaType, bedrockFilePayload{s3URI: url}, nil
 	}
@@ -315,27 +317,14 @@ func resolveBedrockDataMediaType(mediaType string, payload bedrockFilePayload) (
 	if isFullMediaType(mediaType) {
 		return mediaType, nil
 	}
-	if !payload.hasRawBytes {
-		return "", fmt.Errorf("file of media type %q must specify subtype since it could not be auto-detected", mediaType)
-	}
-	switch topLevelMediaType(mediaType) {
-	case "image":
-		switch {
-		case len(payload.raw) >= 4 && payload.raw[0] == 0x89 && payload.raw[1] == 0x50 && payload.raw[2] == 0x4e && payload.raw[3] == 0x47:
-			return "image/png", nil
-		case len(payload.raw) >= 3 && payload.raw[0] == 0x47 && payload.raw[1] == 0x49 && payload.raw[2] == 0x46:
-			return "image/gif", nil
-		case len(payload.raw) >= 2 && payload.raw[0] == 0xff && payload.raw[1] == 0xd8:
-			return "image/jpeg", nil
-		case len(payload.raw) >= 12 && payload.raw[0] == 0x52 && payload.raw[1] == 0x49 && payload.raw[2] == 0x46 && payload.raw[3] == 0x46 && payload.raw[8] == 0x57 && payload.raw[9] == 0x45 && payload.raw[10] == 0x42 && payload.raw[11] == 0x50:
-			return "image/webp", nil
-		}
-	case "application":
-		if len(payload.raw) >= 4 && payload.raw[0] == 0x25 && payload.raw[1] == 0x50 && payload.raw[2] == 0x44 && payload.raw[3] == 0x46 {
-			return "application/pdf", nil
+	// TS resolveFullMediaType: sniff the subtype from inline bytes with the
+	// signature table of the top-level type.
+	if payload.hasRawBytes {
+		if detected, ok := fileutil.DetectMediaTypeSignature(payload.raw, topLevelMediaType(mediaType)); ok {
+			return detected, nil
 		}
 	}
-	return "", fmt.Errorf("file of media type %q must specify subtype since it could not be auto-detected", mediaType)
+	return "", bedrockUnsupported(fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType), "")
 }
 
 // mediaSourceBlock builds an image/video `source` block: either inline bytes
@@ -591,7 +580,7 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 		switch block.Type {
 		case bedrockBlockSystem:
 			if len(out) > 0 {
-				return nil, nil, fmt.Errorf("multiple system messages that are separated by user/assistant messages are not supported")
+				return nil, nil, bedrockUnsupported("Multiple system messages that are separated by user/assistant messages", "")
 			}
 			for _, msg := range block.Messages {
 				for _, part := range msg.Content {
@@ -823,7 +812,7 @@ func bedrockUserImageBlock(p types.ImageContent) (map[string]interface{}, error)
 			return imageBlock, nil
 		}
 		if p.URL != "" {
-			return nil, fmt.Errorf("image URL data is not supported")
+			return nil, bedrockUnsupported("File URL data", "")
 		}
 		return nil, fmt.Errorf("image content requires inline data")
 	}
@@ -843,7 +832,7 @@ func bedrockUserImageBlock(p types.ImageContent) (map[string]interface{}, error)
 
 func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) string) (map[string]interface{}, bool, error) {
 	if file.Reference != "" || file.FileData.Type == types.FileDataTypeReference {
-		return nil, false, fmt.Errorf("file parts with provider references are not supported")
+		return nil, false, bedrockUnsupported("file parts with provider references", "")
 	}
 
 	mediaType := fileContentMediaType(file)
@@ -864,11 +853,11 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 			}
 			return map[string]interface{}{"video": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}}, true, nil
 		default:
-			return nil, false, fmt.Errorf("File URL data is not supported for media type: %s", mediaType) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, false, bedrockUnsupported("File URL data", "")
 		}
 	}
 	if file.URL != "" || file.FileData.Type == types.FileDataTypeURL {
-		return nil, false, fmt.Errorf("file URL data is not supported")
+		return nil, false, bedrockUnsupported("File URL data", "")
 	}
 
 	if file.Text != "" || file.FileData.Type == types.FileDataTypeText {
@@ -892,7 +881,12 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 		if err != nil {
 			return nil, false, err
 		}
-		return map[string]interface{}{"image": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}}, true, nil
+		imageBlock := map[string]interface{}{"image": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}}
+		// TS: providerOptions.bedrock.guardContent wraps an inline image part.
+		if bedrockImageGuardContentOptions(file.ProviderOptions) {
+			return map[string]interface{}{"guardContent": imageBlock}, true, nil
+		}
+		return imageBlock, true, nil
 	case "video":
 		format, err := bedrockVideoFormat(mediaType)
 		if err != nil {
@@ -968,7 +962,7 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 					out = append(out, map[string]interface{}{"video": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}})
 				default:
 					if payload.s3URI != "" {
-						return nil, fmt.Errorf(`unsupported tool result file data of type "url"`)
+						return nil, bedrockUnsupported(`tool result file data of type "url"`, "")
 					}
 					format, err := bedrockDocumentFormat(mediaType)
 					if err != nil {
@@ -985,7 +979,7 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 					out = append(out, map[string]interface{}{"document": document})
 				}
 			default:
-				return nil, fmt.Errorf("unsupported tool content part type: %s", block.ToolResultContentType())
+				return nil, bedrockUnsupported("unsupported tool content part type: "+block.ToolResultContentType(), "")
 			}
 		}
 		return out, nil
@@ -1009,4 +1003,13 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 		// JSON.stringify(output.value).
 		return []map[string]interface{}{{"text": jsonStringify(part.Output.Value)}}, nil
 	}
+}
+
+// bedrockUnsupported is the UnsupportedFunctionalityError TS throws from the
+// message converter. message defaults to the SDK's standard text.
+func bedrockUnsupported(functionality, message string) error {
+	if message == "" {
+		message = fmt.Sprintf("'%s' functionality not supported.", functionality)
+	}
+	return &providererrors.UnsupportedFunctionalityError{Functionality: functionality, Message: message}
 }

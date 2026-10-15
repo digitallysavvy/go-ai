@@ -404,7 +404,11 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 		body["safeguards"] = sg
 	}
 	if o.ContextManagement != nil {
-		body["context_management"] = o.ContextManagement
+		cm, err := wireContextManagement(o.ContextManagement)
+		if err != nil {
+			return nil, err
+		}
+		body["context_management"] = cm
 	}
 	if o.Compaction != nil {
 		body["compaction"] = o.Compaction
@@ -533,6 +537,9 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 			defaultEagerInputStreaming: defaultEager,
 			rejectsForcedToolUse:       caps.RejectsForcedToolUse || th.typ == ThinkingTypeEnabled,
 		})
+	}
+	if prepared.err != nil {
+		return nil, prepared.err
 	}
 	if prepared.tools != nil {
 		body["tools"] = prepared.tools

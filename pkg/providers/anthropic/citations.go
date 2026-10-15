@@ -208,9 +208,9 @@ func extractWebFetchCitationDocument(raw json.RawMessage) (citationDocument, boo
 	if wire.Type != "web_fetch_result" {
 		return citationDocument{}, false
 	}
-	title := wire.Content.Title
-	if title == "" {
-		title = wire.URL
+	title := wire.URL // TS: title ?? url
+	if wire.Content.Title != nil {
+		title = *wire.Content.Title
 	}
 	return citationDocument{
 		Title:     title,

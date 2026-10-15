@@ -29,6 +29,23 @@ type advisor20260301Options struct {
 	Caching   *Advisor20260301Caching `json:"caching,omitempty"`
 }
 
+// Validate mirrors advisor_20260301ArgsSchema: maxTokens is at least 1024 and
+// caching carries an ephemeral type with a 5m or 1h ttl.
+func (a advisor20260301Options) Validate() error {
+	if a.MaxTokens != nil && *a.MaxTokens < 1024 {
+		return fmt.Errorf("advisor_20260301 maxTokens must be an integer of at least 1024, got %d", *a.MaxTokens)
+	}
+	if a.Caching != nil {
+		if a.Caching.Type != "ephemeral" {
+			return fmt.Errorf("advisor_20260301 caching.type must be \"ephemeral\", got %q", a.Caching.Type)
+		}
+		if a.Caching.TTL != "5m" && a.Caching.TTL != "1h" {
+			return fmt.Errorf("advisor_20260301 caching.ttl must be \"5m\" or \"1h\", got %q", a.Caching.TTL)
+		}
+	}
+	return nil
+}
+
 func (a advisor20260301Options) ToAnthropicAPIMap() map[string]interface{} {
 	m := map[string]interface{}{
 		"type":  "advisor_20260301",

@@ -146,3 +146,23 @@ func TestJSONToolAndToolInputAreNotHTMLEscaped(t *testing.T) {
 		t.Fatalf("text = %q", res.Text)
 	}
 }
+
+// TS finishes only on message_stop (the stream has no flush), so a body that
+// ends after message_delta ends without a finish part.
+func TestStreamEndsWithoutFinishWhenMessageStopIsMissing(t *testing.T) {
+	model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"c\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n"+
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n")
+	})
+	defer closeFn()
+	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range drain(t, s) {
+		if c.Type == provider.ChunkTypeFinish {
+			t.Fatalf("finish emitted without message_stop: %+v", c)
+		}
+	}
+}
