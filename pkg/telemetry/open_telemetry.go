@@ -215,6 +215,15 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	if e.Settings != nil && e.Settings.FunctionID != "" {
 		span.SetAttributes(attribute.String("gen_ai.agent.name", e.Settings.FunctionID))
 	}
+	// TS onGenerateStart / onObjectOperationStart also put the call-level
+	// request settings on the root span; embed/rerank roots carry none.
+	// stop_sequences is a generateText/streamText setting only, and the
+	// generateObject/streamObject root declares its output type.
+	isObjectOperation := e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject"
+	if isObjectOperation {
+		span.SetAttributes(attribute.String("gen_ai.output.type", "json"))
+	}
+	span.SetAttributes(requestSettingAttributes(e, !isObjectOperation)...)
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if recordInputs && e.System != "" {
 		if b, err := json.Marshal(formatSystemInstructions(e.System)); err == nil {
@@ -272,6 +281,9 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		if e.SchemaDescription != "" {
 			span.SetAttributes(attribute.String("ai.schema.description", e.SchemaDescription))
 		}
+		if e.SettingsOutput != "" {
+			span.SetAttributes(attribute.String("ai.settings.output", e.SettingsOutput))
+		}
 	}
 	if i.opts.RuntimeContext {
 		if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
@@ -289,6 +301,38 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st.mu.Unlock()
 	}
 	return ctx
+}
+
+// requestSettingAttributes returns the gen_ai.request.* attributes for the
+// call-level generation settings of a start event (TS onGenerateStart /
+// onObjectOperationStart). Unset settings are omitted.
+func requestSettingAttributes(e TelemetryStartEvent, includeStopSequences bool) []attribute.KeyValue {
+	var attrs []attribute.KeyValue
+	if e.FrequencyPenalty != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.frequency_penalty", *e.FrequencyPenalty)
+	}
+	if e.MaxOutputTokens != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.max_tokens", *e.MaxOutputTokens))
+	}
+	if e.PresencePenalty != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.presence_penalty", *e.PresencePenalty)
+	}
+	if e.Temperature != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.temperature", *e.Temperature)
+	}
+	if e.TopK != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.top_k", *e.TopK))
+	}
+	if e.TopP != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.top_p", *e.TopP)
+	}
+	if includeStopSequences && len(e.StopSequences) > 0 {
+		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", e.StopSequences))
+	}
+	if e.Seed != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.seed", *e.Seed))
+	}
+	return attrs
 }
 
 // headerAttributes converts caller-supplied request headers into

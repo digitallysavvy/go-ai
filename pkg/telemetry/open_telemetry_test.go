@@ -505,3 +505,73 @@ func TestOpenTelemetrySpanStatusErrorOnErrorFinishReason(t *testing.T) {
 		})
 	}
 }
+
+// TS onGenerateStart / onObjectOperationStart put the request settings on the
+// root span (open-telemetry.test.ts "creates root span with correct
+// attributes"), and the object root declares gen_ai.output.type=json.
+func TestOpenTelemetryOnStartRequestSettingsOnRootSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), Schema: true})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	maxTokens, topK, seed := 100, 5, 7
+	temperature, topP := 0.7, 0.9
+	start := TelemetryStartEvent{
+		OperationType:   "ai.generateText",
+		ModelProvider:   "openai.chat",
+		ModelID:         "gpt-text",
+		Settings:        settings,
+		MaxOutputTokens: &maxTokens,
+		Temperature:     &temperature,
+		TopP:            &topP,
+		TopK:            &topK,
+		Seed:            &seed,
+		StopSequences:   []string{"END"},
+	}
+	trace.SpanFromContext(integration.OnStart(context.Background(), start)).End()
+
+	span := findSpan(rec, "invoke_agent gpt-text")
+	if span == nil {
+		t.Fatal("missing text root span")
+	}
+	for key, want := range map[string]interface{}{
+		"gen_ai.request.max_tokens":  int64(100),
+		"gen_ai.request.temperature": 0.7,
+		"gen_ai.request.top_p":       0.9,
+		"gen_ai.request.top_k":       int64(5),
+		"gen_ai.request.seed":        int64(7),
+	} {
+		if v, ok := attrValue(span, key); !ok || v != want {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+	if _, ok := attrValue(span, "gen_ai.request.stop_sequences"); !ok {
+		t.Error("generateText root must carry gen_ai.request.stop_sequences")
+	}
+	if _, ok := attrValue(span, "gen_ai.output.type"); ok {
+		t.Error("text root must not carry gen_ai.output.type")
+	}
+
+	start.OperationType = "ai.generateObject"
+	start.ModelID = "gpt-object"
+	start.SettingsOutput = "object"
+	trace.SpanFromContext(integration.OnStart(context.Background(), start)).End()
+	obj := findSpan(rec, "invoke_agent gpt-object")
+	if obj == nil {
+		t.Fatal("missing object root span")
+	}
+	if v, ok := attrValue(obj, "gen_ai.output.type"); !ok || v != "json" {
+		t.Errorf("gen_ai.output.type = %v (ok=%v), want json", v, ok)
+	}
+	if _, ok := attrValue(obj, "gen_ai.request.stop_sequences"); ok {
+		t.Error("object root must not carry gen_ai.request.stop_sequences (TS settings omit it)")
+	}
+	if v, ok := attrValue(obj, "ai.settings.output"); !ok || v != "object" {
+		t.Errorf("ai.settings.output = %v (ok=%v), want object", v, ok)
+	}
+	if v, ok := attrValue(obj, "gen_ai.request.max_tokens"); !ok || v != int64(100) {
+		t.Errorf("object root max_tokens = %v (ok=%v)", v, ok)
+	}
+}
