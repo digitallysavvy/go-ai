@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -192,6 +193,9 @@ func TestXAIResponsesStreamHelpers(t *testing.T) {
 	t.Parallel()
 
 	respStream := newXAIResponsesStream(io.NopCloser(strings.NewReader("data: [DONE]\n\n")))
+	if c, err := respStream.Next(); err != nil || c.Type != provider.ChunkTypeFinish {
+		t.Fatalf("xaiResponsesStream first Next() = %#v, %v, want finish", c, err)
+	}
 	_, err := respStream.Next()
 	if !errors.Is(err, io.EOF) {
 		t.Fatalf("xaiResponsesStream Next() err = %v, want EOF", err)

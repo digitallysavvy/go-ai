@@ -47,7 +47,7 @@ func TestXAIResponsesDoStreamIncludesRawChunks(t *testing.T) {
 			t.Fatalf("path = %q, want /responses", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"Hello"}
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","item_id":"it1","delta":"Hello"}
 
 data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
 
@@ -89,8 +89,15 @@ data: [DONE]
 	if err != nil {
 		t.Fatalf("third chunk error: %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" {
-		t.Fatalf("third chunk = %#v, want text Hello", chunk)
+	if chunk.Type != provider.ChunkTypeTextStart || chunk.ID != "text-it1" {
+		t.Fatalf("third chunk = %#v, want text-start text-it1", chunk)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("fourth chunk error: %v", err)
+	}
+	if chunk.Type != provider.ChunkTypeText || chunk.Text != "Hello" || chunk.ID != "text-it1" {
+		t.Fatalf("fourth chunk = %#v, want text Hello", chunk)
 	}
 }
 
@@ -118,9 +125,18 @@ data: [DONE]
 		t.Fatalf("timestamp = %d, want 1741269019", got)
 	}
 
+	// TS flush(): finish is always enqueued at the end of the stream (other,
+	// zero usage when no terminal response event arrived).
+	chunk, err = stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonOther {
+		t.Fatalf("second Next = %#v, %v, want finish(other)", chunk, err)
+	}
+	if chunk.Usage == nil || chunk.Usage.InputTokens == nil || *chunk.Usage.InputTokens != 0 {
+		t.Fatalf("finish usage = %#v, want zero usage", chunk.Usage)
+	}
 	_, err = stream.Next()
 	if err != io.EOF {
-		t.Fatalf("second Next error = %v, want io.EOF", err)
+		t.Fatalf("third Next error = %v, want io.EOF", err)
 	}
 }
 
@@ -1009,7 +1025,8 @@ func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 		{
 			name:           "error",
 			event:          `{"type":"error","code":"bad_request","message":"boom"}`,
-			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError},
+			// finish follows from TS flush() at the end of the stream.
+			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError, provider.ChunkTypeFinish},
 		},
 		{
 			name:           "incomplete",
