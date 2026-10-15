@@ -276,7 +276,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 		var usageMap interface{}
 		if rawMap, ok := rawBody.(map[string]interface{}); ok {
-			usageMap = rawMap["usage"]
+			usageMap = pickDecisionUsage(rawMap["usage"])
 		}
 		openaiMetadata["usage"] = usageMap
 	}
@@ -491,4 +491,39 @@ func decisionQuestionWire(name string, q provider.DecisionQuestion) map[string]i
 		}
 		return map[string]interface{}{"type": "score", "name": name, "instructions": instructions, "levels": levels}
 	}
+}
+
+// pickDecisionUsage keeps only the keys of the TS zod usage schema (zod
+// objects strip unknown keys, so providerMetadata.openai.usage never carries
+// them). Absent keys stay absent and explicit nulls stay null.
+func pickDecisionUsage(raw interface{}) interface{} {
+	usage, ok := raw.(map[string]interface{})
+	if !ok {
+		return raw
+	}
+	pick := func(src map[string]interface{}, keys ...string) map[string]interface{} {
+		out := map[string]interface{}{}
+		for _, k := range keys {
+			if v, present := src[k]; present {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	out := pick(usage, "input_tokens", "output_tokens", "total_tokens")
+	for key, nested := range map[string][]string{
+		"input_tokens_details":  {"cached_tokens", "cache_write_tokens"},
+		"output_tokens_details": {"reasoning_tokens"},
+	} {
+		v, present := usage[key]
+		if !present {
+			continue
+		}
+		if details, ok := v.(map[string]interface{}); ok {
+			out[key] = pick(details, nested...)
+		} else {
+			out[key] = v
+		}
+	}
+	return out
 }
