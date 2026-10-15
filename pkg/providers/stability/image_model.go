@@ -65,9 +65,15 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	}
 
 	if opts.Size != "" {
-		// Parse size like "1024x1024"
-		body["width"] = 1024
-		body["height"] = 1024
+		var width, height int
+		if _, err := fmt.Sscanf(opts.Size, "%dx%d", &width, &height); err == nil && width > 0 && height > 0 {
+			body["width"] = width
+			body["height"] = height
+		}
+	}
+
+	if opts.Seed != nil {
+		body["seed"] = *opts.Seed
 	}
 
 	if opts.N != nil {
@@ -84,15 +90,23 @@ func (m *ImageModel) convertResponse(response stabilityImageResponse) (*types.Im
 		return nil, fmt.Errorf("no image data returned from Stability AI")
 	}
 
-	artifact := response.Artifacts[0]
-	imageBytes, err := base64.StdEncoding.DecodeString(artifact.Base64)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+	images := make([][]byte, 0, len(response.Artifacts))
+	b64 := make([]string, 0, len(response.Artifacts))
+	for _, artifact := range response.Artifacts {
+		imageBytes, err := base64.StdEncoding.DecodeString(artifact.Base64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+		}
+		images = append(images, imageBytes)
+		b64 = append(b64, artifact.Base64)
 	}
 
 	return &types.ImageResult{
-		Image:    imageBytes,
-		MimeType: "image/png",
+		Image:        images[0],
+		Images:       images,
+		Base64Image:  b64[0],
+		Base64Images: b64,
+		MimeType:     "image/png",
 		Usage: types.ImageUsage{
 			ImageCount: len(response.Artifacts),
 		},

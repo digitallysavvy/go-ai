@@ -81,3 +81,26 @@ func TestImageModelBuildAndConvert(t *testing.T) {
 }
 
 func intPtr(v int) *int { return &v }
+
+func TestStabilityImageSizeSeedAndAllArtifacts(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k"}), "m")
+	seed := 5
+	body := m.buildRequestBody(&provider.ImageGenerateOptions{Prompt: "x", Size: "640x480", Seed: &seed})
+	if body["width"] != 640 || body["height"] != 480 || body["seed"] != 5 {
+		t.Fatalf("body = %v", body)
+	}
+	var resp stabilityImageResponse
+	resp.Artifacts = append(resp.Artifacts, struct {
+		Base64       string `json:"base64"`
+		FinishReason string `json:"finishReason"`
+		Seed         int    `json:"seed"`
+	}{Base64: "YQ=="}, struct {
+		Base64       string `json:"base64"`
+		FinishReason string `json:"finishReason"`
+		Seed         int    `json:"seed"`
+	}{Base64: "Yg=="})
+	res, err := m.convertResponse(resp)
+	if err != nil || len(res.Images) != 2 || string(res.Images[1]) != "b" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
