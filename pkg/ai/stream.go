@@ -1854,7 +1854,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false
 			}
-			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
+			// TS forwards an empty text-delta only when it carries provider
+			// metadata (e.g. a Gemini thought signature).
+			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" && len(chunk.ProviderMetadata) == 0 {
 				forwardChunk = false
 			}
 			// The raw provider finish chunk is never forwarded to the

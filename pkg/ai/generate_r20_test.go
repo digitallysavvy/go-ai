@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,5 +285,37 @@ func TestNormalizeVideoInputs_DetectsFullImageSignatureTable(t *testing.T) {
 	}
 	if len(ref.InputReferences) != 1 || ref.InputReferences[0].MediaType != "image/tiff" {
 		t.Fatalf("reference = %+v, want image/tiff", ref.InputReferences)
+	}
+}
+
+// TS stream-text forwards an empty text-delta when it carries provider
+// metadata (e.g. a Gemini thought signature) and drops it otherwise.
+func TestStreamText_ForwardsEmptyTextDeltaWithProviderMetadata(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "t1"},
+				{Type: provider.ChunkTypeText, ID: "t1", Text: "hi"},
+				{Type: provider.ChunkTypeText, ID: "t1", Text: ""},
+				{Type: provider.ChunkTypeText, ID: "t1", Text: "", ProviderMetadata: []byte(`{"google":{"thoughtSignature":"sig"}}`)},
+				{Type: provider.ChunkTypeTextEnd, ID: "t1"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for c := range res.Chunks() {
+		if c.Type == provider.ChunkTypeText {
+			texts = append(texts, fmt.Sprintf("%q/%d", c.Text, len(c.ProviderMetadata)))
+		}
+	}
+	if len(texts) != 2 || texts[0] != `"hi"/0` || !strings.HasPrefix(texts[1], `""/`) || texts[1] == `""/0` {
+		t.Fatalf("forwarded text chunks = %v, want hi and the empty one carrying metadata", texts)
 	}
 }
