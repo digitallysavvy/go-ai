@@ -1,131 +1,26 @@
 package gemini
 
 import (
-	"bytes"
-	"encoding/json"
-	"strings"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 )
 
 // This file ports the zod `chunkSchema` / `responseSchema`
 // (google-language-model.ts) that TS applies to every parsed Gemini/Vertex
-// response frame. zod objects are non-strict (unknown keys pass), `nullish`
-// means absent or null. A frame that does not match becomes an `error` part
-// (TypeValidationError in TS) and the stream keeps reading.
+// response frame. The validation primitives live in pkg/internal/zodlite. A
+// frame that does not match becomes an `error` part (TypeValidationError in
+// TS) and the stream keeps reading.
 
-type zIssue struct {
-	path    []interface{}
-	code    string
-	message string
-}
-
-// zNode validates one value; present is false when the object key is absent.
-type zNode func(v interface{}, present bool, path []interface{}) *zIssue
-
-func zJSType(v interface{}, present bool) string {
-	switch v.(type) {
-	case nil:
-		if !present {
-			return "undefined"
-		}
-		return "null"
-	case string:
-		return "string"
-	case float64:
-		return "number"
-	case bool:
-		return "boolean"
-	case []interface{}:
-		return "array"
-	case map[string]interface{}:
-		return "object"
-	}
-	return "unknown"
-}
-
-func zInvalid(expected string, v interface{}, present bool, path []interface{}) *zIssue {
-	return &zIssue{path: path, code: "invalid_type", message: "Invalid input: expected " + expected + ", received " + zJSType(v, present)}
-}
-
-func zStr(v interface{}, present bool, path []interface{}) *zIssue {
-	if _, ok := v.(string); !ok {
-		return zInvalid("string", v, present, path)
-	}
-	return nil
-}
-
-func zNum(v interface{}, present bool, path []interface{}) *zIssue {
-	if _, ok := v.(float64); !ok {
-		return zInvalid("number", v, present, path)
-	}
-	return nil
-}
-
-func zBool(v interface{}, present bool, path []interface{}) *zIssue {
-	if _, ok := v.(bool); !ok {
-		return zInvalid("boolean", v, present, path)
-	}
-	return nil
-}
-
-func zAny(interface{}, bool, []interface{}) *zIssue { return nil }
-
-func zNullish(n zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *zIssue {
-		if !present || v == nil {
-			return nil
-		}
-		return n(v, present, path)
-	}
-}
-
-func zArr(n zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *zIssue {
-		a, ok := v.([]interface{})
-		if !ok {
-			return zInvalid("array", v, present, path)
-		}
-		for i, e := range a {
-			if bad := n(e, true, append(append([]interface{}{}, path...), i)); bad != nil {
-				return bad
-			}
-		}
-		return nil
-	}
-}
-
-type zFld struct {
-	key  string
-	node zNode
-}
-
-func zObj(fields ...zFld) zNode {
-	return func(v interface{}, present bool, path []interface{}) *zIssue {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return zInvalid("object", v, present, path)
-		}
-		for _, f := range fields {
-			fv, fp := m[f.key]
-			if bad := f.node(fv, fp, append(append([]interface{}{}, path...), f.key)); bad != nil {
-				return bad
-			}
-		}
-		return nil
-	}
-}
-
-func zUnionOf(nodes ...zNode) zNode {
-	return func(v interface{}, present bool, path []interface{}) *zIssue {
-		for _, n := range nodes {
-			if n(v, present, path) == nil {
-				return nil
-			}
-		}
-		return &zIssue{path: path, code: "invalid_union", message: "Invalid input"}
-	}
-}
-
-func fl(key string, n zNode) zFld { return zFld{key, n} }
+var (
+	zStr     = zodlite.String
+	zNum     = zodlite.Number
+	zBool    = zodlite.Boolean
+	zAny     = zodlite.Unknown
+	zNullish = zodlite.Nullish
+	zArr     = zodlite.Array
+	zObj     = zodlite.Object
+	zUnionOf = zodlite.Union
+	fl       = zodlite.F
+)
 
 var (
 	zSig         = fl("thoughtSignature", zNullish(zStr))
@@ -208,45 +103,12 @@ var (
 
 // chunkValidationMessage validates a JSON frame against the TS chunkSchema.
 // It returns "" when the frame matches (or is not JSON, which is reported
-// separately), otherwise the TS TypeValidationError message. The zod issue
-// text is a best-effort rendering (path plus the zod v4 message of the first
-// failing field).
+// separately), otherwise the TS TypeValidationError message.
 func chunkValidationMessage(data string) string {
-	var value interface{}
-	if err := json.Unmarshal([]byte(data), &value); err != nil {
-		return ""
-	}
-	bad := zChunk(value, true, nil)
-	if bad == nil {
-		return ""
-	}
-	path := bad.path
-	if path == nil {
-		path = []interface{}{}
-	}
-	var issues bytes.Buffer
-	enc := json.NewEncoder(&issues)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode([]map[string]interface{}{{"code": bad.code, "path": path, "message": bad.message}})
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, []byte(data)); err != nil {
-		compact.WriteString(data)
-	}
-	return "Type validation failed: Value: " + compact.String() + ".\nError message: " + strings.TrimSpace(issues.String())
+	return zodlite.ValidationMessage(zChunk, data)
 }
 
 // validationIssueText returns the issue list that follows "Error message: ".
-func validationIssueText(message string) string {
-	if _, after, ok := strings.Cut(message, "Error message: "); ok {
-		return after
-	}
-	return message
-}
+func validationIssueText(message string) string { return zodlite.IssueText(message) }
 
-func compactJSONString(data string) string {
-	var b bytes.Buffer
-	if err := json.Compact(&b, []byte(data)); err != nil {
-		return data
-	}
-	return b.String()
-}
+func compactJSONString(data string) string { return zodlite.CompactJSON(data) }
