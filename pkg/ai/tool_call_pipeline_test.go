@@ -646,3 +646,34 @@ func TestGenerateTextRefineToolInputErrorBecomesInvalidToolCall(t *testing.T) {
 		t.Fatalf("call = %+v", step.ToolCalls[0])
 	}
 }
+
+// TS parseToolCall runs refineToolInput inside the parse try block, so a
+// refiner that throws InvalidToolInputError triggers repairToolCall, and the
+// repaired call is parsed and refined again.
+func TestParseToolCallRefinerInvalidInputTriggersRepair(t *testing.T) {
+	tools := []types.Tool{pipelineTestTool("testTool", nil)}
+	refiner := func(_ context.Context, o ToolInputRefinementOptions) (map[string]interface{}, error) {
+		if o.ToolCall.Arguments["value"] == "bad" {
+			return nil, &InvalidToolInputError{ToolName: "testTool", ToolInput: "bad", Cause: errors.New("refine failed")}
+		}
+		return map[string]interface{}{"value": "refined-" + o.ToolCall.Arguments["value"].(string)}, nil
+	}
+	var repairErr error
+	got, pre, err := parseAndRefineToolCall(context.Background(), ParseToolCallOptions{
+		ToolCall:        types.ToolCall{ID: "1", ToolName: "testTool", RawArguments: `{"value":"bad"}`},
+		Tools:           tools,
+		RefineToolInput: map[string]ToolInputRefiner{"testTool": refiner},
+		RepairToolCall: func(_ context.Context, o ToolCallRepairOptions) (*types.ToolCall, error) {
+			repairErr = o.Error
+			repaired := o.ToolCall
+			repaired.RawArguments = `{"value":"good"}`
+			return &repaired, nil
+		},
+	})
+	if err != nil || got.Invalid || got.Arguments["value"] != "refined-good" || pre.Arguments["value"] != "good" {
+		t.Fatalf("got %+v pre %+v err %v", got, pre, err)
+	}
+	if !IsInvalidToolInputError(repairErr) {
+		t.Fatalf("repair error = %v", repairErr)
+	}
+}

@@ -116,6 +116,14 @@ type ParseToolCallOptions struct {
 	Instructions        string
 	InstructionMessages []types.Message
 	Messages            []types.Message
+
+	// RefineToolInput refines the parsed input by tool name inside the parse
+	// step (TS refineToolInput), so an InvalidToolInputError (or a
+	// NoSuchToolError) returned by a refiner triggers RepairToolCall like a
+	// schema failure does.
+	RefineToolInput map[string]ToolInputRefiner
+	RuntimeContext  interface{}
+	ToolsContext    map[string]interface{}
 }
 
 // ParseToolCall resolves a provider tool call against the available tools,
@@ -125,13 +133,20 @@ type ParseToolCallOptions struct {
 // error is a context error when ctx is cancelled (pending repairs are
 // abandoned). Mirrors TS parseToolCall.
 func ParseToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, error) {
+	refined, _, err := parseAndRefineToolCall(ctx, opts)
+	return refined, err
+}
+
+// parseAndRefineToolCall is ParseToolCall that also returns the call as it
+// was parsed, before RefineToolInput ran (the approval inputSchemaInput).
+func parseAndRefineToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, types.ToolCall, error) {
 	call := opts.ToolCall
-	parsed, err := parseToolCallWithRepair(ctx, opts)
+	parsed, pre, err := parseToolCallWithRepair(ctx, opts)
 	if err == nil {
-		return parsed, nil
+		return parsed, pre, nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return types.ToolCall{}, ctxErr
+		return types.ToolCall{}, types.ToolCall{}, ctxErr
 	}
 	tool := findToolForCall(call, opts.Tools)
 	invalid := call
@@ -147,11 +162,44 @@ func ParseToolCall(ctx context.Context, opts ParseToolCallOptions) (types.ToolCa
 			invalid.ToolMetadata = cloneStringAnyMap(tool.Metadata)
 		}
 	}
-	return invalid, nil
+	return invalid, invalid, nil
 }
 
-func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, error) {
+// refineParsedToolCall runs the refiner registered for the call's tool; the
+// refiner's error is returned (TS refineParsedToolCallInput).
+func refineParsedToolCall(ctx context.Context, parsed types.ToolCall, opts ParseToolCallOptions) (types.ToolCall, error) {
+	refiner := opts.RefineToolInput[parsed.ToolName]
+	if refiner == nil {
+		return parsed, nil
+	}
+	var tool *types.Tool
+	for i := range opts.Tools {
+		if opts.Tools[i].Name == parsed.ToolName {
+			tool = &opts.Tools[i]
+			break
+		}
+	}
+	input, err := refiner(ctx, ToolInputRefinementOptions{
+		ToolCall:       parsed,
+		Tool:           tool,
+		RuntimeContext: opts.RuntimeContext,
+		ToolsContext:   opts.ToolsContext,
+	})
+	if err != nil {
+		return types.ToolCall{}, err
+	}
+	if input != nil {
+		parsed.Arguments = input
+	}
+	return parsed, nil
+}
+
+func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (types.ToolCall, types.ToolCall, error) {
 	call := opts.ToolCall
+	refine := func(parsed types.ToolCall) (types.ToolCall, types.ToolCall, error) {
+		refined, err := refineParsedToolCall(ctx, parsed, opts)
+		return refined, parsed, err
+	}
 	if len(opts.Tools) == 0 {
 		// TS parseToolCall: `toolCall.providerExecuted && toolCall.dynamic`.
 		// A provider-executed call that isn't marked dynamic (e.g. Anthropic
@@ -159,40 +207,57 @@ func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (ty
 		// must still raise NoSuchToolError when no tools are registered at
 		// all — it is not implicitly treated as a dynamic provider tool.
 		if call.ProviderExecuted && call.Dynamic {
-			return parseProviderExecutedDynamicToolCall(call)
+			parsed, err := parseProviderExecutedDynamicToolCall(call)
+			if err != nil {
+				return types.ToolCall{}, types.ToolCall{}, err
+			}
+			return refine(parsed)
 		}
-		return types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName}
+		return types.ToolCall{}, types.ToolCall{}, &NoSuchToolError{ToolName: call.ToolName}
 	}
 
 	parsed, err := doParseToolCall(call, opts.Tools)
 	if err == nil {
-		return parsed, nil
+		// The refiner runs inside the same try block as the parse (TS), so
+		// its NoSuchTool/InvalidToolInput errors are repaired too.
+		var refined, pre types.ToolCall
+		if refined, pre, err = refine(parsed); err == nil {
+			return refined, pre, nil
+		}
 	}
+	return repairParsedToolCall(ctx, opts, err, refine)
+}
+
+func repairParsedToolCall(ctx context.Context, opts ParseToolCallOptions, err error, refine func(types.ToolCall) (types.ToolCall, types.ToolCall, error)) (types.ToolCall, types.ToolCall, error) {
 	if opts.RepairToolCall == nil || (!IsNoSuchToolError(err) && !IsInvalidToolInputError(err)) {
-		return types.ToolCall{}, err
+		return types.ToolCall{}, types.ToolCall{}, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return types.ToolCall{}, ctxErr
+		return types.ToolCall{}, types.ToolCall{}, ctxErr
 	}
 
 	repaired, repairErr := waitForRepair(ctx, opts, err)
 	if repairErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return types.ToolCall{}, ctxErr
+			return types.ToolCall{}, types.ToolCall{}, ctxErr
 		}
-		return types.ToolCall{}, &ToolCallRepairError{Cause: repairErr, OriginalError: err}
+		return types.ToolCall{}, types.ToolCall{}, &ToolCallRepairError{Cause: repairErr, OriginalError: err}
 	}
 	if repaired == nil {
-		return types.ToolCall{}, err
+		return types.ToolCall{}, types.ToolCall{}, err
 	}
 	parsedRepaired, err := doParseToolCall(*repaired, opts.Tools)
 	if err != nil {
-		return types.ToolCall{}, err
+		return types.ToolCall{}, types.ToolCall{}, err
+	}
+	refinedRepaired, pre, err := refine(parsedRepaired)
+	if err != nil {
+		return types.ToolCall{}, types.ToolCall{}, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return types.ToolCall{}, ctxErr
+		return types.ToolCall{}, types.ToolCall{}, ctxErr
 	}
-	return parsedRepaired, nil
+	return refinedRepaired, pre, nil
 }
 
 // waitForRepair runs the repair function and returns as soon as ctx is
@@ -403,20 +468,22 @@ func toolNames(tools []types.Tool) []string {
 
 // parseToolCalls parses every tool call of a step (TS Promise.all over
 // parseToolCall).
-func parseToolCalls(ctx context.Context, calls []types.ToolCall, opts ParseToolCallOptions) ([]types.ToolCall, error) {
+func parseToolCalls(ctx context.Context, calls []types.ToolCall, opts ParseToolCallOptions) (refined, preRefinement []types.ToolCall, err error) {
 	if len(calls) == 0 {
-		return calls, nil
+		return calls, calls, nil
 	}
-	parsed := make([]types.ToolCall, len(calls))
+	refined = make([]types.ToolCall, len(calls))
+	preRefinement = make([]types.ToolCall, len(calls))
 	for i, call := range calls {
 		opts.ToolCall = call
-		result, err := ParseToolCall(ctx, opts)
+		result, pre, err := parseAndRefineToolCall(ctx, opts)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		parsed[i] = result
+		refined[i] = result
+		preRefinement[i] = pre
 	}
-	return parsed, nil
+	return refined, preRefinement, nil
 }
 
 // invokeToolInputCallbacks calls OnInputStart and then OnInputAvailable for

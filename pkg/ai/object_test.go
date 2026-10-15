@@ -706,13 +706,18 @@ func TestGenerateObject_NoTextReturnsNoObjectGeneratedError(t *testing.T) {
 	}
 
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	stepEnds := 0
 	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		Model:  model,
-		Prompt: "Generate",
-		Schema: testSchema,
+		Model:     model,
+		Prompt:    "Generate",
+		Schema:    testSchema,
+		OnStepEnd: func(context.Context, ObjectOnStepFinishEvent) { stepEnds++ },
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+	if stepEnds != 0 {
+		t.Fatalf("step end fired %d times before the no-response error; TS errors first", stepEnds)
 	}
 	var noObjErr *NoObjectGeneratedError
 	if !errors.As(err, &noObjErr) {

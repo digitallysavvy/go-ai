@@ -964,6 +964,13 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
+	}
+
 	// Log model warnings once per model call (TS generate-object.ts
 	// logWarnings, called right after the model call and before the
 	// step-finish event is built).
@@ -1122,6 +1129,13 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
+	}
+
 	// Log model warnings once per model call (TS generate-object.ts
 	// logWarnings, called right after the model call and before the
 	// step-finish event is built).
@@ -1270,6 +1284,13 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		return nil, fmt.Errorf("generation failed: %w", err)
 	}
 
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
+	}
+
 	// Log model warnings once per model call (TS generate-object.ts
 	// logWarnings, called right after the model call and before the
 	// step-finish event is built).
@@ -1410,6 +1431,13 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		return nil, fmt.Errorf("generation failed: %w", err)
+	}
+
+	// A response without any text fails before the step-end event, as in TS
+	// generateObject (extractTextContent(content) === undefined).
+	if noResponseErr := generateObjectNoResponseError(genResult, opts.Model); noResponseErr != nil {
+		fireObjectStepError(telStep, opts.ExperimentalTelemetry, noResponseErr)
+		return nil, noResponseErr
 	}
 
 	// Log model warnings once per model call (TS generate-object.ts
@@ -2178,6 +2206,15 @@ func parseGenerateObjectResult(result *types.GenerateResult, mode ObjectOutputMo
 		return nil, nil, "", newNoObjectGeneratedError("No object generated: the model did not return a response.", nil, "", model, result)
 	}
 	return parseObjectResult(result, mode, s, enumValues, model)
+}
+
+// generateObjectNoResponseError returns the NoObjectGeneratedError for a
+// response with no text part, or nil.
+func generateObjectNoResponseError(result *types.GenerateResult, model provider.LanguageModel) error {
+	if result != nil && result.Text == "" && !hasTextContentPart(result.Content) {
+		return newNoObjectGeneratedError("No object generated: the model did not return a response.", nil, "", model, result)
+	}
+	return nil
 }
 
 // hasTextContentPart reports whether parts holds any text part, empty or not.

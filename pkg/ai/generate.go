@@ -1322,12 +1322,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Parse (validate / repair) the tool calls of this model call before
 		// the language-model-call-end event (TS parseToolCall).
-		parsedToolCalls, parseErr := parseToolCalls(stepCtx, genResult.ToolCalls, ParseToolCallOptions{
+		parsedToolCalls, preRefinementCalls, parseErr := parseToolCalls(stepCtx, genResult.ToolCalls, ParseToolCallOptions{
 			Tools:               stepTools,
 			RepairToolCall:      repairToolCall,
 			Instructions:        stepSystem,
 			InstructionMessages: stepInstructionMessages,
 			Messages:            stepMessages,
+			RefineToolInput:     opts.ExperimentalRefineToolInput,
+			RuntimeContext:      runtimeContext,
+			ToolsContext:        toolsContext,
 		})
 		if parseErr != nil {
 			return nil, parseErr
@@ -1455,12 +1458,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		toolResultsBefore := len(result.ToolResults)
 
 		// Check if there are tool calls to execute
-		preRefinementCalls := genResult.ToolCalls
-		refinedToolCalls, refineErr := RefineToolCalls(ctx, genResult.ToolCalls, stepTools, opts.ExperimentalRefineToolInput, runtimeContext, toolsContext)
-		if refineErr != nil {
-			return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refineErr)
-		}
-		genResult.ToolCalls = enrichToolCallMetadata(refinedToolCalls, stepTools)
+		genResult.ToolCalls = enrichToolCallMetadata(genResult.ToolCalls, stepTools)
 		stepResult.ToolCalls = genResult.ToolCalls
 		stepResult.StaticToolCalls = filterStaticToolCalls(genResult.ToolCalls)
 		stepResult.DynamicToolCalls = filterDynamicToolCalls(genResult.ToolCalls)

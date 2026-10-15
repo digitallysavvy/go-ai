@@ -286,6 +286,15 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 
 		enqueueError := func(err error) {
 			failOutcome(err)
+			// TS handleError: an onError that throws fails the stream with
+			// that error instead of writing an error chunk.
+			defer func() {
+				if r := recover(); r != nil {
+					onErrorErr := panicToError(r)
+					failOutcome(onErrorErr)
+					reportUIStreamCallbackFailure(errCh, r)
+				}
+			}()
 			appendErrorChunk(onError, safeEnqueue, err)
 		}
 
@@ -344,6 +353,11 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			// through the stream's onError; the stream keeps going.
 			defer func() {
 				if r := recover(); r != nil {
+					defer func() {
+						if r2 := recover(); r2 != nil {
+							reportUIStreamCallbackFailure(errCh, r2)
+						}
+					}()
 					onError(panicToError(r))
 				}
 			}()
@@ -619,6 +633,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// through the stream's onError; the stream keeps going.
 			defer func() {
 				if r := recover(); r != nil {
+					defer func() {
+						if r2 := recover(); r2 != nil {
+							reportUIStreamCallbackFailure(errCh, r2)
+						}
+					}()
 					onError(panicToError(r))
 				}
 			}()
@@ -1389,12 +1408,16 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		toolName, dynamic := toolInfoFromPart(part)
-		s.updateExistingToolPart(part, toolName, dynamic, UIMessageChunk{
+		update := UIMessageChunk{
 			"state":     "output-error",
 			"input":     part["input"],
-			"rawInput":  part["rawInput"],
 			"errorText": chunk["errorText"],
-		}, chunk)
+		}
+		// TS keeps rawInput for static tool parts only.
+		if !dynamic {
+			update["rawInput"] = part["rawInput"]
+		}
+		s.updateExistingToolPart(part, toolName, dynamic, update, chunk)
 	case "tool-output-denied":
 		toolCallID := stringValue(chunk["toolCallId"])
 		if part := s.findToolPart(toolCallID); part != nil {
@@ -1537,9 +1560,19 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	if toolName != "" && part["type"] == "dynamic-tool" {
 		part["toolName"] = toolName
 	}
+	// TS updateToolPart/updateDynamicToolPart assign output, errorText, rawInput
+	// and preliminary on every update, so a field the update does not carry is
+	// cleared rather than left over from the previous state.
+	for _, key := range []string{"output", "errorText", "rawInput", "preliminary"} {
+		delete(part, key)
+	}
 	for key, value := range update {
 		if value == uiOmitField {
 			delete(part, key)
+			continue
+		}
+		// A nil rawInput/preliminary is TS undefined (absent), not JSON null.
+		if value == nil && (key == "rawInput" || key == "preliminary") {
 			continue
 		}
 		part[key] = value

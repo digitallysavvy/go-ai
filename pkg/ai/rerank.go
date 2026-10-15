@@ -531,9 +531,17 @@ func validateRankingIndices(ranking []types.RerankItem, documents []interface{})
 }
 
 func rerankDocumentsType(documents interface{}) string {
-	switch documents.(type) {
+	switch d := documents.(type) {
 	case []string:
 		return "text"
+	case []interface{}:
+		// TS: typeof documents[0] === 'string'.
+		if len(d) > 0 {
+			if _, ok := d[0].(string); ok {
+				return "text"
+			}
+		}
+		return "object"
 	default:
 		return "object"
 	}
