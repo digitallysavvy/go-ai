@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"strconv"
@@ -31,7 +32,7 @@ func NewTranscriptionModel(p *Provider, modelID string) *TranscriptionModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *TranscriptionModel) SpecificationVersion() string { return "v3" }
+func (m *TranscriptionModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
 func (m *TranscriptionModel) Provider() string { return "groq" }
@@ -88,6 +89,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if err != nil {
 		return nil, err
 	}
+	if err := validateGroqTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	groqOpts := resolveGroqTranscriptionOptions(opts.ProviderOptions)
 
 	body, contentType, err := m.buildMultipartBody(audio, opts.MimeType, groqOpts)
@@ -105,6 +109,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, providererrors.NewProviderError("groq", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode >= 400 {
+		// TS groqFailedResponseHandler: use error.message from the JSON envelope.
+		statusErr := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		if perr := parseGroqProviderError(statusErr); perr != nil {
+			return nil, perr
+		}
 		return nil, providererrors.NewProviderError("groq", resp.StatusCode, "", string(resp.Body), nil)
 	}
 
@@ -256,4 +265,65 @@ type groqTranscriptionResponse struct {
 	XGroq struct {
 		ID string `json:"id"`
 	} `json:"x_groq,omitempty"`
+}
+
+// validateGroqTranscriptionOptions mirrors TS parseProviderOptions with
+// groqTranscriptionModelOptions: language/prompt/responseFormat are nullish
+// strings, temperature a nullish number in [0, 1], timestampGranularities a
+// nullish array of strings. A violation is an InvalidArgumentError.
+func validateGroqTranscriptionOptions(providerOptions map[string]interface{}) error {
+	raw, ok := providerOptions["groq"]
+	if !ok || raw == nil {
+		return nil
+	}
+	fail := func(msg string) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid groq provider options",
+			Cause:   errors.New(msg),
+		}
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return fail("Invalid input: expected object")
+	}
+	for _, key := range []string{"language", "prompt", "responseFormat"} {
+		if v, ok := m[key]; ok && v != nil {
+			if _, isString := v.(string); !isString {
+				return fail("Invalid input: expected string at " + key)
+			}
+		}
+	}
+	if v, ok := m["temperature"]; ok && v != nil {
+		var f float64
+		switch n := v.(type) {
+		case float64:
+			f = n
+		case float32:
+			f = float64(n)
+		case int:
+			f = float64(n)
+		case int64:
+			f = float64(n)
+		default:
+			return fail("Invalid input: expected number at temperature")
+		}
+		if f < 0 || f > 1 {
+			return fail("Invalid input: expected number between 0 and 1 at temperature")
+		}
+	}
+	if v, ok := m["timestampGranularities"]; ok && v != nil {
+		switch list := v.(type) {
+		case []string:
+		case []interface{}:
+			for _, item := range list {
+				if _, isString := item.(string); !isString {
+					return fail("Invalid input: expected string at timestampGranularities")
+				}
+			}
+		default:
+			return fail("Invalid input: expected array at timestampGranularities")
+		}
+	}
+	return nil
 }

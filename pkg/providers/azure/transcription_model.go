@@ -65,6 +65,9 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		}
 	}
 
+	if err := openai.ValidateTranscriptionProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	streamOpts := openai.TranscriptionStreamOpenAIOptions(opts.ProviderOptions)
 
 	// options that only apply to the REST transcription endpoint, mirroring
@@ -73,13 +76,13 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	if streamOpts.HasInclude {
 		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("include"))
 	}
-	if streamOpts.Prompt != "" {
+	if streamOpts.HasPrompt {
 		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("prompt"))
 	}
 	if streamOpts.HasTemperature {
 		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("temperature"))
 	}
-	if len(streamOpts.TimestampGranularities) > 0 {
+	if streamOpts.HasTimestampGranularities {
 		warnings = append(warnings, openai.UnsupportedStreamingTranscriptionWarning("timestampGranularities"))
 	}
 

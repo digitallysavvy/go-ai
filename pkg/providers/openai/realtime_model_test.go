@@ -384,3 +384,13 @@ func TestOpenAIRealtimeClientSecretHTTPErrorMessage(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestRealtimeTurnDetectionNonServerVADMapsToSemanticVAD(t *testing.T) {
+	// TS: type === 'server-vad' ? 'server_vad' : 'semantic_vad'.
+	for in, want := range map[string]string{"server-vad": "server_vad", "semantic-vad": "semantic_vad", "other": "semantic_vad"} {
+		got := turnDetectionMap(&provider.RealtimeTurnDetection{Type: in}, true)["type"]
+		if got != want {
+			t.Errorf("%s -> %v, want %s", in, got, want)
+		}
+	}
+}

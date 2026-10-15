@@ -59,7 +59,7 @@ func TestReplicateLanguageDoGenerateWithPolling(t *testing.T) {
 	})
 
 	lm := NewLanguageModel(p, "ver-1")
-	if lm.SpecificationVersion() != "v3" || lm.Provider() != "replicate" || lm.ModelID() != "ver-1" {
+	if lm.SpecificationVersion() != "v4" || lm.Provider() != "replicate" || lm.ModelID() != "ver-1" {
 		t.Fatalf("metadata mismatch")
 	}
 	if lm.SupportsTools() || lm.SupportsStructuredOutput() || lm.SupportsImageInput() {
@@ -105,7 +105,7 @@ func TestReplicateVideoDoGeneratePollingNoVideo(t *testing.T) {
 		return nil, errors.New("unexpected request")
 	})
 	vm := NewVideoModel(p, "vid-ver:vid-version-id")
-	if vm.SpecificationVersion() != "v3" || vm.Provider() != "replicate" || vm.ModelID() != "vid-ver:vid-version-id" {
+	if vm.SpecificationVersion() != "v4" || vm.Provider() != "replicate" || vm.ModelID() != "vid-ver:vid-version-id" {
 		t.Fatalf("metadata mismatch")
 	}
 	if got := vm.MaxVideosPerCall(); got == nil || *got != 1 {

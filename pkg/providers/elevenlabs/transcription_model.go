@@ -48,12 +48,15 @@ func (m *TranscriptionModel) ModelID() string { return m.modelID }
 // DoTranscribe performs batch speech-to-text transcription.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if m.modelID == ModelScribeV2Realtime {
-		return nil, fmt.Errorf("%w: non-streaming transcription with %s (this model is realtime/WebSocket-only)", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("non-streaming transcription with %s", m.modelID)}
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
 
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, contentType, warnings, err := m.buildMultipartBody(opts)
 	if err != nil {
 		return nil, err
@@ -81,10 +84,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Start: start,
 			End:   end,
 		})
-		if word.End != nil {
-			e := *word.End
-			durationInSeconds = &e
-		}
+	}
+	// TS: response.words?.at(-1)?.end ?? undefined (only the last word counts).
+	if n := len(response.Words); n > 0 && response.Words[n-1].End != nil {
+		e := *response.Words[n-1].End
+		durationInSeconds = &e
 	}
 
 	var providerMetadata map[string]interface{}

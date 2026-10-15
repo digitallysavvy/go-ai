@@ -189,9 +189,12 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		opts = &provider.TranscriptionStreamOptions{}
 	}
 	if !isRealtimeTranscriptionModelID(m.modelID) {
-		return nil, fmt.Errorf("%w: streaming transcription with %s", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("streaming transcription with %s", m.modelID)}
 	}
 
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	elOpts, _, _ := extractTranscriptionOptions(opts.ProviderOptions)
 	var streaming *StreamingOptions
 	if elOpts != nil {

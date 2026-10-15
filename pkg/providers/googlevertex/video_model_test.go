@@ -24,7 +24,7 @@ func newTestVertexVideoModel(t *testing.T, handler http.HandlerFunc) (*VideoMode
 func TestVertexVideoModel_ConstructorInfo(t *testing.T) {
 	model, _ := newTestVertexVideoModel(t, func(w http.ResponseWriter, r *http.Request) {})
 
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
 	if model.Provider() != "google-vertex" {

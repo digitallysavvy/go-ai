@@ -256,7 +256,8 @@ func TestFilesAPI_GetFileMetadata_RejectsBlankFileID(t *testing.T) {
 		_, err := getter.GetFileMetadata(t.Context(), provider.FileMetadataOptions{
 			File: types.ProviderReference{"openai": id},
 		})
-		if err == nil || !strings.Contains(err.Error(), "file reference is missing an 'openai' file id.") {
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) || ia.Field != "file" || ia.Message != "file reference is missing an 'openai' file id." {
 			t.Fatalf("id %q: err = %v", id, err)
 		}
 	}
@@ -429,5 +430,23 @@ func TestFilesAPI_DownloadFile_ErrorIsProviderError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "No such file") {
 		t.Fatalf("message lost: %v", err)
+	}
+}
+
+func TestParseOpenAIFilesOptionsLikeTS(t *testing.T) {
+	got, err := parseOpenAIFilesOptions(map[string]interface{}{"openai": map[string]interface{}{"purpose": "batch", "expiresAfter": 3600}})
+	if err != nil || got.purpose != "batch" || got.expiresAfter == nil || *got.expiresAfter != 3600 {
+		t.Fatalf("got %+v err %v", got, err)
+	}
+	for _, o := range []interface{}{
+		map[string]interface{}{"purpose": 3.0},
+		map[string]interface{}{"expiresAfter": "soon"},
+		"nope",
+	} {
+		_, err := parseOpenAIFilesOptions(map[string]interface{}{"openai": o})
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) || ia.Message != "invalid openai provider options" {
+			t.Errorf("%v: err = %v", o, err)
+		}
 	}
 }

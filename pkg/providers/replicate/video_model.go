@@ -39,7 +39,7 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 
 // SpecificationVersion returns the specification version
 func (m *VideoModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name

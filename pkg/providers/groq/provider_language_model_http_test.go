@@ -63,7 +63,7 @@ func TestGroqLanguageModelDoGenerateAndConvertUsage(t *testing.T) {
 		}, nil
 	})
 	m := NewLanguageModel(p, "llama-3.3-70b-versatile")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "groq" || m.ModelID() != "llama-3.3-70b-versatile" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "groq" || m.ModelID() != "llama-3.3-70b-versatile" {
 		t.Fatalf("metadata mismatch")
 	}
 	if !m.SupportsTools() || !m.SupportsStructuredOutput() || m.SupportsImageInput() {

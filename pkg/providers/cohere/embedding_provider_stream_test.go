@@ -53,7 +53,7 @@ func TestCohereEmbeddingModelDoEmbedMany(t *testing.T) {
 	})
 	d := Dimension1024
 	model := NewEmbeddingModel(p, "embed-v4", EmbeddingOptions{OutputDimension: &d, InputType: InputTypeSearchDocument})
-	if model.SpecificationVersion() != "v3" || model.Provider() != "cohere" || model.ModelID() != "embed-v4" {
+	if model.SpecificationVersion() != "v4" || model.Provider() != "cohere" || model.ModelID() != "embed-v4" {
 		t.Fatalf("metadata mismatch")
 	}
 	if model.MaxEmbeddingsPerCall() != 96 || !model.SupportsParallelCalls() {
@@ -117,7 +117,7 @@ data: [DONE]
 		}, nil
 	})
 	lm := NewLanguageModel(p, "command-r-plus")
-	if lm.SpecificationVersion() != "v3" || lm.Provider() != "cohere" || lm.ModelID() != "command-r-plus" {
+	if lm.SpecificationVersion() != "v4" || lm.Provider() != "cohere" || lm.ModelID() != "command-r-plus" {
 		t.Fatalf("metadata mismatch")
 	}
 	if !lm.SupportsTools() || !lm.SupportsStructuredOutput() || !lm.SupportsImageInput() {

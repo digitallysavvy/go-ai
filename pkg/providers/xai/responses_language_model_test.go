@@ -21,8 +21,8 @@ func TestXAIResponsesLanguageModelMetadata(t *testing.T) {
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "grok-3")
 
-	if model.SpecificationVersion() != "v3" {
-		t.Errorf("SpecificationVersion() = %q, want %q", model.SpecificationVersion(), "v3")
+	if model.SpecificationVersion() != "v4" {
+		t.Errorf("SpecificationVersion() = %q, want %q", model.SpecificationVersion(), "v4")
 	}
 	if model.Provider() != "xai.responses" {
 		t.Errorf("Provider() = %q, want %q", model.Provider(), "xai.responses")

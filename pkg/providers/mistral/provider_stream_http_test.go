@@ -75,7 +75,7 @@ data: [DONE]
 		return nil, errors.New("unexpected path")
 	})
 	lm := NewLanguageModel(p, ModelMistralSmallLatest)
-	if lm.SpecificationVersion() != "v3" || lm.Provider() != "mistral" || lm.ModelID() != ModelMistralSmallLatest {
+	if lm.SpecificationVersion() != "v4" || lm.Provider() != "mistral" || lm.ModelID() != ModelMistralSmallLatest {
 		t.Fatalf("metadata mismatch")
 	}
 	if !lm.SupportsTools() || !lm.SupportsStructuredOutput() || lm.SupportsImageInput() {

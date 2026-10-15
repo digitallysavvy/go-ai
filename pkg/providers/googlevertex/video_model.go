@@ -35,7 +35,7 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *VideoModel) SpecificationVersion() string { return "v3" }
+func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
 func (m *VideoModel) Provider() string { return "google-vertex" }

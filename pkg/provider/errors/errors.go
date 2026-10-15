@@ -329,6 +329,12 @@ type UnsupportedFunctionalityError struct {
 	Message       string
 }
 
+// Is reports a match with ErrUnsupportedFeature so callers that matched the
+// sentinel keep working when a provider raises the typed error.
+func (e *UnsupportedFunctionalityError) Is(target error) bool {
+	return target == ErrUnsupportedFeature
+}
+
 func (e *UnsupportedFunctionalityError) Error() string {
 	if e.Message != "" {
 		return e.Message

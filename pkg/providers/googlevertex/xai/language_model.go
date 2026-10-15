@@ -29,7 +29,7 @@ type LanguageModel struct {
 }
 
 // SpecificationVersion returns the specification version.
-func (m *LanguageModel) SpecificationVersion() string { return "v3" }
+func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name. Matches TS's `name: 'googleVertex.xai'`.
 func (m *LanguageModel) Provider() string { return "googleVertex.xai" }
