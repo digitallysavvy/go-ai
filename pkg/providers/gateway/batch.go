@@ -213,15 +213,15 @@ func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (strin
 		}
 	}
 
-	var modelID string
+	// TS asserts every request is text before validating the shared model.
 	for _, req := range requests {
 		if req.Type != provider.BatchRequestTypeText || req.Text == nil {
 			return "", unsupportedGatewayBatchRequestType(req.Type)
 		}
-		if modelID == "" {
-			modelID = req.Text.ModelID
-			continue
-		}
+	}
+
+	modelID := requests[0].Text.ModelID
+	for _, req := range requests {
 		if req.Text.ModelID != modelID {
 			return "", &providererrors.InvalidArgumentError{
 				Field: "requests",

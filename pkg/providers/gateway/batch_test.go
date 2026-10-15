@@ -547,3 +547,15 @@ func TestGatewayBatchKeepsCancellationAndTimeoutErrors(t *testing.T) {
 		t.Fatalf("timeout: want the raw deadline error, got %T %v", err, err)
 	}
 }
+
+func TestGatewayBatchRejectsUnsupportedTypeBeforeModelMismatch(t *testing.T) {
+	_, err := validateGatewayTextBatchRequests([]provider.BatchV4Request{
+		testBatchTextRequest("a", "openai/a"),
+		testBatchTextRequest("b", "openai/b"),
+		{Type: provider.BatchRequestTypeImage},
+	})
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("want UnsupportedFunctionalityError (all requests are checked as text first), got %T %v", err, err)
+	}
+}
