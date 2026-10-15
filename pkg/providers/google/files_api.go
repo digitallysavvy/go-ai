@@ -38,15 +38,36 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	displayName := ""
 	pollIntervalMs := int64(2000)
 	pollTimeoutMs := int64(300000)
-	if google, ok := opts.ProviderOptions["google"].(map[string]interface{}); ok {
-		if v, ok := google["displayName"].(string); ok {
-			displayName = v
+	if raw, present := opts.ProviderOptions["google"]; present && raw != nil {
+		// TS parseProviderOptions with z.looseObject({displayName: string,
+		// pollIntervalMs/pollTimeoutMs: positive number}, all nullish).
+		google, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, invalidGoogleFilesOptions(fmt.Errorf("expected object, received %T", raw))
 		}
-		if v, ok := googleFilesNumber(google["pollIntervalMs"]); ok && v > 0 {
-			pollIntervalMs = v
+		if v := google["displayName"]; v != nil {
+			s, isStr := v.(string)
+			if !isStr {
+				return nil, invalidGoogleFilesOptions(fmt.Errorf("displayName: expected string, received %T", v))
+			}
+			displayName = s
 		}
-		if v, ok := googleFilesNumber(google["pollTimeoutMs"]); ok && v > 0 {
-			pollTimeoutMs = v
+		for _, f := range []struct {
+			key string
+			dst *int64
+		}{{"pollIntervalMs", &pollIntervalMs}, {"pollTimeoutMs", &pollTimeoutMs}} {
+			v := google[f.key]
+			if v == nil {
+				continue
+			}
+			n, isNum := googleFilesNumber(v)
+			if !isNum {
+				return nil, invalidGoogleFilesOptions(fmt.Errorf("%s: expected number, received %T", f.key, v))
+			}
+			if n <= 0 {
+				return nil, invalidGoogleFilesOptions(fmt.Errorf("%s: too small: expected number to be >0", f.key))
+			}
+			*f.dst = n
 		}
 	}
 
@@ -267,4 +288,12 @@ func (p *Provider) handleFilesError(status int, headers http.Header, body []byte
 	perr.ResponseBody = string(body)
 	perr.ResponseHeaders = providerutils.ExtractHeaders(headers)
 	return perr
+}
+
+func invalidGoogleFilesOptions(cause error) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "providerOptions",
+		Message: "invalid google provider options",
+		Cause:   cause,
+	}
 }
