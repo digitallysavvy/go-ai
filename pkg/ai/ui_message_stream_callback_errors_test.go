@@ -38,6 +38,23 @@ func TestCreateUIMessageStream_CallbackErrors(t *testing.T) {
 			t.Fatalf("onError got %v", reported)
 		}
 	})
+	// TS callOnStepFinish calls onError inside its catch, so an onError that
+	// throws there fails the stream instead of crashing the process.
+	t.Run("onStepEnd error with a throwing onError fails the stream", func(t *testing.T) {
+		stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+			Execute: func(w UIMessageStreamWriter) {
+				w.Write(UIMessageChunk{"type": "finish-step"})
+				w.Write(UIMessageChunk{"type": "finish"})
+			},
+			OnError:   func(error) string { panic("onError failed") },
+			OnStepEnd: func(map[string]interface{}) { panic(errors.New("step boom")) },
+		})
+		for range stream {
+		}
+		if err := <-errCh; err == nil || err.Error() != "onError failed" {
+			t.Fatalf("stream error = %v, want onError failed", err)
+		}
+	})
 	t.Run("onEnd error fails the stream", func(t *testing.T) {
 		stream, errCh := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
 			Execute: func(w UIMessageStreamWriter) { w.Write(UIMessageChunk{"type": "finish"}) },
@@ -71,6 +88,17 @@ func TestToUIMessageStream_CallbackErrors(t *testing.T) {
 		}
 		if len(reported) != 1 || reported[0].Error() != "step boom" {
 			t.Fatalf("onError got %v", reported)
+		}
+	})
+	t.Run("onStepEnd with a throwing onError", func(t *testing.T) {
+		out, errCh := ToUIMessageStream(context.Background(), chunks(), UIMessageStreamResultOptions{
+			OnError:   func(error) string { panic("onError failed") },
+			OnStepEnd: func(map[string]interface{}) { panic("step boom") },
+		})
+		for range out {
+		}
+		if err := <-errCh; err == nil || err.Error() != "onError failed" {
+			t.Fatalf("stream error = %v, want onError failed", err)
 		}
 	})
 	t.Run("onEnd", func(t *testing.T) {
