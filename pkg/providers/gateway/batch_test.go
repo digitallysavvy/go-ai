@@ -3,10 +3,12 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -508,5 +510,40 @@ func TestGatewayBatch_ImplementsBatchV4Capabilities(t *testing.T) {
 	}
 	if _, ok := batch.(provider.BatchV4Lister); ok {
 		t.Fatalf("gateway batch does not (yet) implement BatchV4Lister")
+	}
+}
+
+// TS isAbortOrTimeoutError: cancellation and timeouts are not wrapped into
+// Gateway errors on the batch surface.
+func TestGatewayBatchKeepsCancellationAndTimeoutErrors(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	p, err := New(Config{APIKey: "k", BaseURL: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := p.ExperimentalBatch()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = b.DoGetBatchStatus(ctx, provider.BatchV4OperationOptions{BatchID: "x"})
+	var gwErr *gatewayerrors.GatewayResponseError
+	if !errors.Is(err, context.Canceled) || errors.As(err, &gwErr) {
+		t.Fatalf("cancel: want the raw context error, got %T %v", err, err)
+	}
+
+	tctx, tcancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer tcancel()
+	_, err = b.DoStartBatch(tctx, provider.BatchV4StartOptions{Requests: []provider.BatchV4Request{testBatchTextRequest("a", "openai/gpt-5")}})
+	var timeoutErr *gatewayerrors.GatewayTimeoutError
+	if !errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeoutErr) {
+		t.Fatalf("timeout: want the raw deadline error, got %T %v", err, err)
 	}
 }

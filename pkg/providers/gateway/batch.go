@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -168,6 +169,12 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 }
 
 func (b *Batch) handleError(ctx context.Context, err error) error {
+	// TS isAbortOrTimeoutError: an aborted or timed-out batch call keeps its
+	// own error (a start may still have been accepted server-side) instead of
+	// becoming a retryable Gateway 500 / client-timeout error.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	lm := &LanguageModel{provider: b.provider}
 	return lm.handleErrorWithContext(ctx, err)
 }
