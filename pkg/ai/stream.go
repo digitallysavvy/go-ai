@@ -2655,7 +2655,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 			stepUsage = stepResult.Usage
-			stepRawFinishReason = stepResult.RawFinishReason
 			stepHeaders = stepResult.Response.Headers
 			performance = stepResult.Performance
 			r.mu.Lock()
