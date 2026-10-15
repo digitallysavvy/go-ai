@@ -29,3 +29,33 @@ func TestValidationMessage(t *testing.T) {
 		t.Fatal("nullable semantics")
 	}
 }
+
+func TestEnumRecordOfAndIssueError(t *testing.T) {
+	e := Enum("a", "b")
+	if e("a", true, nil) != nil {
+		t.Fatal("a should pass")
+	}
+	bad := e("c", true, []interface{}{"k"})
+	if bad == nil || bad.Message != `Invalid option: expected one of "a"|"b"` || bad.Code != "invalid_value" {
+		t.Fatalf("enum issue = %+v", bad)
+	}
+	rec := RecordOf(String)
+	if rec(map[string]interface{}{"x": "y"}, true, nil) != nil {
+		t.Fatal("string record should pass")
+	}
+	got := rec(map[string]interface{}{"x": 1.0}, true, []interface{}{"r"})
+	if got == nil || got.Error() != "r.x: Invalid input: expected string, received number" {
+		t.Fatalf("record issue = %v", got)
+	}
+	if rec("s", true, nil).Message != "Invalid input: expected record, received string" {
+		t.Fatal("record type message")
+	}
+	idx := Array(String)([]interface{}{"a", 2.0}, true, []interface{}{"items"})
+	if idx.Error() != "items[1]: Invalid input: expected string, received number" {
+		t.Fatalf("index path = %q", idx.Error())
+	}
+	var empty error = &Issue{Message: "m"}
+	if empty.Error() != "m" {
+		t.Fatal("empty path renders the message alone")
+	}
+}
