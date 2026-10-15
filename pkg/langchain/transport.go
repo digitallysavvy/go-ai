@@ -167,7 +167,8 @@ const maxRemoteGraphLine = 64 << 20
 // readRemoteGraphEvents decodes the server-sent events of a run stream and
 // maps them like RemoteGraph._streamIterator: "values" and "messages" events
 // become [mode, data] events, an "error" event fails the stream, and every
-// other event ("metadata", "updates", ...) is dropped.
+// other event ("metadata", ...) is dropped. An "updates" event that carries
+// __interrupt__ fails the stream with a *GraphInterruptError (GraphInterrupt).
 func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan StreamEvent {
 	out := make(chan StreamEvent)
 	go func() {
@@ -190,6 +191,16 @@ func readRemoteGraphEvents(ctx context.Context, body io.ReadCloser) <-chan Strea
 			switch mode {
 			case "values", "messages":
 				return sendStreamEvent(ctx, out, StreamEvent{Mode: mode, Data: payload})
+			case "updates":
+				// RemoteGraph._streamIterator throws GraphInterrupt for an
+				// updates event that carries __interrupt__.
+				if m, ok := payload.(map[string]interface{}); ok {
+					if interrupts, found := m["__interrupt__"]; found && interrupts != nil {
+						sendStreamEvent(ctx, out, StreamEvent{Err: newGraphInterrupt(interrupts)})
+						return false
+					}
+				}
+				return true
 			case "error":
 				text, ok := payload.(string)
 				if !ok {
@@ -269,3 +280,25 @@ func closedChunkChannel() <-chan ai.UIMessageChunk {
 	close(out)
 	return out
 }
+
+// GraphInterruptError is the TS GraphInterrupt thrown by RemoteGraph when an
+// "updates" stream event carries __interrupt__. Interrupts holds the raw value.
+type GraphInterruptError struct {
+	Interrupts interface{}
+	message    string
+}
+
+func newGraphInterrupt(interrupts interface{}) *GraphInterruptError {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	message := ""
+	if err := enc.Encode(interrupts); err == nil {
+		message = strings.TrimSuffix(buf.String(), "\n")
+	}
+	return &GraphInterruptError{Interrupts: interrupts, message: message}
+}
+
+// Error returns JSON.stringify(interrupts, null, 2), as the TS message.
+func (e *GraphInterruptError) Error() string { return e.message }
