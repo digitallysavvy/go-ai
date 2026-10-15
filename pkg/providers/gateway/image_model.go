@@ -147,7 +147,14 @@ type gatewayImageResponse struct {
 func (m *ImageModel) convertResponse(response gatewayImageResponse, headers http.Header) *types.ImageResult {
 	images := make([][]byte, 0, len(response.Images))
 	for _, image := range response.Images {
-		images = append(images, []byte(image))
+		// The wire format is always base64; Images carries the decoded bytes
+		// (Base64Images keeps the strings). Undecodable payloads are passed
+		// through unchanged rather than dropped.
+		if decoded, err := base64.StdEncoding.DecodeString(image); err == nil {
+			images = append(images, decoded)
+		} else {
+			images = append(images, []byte(image))
+		}
 	}
 	warnings := response.Warnings
 	if warnings == nil {

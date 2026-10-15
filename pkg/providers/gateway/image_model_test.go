@@ -96,7 +96,7 @@ func TestGatewayImageModelDoGenerate(t *testing.T) {
 	if seenBody["mask"].(map[string]interface{})["data"] != base64.StdEncoding.EncodeToString([]byte("bWFzaw==")) {
 		t.Fatalf("mask bytes should be base64-encoded like TS Uint8Array data: %#v", seenBody)
 	}
-	if result.Base64Image != "aW1n" || string(result.Image) != "aW1n" || len(result.Warnings) != 1 || result.Usage.InputTokens != 1 || result.Usage.OutputTokens != 2 || result.Usage.TotalTokens != 3 {
+	if result.Base64Image != "aW1n" || string(result.Image) != "img" || len(result.Warnings) != 1 || result.Usage.InputTokens != 1 || result.Usage.OutputTokens != 2 || result.Usage.TotalTokens != 3 {
 		t.Fatalf("result mismatch: %#v", result)
 	}
 	if result.Response == nil || result.Response.ModelID != "openai/gpt-image-1" || result.Response.Headers["X-Resp"] != "img" {
