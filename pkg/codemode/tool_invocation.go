@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -453,6 +454,12 @@ func applyToolInputDefaults(input map[string]interface{}, validator schema.Valid
 // or nil when the tool has no JSON schema. Mirrors
 // pkg/ai/tool_call_pipeline.go's toolCallInputValidator.
 func toolInputValidator(tool types.Tool) schema.Validator {
+	if h, ok := tool.Parameters.(jsonorder.Hinted); ok {
+		if m, ok := schema.ParametersMap(h); ok && len(m) > 0 {
+			return schema.NewJSONSchema(m)
+		}
+		return nil
+	}
 	switch s := tool.Parameters.(type) {
 	case map[string]interface{}:
 		if len(s) == 0 {

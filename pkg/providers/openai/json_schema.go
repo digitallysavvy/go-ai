@@ -57,6 +57,9 @@ func NormalizeOpenAIJSONSchema(schema map[string]interface{}) (map[string]interf
 // wire (a JS object keeps its insertion order; the model follows `properties`
 // order when generating). Other shapes pass through untouched.
 func NormalizeOpenAISchemaValue(schema interface{}) (interface{}, []types.Warning, error) {
+	if ordered, ok := jsonschema.OrderedParameters(schema); ok {
+		schema = ordered
+	}
 	switch s := schema.(type) {
 	case map[string]interface{}:
 		if s == nil {

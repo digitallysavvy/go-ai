@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -338,6 +339,12 @@ func toolCallInputValidator(tool *types.Tool) schema.Validator {
 	if tool == nil || tool.ProviderExecuted || tool.Type == "provider" {
 		return nil
 	}
+	if h, ok := tool.Parameters.(jsonorder.Hinted); ok {
+		if m, ok := schema.ParametersMap(h); ok && len(m) > 0 {
+			return schema.NewJSONSchema(m)
+		}
+		return nil
+	}
 	switch s := tool.Parameters.(type) {
 	case map[string]interface{}:
 		if len(s) == 0 {
@@ -370,6 +377,11 @@ func applyToolCallInputDefaults(args map[string]interface{}, validator schema.Va
 }
 
 func toolInputJSONSchema(tool *types.Tool) map[string]interface{} {
+	if h, ok := tool.Parameters.(jsonorder.Hinted); ok {
+		if m, ok := schema.ParametersMap(h); ok {
+			return m
+		}
+	}
 	switch s := tool.Parameters.(type) {
 	case map[string]interface{}:
 		return s

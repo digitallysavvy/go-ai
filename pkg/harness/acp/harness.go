@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 var harnessIDRegexp = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -765,7 +766,7 @@ func serializeBuiltinTools(tools map[string]harness.BuiltinTool) []BuiltinToolMa
 	for _, name := range names {
 		tool := tools[name]
 		m := BuiltinToolMapping{ToolName: name, NativeName: tool.NativeName, Title: tool.Title, ToolUseKind: string(tool.ToolUseKind)}
-		if schema, ok := tool.Parameters.(map[string]any); ok {
+		if schema, ok := jsonschema.ParametersMap(tool.Parameters); ok {
 			m.InputSchema = schema
 		}
 		out = append(out, m)
