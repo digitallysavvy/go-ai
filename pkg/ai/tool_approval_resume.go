@@ -395,6 +395,10 @@ type ResumeToolApprovalsOptions struct {
 	RefineToolInput map[string]ToolInputRefiner
 	// CallID correlates emitted tool execution events with the caller's call.
 	CallID string
+	// ToolCallConcurrency bounds how many approved calls run at once. Nil
+	// runs them all concurrently; values below 1 return an
+	// InvalidArgumentError.
+	ToolCallConcurrency *int
 	// ModelProvider and ModelID identify the model for emitted events.
 	ModelProvider string
 	ModelID       string
@@ -424,15 +428,20 @@ type ResumeToolApprovalsResult struct {
 // state/parity/sep_23_2026/review-p0-1-p0-2-round1.md).
 func ResumeToolApprovals(ctx context.Context, opts ResumeToolApprovalsOptions) (ResumeToolApprovalsResult, error) {
 	var usage types.Usage
+	concurrency, err := prepareToolCallConcurrency(opts.ToolCallConcurrency)
+	if err != nil {
+		return ResumeToolApprovalsResult{}, err
+	}
 	resumed, err := resumeToolApprovals(ctx, toolApprovalResumeOptions{
-		messages:       opts.Messages,
-		tools:          opts.Tools,
-		toolApproval:   opts.ToolApproval,
-		toolsContext:   opts.ToolsContext,
-		runtimeContext: opts.RuntimeContext,
-		secret:         opts.Secret,
-		refine:         opts.RefineToolInput,
-		usage:          &usage,
+		toolCallConcurrency: concurrency,
+		messages:            opts.Messages,
+		tools:               opts.Tools,
+		toolApproval:        opts.ToolApproval,
+		toolsContext:        opts.ToolsContext,
+		runtimeContext:      opts.RuntimeContext,
+		secret:              opts.Secret,
+		refine:              opts.RefineToolInput,
+		usage:               &usage,
 		callbacks: toolCallEventCallbacks{
 			callID:              opts.CallID,
 			onStart:             opts.OnToolExecutionStart,

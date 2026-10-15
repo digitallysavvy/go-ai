@@ -604,6 +604,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		RuntimeContext:       a.runtimeContext(),
 		Secret:               a.config.ExperimentalToolApprovalSecret,
 		RefineToolInput:      a.config.ExperimentalRefineToolInput,
+		ToolCallConcurrency:  a.config.ToolCallConcurrency,
 		ModelProvider:        a.config.Model.Provider(),
 		ModelID:              a.config.Model.ModelID(),
 		OnToolExecutionStart: cbs.onToolCallStart,
@@ -754,7 +755,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			// callConfig.Messages (this step's messages, including its own
 			// AppendToolCallerMessages announcement), not currentMessages,
 			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
-			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
+			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage))
 			if err != nil {
 				stepTel.fail(err)
 				// Call OnChainError callback
@@ -787,6 +788,13 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 					shouldContinue = false
 					break
 				}
+			}
+			// Continue only after every local tool call has a result (TS:
+			// clientToolOutputs + denied === clientToolCalls); a call left
+			// without one (a tool with no Execute) pauses the loop instead of
+			// sending the model a dangling tool call.
+			if hasUnresolvedLocalAgentToolCalls(stepResult.ToolCalls, executionTools, toolResults) {
+				shouldContinue = false
 			}
 		}
 		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
@@ -1467,6 +1475,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
+	// Reject a prompt that leaves a tool call without a result, as
+	// GenerateText does (TS convertToLanguageModelPrompt, MissingToolResultsError).
+	if err := validateStepToolResults(prompt.Messages, callConfig.Tools); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+
 	// Build generate options using potentially modified config
 	genOpts := &provider.GenerateOptions{
 		Prompt:                prompt,
@@ -1563,7 +1577,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 // executeTools executes a list of tool calls with optional approval
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
-func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks) ([]types.ToolResult, error) {
+func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks, usage types.Usage) ([]types.ToolResult, error) {
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
@@ -1804,6 +1818,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
 			var modelOutput *types.ToolResultOutput
+			callUsage := usage // per-call copy: calls may run concurrently
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
 					ToolCallID: call.ID,
@@ -1822,6 +1837,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 						ToolMetadata:     call.ToolMetadata,
 						Dynamic:          call.Dynamic,
 					},
+					Usage: &callUsage,
 				})
 				if convertErr != nil {
 					return results, &toolResultModelOutputError{err: convertErr}
@@ -2575,4 +2591,36 @@ func GetParentRunID(ctx context.Context) string {
 func GetTags(ctx context.Context) []string {
 	tags, _ := ctx.Value(tagsKey).([]string)
 	return tags
+}
+
+// validateStepToolResults returns a *types.MissingToolResultsError when the
+// step prompt has a tool call without a tool result before later context or
+// the end of the conversation. Provider-executed tools are exempt.
+func validateStepToolResults(messages []types.Message, tools []types.Tool) error {
+	var providerTools []string
+	for _, tool := range tools {
+		if tool.ProviderExecuted {
+			providerTools = append(providerTools, tool.Name)
+		}
+	}
+	return promptutils.ValidateToolResults(messages, providerTools...)
+}
+
+// hasUnresolvedLocalAgentToolCalls reports whether a locally executed tool call
+// of the step has no tool result (mirrors ai.hasUnresolvedLocalToolCalls).
+func hasUnresolvedLocalAgentToolCalls(calls []types.ToolCall, tools []types.Tool, results []types.ToolResult) bool {
+	resolved := make(map[string]bool, len(results))
+	for _, r := range results {
+		resolved[r.ToolCallID] = true
+	}
+	for _, call := range calls {
+		tool := findAgentTool(call.ToolName, tools)
+		if tool == nil || tool.ProviderExecuted {
+			continue
+		}
+		if !resolved[call.ID] {
+			return true
+		}
+	}
+	return false
 }

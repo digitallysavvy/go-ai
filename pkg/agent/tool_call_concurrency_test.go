@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,5 +90,96 @@ func TestToolLoopAgent_ToolCallConcurrencyRejectsInvalid(t *testing.T) {
 	a := NewToolLoopAgent(AgentConfig{Model: &mockLanguageModel{}, ToolCallConcurrency: &zero})
 	if _, err := a.Generate(context.Background(), AgentGenerateOptions{Prompt: "go"}); err == nil {
 		t.Fatal("expected an error for ToolCallConcurrency 0")
+	}
+}
+
+func TestLegacyLoopRejectsMissingToolResults(t *testing.T) {
+	model := &mockLanguageModel{}
+	a := NewToolLoopAgent(AgentConfig{Model: model})
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: "{}"}}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "again"}}},
+	}
+	_, err := a.ExecuteWithMessages(context.Background(), msgs)
+	var missing *types.MissingToolResultsError
+	if !errors.As(err, &missing) {
+		t.Fatalf("err = %v, want MissingToolResultsError", err)
+	}
+	if model.callCount != 0 || len(model.options) != 0 {
+		t.Fatal("model must not be called")
+	}
+}
+
+func TestLegacyLoopStopsOnCancelDuringConcurrentTools(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	one := 1
+	var ran int32
+	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			atomic.AddInt32(&ran, 1)
+			cancel()
+			return "ok", nil
+		}}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls: []types.ToolCall{
+			{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}},
+			{ID: "2", ToolName: "t", Arguments: map[string]interface{}{}},
+		},
+	}}}
+	a := NewToolLoopAgent(AgentConfig{Model: model, Tools: []types.Tool{tool}, ToolCallConcurrency: &one})
+	_, err := a.Execute(ctx, "go")
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if atomic.LoadInt32(&ran) != 1 {
+		t.Fatalf("ran = %d, want 1", ran)
+	}
+}
+
+func TestLegacyLoopPausesOnUnresolvedLocalToolCall(t *testing.T) {
+	withExec := types.Tool{Name: "a", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}
+	noExec := types.Tool{Name: "b", Parameters: map[string]interface{}{"type": "object"}}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls: []types.ToolCall{
+			{ID: "1", ToolName: "a", Arguments: map[string]interface{}{}},
+			{ID: "2", ToolName: "b", Arguments: map[string]interface{}{}},
+		},
+	}}}
+	a := NewToolLoopAgent(AgentConfig{Model: model, Tools: []types.Tool{withExec, noExec}})
+	res, err := a.Execute(context.Background(), "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || model.callCount != 1 {
+		t.Fatalf("steps=%d calls=%d, want loop to pause after 1 step", len(res.Steps), model.callCount)
+	}
+}
+
+func TestLegacyLoopToModelOutputReceivesUsage(t *testing.T) {
+	total := int64(7)
+	var got *types.Usage
+	tool := types.Tool{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil },
+		ToModelOutput: func(_ context.Context, o types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+			got = o.Usage
+			return &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "x"}, nil
+		}}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		FinishReason: types.FinishReasonToolCalls,
+		Usage:        types.Usage{TotalTokens: &total},
+		ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}},
+	}}}
+	a := NewToolLoopAgent(AgentConfig{Model: model, Tools: []types.Tool{tool}})
+	if _, err := a.Execute(context.Background(), "go"); err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.TotalTokens == nil || *got.TotalTokens != 7 {
+		t.Fatalf("usage = %+v, want total 7", got)
 	}
 }

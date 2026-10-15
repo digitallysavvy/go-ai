@@ -20,14 +20,19 @@ func validateToolCallConcurrency(n *int) error {
 }
 
 // runToolCalls runs runCall for every tool call of a step in the legacy
-// AgentResult loop. When AgentConfig.ToolCallConcurrency is unset the calls run
-// sequentially, as this loop always has; when set, at most that many run at
-// once (mirrors TS mapWithConcurrency applied to tool execution). Results are
-// returned in call order regardless of completion order, and once a call fails
-// or ctx is cancelled no further queued call is started.
+// AgentResult loop. At most AgentConfig.ToolCallConcurrency calls run at once;
+// when it is unset all calls of the step run concurrently, as in TS (Promise.all
+// through mapWithConcurrency) and in ai.GenerateText/StreamText. Set it to 1 for
+// sequential execution. Results are returned in call order regardless of
+// completion order, and once a call fails or ctx is cancelled no further queued
+// call is started.
 func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.ToolCall, runCall func(types.ToolCall) ([]types.ToolResult, error)) ([]types.ToolResult, error) {
 	results := make([]types.ToolResult, 0, len(toolCalls))
-	if a.config.ToolCallConcurrency == nil || len(toolCalls) <= 1 {
+	limit := 0 // unlimited
+	if a.config.ToolCallConcurrency != nil {
+		limit = *a.config.ToolCallConcurrency
+	}
+	if len(toolCalls) <= 1 {
 		for _, call := range toolCalls {
 			res, err := runCall(call)
 			results = append(results, res...)
@@ -39,7 +44,7 @@ func (a *ToolLoopAgent) runToolCalls(ctx context.Context, toolCalls []types.Tool
 	}
 	perCall := make([][]types.ToolResult, len(toolCalls))
 	errs := make([]error, len(toolCalls))
-	started := ordered.Run(ctx, len(toolCalls), *a.config.ToolCallConcurrency, func(i int) error {
+	started := ordered.Run(ctx, len(toolCalls), limit, func(i int) error {
 		perCall[i], errs[i] = runCall(toolCalls[i])
 		return errs[i]
 	})
