@@ -1,6 +1,7 @@
 package gemini
 
 import (
+	"encoding/json"
 	"io"
 	"testing"
 
@@ -66,5 +67,30 @@ func TestStreamIncludeRawChunks(t *testing.T) {
 		if c.Type == provider.ChunkTypeRaw {
 			t.Fatal("raw chunk without includeRawChunks")
 		}
+	}
+}
+
+// TS passes usageMetadata through as usage.raw and providerMetadata, so
+// fields the SDK does not model survive.
+func TestUsageMetadataKeepsUnknownFields(t *testing.T) {
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"futureField":{"a":1},"totalTokenCount":0}}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	usage := convertUsage(resp.UsageMetadata)
+	if usage.Raw["futureField"] == nil {
+		t.Fatalf("Raw = %#v", usage.Raw)
+	}
+	if _, ok := usage.Raw["totalTokenCount"]; !ok {
+		t.Fatalf("explicit zero dropped: %#v", usage.Raw)
+	}
+	// Continuation sums typed counters and keeps the unknown fields.
+	b := *resp.UsageMetadata
+	sum := addUsageMetadata(resp.UsageMetadata, &b)
+	out, _ := json.Marshal(sum)
+	var m map[string]interface{}
+	_ = json.Unmarshal(out, &m)
+	if m["promptTokenCount"] != float64(6) || m["futureField"] == nil {
+		t.Fatalf("summed = %s", out)
 	}
 }
