@@ -394,7 +394,7 @@ func TestTSReplay_SuspendAndAttachContinuation(t *testing.T) {
 				t.Fatal(err)
 			}
 			<-turn1.Done()
-			if got := delivered(); !reflect.DeepEqual(got, append([]string(nil), tc.wantFirst...)) && !(len(got) == 0 && len(tc.wantFirst) == 0) {
+			if got := delivered(); len(got) != len(tc.wantFirst) || (len(got) > 0 && !reflect.DeepEqual(got, tc.wantFirst)) {
 				t.Fatalf("delivered = %v, want %v", got, tc.wantFirst)
 			}
 			var data map[string]any
