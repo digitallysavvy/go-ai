@@ -97,6 +97,18 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	if responsesLogprobsRequested(opts.ProviderOptions, m.provider.responsesProviderOptionsName()) {
+		if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
+			if pm, ok := result.ProviderMetadata[m.provider.responsesProviderOptionsName()].(map[string]interface{}); ok {
+				pm["logprobs"] = logprobs
+			}
+		}
+	}
+	result.RawRequest = body
+	var rawResponse interface{}
+	if json.Unmarshal(httpResp.Body, &rawResponse) == nil {
+		result.RawResponse = rawResponse
+	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
 	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
 	result.ResponseMetadata.Headers = result.ResponseHeaders
@@ -125,6 +137,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	stream := newResponsesStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, webSearchToolName, m.provider.responsesProviderOptionsName(), httpResp.Header)
 	stream.requestBody = body
 	stream.tools = opts.Tools
+	stream.logprobsEnabled = responsesLogprobsRequested(opts.ProviderOptions, m.provider.responsesProviderOptionsName())
 	stream.store = responsesExplicitStore(body)
 	stream.approvalFromPrompt = extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
 	if name := toolSearchToolName(opts.Tools); name != "" {
@@ -417,6 +430,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		FileIDPrefixes:                       m.provider.responsesFileIDPrefixes(),
 		ProviderOptionsName:                  providerOptionsName,
 		ToolSearchToolName:                   toolSearchToolName(opts.Tools),
+		ProviderToolNames:                    openAIProviderToolNames(opts.Tools),
 		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
@@ -1127,6 +1141,39 @@ func customToolNames(tools []types.Tool) map[string]bool {
 	return names
 }
 
+// responsesLogprobsRequested mirrors TS's truthiness check of
+// providerOptions[providerOptionsName].logprobs (true or a non-zero number).
+func responsesLogprobsRequested(providerOptions map[string]interface{}, providerName string) bool {
+	opts, _ := providerOptions[providerName].(map[string]interface{})
+	switch v := opts["logprobs"].(type) {
+	case bool:
+		return v
+	case int:
+		return v != 0
+	case int64:
+		return v != 0
+	case float64:
+		return v != 0
+	}
+	return false
+}
+
+// openAIProviderToolNames maps each declared OpenAI provider tool's SDK name
+// to its bare provider tool name (TS createToolNameMapping providerToolNames).
+func openAIProviderToolNames(tools []types.Tool) map[string]string {
+	var m map[string]string
+	for _, tool := range tools {
+		if tool.Name == "" || !strings.HasPrefix(tool.ProviderID, "openai.") {
+			continue
+		}
+		if m == nil {
+			m = map[string]string{}
+		}
+		m[tool.Name] = strings.TrimPrefix(tool.ProviderID, "openai.")
+	}
+	return m
+}
+
 func hasTool(tools []types.Tool, name string) bool {
 	for _, tool := range tools {
 		if tool.Name == name || tool.ProviderID == name {
@@ -1297,11 +1344,17 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			for _, part := range item.Content {
 				result.Text += part.Text
-				result.Content = append(result.Content, types.TextContent{
+				msgMeta := openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations)
+				text := types.TextContent{
 					Text:            part.Text,
 					Citations:       openAIAnnotationCitations(providerName, part.Annotations),
-					ProviderOptions: openAIResponsesMessageProviderOptions(providerName, item.ID, item.Phase, part.Annotations),
-				})
+					ProviderOptions: msgMeta,
+				}
+				// TS exposes the same data as the part's providerMetadata.
+				if msgMeta != nil {
+					text.ProviderMetadata, _ = json.Marshal(msgMeta)
+				}
+				result.Content = append(result.Content, text)
 				for _, ann := range part.Annotations {
 					// Use citation-derived sources only when retrieval data
 					// is unavailable.
@@ -1355,7 +1408,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.apply_patch",
+				ToolName:         openAIProviderToolDisplayName(tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, "", nil, nil),
@@ -1378,7 +1431,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				// instead of a client-executable "computer" tool call.
 				tc := types.ToolCall{
 					ID:               computerItemID,
-					ToolName:         "openai.computer_use",
+					ToolName:         "computer_use",
 					Arguments:        map[string]interface{}{},
 					ProviderExecuted: true,
 				}
@@ -1386,14 +1439,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Content = append(result.Content,
 					types.ToolCallContent{
 						ToolCallID:       computerItemID,
-						ToolName:         "openai.computer_use",
+						ToolName:         "computer_use",
 						Input:            "",
 						Arguments:        map[string]interface{}{},
 						ProviderExecuted: true,
 					},
 					types.ToolResultContent{
 						ToolCallID: computerItemID,
-						ToolName:   "openai.computer_use",
+						ToolName:   "computer_use",
 						Result:     map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
 						// TS never sets providerExecuted on this tool-result,
 						// only on the tool-call.
@@ -1404,7 +1457,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			args, rawArgs := computerCallArguments(item)
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               *item.CallID,
-				ToolName:         "openai.computer",
+				ToolName:         openAIProviderToolDisplayName(tools, "openai.computer", "computer"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, "", nil, nil),
@@ -1441,7 +1494,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Content = append(result.Content, types.ReasoningContent{
 					Text:             s.Text,
 					EncryptedContent: item.EncryptedContent,
-					ProviderMetadata: openAIResponsesReasoningMetadata(providerName, item.ID),
+					ProviderMetadata: openAIResponsesReasoningMetadataWithEncrypted(providerName, item.ID, item.EncryptedContent),
 				})
 			}
 
@@ -1468,7 +1521,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			args, rawArgs := programCallArguments(item)
 			tc := types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.programmatic_tool_calling",
+				ToolName:         openAIProviderToolDisplayName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
@@ -1477,7 +1530,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			toolCalls = append(toolCalls, tc)
 			result.Content = append(result.Content, types.ToolCallContent{
 				ToolCallID:       item.CallID,
-				ToolName:         "openai.programmatic_tool_calling",
+				ToolName:         openAIProviderToolDisplayName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Input:            rawArgs,
 				Arguments:        args,
 				ProviderExecuted: true,
@@ -1491,7 +1544,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID: item.CallID,
-				ToolName:   "openai.programmatic_tool_calling",
+				ToolName:   openAIProviderToolDisplayName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 				// TS never sets providerExecuted on this tool-result, only
 				// on the tool-call.
@@ -1539,12 +1592,39 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				result.Content = append(result.Content, src)
 			}
 
+		case "local_shell_call":
+			if tc, ok := openAILocalShellToolCall(providerName, tools, rawItem, false); ok {
+				toolCalls = append(toolCalls, tc)
+			}
+
+		case "shell_call":
+			if tc, ok := openAIShellToolCall(providerName, tools, rawItem); ok {
+				toolCalls = append(toolCalls, tc)
+				if tc.ProviderExecuted {
+					// Hosted-container shell calls are provider-executed:
+					// TS reports the call in content next to its output.
+					result.Content = append(result.Content, types.ToolCallContent{
+						ToolCallID:       tc.ID,
+						ToolName:         tc.ToolName,
+						Input:            tc.RawArguments,
+						Arguments:        tc.Arguments,
+						ProviderExecuted: true,
+						ProviderMetadata: marshalOrNil(tc.ProviderMetadata),
+					})
+				}
+			}
+
+		case "shell_call_output":
+			if tr, ok := openAIShellToolResult(tools, rawItem); ok {
+				result.Content = append(result.Content, tr)
+			}
+
 		case "compaction":
 			var item responses.CompactionEvent
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
-			chunk := responses.CompactionEventToChunk(item)
+			chunk := responses.CompactionEventToChunkForProvider(item, providerName)
 			if chunk.CustomContent != nil {
 				result.Content = append(result.Content, *chunk.CustomContent)
 			}
@@ -1860,6 +1940,46 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	return result, nil
 }
 
+// normalizeResponsesLogprobs keeps only the fields the TS logprobs schema
+// declares (token, logprob, top_logprobs[].token/logprob); zod strips the
+// wire's bytes arrays from providerMetadata.
+func normalizeResponsesLogprobs(raw json.RawMessage) json.RawMessage {
+	var items []struct {
+		Token       string  `json:"token"`
+		Logprob     float64 `json:"logprob"`
+		TopLogprobs []struct {
+			Token   string  `json:"token"`
+			Logprob float64 `json:"logprob"`
+		} `json:"top_logprobs"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return raw
+	}
+	out, err := json.Marshal(items)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// responsesOutputLogprobs collects the per-content-part logprobs of every
+// message output item (TS: logprobs.push(contentPart.logprobs)).
+func responsesOutputLogprobs(output []json.RawMessage) []json.RawMessage {
+	var out []json.RawMessage
+	for _, raw := range output {
+		var item responses.AssistantMessageItem
+		if json.Unmarshal(raw, &item) != nil || item.Type != "message" {
+			continue
+		}
+		for _, part := range item.Content {
+			if len(part.Logprobs) > 0 && string(part.Logprobs) != "null" {
+				out = append(out, normalizeResponsesLogprobs(part.Logprobs))
+			}
+		}
+	}
+	return out
+}
+
 // programCallArguments builds the SDK-facing {code, fingerprint} arguments
 // for a decoded "program" item, mirroring TS's
 // programmaticToolCallingInputSchema (row 1f6dd3a).
@@ -1940,11 +2060,21 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 }
 
 func openAIResponsesReasoningMetadata(providerName, itemID string) json.RawMessage {
+	return openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, "")
+}
+
+// openAIResponsesReasoningMetadataWithEncrypted mirrors the TS reasoning
+// providerMetadata {itemId, reasoningEncryptedContent: encrypted_content ?? null}.
+func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, encrypted string) json.RawMessage {
 	if itemID == "" {
 		return nil
 	}
+	var enc interface{}
+	if encrypted != "" {
+		enc = encrypted
+	}
 	raw, _ := json.Marshal(map[string]interface{}{
-		providerName: map[string]interface{}{"itemId": itemID},
+		providerName: map[string]interface{}{"itemId": itemID, "reasoningEncryptedContent": enc},
 	})
 	return raw
 }
@@ -2276,29 +2406,35 @@ func convertResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 		TotalTokens:  &total,
 	}
 
-	if u.InputTokensDetails != nil && (u.InputTokensDetails.CachedTokens > 0 || u.InputTokensDetails.CacheWriteTokens != nil) {
-		cached := int64(u.InputTokensDetails.CachedTokens)
-		var cacheWrite int64
-		var cacheWritePtr *int64
+	// TS convertOpenAIResponsesUsage always reports the breakdown (cached and
+	// reasoning default to 0; cacheWrite stays undefined unless sent).
+	var cached int64
+	var cacheWritePtr *int64
+	if u.InputTokensDetails != nil {
+		cached = int64(u.InputTokensDetails.CachedTokens)
 		if u.InputTokensDetails.CacheWriteTokens != nil {
-			cacheWrite = int64(*u.InputTokensDetails.CacheWriteTokens)
-			cacheWritePtr = &cacheWrite
-		}
-		noCached := inputTokens - cached - cacheWrite
-		result.InputDetails = &types.InputTokenDetails{
-			CacheReadTokens:  &cached,
-			CacheWriteTokens: cacheWritePtr,
-			NoCacheTokens:    &noCached,
+			cw := int64(*u.InputTokensDetails.CacheWriteTokens)
+			cacheWritePtr = &cw
 		}
 	}
+	noCached := inputTokens - cached
+	if cacheWritePtr != nil {
+		noCached -= *cacheWritePtr
+	}
+	result.InputDetails = &types.InputTokenDetails{
+		CacheReadTokens:  &cached,
+		CacheWriteTokens: cacheWritePtr,
+		NoCacheTokens:    &noCached,
+	}
 
-	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
-		reasoning := int64(u.OutputTokensDetails.ReasoningTokens)
-		textOut := outputTokens - reasoning
-		result.OutputDetails = &types.OutputTokenDetails{
-			ReasoningTokens: &reasoning,
-			TextTokens:      &textOut,
-		}
+	var reasoning int64
+	if u.OutputTokensDetails != nil {
+		reasoning = int64(u.OutputTokensDetails.ReasoningTokens)
+	}
+	textOut := outputTokens - reasoning
+	result.OutputDetails = &types.OutputTokenDetails{
+		ReasoningTokens: &reasoning,
+		TextTokens:      &textOut,
 	}
 
 	// Row 7243530/2c4767d: keep the complete raw usage object (captured by
@@ -2327,6 +2463,11 @@ type responsesToolAccum struct {
 	name      string
 	namespace string
 	arguments string
+	async     *bool
+	// suppressInputStreaming is set for an undeclared "parallel" wrapper call:
+	// its input deltas are buffered and replayed (TS isUndeclaredParallelToolCall).
+	suppressInputStreaming bool
+	bufferedInputDeltas    []string
 }
 
 // responsesReasoningAccum tracks the lifecycle of a streaming reasoning
@@ -2373,6 +2514,8 @@ type responsesStream struct {
 	webSearchToolName string
 	providerName      string
 	responseID        string
+	logprobsEnabled   bool              // providerOptions.<name>.logprobs is truthy
+	logprobs          []json.RawMessage // per-delta logprobs collected for finish metadata
 	outputStarted     bool
 	pendingRaw        []*provider.StreamChunk
 	pendingMetadata   *provider.StreamChunk
@@ -2750,11 +2893,23 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			switch e.Item.Type {
 			case "function_call":
+				suppress := responses.IsUndeclaredParallelToolCall(e.Item.Name, s.tools)
 				s.toolAccum[e.OutputIndex] = &responsesToolAccum{
-					id:        e.Item.CallID,
-					itemID:    e.Item.ID,
-					name:      e.Item.Name,
-					namespace: e.Item.Namespace,
+					id:                     e.Item.CallID,
+					itemID:                 e.Item.ID,
+					name:                   e.Item.Name,
+					namespace:              e.Item.Namespace,
+					async:                  e.Item.Async,
+					suppressInputStreaming: suppress,
+				}
+				if !suppress {
+					// TS streams the tool input: tool-input-start here, a
+					// tool-input-delta per arguments delta, tool-input-end at
+					// output_item.done.
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type:     provider.ChunkTypeToolInputStart,
+						ToolCall: &types.ToolCall{ID: e.Item.CallID, ToolName: e.Item.Name},
+					})
 				}
 			case "web_search_call":
 				s.flushQueue = append(s.flushQueue,
@@ -2919,7 +3074,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				isDelete := opType == "delete_file"
 				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-					toolName:   "openai.apply_patch",
+					toolName:   openAIProviderToolDisplayName(s.tools, "openai.apply_patch", "apply_patch"),
 					toolCallID: callID,
 					applyPatch: &applyPatchStreamState{hasDiff: isDelete, endEmitted: isDelete},
 				}
@@ -2927,14 +3082,20 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					Type: provider.ChunkTypeToolInputStart,
 					ToolCall: &types.ToolCall{
 						ID:       callID,
-						ToolName: "openai.apply_patch",
+						ToolName: openAIProviderToolDisplayName(s.tools, "openai.apply_patch", "apply_patch"),
 					},
 				})
 				if isDelete {
-					inputStr, _ := json.Marshal(map[string]interface{}{
-						"callId":    callID,
-						"operation": map[string]interface{}{"type": opType, "path": opPath},
-					})
+					inputStr, _ := json.Marshal(struct {
+						CallID    string `json:"callId"`
+						Operation struct {
+							Type string `json:"type"`
+							Path string `json:"path"`
+						} `json:"operation"`
+					}{CallID: callID, Operation: struct {
+						Type string `json:"type"`
+						Path string `json:"path"`
+					}{opType, opPath}})
 					s.flushQueue = append(s.flushQueue,
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: string(inputStr)},
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID},
@@ -2966,6 +3127,9 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					return chunk, nil
 				}
 				continue
+			}
+			if s.logprobsEnabled && len(e.Logprobs) > 0 && string(e.Logprobs) != "null" {
+				s.logprobs = append(s.logprobs, normalizeResponsesLogprobs(e.Logprobs))
 			}
 			if e.Delta == "" {
 				continue
@@ -2999,6 +3163,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if accum, ok := s.toolAccum[e.OutputIndex]; ok {
 				accum.arguments += e.Delta
+				if accum.suppressInputStreaming {
+					accum.bufferedInputDeltas = append(accum.bufferedInputDeltas, e.Delta)
+				} else {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputDelta,
+						ID:   accum.id,
+						Text: e.Delta,
+					})
+				}
 			}
 			continue
 
@@ -3377,8 +3550,24 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if responseID == "" {
 				responseID = e.Response.ID
 			}
-			if responseID != "" {
-				meta, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"responseId": responseID}})
+			{
+				// TS: { responseId, logprobs?, serviceTier?, reasoningContext? }.
+				fields := map[string]interface{}{}
+				if responseID != "" {
+					fields["responseId"] = responseID
+				}
+				if len(s.logprobs) > 0 {
+					fields["logprobs"] = s.logprobs
+				}
+				if e.Response.ServiceTier != "" {
+					fields["serviceTier"] = e.Response.ServiceTier
+				}
+				if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
+					fields["reasoningContext"] = e.Response.Reasoning.Context
+				}
+				if len(fields) > 0 {
+					meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
+				}
 			}
 
 			s.err = io.EOF
@@ -3424,8 +3613,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if responseID != "" {
 				metaMap["responseId"] = responseID
 			}
-			if e.Response.ServiceTier != "" {
-				metaMap["serviceTier"] = e.Response.ServiceTier
+			if len(s.logprobs) > 0 {
+				metaMap["logprobs"] = s.logprobs
+			}
+			if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
+				metaMap["reasoningContext"] = e.Response.Reasoning.Context
 			}
 			var meta json.RawMessage
 			if len(metaMap) > 0 {
@@ -3546,11 +3738,9 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
 
-		var args map[string]interface{}
-		if accum.arguments != "" {
-			json.Unmarshal([]byte(accum.arguments), &args) //nolint:errcheck
-		}
-		rawArguments := accum.arguments
+		// TS builds the tool-input-end / tool-call parts from the done item
+		// (call_id, name, arguments), not from the accumulated deltas.
+		callID, name, rawArguments := accum.id, accum.name, accum.arguments
 		var item responses.FunctionCallItem
 		if err := json.Unmarshal(e.Item, &item); err == nil {
 			if item.ID != "" {
@@ -3559,40 +3749,110 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			if item.Namespace != "" {
 				accum.namespace = item.Namespace
 			}
-			if accum.arguments == "" && item.Arguments != "" {
-				json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
+			if item.CallID != "" {
+				callID = item.CallID
+			}
+			if item.Name != "" {
+				name = item.Name
+			}
+			if item.Arguments != "" || accum.arguments == "" {
 				rawArguments = item.Arguments
 			}
+		}
+		async := item.Async
+		if async == nil {
+			async = accum.async
+		}
+		newToolCall := func(id, toolName, input string, metadata map[string]interface{}) *provider.StreamChunk {
+			var args map[string]interface{}
+			if input != "" {
+				json.Unmarshal([]byte(input), &args) //nolint:errcheck
+			}
+			return &provider.StreamChunk{
+				Type: provider.ChunkTypeToolCall,
+				ToolCall: &types.ToolCall{
+					ID:               id,
+					ToolName:         toolName,
+					Arguments:        args,
+					RawArguments:     input,
+					ProviderMetadata: metadata,
+				},
+			}
+		}
+		emitUnexpanded := func() {
+			if accum.suppressInputStreaming {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:     provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{ID: callID, ToolName: name},
+				})
+				if len(accum.bufferedInputDeltas) > 0 {
+					for _, d := range accum.bufferedInputDeltas {
+						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: d})
+					}
+				} else if len(rawArguments) > 0 {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: callID, Text: rawArguments})
+				}
+			}
+			end := &provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: callID, ToolCall: &types.ToolCall{ID: callID, ToolName: name}}
+			if accum.namespace != "" {
+				end.ProviderMetadata, _ = json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"namespace": accum.namespace}})
+			}
+			s.flushQueue = append(s.flushQueue, end,
+				newToolCall(callID, name, rawArguments, openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, async, item.Caller)))
+		}
+		if !accum.suppressInputStreaming {
+			emitUnexpanded()
+			return nil, false
 		}
 		// Row 6be0f51: expand an internal "parallel" wrapper call into one
 		// tool-call chunk per nested recipient, when every recipient names a
 		// declared function tool.
-		if expanded, ok := responses.ExpandParallelToolCall(accum.id, accum.name, rawArguments, accum.itemID, s.tools, s.providerName); ok {
+		if expanded, ok := responses.ExpandParallelToolCall(callID, name, rawArguments, accum.itemID, s.tools, s.providerName); ok {
 			for _, tc := range expanded {
 				tc := tc
-				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-					Type:     provider.ChunkTypeToolCall,
-					ToolCall: &tc,
-				})
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: tc.ID, ToolName: tc.ToolName}},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: tc.ID, Text: tc.RawArguments},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.ID, ToolCall: &types.ToolCall{ID: tc.ID, ToolName: tc.ToolName}},
+					&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc},
+				)
 			}
 			return nil, false
 		}
-		return s.emitParsedChunk(&provider.StreamChunk{
-			Type: provider.ChunkTypeToolCall,
-			ToolCall: &types.ToolCall{
-				ID:               accum.id,
-				ToolName:         accum.name,
-				Arguments:        args,
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, accum.itemID, accum.namespace, item.Async, item.Caller),
-			},
-		})
+		emitUnexpanded()
+		return nil, false
+
+	case "local_shell_call":
+		delete(s.itemTypes, e.OutputIndex)
+		if tc, ok := openAILocalShellToolCall(s.providerName, s.tools, e.Item, true); ok {
+			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
+		}
+		return nil, false
+
+	case "shell_call":
+		delete(s.itemTypes, e.OutputIndex)
+		if tc, ok := openAIShellToolCall(s.providerName, s.tools, e.Item); ok {
+			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &tc})
+		}
+		return nil, false
+
+	case "shell_call_output":
+		delete(s.itemTypes, e.OutputIndex)
+		if tr, ok := openAIShellToolResult(s.tools, e.Item); ok {
+			return s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
+				ToolCallID: tr.ToolCallID,
+				ToolName:   tr.ToolName,
+				Result:     tr.Result,
+			}})
+		}
+		return nil, false
 
 	case "compaction":
 		var item responses.CompactionEvent
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		chunk := responses.CompactionEventToChunk(item)
+		chunk := responses.CompactionEventToChunkForProvider(item, s.providerName)
 		return s.emitParsedChunk(chunk)
 
 	case "message":
@@ -3738,7 +3998,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.apply_patch",
+				ToolName:         openAIProviderToolDisplayName(s.tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, "", nil, nil),
@@ -3766,7 +4026,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					Type: provider.ChunkTypeToolInputEnd,
 					ToolCall: &types.ToolCall{
 						ID:               computerItemID,
-						ToolName:         "openai.computer_use",
+						ToolName:         "computer_use",
 						ProviderExecuted: true,
 					},
 				},
@@ -3774,7 +4034,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 					Type: provider.ChunkTypeToolCall,
 					ToolCall: &types.ToolCall{
 						ID:               computerItemID,
-						ToolName:         "openai.computer_use",
+						ToolName:         "computer_use",
 						Arguments:        map[string]interface{}{},
 						ProviderExecuted: true,
 					},
@@ -3784,7 +4044,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: computerItemID,
-					ToolName:   "openai.computer_use",
+					ToolName:   "computer_use",
 					Result:     map[string]interface{}{"type": "computer_use_tool_result", "status": item.Status},
 				},
 			})
@@ -3794,7 +4054,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               *item.CallID,
-				ToolName:         "openai.computer",
+				ToolName:         openAIProviderToolDisplayName(s.tools, "openai.computer", "computer"),
 				Arguments:        computerArgs,
 				RawArguments:     computerRawArgs,
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, "", nil, nil),
@@ -3867,7 +4127,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         "openai.programmatic_tool_calling",
+				ToolName:         openAIProviderToolDisplayName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
@@ -3886,7 +4146,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.CallID,
-				ToolName:   "openai.programmatic_tool_calling",
+				ToolName:   openAIProviderToolDisplayName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 			},
 		})

@@ -38,6 +38,10 @@ type AssistantMessageContent struct {
 	// Annotations holds citations attached to this text part (url_citation,
 	// file_citation, container_file_citation, file_path).
 	Annotations []TextAnnotation `json:"annotations,omitempty"`
+
+	// Logprobs is the raw per-token logprobs array, present when the request
+	// asked for message.output_text.logprobs.
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
 }
 
 // FunctionCallItem represents a function call output item.
@@ -204,7 +208,11 @@ type CompactionEvent struct {
 	// Type is always "compaction".
 	Type string `json:"type"`
 
-	// ItemID is the unique identifier of the compacted item.
+	// ID is the item id as the API sends it on the wire ("id").
+	ID string `json:"id,omitempty"`
+
+	// ItemID is the unique identifier of the compacted item. Older callers
+	// populate it directly; ID (the wire field) is used when it is empty.
 	ItemID string `json:"item_id,omitempty"`
 
 	// EncryptedContent is the opaque encrypted context blob.
@@ -791,6 +799,9 @@ type OutputTextDeltaEvent struct {
 	Type        string `json:"type"` // "response.output_text.delta"
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
+
+	// Logprobs is the raw per-token logprobs array for this delta.
+	Logprobs json.RawMessage `json:"logprobs,omitempty"`
 }
 
 // FunctionCallArgumentsDeltaEvent carries an incremental tool input chunk.
@@ -907,6 +918,46 @@ type TextAnnotation struct {
 	Filename    string `json:"filename,omitempty"`
 	Index       int    `json:"index,omitempty"`
 	ContainerID string `json:"container_id,omitempty"`
+}
+
+// MarshalJSON emits exactly the fields the TS schema declares for each
+// annotation type, keeping zero-valued indexes (start_index 0, index 0) that
+// the omitempty struct tags would otherwise drop from providerMetadata.
+func (a TextAnnotation) MarshalJSON() ([]byte, error) {
+	switch a.Type {
+	case "url_citation":
+		return json.Marshal(struct {
+			Type       string `json:"type"`
+			StartIndex int    `json:"start_index"`
+			EndIndex   int    `json:"end_index"`
+			URL        string `json:"url"`
+			Title      string `json:"title"`
+		}{a.Type, a.StartIndex, a.EndIndex, a.URL, a.Title})
+	case "file_citation":
+		return json.Marshal(struct {
+			Type     string `json:"type"`
+			FileID   string `json:"file_id"`
+			Filename string `json:"filename"`
+			Index    int    `json:"index"`
+		}{a.Type, a.FileID, a.Filename, a.Index})
+	case "container_file_citation":
+		return json.Marshal(struct {
+			Type        string `json:"type"`
+			ContainerID string `json:"container_id"`
+			FileID      string `json:"file_id"`
+			Filename    string `json:"filename"`
+			StartIndex  int    `json:"start_index"`
+			EndIndex    int    `json:"end_index"`
+		}{a.Type, a.ContainerID, a.FileID, a.Filename, a.StartIndex, a.EndIndex})
+	case "file_path":
+		return json.Marshal(struct {
+			Type   string `json:"type"`
+			FileID string `json:"file_id"`
+			Index  int    `json:"index"`
+		}{a.Type, a.FileID, a.Index})
+	}
+	type plain TextAnnotation
+	return json.Marshal(plain(a))
 }
 
 // OutputItemDoneEvent is emitted when an output item is fully assembled.

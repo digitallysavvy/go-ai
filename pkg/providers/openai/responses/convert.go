@@ -60,6 +60,13 @@ type ConvertOptions struct {
 	// with this exact name is treated as the tool_search feature; a regular
 	// function tool that happens to be named "tool_search" is not.
 	ToolSearchToolName string
+
+	// ProviderToolNames maps the SDK tool name a caller declared for an OpenAI
+	// provider-defined tool (e.g. "program" for openai.programmatic_tool_calling)
+	// to the bare provider tool name ("programmatic_tool_calling"), like the
+	// TS toolNameMapping.toProviderToolName. Names without an entry fall back
+	// to trimming an "openai." prefix.
+	ProviderToolNames map[string]string
 	// OutputSchemaToolNames holds the names of function tools that declared
 	// providerOptions.openai.outputSchema. OpenAI parses their
 	// function_call_output.output as JSON, so text-like results must be
@@ -739,7 +746,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			}, true
 		}
 	}
-	toolName := normalizeOpenAIToolName(tc.ToolName)
+	toolName := opts.providerToolName(tc.ToolName)
 	if tc.ToolName == opts.toolSearchName() {
 		if opts.Store && itemID != "" {
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
@@ -772,7 +779,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			Arguments: rawArguments,
 		}, true
 	}
-	if tc.ToolName == "openai.programmatic_tool_calling" {
+	if opts.providerToolName(tc.ToolName) == "programmatic_tool_calling" {
 		// Row 1f6dd3a: checked before the generic ProviderExecuted branch
 		// below, mirroring TS placing its 'programmatic_tool_calling' check
 		// ahead of the generic providerExecuted branch.
@@ -1031,10 +1038,10 @@ func droppedToolResultWarning(part types.ToolResultContent, opts ConvertOptions)
 	if opts.Store || opts.HasConversation || isExecutionDeniedOutput(part.Output) {
 		return nil
 	}
-	if part.ToolName == opts.toolSearchName() || part.ToolName == "openai.programmatic_tool_calling" {
+	if part.ToolName == opts.toolSearchName() || opts.providerToolName(part.ToolName) == "programmatic_tool_calling" {
 		return nil
 	}
-	if opts.HasShellTool && normalizeOpenAIToolName(part.ToolName) == "shell" {
+	if opts.HasShellTool && opts.providerToolName(part.ToolName) == "shell" {
 		return nil
 	}
 	return &types.Warning{
@@ -1050,7 +1057,7 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 	if opts.HasConversation {
 		return nil
 	}
-	toolName := normalizeOpenAIToolName(part.ToolName)
+	toolName := opts.providerToolName(part.ToolName)
 	if isWebSearchToolName(part.ToolName, opts) {
 		// TS #22346: stateless replay re-creates the web_search_call so the
 		// search context survives across steps.
@@ -1081,7 +1088,7 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 		}
 		return nil
 	}
-	if part.ToolName == "openai.programmatic_tool_calling" {
+	if opts.providerToolName(part.ToolName) == "programmatic_tool_calling" {
 		// Row 1f6dd3a: the result of a hosted program's execution, mirroring
 		// tool_search's item_reference-first handling above.
 		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
@@ -1654,7 +1661,7 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 	if part.ToolName == opts.toolSearchName() {
 		return convertToolSearchOutput(part, "client")
 	}
-	toolName := normalizeOpenAIToolName(part.ToolName)
+	toolName := opts.providerToolName(part.ToolName)
 	switch toolName {
 	case "local_shell":
 		if !opts.HasLocalShellTool {
@@ -1799,6 +1806,15 @@ func convertApplyPatchOutput(part types.ToolResultContent) interface{} {
 		Status: parsed.Status,
 		Output: parsed.Output,
 	}
+}
+
+// providerToolName resolves an SDK tool name to the bare OpenAI provider tool
+// name, honouring custom names declared for provider tools.
+func (o ConvertOptions) providerToolName(name string) string {
+	if mapped, ok := o.ProviderToolNames[name]; ok {
+		return mapped
+	}
+	return normalizeOpenAIToolName(name)
 }
 
 func normalizeOpenAIToolName(name string) string {

@@ -2737,8 +2737,8 @@ func TestResponsesLanguageModel_ApplyPatchCallDecodesAsToolCall(t *testing.T) {
 		t.Fatalf("ToolCalls = %#v, want one apply_patch tool call", result.ToolCalls)
 	}
 	tc := result.ToolCalls[0]
-	if tc.ID != "call_1" || tc.ToolName != "openai.apply_patch" {
-		t.Fatalf("tool call = %#v, want callId call_1 and toolName openai.apply_patch", tc)
+	if tc.ID != "call_1" || tc.ToolName != "apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 and toolName apply_patch", tc)
 	}
 	if tc.Arguments["callId"] != "call_1" {
 		t.Fatalf("arguments = %#v, want callId call_1", tc.Arguments)
@@ -2784,8 +2784,8 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"apply
 	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall == nil {
 		t.Fatalf("chunk = %#v, want a tool call", chunk)
 	}
-	if chunk.ToolCall.ID != "call_1" || chunk.ToolCall.ToolName != "openai.apply_patch" {
-		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.apply_patch", chunk.ToolCall)
+	if chunk.ToolCall.ID != "call_1" || chunk.ToolCall.ToolName != "apply_patch" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName apply_patch", chunk.ToolCall)
 	}
 	operation, ok := chunk.ToolCall.Arguments["operation"].(map[string]interface{})
 	if !ok || operation["type"] != "delete_file" {
@@ -2970,8 +2970,8 @@ func TestResponsesLanguageModel_ComputerToolPrepareAndDecode(t *testing.T) {
 		t.Fatalf("ToolCalls = %#v, want one computer tool call", result.ToolCalls)
 	}
 	tc := result.ToolCalls[0]
-	if tc.ID != "call_1" || tc.ToolName != "openai.computer" {
-		t.Fatalf("tool call = %#v, want callId call_1 toolName openai.computer", tc)
+	if tc.ID != "call_1" || tc.ToolName != "computer" {
+		t.Fatalf("tool call = %#v, want callId call_1 toolName computer", tc)
 	}
 	actions, ok := tc.Arguments["actions"].([]map[string]interface{})
 	if !ok || len(actions) != 2 {
@@ -3000,7 +3000,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compu
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.computer" {
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "computer" {
 		t.Fatalf("chunk = %#v, want an openai.computer tool call", chunk)
 	}
 }
@@ -3028,11 +3028,11 @@ func TestResponsesLanguageModel_ComputerToolNullCallIDIsProviderExecuted(t *test
 		t.Fatalf("Content = %#v, want a tool-call/tool-result pair", result.Content)
 	}
 	tc, ok := result.Content[0].(types.ToolCallContent)
-	if !ok || tc.ToolCallID != "computer_1" || tc.ToolName != "openai.computer_use" || !tc.ProviderExecuted || tc.Input != "" {
+	if !ok || tc.ToolCallID != "computer_1" || tc.ToolName != "computer_use" || !tc.ProviderExecuted || tc.Input != "" {
 		t.Fatalf("Content[0] = %#v, want a providerExecuted computer_use tool-call with empty input", result.Content[0])
 	}
 	tr, ok := result.Content[1].(types.ToolResultContent)
-	if !ok || tr.ToolCallID != "computer_1" || tr.ToolName != "openai.computer_use" {
+	if !ok || tr.ToolCallID != "computer_1" || tr.ToolName != "computer_use" {
 		t.Fatalf("Content[1] = %#v, want a computer_use tool-result", result.Content[1])
 	}
 	resultMap, ok := tr.Result.(map[string]interface{})
@@ -3052,21 +3052,21 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compu
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk1.Type != provider.ChunkTypeToolInputEnd || chunk1.ToolCall.ToolName != "openai.computer_use" {
+	if chunk1.Type != provider.ChunkTypeToolInputEnd || chunk1.ToolCall.ToolName != "computer_use" {
 		t.Fatalf("chunk1 = %#v, want tool-input-end for computer_use", chunk1)
 	}
 	chunk2, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "openai.computer_use" || !chunk2.ToolCall.ProviderExecuted {
+	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "computer_use" || !chunk2.ToolCall.ProviderExecuted {
 		t.Fatalf("chunk2 = %#v, want a providerExecuted computer_use tool-call", chunk2)
 	}
 	chunk3, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk3.Type != provider.ChunkTypeToolResult || chunk3.ToolResult.ToolName != "openai.computer_use" {
+	if chunk3.Type != provider.ChunkTypeToolResult || chunk3.ToolResult.ToolName != "computer_use" {
 		t.Fatalf("chunk3 = %#v, want a computer_use tool-result", chunk3)
 	}
 }
@@ -3179,7 +3179,7 @@ func TestResponsesLanguageModel_ProgrammaticToolCallingPrepareAndDecode(t *testi
 		t.Fatalf("ToolCalls = %#v, want one programmatic tool call", result.ToolCalls)
 	}
 	tc := result.ToolCalls[0]
-	if tc.ID != "call_1" || tc.ToolName != "openai.programmatic_tool_calling" || !tc.ProviderExecuted {
+	if tc.ID != "call_1" || tc.ToolName != "programmatic_tool_calling" || !tc.ProviderExecuted {
 		t.Fatalf("tool call = %#v, want provider-executed openai.programmatic_tool_calling", tc)
 	}
 	if tc.Arguments["code"] != "callTool('lookup', {})" || tc.Arguments["fingerprint"] != "fp_1" {
@@ -3214,7 +3214,7 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"progr
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "openai.programmatic_tool_calling" || !chunk.ToolCall.ProviderExecuted {
+	if chunk.Type != provider.ChunkTypeToolCall || chunk.ToolCall.ToolName != "programmatic_tool_calling" || !chunk.ToolCall.ProviderExecuted {
 		t.Fatalf("chunk = %#v, want a provider-executed openai.programmatic_tool_calling tool call", chunk)
 	}
 
@@ -3418,19 +3418,27 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"funct
 	stream.tools = tools
 	defer stream.Close() //nolint:errcheck
 
-	chunk1, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() error = %v", err)
+	// The wrapper is expanded like TS: each child streams
+	// tool-input-start/delta/end before its tool-call; the wrapper itself
+	// never streams input.
+	var seq []string
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		name := string(c.Type)
+		if c.ToolCall != nil {
+			name += ":" + c.ToolCall.ToolName
+		}
+		seq = append(seq, name)
 	}
-	if chunk1.Type != provider.ChunkTypeToolCall || chunk1.ToolCall.ToolName != "get_weather" {
-		t.Fatalf("chunk1 = %#v, want get_weather tool call", chunk1)
+	want := []string{
+		"tool-input-start:get_weather", "tool-input-delta", "tool-input-end:get_weather", "tool-call:get_weather",
+		"tool-input-start:get_time", "tool-input-delta", "tool-input-end:get_time", "tool-call:get_time",
 	}
-	chunk2, err := stream.Next()
-	if err != nil {
-		t.Fatalf("Next() error = %v", err)
-	}
-	if chunk2.Type != provider.ChunkTypeToolCall || chunk2.ToolCall.ToolName != "get_time" {
-		t.Fatalf("chunk2 = %#v, want get_time tool call", chunk2)
+	if len(seq) < len(want) || strings.Join(seq[:len(want)], ",") != strings.Join(want, ",") {
+		t.Fatalf("stream sequence = %v, want prefix %v", seq, want)
 	}
 }
 
