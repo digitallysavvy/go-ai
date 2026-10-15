@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -182,5 +183,15 @@ func TestInjectJSONInstructionDoesNotHTMLEscapeSchema(t *testing.T) {
 	got := InjectJSONInstruction("", map[string]interface{}{"description": "a < b && c > d"}, InjectJSONInstructionOptions{})
 	if !strings.Contains(got, `{"description":"a < b && c > d"}`) {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestInjectJSONInstructionSchema_NullSchemaIsNoSchema(t *testing.T) {
+	want := InjectJSONInstructionSchema("p", nil, InjectJSONInstructionOptions{})
+	var nilMap map[string]interface{}
+	for name, s := range map[string]interface{}{"nil map": nilMap, "json null": json.RawMessage("null")} {
+		if got := InjectJSONInstructionSchema("p", s, InjectJSONInstructionOptions{}); got != want {
+			t.Errorf("%s: got %q, want %q", name, got, want)
+		}
 	}
 }

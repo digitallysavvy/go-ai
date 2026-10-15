@@ -1,6 +1,8 @@
 package providerutils
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -42,7 +44,7 @@ func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts In
 // shape. A json.RawMessage schema is serialized in its own key order (like
 // JSON.stringify of the parsed object); a map is serialized sorted.
 func InjectJSONInstructionSchema(prompt string, schema interface{}, opts InjectJSONInstructionOptions) string {
-	hasSchema := schema != nil
+	hasSchema := schemaIsPresent(schema)
 	schemaPrefix := opts.SchemaPrefix
 	if schemaPrefix == "" && hasSchema {
 		schemaPrefix = defaultJSONInstructionSchemaPrefix
@@ -119,4 +121,27 @@ func concatTextContent(parts []types.ContentPart) string {
 		}
 	}
 	return b.String()
+}
+
+// schemaIsPresent is TS's `schema != null`: nil, a nil map, a nil pointer and
+// JSON null (json.RawMessage("null")) all mean no schema.
+func schemaIsPresent(schema interface{}) bool {
+	switch s := schema.(type) {
+	case nil:
+		return false
+	case map[string]interface{}:
+		return s != nil
+	case json.RawMessage:
+		return !isJSONNull(s)
+	case []byte:
+		return !isJSONNull(s)
+	}
+	if v := reflect.ValueOf(schema); v.Kind() == reflect.Pointer && v.IsNil() {
+		return false
+	}
+	return true
+}
+
+func isJSONNull(b []byte) bool {
+	return strings.TrimSpace(string(b)) == "null"
 }

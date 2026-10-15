@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -575,3 +576,19 @@ func TestParseToolCallAppliesSchemaDefaults(t *testing.T) {
 }
 
 func ptrFloat(v float64) *float64 { return &v }
+
+func TestToolCallInputValidator_HintedPointerForm(t *testing.T) {
+	m := map[string]interface{}{"type": "object", "required": []interface{}{"a"}}
+	for name, p := range map[string]interface{}{
+		"value":   jsonorder.Hinted{V: m},
+		"pointer": &jsonorder.Hinted{V: m},
+	} {
+		tool := &types.Tool{Name: "t", Parameters: p}
+		if toolCallInputValidator(tool) == nil {
+			t.Errorf("%s: validator is nil", name)
+		}
+		if got := toolInputJSONSchema(tool); got["type"] != "object" || got["required"] == nil {
+			t.Errorf("%s: toolInputJSONSchema = %v", name, got)
+		}
+	}
+}
