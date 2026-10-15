@@ -697,6 +697,14 @@ func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]i
 }
 
 func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, refs *providerRefResolver) map[string]interface{} {
+	// The core builds file parts with the tagged FileData only (for example
+	// from UI messages); sync the legacy Data/URL/Reference/Text fields this
+	// converter reads.
+	if !file.FileData.IsZero() {
+		if normalized, err := NormalizeFileContent(file); err == nil {
+			file = normalized
+		}
+	}
 	// A provider-reference file resolves to the provider's own file ID for
 	// any media type (TS #22466), keeping the part-level
 	// providerOptions.openaiCompatible metadata.

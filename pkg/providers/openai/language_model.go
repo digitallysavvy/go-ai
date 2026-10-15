@@ -324,7 +324,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// A prompt with neither messages nor text (e.g. system-only) must still
 	// carry a concrete message slice for the system-message prepend below.
 	body["messages"] = []map[string]interface{}{}
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{ThoughtSignatureKey: m.thoughtSignatureKey(), SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{ThoughtSignatureKey: m.thoughtSignatureKey(), SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo || m.provider.config.OpenAICompatible, SupportsMultiPartToolContent: m.provider.config.SupportsMultiPartToolContent, Provider: m.fileReferenceProvider()}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
 		if convErr != nil {
@@ -578,26 +578,62 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// The schema is normalized for OpenAI structured outputs first (d5e3024,
 	// 411b3f2: drop propertyNames / lookaround patterns).
 	responseFormat := opts.ResponseFormat
-	if responseFormat != nil && responseFormat.Type == "json" {
-		if rawSchema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema); rawSchema != nil {
-			if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
-				normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
-				if normErr != nil {
-					return nil, nil, normErr
+	if m.provider.config.OpenAICompatible && m.provider.config.SupportsStructuredOutputs != nil {
+		// OpenAICompatibleChatLanguageModel: json_schema only when
+		// supportsStructuredOutputs and a schema is present (no strict flag, no
+		// OpenAI schema normalization), else json_object.
+		if responseFormat != nil && responseFormat.Type == "json" {
+			schema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema)
+			if *m.provider.config.SupportsStructuredOutputs && schema != nil {
+				name := responseFormat.Name
+				if name == "" {
+					name = "response"
 				}
-				warnings = append(warnings, schemaWarnings...)
-				rfCopy := *responseFormat
-				rfCopy.Schema = normalizedSchema
-				responseFormat = &rfCopy
+				strict := true
+				cname, _, _ := strings.Cut(m.provider.Name(), ".")
+				if resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(strings.TrimSpace(cname), opts.ProviderOptions); resolved != nil {
+					if v, ok := resolved["strictJsonSchema"].(bool); ok {
+						strict = v
+					}
+				}
+				js := map[string]interface{}{"schema": schema, "strict": strict, "name": name}
+				if responseFormat.Description != "" {
+					js["description"] = responseFormat.Description
+				}
+				body["response_format"] = map[string]interface{}{"type": "json_schema", "json_schema": js}
+			} else {
+				body["response_format"] = map[string]interface{}{"type": "json_object"}
+				if schema != nil {
+					warnings = append(warnings, types.Warning{
+						Type:    "unsupported",
+						Feature: "responseFormat",
+						Details: "JSON response format schema is only supported with structuredOutputs",
+					})
+				}
 			}
 		}
-	}
-	if format, fmtWarnings := providerutils.ChatResponseFormat(responseFormat, providerutils.ChatResponseFormatOptions{
-		StructuredOutputs: true,
-		StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
-	}); format != nil {
-		body["response_format"] = format
-		warnings = append(warnings, fmtWarnings...)
+	} else {
+		if responseFormat != nil && responseFormat.Type == "json" {
+			if rawSchema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema); rawSchema != nil {
+				if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
+					normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
+					if normErr != nil {
+						return nil, nil, normErr
+					}
+					warnings = append(warnings, schemaWarnings...)
+					rfCopy := *responseFormat
+					rfCopy.Schema = normalizedSchema
+					responseFormat = &rfCopy
+				}
+			}
+		}
+		if format, fmtWarnings := providerutils.ChatResponseFormat(responseFormat, providerutils.ChatResponseFormatOptions{
+			StructuredOutputs: true,
+			StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
+		}); format != nil {
+			body["response_format"] = format
+			warnings = append(warnings, fmtWarnings...)
+		}
 	}
 
 	if resolvedReasoningEffort != "" {
@@ -1546,9 +1582,9 @@ func (m *openAIMessage) UnmarshalJSON(b []byte) error {
 		return nil
 	}
 	var parts []struct {
-		Type     string            `json:"type"`
-		Text     json.RawMessage   `json:"text"`
-		Thinking []json.RawMessage `json:"thinking"`
+		Type     string          `json:"type"`
+		Text     json.RawMessage `json:"text"`
+		Thinking json.RawMessage `json:"thinking"`
 	}
 	if err := json.Unmarshal(aux.Content, &parts); err != nil {
 		return err
@@ -1562,7 +1598,11 @@ func (m *openAIMessage) UnmarshalJSON(b []byte) error {
 				text.WriteString(t)
 			}
 		case "thinking":
-			for _, raw := range p.Thinking {
+			var chunks []json.RawMessage
+			if json.Unmarshal(p.Thinking, &chunks) != nil {
+				continue // not an array of chunks: ignored like TS
+			}
+			for _, raw := range chunks {
 				var chunk struct {
 					Type string `json:"type"`
 					Text string `json:"text"`

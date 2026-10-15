@@ -16,6 +16,7 @@ import (
 // at the replay server. Language models are covered by TestTSCases.
 func TestTSWire(t *testing.T) {
 	tsfixture.RunWire(t, "../testdata/tswire/azure.jsonl.gz", tsfixture.WireSuite{
+		SkipLanguage: true,
 		Skip: map[string]string{
 			"speech > doGenerate > should use correct URL format": "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
 		},

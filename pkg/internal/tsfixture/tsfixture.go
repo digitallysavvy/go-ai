@@ -7,6 +7,7 @@ package tsfixture
 import (
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -910,7 +911,12 @@ func fileDataFromTS(v interface{}) (types.FileData, bool) {
 			return types.FileData{Type: types.FileDataTypeData, Data: b}, true
 		}
 		if str, ok := m["data"].(string); ok {
-			return types.FileData{Type: types.FileDataTypeData, DataString: str}, true
+			fd := types.FileData{Type: types.FileDataTypeData, DataString: str}
+			// Go providers read the bytes; a base64 string is decoded into them.
+			if b, err := base64.StdEncoding.DecodeString(str); err == nil {
+				fd.Data = b
+			}
+			return fd, true
 		}
 	case "url":
 		switch u := m["url"].(type) {

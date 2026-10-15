@@ -215,12 +215,18 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 // "multipart/form-data" for the language model, or
 // "multipart/form-data; video/mp4" for the video model).
 // Returns the response body bytes, response headers, and any error.
-func postMultipartToProdia(ctx context.Context, reqURL, apiKey string, body *bytes.Buffer, contentType, acceptHeader string) ([]byte, http.Header, error) {
+func postMultipartToProdia(ctx context.Context, reqURL, apiKey string, body *bytes.Buffer, contentType, acceptHeader string, extra ...map[string]string) ([]byte, http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, body)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create multipart request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	// provider-level and per-call headers (TS combineHeaders(config, options))
+	for _, h := range extra {
+		for k, v := range h {
+			req.Header.Set(k, v)
+		}
+	}
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Accept", acceptHeader)
 

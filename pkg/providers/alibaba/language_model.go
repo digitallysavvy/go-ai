@@ -203,6 +203,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			Details: details,
 			Message: details,
 		})
+	}
+	if useJsonObject {
+		// TS injects the instruction whenever JSON Object mode is used,
+		// with or without a schema.
 		promptMessages = providerutils.InjectJSONInstructionIntoMessages(promptMessages, responseSchema, providerutils.InjectJSONInstructionOptions{})
 	}
 
@@ -263,13 +267,16 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			if name == "" {
 				name = "response"
 			}
+			jsonSchema := map[string]interface{}{
+				"schema": responseSchema,
+				"name":   name,
+			}
+			if opts.ResponseFormat.Description != "" {
+				jsonSchema["description"] = opts.ResponseFormat.Description
+			}
 			body["response_format"] = map[string]interface{}{
-				"type": "json_schema",
-				"json_schema": map[string]interface{}{
-					"schema":      responseSchema,
-					"name":        name,
-					"description": opts.ResponseFormat.Description,
-				},
+				"type":        "json_schema",
+				"json_schema": jsonSchema,
 			}
 		} else {
 			body["response_format"] = map[string]interface{}{

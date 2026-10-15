@@ -127,7 +127,27 @@ func LoadWire(t testing.TB, path string) []WireTest {
 		} else if err != nil {
 			t.Fatal(err)
 		}
+		w.HTTP = dedupeHTTP(w.HTTP)
 		out = append(out, w)
+	}
+	return out
+}
+
+// dedupeHTTP drops a multipart request recorded twice in a row with the same
+// URL, boundary and body (the TS fetch layer replays an upload).
+func dedupeHTTP(in []WireHTTP) []WireHTTP {
+	var out []WireHTTP
+	for _, h := range in {
+		if n := len(out); n > 0 {
+			p := out[n-1]
+			// Only multipart uploads (same boundary): polling repeats the same
+			// GET legitimately.
+			if h.Method == "POST" && p.Method == h.Method && p.URL == h.URL && p.BodyB64 == h.BodyB64 &&
+				strings.HasPrefix(h.Headers["content-type"], "multipart/") && p.Headers["content-type"] == h.Headers["content-type"] {
+				continue
+			}
+		}
+		out = append(out, h)
 	}
 	return out
 }

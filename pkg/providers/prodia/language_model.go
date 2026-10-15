@@ -180,7 +180,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	}
 
 	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	respBody, respHeaders, err := postMultipartToProdia(ctx, reqURL, m.prov.effectiveAPIKey(), buf, contentType, "multipart/form-data")
+	respBody, respHeaders, err := postMultipartToProdia(ctx, reqURL, m.prov.effectiveAPIKey(), buf, contentType, "multipart/form-data", m.prov.config.Headers, opts.Headers)
 	if err != nil {
 		return nil, fmt.Errorf("prodia: %w", err)
 	}

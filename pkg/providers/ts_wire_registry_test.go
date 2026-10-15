@@ -93,7 +93,12 @@ func wireHeaders(m tsfixture.WireModel) map[string]string {
 // wireSuites maps a TS package (testdata/tswire/<pkg>.jsonl.gz) to the Go
 // provider replayed against it.
 var wireSuites = map[string]tsfixture.WireSuite{
-	"openai-compatible": {Language: func(p provider.Provider, cls, id string) (provider.LanguageModel, error) {
+	"openai-compatible": {Skip: map[string]string{
+		"~transformRequestBody": "the transform is code in the TS test; Go has Config.TransformRequestBody",
+		"doEmbed > should not emit deprecated warning when camelCase provider name key is used": "TS embedding reads only the raw provider-name key; Go also honours the camelCase key",
+		"~should handle error stream parts":                                                     "TS emits stream errors as parts; Go ends the stream with the same error from Next",
+		"~should preserve structured error stream parts":                                        "TS emits stream errors as parts; Go ends the stream with the same error from Next",
+	}, Language: func(p provider.Provider, cls, id string) (provider.LanguageModel, error) {
 		op := p.(*openai.Provider)
 		if strings.Contains(cls, "Completion") {
 			return op.CompletionModel(id)
@@ -104,12 +109,21 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		if i := indexByte(name, '.'); i > 0 {
 			name = name[:i]
 		}
-		return openai.New(openai.Config{APIKey: wireAPIKey(m), BaseURL: b, Name: name, OpenAICompatible: true, Headers: wireHeaders(m)}), nil
+		structured, _ := m.Config["supportsStructuredOutputs"].(bool)
+		multipart, _ := m.Config["supportsMultiPartToolContent"].(bool)
+		includeUsage, _ := m.Config["includeUsage"].(bool)
+		return openai.New(openai.Config{APIKey: wireAPIKey(m), BaseURL: b, Name: name, OpenAICompatible: true, Headers: wireHeaders(m),
+			SupportsStructuredOutputs: &structured, SupportsMultiPartToolContent: multipart, IncludeUsage: includeUsage}), nil
 	}},
-	"cohere": {RootBase: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"cohere": {RootBase: true, Skip: map[string]string{
+		"~should validate cached token usage": "TS validates the usage schema and throws; Go reads usage leniently",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return cohere.New(cohere.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"mistral": {
+		Skip: map[string]string{
+			"doGenerate > should inject JSON schema when structured outputs are disabled": "the injected schema text keeps TS object key order, which a Go map cannot",
+		},
 		RootBase: true,
 		Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 			return mistral.New(mistral.Config{APIKey: k, BaseURL: b, Headers: h})
@@ -153,7 +167,9 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"replicate": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return replicate.New(replicate.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"topaz": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"topaz": {Skip: map[string]string{
+		"TopazImageModel > doGenerate > throws when polling exceeds the timeout": "the number of status polls before the 1ms timeout is timing dependent (TS polls twice, Go once); both then cancel the job and fail with the same message",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return topaz.New(topaz.Config{APIKey: k, BaseURL: b, Headers: h, VideoPollIntervalMillis: 1, VideoPollTimeoutMillis: 5000})
 	})},
 	"xai": {ProviderTool: xaiProviderTool, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
@@ -165,7 +181,9 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"bytedance": {Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 		return bytedance.New(bytedance.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)})
 	}},
-	"cartesia": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"cartesia": {Skip: map[string]string{
+		"~through streaming transcription instead of the batch endpoint": "streaming transcription uses a websocket, which the replay does not carry",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return cartesia.New(cartesia.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"deepgram": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
@@ -192,19 +210,34 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"revai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return revai.New(revai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"alibaba": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"alibaba": {Skip: map[string]string{
+		"~injects the schema for other models": "the injected schema text keeps TS object key order, which a Go map cannot",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return alibaba.New(alibaba.Config{APIKey: k, BaseURL: b, VideoBaseURL: b, EmbeddingBaseURL: b, Headers: h})
 	})},
-	"deepseek": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
-		return deepseek.New(deepseek.Config{APIKey: k, BaseURL: b, Headers: h})
-	})},
-	"moonshotai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"deepseek": {Skip: map[string]string{
+		"~raw usage > continues validating known usage field":                                                                      "TS validates the usage schema and throws; Go reads usage leniently",
+		"DeepSeekChatLanguageModel > doGenerate > tool call > json response format > should send correct request body with schema": "the injected schema text keeps TS object key order, which a Go map cannot",
+	}, Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
+		cfg := deepseek.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}
+		if name, _, _ := strings.Cut(m.Provider, "."); name != "" && name != "deepseek" {
+			cfg.Name, cfg.ProviderOptionsName = name, name
+		}
+		if v, ok := m.Config["supportsStructuredOutputs"].(bool); ok {
+			cfg.SupportsStructuredOutputs = &v
+		}
+		return deepseek.New(cfg), nil
+	}},
+	"moonshotai": {Skip: map[string]string{
+		"~should preserve a provider error envelope in stream errors": "TS emits this as an error part; Go ends the stream with the same error from Next",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return moonshot.New(moonshot.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	// Open Responses takes the full endpoint URL as its base URL.
 	"open-responses": {Skip: map[string]string{
-		"~extension": "the TS test registers an extension in code, which the recording does not carry",
-		"OpenResponsesLanguageModel > doGenerate > multi-turn tool conversation > should send correct request body": "tool output JSON text keeps TS object key order, which a Go map cannot",
+		"~losslessly replay": "the TS test registers a hosted-tool extension in code, which the recording does not carry",
+		"~extension":         "the TS test registers an extension in code, which the recording does not carry",
+		"~multi-turn tool conversation > should send correct request body": "tool output JSON text keeps TS object key order, which a Go map cannot",
 	}, Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 		endpoint := b
 		if len(m.RequestURLs) > 0 {

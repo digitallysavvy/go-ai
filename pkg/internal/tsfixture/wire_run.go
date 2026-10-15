@@ -62,6 +62,8 @@ type WireSuite struct {
 	// usage, finish reason, warnings, provider metadata); otherwise only the
 	// requests they send are compared.
 	LanguageResults bool
+	// SkipLanguage skips language-model calls (covered by another suite).
+	SkipLanguage bool
 	// ProviderTool maps a TS provider tool for language-model calls.
 	ProviderTool func(id, name string, args map[string]interface{}) (types.Tool, bool)
 }
@@ -83,19 +85,21 @@ func learnWirePrefixes(tests []WireTest) {
 
 // WirePrefix returns the path prefix of the TS model's base URL.
 func WirePrefix(m WireModel) string {
-	if u, ok := m.Config["url"].(string); ok && !strings.Contains(u, "/PATH") {
-		if p, ok := wireClsPrefix[m.Cls]; ok {
-			return p
-		}
-	}
 	var raw string
 	if u, ok := m.Config["url"].(string); ok {
 		raw = strings.SplitN(u, "/PATH", 2)[0]
 		if !strings.Contains(u, "/PATH") { // fixed endpoint URL: drop the endpoint
-			for _, e := range []string{"/audio/transcriptions", "/audio/speech", "/audio/translations", "/images/generations", "/images/edits", "/embeddings", "/chat/completions", "/completions", "/responses", "/rerank", "/embed"} {
+			found := false
+			for _, e := range []string{"/audio/transcriptions", "/audio/speech", "/audio/translations", "/images/generations", "/images/edits", "/embeddings", "/chat/completions", "/completions", "/responses", "/rerank", "/embed", "/chat"} {
 				if i := strings.Index(raw, e); i > 0 {
 					raw = raw[:i]
+					found = true
 					break
+				}
+			}
+			if !found {
+				if p, ok := wireClsPrefix[m.Cls]; ok {
+					return p
 				}
 			}
 		}
@@ -172,6 +176,10 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		}
 		if err == errWireSkip {
 			t.Skip(got["skip"])
+		}
+		if os.Getenv("TSWIRE_DEBUG") != "" {
+			b, _ := json.Marshal(got)
+			t.Logf("call %d (%s) err=%v got=%s", i, c.Method, err, trim(string(b)))
 		}
 		if ds := CompareWireResult(srv, s, c, got, err); len(ds) > 0 {
 			for _, d := range ds {
@@ -267,6 +275,9 @@ func RunWireCall(ctx context.Context, srv *WireServer, s WireSuite, p provider.P
 		}
 		return wireVideo(ctx, srv, vm, c)
 	case "language":
+		if s.SkipLanguage {
+			return map[string]interface{}{"skip": "language models are covered by another suite"}, errWireSkip
+		}
 		var m provider.LanguageModel
 		var err error
 		if s.Language != nil {
