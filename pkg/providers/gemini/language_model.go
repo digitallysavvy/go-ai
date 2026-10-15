@@ -433,10 +433,6 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		}
 		// Function calls.
 		if part.FunctionCall != nil && jsonResponseToolName != "" && part.FunctionCall.Name == jsonResponseToolName {
-			args := part.FunctionCall.Args
-			if args == nil {
-				args = map[string]interface{}{}
-			}
 			tc := types.TextContent{Text: completeCallArgsJSON(part.FunctionCall)}
 			if part.ThoughtSignature != "" {
 				tc.ProviderMetadata, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
