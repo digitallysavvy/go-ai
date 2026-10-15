@@ -123,8 +123,26 @@ func (m *RealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent)
 		if event.Options != nil {
 			out["options"] = event.Options
 		}
+	case "session-start":
+		out = map[string]interface{}{"type": event.Type, "config": m.BuildSessionConfig(event.Config)}
+	case "session-close", "input-audio-mute", "input-audio-unmute":
+		out = map[string]interface{}{"type": event.Type}
+	case "context-append":
+		out = map[string]interface{}{"type": event.Type, "content": event.Content}
+		if event.DelegationID != nil {
+			out["delegationId"] = *event.DelegationID
+		} else {
+			out["delegationId"] = nil
+		}
+		if len(event.ProviderOptions) > 0 {
+			out["providerOptions"] = event.ProviderOptions
+		}
 	default:
 		return nil, nil
+	}
+	// TS returns the event itself, so an optional eventId rides along.
+	if event.EventID != "" {
+		out["eventId"] = event.EventID
 	}
 	return json.Marshal(out)
 }

@@ -58,3 +58,19 @@ func TestGatewayModelAndO11yHeadersWinOverCallHeaders(t *testing.T) {
 		t.Fatalf("expected 5 distinct requests, saw %d: %v", len(seen), seen)
 	}
 }
+
+func TestGatewayRealtimeSerializeKeepsEventID(t *testing.T) {
+	p, err := New(Config{APIKey: "k", BaseURL: "https://example.test/v4/ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := p.ExperimentalRealtime("openai/gpt-realtime")
+	raw, err := m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "AA==", EventID: "e1"})
+	if err != nil || string(raw) != `{"audio":"AA==","eventId":"e1","type":"input-audio-append"}` {
+		t.Fatalf("%s %v", raw, err)
+	}
+	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-mute", EventID: "m1"})
+	if string(raw) != `{"eventId":"m1","type":"input-audio-mute"}` {
+		t.Fatalf("%s", raw)
+	}
+}
