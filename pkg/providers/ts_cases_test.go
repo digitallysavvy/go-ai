@@ -39,7 +39,8 @@ func TestProviderTSCases(t *testing.T) {
 		{"deepseek", "deepseek/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return deepseek.New(deepseek.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
 		}, "deepseek-chat", map[string]string{
-			"should send correct request body with schema": "the injected schema text keeps TS object key order, which a Go map cannot",
+			"should send correct request body with schema":                      "the injected schema text keeps TS object key order, which a Go map cannot",
+			"should send json_schema response format and skip schema injection": "needs a provider configured with structured-output support (custom model in the TS test)",
 		}},
 		{"xai-responses", "xai/testdata/tscases/responses.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return xai.New(xai.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
@@ -56,10 +57,9 @@ func TestProviderTSCases(t *testing.T) {
 			"should handle function_call tool responses": "vitest snapshot of a string with embedded quotes is not machine-extractable",
 		}},
 		{"openresponses", "openresponses/testdata/tscases/responses.json.gz", func(b, id string) (provider.LanguageModel, error) {
-			return openresponses.New(openresponses.Config{Name: "openresponses", BaseURL: b}).LanguageModel(id)
-		}, "gpt-4o", map[string]string{
-			"should send instructions from system message":       "model id comes from a custom provider call in the TS test",
-			"should join multiple system messages with newlines": "model id comes from a custom provider call in the TS test",
+			return openresponses.New(openresponses.Config{Name: "lmstudio", BaseURL: b}).LanguageModel(id)
+		}, "gemma-7b-it", map[string]string{
+			"should send correct request body with user, assistant tool-call, and tool result": "tool output JSON text keeps TS object key order, which a Go map cannot",
 		}},
 		{"alibaba", "alibaba/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return alibaba.New(alibaba.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)

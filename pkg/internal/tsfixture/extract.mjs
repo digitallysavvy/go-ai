@@ -133,7 +133,7 @@ function tpl(s, k) {
 // top-level consts (TEST_PROMPT, TEST_TOOLS, ...)
 const ctx = vm.createContext({ JSON, Date, Math, Buffer, Uint8Array, TextEncoder, URL, Object, Array, String, Number });
 {
-  const re = /^(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
+  const re = /^[ \t]*(?:export )?(?:const|let) (\w+)(?::[^=]+)? = /gm;
   let m;
   while ((m = re.exec(src))) {
     const k = m.index + m[0].length;

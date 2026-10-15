@@ -397,6 +397,10 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 			if tr := c.ToolResult; tr != nil {
 				o["toolCallId"], o["toolName"], o["result"] = tr.ToolCallID, tr.ToolName, tr.Result
 			}
+		case provider.ChunkTypeToolApprovalRequest:
+			if r := c.ToolApprovalRequest; r != nil {
+				o["approvalId"], o["toolCallId"] = r.ApprovalID, r.ToolCallID
+			}
 		case provider.ChunkTypeSource:
 			if s := c.SourceContent; s != nil {
 				b, _ := json.Marshal(s)
@@ -425,6 +429,8 @@ func StreamToTS(chunks []*provider.StreamChunk) []interface{} {
 	return out
 }
 
+var generatedID = regexp.MustCompile(`^(id-\d+|call_[0-9a-f]{16})$`)
+
 // MetadataKeyAlias renames provider-metadata keys of the TS snapshot (e.g. the
 // tests' "test-provider") to the key the Go provider under test reports.
 var MetadataKeyAlias map[string]string
@@ -448,6 +454,11 @@ func Normalize(v interface{}) interface{} {
 			}
 			if k == "id" && x["type"] == "source" {
 				continue // generated ids differ
+			}
+			if k == "toolCallId" {
+				if id, _ := e.(string); generatedID.MatchString(id) {
+					continue // generated ids differ
+				}
 			}
 			n := Normalize(e)
 			if n == nil {
