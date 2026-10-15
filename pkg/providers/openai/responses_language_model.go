@@ -3086,6 +3086,21 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					ProviderMetadata: meta,
 				})
 				continue
+			case "computer_call":
+				// TS: tool-input-start under call_id ?? id; the input and
+				// tool-input-end follow at output_item.done.
+				computerCallID := e.Item.ID
+				if e.Item.CallID != "" {
+					computerCallID = e.Item.CallID
+				}
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type: provider.ChunkTypeToolInputStart,
+					ToolCall: &types.ToolCall{
+						ID:       computerCallID,
+						ToolName: openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
+					},
+				})
+				continue
 			case "file_search_call":
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeToolCall,
@@ -3239,16 +3254,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if s.logprobsEnabled && len(e.Logprobs) > 0 && string(e.Logprobs) != "null" {
 				s.logprobs = append(s.logprobs, normalizeResponsesLogprobs(e.Logprobs))
 			}
-			if e.Delta == "" {
-				continue
-			}
+			// TS enqueues text-delta unconditionally (even for ""), keyed by
+			// resolveOutputItemId(item_id, output_index).
 			s.markOutputStarted()
 			if eventRawChunk != nil {
 				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeText,
-				ID:   s.firstItemIDByOutputIndex[e.OutputIndex],
+				ID:   s.resolveOutputItemID(e.OutputIndex, e.ItemID),
 				Text: e.Delta,
 			})
 			if ok {
@@ -4165,6 +4179,13 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			})
 		}
 		computerArgs, computerRawArgs := computerCallArguments(item)
+		s.flushQueue = append(s.flushQueue,
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: *item.CallID, Text: computerRawArgs},
+			&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: *item.CallID, ToolCall: &types.ToolCall{
+				ID:       *item.CallID,
+				ToolName: openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
+			}},
+		)
 		return s.emitParsedChunk(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{

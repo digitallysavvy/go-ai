@@ -801,6 +801,7 @@ type OutputItemAddedEvent struct {
 // OutputTextDeltaEvent carries an incremental text chunk.
 type OutputTextDeltaEvent struct {
 	Type        string `json:"type"` // "response.output_text.delta"
+	ItemID      string `json:"item_id,omitempty"`
 	OutputIndex int    `json:"output_index"`
 	Delta       string `json:"delta"`
 

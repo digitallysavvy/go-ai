@@ -2997,6 +2997,17 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compu
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	// TS: tool-input-start (added), then tool-input-delta / tool-input-end /
+	// tool-call at output_item.done.
+	for _, want := range []provider.ChunkType{provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd} {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+		if chunk.Type != want {
+			t.Fatalf("chunk = %#v, want %s", chunk, want)
+		}
+	}
 	chunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
@@ -3049,6 +3060,9 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"compu
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
+	if start, err := stream.Next(); err != nil || start.Type != provider.ChunkTypeToolInputStart {
+		t.Fatalf("start = %#v, err = %v, want tool-input-start", start, err)
+	}
 	chunk1, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)

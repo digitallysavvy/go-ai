@@ -225,3 +225,28 @@ data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id
 		t.Fatalf("starts=%v deltas=%q", kinds, deltas)
 	}
 }
+
+// TS enqueues text-delta for every output_text.delta (even ""), keyed by
+// item_id when no output item was registered for the output_index.
+func TestResponsesTextDeltaEmptyAndItemIDFallback(t *testing.T) {
+	sse := `data: {"type":"response.output_text.delta","item_id":"msg_x","output_index":3,"content_index":0,"delta":""}
+
+data: {"type":"response.output_text.delta","item_id":"msg_x","output_index":3,"content_index":0,"delta":"hi"}
+
+`
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)
+	defer stream.Close() //nolint:errcheck
+	var got []string
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeText {
+			got = append(got, c.ID+"|"+c.Text)
+		}
+	}
+	if len(got) != 2 || got[0] != "msg_x|" || got[1] != "msg_x|hi" {
+		t.Fatalf("text chunks = %q", got)
+	}
+}
