@@ -502,7 +502,7 @@ func TestAuthenticationEnvironment(t *testing.T) {
 }
 
 func TestHeadersAndClientApp(t *testing.T) {
-	if ClientApp("claude-code", "1.2.3") != "ai-sdk/harness-claude-code/1.2.3" {
+	if ClientApp("claude-code", "1.2.3") != "ai-sdk-harness-claude-code/1.2.3" {
 		t.Fatal(ClientApp("claude-code", "1.2.3"))
 	}
 	h, err := NormalizeHeaders(map[string]string{"X-Trace": "1"})

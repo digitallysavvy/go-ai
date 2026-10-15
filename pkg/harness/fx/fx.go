@@ -30,7 +30,7 @@ import (
 const fxVersion = "0.0.13"
 
 const (
-	ClientAppName    = "ai-sdk/harness-fx"
+	ClientAppName    = "ai-sdk-harness-fx"
 	ClientAppVersion = "0.0.0-go"
 	HarnessID        = "fx"
 

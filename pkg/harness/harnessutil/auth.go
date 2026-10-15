@@ -79,9 +79,9 @@ func ShouldResolveNativeSubscription(auth string, env map[string]string, hasDire
 
 // ClientApp returns the value adapters send as `User-Agent` / `x-client-app`
 // (b2d0306), e.g. ClientApp("claude-code", "1.0.0") =
-// "ai-sdk/harness-claude-code/1.0.0".
+// "ai-sdk-harness-claude-code/1.0.0".
 func ClientApp(harnessID, version string) string {
-	return fmt.Sprintf("ai-sdk/harness-%s/%s", harnessID, version)
+	return fmt.Sprintf("ai-sdk-harness-%s/%s", harnessID, version)
 }
 
 // ManagedHeaderNames are headers the harness manages itself; callers may not

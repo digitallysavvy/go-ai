@@ -208,7 +208,7 @@ func TestDoStartSpawnsBridgeWithClientAppAndToken(t *testing.T) {
 		t.Fatal("expected the bridge to be spawned")
 	}
 	env := sandbox.spawnEnvs[0]
-	if env["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk/harness-deepagents/"+Version {
+	if env["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk-harness-deepagents/"+Version {
 		t.Fatalf("AI_SDK_HARNESS_CLIENT_APP = %q", env["AI_SDK_HARNESS_CLIENT_APP"])
 	}
 	if len(env[bridge.EnvChannelToken]) != 64 {
