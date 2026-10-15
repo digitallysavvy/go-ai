@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
@@ -867,5 +868,218 @@ func TestTSReplay_PreservesBridgeCapabilityErrors(t *testing.T) {
 	}
 	if e, _ := ep.Error.(error); !errors.As(e, &unsupported) {
 		t.Fatalf("forwarded error = %#v, want a *CapabilityUnsupportedError", ep.Error)
+	}
+}
+
+// TS 'resolves downstream Gateway credentials separately from bridge auth',
+// 'excludes resolved credentials from ... lifecycle state' and
+// 'excludes direct provider credentials from its authentication profile'.
+func TestTSReplay_ProviderAuthentication(t *testing.T) {
+	gatewayProfile := &ProviderAuthentication{GatewayEnv: map[string]any{"PROVIDER_API_KEY": map[string]any{"$source": "gateway-api-key"}}}
+	cases := []struct {
+		name  string
+		env   map[string]string
+		mut   func(*Settings)
+		check func(t *testing.T, spawn map[string]string, profile map[string]any, state string)
+	}{
+		{"gateway credentials separate from bridge auth",
+			map[string]string{"AI_GATEWAY_API_KEY": "gateway-key", "AI_GATEWAY_BASE_URL": "https://gateway.example/custom"},
+			func(s *Settings) {
+				s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
+				s.ClientApp = ClientApp{Name: "custom-client", Version: "1.2.3"}
+				s.ForwardEnv = nil
+				s.ProviderAuthentication = &ProviderAuthentication{GatewayEnv: map[string]any{}}
+			},
+			func(t *testing.T, env map[string]string, _ map[string]any, _ string) {
+				if env["AI_SDK_ACP_GATEWAY_API_KEY"] != "gateway-key" || env["AI_SDK_ACP_GATEWAY_BASE_URL"] != "https://gateway.example/custom" ||
+					env["AI_SDK_ACP_CLIENT_APP_NAME"] != "custom-client" || env["AI_SDK_ACP_CLIENT_APP_VERSION"] != "1.2.3" || env["BRIDGE_CHANNEL_TOKEN"] == "gateway-key" || env["CODEX_API_KEY"] != "" {
+					t.Fatalf("env = %v", env)
+				}
+			}},
+		{"credentials excluded from lifecycle state (gateway)",
+			map[string]string{"PROVIDER_API_KEY": "direct-secret", "AI_GATEWAY_API_KEY": "gateway-secret", "AI_GATEWAY_BASE_URL": "https://gateway.example"},
+			func(s *Settings) {
+				s.Auth = harness.Authentication{Mode: harness.AuthModeAIGateway}
+				s.ForwardEnv = []string{"PROVIDER_API_KEY"}
+				s.Env = map[string]string{"PROVIDER_BASE_URL": "https://provider.example"}
+				s.ProviderAuthentication = gatewayProfile
+			},
+			func(t *testing.T, env map[string]string, profile map[string]any, state string) {
+				if env["PROVIDER_API_KEY"] != "direct-secret" || env["PROVIDER_BASE_URL"] != "https://provider.example" || env["AI_SDK_ACP_GATEWAY_API_KEY"] != "gateway-secret" {
+					t.Fatalf("env = %v", env)
+				}
+				if strings.Contains(state, "direct-secret") || strings.Contains(state, "gateway-secret") {
+					t.Fatalf("state leaked a secret: %s", state)
+				}
+				if profile["providerKind"] != "ai-gateway" || profile["providerMode"] != "ai-gateway" || profile["gatewayCredentialSource"] != "AI_GATEWAY_API_KEY" || !regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(profile["digest"].(string)) {
+					t.Fatalf("profile = %v", profile)
+				}
+			}},
+		{"direct credentials excluded from the profile",
+			map[string]string{"PROVIDER_API_KEY": "direct-profile-secret", "AI_GATEWAY_API_KEY": "unused-gateway-secret"},
+			func(s *Settings) {
+				s.Auth = harness.Authentication{Mode: harness.AuthModeDirect}
+				s.ForwardEnv = []string{"PROVIDER_API_KEY"}
+				s.ProviderAuthentication = gatewayProfile
+			},
+			func(t *testing.T, env map[string]string, profile map[string]any, state string) {
+				if env["PROVIDER_API_KEY"] != "direct-profile-secret" || env["AI_SDK_ACP_GATEWAY_API_KEY"] != "" {
+					t.Fatalf("env = %v", env)
+				}
+				if strings.Contains(state, "direct-profile-secret") || strings.Contains(state, "unused-gateway-secret") {
+					t.Fatalf("state leaked a secret: %s", state)
+				}
+				if profile["providerKind"] != "direct" || profile["providerMode"] != "direct" {
+					t.Fatalf("profile = %v", profile)
+				}
+			}},
+		{"automatic mode resolves from the session-start environment",
+			map[string]string{"AI_GATEWAY_API_KEY": "late-gateway-key", "AI_GATEWAY_BASE_URL": "https://gateway.example/late"},
+			func(s *Settings) {
+				s.ForwardEnv = nil
+				s.ProviderAuthentication = gatewayProfile
+			},
+			func(t *testing.T, env map[string]string, profile map[string]any, _ string) {
+				if env["AI_SDK_ACP_GATEWAY_API_KEY"] != "late-gateway-key" || env["AI_SDK_ACP_GATEWAY_BASE_URL"] != "https://gateway.example/late" {
+					t.Fatalf("env = %v", env)
+				}
+				if profile["providerKind"] != "ai-gateway" || profile["providerMode"] != "auto" || profile["gatewayCredentialSource"] != "AI_GATEWAY_API_KEY" {
+					t.Fatalf("profile = %v", profile)
+				}
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{"AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN", "AI_GATEWAY_BASE_URL", "PROVIDER_API_KEY"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			sandbox := replaySandbox(t, "tok")
+			h, err := CreateACP(testSettings(func(s *Settings) {
+				s.MintBridgeToken = func(string) string { return "tok" }
+				s.HarnessID = "codex-acp"
+				tc.mut(s)
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := sess.DoStop(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var data map[string]any
+			_ = json.Unmarshal(state.Data, &data)
+			profile, _ := data["authenticationProfile"].(map[string]any)
+			tc.check(t, sandbox.spawnEnvs[0], profile, string(state.Data))
+		})
+	}
+}
+
+// TS 'translates ACP question requests and client results'.
+func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
+	var gotNative any
+	var toNativeArgs []any
+	var gotRequestID string
+	toolResults := make(chan map[string]any, 4)
+	started := make(chan *bridgetest.Turn, 1)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+		OnStart:      func(turn *bridgetest.Turn, _ map[string]any) { started <- turn },
+		OnToolResult: func(f map[string]any) { toolResults <- f }})
+	t.Cleanup(srv.Close)
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.HarnessID = "test-acp"
+		s.AskUserQuestions = &AskUserQuestionsSettings{
+			RequestMethod: "test/ask",
+			FromNativeRequest: func(nativeRequest any, nativeToolCall *ToolCall) *harness.ToolCallPart {
+				gotNative = nativeRequest
+				if nativeToolCall != nil {
+					t.Errorf("nativeToolCall = %+v, want nil", nativeToolCall)
+				}
+				return &harness.ToolCallPart{ToolCallID: "question-1", ToolName: "askUserQuestions",
+					Input:            `{"allowPartialAnswers":false,"questions":[{"id":"q1","question":"Framework?"}]}`,
+					ProviderMetadata: harness.ProviderMetadata{"test": {"preserved": true}}}
+			},
+			ToNativeResponse: func(nativeRequest any, toolResult types.ToolResultContent) any {
+				toNativeArgs = []any{nativeRequest, toolResult}
+				return map[string]any{"native": toolResult}
+			},
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: newFakeSandbox(srv), SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	var mu sync.Mutex
+	var events []harness.StreamPart
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("Ask."), Emit: func(p harness.StreamPart) {
+		mu.Lock()
+		events = append(events, p)
+		mu.Unlock()
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := <-started
+	nativeRequest := map[string]any{"sessionId": "native-session", "toolCallId": "native-question-1"}
+	gotRequestID = "request-1"
+	turn.Emit(map[string]any{"type": "acp-question-request", "requestId": gotRequestID, "nativeRequest": nativeRequest})
+
+	handled := <-toolResults
+	if handled["toolCallId"] != "request-1" || !reflect.DeepEqual(handled["output"], map[string]any{"type": "handled", "toolCallId": "question-1"}) {
+		t.Fatalf("handled reply = %v", handled)
+	}
+	if !reflect.DeepEqual(gotNative, nativeRequest) {
+		t.Fatalf("fromNativeRequest got %v", gotNative)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var forwarded *harness.ToolCallPart
+	for time.Now().Before(deadline) && forwarded == nil {
+		mu.Lock()
+		for _, e := range events {
+			if tc, ok := e.(*harness.ToolCallPart); ok {
+				forwarded = tc
+			}
+		}
+		mu.Unlock()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if forwarded == nil {
+		t.Fatal("the translated askUserQuestions tool call was not forwarded")
+	}
+	if forwarded.ToolCallID != "question-1" || forwarded.ProviderExecuted || forwarded.ProviderMetadata["test"]["preserved"] != true ||
+		!reflect.DeepEqual(forwarded.ProviderMetadata["test-acp"]["nativeRequest"], nativeRequest) {
+		t.Fatalf("forwarded = %+v", forwarded)
+	}
+
+	result := types.ToolResultContent{ToolCallID: "question-1", ToolName: "askUserQuestions",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]any{"action": "answered", "answers": map[string]any{"q1": map[string]any{"optionIds": []any{}}}}}}
+	if err := control.(harness.PromptControl).SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "question-1", Output: result.Output.Value, ToolResult: &result}); err != nil {
+		t.Fatal(err)
+	}
+	reply := <-toolResults
+	if reply["toolCallId"] != "question-1" {
+		t.Fatalf("reply = %v", reply)
+	}
+	if len(toNativeArgs) != 2 || !reflect.DeepEqual(toNativeArgs[0], nativeRequest) {
+		t.Fatalf("toNativeResponse args = %v", toNativeArgs)
+	}
+	out, _ := reply["output"].(map[string]any)
+	tr, _ := out["native"].(map[string]any)
+	if tr["type"] != "tool-result" || tr["toolCallId"] != "question-1" || tr["toolName"] != "askUserQuestions" {
+		t.Fatalf("output = %v", reply["output"])
+	}
+	if reply["toolResult"] == nil {
+		t.Fatalf("toolResult missing from %v", reply)
 	}
 }
