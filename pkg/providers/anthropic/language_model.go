@@ -479,14 +479,24 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	for blockIdx, content := range response.Content {
 		switch content.Type {
 		case "thinking":
+			// TS: providerMetadata.anthropic.signature; Signature stays for
+			// existing Go callers.
+			sigMeta, _ := json.Marshal(map[string]interface{}{ //nolint:errcheck // string map always marshals
+				"anthropic": map[string]interface{}{"signature": content.Signature},
+			})
 			byBlock[blockIdx] = append(byBlock[blockIdx], types.ReasoningContent{
-				Text:      content.Thinking,
-				Signature: content.Signature,
+				Text:             content.Thinking,
+				Signature:        content.Signature,
+				ProviderMetadata: sigMeta,
 			})
 		case "redacted_thinking":
 			// Redacted blocks have no visible text — only the opaque data blob.
+			redactedMeta, _ := json.Marshal(map[string]interface{}{ //nolint:errcheck // string map always marshals
+				"anthropic": map[string]interface{}{"redactedData": content.Data},
+			})
 			byBlock[blockIdx] = append(byBlock[blockIdx], types.ReasoningContent{
-				RedactedData: content.Data,
+				RedactedData:     content.Data,
+				ProviderMetadata: redactedMeta,
 			})
 		case "container_upload":
 			// A file the model uploaded to the code execution container
