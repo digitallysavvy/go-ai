@@ -63,7 +63,15 @@ type sessionOptions struct {
 	// reaches the Channel's normal dispatch, so it cannot be observed via
 	// channel.On. Mirrors TS `supportsUserMessageResponses()`, captured once
 	// at channel-build (session) time, the same way.
-	supportsUserMessages bool
+	supportsUserMessages func() bool
+
+	// finishListenerAttachment releases the channel's buffered events once
+	// the first turn has registered its listeners (attach/replay hold them
+	// back until then). Mirrors TS `finishListenerAttachment`.
+	finishListenerAttachment func()
+
+	// debug is the observability debug config forwarded on `start`.
+	debug *harness.DebugConfig
 }
 
 type session struct {
@@ -72,14 +80,17 @@ type session struct {
 	mu                sync.Mutex
 	stopped           bool
 	pendingResumeFlag bool
+	finishAttachment  func()
 	lastSessionID     string
+	// destroyed is closed when the first DoDestroy finishes its teardown.
+	destroyed chan struct{}
 	// rerunContinue is the live copy of opts.rerunContinue: true until the
 	// single recovery start has been sent. Mirrors TS `rerunContinue`.
 	rerunContinue bool
 }
 
 func newSession(opts sessionOptions) *session {
-	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID, rerunContinue: opts.rerunContinue}
+	return &session{opts: opts, pendingResumeFlag: opts.continueOnFirstPrompt, lastSessionID: opts.resumeSessionID, rerunContinue: opts.rerunContinue, finishAttachment: opts.finishListenerAttachment}
 }
 
 func (s *session) SessionID() string { return s.opts.sessionID }
@@ -140,7 +151,13 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 	if rerun {
 		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat)
 		s.mu.Lock()
-		frame.Continue, frame.ResumeSessionID = s.resumeFields()
+		// Unlike a prompt turn, a rerun continuation always rehydrates: the
+		// exact conversation when known, else `continue: true`.
+		if s.lastSessionID != "" {
+			frame.ResumeSessionID = s.lastSessionID
+		} else {
+			frame.Continue = true
+		}
 		s.pendingResumeFlag = false
 		s.mu.Unlock()
 		if err := s.opts.channel.Send(frame); err != nil {
@@ -184,6 +201,7 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 		frame.Skills = append(frame.Skills, sk.Name)
 	}
 	frame.MCPServers = s.opts.mcpServers
+	frame.Debug = s.opts.debug
 	return frame
 }
 
@@ -239,11 +257,24 @@ func (s *session) resumeData(lastSeenEventID float64) resumeStateData {
 func (s *session) DoDestroy(ctx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
+		// A second destroy awaits the first one's teardown (TS returns the
+		// same `stopPromise`). A destroy after stop/detach has nothing to do.
+		done := s.destroyed
 		s.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		return nil
 	}
 	s.stopped = true
+	s.destroyed = make(chan struct{})
+	done := s.destroyed
 	s.mu.Unlock()
+	defer close(done)
 
 	s.opts.channel.BeginClose()
 	if !s.opts.channel.IsClosed() {
@@ -344,7 +375,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	// messages on its hello (captured once at DoStart time — see
 	// sessionOptions.supportsUserMessages). Mirrors TS `wireTurn`'s
 	// `supportsUserMessageResponses() ? experimental_createBridgeUserMessageSubmitter(...) : undefined`.
-	if s.opts.supportsUserMessages {
+	if s.opts.supportsUserMessages != nil && s.opts.supportsUserMessages() {
 		pc.userMessages = bridge.NewChannelUserMessageSubmitter(s.opts.channel)
 	}
 
@@ -397,6 +428,15 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		pc.settleError(cause)
 	}))
 	pc.unsubs = unsubs
+	// Listeners are registered: release events the channel buffered while an
+	// attach/replay was in flight (first turn only).
+	s.mu.Lock()
+	finish := s.finishAttachment
+	s.finishAttachment = nil
+	s.mu.Unlock()
+	if finish != nil {
+		finish()
+	}
 
 	s.opts.channel.OnClose(func(_ int, reason string) {
 		if reason == bridge.CloseReasonSuspended {
