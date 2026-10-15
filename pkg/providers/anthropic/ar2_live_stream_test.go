@@ -35,10 +35,9 @@ func TestStream_LiveWebFetchToolResult(t *testing.T) {
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 	stream.citationDocuments = nil
 
-	// First chunk: tool-input-start is not emitted for provider-executed
-	// server tools (matches TS "tool-input-start" only for the caller-visible
-	// tool_use case); the first real chunk here is the tool-call for
-	// server_tool_use.
+	// TS streams provider-executed tool input too: tool-input-start, then
+	// tool-input-end (no deltas here), then the tool-call.
+	skipToolInputChunks(t, stream)
 	callChunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() tool-call error: %v", err)
@@ -130,6 +129,7 @@ func TestStream_LiveWebSearchToolResult(t *testing.T) {
 
 	stream := newAnthropicStream(io.NopCloser(strings.NewReader(sseData)), false)
 
+	skipToolInputChunks(t, stream)
 	callChunk, err := stream.Next()
 	if err != nil {
 		t.Fatalf("Next() tool-call error: %v", err)
@@ -274,5 +274,20 @@ func TestStream_MessageStartPrePopulatedMCPToolUse(t *testing.T) {
 	}
 	if tr.Result != "sunny" {
 		t.Errorf("Result = %v, want sunny", tr.Result)
+	}
+}
+
+// skipToolInputChunks consumes the tool-input-start / tool-input-end pair TS
+// emits around a provider-executed tool call whose input arrives complete in
+// content_block_start.
+func skipToolInputChunks(t *testing.T, stream *anthropicStream) {
+	t.Helper()
+	start, err := stream.Next()
+	if err != nil || start.Type != provider.ChunkTypeToolInputStart || start.ToolCall == nil || !start.ToolCall.ProviderExecuted {
+		t.Fatalf("want provider-executed tool-input-start, got %#v (err %v)", start, err)
+	}
+	end, err := stream.Next()
+	if err != nil || end.Type != provider.ChunkTypeToolInputEnd {
+		t.Fatalf("want tool-input-end, got %#v (err %v)", end, err)
 	}
 }

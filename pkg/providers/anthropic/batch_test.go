@@ -863,9 +863,18 @@ func TestBatch_WebFetchToolResultNeverGrowsCitationDocuments(t *testing.T) {
 			t.Fatalf("expected no SourceContent (page_location can't resolve in batch even against a web-fetched document), got %+v", res.Content)
 		}
 	}
-	text, ok := res.Content[0].(types.TextContent)
-	if !ok {
-		t.Fatalf("Content[0] = %T, want types.TextContent", res.Content[0])
+	// Content follows the order of the response blocks: the web_fetch result
+	// comes first, then the cited text.
+	var text types.TextContent
+	foundText := false
+	for _, c := range res.Content {
+		if tc, ok := c.(types.TextContent); ok {
+			text, foundText = tc, true
+			break
+		}
+	}
+	if !foundText {
+		t.Fatalf("no TextContent in %+v", res.Content)
 	}
 	var meta map[string]struct {
 		Citations []map[string]interface{} `json:"citations"`

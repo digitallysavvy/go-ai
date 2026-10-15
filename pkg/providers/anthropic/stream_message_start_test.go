@@ -17,6 +17,12 @@ func skipMessageStartChunk(t *testing.T, stream *anthropicStream) {
 	if err != nil {
 		t.Fatalf("Next() message_start chunk error: %v", err)
 	}
+	// TS enqueues response-metadata {id, modelId} before the custom chunk.
+	if chunk.Type == provider.ChunkTypeResponseMetadata {
+		if chunk, err = stream.Next(); err != nil {
+			t.Fatalf("Next() message_start chunk error: %v", err)
+		}
+	}
 	if chunk.Type != provider.ChunkTypeCustom || chunk.CustomContent == nil || chunk.CustomContent.Kind != "anthropic.message_start" {
 		t.Fatalf("expected anthropic.message_start custom chunk, got %#v", chunk)
 	}
@@ -32,8 +38,16 @@ func TestStreamEmitsMessageStartCustomChunk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chunk.Type != provider.ChunkTypeCustom || chunk.CustomContent == nil || chunk.CustomContent.Kind != "anthropic.message_start" {
+	// TS: response-metadata {id, modelId} comes first, from message_start.
+	if chunk.Type != provider.ChunkTypeResponseMetadata || chunk.ResponseMetadata == nil ||
+		chunk.ResponseMetadata.ID != "msg_01" || chunk.ResponseMetadata.ModelID != "claude-haiku-4-5-20251001" {
 		t.Fatalf("first chunk = %#v", chunk)
+	}
+	if chunk, err = stream.Next(); err != nil {
+		t.Fatal(err)
+	}
+	if chunk.Type != provider.ChunkTypeCustom || chunk.CustomContent == nil || chunk.CustomContent.Kind != "anthropic.message_start" {
+		t.Fatalf("second chunk = %#v", chunk)
 	}
 	var meta map[string]map[string]interface{}
 	if err := json.Unmarshal(chunk.CustomContent.ProviderMetadata, &meta); err != nil {
