@@ -389,12 +389,12 @@ func TestToUIMessageStreamCallbacksCallAbortWithPartialFinal(t *testing.T) {
 
 func TestToUIMessageStreamStreamEventsResetTextBetweenModelInvocations(t *testing.T) {
 	events := make(chan StreamEvent, 4)
-	events <- StreamEvent{Mode: "streamEvents", Data: map[string]interface{}{"event": "on_chat_model_start", "run_id": "run-1"}}
+	events <- StreamEvent{Mode: "streamEvents", Data: map[string]interface{}{"event": "on_chat_model_start", "run_id": "run-1", "data": map[string]interface{}{"input": "Hello"}}}
 	events <- StreamEvent{Mode: "streamEvents", Data: map[string]interface{}{
 		"event": "on_chat_model_stream",
 		"data":  map[string]interface{}{"chunk": map[string]interface{}{"id": "msg-1", "content": "first"}},
 	}}
-	events <- StreamEvent{Mode: "streamEvents", Data: map[string]interface{}{"event": "on_chat_model_start", "run_id": "run-2"}}
+	events <- StreamEvent{Mode: "streamEvents", Data: map[string]interface{}{"event": "on_chat_model_start", "run_id": "run-2", "data": map[string]interface{}{"input": "Again"}}}
 	events <- StreamEvent{Mode: "streamEvents", Data: map[string]interface{}{
 		"event": "on_chat_model_stream",
 		"data":  map[string]interface{}{"chunk": map[string]interface{}{"id": "msg-2", "content": "second"}},

@@ -151,14 +151,28 @@ func ToUIMessageStreamFromAnyWithCallbacks(ctx context.Context, events <-chan in
 	converted := make(chan StreamEvent)
 	go func() {
 		defer close(converted)
+		// The stream type is decided by the first value, like TS.
+		streamType := ""
 		for event := range events {
-			streamEvent := StreamEvent{Mode: "model", Data: event}
-			if tuple, ok := asSlice(event); ok {
-				streamEvent = ParseLangGraphEvent(tuple)
-			} else if m, ok := asMap(event); ok {
-				if stringValue(m["event"]) != "" {
-					streamEvent = StreamEvent{Mode: "streamEvents", Data: event}
+			if streamType == "" {
+				switch {
+				case isTuple(event):
+					streamType = "langgraph"
+				case isStreamEventsEvent(event):
+					streamType = "streamEvents"
+				default:
+					streamType = "model"
 				}
+			}
+			var streamEvent StreamEvent
+			switch streamType {
+			case "langgraph":
+				tuple, _ := asSlice(event)
+				streamEvent = ParseLangGraphEvent(tuple)
+			case "streamEvents":
+				streamEvent = StreamEvent{Mode: "streamEvents", Data: event}
+			default:
+				streamEvent = StreamEvent{Mode: "model", Data: event}
 			}
 			select {
 			case <-ctx.Done():
@@ -168,6 +182,32 @@ func ToUIMessageStreamFromAnyWithCallbacks(ctx context.Context, events <-chan in
 		}
 	}()
 	return ToUIMessageStreamWithCallbacks(ctx, converted, callbacks)
+}
+
+func isTuple(v interface{}) bool {
+	_, ok := asSlice(v)
+	return ok
+}
+
+// isStreamEventsEvent mirrors TS isStreamEventsEvent: an object with a string
+// `event` and a `data` that is an object or null.
+func isStreamEventsEvent(v interface{}) bool {
+	m, ok := asMap(v)
+	if !ok {
+		return false
+	}
+	if _, ok := m["event"].(string); !ok {
+		return false
+	}
+	data, present := m["data"]
+	if !present {
+		return false
+	}
+	if data == nil {
+		return true
+	}
+	_, ok = asMap(data)
+	return ok
 }
 
 // ToUIMessageStream converts LangGraph messages/values stream events into AI SDK
@@ -188,6 +228,9 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 		state := newEventState()
 		var textChunks []string
 		var lastValuesData interface{}
+		// TS detects the stream type on the first value: a stream with no
+		// values emits no finish chunk.
+		received := false
 		if callbacks != nil && callbacks.OnStart != nil {
 			if err := callbacks.OnStart(); err != nil {
 				reportCallbackError(errs, callbacks, err)
@@ -214,7 +257,7 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 				return
 			case event, ok := <-events:
 				if !ok {
-					for _, chunk := range finishChunks(state, sendFinishEnabled(callbacks)) {
+					for _, chunk := range finishChunks(state, received && sendFinishEnabled(callbacks)) {
 						if err := handleCallbackChunk(callbacks, &textChunks, chunk); err != nil {
 							reportCallbackError(errs, callbacks, err)
 							return
@@ -233,6 +276,7 @@ func ToUIMessageStreamWithCallbacks(ctx context.Context, events <-chan StreamEve
 					failStream(ctx, out, errs, callbacks, textChunks, event.Err)
 					return
 				}
+				received = true
 				if event.Mode == "values" {
 					lastValuesData = event.Data
 				}
@@ -358,9 +402,9 @@ func ConvertModelMessages(messages []types.Message) []LangChainMessage {
 	for _, message := range messages {
 		switch message.Role {
 		case types.RoleSystem:
-			out = append(out, LangChainMessage{"type": "system", "content": contentText(message.Content)})
+			out = append(out, wireMessage(LangChainMessage{"type": "system", "content": contentText(message.Content)}))
 		case types.RoleUser:
-			out = append(out, LangChainMessage{"type": "human", "content": convertUserContent(message.Content)})
+			out = append(out, wireMessage(LangChainMessage{"type": "human", "content": convertUserContent(message.Content)}))
 		case types.RoleAssistant:
 			out = append(out, convertAssistantContent(message.Content))
 		case types.RoleTool:
@@ -406,6 +450,15 @@ type eventState struct {
 	messageNamespaces           map[string][]string
 	toolCallInfoByIndex         map[string]map[int]toolCall
 
+	// messageOrder lists messageSeen keys in first-seen order.
+	messageOrder []string
+	// emittedImages, emittedReasoningIDs and messageReasoningIDs mirror the TS
+	// state of the same names (image ids already emitted; GPT-5 reasoning ids
+	// already emitted, and the id each message streamed its reasoning under).
+	emittedImages       map[string]bool
+	emittedReasoningIDs map[string]bool
+	messageReasoningIDs map[string]string
+
 	// per-namespace step lifecycle bookkeeping, keyed by namespaceKey(...)
 	currentStepsByNamespace                    map[string]int
 	messageIdsInCurrentStepByNamespace         map[string]map[string]bool
@@ -424,6 +477,7 @@ type eventState struct {
 
 	// direct model / streamEvents stream state
 	streamMessageID        string
+	streamStarted          bool
 	streamTextStarted      bool
 	streamTextID           string
 	streamReasoningStarted bool
@@ -441,6 +495,9 @@ func newEventState() *eventState {
 		messageSeen:                 map[string]*messageSeenState{},
 		messageNamespaces:           map[string][]string{},
 		toolCallInfoByIndex:         map[string]map[int]toolCall{},
+		emittedImages:               map[string]bool{},
+		emittedReasoningIDs:         map[string]bool{},
+		messageReasoningIDs:         map[string]string{},
 
 		currentStepsByNamespace:                    map[string]int{},
 		messageIdsInCurrentStepByNamespace:         map[string]map[string]bool{},
@@ -456,6 +513,20 @@ type messageSeenState struct {
 	text      bool
 	reasoning bool
 	tools     map[string]bool
+	toolOrder []string
+}
+
+func (s *messageSeenState) hasTool(id string) bool { return s.tools[id] }
+
+// addTool records a tool call id, keeping first-seen order (a JS Set).
+func (s *messageSeenState) addTool(id string) {
+	if s.tools == nil {
+		s.tools = map[string]bool{}
+	}
+	if !s.tools[id] {
+		s.tools[id] = true
+		s.toolOrder = append(s.toolOrder, id)
+	}
 }
 
 // startNamespaceStep begins a new LangGraph step scope for the given
@@ -581,19 +652,35 @@ func closeStepNamespaceMessages(state *eventState, stepNamespace string) ([]ai.U
 			}
 			chunks = append(chunks, chunk)
 		}
-		delete(state.messageSeen, id)
-		delete(state.messageNamespaces, id)
+		state.deleteSeen(id)
 	}
 	return chunks, hasConcurrentMessageParts
 }
 
+// sortedMessageSeenIDs returns the ids of the messages with open parts in the
+// order they were first seen (a JS Map keeps insertion order; chunk order
+// across concurrent messages must not depend on the ids).
 func sortedMessageSeenIDs(state *eventState) []string {
 	ids := make([]string, 0, len(state.messageSeen))
-	for id := range state.messageSeen {
-		ids = append(ids, id)
+	for _, id := range state.messageOrder {
+		if state.messageSeen[id] != nil {
+			ids = append(ids, id)
+		}
 	}
-	sort.Strings(ids)
 	return ids
+}
+
+// deleteSeen forgets a message's open-part bookkeeping.
+func (state *eventState) deleteSeen(id string) {
+	delete(state.messageSeen, id)
+	delete(state.messageNamespaces, id)
+	delete(state.messageReasoningIDs, id)
+	for i, existing := range state.messageOrder {
+		if existing == id {
+			state.messageOrder = append(state.messageOrder[:i:i], state.messageOrder[i+1:]...)
+			break
+		}
+	}
 }
 
 // namespaceEligibleTypes mirrors the TypeScript adapter's
@@ -753,9 +840,10 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 		return nil
 	}
 
+	// TS: a message without an id is ignored.
 	msgID := messageID(message)
 	if msgID == "" {
-		msgID = "langchain-msg-1"
+		return nil
 	}
 
 	eventNS := namespaceKey(event.Namespace)
@@ -805,12 +893,66 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 		state.messageIdsInCurrentStepByNamespace[eventNS][msgID] = true
 	}
 
+	if isAIMessageChunk(message) {
+		return append(chunks, processAIMessageChunk(state, message, msgID, eventNS)...)
+	}
 	if isToolMessage(message) {
 		chunks = append(chunks, processToolMessage(state, message, eventNS, startedUIReducerStep)...)
-		return chunks
+	}
+	return chunks
+}
+
+// processAIMessageChunk mirrors the isAIMessageChunk branch of TS
+// processLangGraphEvent for a messages-mode chunk: image outputs, then tool
+// call chunks (which end the chunk's processing), then reasoning, text and
+// citations.
+func processAIMessageChunk(state *eventState, message map[string]interface{}, msgID, eventNS string) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	source := messageDataSource(message)
+	chunks = append(chunks, imageOutputChunks(state, source)...)
+
+	if toolChunks := extractToolCallChunks(message); len(toolChunks) > 0 {
+		return append(chunks, processToolCallChunks(state, msgID, eventNS, toolChunks)...)
 	}
 
-	for _, call := range extractToolCallChunks(message) {
+	if reasoningID := extractReasoningID(message); reasoningID != "" {
+		if _, ok := state.messageReasoningIDs[msgID]; !ok {
+			state.messageReasoningIDs[msgID] = reasoningID
+		}
+		state.emittedReasoningIDs[reasoningID] = true
+	}
+	if reasoning := messageReasoning(message); reasoning != "" {
+		reasoningID := firstString(state.messageReasoningIDs[msgID], firstString(extractReasoningID(message), msgID))
+		seen := state.messageSeen[msgID]
+		if seen == nil || !seen.reasoning {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
+			state.seenFor(msgID).reasoning = true
+		}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID})
+		state.emittedReasoningIDs[reasoningID] = true
+	}
+
+	if text := messageText(message); text != "" {
+		seen := state.messageSeen[msgID]
+		if seen != nil && seen.reasoning && !seen.text {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": msgID})
+			seen.reasoning = false
+		}
+		if seen == nil || !seen.text {
+			chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
+			state.seenFor(msgID).text = true
+		}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": msgID})
+	}
+	return append(chunks, emitSourceChunks(state, msgID, extractCitations(message))...)
+}
+
+// processToolCallChunks emits the tool-input lifecycle for streamed tool call
+// chunks. The first chunk of a call carries its id and name; later chunks only
+// carry an index and argument text, so the id and name are remembered by index.
+func processToolCallChunks(state *eventState, msgID, eventNS string, calls []toolCall) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	for _, call := range calls {
 		if call.id != "" {
 			if state.toolCallInfoByIndex[msgID] == nil {
 				state.toolCallInfoByIndex[msgID] = map[int]toolCall{}
@@ -826,11 +968,8 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 			continue
 		}
 		seen := state.seenFor(msgID)
-		if seen.tools == nil {
-			seen.tools = map[string]bool{}
-		}
-		if !seen.tools[call.id] {
-			seen.tools[call.id] = true
+		if !seen.hasTool(call.id) {
+			seen.addTool(call.id)
 			if !state.hasEmittedToolCallInCurrentStep(call.id, eventNS) {
 				state.markToolCallStarted(call.id, eventNS)
 				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": call.id, "toolName": firstString(call.name, "unknown"), "dynamic": true})
@@ -840,31 +979,118 @@ func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageCh
 			chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-delta", "toolCallId": call.id, "inputTextDelta": argDelta})
 		}
 	}
-	if text := messageText(message); text != "" {
-		seen := state.seenFor(msgID)
-		// Close any reasoning part still open on this message before
-		// starting/continuing text, mirroring LangGraph model turns that
-		// stream reasoning followed by text on the same message ID.
-		if seen.reasoning && !seen.text {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": msgID})
-			seen.reasoning = false
-		}
-		if !seen.text {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
-			seen.text = true
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": msgID})
-	}
-	if reasoning := messageReasoning(message); reasoning != "" {
-		seen := state.seenFor(msgID)
-		if !seen.reasoning {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
-			seen.reasoning = true
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID})
-	}
-	chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(message))...)
 	return chunks
+}
+
+// isAIMessageChunk mirrors TS isAIMessageChunk for JSON messages: type "ai"
+// (TypeScript langchain-core), "AIMessageChunk" (Python) or a serialized
+// constructor whose id path names AIMessageChunk or AIMessage.
+func isAIMessageChunk(message map[string]interface{}) bool {
+	switch stringValue(message["type"]) {
+	case "ai", "AIMessageChunk":
+		return true
+	case "constructor":
+		ids, _ := asSlice(message["id"])
+		for _, id := range ids {
+			if name := stringValue(id); name == "AIMessageChunk" || name == "AIMessage" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// imageOutputChunks emits a file part for each image_generation_call in
+// additional_kwargs.tool_outputs that carries data and was not emitted yet.
+func imageOutputChunks(state *eventState, source map[string]interface{}) []ai.UIMessageChunk {
+	additional, _ := asMap(source["additional_kwargs"])
+	outputs, _ := asSlice(additional["tool_outputs"])
+	var chunks []ai.UIMessageChunk
+	for _, raw := range outputs {
+		output, ok := asMap(raw)
+		if !ok || stringValue(output["type"]) != "image_generation_call" {
+			continue
+		}
+		result := stringValue(output["result"])
+		id := stringValue(output["id"])
+		if result == "" || state.emittedImages[id] {
+			continue
+		}
+		state.emittedImages[id] = true
+		mediaType := "image/" + firstString(output["output_format"], "png")
+		chunks = append(chunks, ai.UIMessageChunk{"type": "file", "mediaType": mediaType, "url": "data:" + mediaType + ";base64," + result})
+	}
+	return chunks
+}
+
+// extractReasoningID mirrors TS extractReasoningId: the GPT-5 reasoning block
+// id, consistent across streaming and values events.
+func extractReasoningID(message map[string]interface{}) string {
+	source := messageDataSource(message)
+	if additional, ok := asMap(source["additional_kwargs"]); ok {
+		if reasoning, ok := asMap(additional["reasoning"]); ok {
+			if id := stringValue(reasoning["id"]); id != "" {
+				return id
+			}
+		}
+	}
+	if metadata, ok := asMap(source["response_metadata"]); ok {
+		items, _ := asSlice(metadata["output"])
+		for _, item := range items {
+			if block, ok := asMap(item); ok && stringValue(block["type"]) == "reasoning" {
+				if _, isArray := asSlice(block["summary"]); isArray {
+					return stringValue(block["id"])
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// summaryTexts joins the text of reasoning summary items.
+func summaryTexts(summary []interface{}, requireNonEmpty bool) string {
+	var b strings.Builder
+	for _, item := range summary {
+		block, ok := asMap(item)
+		if !ok {
+			continue
+		}
+		if text, ok := block["text"].(string); ok && (!requireNonEmpty || text != "") {
+			b.WriteString(text)
+		}
+	}
+	return b.String()
+}
+
+// reasoningFromValuesMessage mirrors TS extractReasoningFromValuesMessage: the
+// accumulated reasoning in response_metadata.output (GPT-5 final format), with
+// additional_kwargs.reasoning.summary as a fallback.
+func reasoningFromValuesMessage(message map[string]interface{}) string {
+	source := messageDataSource(message)
+	if metadata, ok := asMap(source["response_metadata"]); ok {
+		items, _ := asSlice(metadata["output"])
+		var b strings.Builder
+		for _, item := range items {
+			block, ok := asMap(item)
+			if !ok || stringValue(block["type"]) != "reasoning" {
+				continue
+			}
+			if summary, ok := asSlice(block["summary"]); ok {
+				b.WriteString(summaryTexts(summary, true))
+			}
+		}
+		if b.Len() > 0 {
+			return b.String()
+		}
+	}
+	if additional, ok := asMap(source["additional_kwargs"]); ok {
+		if reasoning, ok := asMap(additional["reasoning"]); ok {
+			if summary, ok := asSlice(reasoning["summary"]); ok {
+				return summaryTexts(summary, false)
+			}
+		}
+	}
+	return ""
 }
 
 func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
@@ -923,7 +1149,8 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 				continue
 			}
 
-			for _, call := range extractToolCalls(msg) {
+			msgCalls := extractToolCalls(msg)
+			for _, call := range msgCalls {
 				if call.id == "" {
 					continue
 				}
@@ -970,6 +1197,22 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 					} else {
 						chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": call.id, "output": trailing.data["content"]})
 					}
+				}
+			}
+
+			// Reasoning that was not streamed (GPT-5 final format). A message
+			// with tool calls that was not streamed in this request is
+			// historical (a resumed HITL run) and is skipped, as is reasoning
+			// already emitted under the same reasoning id.
+			if reasoningID := extractReasoningID(msg); reasoningID != "" && !state.emittedReasoningIDs[reasoningID] &&
+				(state.messageSeen[msgID] != nil || len(msgCalls) == 0) {
+				if reasoning := reasoningFromValuesMessage(msg); reasoning != "" {
+					chunks = append(chunks,
+						ai.UIMessageChunk{"type": "reasoning-start", "id": msgID},
+						ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID},
+						ai.UIMessageChunk{"type": "reasoning-end", "id": msgID},
+					)
+					state.emittedReasoningIDs[reasoningID] = true
 				}
 			}
 
@@ -1125,6 +1368,44 @@ func processToolMessage(state *eventState, message map[string]interface{}, ns st
 	return chunks
 }
 
+// modelMessageID is the id of the current direct-model / streamEvents message
+// (TS modelState.messageId, initially "langchain-msg-1").
+func (state *eventState) modelMessageID() string {
+	return firstString(state.streamMessageID, "langchain-msg-1")
+}
+
+// modelReasoning and modelText emit reasoning and text for a direct model or
+// streamEvents chunk. They mirror the shared TS logic: reasoning ends when
+// text starts (unless text was already open), and each part keeps the id it
+// started under.
+func (state *eventState) modelReasoning(reasoning string) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	if !state.streamReasoningStarted {
+		state.streamReasoningID = state.modelMessageID()
+		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": state.streamReasoningID})
+		state.streamReasoningStarted = true
+		state.streamStarted = true
+	}
+	return append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": firstString(state.streamReasoningID, state.modelMessageID())})
+}
+
+func (state *eventState) modelText(text string) []ai.UIMessageChunk {
+	var chunks []ai.UIMessageChunk
+	if state.streamReasoningStarted && !state.streamTextStarted {
+		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": firstString(state.streamReasoningID, state.modelMessageID())})
+		state.streamReasoningStarted = false
+	}
+	if !state.streamTextStarted {
+		state.streamTextID = state.modelMessageID()
+		chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": state.streamTextID})
+		state.streamTextStarted = true
+		state.streamStarted = true
+	}
+	return append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": firstString(state.streamTextID, state.modelMessageID())})
+}
+
+// processModelChunk handles one chunk of a direct model stream (TS
+// processModelChunk).
 func processModelChunk(state *eventState, data interface{}) []ai.UIMessageChunk {
 	chunk, ok := asMap(data)
 	if !ok {
@@ -1133,75 +1414,67 @@ func processModelChunk(state *eventState, data interface{}) []ai.UIMessageChunk 
 	if id := messageID(chunk); id != "" {
 		state.streamMessageID = id
 	}
-	msgID := firstString(state.streamMessageID, "langchain-msg-1")
 	var chunks []ai.UIMessageChunk
-	if reasoning := messageReasoning(chunk); reasoning != "" {
-		if !state.streamReasoningStarted {
-			state.streamReasoningStarted = true
-			state.streamReasoningID = msgID
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": state.streamReasoningID})
+	images := imageOutputChunks(state, messageDataSource(chunk))
+	if len(images) > 0 {
+		state.streamStarted = true
+	}
+	chunks = append(chunks, images...)
+	// For a direct model stream there is no values event that could duplicate
+	// accumulated reasoning, so both sources are read.
+	reasoning := messageReasoning(chunk)
+	if reasoning == "" {
+		reasoning = reasoningFromValuesMessage(chunk)
+	}
+	if reasoning != "" {
+		chunks = append(chunks, state.modelReasoning(reasoning)...)
 	}
 	if text := messageText(chunk); text != "" {
-		if state.streamReasoningStarted && !state.streamTextStarted {
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": state.streamReasoningID})
-			state.streamReasoningStarted = false
-			state.streamReasoningID = ""
-		}
-		if !state.streamTextStarted {
-			state.streamTextStarted = true
-			state.streamTextID = msgID
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
-		}
-		chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": state.streamTextID})
+		chunks = append(chunks, state.modelText(text)...)
 	}
-	chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(chunk))...)
-	return chunks
+	return append(chunks, emitSourceChunks(state, state.modelMessageID(), extractCitations(chunk))...)
 }
 
+// processStreamEventsEvent handles one LangChain streamEvents (v2) event (TS
+// processStreamEventsEvent).
 func processStreamEventsEvent(state *eventState, data interface{}) []ai.UIMessageChunk {
 	event, ok := asMap(data)
 	if !ok {
 		return nil
 	}
-	eventName := stringValue(event["event"])
-	payload, _ := asMap(event["data"])
-	switch eventName {
+	// The run id on the event names the message until output has started.
+	if runID := stringValue(event["run_id"]); runID != "" && !state.streamStarted {
+		state.streamMessageID = runID
+	}
+	payload, ok := asMap(event["data"])
+	if !ok {
+		return nil
+	}
+	switch stringValue(event["event"]) {
 	case "on_chat_model_start":
+		// Close the previous model turn's parts so deltas of the next turn
+		// cannot attach to them.
 		chunks := finalizeStreamEventParts(state)
-		state.streamMessageID = firstString(event["run_id"], stringValue(payload["run_id"]))
+		if runID := firstString(event["run_id"], stringValue(payload["run_id"])); runID != "" {
+			state.streamMessageID = runID
+		}
 		return chunks
 	case "on_chat_model_stream":
-		chunk, _ := asMap(payload["chunk"])
-		if id := messageID(chunk); id != "" {
+		chunk, ok := asMap(payload["chunk"])
+		if !ok {
+			return nil
+		}
+		if id := stringValue(chunk["id"]); id != "" {
 			state.streamMessageID = id
 		}
-		msgID := firstString(state.streamMessageID, "langchain-stream")
 		var chunks []ai.UIMessageChunk
 		if reasoning := messageReasoning(chunk); reasoning != "" {
-			if !state.streamReasoningStarted {
-				state.streamReasoningStarted = true
-				state.streamReasoningID = msgID
-				chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-start", "id": msgID})
-			}
-			chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-delta", "delta": reasoning, "id": msgID})
+			chunks = append(chunks, state.modelReasoning(reasoning)...)
 		}
 		if text := messageText(chunk); text != "" {
-			if state.streamReasoningStarted {
-				chunks = append(chunks, ai.UIMessageChunk{"type": "reasoning-end", "id": state.streamReasoningID})
-				state.streamReasoningStarted = false
-				state.streamReasoningID = ""
-			}
-			if !state.streamTextStarted {
-				state.streamTextStarted = true
-				state.streamTextID = msgID
-				chunks = append(chunks, ai.UIMessageChunk{"type": "text-start", "id": msgID})
-			}
-			chunks = append(chunks, ai.UIMessageChunk{"type": "text-delta", "delta": text, "id": state.streamTextID})
+			chunks = append(chunks, state.modelText(text)...)
 		}
-		chunks = append(chunks, emitSourceChunks(state, msgID, extractCitations(chunk))...)
-		return chunks
+		return append(chunks, emitSourceChunks(state, state.modelMessageID(), extractCitations(chunk))...)
 	case "on_tool_start":
 		runID := firstString(event["run_id"], stringValue(payload["run_id"]))
 		name := firstString(event["name"], stringValue(payload["name"]))
@@ -1214,8 +1487,7 @@ func processStreamEventsEvent(state *eventState, data interface{}) []ai.UIMessag
 		if runID == "" {
 			return nil
 		}
-		output := firstPresent(payload, "output", "result")
-		return []ai.UIMessageChunk{{"type": "tool-output-available", "toolCallId": runID, "output": output}}
+		return []ai.UIMessageChunk{{"type": "tool-output-available", "toolCallId": runID, "output": payload["output"]}}
 	default:
 		return nil
 	}
@@ -1226,6 +1498,7 @@ func (state *eventState) seenFor(messageID string) *messageSeenState {
 	if seen == nil {
 		seen = &messageSeenState{}
 		state.messageSeen[messageID] = seen
+		state.messageOrder = append(state.messageOrder, messageID)
 	}
 	return seen
 }
@@ -1250,8 +1523,7 @@ func finalizeOpenMessageParts(state *eventState) []ai.UIMessageChunk {
 			}
 			chunks = append(chunks, chunk)
 		}
-		delete(state.messageSeen, id)
-		delete(state.messageNamespaces, id)
+		state.deleteSeen(id)
 	}
 	return chunks
 }
@@ -1286,7 +1558,7 @@ func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall
 			}
 			chunks = append(chunks, chunk)
 		}
-		for callID := range seen.tools {
+		for _, callID := range seen.toolOrder {
 			call, ok := callsByID[callID]
 			if !ok || call.name == "" {
 				continue
@@ -1305,8 +1577,7 @@ func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall
 			}
 			chunks = append(chunks, chunk)
 		}
-		delete(state.messageSeen, id)
-		delete(state.messageNamespaces, id)
+		state.deleteSeen(id)
 	}
 	return chunks
 }
@@ -1362,7 +1633,7 @@ func extractToolCalls(message map[string]interface{}) []toolCall {
 		name := stringValue(m["name"])
 		args := m["args"]
 		if fn, ok := asMap(m["function"]); ok {
-			name = stringValue(fn["name"])
+			name = firstString(fn["name"], "unknown")
 			args = parseArgs(fn["arguments"])
 		}
 		if args == nil {
@@ -1506,34 +1777,36 @@ func messageText(message map[string]interface{}) string {
 	}
 }
 
+// messageReasoning mirrors TS extractReasoningFromContentBlocks, for streaming
+// chunks whose content is delta text: reasoning/thinking content blocks first,
+// then additional_kwargs.reasoning.summary. It never reads
+// response_metadata.output, which holds accumulated text.
 func messageReasoning(message map[string]interface{}) string {
 	source := messageDataSource(message)
-	contentBlocks := langChainContentBlocks(source)
 	var b strings.Builder
-	for _, block := range contentBlocks {
-		typ := stringValue(block["type"])
-		switch typ {
+	for _, block := range langChainContentBlocks(source) {
+		switch stringValue(block["type"]) {
 		case "reasoning":
-			b.WriteString(stringValue(block["reasoning"]))
+			if text, ok := block["reasoning"].(string); ok {
+				b.WriteString(text)
+			}
 		case "thinking":
-			b.WriteString(stringValue(block["thinking"]))
-		}
-	}
-	if additional, ok := asMap(source["additional_kwargs"]); ok {
-		if reasoning := stringValue(additional["reasoning"]); reasoning != "" {
-			b.WriteString(reasoning)
-		}
-		if reasoning, ok := asMap(additional["reasoning"]); ok {
-			if summary, ok := asSlice(reasoning["summary"]); ok {
-				for _, item := range summary {
-					if summaryItem, ok := asMap(item); ok {
-						b.WriteString(stringValue(summaryItem["text"]))
-					}
-				}
+			if text, ok := block["thinking"].(string); ok {
+				b.WriteString(text)
 			}
 		}
 	}
-	return b.String()
+	if b.Len() > 0 {
+		return b.String()
+	}
+	if additional, ok := asMap(source["additional_kwargs"]); ok {
+		if reasoning, ok := asMap(additional["reasoning"]); ok {
+			if summary, ok := asSlice(reasoning["summary"]); ok {
+				return summaryTexts(summary, false)
+			}
+		}
+	}
+	return ""
 }
 
 type langChainCitation struct {
@@ -1560,7 +1833,7 @@ func extractCitations(message map[string]interface{}) []langChainCitation {
 			}
 			citation := langChainCitation{
 				URL:       stringValue(annotation["url"]),
-				Title:     firstString(annotation["title"], stringValue(annotation["source"])),
+				Title:     stringValue(annotation["title"]),
 				CitedText: stringValue(firstPresent(annotation, "cited_text", "citedText", "text")),
 				Start:     firstPresent(annotation, "start_index", "startIndex"),
 				End:       firstPresent(annotation, "end_index", "endIndex"),
@@ -1598,12 +1871,18 @@ func emitSourceChunks(state *eventState, messageID string, citations []langChain
 	for _, citation := range citations {
 		sourceID := citation.URL
 		chunkType := "source-url"
-		if sourceID == "" {
-			sourceID = messageID + ":" + citation.Title + ":" + citation.CitedText + ":" + stringValue(citation.Start) + ":" + stringValue(citation.End)
+		// TS: a document source is labelled by title ?? source; a url source
+		// carries only the citation's own title.
+		label := citation.Title
+		if citation.URL == "" {
+			if label == "" {
+				label = stringValue(citation.Source)
+			}
+			if label == "" {
+				continue
+			}
+			sourceID = messageID + ":" + label + ":" + citation.CitedText + ":" + stringValue(citation.Start) + ":" + stringValue(citation.End)
 			chunkType = "source-document"
-		}
-		if citation.URL == "" && citation.Title == "" {
-			continue
 		}
 		if sourceID == "" || state.emittedSources[sourceID] {
 			continue
@@ -1616,8 +1895,8 @@ func emitSourceChunks(state *eventState, messageID string, citations []langChain
 		if metadata := citationProviderMetadata(citation); len(metadata) > 0 {
 			chunk["providerMetadata"] = map[string]interface{}{"langchain": metadata}
 		}
-		if citation.Title != "" {
-			chunk["title"] = citation.Title
+		if label != "" {
+			chunk["title"] = label
 		}
 		if citation.URL != "" {
 			chunk["url"] = citation.URL
@@ -1703,15 +1982,19 @@ func convertAssistantContent(parts []types.ContentPart) LangChainMessage {
 	if len(toolCalls) > 0 {
 		msg["tool_calls"] = toolCalls
 	}
+	return wireMessage(msg)
+}
+
+// wireMessage adds the fields TS RemoteGraph serializes with every message
+// ({...message.toDict().data, role: message.getType()}).
+func wireMessage(msg LangChainMessage) LangChainMessage {
+	msg["role"] = msg["type"]
+	msg["additional_kwargs"] = map[string]interface{}{}
+	msg["response_metadata"] = map[string]interface{}{}
 	return msg
 }
 
 func convertUserContent(parts []types.ContentPart) interface{} {
-	if len(parts) == 1 {
-		if text, ok := parts[0].(types.TextContent); ok {
-			return text.Text
-		}
-	}
 	blocks := make([]interface{}, 0, len(parts))
 	for _, part := range parts {
 		switch p := part.(type) {
@@ -1723,15 +2006,29 @@ func convertUserContent(parts []types.ContentPart) interface{} {
 			blocks = append(blocks, fileContentBlock(p))
 		}
 	}
+	// TS: when every block is text the message content is the joined string.
+	var joined strings.Builder
+	allText := true
+	for _, block := range blocks {
+		m := block.(map[string]interface{})
+		if m["type"] != "text" {
+			allText = false
+			break
+		}
+		joined.WriteString(m["text"].(string))
+	}
+	if allText {
+		return joined.String()
+	}
 	return blocks
 }
 
 func convertToolResultPart(result types.ToolResultContent) LangChainMessage {
-	return LangChainMessage{
+	return wireMessage(LangChainMessage{
 		"type":         "tool",
 		"tool_call_id": result.ToolCallID,
 		"content":      toolResultContent(result),
-	}
+	})
 }
 
 func toolResultContent(result types.ToolResultContent) string {
@@ -1827,61 +2124,73 @@ func parseBase64DataURL(dataURL string) (mime string, data string, ok bool) {
 	}
 	mime = rest[:idx]
 	data = rest[idx+len(marker):]
-	if mime == "" || data == "" {
+	// The TS pattern is /^data:([^;]+);base64,(.+)$/: the media type cannot
+	// contain another parameter.
+	if mime == "" || data == "" || strings.Contains(mime, ";") {
 		return "", "", false
 	}
 	return mime, data, true
 }
 
+// fileData returns the file's data the way the TS adapter normalizes the
+// tagged data shape: a URL, inline text or base64 string; a provider reference
+// becomes "".
+func fileData(part types.FileContent) string {
+	switch {
+	case part.URL != "":
+		return part.URL
+	case part.Text != "":
+		return part.Text
+	case part.Reference != "":
+		return ""
+	}
+	switch part.FileData.Type {
+	case types.FileDataTypeURL:
+		return part.FileData.URL
+	case types.FileDataTypeText:
+		return part.FileData.Text
+	case types.FileDataTypeReference:
+		return ""
+	}
+	if part.FileData.DataString != "" {
+		return part.FileData.DataString
+	}
+	data := part.Data
+	if len(data) == 0 {
+		data = part.FileData.Data
+	}
+	return base64.StdEncoding.EncodeToString(data)
+}
+
+// fileContentBlock mirrors the non-image branch of TS convertUserContent:
+// {type:'file', url | data, mimeType, filename}.
 func fileContentBlock(part types.FileContent) map[string]interface{} {
 	mediaType := part.MediaType
 	if mediaType == "" {
 		mediaType = part.MimeType
 	}
 	if strings.HasPrefix(mediaType, "image/") {
-		return canonicalImageBlockForFile(part, mediaType)
+		return canonicalImageBlockFromString(fileData(part), mediaType)
 	}
 	filename := part.Filename
 	if filename == "" {
 		filename = defaultFilename(mediaType, "file")
 	}
-	metadata := map[string]interface{}{"filename": filename}
+	data := fileData(part)
+	block := func(key, value, mime string) map[string]interface{} {
+		return map[string]interface{}{"type": "file", key: value, "mimeType": mime, "filename": filename}
+	}
 	switch {
-	case part.URL != "":
-		return map[string]interface{}{"type": "file", "source_type": "url", "url": part.URL, "mime_type": mediaType, "metadata": metadata}
-	case part.Text != "":
-		return map[string]interface{}{"type": "file", "source_type": "text", "text": part.Text, "mime_type": mediaType, "metadata": metadata}
-	case part.Reference != "":
-		return map[string]interface{}{"type": "file", "source_type": "reference", "reference": part.Reference, "mime_type": mediaType, "metadata": metadata}
-	case part.FileData.Type == types.FileDataTypeURL:
-		return map[string]interface{}{"type": "file", "source_type": "url", "url": part.FileData.URL, "mime_type": mediaType, "metadata": metadata}
+	case strings.HasPrefix(data, "http://") || strings.HasPrefix(data, "https://"):
+		return block("url", data, mediaType)
+	case strings.HasPrefix(data, "data:"):
+		if mime, b64, ok := parseBase64DataURL(data); ok {
+			return block("data", b64, mime)
+		}
+		return block("url", data, mediaType)
 	default:
-		data := part.Data
-		if len(data) == 0 && len(part.FileData.Data) > 0 {
-			data = part.FileData.Data
-		}
-		encoded := part.FileData.DataString
-		if encoded == "" {
-			encoded = base64.StdEncoding.EncodeToString(data)
-		}
-		return map[string]interface{}{"type": "file", "source_type": "base64", "data": encoded, "mime_type": mediaType, "metadata": metadata}
+		return block("data", data, mediaType)
 	}
-}
-
-// canonicalImageBlockForFile converts a non-image-typed FileContent whose
-// mediaType is an image/* MIME type into LangChain's canonical image content
-// block, matching the TypeScript adapter's `isImage` branch in
-// `convertUserContent`.
-func canonicalImageBlockForFile(part types.FileContent, mediaType string) map[string]interface{} {
-	urlOrDataURL := part.URL
-	if urlOrDataURL == "" && part.FileData.Type == types.FileDataTypeURL {
-		urlOrDataURL = part.FileData.URL
-	}
-	data := part.Data
-	if len(data) == 0 && len(part.FileData.Data) > 0 {
-		data = part.FileData.Data
-	}
-	return canonicalImageContentBlock(urlOrDataURL, part.FileData.DataString, data, mediaType)
 }
 
 func defaultFilename(mediaType, prefix string) string {
