@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StreamEvent is a LangGraph stream event. Mode is commonly "messages" or
@@ -1289,7 +1290,11 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	case "on_tool_error":
 		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": formatToolError(payload["error"])})
+		errorText := "undefined" // TS String(undefined) for a missing error
+		if rawErr, present := payload["error"]; present {
+			errorText = formatToolError(rawErr)
+		}
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errorText})
 	}
 	return chunks
 }
@@ -1330,7 +1335,7 @@ func formatToolError(v interface{}) string {
 	case error:
 		return e.Error()
 	default:
-		data, err := json.Marshal(e)
+		data, err := jsonstr.Marshal(e)
 		if err != nil {
 			return fmt.Sprint(e)
 		}
@@ -2038,7 +2043,7 @@ func toolResultContent(result types.ToolResultContent) string {
 		if s, ok := result.Result.(string); ok {
 			return s
 		}
-		data, err := json.Marshal(result.Result)
+		data, err := jsonstr.Marshal(result.Result)
 		if err != nil {
 			return fmt.Sprint(result.Result)
 		}
@@ -2048,7 +2053,7 @@ func toolResultContent(result types.ToolResultContent) string {
 	case types.ToolResultOutputText, types.ToolResultOutputErrorText:
 		return stringValue(result.Output.Value)
 	case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
-		data, err := json.Marshal(result.Output.Value)
+		data, err := jsonstr.Marshal(result.Output.Value)
 		if err != nil {
 			return ""
 		}
@@ -2203,7 +2208,7 @@ func toolCallKey(name string, args interface{}) string {
 
 func stableJSONString(v interface{}) string {
 	normalized := normalizeForStableJSON(v)
-	data, err := json.Marshal(normalized)
+	data, err := jsonstr.Marshal(normalized)
 	if err != nil {
 		return "null"
 	}
