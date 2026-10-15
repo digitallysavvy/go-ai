@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -103,8 +104,8 @@ func IsUnauthorizedClientError(err error) bool {
 }
 
 func oauthErrorCodeIs(err error, code string) bool {
-	oauthErr, ok := err.(*MCPClientOAuthError)
-	return ok && oauthErr.Code == code
+	var oauthErr *MCPClientOAuthError
+	return errors.As(err, &oauthErr) && oauthErr.Code == code
 }
 
 // oauthErrorResponseBody is the RFC 6749 §5.2 error response shape.

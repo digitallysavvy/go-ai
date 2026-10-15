@@ -53,7 +53,7 @@ func assertSafeOAuthEndpoint(endpoint string, allowLoopback bool) error {
 		}
 	}
 	if err := fileutil.ValidateDownloadURL(endpoint); err != nil {
-		return fmt.Errorf("OAuth endpoint URL is not allowed: %s: %w", endpoint, err)
+		return &MCPClientOAuthError{Message: fmt.Sprintf("OAuth endpoint URL is not allowed: %s", endpoint), Cause: err}
 	}
 	return nil
 }
