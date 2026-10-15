@@ -1588,7 +1588,7 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 					"type":       "tool_search_tool_result_error",
 					"error_code": extractErrorCode(output.value),
 				},
-			}, true)
+			}, false)
 			return nil
 		}
 		if output.kind != "json" {
