@@ -69,6 +69,20 @@ func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 	return result, nil
 }
 
+// UnsupportedProviderToolWarnings returns the TS prepareTools `unsupported`
+// warning for each provider-defined tool whose id the Responses API does not
+// know (PrepareTools drops it). TS builds the feature text from the tool
+// object itself, so it reads `function tool [object Object]`.
+func UnsupportedProviderToolWarnings(tools []types.Tool) []types.Warning {
+	var warnings []types.Warning
+	for _, t := range tools {
+		if t.Type == types.ToolTypeProviderDefined && convertTool(t) == nil {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "function tool [object Object]"})
+		}
+	}
+	return warnings
+}
+
 // convertTool converts a single types.Tool to its Responses API representation.
 func convertTool(t types.Tool) interface{} {
 	// Custom tools are detected by ProviderOptions type since t.Name holds the

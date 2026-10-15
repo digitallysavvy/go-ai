@@ -33,6 +33,18 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 	moonshotTools := make([]moonshotFunctionTool, 0, len(tools))
 
 	for _, tool := range tools {
+		// TS: tool.type === 'provider' (the typed provider-defined tool).
+		if tool.Type == "provider" {
+			id := tool.ProviderID
+			if id == "" {
+				id = tool.Name
+			}
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "provider-defined tool " + id,
+			})
+			continue
+		}
 		if tool.ProviderExecuted {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
