@@ -121,7 +121,7 @@ func (t *PermissionModeTarget) UnmarshalJSON(data []byte) error {
 }
 
 // MarshalJSON encodes `{ 'allow-reads', 'allow-edits', 'allow-all' }`; a nil
-// target is an explicit no-op and encodes as `null`. Modes flagged Unset* are left
+// target is an explicit no-op and encodes as `null`. Modes marked Unset<Mode> are left
 // out, like a TS record with an undefined entry.
 func (m PermissionModeMapping) MarshalJSON() ([]byte, error) {
 	var w struct {
@@ -129,7 +129,7 @@ func (m PermissionModeMapping) MarshalJSON() ([]byte, error) {
 		AllowEdits *PermissionModeTarget `json:"allow-edits"`
 		AllowAll   *PermissionModeTarget `json:"allow-all"`
 	}
-	if m.IsComplete() || (!m.UnsetAllowReads && !m.UnsetAllowEdits && !m.UnsetAllowAll) {
+	if m.IsComplete() {
 		w.AllowReads, w.AllowEdits, w.AllowAll = m.AllowReads, m.AllowEdits, m.AllowAll
 		return json.Marshal(w)
 	}
@@ -159,7 +159,7 @@ func (m PermissionModeMapping) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON decodes the TS shape (and the legacy Go-field-name shape). A
-// missing key is recorded in the Unset* flags; an explicit null is a no-op target.
+// missing key sets the matching Unset<Mode> flag; an explicit null is a no-op target.
 func (m *PermissionModeMapping) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -167,10 +167,10 @@ func (m *PermissionModeMapping) UnmarshalJSON(data []byte) error {
 	}
 	*m = PermissionModeMapping{}
 	for _, e := range []struct {
-		keys []string
-		mode harness.PermissionMode
-		dst  **PermissionModeTarget
-		flag *bool
+		keys  []string
+		mode  harness.PermissionMode
+		dst   **PermissionModeTarget
+		unset *bool
 	}{
 		{[]string{"allow-reads", "allowReads"}, harness.PermissionModeAllowReads, &m.AllowReads, &m.UnsetAllowReads},
 		{[]string{"allow-edits", "allowEdits"}, harness.PermissionModeAllowEdits, &m.AllowEdits, &m.UnsetAllowEdits},
@@ -191,7 +191,7 @@ func (m *PermissionModeMapping) UnmarshalJSON(data []byte) error {
 			}
 		}
 		if !found {
-			*e.flag = true
+			*e.unset = true
 		}
 	}
 	return nil

@@ -1,191 +1,33 @@
 package anthropic
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
-	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 )
 
 // This file ports anthropicChunkSchema (anthropic-api.ts), the zod schema TS
-// applies to every parsed streaming frame. zod objects are non-strict (unknown
-// keys pass), `nullish` means absent or null, `optional` means absent only,
-// and `nullable` means the key must be present but may be null. A frame that
-// does not match becomes an `error` part (TypeValidationError in TS) and the
-// stream keeps reading.
+// applies to every parsed streaming frame. The validation primitives live in
+// pkg/internal/zodlite. A frame that does not match becomes an `error` part
+// (TypeValidationError in TS) and the stream keeps reading.
 
-type zodIssue struct {
-	path    []interface{}
-	code    string
-	message string
-}
-
-// zodNode validates one value; present is false when the object key is absent.
-type zodNode func(v interface{}, present bool, path []interface{}) *zodIssue
-
-func jsType(v interface{}, present bool) string {
-	switch x := v.(type) {
-	case nil:
-		if !present {
-			return "undefined"
-		}
-		return "null"
-	case string:
-		return "string"
-	case float64:
-		return "number"
-	case bool:
-		return "boolean"
-	case []interface{}:
-		return "array"
-	case map[string]interface{}:
-		return "object"
-	default:
-		_ = x
-		return "unknown"
-	}
-}
-
-func invalidType(expected string, v interface{}, present bool, path []interface{}) *zodIssue {
-	return &zodIssue{path: path, code: "invalid_type", message: "Invalid input: expected " + expected + ", received " + jsType(v, present)}
-}
-
-func zString(v interface{}, present bool, path []interface{}) *zodIssue {
-	if _, ok := v.(string); !ok {
-		return invalidType("string", v, present, path)
-	}
-	return nil
-}
-
-func zNumber(v interface{}, present bool, path []interface{}) *zodIssue {
-	if _, ok := v.(float64); !ok {
-		return invalidType("number", v, present, path)
-	}
-	return nil
-}
-
-func zBoolean(v interface{}, present bool, path []interface{}) *zodIssue {
-	if _, ok := v.(bool); !ok {
-		return invalidType("boolean", v, present, path)
-	}
-	return nil
-}
-
-// zUnknown is z.unknown() / z.json(): any value passes.
-func zUnknown(interface{}, bool, []interface{}) *zodIssue { return nil }
-
-func zLiteral(want string) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		if s, ok := v.(string); ok && s == want {
-			return nil
-		}
-		return &zodIssue{path: path, code: "invalid_value", message: fmt.Sprintf("Invalid input: expected %q", want)}
-	}
-}
-
-func zNullish(n zodNode) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		if !present || v == nil {
-			return nil
-		}
-		return n(v, present, path)
-	}
-}
-
-func zNullable(n zodNode) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		if present && v == nil {
-			return nil
-		}
-		return n(v, present, path)
-	}
-}
-
-func zOptional(n zodNode) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		if !present {
-			return nil
-		}
-		return n(v, present, path)
-	}
-}
-
-func zArray(n zodNode) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		a, ok := v.([]interface{})
-		if !ok {
-			return invalidType("array", v, present, path)
-		}
-		for i, e := range a {
-			if bad := n(e, true, append(append([]interface{}{}, path...), i)); bad != nil {
-				return bad
-			}
-		}
-		return nil
-	}
-}
-
-type zField struct {
-	key  string
-	node zodNode
-}
-
-func zObject(fields ...zField) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return invalidType("object", v, present, path)
-		}
-		for _, f := range fields {
-			fv, fp := m[f.key]
-			if bad := f.node(fv, fp, append(append([]interface{}{}, path...), f.key)); bad != nil {
-				return bad
-			}
-		}
-		return nil
-	}
-}
-
-// zRecord is z.record(z.string(), z.unknown()): an object with any values.
-func zRecord(v interface{}, present bool, path []interface{}) *zodIssue {
-	if _, ok := v.(map[string]interface{}); !ok {
-		return invalidType("record", v, present, path)
-	}
-	return nil
-}
-
-func zUnion(nodes ...zodNode) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		for _, n := range nodes {
-			if n(v, present, path) == nil {
-				return nil
-			}
-		}
-		return &zodIssue{path: path, code: "invalid_union", message: "Invalid input"}
-	}
-}
-
-// zDisc is z.discriminatedUnion('type', ...).
-func zDisc(variants map[string]zodNode) zodNode {
-	return func(v interface{}, present bool, path []interface{}) *zodIssue {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return invalidType("object", v, present, path)
-		}
-		t, _ := m["type"].(string)
-		n, known := variants[t]
-		if !known {
-			return &zodIssue{path: append(append([]interface{}{}, path...), "type"), code: "invalid_union", message: "Invalid input"}
-		}
-		return n(v, present, path)
-	}
-}
-
-func typed(t string, fields ...zField) zodNode {
-	return zObject(append([]zField{{"type", zLiteral(t)}}, fields...)...)
-}
-
-func f(key string, n zodNode) zField { return zField{key, n} }
+var (
+	zString   = zodlite.String
+	zNumber   = zodlite.Number
+	zBoolean  = zodlite.Boolean
+	zUnknown  = zodlite.Unknown
+	zLiteral  = zodlite.Literal
+	zNullish  = zodlite.Nullish
+	zNullable = zodlite.Nullable
+	zOptional = zodlite.Optional
+	zArray    = zodlite.Array
+	zObject   = zodlite.Object
+	zRecord   = zodlite.Record
+	zUnion    = zodlite.Union
+	zDisc     = zodlite.Disc
+	typed     = zodlite.Typed
+	f         = zodlite.F
+)
 
 var (
 	zCaller = zUnion(
@@ -215,10 +57,10 @@ var (
 		f("type", zString),
 		f("status", zObject(
 			f("type", zString),
-			f("tool_uses", zNullish(func(v interface{}, present bool, path []interface{}) *zodIssue {
+			f("tool_uses", zNullish(func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
 				m, ok := v.(map[string]interface{})
 				if !ok {
-					return invalidType("record", v, present, path)
+					return zodlite.Invalid("record", v, present, path)
 				}
 				entry := zObject(f("type", zString), f("outcome", zNullish(zString)), f("explanation", zNullish(zString)))
 				for k, e := range m {
@@ -231,7 +73,7 @@ var (
 		)),
 	)
 
-	zCitation = zDisc(map[string]zodNode{
+	zCitation = zDisc(map[string]zodlite.Node{
 		"web_search_result_location": typed("web_search_result_location",
 			f("cited_text", zString), f("url", zString), f("title", zNullable(zString)), f("encrypted_index", zString)),
 		"page_location": typed("page_location",
@@ -250,7 +92,7 @@ var (
 
 	zCodeExecOutputs = zOptional(zArray(typed("code_execution_output", f("file_id", zString))))
 
-	zContentBlockStart = zDisc(map[string]zodNode{
+	zContentBlockStart = zDisc(map[string]zodlite.Node{
 		"text":     typed("text", f("text", zString)),
 		"thinking": typed("thinking", f("thinking", zString)),
 		"tool_use": typed("tool_use",
@@ -298,7 +140,7 @@ var (
 			))),
 		"bash_code_execution_tool_result": typed("bash_code_execution_tool_result",
 			f("tool_use_id", zString),
-			f("content", zDisc(map[string]zodNode{
+			f("content", zDisc(map[string]zodlite.Node{
 				"bash_code_execution_result": typed("bash_code_execution_result",
 					f("content", zArray(typed("bash_code_execution_output", f("file_id", zString)))),
 					f("stdout", zString), f("stderr", zString), f("return_code", zNumber)),
@@ -306,7 +148,7 @@ var (
 			}))),
 		"text_editor_code_execution_tool_result": typed("text_editor_code_execution_tool_result",
 			f("tool_use_id", zString),
-			f("content", zDisc(map[string]zodNode{
+			f("content", zDisc(map[string]zodlite.Node{
 				"text_editor_code_execution_tool_result_error": typed("text_editor_code_execution_tool_result_error", f("error_code", zString)),
 				"text_editor_code_execution_view_result": typed("text_editor_code_execution_view_result",
 					f("content", zString), f("file_type", zString),
@@ -325,7 +167,7 @@ var (
 			))),
 		"advisor_tool_result": typed("advisor_tool_result",
 			f("tool_use_id", zString),
-			f("content", zDisc(map[string]zodNode{
+			f("content", zDisc(map[string]zodlite.Node{
 				"advisor_result":            typed("advisor_result", f("text", zString), f("stop_reason", zNullish(zString))),
 				"advisor_redacted_result":   typed("advisor_redacted_result", f("encrypted_content", zString), f("stop_reason", zNullish(zString))),
 				"advisor_tool_result_error": typed("advisor_tool_result_error", f("error_code", zString)),
@@ -344,7 +186,7 @@ var (
 		typed("compact_20260112"),
 	)
 
-	zAnthropicChunk = zDisc(map[string]zodNode{
+	zAnthropicChunk = zDisc(map[string]zodlite.Node{
 		"message_start": typed("message_start", f("message", zObject(
 			f("id", zNullish(zString)), f("model", zNullish(zString)), f("role", zNullish(zString)),
 			f("usage", zObject(
@@ -359,7 +201,7 @@ var (
 			f("container", zNullish(zContainerIDExpiry)),
 		))),
 		"content_block_start": typed("content_block_start", f("index", zNumber), f("content_block", zContentBlockStart)),
-		"content_block_delta": typed("content_block_delta", f("index", zNumber), f("delta", zDisc(map[string]zodNode{
+		"content_block_delta": typed("content_block_delta", f("index", zNumber), f("delta", zDisc(map[string]zodlite.Node{
 			"input_json_delta": typed("input_json_delta", f("partial_json", zString)),
 			"text_delta":       typed("text_delta", f("text", zString)),
 			"thinking_delta":   typed("thinking_delta", f("thinking", zString)),
@@ -409,30 +251,9 @@ var (
 
 // anthropicChunkValidationMessage validates a JSON frame against
 // anthropicChunkSchema. It returns "" when the frame matches, otherwise the
-// TS TypeValidationError message. The zod issue text is a best-effort
-// rendering (path plus the zod v4 message for the first failing field).
+// TS TypeValidationError message.
 func anthropicChunkValidationMessage(data string) string {
-	var value interface{}
-	if err := json.Unmarshal([]byte(data), &value); err != nil {
-		return ""
-	}
-	bad := zAnthropicChunk(value, true, nil)
-	if bad == nil {
-		return ""
-	}
-	path := bad.path
-	if path == nil {
-		path = []interface{}{}
-	}
-	var issues bytes.Buffer
-	enc := json.NewEncoder(&issues)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode([]map[string]interface{}{{"code": bad.code, "path": path, "message": bad.message}})
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, []byte(data)); err != nil {
-		compact.WriteString(data)
-	}
-	return "Type validation failed: Value: " + compact.String() + ".\nError message: " + strings.TrimSpace(issues.String())
+	return zodlite.ValidationMessage(zAnthropicChunk, data)
 }
 
 // anthropicChunkType returns the frame's `type` for dispatch.
@@ -444,19 +265,8 @@ func anthropicChunkType(data string) string {
 	return head.Type
 }
 
-func compactJSON(data string) string {
-	var b bytes.Buffer
-	if err := json.Compact(&b, []byte(data)); err != nil {
-		return data
-	}
-	return b.String()
-}
+func compactJSON(data string) string { return zodlite.CompactJSON(data) }
 
 // validationIssueText returns the issue list that follows "Error message: "
 // in a validation message, or the whole message when the marker is absent.
-func validationIssueText(message string) string {
-	if _, after, ok := strings.Cut(message, "Error message: "); ok {
-		return after
-	}
-	return message
-}
+func validationIssueText(message string) string { return zodlite.IssueText(message) }

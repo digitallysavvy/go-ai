@@ -66,16 +66,18 @@ type PermissionModeTarget struct {
 //
 // TS also accepts a partial record (a key left out). Such a mapping is part of
 // the implementation identity but is otherwise ignored: it is never sent to the
-// bridge. Go expresses a left-out key with the matching Unset* flag; the zero
+// bridge. Go expresses a left-out key by setting its Unset<Mode> flag; the zero
 // value (no flag set) is a complete mapping, so existing callers are unchanged.
-// The struct stays comparable with == (flags, not a slice, as in v0.5.2).
 type PermissionModeMapping struct {
 	AllowReads *PermissionModeTarget
 	AllowEdits *PermissionModeTarget
 	AllowAll   *PermissionModeTarget
 	// UnsetAllowReads, UnsetAllowEdits and UnsetAllowAll mark a mode whose key
-	// is absent (TS `undefined`). The target field of a flagged mode is ignored.
-	UnsetAllowReads, UnsetAllowEdits, UnsetAllowAll bool
+	// is absent (TS `undefined`); the target field of a marked mode is
+	// ignored. Flags (not a slice) keep the struct comparable with ==.
+	UnsetAllowReads bool
+	UnsetAllowEdits bool
+	UnsetAllowAll   bool
 }
 
 // IsComplete reports whether every mode has an entry (a target or an explicit

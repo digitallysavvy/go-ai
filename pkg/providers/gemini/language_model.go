@@ -518,7 +518,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 				ID:               toolCallID,
 				ToolName:         "server:" + part.ToolCall.ToolType,
 				Arguments:        args,
-				RawArguments:     jsonorder.Text(part.toolCallArgsRaw, args),
+				RawArguments:     jsonorder.Text(json.RawMessage(part.toolCallArgsRaw), args),
 				ProviderExecuted: true,
 				Dynamic:          true,
 				ProviderMetadata: m.cfg.wrapProviderMetadata(meta),

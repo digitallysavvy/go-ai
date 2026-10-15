@@ -315,8 +315,21 @@ type Usage struct {
 	InputTokensDetails  *InputTokensDetails  `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *OutputTokensDetails `json:"output_tokens_details,omitempty"`
 
-	// rawWire is the usage object exactly as the API sent it (TS usage.raw).
-	rawWire map[string]interface{}
+	// rawWire is the usage object exactly as the API sent it (TS usage.raw),
+	// as JSON text so Usage stays comparable with == as in v0.5.2.
+	rawWire string
+}
+
+// wire decodes rawWire; nil when the usage was not decoded from the wire.
+func (u Usage) wire() map[string]interface{} {
+	if u.rawWire == "" {
+		return nil
+	}
+	var m map[string]interface{}
+	if json.Unmarshal([]byte(u.rawWire), &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // UnmarshalJSON decodes the typed fields and keeps the wire object.
@@ -329,7 +342,7 @@ func (u *Usage) UnmarshalJSON(b []byte) error {
 	*u = Usage(p)
 	var raw map[string]interface{}
 	if json.Unmarshal(b, &raw) == nil {
-		u.rawWire = raw
+		u.rawWire = string(b)
 	}
 	return nil
 }

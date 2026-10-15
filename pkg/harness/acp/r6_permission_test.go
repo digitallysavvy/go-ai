@@ -79,10 +79,15 @@ func TestPermissionModeMapping_PartialWireAndIdentity(t *testing.T) {
 	}
 }
 
-// PermissionModeMapping stays comparable with == (as in v0.5.2).
+// v0.5.2 callers compare mappings with ==; the Unset flags must keep that valid.
 func TestPermissionModeMapping_Comparable(t *testing.T) {
-	a, b := PermissionModeMapping{UnsetAllowAll: true}, PermissionModeMapping{UnsetAllowAll: true}
+	a := PermissionModeMapping{UnsetAllowReads: true}
+	b := PermissionModeMapping{UnsetAllowReads: true}
 	if a != b || a == (PermissionModeMapping{}) {
+		t.Fatal("comparison")
+	}
+	c, d := PermissionModeMapping{UnsetAllowAll: true}, PermissionModeMapping{UnsetAllowAll: true}
+	if c != d || c == a {
 		t.Fatal("PermissionModeMapping must be comparable")
 	}
 }

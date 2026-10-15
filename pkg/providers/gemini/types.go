@@ -244,7 +244,7 @@ func (p *Part) UnmarshalJSON(b []byte) error {
 		} `json:"toolCall"`
 	}
 	if json.Unmarshal(b, &aux) == nil && aux.ToolCall != nil && len(aux.ToolCall.Args) > 0 && string(aux.ToolCall.Args) != "null" {
-		p.toolCallArgsRaw = aux.ToolCall.Args
+		p.toolCallArgsRaw = string(aux.ToolCall.Args)
 	}
 	return nil
 }
@@ -284,8 +284,9 @@ type Part struct {
 		ID       string                 `json:"id"`
 	} `json:"toolCall,omitempty"`
 	// toolCallArgsRaw is the wire text of ToolCall.Args, which keeps the key
-	// order JSON.stringify(part.toolCall.args) has in TS.
-	toolCallArgsRaw json.RawMessage
+	// order JSON.stringify(part.toolCall.args) has in TS. A string (not
+	// json.RawMessage) keeps Part comparable with ==, as in v0.5.2.
+	toolCallArgsRaw string
 	ToolResponse    *struct {
 		ToolType string                 `json:"toolType"`
 		Response map[string]interface{} `json:"response,omitempty"`
