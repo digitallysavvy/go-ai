@@ -39,19 +39,15 @@ func RawJSONObject(v interface{}) (json.RawMessage, bool) {
 			return nil, false
 		}
 		raw = b
-	case jsonorder.Hinted:
+	case jsonorder.Hinted, *jsonorder.Hinted:
 		// A decoded schema plus the ordered tree of its source JSON (what MCP
-		// tool definitions carry): its marshaled form is the source order.
-		b, err := x.MarshalJSON()
-		if err != nil {
+		// tool definitions carry), unwrapped by schema.OrderedParameters, the
+		// shared Hinted unwrap.
+		o, ok := schema.OrderedParameters(x)
+		if !ok {
 			return nil, false
 		}
-		raw = b
-	case *jsonorder.Hinted:
-		if x == nil {
-			return nil, false
-		}
-		b, err := x.MarshalJSON()
+		b, err := o.MarshalJSON()
 		if err != nil {
 			return nil, false
 		}

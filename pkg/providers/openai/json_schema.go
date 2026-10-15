@@ -7,6 +7,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // NormalizeOpenAIJSONSchema is a Go port of TypeScript's
