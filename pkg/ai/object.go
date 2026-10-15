@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -504,6 +505,21 @@ const (
 	ObjectModeNoSchema ObjectOutputMode = "no-schema"
 )
 
+// prepareObjectPrompt builds the prompt for an object call, downloads remote
+// files the model cannot read by URL (the same download and SupportedURLs
+// handling as GenerateText, TS convertToLanguageModelPrompt) and rejects tool
+// calls without results.
+func prepareObjectPrompt(ctx context.Context, promptText string, messages []types.Message, system string, model provider.LanguageModel, download DownloadFunction) (types.Prompt, error) {
+	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, buildPrompt(promptText, messages, system), true, effectiveDownload(download), supportedURLChecker(model))
+	if err != nil {
+		return types.Prompt{}, err
+	}
+	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+		return types.Prompt{}, err
+	}
+	return prompt, nil
+}
+
 // GenerateObjectOptions contains options for structured object generation
 type GenerateObjectOptions struct {
 	// Model to use for generation
@@ -513,6 +529,11 @@ type GenerateObjectOptions struct {
 	Prompt   string
 	Messages []types.Message
 	System   string
+
+	// ExperimentalDownload downloads remote file URLs the model cannot read
+	// directly (per its SupportedURLs). Defaults to DefaultDownload, as in
+	// GenerateText. Mirrors TS experimental_download.
+	ExperimentalDownload DownloadFunction
 
 	// Schema for the output object (not required for no-schema mode)
 	Schema schema.Schema
@@ -919,8 +940,8 @@ func objectResultValue(mode ObjectOutputMode, r *GenerateObjectResult) interface
 
 // generateObjectMode handles standard object generation
 func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
-	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	if err != nil {
 		return nil, err
 	}
 
@@ -1052,8 +1073,8 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 
 // generateArrayMode handles array generation
 func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
-	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	if err != nil {
 		return nil, err
 	}
 
@@ -1212,8 +1233,8 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 // because most LLMs cannot generate a top-level enum value directly.
 // The model outputs { "result": "value" } and we extract value.result.
 func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
-	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	if err != nil {
 		return nil, err
 	}
 
@@ -1373,8 +1394,8 @@ func (n noopValidator) JSONSchema() map[string]interface{} { return n.jsonSchema
 
 // generateNoSchemaMode handles raw JSON generation without validation
 func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
-	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	if err != nil {
 		return nil, err
 	}
 
@@ -1525,6 +1546,11 @@ type StreamObjectOptions struct {
 	Prompt   string
 	Messages []types.Message
 	System   string
+
+	// ExperimentalDownload downloads remote file URLs the model cannot read
+	// directly (per its SupportedURLs). Defaults to DefaultDownload, as in
+	// GenerateText. Mirrors TS experimental_download.
+	ExperimentalDownload DownloadFunction
 
 	// Schema for the output object
 	Schema schema.Schema
@@ -1776,8 +1802,8 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
 	// Build prompt
-	prompt := buildPrompt(opts.Prompt, opts.Messages, opts.System)
-	if err := validateStepToolResults(prompt.Messages, nil); err != nil {
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	if err != nil {
 		return nil, err
 	}
 

@@ -23,6 +23,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 | Prompt | string | No | Simple string prompt (alternative to Messages) |
 | Messages | []types.Message | No | List of conversation messages |
 | System | string | No | System instructions |
+| ExperimentalDownload | DownloadFunction | No | Downloads remote file URLs the model cannot read directly (per its SupportedURLs); defaults to `DefaultDownload`, as in GenerateText. Mirrors TS `experimental_download`. |
 | Schema | schema.Schema | No | Schema for output validation (required for object/array modes) |
 | OutputMode | ObjectOutputMode | No | Output mode: object, array, enum, or no-schema (default: object) |
 | EnumValues | []string | No | Enum values (required for enum mode) |

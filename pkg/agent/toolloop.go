@@ -755,7 +755,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			// callConfig.Messages (this step's messages, including its own
 			// AppendToolCallerMessages announcement), not currentMessages,
 			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
-			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs)
+			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage))
 			if err != nil {
 				stepTel.fail(err)
 				// Call OnChainError callback
@@ -1577,7 +1577,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 // executeTools executes a list of tool calls with optional approval
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
-func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks) ([]types.ToolResult, error) {
+func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks, usage types.Usage) ([]types.ToolResult, error) {
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
@@ -1818,6 +1818,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
 			var modelOutput *types.ToolResultOutput
+			callUsage := usage // per-call copy: calls may run concurrently
 			if toolErr == nil && tool.ToModelOutput != nil {
 				converted, convertErr := tool.ToModelOutput(ctx, types.ToModelOutputOptions{
 					ToolCallID: call.ID,
@@ -1836,6 +1837,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 						ToolMetadata:     call.ToolMetadata,
 						Dynamic:          call.Dynamic,
 					},
+					Usage: &callUsage,
 				})
 				if convertErr != nil {
 					return results, &toolResultModelOutputError{err: convertErr}

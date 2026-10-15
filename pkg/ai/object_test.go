@@ -2133,3 +2133,77 @@ func TestObjectCallsRejectMissingToolResults(t *testing.T) {
 		t.Fatal("model must not be called")
 	}
 }
+
+func objectFileMessages() []types.Message {
+	return []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.test/cat.png", MediaType: "image/png"},
+		}},
+	}}
+}
+
+func TestObjectCallsDownloadUnsupportedFileURLs(t *testing.T) {
+	s := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	check := func(t *testing.T, opts *provider.GenerateOptions, wantURL bool) {
+		t.Helper()
+		file, ok := opts.Prompt.Messages[0].Content[0].(types.FileContent)
+		if !ok {
+			t.Fatalf("content = %T", opts.Prompt.Messages[0].Content[0])
+		}
+		if isURL := file.FileData.Type == types.FileDataTypeURL; isURL != wantURL {
+			t.Fatalf("file data type = %v, want url=%v", file.FileData.Type, wantURL)
+		}
+	}
+	download := func(ctx context.Context, reqs []DownloadRequest) ([]*DownloadResult, error) {
+		out := make([]*DownloadResult, len(reqs))
+		for i, r := range reqs {
+			if !r.IsURLSupportedByModel {
+				out[i] = &DownloadResult{Data: []byte("png"), MediaType: "image/png"}
+			}
+		}
+		return out, nil
+	}
+	for _, tc := range []struct {
+		name      string
+		supported map[string][]string
+		wantURL   bool
+	}{
+		{"unsupported is inlined", nil, false},
+		{"supported stays a URL", map[string][]string{"image/*": {`^https://example\.test/.+`}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var seen int
+			model := &supportedURLMockModel{
+				MockLanguageModel: &testutil.MockLanguageModel{
+					StructuredSupport: true,
+					DoGenerateFunc: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+						seen++
+						check(t, opts, tc.wantURL)
+						return &types.GenerateResult{Text: `{}`, FinishReason: types.FinishReasonStop}, nil
+					},
+					DoStreamFunc: func(_ context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+						seen++
+						check(t, opts, tc.wantURL)
+						return testutil.NewMockTextStream([]provider.StreamChunk{
+							{Type: provider.ChunkTypeText, Text: `{}`},
+							{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+						}), nil
+					},
+				},
+				supported: tc.supported,
+			}
+			if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Messages: objectFileMessages(), Schema: s, ExperimentalDownload: download}); err != nil {
+				t.Fatalf("GenerateObject: %v", err)
+			}
+			_, err := StreamObject(context.Background(), StreamObjectOptions{Model: model, Messages: objectFileMessages(), Schema: s, ExperimentalDownload: download})
+			if err != nil {
+				t.Fatalf("StreamObject: %v", err)
+			}
+			if seen != 2 {
+				t.Fatalf("model calls = %d, want 2", seen)
+			}
+		})
+	}
+}
