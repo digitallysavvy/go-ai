@@ -255,40 +255,59 @@ func GenerateContentToTS(res *types.GenerateResult) interface{} {
 	if !hasText && res.Text != "" {
 		parts = append(parts, map[string]interface{}{"type": "text", "text": res.Text})
 	}
-	hasCalls := false
+	have := map[string]bool{}
+	callPart := func(tc types.ToolCall) map[string]interface{} {
+		in := tc.RawArguments
+		if in == "" && tc.Arguments != nil {
+			bb, _ := json.Marshal(tc.Arguments)
+			in = string(bb)
+		}
+		part := map[string]interface{}{"type": "tool-call", "toolCallId": tc.ID, "toolName": tc.ToolName, "input": in}
+		if tc.ProviderExecuted {
+			part["providerExecuted"] = true
+		}
+		if len(tc.ProviderMetadata) > 0 {
+			part["providerMetadata"] = tc.ProviderMetadata
+		}
+		return part
+	}
+	for _, p := range res.Content {
+		if tc, ok := p.(types.ToolCallContent); ok {
+			have[tc.ToolCallID] = true
+		}
+	}
 	for _, p := range res.Content {
 		b, _ := json.Marshal(p)
 		var v interface{}
 		_ = json.Unmarshal(b, &v)
-		if tc, ok := p.(types.ToolCallContent); ok {
-			hasCalls = true
+		switch x := p.(type) {
+		case types.ToolCallContent:
 			// TS tool-call input is the raw JSON string.
-			in := tc.Input
-			if in == "" && tc.Arguments != nil {
-				bb, _ := json.Marshal(tc.Arguments)
+			in := x.Input
+			if in == "" && x.Arguments != nil {
+				bb, _ := json.Marshal(x.Arguments)
 				in = string(bb)
 			}
 			if m, ok := v.(map[string]interface{}); ok {
 				m["input"] = in
 			}
+		case types.ToolResultContent:
+			// A provider-executed call that only exists in ToolCalls is
+			// reported right before its result.
+			if !have[x.ToolCallID] {
+				for _, tc := range res.ToolCalls {
+					if tc.ID == x.ToolCallID {
+						parts = append(parts, callPart(tc))
+						have[tc.ID] = true
+					}
+				}
+			}
 		}
 		parts = append(parts, v)
 	}
-	if !hasCalls {
-		for _, tc := range res.ToolCalls {
-			in := tc.RawArguments
-			if in == "" {
-				b, _ := json.Marshal(tc.Arguments)
-				in = string(b)
-			}
-			part := map[string]interface{}{"type": "tool-call", "toolCallId": tc.ID, "toolName": tc.ToolName, "input": in}
-			if tc.ProviderExecuted {
-				part["providerExecuted"] = true
-			}
-			if len(tc.ProviderMetadata) > 0 {
-				part["providerMetadata"] = tc.ProviderMetadata
-			}
-			parts = append(parts, part)
+	for _, tc := range res.ToolCalls {
+		if !have[tc.ID] {
+			parts = append(parts, callPart(tc))
 		}
 	}
 	return parts
@@ -554,7 +573,7 @@ func CanonStream(parts []interface{}) []interface{} {
 		switch m["type"] {
 		case "reasoning-start", "reasoning-end":
 			// generated block ids differ (mockId vs "reasoning-0")
-			if id, _ := m["id"].(string); strings.HasPrefix(id, "id-") || strings.HasPrefix(id, "reasoning-") {
+			if id, _ := m["id"].(string); strings.HasPrefix(id, "id-") || strings.HasPrefix(id, "reasoning-") || (id != "" && strings.Trim(id, "0123456789") == "") {
 				delete(m, "id")
 			}
 		case "text-start", "text-end":

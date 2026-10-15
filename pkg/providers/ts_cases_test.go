@@ -30,7 +30,7 @@ func TestProviderTSCases(t *testing.T) {
 		{"groq", "groq/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return groq.New(groq.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
 		}, "gemma2-9b-it", map[string]string{
-			"should send request body": "TS groq returns request.body as a JSON string; Go keeps the object",
+			"should send request body":                            "TS groq returns request.body as a JSON string; Go keeps the object",
 			"should handle structured outputs with Kimi K2 model": "model id comes from a custom provider call in the TS test",
 		}},
 		{"mistral", "mistral/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
@@ -41,7 +41,10 @@ func TestProviderTSCases(t *testing.T) {
 		}, "deepseek-chat", nil},
 		{"xai-responses", "xai/testdata/tscases/responses.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return xai.New(xai.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
-		}, "grok-4", nil},
+		}, "grok-4", map[string]string{
+			"should include x_search tool call with real response":         "provider-executed call has no result part, so its position among content cannot be compared",
+			"should include code_interpreter tool call with real response": "provider-executed call has no result part, so its position among content cannot be compared",
+		}},
 		{"cohere", "cohere/testdata/tscases/chat.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return cohere.New(cohere.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
 		}, "command-r-plus", nil},
