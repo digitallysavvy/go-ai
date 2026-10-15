@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"strconv"
 	"strings"
 
@@ -275,7 +276,13 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 			block["mime_type"] = mediaType
 		}
 	case part.FileData.Type == types.FileDataTypeReference:
-		block["uri"] = resolveGoogleReference(part.FileData.Reference)
+		// TS resolveProviderReference throws when the reference has no google
+		// entry; no other provider's file id is a valid Files API URI.
+		uri, err := providerutils.ResolveProviderReference(part.FileData.Reference, "google")
+		if err != nil {
+			return nil, nil, err
+		}
+		block["uri"] = uri
 		if isFullMediaType(mediaType) {
 			block["mime_type"] = mediaType
 		}
@@ -448,7 +455,7 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 			out = append(out, map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString(b.Data), "mime_type": b.MediaType})
 		case types.FileContentBlock:
 			if !strings.HasPrefix(b.MediaType, "image/") {
-				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType %q is not supported (Interactions function_result.result accepts only text and image content); part dropped.", b.MediaType)
+				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType %q is not supported (Interactions %s accepts only text and image content); part dropped.", b.MediaType, "`function_result.result`")
 				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 				continue
 			}
@@ -687,24 +694,6 @@ func isFullMediaType(mediaType string) bool {
 	}
 	sub := mediaType[i+1:]
 	return sub != "" && sub != "*"
-}
-
-func resolveGoogleReference(ref types.ProviderReference) string {
-	if ref == nil {
-		return ""
-	}
-	if v := ref["google"]; v != "" {
-		return v
-	}
-	if v := ref[""]; v != "" {
-		return v
-	}
-	for _, v := range ref {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 func reasoningSummary(text string) interface{} {

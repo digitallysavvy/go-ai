@@ -361,7 +361,7 @@ for (let i = 0; i < starts.length; i++) {
         try {
           const open = expr.indexOf('(');
           a2.callArgs = evalArgsJSON(splitTopLevelArgs(expr.slice(open + 1, balanced(expr, open) - 1)));
-          a2.callSuffix = expr.slice(balanced(expr, open));
+          a2.callSuffix = expr.slice(balanced(expr, open)).replace(/[,\s]+$/, '');
         } catch (err) { continue; }
       }
       asserts2.push(a2);
@@ -377,7 +377,7 @@ for (let i = 0; i < starts.length; i++) {
         const e2 = is[1].trim().replace(/^await\s+/, '');
         const a3 = { expr: e2, matcher: 'toEqual', not: false, arg: snap };
         if (new RegExp('^' + fnName + '\\(').test(e2)) {
-          try { const open = e2.indexOf('('); a3.callArgs = evalArgsJSON(splitTopLevelArgs(e2.slice(open + 1, balanced(e2, open) - 1))); a3.callSuffix = e2.slice(balanced(e2, open)); } catch (err) { continue; }
+          try { const open = e2.indexOf('('); a3.callArgs = evalArgsJSON(splitTopLevelArgs(e2.slice(open + 1, balanced(e2, open) - 1))); a3.callSuffix = e2.slice(balanced(e2, open)).replace(/[,\s]+$/, ''); } catch (err) { continue; }
         }
         asserts2.push(a3);
       }

@@ -418,8 +418,12 @@ func WarningsToTS(ws []types.Warning) []interface{} {
 	out := make([]interface{}, 0, len(ws))
 	for _, w := range ws {
 		v := jsonValue(w)
-		if m, ok := v.(map[string]interface{}); ok && m["type"] != "other" {
-			delete(m, "message")
+		if m, ok := v.(map[string]interface{}); ok {
+			if m["type"] != "other" {
+				delete(m, "message")
+			} else if m["details"] == m["message"] {
+				delete(m, "details")
+			}
 		}
 		out = append(out, v)
 	}

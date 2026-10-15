@@ -243,3 +243,16 @@ func TestTSCasesPrepareTools(t *testing.T) {
 		"should correctly prepare computer_20251124 tool": "enableZoom is a Go bool: unset is sent as enable_zoom false (same API default)",
 	})
 }
+
+// TestTSCasesUnknownModelMaxOutputTokens replays
+// anthropic-unknown-model-max-output-tokens.test.ts.
+func TestTSCasesUnknownModelMaxOutputTokens(t *testing.T) {
+	cases := tsfixture.LoadCases(t, "testdata/tscases/unknown_model_max_tokens.json.gz")
+	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
+		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).LanguageModel(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}, nil)
+}

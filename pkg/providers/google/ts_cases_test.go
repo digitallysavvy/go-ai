@@ -114,3 +114,20 @@ func TestTSCasesInteractions(t *testing.T) {
 		"round-trips an assistant tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
 	})
 }
+
+// TestTSCasesStructuredOutputWithTools replays structured-output-with-tools.test.ts.
+func TestTSCasesStructuredOutputWithTools(t *testing.T) {
+	tsfixture.DropResponseTimestamp, tsfixture.DropResponseModelID = true, true
+	defer func() { tsfixture.DropResponseTimestamp, tsfixture.DropResponseModelID = false, false }()
+	cases := tsfixture.LoadCases(t, "testdata/tscases/structured_output_with_tools.json.gz")
+	tsfixture.Run(t, cases, func(base, id string) provider.LanguageModel {
+		if id == "" {
+			id = "gemini-3-pro-preview"
+		}
+		m, err := New(Config{APIKey: "test-api-key", BaseURL: base}).LanguageModel(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}, nil)
+}
