@@ -157,3 +157,71 @@ data: {"type":"response.completed","response":{"id":"r","output":[],"usage":{"in
 		}
 	}
 }
+
+// TS encounteredStreamError: an `error` event followed by response.completed
+// keeps finishReason error (raw 'error'), and a later response.failed with an
+// error object does not enqueue a second error part.
+func TestResponsesErrorEventKeepsErrorFinishReason(t *testing.T) {
+	started := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m1","role":"assistant","content":[]}}
+
+data: {"type":"error","code":"server_error","message":"boom","param":null,"sequence_number":2}
+
+`
+	run := func(tail string) (errs int, finish *provider.StreamChunk) {
+		stream := newResponsesStream(io.NopCloser(strings.NewReader(started+tail)), false)
+		defer stream.Close() //nolint:errcheck
+		for {
+			c, err := stream.Next()
+			if err != nil {
+				return
+			}
+			switch c.Type {
+			case provider.ChunkTypeError:
+				errs++
+			case provider.ChunkTypeFinish:
+				finish = c
+			}
+		}
+	}
+	errs, finish := run(`data: {"type":"response.completed","response":{"id":"r","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`)
+	if errs != 1 || finish == nil || finish.FinishReason != types.FinishReasonError || finish.RawFinishReason != "error" {
+		t.Fatalf("completed after error: errs=%d finish=%+v", errs, finish)
+	}
+	errs, finish = run(`data: {"type":"response.failed","sequence_number":3,"response":{"id":"r","error":{"code":"x","message":"y"}}}
+
+`)
+	if errs != 1 || finish == nil || finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("failed after error: errs=%d finish=%+v", errs, finish)
+	}
+}
+
+// TS flush(): an undeclared "parallel" wrapper call cut off before
+// output_item.done still surfaces its buffered input at stream end.
+func TestResponsesUnfinishedSuppressedToolCallFlushed(t *testing.T) {
+	sse := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"call_p","name":"parallel","arguments":""}}
+
+data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc1","delta":"{\"a\":"}
+
+`
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)
+	defer stream.Close() //nolint:errcheck
+	var kinds []provider.ChunkType
+	var deltas []string
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeToolInputStart:
+			kinds = append(kinds, c.Type)
+		case provider.ChunkTypeToolInputDelta:
+			deltas = append(deltas, c.Text)
+		}
+	}
+	if len(kinds) != 1 || len(deltas) != 1 || deltas[0] != `{"a":` {
+		t.Fatalf("starts=%v deltas=%q", kinds, deltas)
+	}
+}

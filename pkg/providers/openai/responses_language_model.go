@@ -2551,6 +2551,9 @@ type responsesStream struct {
 	// instead of whatever response.completed/incomplete would otherwise
 	// report, so callers don't see a false "stop"/"length" outcome.
 	hadDecodeError bool
+	// sawErrorEvent records a provider "error" event (TS sets the finish
+	// reason's raw value to 'error' for it).
+	sawErrorEvent bool
 
 	// tools holds the request's declared tools, used to expand an internal
 	// "parallel" tool call wrapper into its nested recipients (row 6be0f51).
@@ -2774,9 +2777,14 @@ func (s *responsesStream) queueEOFFinish() {
 		meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
 	}
 	usage := convertResponsesUsage(nil)
+	rawFinishReason := ""
+	if s.sawErrorEvent {
+		rawFinishReason = "error"
+	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
 		FinishReason:     finishReason,
+		RawFinishReason:  rawFinishReason,
 		Usage:            &usage,
 		ProviderMetadata: meta,
 	})
@@ -2793,6 +2801,27 @@ func (s *responsesStream) queueFallbackSources() {
 		}
 	}
 	s.fallbackAnnotations = nil
+
+	// TS flush(): a suppressed (undeclared "parallel") tool call that never
+	// reached output_item.done still surfaces its buffered input.
+	indices := make([]int, 0, len(s.toolAccum))
+	for idx, accum := range s.toolAccum {
+		if accum.suppressInputStreaming {
+			indices = append(indices, idx)
+		}
+	}
+	sort.Ints(indices)
+	for _, idx := range indices {
+		accum := s.toolAccum[idx]
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+			Type:     provider.ChunkTypeToolInputStart,
+			ToolCall: &types.ToolCall{ID: accum.id, ToolName: accum.name},
+		})
+		for _, d := range accum.bufferedInputDeltas {
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: accum.id, Text: d})
+		}
+		delete(s.toolAccum, idx)
+	}
 }
 
 // emitParsedChunk decides how a freshly built chunk should be delivered: if
@@ -3618,6 +3647,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// finish reason to "error", regardless of what this event reports.
 			if s.hadDecodeError {
 				finishReason = types.FinishReasonError
+				rawFinishReason = ""
+				if s.sawErrorEvent {
+					rawFinishReason = "error" // TS: raw 'error' after an error event
+				}
 			}
 			s.markOutputStarted()
 			if eventRawChunk != nil {
@@ -3711,7 +3744,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// constructs), enqueued before the terminal finish chunk. Previously
 			// Go only emitted the finish chunk here and silently dropped the
 			// error entirely (P1-1c part 2).
-			if e.Response.Error != nil {
+			if e.Response.Error != nil && !s.hadDecodeError {
+				s.hadDecodeError = true
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeError,
 					Text: e.Response.Error.Message,
@@ -3745,6 +3779,10 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
 				return nil, s.err
 			}
+			// TS encounteredStreamError: a later response.completed must not
+			// replace the error finish reason.
+			s.hadDecodeError = true
+			s.sawErrorEvent = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: e.Message,
