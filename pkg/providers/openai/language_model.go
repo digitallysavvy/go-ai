@@ -90,6 +90,18 @@ func (m *LanguageModel) SupportsImageInput() bool {
 		m.modelID == "gpt-4o-mini"
 }
 
+// SupportedURLs lists the URLs the model accepts directly, without the SDK
+// downloading them first (TS supportedUrls).
+func (m *LanguageModel) SupportedURLs() map[string][]string {
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleChatLanguageModel defaults supportedUrls to {}.
+		return map[string][]string{}
+	}
+	return map[string][]string{
+		"image/*": {`^https?://.*$`},
+	}
+}
+
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
 	// Build request body
