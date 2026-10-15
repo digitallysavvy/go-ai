@@ -213,6 +213,9 @@ func TestConversationGenerateMapsToolResultSourcesUsage(t *testing.T) {
 	if string(call.ProviderMetadata) != `{"mistral":{"name":"web_search","type":"tool.execution"}}` {
 		t.Errorf("metadata = %s", call.ProviderMetadata)
 	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].RawArguments != `{"arguments":"latest results"}` {
+		t.Errorf("ToolCalls RawArguments = %#v", res.ToolCalls)
+	}
 	tr := res.Content[1].(types.ToolResultContent)
 	if tr.ToolCallID != "search-1" || tr.ToolName != "search" || !reflect.DeepEqual(tr.Result, map[string]interface{}{"info": map[string]interface{}{"status": "success"}}) {
 		t.Errorf("result = %#v", tr)
@@ -497,7 +500,7 @@ func TestConversationStreamSearchReasoningTextReferencesAndUsage(t *testing.T) {
 		t.Fatalf("chunk types = %v\nwant %v", got, want)
 	}
 	call := findChunk(chunks, provider.ChunkTypeToolCall).ToolCall
-	if call.ToolName != "search" || !call.ProviderExecuted || call.RawArguments != "" && call.RawArguments != `{"arguments":"latest results"}` {
+	if call.ToolName != "search" || !call.ProviderExecuted || call.RawArguments != `{"arguments":"latest results"}` {
 		t.Errorf("call = %#v", call)
 	}
 	if call.Arguments["arguments"] != "latest results" {

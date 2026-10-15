@@ -1012,19 +1012,24 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 		TotalTokens:  &totalTokens,
 	}
 
-	// Calculate cached tokens
-	var cachedTokens int64
+	// TS reads cached_tokens / cache_write_tokens / reasoning_tokens as
+	// optional values: absent stays undefined, a reported 0 stays 0. The
+	// typed struct cannot tell them apart, so consult the wire object when
+	// present (hand-built usage keeps the details it carries).
+	cachedPresent, reasoningPresent := true, true
+	if usage.rawWire != nil {
+		cachedPresent = wireNumberPresent(usage.rawWire, "input_tokens_details", "cached_tokens")
+		reasoningPresent = wireNumberPresent(usage.rawWire, "output_tokens_details", "reasoning_tokens")
+	}
+	var cachedTokens, reasoningTokens int64
 	if usage.InputTokensDetails != nil {
 		cachedTokens = int64(usage.InputTokensDetails.CachedTokens)
 	}
-
-	// Calculate reasoning tokens
-	var reasoningTokens int64
 	if usage.OutputTokensDetails != nil {
 		reasoningTokens = int64(usage.OutputTokensDetails.ReasoningTokens)
 	}
 
-	// Set input token details (TS: noCache = input - cached - cacheWrite)
+	// TS: noCache = input - cached - cacheWrite, text = output - reasoning.
 	{
 		noCacheTokens := inputTokens - cachedTokens
 		var cacheWrite *int64
@@ -1035,20 +1040,17 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 		}
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
-			CacheReadTokens:  &cachedTokens,
 			CacheWriteTokens: cacheWrite,
 		}
+		if cachedPresent {
+			result.InputDetails.CacheReadTokens = &cachedTokens
+		}
 	}
-
-	// Set output token details
 	{
 		textTokens := outputTokens - reasoningTokens
-		if textTokens < 0 {
-			textTokens = 0
-		}
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &textTokens,
-			ReasoningTokens: &reasoningTokens,
+		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &textTokens}
+		if reasoningPresent {
+			result.OutputDetails.ReasoningTokens = &reasoningTokens
 		}
 	}
 
@@ -1771,4 +1773,14 @@ func (s *openResponsesStream) streamProviderError(respErr *ResponseError) *provi
 		statusCode, retryable = s.getResponseErrorMetadata(respErr)
 	}
 	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, "", respErr.Code, statusCode, retryable, respErr)
+}
+
+// wireNumberPresent reports whether raw[object][key] is a JSON number.
+func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
+	m, ok := raw[object].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, ok = m[key].(float64)
+	return ok
 }

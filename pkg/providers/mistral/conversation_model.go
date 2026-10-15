@@ -351,7 +351,7 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 			call, res := converter.convertTool(conversationExecution{ID: out.ID, Name: out.Name, Arguments: args, Function: out.Function, Info: out.Info})
 			result.Content = append(result.Content, call, res)
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-				ID: call.ToolCallID, ToolName: call.ToolName, Arguments: call.Arguments, ProviderExecuted: true,
+				ID: call.ToolCallID, ToolName: call.ToolName, Arguments: call.Arguments, RawArguments: call.Input, ProviderExecuted: true,
 				ProviderMetadata: map[string]interface{}{"mistral": map[string]interface{}{"type": "tool.execution", "name": out.Name}},
 			})
 		case "function.call":
@@ -625,7 +625,7 @@ func (s *conversationStream) handle(data string) {
 		call, res := s.converter.convertTool(conversationExecution{ID: ev.ID, Name: ex.Name, Arguments: ex.Arguments, Function: fn, Info: ev.Info})
 		s.queue = append(s.queue,
 			&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
-				ID: call.ToolCallID, ToolName: call.ToolName, Arguments: call.Arguments, ProviderExecuted: true,
+				ID: call.ToolCallID, ToolName: call.ToolName, Arguments: call.Arguments, RawArguments: call.Input, ProviderExecuted: true,
 				ProviderMetadata: map[string]interface{}{"mistral": mistralExecutionMetadata(ex.Name, fn)},
 			}},
 			&provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
