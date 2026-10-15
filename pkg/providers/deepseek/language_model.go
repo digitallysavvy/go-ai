@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
 	"regexp"
@@ -143,6 +144,26 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.Prompt.System != "" {
 		systemMsg := types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: opts.Prompt.System}}}
 		messages = append([]types.Message{systemMsg}, messages...)
+	}
+	// TS convertToDeepSeekChatMessages: JSON mode without a schema is
+	// steered by a leading system message; a schema is injected the same way
+	// when the endpoint cannot take json_schema.
+	if rf := opts.ResponseFormat; rf != nil && rf.Type == "json" {
+		var instruction string
+		if rf.Schema == nil {
+			instruction = "Return JSON."
+		} else if !m.provider.supportsStructuredOutputs() {
+			schemaJSON, _ := jsonstr.Marshal(rf.Schema)
+			instruction = "Return JSON that conforms to the following schema: " + string(schemaJSON)
+			warnings = append(warnings, types.Warning{
+				Type:    "compatibility",
+				Feature: "responseFormat JSON schema",
+				Details: "JSON response schema is injected into the system message.",
+			})
+		}
+		if instruction != "" {
+			messages = append([]types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: instruction}}}}, messages...)
+		}
 	}
 	convertedMessages, msgWarnings, err := m.convertMessages(messages)
 	if err != nil {
