@@ -1,6 +1,10 @@
 package providerutils
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
+)
 
 // Port of openaiResponsesChunkSchema (openai/src/responses/openai-responses-api.ts):
 // a union of one object schema per modeled event type, the two error shapes,
@@ -230,12 +234,8 @@ var (
 	}
 )
 
-func zBoolean(v interface{}, present bool, path []interface{}) *ChunkSchemaError {
-	if _, ok := v.(bool); !ok {
-		return zBad("boolean", v, present, path)
-	}
-	return nil
-}
+// zBoolean is zodlite.Boolean (z.boolean()).
+var zBoolean = zodlite.Boolean
 
 // isModeledResponsesChunk mirrors isModeledOpenAIResponsesChunk.
 func isModeledResponsesChunk(m map[string]interface{}) bool {

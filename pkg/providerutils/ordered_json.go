@@ -1,12 +1,12 @@
 package providerutils
 
 import (
-	"bytes"
 	"encoding/json"
 	"reflect"
 	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -74,11 +74,7 @@ func DecodeRawJSONObject(raw json.RawMessage) map[string]interface{} {
 // CompactJSON is JSON.stringify of an already-parsed raw value: whitespace
 // removed, key order kept.
 func CompactJSON(raw json.RawMessage) string {
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
+	return zodlite.CompactJSON(string(raw))
 }
 
 // OrderedMap marshals its keys in the given order (then any keys missing from
