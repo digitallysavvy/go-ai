@@ -22,3 +22,48 @@ func ApplyWireUsageRaw(result *types.GenerateResult, body []byte) {
 	}
 	result.Usage.Raw = env.Usage
 }
+
+// UsageRawSchema lists the usage fields a TS zod schema declares: zod strips
+// everything else from usage.raw. Nested maps describe object-valued fields.
+type UsageRawSchema struct {
+	Keys   []string
+	Nested map[string][]string
+}
+
+// ApplyWireUsageRawSchema is ApplyWireUsageRaw restricted to the fields in
+// schema (null and absent values are kept as sent).
+func ApplyWireUsageRawSchema(result *types.GenerateResult, body []byte, schema UsageRawSchema) {
+	if result == nil {
+		return
+	}
+	ApplyWireUsageRaw(result, body)
+	raw := result.Usage.Raw
+	if raw == nil {
+		return
+	}
+	out := map[string]interface{}{}
+	for _, k := range schema.Keys {
+		if v, ok := raw[k]; ok {
+			out[k] = v
+		}
+	}
+	for k, subKeys := range schema.Nested {
+		v, ok := raw[k]
+		if !ok {
+			continue
+		}
+		sub, isMap := v.(map[string]interface{})
+		if !isMap {
+			out[k] = v
+			continue
+		}
+		f := map[string]interface{}{}
+		for _, sk := range subKeys {
+			if sv, ok := sub[sk]; ok {
+				f[sk] = sv
+			}
+		}
+		out[k] = f
+	}
+	result.Usage.Raw = out
+}

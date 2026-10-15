@@ -552,6 +552,11 @@ func CanonStream(parts []interface{}) []interface{} {
 			continue
 		}
 		switch m["type"] {
+		case "reasoning-start", "reasoning-end":
+			// generated block ids differ (mockId vs "reasoning-0")
+			if id, _ := m["id"].(string); strings.HasPrefix(id, "id-") || strings.HasPrefix(id, "reasoning-") {
+				delete(m, "id")
+			}
 		case "text-start", "text-end":
 			continue
 		case "stream-start":

@@ -140,6 +140,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	result.RawRequest = reqBody
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
@@ -566,6 +567,12 @@ type mistralStream struct {
 	includeRawChunks        bool
 	responseHeaders         map[string]string
 	responseMetadataEmitted bool
+	// The finish part is emitted when the stream ends (TS flush()), so usage
+	// arriving on any chunk is merged into it.
+	finishRaw    string
+	finishSeen   bool
+	finishQueued bool
+	pendingUsage json.RawMessage
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -606,10 +613,16 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		}
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF && s.queueFinishAtEnd() {
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
+			if s.queueFinishAtEnd() {
+				continue
+			}
 			s.err = io.EOF
 			return nil, io.EOF
 		}
@@ -629,9 +642,10 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		// Parse using a struct where content is json.RawMessage to handle
 		// both plain-string and content-array formats.
 		var chunkData struct {
-			ID      string `json:"id"`
-			Model   string `json:"model"`
-			Created int64  `json:"created"`
+			ID      string          `json:"id"`
+			Model   string          `json:"model"`
+			Created int64           `json:"created"`
+			Usage   json.RawMessage `json:"usage"`
 			Choices []struct {
 				FinishReason string `json:"finish_reason"`
 				Delta        struct {
@@ -662,6 +676,9 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			return errorChunk, nil
+		}
+		if len(chunkData.Usage) > 0 && string(chunkData.Usage) != "null" {
+			s.pendingUsage = chunkData.Usage
 		}
 		if !s.responseMetadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.responseHeaders) > 0) {
 			s.responseMetadataEmitted = true
@@ -792,21 +809,43 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 }
 
 func (s *mistralStream) flushMistralToolCalls(finishReason string) {
+	s.closeReasoningAndTools()
+	s.finishSeen = true
+	s.finishRaw = finishReason
+}
+
+func (s *mistralStream) closeReasoningAndTools() {
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
-		s.flushQueue = append([]*provider.StreamChunk{
-			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-		}, s.flushQueue...)
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-		Type:            provider.ChunkTypeFinish,
-		FinishReason:    mapMistralFinishReason(finishReason),
-		RawFinishReason: finishReason,
-	})
+}
+
+// queueFinishAtEnd queues the terminal finish part (TS flush(): reason
+// "other" when none arrived, usage from the last chunk that carried it).
+func (s *mistralStream) queueFinishAtEnd() bool {
+	if s.finishQueued {
+		return false
+	}
+	s.finishQueued = true
+	if !s.finishSeen {
+		s.closeReasoningAndTools()
+	}
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	if s.finishSeen {
+		finish.FinishReason = mapMistralFinishReason(s.finishRaw)
+		finish.RawFinishReason = s.finishRaw
+	}
+	if len(s.pendingUsage) > 0 {
+		u := convertMistralUsage(s.pendingUsage)
+		finish.Usage = &u
+	}
+	s.flushQueue = append(s.flushQueue, finish)
+	return true
 }
 
 // injectMistralJSONInstruction mirrors injectJsonInstructionIntoMessages
