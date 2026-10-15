@@ -169,10 +169,10 @@ func TestReadSubscription_RefreshPreservesKeyOrder(t *testing.T) {
 	persisted, _ := os.ReadFile(authPath)
 	s := string(persisted)
 	idx := func(sub string) int { return strings.Index(s, sub) }
-	if !(idx(`"z-first"`) < idx(`"`+testScope+`"`) && idx(`"`+testScope+`"`) < idx(`"`+other+`"`)) {
+	if idx(`"z-first"`) >= idx(`"`+testScope+`"`) || idx(`"`+testScope+`"`) >= idx(`"`+other+`"`) {
 		t.Errorf("scope order not preserved:\n%s", s)
 	}
-	if !(idx(`"b": 1`) < idx(`"a": 2`)) || !(idx(`"key"`) < idx(`"refresh_token"`) && idx(`"refresh_token"`) < idx(`"expires_at"`) && idx(`"expires_at"`) < idx(`"zeta"`)) {
+	if idx(`"b": 1`) >= idx(`"a": 2`) || idx(`"key"`) >= idx(`"refresh_token"`) || idx(`"refresh_token"`) >= idx(`"expires_at"`) || idx(`"expires_at"`) >= idx(`"zeta"`) {
 		t.Errorf("field order not preserved:\n%s", s)
 	}
 	if !strings.Contains(s, `"email": "<a&b>"`) || !strings.Contains(s, "new-access") || !strings.HasSuffix(s, "}\n") {

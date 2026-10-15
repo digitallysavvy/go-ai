@@ -258,7 +258,7 @@ func jsNumber(s string) (float64, bool) {
 	}
 	// Reject Go-only float syntax (underscores, hex floats, inf/nan words).
 	for _, c := range s {
-		if !(c >= '0' && c <= '9' || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-') {
+		if (c < '0' || c > '9') && c != '.' && c != 'e' && c != 'E' && c != '+' && c != '-' {
 			return 0, false
 		}
 	}
