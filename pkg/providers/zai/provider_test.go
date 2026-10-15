@@ -17,8 +17,8 @@ func TestNewDefaultsToZaiEndpointAndEnvVar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LanguageModel() error = %v", err)
 	}
-	if model.Provider() != "zai" {
-		t.Fatalf("model.Provider() = %q, want zai", model.Provider())
+	if model.Provider() != "zai.chat" {
+		t.Fatalf("model.Provider() = %q, want zai.chat", model.Provider())
 	}
 	if model.ModelID() != "glm-5.3" {
 		t.Fatalf("model.ModelID() = %q, want glm-5.3", model.ModelID())

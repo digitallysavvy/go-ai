@@ -36,7 +36,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "together"
+	return "togetherai.image"
 }
 
 // ModelID returns the model ID

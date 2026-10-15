@@ -27,8 +27,8 @@ func newTestVideoModel(t *testing.T, modelID string, mux *http.ServeMux) (*Video
 func TestVideoModel_ConstructorInfo(t *testing.T) {
 	model, _ := newTestVideoModel(t, "luma-dream-machine", http.NewServeMux())
 
-	if model.Provider() != "fal" {
-		t.Errorf("Provider() = %q, want fal", model.Provider())
+	if model.Provider() != "fal.video" {
+		t.Errorf("Provider() = %q, want fal.video", model.Provider())
 	}
 	if model.ModelID() != "luma-dream-machine" {
 		t.Errorf("ModelID() = %q, want luma-dream-machine", model.ModelID())

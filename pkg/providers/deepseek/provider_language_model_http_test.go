@@ -70,7 +70,7 @@ data: [DONE]
 	})
 
 	m := NewLanguageModel(p, "deepseek-v4")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "deepseek" || m.ModelID() != "deepseek-v4" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "deepseek.chat" || m.ModelID() != "deepseek-v4" {
 		t.Fatalf("metadata mismatch")
 	}
 	if !m.SupportsTools() || !m.SupportsStructuredOutput() || !m.SupportsImageInput() {

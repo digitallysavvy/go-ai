@@ -32,7 +32,7 @@ func (m *EmbeddingModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *EmbeddingModel) Provider() string {
-	return "mistral"
+	return "mistral.embedding"
 }
 
 // ModelID returns the model ID
@@ -76,6 +76,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			ModelID:              m.modelID,
 			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
 			Values:               inputs,
+		}
+	}
+	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
 		}
 	}
 	reqBody := map[string]interface{}{

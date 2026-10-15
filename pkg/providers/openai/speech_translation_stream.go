@@ -180,9 +180,11 @@ func (s *openAIRealtimeSpeechTranslationStream) run(cfg openAIRealtimeSpeechTran
 				return
 
 			case "error":
+				// TS `raw.error?.message ?? 'OpenAI realtime error'`: only a
+				// missing (or null) message falls back; an empty one stays.
 				message := "OpenAI realtime error"
 				if errObj, ok := raw["error"].(map[string]interface{}); ok {
-					if m, ok := errObj["message"].(string); ok && m != "" {
+					if m, ok := errObj["message"].(string); ok {
 						message = m
 					}
 				}

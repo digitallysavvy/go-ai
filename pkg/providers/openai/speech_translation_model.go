@@ -11,6 +11,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // SpeechTranslationModel implements provider.SpeechTranslationModel over the
@@ -84,7 +85,14 @@ func buildOpenAISpeechTranslationSession(targetLanguage string) map[string]inter
 func realtimeSpeechTranslationWebSocketURL(baseURL, modelID string) string {
 	wsBase := strings.Replace(baseURL, "https://", "wss://", 1)
 	wsBase = strings.Replace(wsBase, "http://", "ws://", 1)
-	return wsBase + "/realtime/translations?model=" + url.QueryEscape(modelID)
+	return wsBase + "/realtime/translations?model=" + encodeURIComponent(modelID)
+}
+
+// encodeURIComponent mirrors ECMAScript encodeURIComponent (TS encodes the
+// model id with it): a space is %20 and ! ' ( ) * stay literal.
+func encodeURIComponent(s string) string {
+	r := strings.NewReplacer("+", "%20", "%21", "!", "%27", "'", "%28", "(", "%29", ")", "%2A", "*")
+	return r.Replace(url.QueryEscape(s))
 }
 
 // baseSpeechTranslationWSHeaders rebuilds the provider's default headers
@@ -111,6 +119,12 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 			Field:   "targetLanguage",
 			Message: fmt.Sprintf("targetLanguage is required for translation model '%s'.", m.modelID),
 		}
+	}
+
+	// TS parseProviderOptions({provider: 'openai', schema: z.object({})}):
+	// no member is declared, but a non-object value is invalid.
+	if _, err := providerutils.ParseProviderOptions("openai", opts.ProviderOptions, providerutils.OptionSchema{}); err != nil {
+		return nil, err
 	}
 
 	if err := validateOpenAISpeechTranslationInputAudioFormat(opts.InputAudioFormat); err != nil {

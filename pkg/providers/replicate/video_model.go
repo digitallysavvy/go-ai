@@ -44,7 +44,7 @@ func (m *VideoModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *VideoModel) Provider() string {
-	return "replicate"
+	return "replicate.video"
 }
 
 // ModelID returns the model ID

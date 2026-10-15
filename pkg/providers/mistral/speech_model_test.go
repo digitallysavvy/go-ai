@@ -25,7 +25,7 @@ func TestMistralSpeechModelDoGenerate(t *testing.T) {
 	})
 
 	m := NewSpeechModel(p, "voxtral-mini-tts-latest")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "mistral" || m.ModelID() != "voxtral-mini-tts-latest" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "mistral.speech" || m.ModelID() != "voxtral-mini-tts-latest" {
 		t.Fatalf("metadata mismatch: %s %s %s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 

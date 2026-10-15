@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ConvertToAlibabaChatMessages converts SDK messages to Alibaba API format.
@@ -26,6 +27,15 @@ import (
 //
 // Pass nil for validator to produce compact string content with no caching.
 func ConvertToAlibabaChatMessages(messages []types.Message, validator *CacheControlValidator, preserveThinking bool) []map[string]interface{} {
+	if validator != nil && validator.perPart {
+		if result, err := ConvertToAlibabaChatMessagesWithError(messages, validator, preserveThinking); err == nil {
+			return result
+		}
+	}
+	return convertToAlibabaChatMessagesLegacy(messages, validator, preserveThinking)
+}
+
+func convertToAlibabaChatMessagesLegacy(messages []types.Message, validator *CacheControlValidator, preserveThinking bool) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(messages))
 
 	lastUserMessageIndex := -1
@@ -38,6 +48,10 @@ func ConvertToAlibabaChatMessages(messages []types.Message, validator *CacheCont
 
 	for i, msg := range messages {
 		includeReasoning := preserveThinking || i > lastUserMessageIndex
+		if msg.Role == types.RoleTool {
+			result = append(result, convertToolMessages(msg, validator)...)
+			continue
+		}
 		converted := convertMessage(msg, validator, includeReasoning)
 		if converted != nil {
 			result = append(result, converted)
@@ -56,8 +70,6 @@ func convertMessage(msg types.Message, validator *CacheControlValidator, include
 		return convertUserMessage(msg, validator)
 	case types.RoleAssistant:
 		return convertAssistantMessage(msg, validator, includeReasoning)
-	case types.RoleTool:
-		return convertToolMessage(msg, validator)
 	default:
 		return nil
 	}
@@ -271,9 +283,11 @@ func alibabaOpenAIStyleToolCalls(toolCalls []types.ToolCall) []map[string]interf
 	return result
 }
 
-// convertToolMessage converts a tool result message to Alibaba format.
+// convertToolMessages converts a tool message to Alibaba format: one wire
+// message per tool result (a tool message may carry several parallel results).
 // If validator is non-nil, cache markers are applied to the tool result content.
-func convertToolMessage(msg types.Message, validator *CacheControlValidator) map[string]interface{} {
+func convertToolMessages(msg types.Message, validator *CacheControlValidator) []map[string]interface{} {
+	var out []map[string]interface{}
 	for _, part := range msg.Content {
 		tr, ok := part.(types.ToolResultContent)
 		if !ok {
@@ -291,20 +305,21 @@ func convertToolMessage(msg types.Message, validator *CacheControlValidator) map
 			if cc != nil {
 				p["cache_control"] = cc
 			}
-			return map[string]interface{}{
+			out = append(out, map[string]interface{}{
 				"role":         "tool",
 				"tool_call_id": tr.ToolCallID,
 				"content":      []map[string]interface{}{p},
-			}
+			})
+			continue
 		}
 
-		return map[string]interface{}{
+		out = append(out, map[string]interface{}{
 			"role":         "tool",
 			"tool_call_id": tr.ToolCallID,
 			"content":      contentValue,
-		}
+		})
 	}
-	return nil
+	return out
 }
 
 // extractText extracts all text from a slice of content parts.
@@ -320,39 +335,10 @@ func extractText(parts []types.ContentPart) string {
 
 // extractToolResultText converts a ToolResultContent to a string for the API.
 func extractToolResultText(tr types.ToolResultContent) string {
-	if tr.Output != nil {
-		switch tr.Output.Type {
-		case types.ToolResultOutputText:
-			if v, ok := tr.Output.Value.(string); ok {
-				return v
-			}
-		case types.ToolResultOutputJSON, types.ToolResultOutputContent:
-			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
-				return string(b)
-			}
-		case types.ToolResultOutputError, types.ToolResultOutputErrorText:
-			if v, ok := tr.Output.Value.(string); ok {
-				return v
-			}
-		case types.ToolResultOutputErrorJSON:
-			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
-				return string(b)
-			}
-		}
-	}
-	// Fallback: use legacy Result field
-	if tr.Result != nil {
-		if s, ok := tr.Result.(string); ok {
-			return s
-		}
-		if b, err := jsonstr.Marshal(tr.Result); err == nil {
-			return string(b)
-		}
-	}
-	if tr.Error != "" {
+	if tr.Output == nil && tr.Result == nil && tr.Error != "" {
 		return tr.Error
 	}
-	return ""
+	return prompt.ToolResultText(tr)
 }
 
 func firstNonEmptyString(values ...string) string {

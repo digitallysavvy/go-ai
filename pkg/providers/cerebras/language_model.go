@@ -15,7 +15,7 @@ type LanguageModel struct {
 }
 
 func (m *LanguageModel) SpecificationVersion() string { return m.base.SpecificationVersion() }
-func (m *LanguageModel) Provider() string             { return "cerebras" }
+func (m *LanguageModel) Provider() string             { return "cerebras.chat" }
 func (m *LanguageModel) ModelID() string              { return m.base.ModelID() }
 func (m *LanguageModel) SupportsTools() bool          { return m.base.SupportsTools() }
 func (m *LanguageModel) SupportsStructuredOutput() bool {

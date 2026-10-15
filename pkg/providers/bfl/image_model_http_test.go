@@ -26,7 +26,7 @@ func TestBFLImageModel_MetadataAndClient(t *testing.T) {
 	if m.SpecificationVersion() != "v4" {
 		t.Fatalf("SpecificationVersion() = %q", m.SpecificationVersion())
 	}
-	if m.Provider() != "bfl" {
+	if m.Provider() != "black-forest-labs.image" {
 		t.Fatalf("Provider() = %q", m.Provider())
 	}
 }

@@ -39,7 +39,7 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 func (m *LanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *LanguageModel) Provider() string { return "zai" }
+func (m *LanguageModel) Provider() string { return "zai.chat" }
 
 // ModelID returns the model ID.
 func (m *LanguageModel) ModelID() string { return m.modelID }
@@ -68,6 +68,9 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "zai"); err != nil {
 		return nil, err
 	}
@@ -103,6 +106,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "zai"); err != nil {
 		return nil, err
 	}
@@ -295,8 +301,13 @@ func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateRes
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			// TS openai-compatible chat: `toolCall.id || generateId()`.
+			id := tc.ID
+			if id == "" {
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).

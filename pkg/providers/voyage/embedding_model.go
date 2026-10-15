@@ -40,6 +40,12 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 }
 
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// TS VoyageEmbeddingModel parses provider options before the count check.
+	if opts != nil {
+		if err := validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
 		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
 			Provider:             m.Provider(),

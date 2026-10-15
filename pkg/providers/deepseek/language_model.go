@@ -43,8 +43,15 @@ func (m *LanguageModel) SpecificationVersion() string {
 }
 
 // Provider returns the provider name
+//
+// Mirrors TS config.provider: "deepseek.chat" by default; a host that
+// supplies its own Config.Name (for example azure's "azure.deepseek")
+// provides the full identifier.
 func (m *LanguageModel) Provider() string {
-	return m.provider.Name()
+	if m.provider.config.Name != "" {
+		return m.provider.config.Name
+	}
+	return "deepseek.chat"
 }
 
 // ModelID returns the model ID
@@ -132,6 +139,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 }
 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := m.validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	var warnings []types.Warning
 	body := map[string]interface{}{
 		"model": m.modelID,
@@ -177,6 +188,14 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	warnings = append(warnings, msgWarnings...)
 	body["messages"] = convertedMessages
+
+	// TS getArgs: topK and seed are not supported by DeepSeek.
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
 
 	if opts.MaxTokens != nil {
 		body["max_tokens"] = *opts.MaxTokens
@@ -266,15 +285,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				"type":        "json_schema",
 				"json_schema": jsonSchema,
 			}
-		case opts.ResponseFormat.Type != "":
-			responseFormatType := opts.ResponseFormat.Type
-			if responseFormatType == "json" {
-				responseFormatType = "json_object"
-			}
-			body["response_format"] = map[string]interface{}{
-				"type": responseFormatType,
-			}
+		case opts.ResponseFormat.Type == "json":
+			body["response_format"] = map[string]interface{}{"type": "json_object"}
 		}
+		// TS: `responseFormat?.type === 'json' ? ... : undefined` -- a text
+		// response format sends no response_format at all.
 	}
 	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
 

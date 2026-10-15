@@ -9,7 +9,7 @@ func TestGladiaSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
 	serialized := model.(*TranscriptionModel).Serialize()
-	if serialized.Provider != "gladia" || serialized.ModelID != "default" {
+	if serialized.Provider != "gladia.transcription" || serialized.ModelID != "default" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -19,7 +19,7 @@ func TestGladiaSerializeAndDeserializeTranscriptionModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeModel error = %v", err)
 	}
-	if restored.Provider() != "gladia" || restored.ModelID() != "default" {
+	if restored.Provider() != "gladia.transcription" || restored.ModelID() != "default" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

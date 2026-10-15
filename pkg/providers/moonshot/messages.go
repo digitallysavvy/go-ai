@@ -245,32 +245,7 @@ func moonshotWireToolCalls(toolCalls []types.ToolCall) []map[string]interface{} 
 }
 
 func extractMoonshotToolResultText(tr types.ToolResultContent) string {
-	if tr.Output != nil {
-		switch tr.Output.Type {
-		case types.ToolResultOutputText, types.ToolResultOutputErrorText:
-			if v, ok := tr.Output.Value.(string); ok {
-				return v
-			}
-		case types.ToolResultOutputExecutionDenied:
-			if tr.Output.Reason != "" {
-				return tr.Output.Reason
-			}
-			return "Tool call execution denied."
-		case types.ToolResultOutputJSON, types.ToolResultOutputContent, types.ToolResultOutputErrorJSON:
-			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
-				return string(b)
-			}
-		}
-	}
-	if tr.Result != nil {
-		if s, ok := tr.Result.(string); ok {
-			return s
-		}
-		if b, err := jsonstr.Marshal(tr.Result); err == nil {
-			return string(b)
-		}
-	}
-	return tr.Error
+	return prompt.ToolResultText(tr)
 }
 
 // topLevelMoonshotMediaType returns the portion of a media type before "/",

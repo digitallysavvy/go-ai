@@ -40,7 +40,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "fal"
+	return "fal.image"
 }
 
 // ModelID returns the model ID

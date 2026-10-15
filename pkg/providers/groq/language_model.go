@@ -38,7 +38,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "groq"
+	return "groq.chat"
 }
 
 // ModelID returns the model ID
@@ -63,6 +63,9 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
@@ -104,6 +107,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
@@ -172,6 +178,18 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if opts.Seed != nil {
 		body["seed"] = *opts.Seed
 	}
+	// TS sends frequency_penalty / presence_penalty and warns that topK is
+	// unsupported.
+	if opts.FrequencyPenalty != nil {
+		body["frequency_penalty"] = *opts.FrequencyPenalty
+	}
+	if opts.PresencePenalty != nil {
+		body["presence_penalty"] = *opts.PresencePenalty
+	}
+	var topKWarnings []types.Warning
+	if opts.TopK != nil {
+		topKWarnings = append(topKWarnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
 	// Groq rejects JSON response formatting together with function tools, so
 	// structured output is requested through a synthetic JSON response tool
 	// (TS #21989).
@@ -194,7 +212,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
-	warnings = append(toolPrepWarnings, warnings...)
+	warnings = append(topKWarnings, warnings...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// Map top-level Reasoning to Groq reasoning_effort. An explicit
 	// providerOptions.groq.reasoningEffort always wins (applied below via
@@ -254,7 +272,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if reasoningFormat, ok := providerutils.OpenAICompatibleStringOption(compatibleOptions, "reasoningFormat", "reasoning_format", "reasoning-format"); ok {
 		body["reasoning_format"] = reasoningFormat
 	}
-	return body, warnings
+	// TS: warnings: [...warnings, ...toolWarnings].
+	return body, append(warnings, toolPrepWarnings...)
 }
 
 // jsonResponseToolName returns the name of the synthetic JSON response tool

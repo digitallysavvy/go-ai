@@ -38,7 +38,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "alibaba"
+	return "alibaba.chat"
 }
 
 // ModelID returns the model ID
@@ -64,10 +64,16 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
-	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
+	reqBody, warnings, err := m.buildRequestBodyChecked(opts, false)
+	if err != nil {
+		return nil, err
+	}
 
 	var response alibabaResponse
 	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -93,11 +99,17 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
 	// Build request body with streaming enabled
-	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
+	reqBody, warnings, err := m.buildRequestBodyChecked(opts, true)
+	if err != nil {
+		return nil, err
+	}
 
 	// Make streaming API request
 	httpResp, err := m.prov.client.DoStream(ctx, internalhttp.Request{
@@ -131,6 +143,13 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 }
 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
+	body, warnings, _ := m.buildRequestBodyChecked(opts, stream)
+	return body, warnings
+}
+
+// buildRequestBodyChecked builds the request body and returns the errors TS
+// throws while converting the prompt (unsupported file parts).
+func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -152,9 +171,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// Extract Alibaba-level cache control (applies to all message types).
 	// When enabled, a CacheControlValidator enforces the 4-breakpoint limit and
 	// accumulates warnings when the limit is exceeded.
+	// Without it, markers come from each message's / part's own
+	// providerOptions.alibaba.cacheControl, like TS.
 	var validator *CacheControlValidator
+	legacyCacheControl := false
 	if cc, ok := alibabaOpts["cacheControl"]; ok && cc != nil {
 		validator = NewCacheControlValidator()
+		legacyCacheControl = true
+	} else {
+		validator = NewPartCacheControlValidator()
 	}
 
 	// Preserved thinking defaults to on for models that support it; an
@@ -220,9 +245,17 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	var allMessages []map[string]interface{}
 
 	if len(promptMessages) > 0 {
-		allMessages = append(allMessages,
-			ConvertToAlibabaChatMessages(promptMessages, validator, preserveThinkingForConverter)...,
-		)
+		if legacyCacheControl {
+			allMessages = append(allMessages,
+				ConvertToAlibabaChatMessages(promptMessages, validator, preserveThinkingForConverter)...,
+			)
+		} else {
+			converted, err := ConvertToAlibabaChatMessagesWithError(promptMessages, validator, preserveThinkingForConverter)
+			if err != nil {
+				return nil, nil, err
+			}
+			allMessages = append(allMessages, converted...)
+		}
 	} else if opts.Prompt.IsSimple() {
 		allMessages = append(allMessages,
 			prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text))...,
@@ -248,8 +281,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["top_k"] = *opts.TopK
 	}
 
+	// TS warns that frequencyPenalty is unsupported and does not send it.
 	if opts.FrequencyPenalty != nil {
-		body["frequency_penalty"] = *opts.FrequencyPenalty
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
 	}
 
 	if opts.PresencePenalty != nil {
@@ -302,13 +336,21 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
-	// Map top-level Reasoning to Alibaba enable_thinking / thinking_budget.
-	// Budgets are scaled from maxOutputTokens=16384 using TS SDK percentages:
-	//   minimal=2% → 1024 (min-clamped), low=10% → 1638, medium=30% → 4915,
-	//   high=60% → 9830, xhigh=90% → 14746 (capped at maxReasoningBudget=16384).
-	// provider-default → omit (do not override Alibaba's own default).
-	// Provider-specific options below may override these values.
-	if opts.Reasoning != nil {
+	// TS resolveAlibabaThinking: an explicit enableThinking / thinkingBudget
+	// option decides on its own (the top-level reasoning is then ignored);
+	// otherwise reasoning maps to enable_thinking / thinking_budget.
+	// Budgets scale maxOutputTokens=16384 by 2/10/30/60/90/95%, clamped to
+	// [1024, 16384]. provider-default omits both.
+	enableThinking, hasEnableThinking := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "enableThinking", "enable_thinking", "enable-thinking")
+	thinkingBudget, hasThinkingBudget := providerutils.OpenAICompatibleIntOption(alibabaOpts, "thinkingBudget", "thinking_budget", "thinking-budget")
+	if hasEnableThinking || hasThinkingBudget {
+		if hasEnableThinking {
+			body["enable_thinking"] = enableThinking
+		}
+		if hasThinkingBudget {
+			body["thinking_budget"] = thinkingBudget
+		}
+	} else if opts.Reasoning != nil {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
 			body["enable_thinking"] = false
@@ -335,14 +377,6 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, alibabaOpts)
-	// Alibaba-specific options from provider metadata
-	// Thinking/reasoning support (overrides top-level Reasoning if both set)
-	if enableThinking, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "enableThinking", "enable_thinking", "enable-thinking"); ok {
-		body["enable_thinking"] = enableThinking
-	}
-	if thinkingBudget, ok := providerutils.OpenAICompatibleIntOption(alibabaOpts, "thinkingBudget", "thinking_budget", "thinking-budget"); ok {
-		body["thinking_budget"] = thinkingBudget
-	}
 
 	// Parallel tool calls
 	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
@@ -368,7 +402,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		warnings = append(warnings, validator.Warnings()...)
 	}
 
-	return body, append(warnings, toolWarnings...)
+	return body, append(warnings, toolWarnings...), nil
 }
 
 // convertResponse converts Alibaba API response to SDK format

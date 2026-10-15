@@ -39,7 +39,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "fireworks"
+	return "fireworks.chat"
 }
 
 // ModelID returns the model ID
@@ -307,8 +307,13 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
+			// TS openai-compatible chat: `toolCall.id || generateId()`.
+			id := tc.ID
+			if id == "" {
+				id = streaming.GenerateID()
+			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				ToolName:  tc.Function.Name,
 				Arguments: args,
 				// Wire text keeps the key order TS keeps (JSON.stringify of the parsed input).

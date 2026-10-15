@@ -9,14 +9,14 @@ func TestDeepInfraSerializeAndDeserializeLanguageModel(t *testing.T) {
 		t.Fatalf("LanguageModel error = %v", err)
 	}
 	serialized := model.(*LanguageModel).Serialize()
-	if serialized.Provider != "deepinfra" || serialized.ModelID != "meta-llama/Llama-3-8b" || serialized.Config == nil {
+	if serialized.Provider != "deepinfra.chat" || serialized.ModelID != "meta-llama/Llama-3-8b" || serialized.Config == nil {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	restored, err := deserializeLanguageModel(serialized)
 	if err != nil {
 		t.Fatalf("deserializeLanguageModel error = %v", err)
 	}
-	if restored.Provider() != "deepinfra" || restored.ModelID() != "meta-llama/Llama-3-8b" {
+	if restored.Provider() != "deepinfra.chat" || restored.ModelID() != "meta-llama/Llama-3-8b" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }
@@ -28,7 +28,7 @@ func TestDeepInfraSerializeAndDeserializeImageModel(t *testing.T) {
 		t.Fatalf("ImageModel error = %v", err)
 	}
 	serialized := model.(*ImageModel).Serialize()
-	if serialized.Provider != "deepinfra" || serialized.ModelID != "stabilityai/sd3.5" {
+	if serialized.Provider != "deepinfra.image" || serialized.ModelID != "stabilityai/sd3.5" {
 		t.Fatalf("serialize mismatch: %#v", serialized)
 	}
 	if _, ok := serialized.Config["APIKey"]; ok {
@@ -38,7 +38,7 @@ func TestDeepInfraSerializeAndDeserializeImageModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deserializeImageModel error = %v", err)
 	}
-	if restored.Provider() != "deepinfra" || restored.ModelID() != "stabilityai/sd3.5" {
+	if restored.Provider() != "deepinfra.image" || restored.ModelID() != "stabilityai/sd3.5" {
 		t.Fatalf("restored mismatch: provider=%s model=%s", restored.Provider(), restored.ModelID())
 	}
 }

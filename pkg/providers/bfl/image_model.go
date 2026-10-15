@@ -43,7 +43,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "bfl"
+	return "black-forest-labs.image"
 }
 
 // ModelID returns the model ID

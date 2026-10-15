@@ -315,8 +315,8 @@ func TestTranscriptionModel_ModelInfo(t *testing.T) {
 
 	tm := model.(*TranscriptionModel)
 
-	if tm.Provider() != "gladia" {
-		t.Errorf("Expected provider 'gladia', got '%s'", tm.Provider())
+	if tm.Provider() != "gladia.transcription" {
+		t.Errorf("Expected provider 'gladia.transcription', got '%s'", tm.Provider())
 	}
 
 	if tm.ModelID() != "whisper-v3" {

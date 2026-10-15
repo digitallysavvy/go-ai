@@ -930,3 +930,11 @@ func applyThoughtSignatures(toolCalls []map[string]interface{}, msg types.Messag
 		}
 	}
 }
+
+// ToolResultText returns the text a provider that sends tool results as plain
+// strings uses for a tool-result part: text and error-text verbatim, the
+// execution-denied reason (or "Tool call execution denied."), and
+// JSON.stringify of the value (the block array for content outputs) otherwise.
+func ToolResultText(p types.ToolResultContent) string {
+	return openAIToolResultText(p)
+}

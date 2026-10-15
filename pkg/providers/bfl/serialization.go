@@ -8,7 +8,9 @@ import (
 
 func init() {
 	provider.RegisterImageModelDeserializer("bfl", deserializeImageModel)
+	provider.RegisterImageModelDeserializer("black-forest-labs.image", deserializeImageModel)
 	provider.RegisterVideoModelDeserializer("bfl.video", deserializeVideoModel)
+	provider.RegisterVideoModelDeserializer("black-forest-labs.video", deserializeVideoModel)
 }
 
 // Serialize implements provider.SerializableModel for workflow boundaries.

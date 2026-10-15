@@ -38,7 +38,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "fireworks"
+	return "fireworks.image"
 }
 
 // ModelID returns the model ID

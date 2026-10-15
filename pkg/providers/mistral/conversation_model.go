@@ -59,6 +59,9 @@ func (m *ConversationLanguageModel) Serialize() provider.SerializedModel {
 }
 
 func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	provOpts, err := extractMistralProviderOptions(opts)
 	if err != nil {
 		return nil, nil, err

@@ -29,7 +29,7 @@ func TestElevenLabsSpeechModelMetadataAndGenerate(t *testing.T) {
 		}, nil
 	})
 	m := NewSpeechModel(p, "eleven_multilingual_v2")
-	if m.SpecificationVersion() != "v4" || m.Provider() != "elevenlabs" || m.ModelID() != "eleven_multilingual_v2" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "elevenlabs.speech" || m.ModelID() != "eleven_multilingual_v2" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 

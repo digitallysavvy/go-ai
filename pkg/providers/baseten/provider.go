@@ -107,7 +107,7 @@ func New(cfg Config) *Provider {
 			BaseURL:          basetenEmbeddingURL(cfg.ModelURL),
 			Headers:          cfg.Headers,
 			HTTPClient:       cfg.HTTPClient,
-			Name:             "baseten.embedding",
+			Name:             "baseten",
 			OpenAICompatible: true,
 			IncludeUsage:     true,
 			UserAgentName:    "baseten",

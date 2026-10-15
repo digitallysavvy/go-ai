@@ -72,7 +72,7 @@ func TestCreateTogetherAIAndSerializationRoundTrip(t *testing.T) {
 	}
 	model := modelAny.(*LanguageModel)
 	serialized := model.Serialize()
-	if serialized.Provider != "together" || serialized.ModelID != "meta-llama/Llama-3-8b" {
+	if serialized.Provider != "togetherai.chat" || serialized.ModelID != "meta-llama/Llama-3-8b" {
 		t.Fatalf("unexpected serialized model: %+v", serialized)
 	}
 

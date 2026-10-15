@@ -2,9 +2,12 @@ package cohere
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -484,30 +487,93 @@ func TestCohereCitationsBecomeSourceParts(t *testing.T) {
 	}
 }
 
-func TestCohereMalformedToolArgumentsReturnsValidationError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{
-			"generation_id":"test",
-			"message":{
-				"role":"assistant",
-				"content":[{"type":"text","text":"hello"}],
-				"tool_calls":[{"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"a\":"}}]
-			},
-			"finish_reason":"TOOL_CALL",
-			"usage":{"tokens":{"input_tokens":1,"output_tokens":1}}
-		}`))
-	}))
-	defer server.Close()
-
-	prov := New(Config{BaseURL: server.URL, APIKey: "test-key"})
-	model := NewLanguageModel(prov, "command-r-plus")
-	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
-	if err == nil {
-		t.Fatal("expected validation error")
+// TS doGenerate passes tool-call arguments through as text (only a bare
+// "null" becomes "{}"); core decides what to do with malformed input, so the
+// provider call itself must not fail.
+func TestCohereMalformedToolArgumentsPassThroughRaw(t *testing.T) {
+	for _, tc := range []struct{ args, want string }{
+		{`{\"a\":`, `{"a":`},
+		{`null`, `{}`},
+		{`{ \"a\" : 1 }`, `{ "a" : 1 }`},
+	} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{
+				"generation_id":"test",
+				"message":{
+					"role":"assistant",
+					"content":[{"type":"text","text":"hello"}],
+					"tool_calls":[{"id":"tc1","type":"function","function":{"name":"lookup","arguments":"` + tc.args + `"}}]
+				},
+				"finish_reason":"TOOL_CALL",
+				"usage":{"tokens":{"input_tokens":1,"output_tokens":1}}
+			}`))
+		}))
+		prov := New(Config{BaseURL: server.URL, APIKey: "test-key"})
+		model := NewLanguageModel(prov, "command-r-plus")
+		result, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+		server.Close()
+		if err != nil {
+			t.Fatalf("args %q: error = %v", tc.args, err)
+		}
+		if len(result.ToolCalls) != 1 || result.ToolCalls[0].RawArguments != tc.want {
+			t.Fatalf("args %q: tool calls = %#v, want raw %q", tc.args, result.ToolCalls, tc.want)
+		}
 	}
-	if !providererrors.IsValidationError(err) {
-		t.Fatalf("error type = %T, want validation error", err)
+}
+
+// TS streams tool-input-end and then fails the stream when the accumulated
+// arguments are not valid JSON (parseJSON throws inside the transform).
+func TestCohereStreamMalformedToolArgumentsFailsStream(t *testing.T) {
+	sse := "data: {\"type\":\"tool-call-start\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"id\":\"tc1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\"}}}}}\n\n" +
+		"data: {\"type\":\"tool-call-end\",\"index\":0,\"delta\":{}}\n\n"
+	s := newCohereV2Stream(io.NopCloser(strings.NewReader(sse)))
+	var types_ []provider.ChunkType
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		c, err := s.Next()
+		if err != nil {
+			lastErr = err
+			break
+		}
+		types_ = append(types_, c.Type)
+	}
+	var parseErr *providererrors.JSONParseError
+	if !errors.As(lastErr, &parseErr) {
+		t.Fatalf("stream error = %v, want JSONParseError", lastErr)
+	}
+	want := []provider.ChunkType{provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd}
+	if len(types_) != len(want) {
+		t.Fatalf("chunks = %v, want %v", types_, want)
+	}
+	for i := range want {
+		if types_[i] != want[i] {
+			t.Fatalf("chunks = %v, want %v", types_, want)
+		}
+	}
+}
+
+// cohereImagePartProviderOptions validates detail (auto|low|high), as TS
+// parseProviderOptions does while converting an image part.
+func TestCohereImagePartDetailValidated(t *testing.T) {
+	model := NewLanguageModel(New(Config{APIKey: "k"}), "command-r-plus")
+	build := func(detail interface{}) error {
+		_, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{types.ImageContent{
+				Image: []byte{1, 2, 3}, MimeType: "image/png",
+				ProviderOptions: map[string]interface{}{"cohere": map[string]interface{}{"detail": detail}},
+			}},
+		}}}})
+		return err
+	}
+	if err := build("high"); err != nil {
+		t.Fatalf("valid detail rejected: %v", err)
+	}
+	err := build("ultra")
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) || invalid.Message != "invalid cohere provider options" {
+		t.Fatalf("error = %v, want InvalidArgumentError", err)
 	}
 }

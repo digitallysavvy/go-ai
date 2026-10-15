@@ -3,6 +3,7 @@ package deepseek
 import (
 	"fmt"
 	stdhttp "net/http"
+	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -60,6 +61,10 @@ type Config struct {
 
 // New creates a new Deepseek provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS loadApiKey: the key defaults to the DEEPSEEK_API_KEY environment variable.
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("DEEPSEEK_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.deepseek.com"

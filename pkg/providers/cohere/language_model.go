@@ -40,7 +40,7 @@ func (m *LanguageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *LanguageModel) Provider() string {
-	return "cohere"
+	return "cohere.chat"
 }
 
 // ModelID returns the model ID
@@ -65,6 +65,9 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
@@ -100,6 +103,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
 		return nil, err
 	}
@@ -134,6 +140,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) (map[st
 // (frequency_penalty, presence_penalty, p, k, seed, stop_sequences),
 // response_format (json mode), tools/tool_choice, and thinking.
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions) (map[string]interface{}, []types.Warning, error) {
+	// TS parseProviderOptions: an invalid provider option fails the call.
+	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	body := map[string]interface{}{"model": m.modelID}
 	var messages []map[string]interface{}
 	var documents []map[string]interface{}
@@ -247,7 +257,11 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 					return nil, nil, err
 				}
 				img := map[string]interface{}{"url": url}
-				if detail := cohereImageDetail(normalized.ProviderOptions); detail != "" {
+				detail, err := cohereImageDetail(normalized.ProviderOptions)
+				if err != nil {
+					return nil, nil, err
+				}
+				if detail != "" {
 					img["detail"] = detail
 				}
 				content = append(content, map[string]interface{}{"type": "image_url", "image_url": img})
@@ -263,7 +277,11 @@ func (m *LanguageModel) toCohereMessages(src []types.Message) ([]map[string]inte
 						return nil, nil, err
 					}
 					img := map[string]interface{}{"url": url}
-					if detail := cohereImageDetail(normalized.ProviderOptions); detail != "" {
+					detail, err := cohereImageDetail(normalized.ProviderOptions)
+					if err != nil {
+						return nil, nil, err
+					}
+					if detail != "" {
 						img["detail"] = detail
 					}
 					content = append(content, map[string]interface{}{"type": "image_url", "image_url": img})
@@ -310,10 +328,15 @@ func fileDataToImageURL(file types.FileContent) (string, error) {
 			media = "image/jpeg"
 		}
 		return "data:" + media + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data), nil
+	case types.FileDataTypeReference:
+		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "image file parts with provider references"}
 	default:
-		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported image file data type for cohere", nil)
+		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "image file parts with text data"}
 	}
 }
+
+// cohereImagePartOptionsSchema mirrors cohereImagePartProviderOptions.
+var cohereImagePartOptionsSchema = providerutils.OptionSchema{"detail": providerutils.OptEnum("auto", "low", "high")}
 
 func cohereDocumentText(file types.FileContent) (string, error) {
 	switch file.FileData.Type {
@@ -326,27 +349,27 @@ func cohereDocumentText(file types.FileContent) (string, error) {
 		}
 		return string(file.FileData.Data), nil
 	case types.FileDataTypeURL:
-		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file URL data for cohere", nil)
+		return "", &providererrors.UnsupportedFunctionalityError{
+			Functionality: "File URL data",
+			Message:       "URLs should be downloaded by the AI SDK and not reach this point. This indicates a configuration issue.",
+		}
 	case types.FileDataTypeReference:
-		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file reference data for cohere", nil)
+		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
 	default:
 		return "", providererrors.NewValidationError("messages[].content[].file", "unsupported file data type for cohere", nil)
 	}
 }
 
-func cohereImageDetail(providerOptions map[string]interface{}) string {
-	raw, ok := providerOptions["cohere"]
-	if !ok {
-		return ""
+// cohereImageDetail parses providerOptions.cohere on an image part (TS
+// parseProviderOptions with cohereImagePartProviderOptions): an invalid
+// detail is an InvalidArgumentError.
+func cohereImageDetail(providerOptions map[string]interface{}) (string, error) {
+	parsed, err := providerutils.ParseProviderOptions("cohere", providerOptions, cohereImagePartOptionsSchema)
+	if err != nil {
+		return "", err
 	}
-	asMap, ok := raw.(map[string]interface{})
-	if !ok {
-		return ""
-	}
-	if d, ok := asMap["detail"].(string); ok {
-		return d
-	}
-	return ""
+	detail, _ := parsed["detail"].(string)
+	return detail, nil
 }
 
 func (m *LanguageModel) resolveThinking(opts *provider.GenerateOptions) map[string]interface{} {
@@ -485,15 +508,25 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 	}
 
 	for _, tc := range resp.Message.ToolCalls {
-		args, err := parseCohereToolArguments(tc.Function.Arguments)
-		if err != nil {
-			return nil, err
+		// TS: `input: toolCall.function.arguments.replace(/^null$/, '{}')` --
+		// the text is not parsed here (core parses it, and treats malformed
+		// input as an invalid tool call), and its formatting is kept.
+		rawInput := tc.Function.Arguments
+		if rawInput == "null" {
+			rawInput = "{}"
+		}
+		var args map[string]interface{}
+		if strings.TrimSpace(rawInput) != "" {
+			_ = json.Unmarshal([]byte(rawInput), &args) //nolint:errcheck // malformed input stays in RawArguments
+		}
+		if args == nil {
+			args = map[string]interface{}{}
 		}
 		result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 			ID:           tc.ID,
 			ToolName:     tc.Function.Name,
 			Arguments:    args,
-			RawArguments: cohereToolInputText(tc.Function.Arguments, args),
+			RawArguments: rawInput,
 		})
 	}
 	return result, nil
@@ -569,7 +602,6 @@ type cohereV2Stream struct {
 	parser            *streaming.SSEParser
 	err               error
 	flushQueue        []*provider.StreamChunk
-	contentType       map[int]string // index → "text" | "thinking"
 	pendingTools      map[string]*cohereV2PendingTool
 	isActiveReasoning bool
 
@@ -619,37 +651,10 @@ type cohereV2PendingTool struct {
 	finished  bool
 }
 
-func parseCohereToolArguments(raw string) (map[string]interface{}, error) {
-	if raw == "" || raw == "null" {
-		return map[string]interface{}{}, nil
-	}
-	var parsed interface{}
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-		return nil, providererrors.NewValidationError(
-			"tool_calls[].function.arguments",
-			fmt.Sprintf("invalid JSON arguments in Cohere tool call: %v", err),
-			err,
-		)
-	}
-	if parsed == nil {
-		return map[string]interface{}{}, nil
-	}
-	obj, ok := parsed.(map[string]interface{})
-	if !ok {
-		return nil, providererrors.NewValidationError(
-			"tool_calls[].function.arguments",
-			"Cohere tool call arguments must decode to a JSON object",
-			nil,
-		)
-	}
-	return obj, nil
-}
-
 func newCohereV2Stream(reader io.ReadCloser) *cohereV2Stream {
 	return &cohereV2Stream{
 		reader:       reader,
 		parser:       streaming.NewSSEParser(reader),
-		contentType:  make(map[int]string),
 		pendingTools: make(map[string]*cohereV2PendingTool),
 	}
 }
@@ -737,56 +742,47 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"content"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-				contentType := delta.Message.Content.Type
-				s.contentType[ev.Index] = contentType
-				if contentType == "thinking" {
-					s.isActiveReasoning = true
-					return &provider.StreamChunk{
-						Type: provider.ChunkTypeReasoningStart,
-						ID:   fmt.Sprintf("reasoning-%d", ev.Index),
-					}, nil
-				}
+			if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Type == "thinking" {
+				s.isActiveReasoning = true
+				return &provider.StreamChunk{
+					Type: provider.ChunkTypeReasoningStart,
+					ID:   fmt.Sprintf("reasoning-%d", ev.Index),
+				}, nil
 			}
 			continue
 
 		case "content-delta":
-			ctype := s.contentType[ev.Index]
-			if ctype == "thinking" {
-				var delta struct {
-					Message struct {
-						Content struct {
-							Thinking string `json:"thinking"`
-						} `json:"content"`
-					} `json:"message"`
-				}
-				if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Thinking != "" {
+			// TS decides by key (`'thinking' in content`), not by the type the
+			// block was opened with.
+			var delta struct {
+				Message struct {
+					Content map[string]json.RawMessage `json:"content"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal(ev.Delta, &delta); err != nil {
+				continue
+			}
+			if raw, ok := delta.Message.Content["thinking"]; ok {
+				var thinking string
+				if json.Unmarshal(raw, &thinking) == nil && thinking != "" {
 					return &provider.StreamChunk{
 						Type:      provider.ChunkTypeReasoning,
-						Reasoning: delta.Message.Content.Thinking,
+						Reasoning: thinking,
 						ID:        fmt.Sprintf("reasoning-%d", ev.Index),
 					}, nil
 				}
-			} else {
-				var delta struct {
-					Message struct {
-						Content struct {
-							Text string `json:"text"`
-						} `json:"content"`
-					} `json:"message"`
-				}
-				if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Text != "" {
-					return &provider.StreamChunk{
-						Type: provider.ChunkTypeText,
-						Text: delta.Message.Content.Text,
-					}, nil
-				}
+				continue
+			}
+			var text string
+			if json.Unmarshal(delta.Message.Content["text"], &text) == nil && text != "" {
+				return &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text}, nil
 			}
 			continue
 
 		case "content-end":
-			ctype := s.contentType[ev.Index]
-			if ctype == "thinking" {
+			// TS closes the reasoning block when one is active (flag), not
+			// by looking the index up.
+			if s.isActiveReasoning {
 				s.isActiveReasoning = false
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningEnd,
@@ -852,23 +848,32 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			for id, tc := range s.pendingTools {
 				if !tc.finished {
 					tc.finished = true
-					args, err := parseCohereToolArguments(tc.arguments)
-					if err != nil {
-						// Streaming parity: keep the stream alive on malformed incremental
-						// tool JSON and emit an empty-args tool call.
+					delete(s.pendingTools, id)
+					text := strings.TrimSpace(tc.arguments)
+					if text == "" {
+						text = "{}"
+					}
+					// TS: JSON.stringify(await parseJSON({text})) -- tool-input-end
+					// is emitted first, then an unparsable input errors the stream.
+					s.flushQueue = append(s.flushQueue,
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}})
+					var parsed interface{}
+					if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+						s.err = providererrors.NewJSONParseError(text, err)
+						break
+					}
+					args, _ := parsed.(map[string]interface{})
+					if args == nil {
 						args = map[string]interface{}{}
 					}
-					delete(s.pendingTools, id)
-					input := cohereToolInputText(tc.arguments, args)
 					s.flushQueue = append(s.flushQueue,
-						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}},
 						&provider.StreamChunk{
 							Type: provider.ChunkTypeToolCall,
 							ToolCall: &types.ToolCall{
 								ID:           tc.id,
 								ToolName:     tc.name,
 								Arguments:    args,
-								RawArguments: input,
+								RawArguments: cohereToolInputText(tc.arguments, args),
 							},
 						})
 					break

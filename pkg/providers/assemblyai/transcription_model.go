@@ -42,7 +42,7 @@ func (m *TranscriptionModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *TranscriptionModel) Provider() string {
-	return "assemblyai"
+	return "assemblyai.transcription"
 }
 
 // ModelID returns the model ID
