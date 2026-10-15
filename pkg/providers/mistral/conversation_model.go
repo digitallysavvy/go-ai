@@ -67,6 +67,7 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
 
+	warnings = append(warnings, mistralReasoningMapWarnings(conversationReasoningEffortModelIDs[m.modelID], provOpts.ReasoningEffort, opts.Reasoning)...)
 	var effort string
 	if conversationReasoningEffortModelIDs[m.modelID] {
 		if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
@@ -79,11 +80,6 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 		if provOpts.ReasoningEffort != "" {
 			effort = provOpts.ReasoningEffort
 		}
-	} else if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		warnings = append(warnings, types.Warning{
-			Type: "unsupported", Feature: "reasoning",
-			Details: "This model does not support reasoning configuration.",
-		})
 	}
 
 	messages := opts.Prompt.Messages

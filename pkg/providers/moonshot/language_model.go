@@ -227,7 +227,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		if requestedReasoningEffort != "" {
 			reasoningEffort = requestedReasoningEffort
 		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
-			reasoningEffort = mapReasoningToMoonshotEffort(*opts.Reasoning)
+			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, moonshotEffortMap, &warnings)
 		}
 
 	case FamilyKimiK27:
@@ -303,7 +303,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		if requestedReasoningEffort != "" {
 			reasoningEffort = requestedReasoningEffort
 		} else if isCustomReasoning(opts.Reasoning) && !reasoningNone {
-			reasoningEffort = mapReasoningToMoonshotEffort(*opts.Reasoning)
+			reasoningEffort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, moonshotEffortMap, &warnings)
 		}
 		if requestedThinking != nil && requestedThinking.Type != "" {
 			thinkingBody = map[string]interface{}{"type": requestedThinking.Type}
@@ -454,6 +454,13 @@ func moonshotFixedSamplingWarning(feature, modelID string) types.Warning {
 // reasoning level other than the provider-default sentinel.
 func isCustomReasoning(r *types.ReasoningLevel) bool {
 	return r != nil && *r != types.ReasoningDefault
+}
+
+// moonshotEffortMap is the TS effortMap for Kimi K3 and unknown models.
+var moonshotEffortMap = map[types.ReasoningLevel]string{
+	types.ReasoningMinimal: "low", types.ReasoningLow: "low",
+	types.ReasoningMedium: "high", types.ReasoningHigh: "high",
+	types.ReasoningXHigh: "max", types.ReasoningMax: "max",
 }
 
 // mapReasoningToMoonshotEffort mirrors the effortMap used for Kimi K3 and

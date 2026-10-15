@@ -31,3 +31,26 @@ func TestRejectsProviderReferenceFiles(t *testing.T) {
 		t.Fatalf("DoStream err = %v, want UnsupportedFunctionalityError", err)
 	}
 }
+
+func TestMistralReasoningMapWarnings(t *testing.T) {
+	low, high, none := types.ReasoningLow, types.ReasoningHigh, types.ReasoningNone
+	max := types.ReasoningMax
+	if w := mistralReasoningMapWarnings(true, "", &low); len(w) != 1 || w[0].Type != "compatibility" ||
+		w[0].Details != `reasoning "low" is not directly supported by this model. mapped to effort "high".` {
+		t.Fatalf("low: %#v", w)
+	}
+	if w := mistralReasoningMapWarnings(true, "", &max); len(w) != 1 || w[0].Type != "compatibility" {
+		t.Fatalf("max: %#v", w)
+	}
+	for _, r := range []*types.ReasoningLevel{&high, &none} {
+		if w := mistralReasoningMapWarnings(true, "", r); len(w) != 0 {
+			t.Fatalf("%v: %#v", *r, w)
+		}
+	}
+	if w := mistralReasoningMapWarnings(true, "high", &low); len(w) != 0 {
+		t.Fatalf("explicit effort: %#v", w)
+	}
+	if w := mistralReasoningMapWarnings(false, "", &low); len(w) != 1 || w[0].Type != "unsupported" {
+		t.Fatalf("unsupported: %#v", w)
+	}
+}
