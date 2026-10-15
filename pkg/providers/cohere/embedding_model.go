@@ -36,7 +36,7 @@ func NewEmbeddingModel(provider *Provider, modelID string, options ...EmbeddingO
 
 // SpecificationVersion returns the specification version
 func (m *EmbeddingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name

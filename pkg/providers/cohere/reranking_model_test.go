@@ -17,7 +17,7 @@ import (
 func TestCohereRerankingModelMetadata(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewRerankingModel(p, "rerank-v3.5")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "cohere" || m.ModelID() != "rerank-v3.5" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "cohere" || m.ModelID() != "rerank-v3.5" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 }

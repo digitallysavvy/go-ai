@@ -31,7 +31,7 @@ func encodeBinary(values []byte) string {
 func TestPerplexityEmbeddingModelMetadataAndLimits(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	m := NewEmbeddingModel(p, "pplx-embed-v1-4b")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "perplexity" || m.ModelID() != "pplx-embed-v1-4b" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "perplexity" || m.ModelID() != "pplx-embed-v1-4b" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 	if m.MaxEmbeddingsPerCall() != 512 || !m.SupportsParallelCalls() {

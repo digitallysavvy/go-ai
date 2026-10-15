@@ -25,7 +25,7 @@ func TestOllamaEmbeddingModelMetadataAndDoEmbed(t *testing.T) {
 		}, nil
 	})
 	m := NewEmbeddingModel(p, "nomic-embed")
-	if m.SpecificationVersion() != "v3" || m.Provider() != "ollama" || m.ModelID() != "nomic-embed" {
+	if m.SpecificationVersion() != "v4" || m.Provider() != "ollama" || m.ModelID() != "nomic-embed" {
 		t.Fatalf("metadata mismatch: spec=%s provider=%s model=%s", m.SpecificationVersion(), m.Provider(), m.ModelID())
 	}
 	if m.MaxEmbeddingsPerCall() != 1 || !m.SupportsParallelCalls() {

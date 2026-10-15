@@ -28,7 +28,7 @@ func NewRerankingModel(provider *Provider, modelID string) *RerankingModel {
 
 // SpecificationVersion returns the specification version
 func (m *RerankingModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name

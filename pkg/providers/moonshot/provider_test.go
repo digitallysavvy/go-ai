@@ -97,7 +97,7 @@ func TestLanguageModelValidation(t *testing.T) {
 				t.Errorf("expected provider 'moonshot', got %s", model.Provider())
 			}
 
-			if model.SpecificationVersion() != "v3" {
+			if model.SpecificationVersion() != "v4" {
 				t.Errorf("expected specification version 'v3', got %s", model.SpecificationVersion())
 			}
 

@@ -102,7 +102,7 @@ func NewResponsesLanguageModel(p *Provider, modelID string) *ResponsesLanguageMo
 }
 
 // SpecificationVersion returns the provider spec version.
-func (m *ResponsesLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *ResponsesLanguageModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider identifier. Uses the ".responses" suffix to
 // distinguish Responses API models from Chat Completions models.

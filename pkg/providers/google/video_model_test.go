@@ -30,7 +30,7 @@ func TestVideoModel_ConstructorInfo(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
 	model := NewVideoModel(prov, "veo-3.1-generate-preview")
 
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
 	if model.Provider() != "google.generative-ai" {

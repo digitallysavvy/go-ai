@@ -33,7 +33,7 @@ func TestVideoModel_ConstructorInfo(t *testing.T) {
 	if model.ModelID() != "luma-dream-machine" {
 		t.Errorf("ModelID() = %q, want luma-dream-machine", model.ModelID())
 	}
-	if model.SpecificationVersion() != "v3" {
+	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q, want v3", model.SpecificationVersion())
 	}
 	if got := model.MaxVideosPerCall(); got == nil || *got != 1 {
