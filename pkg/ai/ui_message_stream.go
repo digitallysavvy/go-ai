@@ -216,6 +216,22 @@ func resolveUIMessageStreamOnEnd(onEnd, onFinish UIMessageStreamOnEndCallback) U
 	return onFinish
 }
 
+func panicToError(r interface{}) error {
+	if err, ok := r.(error); ok {
+		return err
+	}
+	return fmt.Errorf("%v", r)
+}
+
+// reportUIStreamCallbackFailure fails the stream with what an onEnd callback
+// panicked with. errCh holds one error; the first failure wins.
+func reportUIStreamCallbackFailure(errCh chan<- error, r interface{}) {
+	select {
+	case errCh <- panicToError(r):
+	default:
+	}
+}
+
 // CreateUIMessageStreamWithOptions creates a UI message stream with writer callbacks.
 func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStreamOptions) (<-chan UIMessageChunk, <-chan error) {
 	out := make(chan UIMessageChunk)
@@ -303,8 +319,12 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			if isCancelled {
 				finishEvent["isCancelled"] = true
 			}
+			// TS handleUIMessageStreamFinish awaits onEnd in the transform's
+			// flush/cancel, so an error it throws fails the stream.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					reportUIStreamCallbackFailure(errCh, r)
+				}
 			}()
 			onEnd(finishEvent)
 		}
@@ -319,8 +339,12 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
+			// TS callOnStepFinish catches what onStepEnd throws and reports it
+			// through the stream's onError; the stream keeps going.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					onError(panicToError(r))
+				}
 			}()
 			onStepEnd(stepEvent)
 		}
@@ -555,8 +579,12 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			if isCancelled {
 				finishEvent["isCancelled"] = true
 			}
+			// TS handleUIMessageStreamFinish awaits onEnd in the transform's
+			// flush/cancel, so an error it throws fails the stream.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					reportUIStreamCallbackFailure(errCh, r)
+				}
 			}()
 			onEnd(finishEvent)
 		}
@@ -571,8 +599,12 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
+			// TS callOnStepFinish catches what onStepEnd throws and reports it
+			// through the stream's onError; the stream keeps going.
 			defer func() {
-				_ = recover()
+				if r := recover(); r != nil {
+					onError(panicToError(r))
+				}
 			}()
 			onStepEnd(stepEvent)
 		}
@@ -792,7 +824,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				if finishReason == "" {
 					finishReason = types.FinishReasonError
 				}
-				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: errors.New(chunk.Text)})
+				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: streamChunkError(chunk)})
 			}
 			if isModelOutputChunkType(chunk.Type) {
 				sawOutput = true
@@ -2520,7 +2552,7 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	case provider.ChunkTypeError:
 		out = append(out, map[string]interface{}{
 			"type":      "error",
-			"errorText": opts.OnError(errors.New(chunk.Text)),
+			"errorText": opts.OnError(streamChunkError(&chunk)),
 		})
 	// ChunkTypeFinish is handled by toUIMessageChunks' own switch (alongside
 	// ChunkTypeFinishStep) before this function is ever reached, so it is
@@ -2599,4 +2631,14 @@ func reasoningFileBase64Data(file *types.ReasoningFileContent) string {
 		return base64.StdEncoding.EncodeToString(file.Data)
 	}
 	return ""
+}
+
+// streamChunkError returns the error carried by an error chunk: chunk.Err when
+// the provider set it (keeping its type for errors.As in onError handlers),
+// else an error built from chunk.Text.
+func streamChunkError(chunk *provider.StreamChunk) error {
+	if chunk.Err != nil {
+		return chunk.Err
+	}
+	return errors.New(chunk.Text)
 }

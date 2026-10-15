@@ -137,8 +137,8 @@ type StreamTextOptions struct {
 	Reasoning *types.ReasoningLevel
 
 	// SendReasoning controls whether reasoning/thinking boundary chunks are
-	// exposed to OnChunk. nil and false suppress reasoning-start/end, matching
-	// the TypeScript SDK default.
+	// exposed to OnChunk and Stream(). nil (the default) keeps them, as TS
+	// fullStream does; an explicit false suppresses reasoning-start/end.
 	SendReasoning *bool
 
 	// ProviderOptions allows passing provider-specific options
@@ -1266,7 +1266,19 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
-		r.fail(fmt.Errorf("failed to start stream: %w", err))
+		startErr := fmt.Errorf("failed to start stream: %w", err)
+		if !isAbortErr(stepCtx, err) {
+			// TS streamText turns a doStream failure into an `error` part
+			// after `start` and reports it to onError instead of throwing.
+			if opts.OnError != nil {
+				safeInvoke(func() { opts.OnError(ctx, startErr) })
+			}
+			if r.chunkBuf != nil {
+				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
+				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: startErr, Text: startErr.Error()})
+			}
+		}
+		r.fail(startErr)
 		return
 	}
 
@@ -2912,6 +2924,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if isAbort {
 				stepErr = nil
 			}
+			if !isAbort {
+				// Same as the first step: the failure is an error part and
+				// goes to onError.
+				if opts.OnError != nil {
+					startErr := r.err
+					safeInvoke(func() { opts.OnError(ctx, startErr) })
+				}
+				if onChunk != nil {
+					onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: r.err, Text: r.err.Error()})
+				}
+			}
 			telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
 			if isAbort {
 				fireAbort(r.err)
@@ -3105,7 +3128,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if len(stepsForEvent) == 0 {
 		stepsForEvent = []types.StepResult{lastStep}
 	}
-	Notify(ctx, OnFinishEvent{
+	finishEvent := OnFinishEvent{
 		CallID:             r.cbCallID,
 		StepNumber:         lastStep.StepNumber,
 		Model:              lastStep.Model,
@@ -3138,7 +3161,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
 		Output:              r.outputResult,
-	}, r.cbOnEndEvent)
+	}
+	finishEvent.SetAggregatesFromSteps(stepsForEvent, responseMessagesWithInitial(r.initialResponseMessages, stepsForEvent))
+	Notify(ctx, finishEvent, r.cbOnEndEvent)
 }
 
 func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
@@ -4025,7 +4050,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	if r.cbOnEnd != nil {
 		r.cbOnEnd(r)
 	}
-	Notify(ctx, OnFinishEvent{
+	finishEvent := OnFinishEvent{
 		CallID:             r.cbCallID,
 		StepNumber:         step.StepNumber,
 		Model:              step.Model,
@@ -4060,7 +4085,9 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		RuntimeContext:      r.cbRuntimeCtx,
 		ToolsContext:        r.cbToolsCtx,
 		Output:              r.outputResult,
-	}, r.cbOnEndEvent)
+	}
+	finishEvent.SetAggregatesFromSteps(finishEvent.Steps, responseMessagesWithInitial(r.initialResponseMessages, finishEvent.Steps))
+	Notify(ctx, finishEvent, r.cbOnEndEvent)
 
 	return r.text, nil
 }
@@ -4204,8 +4231,12 @@ func isAbortErr(ctx context.Context, err error) bool {
 	return ctx != nil && ctx.Err() != nil
 }
 
+// shouldSuppressReasoningBoundaries reports whether reasoning-start/end are
+// dropped from the stream. TS fullStream always carries them (its sendReasoning
+// is a UI-message-stream option that defaults to true), so only an explicit
+// false suppresses them.
 func shouldSuppressReasoningBoundaries(sendReasoning *bool) bool {
-	return sendReasoning == nil || !*sendReasoning
+	return sendReasoning != nil && !*sendReasoning
 }
 
 func includedRequestMessages(include bool, messages []types.Message) []types.Message {

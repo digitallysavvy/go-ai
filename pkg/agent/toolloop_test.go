@@ -162,11 +162,12 @@ func TestToolLoopAgent_ResponseMessagesUseFullStepContent(t *testing.T) {
 	if got, want := len(step.Content), 4; got != want {
 		t.Fatalf("step content len = %d, want %d: %#v", got, want, step.Content)
 	}
-	if _, ok := step.Content[0].(types.TextContent); !ok {
-		t.Fatalf("content[0] = %T, want TextContent", step.Content[0])
+	// Reasoning precedes the answer text (provider order), as in TS content.
+	if _, ok := step.Content[0].(types.ReasoningContent); !ok {
+		t.Fatalf("content[0] = %T, want ReasoningContent", step.Content[0])
 	}
-	if _, ok := step.Content[1].(types.ReasoningContent); !ok {
-		t.Fatalf("content[1] = %T, want ReasoningContent", step.Content[1])
+	if _, ok := step.Content[1].(types.TextContent); !ok {
+		t.Fatalf("content[1] = %T, want TextContent", step.Content[1])
 	}
 	if _, ok := step.Content[2].(types.ToolCallContent); !ok {
 		t.Fatalf("content[2] = %T, want ToolCallContent", step.Content[2])
@@ -177,8 +178,8 @@ func TestToolLoopAgent_ResponseMessagesUseFullStepContent(t *testing.T) {
 	if len(step.ResponseMessages) != 2 {
 		t.Fatalf("response messages len = %d, want 2: %#v", len(step.ResponseMessages), step.ResponseMessages)
 	}
-	if _, ok := step.ResponseMessages[0].Content[1].(types.ReasoningContent); !ok {
-		t.Fatalf("assistant response content[1] = %T, want ReasoningContent", step.ResponseMessages[0].Content[1])
+	if _, ok := step.ResponseMessages[0].Content[0].(types.ReasoningContent); !ok {
+		t.Fatalf("assistant response content[0] = %T, want ReasoningContent", step.ResponseMessages[0].Content[0])
 	}
 }
 

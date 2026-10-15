@@ -58,7 +58,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 | `ExperimentalInclude` | `*IncludeOptions` | ExperimentalInclude is a deprecated alias for Include. |
 | `IncludeRawChunks` | `bool` | IncludeRawChunks is a deprecated alias for Include.RawChunks. |
 | `Reasoning` | `*types.ReasoningLevel` | Reasoning controls how much thinking effort the model applies. nil means unset (use provider default). Set to types.ReasoningDefault to explicitly omit from the API request. |
-| `SendReasoning` | `*bool` | SendReasoning controls whether reasoning/thinking boundary chunks are exposed to OnChunk. nil and false suppress reasoning-start/end, matching the TypeScript SDK default. |
+| `SendReasoning` | `*bool` | SendReasoning controls whether reasoning/thinking boundary chunks are exposed to OnChunk and Stream(). nil (the default) keeps them, as TS fullStream does; an explicit false suppresses reasoning-start/end. |
 | `ProviderOptions` | `map[string]interface{}` | ProviderOptions allows passing provider-specific options |
 | `MaxRetries` | `*int` | MaxRetries controls transient provider call retries (HTTP 408, 409, 429 and 5xx, or errors a provider marks retryable). nil uses the TypeScript SDK default of 2 retries with exponential backoff starting at 2s; set to 0 to disable. |
 | `ExperimentalSandbox` | `interface{}` | ExperimentalSandbox is passed through to tool execution. PrepareStep can override it for an individual step. |

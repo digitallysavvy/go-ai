@@ -1,11 +1,11 @@
 package providerutils
 
 import (
-	"encoding/json"
 	"strconv"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // HasFunctionTool reports whether tools contains a function tool (as opposed
@@ -81,7 +81,7 @@ func JSONResponseToolText(call types.ToolCall) string {
 	if call.Arguments == nil {
 		return "{}"
 	}
-	raw, err := json.Marshal(call.Arguments)
+	raw, err := jsonstr.Marshal(call.Arguments)
 	if err != nil {
 		return "{}"
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -110,7 +111,7 @@ func ValidateApprovedToolApprovals(ctx context.Context, opts ValidateApprovedToo
 		if tool != nil && tool.Execute != nil {
 			if validator := toolInputValidator(tool); validator != nil {
 				if validationErr := revalidateApprovedInput(ctx, approval, tool, validator, opts); validationErr != nil {
-					inputJSON, _ := json.Marshal(call.Arguments)
+					inputJSON, _ := jsonstr.Marshal(call.Arguments)
 					result.InvalidToolApprovals = append(result.InvalidToolApprovals, InvalidToolApproval{
 						CollectedToolApproval: approval,
 						Error: &InvalidToolInputError{
@@ -243,3 +244,6 @@ func isDeepEqualJSONData(a, b interface{}) bool {
 	}
 	return bytes.Equal(ca, cb)
 }
+
+// ErrorName is the TS error name, used where TS shows error.toString().
+func (e *InvalidToolInputError) ErrorName() string { return "AI_InvalidToolInputError" }

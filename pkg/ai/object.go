@@ -136,6 +136,12 @@ func cloneSchemaValue(value interface{}) interface{} {
 }
 
 func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
+	result, err := doGenerateWithRetryRaw(ctx, model, opts, maxRetries)
+	normalizeGenerateResultText(result)
+	return result, err
+}
+
+func doGenerateWithRetryRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries int) (*types.GenerateResult, error) {
 	if maxRetries <= 0 {
 		return model.DoGenerate(ctx, opts)
 	}
@@ -740,10 +746,6 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, err
 	}
 
-	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
-		return nil, fmt.Errorf("model does not support structured output")
-	}
-
 	// TS generate-object.ts tags every call's headers with `ai/${VERSION}`
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
 	// before building the onStart event, so the tagged value is what
@@ -978,7 +980,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	obj, _, _, err := parseObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
+	obj, _, _, err := parseGenerateObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
 		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
@@ -1135,7 +1137,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	_, arr, _, err := parseObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
+	_, arr, _, err := parseGenerateObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
 		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
@@ -1283,7 +1285,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	_, _, selectedValue, err := parseObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
+	_, _, selectedValue, err := parseGenerateObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
 		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
@@ -1425,7 +1427,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	obj, _, _, err := parseObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
+	obj, _, _, err := parseGenerateObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
 		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
@@ -1637,9 +1639,6 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	opts.MaxRetries = maxRetries
 	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
 		return nil, err
-	}
-	if opts.OutputMode != ObjectModeNoSchema && !opts.Model.SupportsStructuredOutput() {
-		return nil, fmt.Errorf("model does not support structured output")
 	}
 
 	// Generate call ID and extract telemetry info for callback events.
@@ -1870,7 +1869,7 @@ streamLoop:
 			// finishReason "error" instead of whatever finish reason (if
 			// any) the model happened to send. Mirrors TS stream-object.ts's
 			// TransformStream error handling (audit row b181020 / WG5).
-			chunkErr := errors.New(chunk.Text)
+			chunkErr := streamChunkError(chunk)
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
@@ -2156,4 +2155,29 @@ func validateObjectGenerationInput(mode ObjectOutputMode, hasSchema bool, schema
 		return invalid("output", "Invalid output type.")
 	}
 	return nil
+}
+
+// parseGenerateObjectResult is parseObjectResult for a non-streaming model
+// response: a response with no text at all fails as in TS generateObject
+// (extractTextContent(content) === undefined) before any parsing.
+func parseGenerateObjectResult(result *types.GenerateResult, mode ObjectOutputMode, s schema.Schema, enumValues []string, model provider.LanguageModel) (interface{}, []interface{}, string, error) {
+	if result != nil && result.Text == "" && !hasTextContentPart(result.Content) {
+		return nil, nil, "", newNoObjectGeneratedError("No object generated: the model did not return a response.", nil, "", model, result)
+	}
+	return parseObjectResult(result, mode, s, enumValues, model)
+}
+
+// hasTextContentPart reports whether parts holds any text part, empty or not.
+func hasTextContentPart(parts []types.ContentPart) bool {
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			return true
+		case *types.TextContent:
+			if p != nil {
+				return true
+			}
+		}
+	}
+	return false
 }

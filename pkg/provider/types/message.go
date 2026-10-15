@@ -646,11 +646,15 @@ func (t ToolResultContent) MarshalJSON() ([]byte, error) {
 
 // ToolErrorContent represents a failed tool execution in ordered content.
 type ToolErrorContent struct {
-	ToolCallID       string                 `json:"toolCallId"`
-	ToolName         string                 `json:"toolName"`
-	Title            string                 `json:"title,omitempty"`
-	Input            map[string]interface{} `json:"input,omitempty"`
-	Error            interface{}            `json:"error"`
+	ToolCallID string                 `json:"toolCallId"`
+	ToolName   string                 `json:"toolName"`
+	Title      string                 `json:"title,omitempty"`
+	Input      map[string]interface{} `json:"input,omitempty"`
+	Error      interface{}            `json:"error"`
+	// ErrorText is the text the model sees for this error in the tool result
+	// message: TS getErrorMessage(error), which is error.toString() ("Error:
+	// message", "AI_InvalidToolInputError: message"). Empty means Error is used.
+	ErrorText        string                 `json:"errorText,omitempty"`
 	ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 	ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 	ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`

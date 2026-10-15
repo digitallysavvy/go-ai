@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // decisionLanguageModelSystemPrompt mirrors TypeScript's
@@ -179,7 +180,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		}
 	}
 
-	rubricPayload, err := json.Marshal(map[string]interface{}{"questions": rubrics})
+	rubricPayload, err := jsonstr.Marshal(map[string]interface{}{"questions": rubrics})
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode decision prompt: %w", err)
 	}
@@ -195,7 +196,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		case "text":
 			userContent = append(userContent, types.TextContent{Text: part.Text})
 		case "json":
-			encoded, merr := json.Marshal(part.Value)
+			encoded, merr := jsonstr.Marshal(part.Value)
 			if merr != nil {
 				return nil, fmt.Errorf("failed to encode decision state: %w", merr)
 			}

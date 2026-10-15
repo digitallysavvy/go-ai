@@ -299,7 +299,11 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		// fails, so a failed Connect never leaves a live subprocess,
 		// connection or receive goroutine behind.
 		_ = c.closeWith(ctx)
-		if initTimeout > 0 && errors.Is(context.Cause(ctx), errInitTimeout) && parent.Err() == nil {
+		// The initialize request carries the same timeout, so its own timer can
+		// win the race with the handshake context's; either way the handshake
+		// deadline has passed.
+		if deadline, ok := ctx.Deadline(); initTimeout > 0 && parent.Err() == nil &&
+			(errors.Is(context.Cause(ctx), errInitTimeout) || (ok && !time.Now().Before(deadline))) {
 			return &MCPClientError{Message: fmt.Sprintf("MCP client initialization timed out after %dms", initTimeout/time.Millisecond), Cause: err}
 		}
 		if parent.Err() != nil {

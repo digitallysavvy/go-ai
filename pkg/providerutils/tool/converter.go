@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ToJSONSchema converts a Tool to JSON Schema format
@@ -240,7 +241,7 @@ func formatAnthropicConstraintValue(value interface{}) string {
 	if s, ok := value.(string); ok {
 		return s
 	}
-	data, err := json.Marshal(value)
+	data, err := jsonstr.Marshal(value)
 	if err != nil {
 		return fmt.Sprint(value)
 	}

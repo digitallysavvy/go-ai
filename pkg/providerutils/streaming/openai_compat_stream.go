@@ -27,6 +27,7 @@ type OpenAICompatStream struct {
 	flushQueue         []*provider.StreamChunk
 	finishReasonMapper func(string) types.FinishReason
 	pendingEventData   string
+	hasPendingEvent    bool // pendingEventData is set (it may be the empty string)
 	// IncludeRawChunks emits the raw parsed SSE event before normal processing,
 	// matching providers that expose TypeScript's includeRawChunks behavior.
 	IncludeRawChunks bool
@@ -177,8 +178,9 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		}
 
 		eventData := s.pendingEventData
-		if eventData != "" {
+		if s.hasPendingEvent {
 			s.pendingEventData = ""
+			s.hasPendingEvent = false
 		} else {
 			event, err := s.parser.Next()
 			if err != nil {
@@ -196,6 +198,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			eventData = event.Data
 			if s.IncludeRawChunks {
 				s.pendingEventData = eventData
+				s.hasPendingEvent = true
 				var raw interface{}
 				if err := json.Unmarshal([]byte(eventData), &raw); err != nil {
 					raw = eventData

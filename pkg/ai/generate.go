@@ -18,12 +18,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
-// now returns the current time in milliseconds since Unix epoch.
-// Used for measuring tool call execution duration.
-func now() int64 {
-	return time.Now().UnixMilli()
-}
-
 // abortReason resolves the reason an aborted call should report:
 // context.Cause(ctx) when the context carries a specific cancellation cause,
 // else fallback (typically the error that surfaced the abort). Mirrors TS
@@ -121,6 +115,12 @@ func IsGatewayCallRetryable(err error) bool {
 }
 
 func doGenerateWithGatewayRetry(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
+	result, err := doGenerateWithGatewayRetryRaw(ctx, model, opts, maxRetries)
+	normalizeGenerateResultText(result)
+	return result, err
+}
+
+func doGenerateWithGatewayRetryRaw(ctx context.Context, model provider.LanguageModel, opts *provider.GenerateOptions, maxRetries *int) (*types.GenerateResult, error) {
 	retries := gatewayMaxRetries(model, maxRetries)
 	if retries <= 0 {
 		return model.DoGenerate(ctx, opts)
@@ -326,8 +326,8 @@ type GenerateTextOptions struct {
 	Reasoning *types.ReasoningLevel
 
 	// SendReasoning controls whether reasoning/thinking stream boundary chunks
-	// are exposed to callbacks. nil and false suppress reasoning-start/end,
-	// matching the TypeScript SDK default.
+	// are exposed to callbacks. nil (the default) keeps them, as TS does; an
+	// explicit false suppresses reasoning-start/end.
 	SendReasoning *bool
 
 	// ========================================================================
@@ -1365,7 +1365,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Performance:      languageModelCallPerformance(performance),
 		})
 
-		if violation := checkToolChoiceViolation(stepToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), genResult.Content); violation != nil {
+		if violation := checkToolChoiceViolation(stepToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), generateResultContentParts(genResult)); violation != nil {
 			return nil, violation
 		}
 
@@ -1858,7 +1858,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		lastDynamicResults = last.DynamicToolResults
 		lastSources = last.Sources
 	}
-	Notify(ctx, OnFinishEvent{
+	finishEvent := OnFinishEvent{
 		CallID:             callID,
 		StepNumber:         lastStepNum,
 		Model:              lastModel,
@@ -1896,7 +1896,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
 		Output:              result.Output,
-	}, onEndEvent)
+	}
+	finishEvent.SetAggregatesFromSteps(result.Steps, result.ResponseMessages)
+	Notify(ctx, finishEvent, onEndEvent)
 
 	// Apply retention settings (v6.0.60)
 	// Exclude request/response bodies based on retention settings
@@ -2244,7 +2246,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				execCtx, execCancel = context.WithTimeout(toolCtx, *toolTimeout)
 			}
 
-			startTime := now()
+			toolStarted := time.Now()
 			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(
 				execCtx,
 				callbacks.telemetrySettings,
@@ -2254,7 +2256,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					return tool.Execute(execCtx, args, execOptions)
 				},
 			)
-			durationMs := now() - startTime
+			durationMs := time.Since(toolStarted).Milliseconds()
 			if callbacks.toolExecutionMs != nil {
 				callbacks.toolExecutionMs[call.ID] = durationMs
 			}

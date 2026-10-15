@@ -79,7 +79,9 @@ func ConvertToResponseMessages(toolCalls []types.ToolCall, content []types.Conte
 	}
 	if len(toolResults) > 0 {
 		for _, result := range toolResults {
-			if result.ProviderExecuted || seenToolResultIDs[result.ToolCallID] {
+			// A call awaiting user approval has no result yet: TS carries only
+			// the tool-approval-request part (in the assistant message).
+			if result.ProviderExecuted || seenToolResultIDs[result.ToolCallID] || result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				continue
 			}
 			seenToolResultIDs[result.ToolCallID] = true
@@ -138,6 +140,7 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 			Title:            result.Title,
 			Input:            result.Input,
 			Error:            result.Error.Error(),
+			ErrorText:        ToolErrorText(result.Error),
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
@@ -162,6 +165,7 @@ func toolResultContentFromResult(result types.ToolResult) types.ToolResultConten
 			Title:            result.Title,
 			Input:            result.Input,
 			Error:            output.Error(),
+			ErrorText:        ToolErrorText(output),
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
@@ -220,15 +224,41 @@ func normalizeToolResultContent(part types.ToolResultContent) types.ToolResultCo
 	return part
 }
 
+// ErrorNamer is implemented by errors that correspond to a named TS error
+// class. TS getErrorMessage(error) is error.toString(), "<name>: <message>"
+// ("Error: boom", "AI_InvalidToolInputError: Invalid input ...").
+type ErrorNamer interface {
+	ErrorName() string
+}
+
+// ToolErrorText returns the text a tool error is shown to the model as, the
+// equivalent of TS getErrorMessage(error): "unknown error" for nil, the
+// "<name>: <message>" form for errors (name "Error" unless the error is one of
+// the SDK's named errors).
+func ToolErrorText(err error) string {
+	if err == nil {
+		return "unknown error"
+	}
+	name := "Error"
+	if named, ok := err.(ErrorNamer); ok {
+		name = named.ErrorName()
+	}
+	return name + ": " + err.Error()
+}
+
 func normalizeToolErrorContent(part types.ToolErrorContent, providerExecuted bool) types.ToolResultContent {
 	outputType := types.ToolResultOutputErrorText
+	value := part.Error
+	if part.ErrorText != "" {
+		value = part.ErrorText
+	}
 	if providerExecuted {
 		outputType = types.ToolResultOutputErrorJSON
 	}
 	return types.ToolResultContent{
 		ToolCallID:      part.ToolCallID,
 		ToolName:        part.ToolName,
-		Output:          &types.ToolResultOutput{Type: outputType, Value: part.Error},
+		Output:          &types.ToolResultOutput{Type: outputType, Value: value},
 		ProviderOptions: providerMetadataOptions(part.ProviderMetadata),
 	}
 }

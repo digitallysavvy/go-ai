@@ -965,25 +965,25 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		a.config.OnFinish(result)
 	}
 
-	// Aggregate all tool calls across steps for the finish event
-	var allToolCalls []types.ToolCall
-	for _, s := range result.Steps {
-		allToolCalls = append(allToolCalls, s.ToolCalls...)
-	}
-
-	// CB-T23: Emit OnFinishEvent
-	ai.Notify(ctx, ai.OnFinishEvent{
+	// CB-T23: Emit OnFinishEvent. Like the TS onEnd event, it aggregates
+	// content, tool calls, results, sources, files and warnings across steps.
+	finishEvent := ai.OnFinishEvent{
 		Text:                result.Text,
-		ToolCalls:           allToolCalls,
-		ToolResults:         result.ToolResults,
 		FinishReason:        result.FinishReason,
 		Steps:               result.Steps,
 		TotalUsage:          result.Usage,
-		Warnings:            result.Warnings,
 		ExperimentalContext: a.config.ExperimentalContext,
 		RuntimeContext:      a.runtimeContext(),
 		ToolsContext:        a.config.ToolsContext,
-	}, cbs.onFinish)
+	}
+	finishEvent.SetAggregatesFromSteps(result.Steps, append(append([]types.Message(nil), resumed.ResponseMessages...), responseMessagesOf(result.Steps)...))
+	if len(finishEvent.ToolResults) == 0 {
+		finishEvent.ToolResults = result.ToolResults
+	}
+	if len(finishEvent.Warnings) == 0 {
+		finishEvent.Warnings = result.Warnings
+	}
+	ai.Notify(ctx, finishEvent, cbs.onFinish)
 
 	return result, nil
 }
@@ -1537,6 +1537,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 
 	stepTel.modelCallEnd(stepModel, genResult, modelCallStarted)
+	// An enforced tool choice (required, or a named tool) must produce a tool
+	// call, as in GenerateText (TS ToolChoiceViolationError).
+	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, violation
+	}
 	performance := ai.NonStreamingStepPerformance(time.Since(modelCallStarted).Milliseconds(), genResult.Usage)
 	rawFinishReason := genResult.RawFinishReason
 
@@ -1810,12 +1815,12 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Args:        call.Arguments,
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
-			startMs := time.Now().UnixMilli()
+			toolStarted := time.Now()
 			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(toolTelCtx, tsettings, call.ToolName, call.Arguments,
 				func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
 					return tool.Execute(execCtx, args, execOptions)
 				})
-			durationMs := time.Now().UnixMilli() - startMs
+			durationMs := time.Since(toolStarted).Milliseconds()
 			timings.record(call.ID, durationMs)
 			telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
 				Settings:    tsettings,
@@ -1949,7 +1954,7 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	}
 	parts := append([]types.ContentPart(nil), result.Content...)
 	if result.Text != "" && !agentContentHasText(parts) {
-		parts = append([]types.ContentPart{types.TextContent{Text: result.Text}}, parts...)
+		parts = types.InsertLeadText(parts, result.Text)
 	}
 	seenToolCalls := map[string]bool{}
 	for i, part := range parts {
@@ -2159,6 +2164,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				ToolName:         result.ToolName,
 				Input:            result.Input,
 				Error:            result.Error.Error(),
+				ErrorText:        providerutils.ToolErrorText(result.Error),
 				ProviderExecuted: result.ProviderExecuted,
 				ProviderMetadata: agentProviderMetadataRaw(result.ProviderMetadata),
 				ToolMetadata:     result.ToolMetadata,
@@ -2676,4 +2682,12 @@ func (t *toolTimings) snapshot() map[string]int64 {
 		out[k] = v
 	}
 	return out
+}
+
+func responseMessagesOf(steps []types.StepResult) []types.Message {
+	var messages []types.Message
+	for _, step := range steps {
+		messages = append(messages, step.Response.Messages...)
+	}
+	return messages
 }
