@@ -181,7 +181,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	part, err := writer.CreateFormFile("media", "audio."+revaiAudioExtension(opts.MimeType))
+	part, err := providerutils.CreateTypedFormFile(writer, "media", "audio."+revaiAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
@@ -218,22 +218,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 }
 
 func revaiAudioExtension(mimeType string) string {
-	switch mimeType {
-	case "audio/mpeg", "audio/mp3":
-		return "mp3"
-	case "audio/wav", "audio/wave", "audio/x-wav":
-		return "wav"
-	case "audio/webm":
-		return "webm"
-	case "audio/mp4", "audio/m4a":
-		return "m4a"
-	case "audio/flac":
-		return "flac"
-	case "audio/ogg":
-		return "ogg"
-	default:
-		return "wav"
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 // convertRevaiTranscript mirrors RevaiTranscriptionModel.doGenerate's
