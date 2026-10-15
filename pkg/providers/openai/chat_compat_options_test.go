@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TS OpenAICompatibleChatLanguageModel reads <providerName> options (not
@@ -116,5 +117,33 @@ data: [DONE]
 	}
 	if endIdx < 0 || startIdx < 0 || endIdx > startIdx {
 		t.Fatalf("reasoning-end must precede tool-input-start: %v", seq)
+	}
+}
+
+// TS compat flush(): no finish_reason at all -> error part + error finish.
+func TestChatCompatStreamWithoutFinishReasonIsError(t *testing.T) {
+	sse := `data: {"id":"x","choices":[{"index":0,"delta":{"content":"hi"}}]}
+
+data: [DONE]
+
+`
+	s := newOpenAIStreamWithMetadata(io.NopCloser(strings.NewReader(sse)), false, "my.chat", nil)
+	s.compat = true
+	var sawErr bool
+	var finish *provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeError && c.Text == "Response stream ended without a finish reason." {
+			sawErr = true
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finish = c
+		}
+	}
+	if !sawErr || finish == nil || finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("sawErr=%v finish=%+v", sawErr, finish)
 	}
 }

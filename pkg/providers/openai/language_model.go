@@ -1201,6 +1201,7 @@ type openAIStream struct {
 	// trailing usage-only chunk (stream_options.include_usage) can be merged
 	// into it, as TS does in flush().
 	finishRaw         string
+	finishSeen        bool // a choice carried a non-null finish_reason
 	finishErrored     bool // TS finishReason={unified:'error'} after an unparsable/error chunk
 	finished          bool
 	isActiveReasoning bool
@@ -1506,6 +1507,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				}
 				s.outputStarted = true
 				s.finishErrored = false
+				s.finishSeen = true
 				s.finishRaw = *choice.FinishReason
 			}
 		}
@@ -1592,6 +1594,17 @@ func (s *openAIStream) endStream() {
 		s.finished = true
 		s.flushPendingMetadata()
 		s.closeBlocksAndToolCalls()
+		if s.compat && !s.finishSeen && !s.finishErrored {
+			// TS OpenAICompatibleChatLanguageModel flush(): a stream that
+			// ends without any finish_reason is an invalid response.
+			msg := "Response stream ended without a finish reason."
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+				Type: provider.ChunkTypeError,
+				Text: msg,
+				Err:  providererrors.NewInvalidResponseDataError(nil, msg),
+			})
+			s.finishErrored = true
+		}
 		finish := &provider.StreamChunk{
 			Type:            provider.ChunkTypeFinish,
 			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
