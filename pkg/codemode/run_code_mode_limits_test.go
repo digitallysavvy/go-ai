@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -69,5 +70,29 @@ func TestToJSONPayloadCountsHTMLCharactersAsOneByte(t *testing.T) {
 	got, err := toJSONPayload("<>&", 5, "Tool output")
 	if err != nil || got != `"<>&"` {
 		t.Fatalf("payload = %q, %v", got, err)
+	}
+}
+
+// TS setCodeModeContinuationSigningKey() with no key rotates to a random key
+// and with no maxAgeMs resets the max age to its default.
+func TestSetCodeModeContinuationSigningKeyRotatesAndResets(t *testing.T) {
+	t.Cleanup(func() { _ = SetCodeModeContinuationSigningKey(nil, 0) })
+	if err := SetCodeModeContinuationSigningKey([]byte("fixed-key"), 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	continuationSigningKeyMu.RLock()
+	key, age := string(defaultSigningKey), defaultMaxAge
+	continuationSigningKeyMu.RUnlock()
+	if key != "fixed-key" || age != 5*time.Minute {
+		t.Fatalf("key %q age %v", key, age)
+	}
+	if err := SetCodeModeContinuationSigningKey(nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	continuationSigningKeyMu.RLock()
+	key2, age2 := string(defaultSigningKey), defaultMaxAge
+	continuationSigningKeyMu.RUnlock()
+	if key2 == "fixed-key" || len(key2) != 32 || age2 != time.Hour {
+		t.Fatalf("after reset: key length %d (rotated=%v) age %v", len(key2), key2 != "fixed-key", age2)
 	}
 }

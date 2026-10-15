@@ -49,9 +49,10 @@ func init() {
 // SetCodeModeContinuationSigningKey sets the process-wide default
 // continuation signing key and max age used whenever a call's
 // Options.ContinuationSecurity / ContinuationSecurityOptions doesn't
-// override them. key == nil generates a fresh random 32-byte key (as at
-// process start); a non-nil, empty key is an error. maxAge == 0 keeps the
-// current default (1 hour, unless already changed). Mirrors TypeScript's
+// override them. key == nil generates a fresh random 32-byte key (rotating
+// the key, which invalidates continuations signed with the old one); a
+// non-nil, empty key is an error. maxAge == 0 resets the default to 1 hour,
+// like TS (`options.maxAgeMs ?? DEFAULT_MAX_AGE_MS`). Mirrors TypeScript's
 // experimental_setCodeModeContinuationSigningKey.
 //
 // This mutates global state shared by every concurrent invocation in the
@@ -59,6 +60,15 @@ func init() {
 // every invocation in a JS realm; call it during setup, not from
 // concurrent request handling.
 func SetCodeModeContinuationSigningKey(key []byte, maxAge time.Duration) error {
+	if key == nil {
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return fmt.Errorf("codemode: crypto/rand unavailable for the continuation signing key: %w", err)
+		}
+	}
+	if maxAge == 0 {
+		maxAge = defaultContinuationMaxAge
+	}
 	resolved, err := resolveContinuationSecurity(ContinuationSecurityOptions{SigningKey: key, MaxAge: maxAge})
 	if err != nil {
 		return err
