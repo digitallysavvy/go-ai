@@ -283,7 +283,13 @@ func attemptRepair(
 	}
 	cause := parseErr
 	var noObjErr *NoObjectGeneratedError
-	if errors.As(parseErr, &noObjErr) && noObjErr.Cause != nil {
+	if errors.As(parseErr, &noObjErr) {
+		// TS only repairs a JSONParseError / TypeValidationError cause; a
+		// NoObjectGeneratedError without one (the model returned no text
+		// part at all) is rethrown as is.
+		if noObjErr.Cause == nil {
+			return nil, nil
+		}
 		cause = noObjErr.Cause
 	}
 	return repair(ctx, text, cause)
@@ -425,6 +431,16 @@ func parseStreamPartial(mode ObjectOutputMode, s schema.Schema, enumValues []str
 	}
 }
 
+// objectTypeValidationError builds the TS TypeValidationError carried as the
+// cause of NoObjectGeneratedError when the parsed value does not satisfy the
+// output strategy.
+func objectTypeValidationError(value interface{}, message string, cause error) error {
+	if cause == nil {
+		cause = errors.New(message)
+	}
+	return providererrors.NewValidationErrorWithContext(value, message, cause, &providererrors.ValidationContext{})
+}
+
 func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []string, text string) (interface{}, []interface{}, string, error) {
 	if text == "" {
 		return nil, nil, "", nil
@@ -438,50 +454,47 @@ func parseStreamFinal(mode ObjectOutputMode, s schema.Schema, enumValues []strin
 		}
 		obj = schema.ApplyDefaults(obj, s)
 		if err := s.Validator().Validate(obj); err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", objectTypeValidationError(obj, err.Error(), err)
 		}
 		return obj, nil, "", nil
 	case ObjectModeArray:
-		var wrapper map[string]interface{}
-		if err := json.Unmarshal([]byte(text), &wrapper); err != nil {
+		var root interface{}
+		if err := json.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
-		rawElements, ok := wrapper["elements"]
+		// Mirrors TS arrayOutputStrategy.validateFinalResult: the value must
+		// be an object holding an `elements` array.
+		wrapper, _ := root.(map[string]interface{})
+		arr, ok := wrapper["elements"].([]interface{})
 		if !ok {
-			return nil, nil, "", fmt.Errorf("missing 'elements' field")
-		}
-		arr, ok := rawElements.([]interface{})
-		if !ok {
-			return nil, nil, "", fmt.Errorf("'elements' is not an array")
+			return nil, nil, "", objectTypeValidationError(root, "value must be an object that contains an array of elements", nil)
 		}
 		resultArray := make([]interface{}, len(arr))
 		for i, element := range arr {
 			element = schema.ApplyDefaults(element, s)
 			if err := s.Validator().Validate(element); err != nil {
-				return nil, nil, "", fmt.Errorf("validation failed for element %d: %w", i, err)
+				return nil, nil, "", objectTypeValidationError(element, err.Error(), err)
 			}
 			resultArray[i] = element
 		}
 		return resultArray, resultArray, "", nil
 	case ObjectModeEnum:
-		var wrapper map[string]interface{}
-		if err := json.Unmarshal([]byte(text), &wrapper); err != nil {
+		var root interface{}
+		if err := json.Unmarshal([]byte(text), &root); err != nil {
 			return nil, nil, "", err
 		}
-		rawResult, ok := wrapper["result"]
+		// Mirrors TS enumOutputStrategy.validateFinalResult.
+		wrapper, _ := root.(map[string]interface{})
+		selected, ok := wrapper["result"].(string)
 		if !ok {
-			return nil, nil, "", fmt.Errorf("enum output missing 'result' field")
-		}
-		selected, ok := rawResult.(string)
-		if !ok {
-			return nil, nil, "", fmt.Errorf("enum output 'result' is not a string: %T", rawResult)
+			return nil, nil, "", objectTypeValidationError(root, `value must be an object that contains a string in the "result" property.`, nil)
 		}
 		for _, enumVal := range enumValues {
 			if selected == enumVal {
 				return selected, nil, selected, nil
 			}
 		}
-		return nil, nil, "", fmt.Errorf("invalid enum value: %q (expected one of %v)", selected, enumValues)
+		return nil, nil, "", objectTypeValidationError(root, "value must be a string in the enum", nil)
 	case ObjectModeNoSchema:
 		var obj interface{}
 		if err := json.Unmarshal([]byte(text), &obj); err != nil {

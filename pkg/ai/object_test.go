@@ -2237,3 +2237,77 @@ func TestObjectCallsDownloadUnsupportedFileURLs(t *testing.T) {
 		})
 	}
 }
+
+// TS array/enum output strategies reject a non-object root as a schema
+// mismatch (TypeValidationError cause), not as a JSON parse failure.
+func TestGenerateObject_NonObjectRootIsSchemaMismatch(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		mode  ObjectOutputMode
+		text  string
+		cause string
+	}{
+		{"array", ObjectModeArray, `[1,2]`, "value must be an object that contains an array of elements"},
+		{"enum", ObjectModeEnum, `["happy"]`, `value must be an object that contains a string in the "result" property.`},
+		{"enum-not-member", ObjectModeEnum, `{"result":"angry"}`, "value must be a string in the enum"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{
+				StructuredSupport: true,
+				DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+					return &types.GenerateResult{Text: tc.text, FinishReason: types.FinishReasonStop}, nil
+				},
+			}
+			o := GenerateObjectOptions{Model: model, Prompt: "x", OutputMode: tc.mode}
+			if tc.mode == ObjectModeEnum {
+				o.EnumValues = []string{"happy", "sad"}
+			} else {
+				o.Schema = schema.NewSimpleJSONSchema(map[string]interface{}{"type": "string"})
+			}
+			_, err := GenerateObject(context.Background(), o)
+			var noObjErr *NoObjectGeneratedError
+			if !errors.As(err, &noObjErr) {
+				t.Fatalf("expected NoObjectGeneratedError, got %v", err)
+			}
+			if !strings.Contains(noObjErr.Message, "response did not match schema") {
+				t.Errorf("message = %q", noObjErr.Message)
+			}
+			if !strings.Contains(noObjErr.Cause.Error(), tc.cause) {
+				t.Errorf("cause = %q, want %q", noObjErr.Cause.Error(), tc.cause)
+			}
+		})
+	}
+}
+
+// TS parseAndValidateObjectResultWithRepair only invokes repairText for a
+// JSONParseError / TypeValidationError cause, not when no text was returned.
+func TestGenerateObject_RepairTextNotCalledWithoutTextPart(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model:  model,
+		Prompt: "x",
+		Schema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"}),
+		RepairText: func(context.Context, string, error) (*string, error) {
+			called = true
+			s := `{}`
+			return &s, nil
+		},
+	})
+	var noObjErr *NoObjectGeneratedError
+	if !errors.As(err, &noObjErr) || !strings.Contains(noObjErr.Message, "did not return a response") {
+		t.Fatalf("err = %v", err)
+	}
+	if called {
+		t.Fatal("repairText must not be called when the model returned no text")
+	}
+}

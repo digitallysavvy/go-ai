@@ -2,6 +2,7 @@ package providerutils
 
 import (
 	"encoding/json"
+	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -92,10 +93,75 @@ func ConvertToResponseMessages(toolCalls []types.ToolCall, content []types.Conte
 	if len(parts) > 0 {
 		messages = append(messages, types.Message{
 			Role:    types.RoleTool,
-			Content: parts,
+			Content: sortToolResultContentByToolCallOrder(parts, toolCallOrder(toolCalls, content)),
 		})
 	}
 	return messages
+}
+
+// toolCallOrder maps each tool call ID to its position in the assistant
+// content (first appearance wins), falling back to the toolCalls list for
+// calls absent from content. Mirrors the TS toolCallOrder map in
+// toResponseMessages.
+func toolCallOrder(toolCalls []types.ToolCall, content []types.ContentPart) map[string]int {
+	order := map[string]int{}
+	add := func(id string) {
+		if _, ok := order[id]; !ok {
+			order[id] = len(order)
+		}
+	}
+	for _, part := range content {
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			add(p.ToolCallID)
+		case *types.ToolCallContent:
+			if p != nil {
+				add(p.ToolCallID)
+			}
+		}
+	}
+	for _, call := range toolCalls {
+		add(call.ID)
+	}
+	return order
+}
+
+// sortToolResultContentByToolCallOrder reorders the tool-result parts of a
+// tool message into tool call order (parallel tools resolve in completion
+// order). Non-result parts keep their slots; results for unknown calls go
+// last, keeping their relative order. Mirrors TS
+// sortToolResultContentByToolCallOrder.
+func sortToolResultContentByToolCallOrder(parts []types.ContentPart, order map[string]int) []types.ContentPart {
+	var slots []int
+	var results []types.ToolResultContent
+	for i, part := range parts {
+		if r, ok := part.(types.ToolResultContent); ok {
+			slots = append(slots, i)
+			results = append(results, r)
+		}
+	}
+	if len(results) < 2 {
+		return parts
+	}
+	sort.SliceStable(results, func(a, b int) bool {
+		ao, aok := order[results[a].ToolCallID]
+		bo, bok := order[results[b].ToolCallID]
+		switch {
+		case !aok && !bok:
+			return false
+		case !aok:
+			return false
+		case !bok:
+			return true
+		}
+		return ao < bo
+	})
+	out := make([]types.ContentPart, len(parts))
+	copy(out, parts)
+	for i, slot := range slots {
+		out[slot] = results[i]
+	}
+	return out
 }
 
 func approvalResponseToolCallID(response types.ToolApprovalResponseContent) string {

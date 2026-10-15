@@ -2071,6 +2071,12 @@ func responseMessagesFromSteps(steps []types.StepResult) []types.Message {
 	return messages
 }
 
+// RefineToolCalls applies the per-tool input refiners to the valid calls.
+// Mirroring TS parseToolCall, where the refiner runs inside the parse try
+// block, a refiner that fails does not abort the generation: the call becomes
+// an invalid dynamic call carrying the error (which is then reported back to
+// the model like any other invalid tool call). Only a cancelled ctx is
+// returned as an error.
 func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.Tool, refiners map[string]ToolInputRefiner, runtimeContext interface{}, toolsContext map[string]interface{}) ([]types.ToolCall, error) {
 	if len(calls) == 0 || len(refiners) == 0 {
 		return calls, nil
@@ -2095,7 +2101,13 @@ func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.
 			ToolsContext:   toolsContext,
 		})
 		if err != nil {
-			return nil, err
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			refined[i].Dynamic = true
+			refined[i].Invalid = true
+			refined[i].Error = err
+			continue
 		}
 		if input != nil {
 			refined[i].Arguments = input

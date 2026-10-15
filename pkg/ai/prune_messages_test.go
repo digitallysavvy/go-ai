@@ -388,3 +388,24 @@ func TestPruneModelMessages_InvalidReasoningValue(t *testing.T) {
 		t.Fatal("expected an error for an invalid reasoning value")
 	}
 }
+
+// TS: `toolCall.tools != null` — an explicit empty tools list is non-null and
+// matches no tool, so nothing is pruned.
+func TestPruneModelMessages_EmptyToolsListPrunesNothing(t *testing.T) {
+	t.Parallel()
+
+	messages := []types.Message{
+		userMsg("hi"),
+		assistantMsg(types.ToolCallContent{ToolCallID: "c1", ToolName: "w"}),
+		toolMsg(types.ToolResultContent{ToolCallID: "c1", ToolName: "w"}),
+	}
+	out, err := PruneModelMessages(messages, PruneModelMessagesOptions{
+		ToolCalls: []PruneToolCallsRule{{Type: "all", Tools: []string{}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("expected nothing pruned, got %+v", out)
+	}
+}

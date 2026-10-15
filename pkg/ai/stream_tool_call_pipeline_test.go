@@ -437,3 +437,54 @@ func TestStreamTextInvalidToolCallErrorChunkOrder(t *testing.T) {
 		t.Fatalf("expected step 1's tool-result chunks (including the invalid call's synthesized error) before step 2's text — invalid calls must not be deferred past the stream, got order = %+v", order)
 	}
 }
+
+// TS toUIMessageChunk isDynamic: a registered tool decides on its own type, so
+// an invalid call to a static tool is not flagged dynamic; a call to a tool
+// missing from the tool set keeps the call's own dynamic flag.
+func TestStreamTextUIMessageStreamInvalidToolCallDynamicFlag(t *testing.T) {
+	t.Parallel()
+
+	step := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+			step++
+			if step == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "bad-1", ToolName: "testTool", RawArguments: `{"value":1}`}},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "bogus-1", ToolName: "bogus", RawArguments: `{}`}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	tool := pipelineTestTool("testTool", func(map[string]interface{}) (interface{}, error) { return "ok", nil })
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "hi",
+		Tools:    []types.Tool{tool},
+		StopWhen: []StopCondition{StepCountIs(1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunks, errCh := CreateUIMessageStream(context.Background(), result)
+	dynamic := map[string]interface{}{}
+	for c := range chunks {
+		if c["type"] == "tool-input-error" {
+			dynamic[c["toolName"].(string)] = c["dynamic"]
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := dynamic["testTool"]; !ok || v != nil {
+		t.Errorf("registered static tool: dynamic = %v (present=%v), want absent", v, ok)
+	}
+	if dynamic["bogus"] != true {
+		t.Errorf("unknown tool: dynamic = %v, want true", dynamic["bogus"])
+	}
+}
