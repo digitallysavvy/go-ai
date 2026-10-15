@@ -236,14 +236,17 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			// chunk and the transform CONTINUES reading, it does not terminate
 			// the stream. Previously Go returned this as a terminal Next()
 			// error, ending the stream outright (P1-1c part 2).
-			message := "JSON parsing failed: Text: " + event.Data + "."
-			if json.Valid([]byte(event.Data)) {
-				message = fmt.Sprintf("failed to parse stream chunk: %v", err)
+			var chunkErr error
+			if !json.Valid([]byte(event.Data)) {
+				var probe interface{}
+				chunkErr = providererrors.NewJSONParseError(event.Data, json.Unmarshal([]byte(event.Data), &probe))
+			} else {
+				chunkErr = providererrors.NewValidationErrorWithContext(compactJSONString(event.Data), fmt.Sprintf("failed to parse stream chunk: %v", err), err, &providererrors.ValidationContext{})
 			}
 			errChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
-				Text: message,
-				Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
+				Text: chunkErr.Error(),
+				Err:  chunkErr,
 			}
 			if len(s.chunkBuffer) > 0 {
 				// A raw chunk precedes the error.

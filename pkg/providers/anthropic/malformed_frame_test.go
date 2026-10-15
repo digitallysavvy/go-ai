@@ -1,11 +1,13 @@
 package anthropic
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TS createEventSourceResponseHandler yields {success:false} for a frame that
@@ -24,6 +26,10 @@ func TestStreamMalformedFrameIsErrorChunkAndStreamContinues(t *testing.T) {
 			}
 			if chunk.Type != provider.ChunkTypeError || chunk.Err == nil {
 				t.Fatalf("first chunk = %+v, want error chunk", chunk)
+			}
+			var jpe *providererrors.JSONParseError
+			if !errors.As(chunk.Err, &jpe) || jpe.Text != "{not json" {
+				t.Fatalf("Err = %#v, want *JSONParseError", chunk.Err)
 			}
 			chunk, err = stream.Next()
 			if err != nil {
