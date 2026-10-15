@@ -180,6 +180,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | Field | Type | Description |
 | --- | --- | --- |
 | (embedded) | `*agent.AgentResult` | Embedded. |
+| `ResponseMessages` | `[]types.Message` | ResponseMessages are the messages this run added to the conversation: first the tool message holding the results of any tool approvals the run resumed (executed before the first model call), then each step's assistant and tool messages. Append them to the input messages to continue the conversation (TS result.response.messages). |
 
 {/* /gen:fields */}
 

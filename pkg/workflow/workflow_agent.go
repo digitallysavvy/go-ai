@@ -339,7 +339,16 @@ type WorkflowStreamOptions struct {
 }
 
 // WorkflowResult is the final non-streaming workflow result.
-type WorkflowResult struct{ *agent.AgentResult }
+type WorkflowResult struct {
+	*agent.AgentResult
+
+	// ResponseMessages are the messages this run added to the conversation:
+	// first the tool message holding the results of any tool approvals the
+	// run resumed (executed before the first model call), then each step's
+	// assistant and tool messages. Append them to the input messages to
+	// continue the conversation (TS result.response.messages).
+	ResponseMessages []types.Message
+}
 
 // IsLoopFinished reports whether the workflow ended naturally.
 func (r *WorkflowResult) IsLoopFinished() bool {
@@ -552,6 +561,10 @@ type workflowApprovalResumeOptions struct {
 	// toolCallConcurrency bounds concurrent approved tool executions; 0 means
 	// unbounded.
 	toolCallConcurrency int
+	// initialResponse, when non-nil, receives the tool message holding the
+	// resumed approvals' results (TS initialResponseMessages), so generate can
+	// report it as the first response message.
+	initialResponse *[]types.Message
 }
 
 // processWorkflowApprovalResume resolves tool approvals from the last tool
@@ -788,7 +801,11 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		}
 	}
 	if len(localResults) > 0 {
-		cleaned = append(cleaned, types.Message{Role: types.RoleTool, Content: localResults})
+		toolMessage := types.Message{Role: types.RoleTool, Content: localResults}
+		cleaned = append(cleaned, toolMessage)
+		if opts.initialResponse != nil {
+			*opts.initialResponse = append(*opts.initialResponse, toolMessage)
+		}
 	}
 	if len(localResults) > 0 || deniedChunks > 0 {
 		prefixChunks = append(prefixChunks,
@@ -1357,7 +1374,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
+	var initialResponseMessages []types.Message
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
+		initialResponse:     &initialResponseMessages,
 		messages:            opts.Messages,
 		tools:               effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts),
 		runtimeContext:      firstNonNil(opts.RuntimeContext, w.RuntimeContext),
@@ -1424,7 +1443,11 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			TotalTokens:  result.Usage.TotalTokens,
 		},
 	})
-	return &WorkflowResult{AgentResult: result}, nil
+	responseMessages := append([]types.Message(nil), initialResponseMessages...)
+	for _, step := range result.Steps {
+		responseMessages = append(responseMessages, step.Response.Messages...)
+	}
+	return &WorkflowResult{AgentResult: result, ResponseMessages: responseMessages}, nil
 }
 
 // workflowModelInfo returns the model's provider and model id, or two empty

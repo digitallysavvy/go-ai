@@ -51,3 +51,49 @@ func TestWorkflowGenerateRejectsMissingToolResults(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, m.calls)
 	}
 }
+
+// TS generate: result.response.messages starts with the tool message holding
+// the results of the approvals the run resumed, so callers appending the
+// response to their history do not re-execute those approvals next turn.
+func TestWorkflowGenerateResponseMessagesIncludeResumedApprovalResults(t *testing.T) {
+	m := &wfJSONModel{}
+	a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: []types.Tool{{
+		Name:         "getWeather",
+		ToolApproval: true,
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "sunny", nil
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Messages: []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Weather?"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "call-1", ToolName: "getWeather", Arguments: map[string]interface{}{}},
+			types.ToolApprovalRequestContent{ApprovalID: "approval-call-1", ToolCallID: "call-1"},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolApprovalResponseContent{ApprovalID: "approval-call-1", Approved: true},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ResponseMessages) < 2 {
+		t.Fatalf("response messages = %+v, want the resumed tool message then the assistant reply", res.ResponseMessages)
+	}
+	first := res.ResponseMessages[0]
+	found := false
+	for _, part := range first.Content {
+		if r, ok := part.(types.ToolResultContent); ok && r.ToolCallID == "call-1" {
+			found = true
+		}
+	}
+	if first.Role != types.RoleTool || !found {
+		t.Fatalf("first response message = %+v, want tool result for call-1", first)
+	}
+	if last := res.ResponseMessages[len(res.ResponseMessages)-1]; last.Role != types.RoleAssistant {
+		t.Fatalf("last response message role = %s, want assistant", last.Role)
+	}
+}

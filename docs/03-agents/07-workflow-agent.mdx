@@ -87,6 +87,11 @@ agent's). `ToolSet` entries reach the model sorted by name, so the tool list is 
 `OnError` and `OnAbort` fire for failures that happen while a stream is being consumed (provider error chunks,
 cancellation), not only before it starts.
 
+### Continuing the conversation
+
+`WorkflowResult.ResponseMessages` holds the messages the run added: first the tool message with the results of any
+approvals the run resumed, then each step's assistant and tool messages. Append them to the input messages for the next turn.
+
 ### Telemetry and runtime context
 
 Workflow telemetry events carry only the runtime context keys you opt in to with
