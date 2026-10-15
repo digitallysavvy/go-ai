@@ -2003,13 +2003,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// forwarded chunk itself.
 			if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
 				enriched := enrichToolCallMetadata([]types.ToolCall{*chunk.ToolCall}, stepTools)[0]
-				parsed, parseErr := ParseToolCall(stepCtx, ParseToolCallOptions{
+				refined, parsed, parseErr := parseAndRefineToolCall(stepCtx, ParseToolCallOptions{
 					ToolCall:            enriched,
 					Tools:               stepTools,
 					RepairToolCall:      repairToolCall,
 					Instructions:        stepInstructions,
 					InstructionMessages: stepInstructionMessages,
 					Messages:            currentMessages,
+					RefineToolInput:     opts.ExperimentalRefineToolInput,
+					RuntimeContext:      r.cbRuntimeCtx,
+					ToolsContext:        r.cbToolsCtx,
 				})
 				if parseErr != nil {
 					// Only a context cancellation reaches here (ParseToolCall
@@ -2021,12 +2024,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					break
 				}
 				preRefinementCalls = append(preRefinementCalls, parsed)
-				refinedCalls, refErr := RefineToolCalls(stepCtx, []types.ToolCall{parsed}, stepTools, opts.ExperimentalRefineToolInput, r.cbRuntimeCtx, r.cbToolsCtx)
-				if refErr != nil {
-					r.err = fmt.Errorf("tool input refinement failed at step %d: %w", stepNum, refErr)
-					break
-				}
-				refined := refinedCalls[0]
 				chunk.ToolCall = &refined
 				stepToolCalls = append(stepToolCalls, refined)
 				stepContent = append(stepContent, toolCallContentOf(refined))
