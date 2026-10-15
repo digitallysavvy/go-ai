@@ -6,8 +6,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -222,7 +224,7 @@ func renderToolExampleCall(name string, tool types.Tool) string {
 			input = map[string]interface{}{}
 		}
 	}
-	encoded, err := json.Marshal(input)
+	encoded, err := jsonstr.Marshal(input)
 	if err != nil {
 		encoded = []byte("{}")
 	}
@@ -268,24 +270,38 @@ func resolveOutputSchema(tool types.Tool) (jsonSchemaMap, bool) {
 }
 
 func toJSONSchemaMap(v interface{}) (jsonSchemaMap, bool) {
+	var raw map[string]interface{}
 	switch s := v.(type) {
 	case jsonSchemaMap:
-		if len(s) == 0 {
-			return nil, false
-		}
-		return s, true
+		raw = s
 	case schema.Schema:
 		if s == nil {
 			return nil, false
 		}
-		js := s.Validator().JSONSchema()
-		if len(js) == 0 {
-			return nil, false
-		}
-		return js, true
+		raw = s.Validator().JSONSchema()
 	default:
 		return nil, false
 	}
+	if len(raw) == 0 {
+		return nil, false
+	}
+	return normalizeJSONSchema(raw)
+}
+
+// normalizeJSONSchema turns a schema built from Go-typed values ([]string
+// for required/enum/type, int numbers, ...) into the generic JSON shapes the
+// renderers read ([]interface{}, float64, nested maps), as the schema looks
+// once serialized -- the form TS always sees.
+func normalizeJSONSchema(raw map[string]interface{}) (jsonSchemaMap, bool) {
+	data, err := jsonstr.Marshal(raw)
+	if err != nil {
+		return nil, false
+	}
+	var out jsonSchemaMap
+	if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 func schemaToType(s jsonSchemaMap, root jsonSchemaMap) string {
@@ -305,7 +321,7 @@ func schemaToTypeInner(s jsonSchemaMap, ctx schemaContext) string {
 		return schemaToTypeInner(resolved, nextContext(ctx))
 	}
 
-	if constVal, ok := s["const"]; ok && constVal != nil {
+	if constVal, ok := s["const"]; ok {
 		return literalType(constVal)
 	}
 
@@ -328,8 +344,8 @@ func schemaToTypeInner(s jsonSchemaMap, ctx schemaContext) string {
 		return strings.Join(parts, " & ")
 	}
 
-	switch t := s["type"].(type) {
-	case []interface{}:
+	typeVal := s["type"]
+	if t, ok := typeVal.([]interface{}); ok {
 		parts := make([]string, len(t))
 		for i, part := range t {
 			variant := jsonSchemaMap{}
@@ -340,28 +356,24 @@ func schemaToTypeInner(s jsonSchemaMap, ctx schemaContext) string {
 			parts[i] = schemaToTypeInner(variant, ctx)
 		}
 		return union(parts)
-	case string:
-		switch t {
-		case "object":
-			return objectType(s, ctx)
-		case "array":
-			return arrayType(s, ctx)
-		case "string":
-			return "string"
-		case "number", "integer":
-			return "number"
-		case "boolean":
-			return "boolean"
-		case "null":
-			return "null"
-		}
 	}
 
-	if _, ok := s["properties"].(jsonSchemaMap); ok {
+	typeStr, _ := typeVal.(string)
+	if _, hasProps := s["properties"].(jsonSchemaMap); typeStr == "object" || hasProps {
 		return objectType(s, ctx)
 	}
-	if _, hasItems := s["items"]; hasItems {
+	if _, hasItems := s["items"]; typeStr == "array" || hasItems {
 		return arrayType(s, ctx)
+	}
+	switch typeStr {
+	case "string":
+		return "string"
+	case "number", "integer":
+		return "number"
+	case "boolean":
+		return "boolean"
+	case "null":
+		return "null"
 	}
 
 	return "unknown"
@@ -465,7 +477,7 @@ func sampleFromSchemaInner(s jsonSchemaMap, ctx schemaContext) interface{} {
 	if ctx.depth > maxSchemaDepth {
 		return nil
 	}
-	if def, ok := s["default"]; ok && def != nil {
+	if def, ok := s["default"]; ok {
 		return def
 	}
 	if ref, ok := stringField(s, "$ref"); ok {
@@ -631,7 +643,7 @@ func union(parts []string) string {
 func literalType(value interface{}) string {
 	switch v := value.(type) {
 	case string:
-		encoded, _ := json.Marshal(v)
+		encoded, _ := jsonstr.Marshal(v)
 		return string(encoded)
 	case float64:
 		return formatNumber(v)
@@ -676,7 +688,7 @@ func formatObjectKey(key string) string {
 	if isIdentifier(key) {
 		return key
 	}
-	encoded, _ := json.Marshal(key)
+	encoded, _ := jsonstr.Marshal(key)
 	return string(encoded)
 }
 
@@ -684,7 +696,7 @@ func formatPropertyAccess(key string) string {
 	if isIdentifier(key) {
 		return "." + key
 	}
-	encoded, _ := json.Marshal(key)
+	encoded, _ := jsonstr.Marshal(key)
 	return "[" + string(encoded) + "]"
 }
 
@@ -735,7 +747,7 @@ func compactObjectType(lines []string) (string, bool) {
 		}
 	}
 	compact := "{ " + strings.Join(fields, " ") + " }"
-	if len(compact) <= maxCompactObjectTypeLength {
+	if len(utf16.Encode([]rune(compact))) <= maxCompactObjectTypeLength {
 		return compact, true
 	}
 	return "", false
