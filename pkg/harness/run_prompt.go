@@ -2422,7 +2422,19 @@ func (d *turnDriver) processResultContinuation(pending PendingToolResult, contin
 		output, isError := unwrapToolResultOutput(*continuation)
 		submission.Output = output
 		submission.IsError = isError
-		submission.ToolResult = continuation
+		// TS: `{...continuation, toolName: pendingResult.toolName,
+		// providerOptions: pendingResult.providerOptions when the
+		// continuation has none}`. The fallback carries adapter-private state
+		// (e.g. ACP's native question request) stamped on the tool call.
+		tr := *continuation
+		tr.ToolName = pending.ToolName
+		if tr.ProviderOptions == nil && len(pending.ProviderOptions) > 0 {
+			tr.ProviderOptions = make(map[string]interface{}, len(pending.ProviderOptions))
+			for k, v := range pending.ProviderOptions {
+				tr.ProviderOptions[k] = v
+			}
+		}
+		submission.ToolResult = &tr
 	case pending.CompletedResult != nil:
 		submission.Output = pending.CompletedResult.Output
 		if pending.CompletedResult.IsError != nil {
@@ -2460,7 +2472,7 @@ func unwrapToolResultOutput(result types.ToolResultContent) (output interface{},
 	case types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON, types.ToolResultOutputError:
 		return result.Output.Value, true
 	case types.ToolResultOutputExecutionDenied:
-		return map[string]interface{}{"type": string(result.Output.Type), "reason": result.Output.Reason}, false
+		return executionDeniedOutput(result.Output.Reason), false
 	case types.ToolResultOutputContent:
 		return result.Output, false
 	default:

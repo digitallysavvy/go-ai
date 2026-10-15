@@ -131,3 +131,43 @@ func TestRunPrompt_ApprovedContinuationSurfacesToolResult(t *testing.T) {
 		t.Fatalf("OnToolExecutionEnd result = %v, want the raw output", endOut)
 	}
 }
+
+// A client tool-result continuation is submitted with the pending call's tool
+// name and, when it carries none, the pending call's providerOptions (TS
+// processPendingToolResultContinuation) — adapters read private state such as
+// ACP's native question request from them.
+func TestRunPrompt_ResultContinuationInheritsPendingNameAndProviderOptions(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		continueScript: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Mode: "continue",
+		SandboxSession: testSandbox(),
+		PendingToolResults: []PendingToolResult{{
+			ToolCallID: "c1", ToolName: "ask", Input: `{}`,
+			ProviderOptions: map[string]map[string]any{"mock": {"nativeRequest": "req-1"}},
+		}},
+		ToolResultContinuations: []types.ToolResultContent{{
+			ToolCallID: "c1", ToolName: "client-name",
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "yes"},
+		}},
+	})
+	drainRunPrompt(t, out)
+
+	if len(mock.toolResults) != 1 {
+		t.Fatalf("submitted = %+v, want one", mock.toolResults)
+	}
+	tr, _ := mock.toolResults[0].ToolResult.(*types.ToolResultContent)
+	if tr == nil || tr.ToolName != "ask" {
+		t.Fatalf("submitted tool result = %+v, want toolName ask", mock.toolResults[0].ToolResult)
+	}
+	inner, _ := tr.ProviderOptions["mock"].(map[string]any)
+	if inner["nativeRequest"] != "req-1" {
+		t.Fatalf("providerOptions = %+v, want the pending call's", tr.ProviderOptions)
+	}
+}
