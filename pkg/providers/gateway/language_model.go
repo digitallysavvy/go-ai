@@ -565,7 +565,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 
 	case "error":
 		if chunk.Error == nil {
-			return &provider.StreamChunk{Type: provider.ChunkTypeError}, fmt.Errorf("stream error"), true
+			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: "stream error", Err: fmt.Errorf("stream error")}, nil, true
 		}
 		var code interface{}
 		if len(chunk.Error.Code) > 0 {
@@ -597,7 +597,7 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			Text:        chunk.Error.Message,
 			AbortReason: chunk.Error.Message,
 			Err:         streamErr,
-		}, fmt.Errorf("stream error: %s", chunk.Error.Message), true
+		}, nil, true
 
 	default:
 		// Skip unknown chunk types and get next chunk

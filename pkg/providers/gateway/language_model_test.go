@@ -139,6 +139,11 @@ func TestGatewayTextStreamErrorChunkAttachesStructuredPayload(t *testing.T) {
 	if chunk == nil {
 		t.Fatalf("stream.Next() chunk = nil, err = %v", err)
 	}
+	// TS forwards the error part like any other part: the stream keeps going
+	// (finish follows), so the error rides on the chunk, not on Next().
+	if err != nil {
+		t.Fatalf("stream.Next() err = %v, want nil", err)
+	}
 	if chunk.Type != provider.ChunkTypeError {
 		t.Fatalf("chunk.Type = %v, want ChunkTypeError", chunk.Type)
 	}
