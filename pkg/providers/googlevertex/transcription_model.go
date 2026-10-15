@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -116,14 +117,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message := providererrors.ExtractAPIErrorMessage(respBody)
-		if message == "" {
-			message = fmt.Sprintf("google vertex transcription request failed: %d %s", resp.StatusCode, string(respBody))
-		}
-		perr := providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", message, nil)
-		perr.ResponseBody = string(respBody)
-		perr.ResponseHeaders = providerutils.ExtractHeaders(resp.Header)
-		return nil, perr
+		return nil, gemini.GoogleHTTPError(m.Provider(), resp.StatusCode, resp.Header, respBody, nil)
 	}
 
 	var parsed vertexTranscriptionResponse
