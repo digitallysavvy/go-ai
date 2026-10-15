@@ -178,10 +178,23 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		}
 	}
 
-	// Check if we have at least one image
+	// TS returns an empty `images` array for an empty `data` array (core then
+	// retries and throws NoImageGeneratedError), so this is not an error.
 	if len(resp.Data) == 0 {
-		return nil, providererrors.NewProviderError("xai.image", 0, "",
-			"no images in response", nil)
+		meta := XAIImageMetadata{Images: []XAIImageItemMetadata{}}
+		if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
+			meta.CostInUsdTicks = resp.Usage.CostInUsdTicks
+		}
+		return &types.ImageResult{
+			MimeType: "image/png",
+			Warnings: warnings,
+			Response: &types.ResponseMetadata{
+				Timestamp: responseTimestamp,
+				ModelID:   m.modelID,
+				Headers:   flattenHeaders(httpResp.Headers),
+			},
+			ProviderMetadata: map[string]interface{}{"xai": meta},
+		}, nil
 	}
 
 	images, base64Images, err := m.responseImages(callCtx, resp.Data)

@@ -392,3 +392,13 @@ func TestImageModel_DoGenerate_UsesVersionRelativePath(t *testing.T) {
 		t.Fatalf("path = %q, want /v1/images/generations", requestPath)
 	}
 }
+
+// TS returns an empty `images` array for empty `data`; core retries and then
+// throws NoImageGeneratedError, so convertResponse must not error.
+func TestImageModelConvertResponseEmptyDataIsNotAnError(t *testing.T) {
+	m := &ImageModel{}
+	res, err := m.convertResponse(openaiImageResponse{})
+	if err != nil || len(res.Images) != 0 {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}

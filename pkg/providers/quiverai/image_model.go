@@ -99,7 +99,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, m.handleError(err)
 	}
 	if len(response.Data) == 0 {
-		return nil, providererrors.NewProviderError("quiverai", 0, "", "no SVGs in response", nil)
+		// TS returns an empty `images` array; core retries and then throws
+		// NoImageGeneratedError, so an empty response is not a provider error.
+		return &types.ImageResult{}, nil
 	}
 
 	images := make([][]byte, len(response.Data))

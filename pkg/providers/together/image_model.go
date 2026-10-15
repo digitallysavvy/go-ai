@@ -213,7 +213,9 @@ func (m *ImageModel) convertResponse(body []byte) (*types.ImageResult, error) {
 	}
 
 	if len(response.Data) == 0 {
-		return nil, fmt.Errorf("no images generated")
+		// TS returns an empty `images` array; core retries and then throws
+		// NoImageGeneratedError, so an empty response is not a provider error.
+		return &types.ImageResult{}, nil
 	}
 
 	result := &types.ImageResult{

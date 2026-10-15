@@ -452,7 +452,18 @@ func firstNonEmpty(values ...string) string {
 
 func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.ImageResult, error) {
 	if len(response.Data) == 0 {
-		return nil, fmt.Errorf("no image data returned from OpenAI")
+		// TS returns an empty `images` array; core then retries and finally
+		// throws NoImageGeneratedError, so this is not a provider error.
+		empty := &types.ImageResult{
+			MimeType:         "image/png",
+			ProviderMetadata: map[string]interface{}{"openai": map[string]interface{}{"images": []map[string]interface{}{}}},
+		}
+		if u := response.Usage; u != nil {
+			empty.Usage.InputTokens = u.InputTokens
+			empty.Usage.OutputTokens = u.OutputTokens
+			empty.Usage.TotalTokens = u.TotalTokens
+		}
+		return empty, nil
 	}
 	images := make([][]byte, 0, len(response.Data))
 	b64 := make([]string, 0, len(response.Data))

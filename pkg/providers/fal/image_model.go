@@ -371,7 +371,12 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 		rawImages = []map[string]interface{}{img}
 	}
 	if len(rawImages) == 0 {
-		return nil, fmt.Errorf("no images generated")
+		if _, hasImages := top["images"]; !hasImages {
+			return nil, fmt.Errorf("no images generated")
+		}
+		// TS accepts an empty `images` array and returns it empty; core
+		// retries and then throws NoImageGeneratedError.
+		return &types.ImageResult{}, nil
 	}
 
 	var hasNSFW, nsfwDetected []bool
