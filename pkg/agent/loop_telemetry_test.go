@@ -94,8 +94,11 @@ func TestGenerateAgentToolCallConcurrencyBoundsLegacyLoop(t *testing.T) {
 		return overlapped
 	}
 	one, two := 1, 2
-	if run(nil) || run(&one) {
-		t.Fatal("unset (legacy) and limit 1 must run tools sequentially")
+	if run(&one) {
+		t.Fatal("limit 1 must run tools sequentially")
+	}
+	if !run(nil) {
+		t.Fatal("unset limit must run tools concurrently (TS parity)")
 	}
 	if !run(&two) {
 		t.Fatal("limit 2 should run both tool calls concurrently")

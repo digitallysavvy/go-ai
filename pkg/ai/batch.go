@@ -656,6 +656,12 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		if normErr != nil {
 			return provider.BatchV4Request{}, normErr
 		}
+		// convertToLanguageModelPrompt also rejects a tool call without a
+		// result (MissingToolResultsError); batch never executes tools, so the
+		// prompt must already be complete.
+		if err := validateStepToolResults(normalizedPrompt.Messages, t.Tools); err != nil {
+			return provider.BatchV4Request{}, err
+		}
 		// Mirrors TypeScript's `prepareTools({ tools, toolOrder, toolsContext })`
 		// in packages/ai/src/batch/batch.ts: dynamic tool descriptions are
 		// resolved via toolsContext, then tools are reordered per toolOrder.

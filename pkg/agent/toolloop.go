@@ -604,6 +604,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		RuntimeContext:       a.runtimeContext(),
 		Secret:               a.config.ExperimentalToolApprovalSecret,
 		RefineToolInput:      a.config.ExperimentalRefineToolInput,
+		ToolCallConcurrency:  a.config.ToolCallConcurrency,
 		ModelProvider:        a.config.Model.Provider(),
 		ModelID:              a.config.Model.ModelID(),
 		OnToolExecutionStart: cbs.onToolCallStart,
@@ -787,6 +788,13 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 					shouldContinue = false
 					break
 				}
+			}
+			// Continue only after every local tool call has a result (TS:
+			// clientToolOutputs + denied === clientToolCalls); a call left
+			// without one (a tool with no Execute) pauses the loop instead of
+			// sending the model a dangling tool call.
+			if hasUnresolvedLocalAgentToolCalls(stepResult.ToolCalls, executionTools, toolResults) {
+				shouldContinue = false
 			}
 		}
 		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
@@ -1464,6 +1472,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		System:   callConfig.System,
 	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+
+	// Reject a prompt that leaves a tool call without a result, as
+	// GenerateText does (TS convertToLanguageModelPrompt, MissingToolResultsError).
+	if err := validateStepToolResults(prompt.Messages, callConfig.Tools); err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
@@ -2575,4 +2589,36 @@ func GetParentRunID(ctx context.Context) string {
 func GetTags(ctx context.Context) []string {
 	tags, _ := ctx.Value(tagsKey).([]string)
 	return tags
+}
+
+// validateStepToolResults returns a *types.MissingToolResultsError when the
+// step prompt has a tool call without a tool result before later context or
+// the end of the conversation. Provider-executed tools are exempt.
+func validateStepToolResults(messages []types.Message, tools []types.Tool) error {
+	var providerTools []string
+	for _, tool := range tools {
+		if tool.ProviderExecuted {
+			providerTools = append(providerTools, tool.Name)
+		}
+	}
+	return promptutils.ValidateToolResults(messages, providerTools...)
+}
+
+// hasUnresolvedLocalAgentToolCalls reports whether a locally executed tool call
+// of the step has no tool result (mirrors ai.hasUnresolvedLocalToolCalls).
+func hasUnresolvedLocalAgentToolCalls(calls []types.ToolCall, tools []types.Tool, results []types.ToolResult) bool {
+	resolved := make(map[string]bool, len(results))
+	for _, r := range results {
+		resolved[r.ToolCallID] = true
+	}
+	for _, call := range calls {
+		tool := findAgentTool(call.ToolName, tools)
+		if tool == nil || tool.ProviderExecuted {
+			continue
+		}
+		if !resolved[call.ID] {
+			return true
+		}
+	}
+	return false
 }
