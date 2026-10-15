@@ -71,9 +71,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	var response alibabaResponse
 	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    "/chat/completions",
+		Body:    reqBody,
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -94,12 +95,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	// Make streaming API request
 	httpResp, err := m.prov.client.DoStream(ctx, internalhttp.Request{
-		Method: "POST",
-		Path:   "/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  "POST",
+		Path:    "/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"strings"
@@ -71,7 +72,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	var response cohereV2Response
-	err = m.provider.client.PostJSON(ctx, "/v2/chat", reqBody, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/v2/chat",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -80,6 +86,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	// TS: response { id: generation_id, headers } (no timestamp/model id).
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	result.ResponseMetadata = &types.ResponseMetadata{ID: response.GenerationID, Headers: result.ResponseHeaders}
 	return result, nil
 }
 
@@ -94,9 +103,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	reqBody["stream"] = true
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v2/chat",
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    "/v2/chat",
+		Body:    reqBody,
+		Headers: opts.Headers,
 	})
 	if err != nil {
 		return nil, m.handleError(err)
