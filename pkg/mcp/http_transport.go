@@ -375,6 +375,11 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	return nil
 }
 
+// sessionTerminateTimeout bounds the session-termination DELETE in Close when
+// the caller's context has no earlier deadline (undici's 5 minute headers
+// timeout is what bounds TS's close()). A variable so tests can shorten it.
+var sessionTerminateTimeout = 5 * time.Minute
+
 // Close closes the connection. When a streamable HTTP session is
 // established and TerminateSessionOnClose is enabled (the default), it sends
 // a best-effort DELETE with the session id before disconnecting (hash
@@ -413,6 +418,12 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	t.mu.Unlock()
 
 	if terminate && sessionID != "" && !t.isModernProtocol() && ctx.Err() == nil {
+		// A server that never answers the DELETE must not hang Close. TS has
+		// no deadline of its own but Node's fetch (undici) gives up waiting
+		// for response headers after 5 minutes, so that bounds TS's close();
+		// the same bound applies here unless ctx ends sooner.
+		ctx, cancel := context.WithTimeout(ctx, sessionTerminateTimeout)
+		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err == nil {
 			req.Header.Set("mcp-session-id", sessionID)
