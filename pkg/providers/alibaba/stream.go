@@ -150,18 +150,6 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
-// emitParsedChunk decides how a freshly built chunk should be delivered:
-// returned immediately (chunk, true) if nothing is queued ahead of it, or
-// appended behind the pending flushQueue (nil, false) for the caller's
-// Next() loop to continue draining.
-func (s *alibabaStream) emitParsedChunk(chunk *provider.StreamChunk) (*provider.StreamChunk, bool) {
-	if len(s.flushQueue) == 0 {
-		return chunk, true
-	}
-	s.flushQueue = append(s.flushQueue, chunk)
-	return nil, false
-}
-
 // processChunk processes a single Alibaba stream chunk. Returns
 // (*provider.StreamChunk, bool), where ok=true means Next() should return
 // the chunk immediately and ok=false means Next() should continue its loop
