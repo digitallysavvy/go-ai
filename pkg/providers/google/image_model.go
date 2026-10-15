@@ -2,9 +2,7 @@ package google
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -156,12 +154,11 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if err != nil {
 		return nil, err
 	}
-	file, ok := firstGeneratedImage(lmResult.Content)
-	if !ok {
-		return nil, providererrors.NewProviderError("google", 0, "", "no image data in response", nil)
-	}
-	base64Image := base64.StdEncoding.EncodeToString(file.Data)
-	usage := types.ImageUsage{ImageCount: 1}
+	// Every image part is returned. A response without images is not an error
+	// here (TS returns an empty images array): the caller decides whether to
+	// retry, and a content-filter block is marked terminal.
+	out := gemini.ExtractImages(lmResult.Content)
+	usage := types.ImageUsage{ImageCount: len(out.Images)}
 	if lmResult.Usage.InputTokens != nil {
 		usage.InputTokens = int(*lmResult.Usage.InputTokens)
 	}
@@ -174,19 +171,29 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 
 	warnings := googleImageWarnings(opts)
 	warnings = append(warnings, lmResult.Warnings...)
-	return &types.ImageResult{
-		Image:        file.Data,
-		Images:       [][]byte{file.Data},
-		Base64Image:  base64Image,
-		Base64Images: []string{base64Image},
-		MimeType:     file.MediaType,
-		Usage:        usage,
-		Warnings:     warnings,
-		ProviderMetadata: map[string]interface{}{
-			"google": googleImageProviderMetadata(lmResult.ProviderMetadata, rawFinishReason(lmResult.RawResponse)),
-		},
-		Response: lmResult.ResponseMetadata,
-	}, nil
+	metadata := googleImageProviderMetadata(lmResult.ProviderMetadata, rawFinishReason(lmResult.RawResponse))
+	metadata["images"] = make([]map[string]interface{}, len(out.Images))
+	for i := range out.Images {
+		metadata["images"].([]map[string]interface{})[i] = map[string]interface{}{}
+	}
+	result := &types.ImageResult{
+		Images:           out.Images,
+		Base64Images:     out.Base64Images,
+		MimeType:         out.MediaType,
+		Usage:            usage,
+		Warnings:         warnings,
+		ProviderMetadata: map[string]interface{}{"google": metadata},
+		Response:         lmResult.ResponseMetadata,
+	}
+	if len(out.Images) > 0 {
+		result.Image = out.Images[0]
+		result.Base64Image = out.Base64Images[0]
+	}
+	if lmResult.FinishReason == types.FinishReasonContentFilter {
+		retryable := false
+		result.IsRetryable = &retryable
+	}
+	return result, nil
 }
 
 // rawFinishReason extracts the raw Gemini candidate finishReason string from
@@ -221,43 +228,8 @@ func googleGeminiImageContent(opts *provider.ImageGenerateOptions) []types.Conte
 }
 
 func geminiImageProviderOptions(opts *provider.ImageGenerateOptions) (map[string]interface{}, interface{}) {
-	googleOpts := map[string]interface{}{
-		"responseModalities": []string{"IMAGE"},
-	}
-	imageConfig := map[string]interface{}{}
-	if opts.AspectRatio != "" {
-		imageConfig["aspectRatio"] = opts.AspectRatio
-	}
-	for key, value := range extractGoogleOptions(opts.ProviderOptions) {
-		if key == "googleSearch" {
-			continue
-		}
-		if key == "imageSize" {
-			if value != nil {
-				imageConfig["imageSize"] = value
-			}
-			continue
-		}
-		if value != nil {
-			googleOpts[key] = value
-		}
-	}
-	if len(imageConfig) > 0 {
-		googleOpts["imageConfig"] = imageConfig
-	}
-	googleSearch := extractGoogleOptions(opts.ProviderOptions)["googleSearch"]
+	googleOpts, googleSearch := gemini.ImageCallOptions(extractGoogleOptions(opts.ProviderOptions), opts.AspectRatio, "imageSize")
 	return map[string]interface{}{"google": googleOpts}, googleSearch
-}
-
-func firstGeneratedImage(content []types.ContentPart) (types.GeneratedFileContent, bool) {
-	for _, part := range content {
-		file, ok := part.(types.GeneratedFileContent)
-		if !ok || !strings.HasPrefix(file.MediaType, "image/") || len(file.Data) == 0 {
-			continue
-		}
-		return file, true
-	}
-	return types.GeneratedFileContent{}, false
 }
 
 func googleImageProviderMetadata(providerMetadata map[string]interface{}, finishReason string) map[string]interface{} {

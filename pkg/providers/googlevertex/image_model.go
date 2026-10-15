@@ -2,14 +2,11 @@ package googlevertex
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
-	"fmt"
-	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 )
 
 // imagenRemovedError matches TS google-image-model.ts / google-vertex-image-model.ts
@@ -96,133 +93,87 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	return m.doGenerateGemini(ctx, opts)
 }
 
-// doGenerateGemini generates images using Gemini models via the generateContent API
+// doGenerateGemini generates images through the Vertex Gemini language model
+// (TS google-vertex-image-model.ts), so every language-model provider option,
+// request header and error mapping applies to image calls too.
 func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	// Image editing with masks is not supported for Gemini image models.
 	if opts.Mask != nil {
 		return nil, providererrors.NewProviderError("google-vertex", 0, "", "Gemini image models do not support mask-based image editing.", nil)
 	}
-	// Gemini image models use the language model API with responseModalities: ["IMAGE"]
-	genConfig := map[string]interface{}{
-		"responseModalities": []string{"IMAGE"},
-	}
-
-	// Add seed if specified for reproducible generation.
-	if opts.Seed != nil {
-		genConfig["seed"] = *opts.Seed
-	}
-
-	parts := vertexGeminiImageParts(opts)
-	reqBody := map[string]interface{}{
-		"contents": []map[string]interface{}{
-			{
-				"role":  "user",
-				"parts": parts,
-			},
+	vertexOpts, _ := gemini.ImageCallOptions(extractVertexOptions(opts.ProviderOptions), opts.AspectRatio, "sampleImageSize")
+	lmOpts := &provider.GenerateOptions{
+		Prompt: types.Prompt{
+			Messages: []types.Message{{
+				Role:    types.RoleUser,
+				Content: vertexGeminiImageContent(opts),
+			}},
 		},
-		"generationConfig": genConfig,
+		Seed:    opts.Seed,
+		Headers: opts.Headers,
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": vertexOpts,
+			"vertex":       vertexOpts,
+		},
 	}
 
-	// Add aspect ratio and/or imageSize if specified.
-	imageConfig := map[string]interface{}{}
-	if opts.AspectRatio != "" {
-		imageConfig["aspectRatio"] = opts.AspectRatio
-	}
-	if imageSize := resolveVertexImageSize(opts.ProviderOptions); imageSize != "" {
-		imageConfig["imageSize"] = imageSize
-	}
-	if len(imageConfig) > 0 {
-		genConfig["imageConfig"] = imageConfig
-	}
-	for key, value := range extractVertexOptions(opts.ProviderOptions) {
-		if value != nil {
-			genConfig[key] = value
-		}
-	}
-
-	// Build URL
-	path := fmt.Sprintf("/models/%s:generateContent", m.modelID)
-
-	// Make request
-	resp, err := m.prov.client.Post(ctx, path, reqBody)
+	lmResult, err := NewLanguageModel(m.prov, m.modelID).DoGenerate(ctx, lmOpts)
 	if err != nil {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to generate image: "+err.Error(), err)
+		return nil, err
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, providererrors.NewProviderError("google-vertex", resp.StatusCode, "",
-			fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
+	out := gemini.ExtractImages(lmResult.Content)
+	usage := types.ImageUsage{ImageCount: len(out.Images)}
+	if lmResult.Usage.InputTokens != nil {
+		usage.InputTokens = int(*lmResult.Usage.InputTokens)
 	}
-
-	// Parse response
-	var geminiResp vertexGeminiImageResponse
-	if err := json.Unmarshal(resp.Body, &geminiResp); err != nil {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to parse response: "+err.Error(), err)
+	if lmResult.Usage.OutputTokens != nil {
+		usage.OutputTokens = int(*lmResult.Usage.OutputTokens)
 	}
-
-	// Extract image from response
-	if len(geminiResp.Candidates) == 0 || len(geminiResp.Candidates[0].Content.Parts) == 0 {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "no image in response", nil)
+	if lmResult.Usage.TotalTokens != nil {
+		usage.TotalTokens = int(*lmResult.Usage.TotalTokens)
 	}
-
-	// Find the image part (inlineData with image/* mimeType)
-	var imageData []byte
-	var base64Image string
-	var mimeType string
-	for _, part := range geminiResp.Candidates[0].Content.Parts {
-		if part.InlineData != nil && len(part.InlineData.MimeType) >= 6 && part.InlineData.MimeType[:6] == "image/" {
-			data, err := base64.StdEncoding.DecodeString(part.InlineData.Data)
-			if err != nil {
-				return nil, providererrors.NewProviderError("google-vertex", 0, "", "failed to decode image: "+err.Error(), err)
-			}
-			imageData = data
-			base64Image = part.InlineData.Data
-			mimeType = part.InlineData.MimeType
-			break
-		}
+	imagesMeta := make([]map[string]interface{}, len(out.Images))
+	for i := range imagesMeta {
+		imagesMeta[i] = map[string]interface{}{}
 	}
-
-	if imageData == nil {
-		return nil, providererrors.NewProviderError("google-vertex", 0, "", "no image data in response", nil)
-	}
-
-	return &types.ImageResult{
-		Image:        imageData,
-		Images:       [][]byte{imageData},
-		Base64Image:  base64Image,
-		Base64Images: []string{base64Image},
-		MimeType:     mimeType,
-		Usage: types.ImageUsage{
-			ImageCount: 1,
-		},
-		Warnings: vertexImageWarnings(opts),
+	result := &types.ImageResult{
+		Images:       out.Images,
+		Base64Images: out.Base64Images,
+		MimeType:     out.MediaType,
+		Usage:        usage,
+		Warnings:     append(vertexImageWarnings(opts), lmResult.Warnings...),
 		ProviderMetadata: map[string]interface{}{
-			"googleVertex": map[string]interface{}{"images": []map[string]interface{}{{}}},
-			"vertex":       map[string]interface{}{"images": []map[string]interface{}{{}}},
+			"googleVertex": map[string]interface{}{"images": imagesMeta},
+			"vertex":       map[string]interface{}{"images": imagesMeta},
 		},
-	}, nil
+		Response: lmResult.ResponseMetadata,
+	}
+	if len(out.Images) > 0 {
+		result.Image = out.Images[0]
+		result.Base64Image = out.Base64Images[0]
+	}
+	if lmResult.FinishReason == types.FinishReasonContentFilter {
+		retryable := false
+		result.IsRetryable = &retryable
+	}
+	return result, nil
 }
 
-func vertexGeminiImageParts(opts *provider.ImageGenerateOptions) []map[string]interface{} {
-	parts := []map[string]interface{}{}
+func vertexGeminiImageContent(opts *provider.ImageGenerateOptions) []types.ContentPart {
+	parts := []types.ContentPart{}
 	if opts.Prompt != "" {
-		parts = append(parts, map[string]interface{}{"text": opts.Prompt})
+		parts = append(parts, types.TextContent{Text: opts.Prompt})
 	}
 	for _, file := range opts.Files {
-		if file.Type == "url" || file.URL != "" {
-			parts = append(parts, map[string]interface{}{
-				"fileData": map[string]interface{}{
-					"fileUri":  file.URL,
-					"mimeType": "image/*",
-				},
-			})
-			continue
+		mediaType := file.MediaType
+		if mediaType == "" {
+			mediaType = "image/*"
 		}
-		parts = append(parts, map[string]interface{}{
-			"inlineData": map[string]interface{}{
-				"mimeType": file.MediaType,
-				"data":     base64.StdEncoding.EncodeToString(file.Data),
-			},
+		parts = append(parts, types.FileContent{
+			Data:      file.Data,
+			MediaType: mediaType,
+			MimeType:  mediaType,
+			URL:       file.URL,
 		})
 	}
 	return parts
