@@ -20,27 +20,28 @@ import (
 )
 
 type interactionsStream struct {
-	ctx             context.Context
-	client          *internalhttp.Client
-	reader          io.ReadCloser
-	parser          *streaming.SSEParser
-	interactionID   string
-	headers         map[string]string
-	responseHeaders map[string]string
-	warnings        []types.Warning
-	timeoutMs       int
-	err             error
-	buffer          []*provider.StreamChunk
-	open            map[int]*interactionOpenBlock
-	startEmitted    bool
-	completed       bool
-	finishStatus    string
-	usage           *interactionsUsage
-	serviceTier     string
-	hasFunction     bool
-	lastEventID     string
-	resumable       bool
-	finished        bool
+	currentEventData string // raw JSON of the event being processed (error data)
+	ctx              context.Context
+	client           *internalhttp.Client
+	reader           io.ReadCloser
+	parser           *streaming.SSEParser
+	interactionID    string
+	headers          map[string]string
+	responseHeaders  map[string]string
+	warnings         []types.Warning
+	timeoutMs        int
+	err              error
+	buffer           []*provider.StreamChunk
+	open             map[int]*interactionOpenBlock
+	startEmitted     bool
+	completed        bool
+	finishStatus     string
+	usage            *interactionsUsage
+	serviceTier      string
+	hasFunction      bool
+	lastEventID      string
+	resumable        bool
+	finished         bool
 
 	// includeRawChunks emits a ChunkTypeRaw chunk with the parsed SSE payload
 	// ahead of the chunks each event produces (TS includeRawChunks).
@@ -274,6 +275,7 @@ restart:
 		if payload.EventID != "" {
 			s.lastEventID = payload.EventID
 		}
+		s.currentEventData = event.Data
 		s.processEvent(payload)
 		if len(s.buffer) > 0 {
 			goto restart
@@ -525,12 +527,29 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		s.appendFinish()
 	case "error":
 		s.finishStatus = InteractionStatusFailed
-		message := "google.interactions stream error"
-		if event.Error != nil && event.Error.Message != "" {
-			message = event.Error.Message
+		// TS: createProviderStreamError({message: error?.message ?? 'Unknown
+		// interaction error', type: 'error', code: error?.code, data: event}).
+		message := "Unknown interaction error"
+		var code interface{}
+		if event.Error != nil {
+			if event.Error.Message != nil {
+				message = *event.Error.Message
+			}
+			if event.Error.Code != "" {
+				code = event.Error.Code
+			}
+		}
+		var data interface{}
+		if json.Unmarshal([]byte(s.currentEventData), &data) != nil {
+			data = nil
 		}
 		s.closeAll()
-		s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, AbortReason: message})
+		s.buffer = append(s.buffer, &provider.StreamChunk{
+			Type:        provider.ChunkTypeError,
+			Text:        message,
+			AbortReason: message,
+			Err:         providererrors.NewStreamProviderError(message, "google.interactions", "error", code, nil, nil, data),
+		})
 		s.appendFinish()
 	}
 }
