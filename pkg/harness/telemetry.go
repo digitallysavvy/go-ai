@@ -146,6 +146,12 @@ func telemetryToolContext(settings *telemetry.Options, toolName string, toolCont
 // per turn and records the returned root ctx for span nesting. Called from
 // ensureStarted, which already guards against firing more than once.
 func (d *turnDriver) telStart() {
+	// TS createTurnLifecycle: `telemetry == null` -> no dispatcher at all, so
+	// an agent without Telemetry settings fires nothing, even when an
+	// integration is registered globally.
+	if d.in.Telemetry == nil {
+		return
+	}
 	d.telCtx = telemetry.FireOnStart(d.ctx, telemetry.TelemetryStartEvent{
 		CallID:         d.telCallID,
 		OperationType:  "ai.harness",
@@ -164,6 +170,9 @@ func (d *turnDriver) telStart() {
 // `ensureStepOpen`. Called from ensureStepOpen, which already guards against
 // firing more than once per step.
 func (d *turnDriver) telStepStart() {
+	if d.in.Telemetry == nil {
+		return
+	}
 	provider := "harness:" + d.in.Harness.HarnessID()
 	d.telStepCtx = telemetry.FireOnStepStart(d.telCtx, telemetry.TelemetryStepStartEvent{
 		CallID:         d.telCallID,
@@ -346,7 +355,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 // content existed), so the root span this reports the error on always
 // exists.
 func (d *turnDriver) telError(err error) {
-	if d.telEnded {
+	if d.telEnded || d.in.Telemetry == nil {
 		return
 	}
 	d.ensureStarted()
@@ -365,7 +374,7 @@ func (d *turnDriver) telError(err error) {
 // the stream itself settles through an `abort` chunk (turnDriver.abort)
 // rather than an `error` one. Guarded by d.telEnded like telError.
 func (d *turnDriver) telAbort(err error) {
-	if d.telEnded {
+	if d.telEnded || d.in.Telemetry == nil {
 		return
 	}
 	d.ensureStarted()

@@ -1851,13 +1851,21 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		// can create nested spans for tool -> generateText chains (TS
 		// 59a2306's `wrappedExecuteTool`, matching pkg/ai/generate.go's own
 		// tool-loop wrapping of the same call).
-		output, err := telemetry.FireExecuteToolWithSettings(execTelCtx, d.in.Telemetry, raw.ToolName, execArgs,
-			func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
-				return tool.Execute(execCtx, args, types.ToolExecutionOptions{
-					ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
-					ExperimentalSandbox: d.in.SandboxSession,
-				})
+		runTool := func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
+			return tool.Execute(execCtx, args, types.ToolExecutionOptions{
+				ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
+				ExperimentalSandbox: d.in.SandboxSession,
 			})
+		}
+		var output interface{}
+		var err error
+		if d.in.Telemetry == nil {
+			// No telemetry settings: no dispatcher, so globally registered
+			// integrations do not wrap the tool either (TS executeTool).
+			output, err = runTool(execTelCtx, execArgs)
+		} else {
+			output, err = telemetry.FireExecuteToolWithSettings(execTelCtx, d.in.Telemetry, raw.ToolName, execArgs, runTool)
+		}
 		d.execMu.Lock()
 		d.toolExecMs[raw.ToolCallID] = time.Since(start).Milliseconds()
 		d.execMu.Unlock()
