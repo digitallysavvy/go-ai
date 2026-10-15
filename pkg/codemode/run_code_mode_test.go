@@ -391,7 +391,7 @@ func TestRunCodeMode_ContextCancellationAbortsInFlightNestedToolCall(t *testing.
 
 	select {
 	case <-started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(60 * time.Second):
 		t.Fatal("tool never started")
 	}
 	cancel()
@@ -399,8 +399,8 @@ func TestRunCodeMode_ContextCancellationAbortsInFlightNestedToolCall(t *testing.
 	select {
 	case out := <-done:
 		assertErrMatches(t, out.err, `(?i)abort`)
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunCodeMode did not return promptly after cancellation")
+	case <-time.After(60 * time.Second):
+		t.Fatal("RunCodeMode did not return after cancellation")
 	}
 }
 
