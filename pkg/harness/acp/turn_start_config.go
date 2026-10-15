@@ -38,9 +38,7 @@ type TurnStartConfig struct {
 }
 
 // ColdSessionState is the subset of TurnStartConfig persisted for a cold ACP
-// session restore. Mirrors TS `ACPColdSessionState`. This port never
-// produces or consumes cold-restore lifecycle data (see the package doc);
-// the type exists so lifecycle JSON round-trips without data loss.
+// session restore. Mirrors TS `ACPColdSessionState`.
 type ColdSessionState struct {
 	Version                  int                     `json:"version"`
 	ConfigurationFingerprint string                  `json:"configurationFingerprint"`
