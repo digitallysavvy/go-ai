@@ -141,7 +141,7 @@ func (t *WorkflowChatTransport) ReconnectToStream(ctx context.Context, req ai.Ch
 		defer close(out)
 		defer close(errs)
 		normalizer := newUIStreamNormalizer()
-		t.reconnectLoop(ctx, req.ChatID, req.ChatID, 0, true, normalizer, out, errs)
+		t.reconnectLoop(ctx, req.ChatID, req.ChatID, 0, req.StartIndex, normalizer, out, errs)
 	}()
 	return out, errs
 }
@@ -229,17 +229,23 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 	}
 	// The initial POST stream ended without a finish chunk (dropped
 	// connection or platform function timeout) — reconnect to resume.
-	t.reconnectLoop(ctx, req.ChatID, workflowRunID, chunkIndex, false, normalizer, out, errs)
+	t.reconnectLoop(ctx, req.ChatID, workflowRunID, chunkIndex, nil, normalizer, out, errs)
 }
 
 // reconnectLoop mirrors TS's reconnectToStreamIterator: it GETs the run's
 // stream, resuming from the running chunkIndex (or an explicit startIndex on
 // the first request), retrying up to maxConsecutiveErrors times on read
 // failures, until a "finish" chunk is observed.
-func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID string, initialChunkIndex int, useConfiguredStartIndex bool, normalizer *uiStreamNormalizer, out chan<- ai.UIMessageChunk, errs chan<- error) {
+func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID string, initialChunkIndex int, startIndexOverride *int, normalizer *uiStreamNormalizer, out chan<- ai.UIMessageChunk, errs chan<- error) {
 	chunkIndex := initialChunkIndex
+	// TS: `options.startIndex ?? this.initialStartIndex`, applied to the first
+	// request whenever the loop starts at chunk 0 (also after a POST stream
+	// that delivered no chunks) and the value is not 0.
 	explicitStartIndex := t.initialStartIndex
-	useExplicitStartIndex := useConfiguredStartIndex && explicitStartIndex != 0
+	if startIndexOverride != nil {
+		explicitStartIndex = *startIndexOverride
+	}
+	useExplicitStartIndex := initialChunkIndex == 0 && explicitStartIndex != 0
 
 	base := fmt.Sprintf("%s/%s/stream", strings.TrimRight(t.api, "/"), url.PathEscape(runID))
 	reconnectCtx := WorkflowChatTransportReconnectContext{ChatID: chatID, API: base}
@@ -314,18 +320,16 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		if useExplicitStartIndex && explicitStartIndex > 0 {
 			chunkIndex = explicitStartIndex
 		} else if useExplicitStartIndex && explicitStartIndex < 0 {
-			if tailHeader := resp.Header.Get("x-workflow-stream-tail-index"); tailHeader != "" {
-				if tailIndex, err := strconv.Atoi(tailHeader); err == nil {
-					chunkIndex = tailIndex + 1 + explicitStartIndex
-					if chunkIndex < 0 {
-						chunkIndex = 0
-					}
-				} else {
-					log.Printf("[WorkflowChatTransport] Negative initialStartIndex is configured (%d) but the reconnection endpoint returned an unparseable \"x-workflow-stream-tail-index\" header. Retries will replay the stream from the beginning.", explicitStartIndex)
-					replayFromStart = true
+			if tailIndex, ok := parseIntPrefix(resp.Header.Get("x-workflow-stream-tail-index")); ok {
+				// Resolve: e.g. tailIndex=499, startIndex=-20 -> 500 + (-20) = 480.
+				chunkIndex = tailIndex + 1 + explicitStartIndex
+				if chunkIndex < 0 {
+					chunkIndex = 0
 				}
 			} else {
-				log.Printf("[WorkflowChatTransport] Negative initialStartIndex is configured (%d) but the reconnection endpoint did not return an \"x-workflow-stream-tail-index\" header. Retries will replay the stream from the beginning.", explicitStartIndex)
+				// Header missing or unparseable: replay from the beginning so
+				// retries do not resume from a wrong position.
+				log.Printf("[WorkflowChatTransport] Negative initialStartIndex is configured (%d) but the reconnection endpoint did not return a valid \"x-workflow-stream-tail-index\" header. Retries will replay the stream from the beginning. See: https://workflow.dev/docs/ai/resumable-streams#resuming-from-the-end-of-the-stream", explicitStartIndex)
 				replayFromStart = true
 			}
 		}
@@ -364,6 +368,28 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 	}
 
 	t.finishChat(chatID, chunkIndex, errs)
+}
+
+// parseIntPrefix is JavaScript parseInt(s, 10): leading whitespace, an optional
+// sign and the longest run of digits; ok is false when there is none (NaN).
+func parseIntPrefix(s string) (int, bool) {
+	s = strings.TrimLeft(s, " \t\n\r\v\f")
+	i := 0
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	start := i
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == start {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:i])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func (t *WorkflowChatTransport) finishChat(chatID string, chunkIndex int, errs chan<- error) {

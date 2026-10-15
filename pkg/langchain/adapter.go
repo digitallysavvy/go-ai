@@ -822,12 +822,17 @@ func processCustomEvent(data interface{}) []ai.UIMessageChunk {
 			partID = id
 		}
 	}
-	return []ai.UIMessageChunk{{
+	chunk := ai.UIMessageChunk{
 		"type":      "data-" + customTypeName,
-		"id":        partID,
 		"transient": partID == nil,
 		"data":      data,
-	}}
+	}
+	// TS leaves `id` undefined (absent on the wire) for a transient part; a
+	// JSON null would fail the client's `id: string | undefined` schema.
+	if partID != nil {
+		chunk["id"] = partID
+	}
+	return []ai.UIMessageChunk{chunk}
 }
 
 func processMessagesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
@@ -1101,8 +1106,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 	eventNS := namespaceKey(event.Namespace)
 	var chunks []ai.UIMessageChunk
 
-	toolCallsByID := extractToolCallsByID(root)
-	chunks = append(chunks, finalizeSeenPartsForValues(state, toolCallsByID)...)
+	chunks = append(chunks, finalizeSeenPartsForValues(state)...)
 
 	messages := messageMaps(root)
 	if len(messages) > 0 {
@@ -1224,6 +1228,9 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 	return chunks
 }
 
+// nowMillis is Date.now(); a variable so tests can pin it like TS vi.spyOn.
+var nowMillis = func() int64 { return time.Now().UnixMilli() }
+
 func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS string) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, request := range actionRequests(root) {
@@ -1236,7 +1243,7 @@ func actionRequestChunks(state *eventState, root map[string]interface{}, eventNS
 			toolCallID = request.id
 		}
 		if toolCallID == "" {
-			toolCallID = fmt.Sprintf("hitl-%s-%d", request.name, time.Now().UnixMilli())
+			toolCallID = fmt.Sprintf("hitl-%s-%d", request.name, nowMillis())
 		}
 		if !state.emittedToolCalls[toolCallID] {
 			state.markToolCallStarted(toolCallID, eventNS)
@@ -1271,16 +1278,16 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	case "on_tool_start":
 		key := toolCallKey(toolName, payload["input"])
 		state.emittedToolCallsByKey[key] = toolCallID
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], false)...)
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, false)...)
 	case "on_tool_event":
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["data"], "preliminary": true})
 	case "on_tool_end":
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["output"]})
 	case "on_tool_error":
-		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload["input"], true)...)
+		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": formatToolError(payload["error"])})
 	}
@@ -1292,7 +1299,7 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 // allowPreviousStep is true and the call was already emitted in a prior step
 // (globally, but not in the current step), it is treated as a delayed event
 // for that prior step's call and no new input lifecycle is synthesized at all.
-func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string, input interface{}, allowPreviousStep bool) []ai.UIMessageChunk {
+func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string, payload map[string]interface{}, allowPreviousStep bool) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	if !state.hasEmittedToolCallInCurrentStep(toolCallID, ns) {
 		if allowPreviousStep && state.hasUnfinishedToolCall(toolCallID, ns) {
@@ -1303,7 +1310,13 @@ func ensureToolInputLifecycle(state *eventState, toolCallID, toolName, ns string
 	}
 	if !state.hasEmittedToolInputInCurrentStep(toolCallID, ns) {
 		state.markToolInputEmitted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": toolName, "input": input, "dynamic": true})
+		chunk := ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": toolCallID, "toolName": toolName, "dynamic": true}
+		// TS passes payload.input as is: an absent input is undefined and
+		// left off the wire, not sent as null.
+		if input, ok := payload["input"]; ok {
+			chunk["input"] = input
+		}
+		chunks = append(chunks, chunk)
 	}
 	return chunks
 }
@@ -1543,12 +1556,11 @@ func finalizeStreamEventParts(state *eventState) []ai.UIMessageChunk {
 	return chunks
 }
 
-func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall) []ai.UIMessageChunk {
+func finalizeSeenPartsForValues(state *eventState) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, id := range sortedMessageSeenIDs(state) {
 		seen := state.messageSeen[id]
 		ns, hasNS := state.messageNamespaces[id]
-		msgNSKey := namespaceKey(ns)
 
 		// Tag with the per-message namespace before deleting it below.
 		if seen.text {
@@ -1558,18 +1570,10 @@ func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall
 			}
 			chunks = append(chunks, chunk)
 		}
-		for _, callID := range seen.toolOrder {
-			call, ok := callsByID[callID]
-			if !ok || call.name == "" {
-				continue
-			}
-			state.markToolCallEmitted(callID, msgNSKey)
-			state.emittedToolCallsByKey[toolCallKey(call.name, call.args)] = callID
-			if !state.hasEmittedToolInputInCurrentStep(callID, msgNSKey) {
-				state.markToolInputEmitted(callID, msgNSKey)
-				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": callID, "toolName": call.name, "input": call.args, "dynamic": true})
-			}
-		}
+		// TS emits tool-input-available here only from an accumulated
+		// AIMessageChunk class instance (messageConcat); RemoteGraph yields
+		// plain JSON, so it never does. The values message pass below
+		// registers the key mapping for streamed calls instead.
 		if seen.reasoning {
 			chunk := ai.UIMessageChunk{"type": "reasoning-end", "id": id}
 			if hasNS {
@@ -1655,18 +1659,6 @@ func openAIToolCalls(source map[string]interface{}) []interface{} {
 	}
 	raw, _ := asSlice(additional["tool_calls"])
 	return raw
-}
-
-func extractToolCallsByID(root map[string]interface{}) map[string]toolCall {
-	out := map[string]toolCall{}
-	for _, msg := range messageMaps(root) {
-		for _, call := range extractToolCalls(msg) {
-			if call.id != "" {
-				out[call.id] = call
-			}
-		}
-	}
-	return out
 }
 
 func messageMaps(root map[string]interface{}) []map[string]interface{} {

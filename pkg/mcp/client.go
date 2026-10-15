@@ -100,8 +100,8 @@ type MCPClientConfig struct {
 	// Capabilities are optional client capabilities advertised during initialize.
 	Capabilities ClientCapabilities
 
-	// RequestTimeoutMS is the timeout for individual requests in milliseconds
-	// Default: 30000 (30 seconds)
+	// RequestTimeoutMS is the timeout for individual requests in milliseconds.
+	// Default: 0, no timeout (TS has none; the call's context governs).
 	RequestTimeoutMS int
 
 	// InitializationOptions bounds Connect (TS initializationOptions):
@@ -170,9 +170,6 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 	}
 	if config.ClientVersion == "" {
 		config.ClientVersion = "1.0.0"
-	}
-	if config.RequestTimeoutMS == 0 {
-		config.RequestTimeoutMS = 30000 // 30 seconds
 	}
 	// config.MaxRetries is intentionally left as given (even if negative):
 	// Connect validates and rejects a negative value, matching TS's
@@ -296,13 +293,12 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeoutCause(ctx, initTimeout, errInitTimeout)
 		defer cancel()
-		ctx = WithRequestOptions(ctx, RequestOptions{TimeoutMS: int(initTimeout / time.Millisecond)})
 	}
 	fail := func(err error) error {
 		// TS init() closes the transport and the client when the handshake
 		// fails, so a failed Connect never leaves a live subprocess,
 		// connection or receive goroutine behind.
-		_ = c.Close()
+		_ = c.closeWith(ctx)
 		if initTimeout > 0 && errors.Is(context.Cause(ctx), errInitTimeout) && parent.Err() == nil {
 			return &MCPClientError{Message: fmt.Sprintf("MCP client initialization timed out after %dms", initTimeout/time.Millisecond), Cause: err}
 		}
@@ -461,6 +457,18 @@ func (c *MCPClient) InitializeResult() InitializeResult {
 
 // Close closes the connection to the MCP server
 func (c *MCPClient) Close() error {
+	return c.closeWith(context.Background())
+}
+
+// contextCloser is implemented by transports whose Close does network I/O
+// that a context can bound (the streamable HTTP session DELETE).
+type contextCloser interface {
+	CloseContext(ctx context.Context) error
+}
+
+// closeWith closes the client; ctx bounds transport cleanup that waits on the
+// server (TS transport.close({ signal })).
+func (c *MCPClient) closeWith(ctx context.Context) error {
 	c.cancel()
 
 	// Pending calls observe the cancelled client context and return; their
@@ -470,6 +478,9 @@ func (c *MCPClient) Close() error {
 	c.pending = make(map[interface{}]chan *MCPMessage)
 	c.pendingMu.Unlock()
 
+	if cc, ok := c.transport.(contextCloser); ok {
+		return cc.CloseContext(ctx)
+	}
 	return c.transport.Close()
 }
 
@@ -663,6 +674,9 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[str
 		var result CallToolResult
 		if err := c.call(ctx, "tools/call", params, &result); err != nil {
 			return nil, fmt.Errorf("failed to call tool: %w", err)
+		}
+		if err := validateCallToolResult(&result); err != nil {
+			return nil, &MCPClientError{Message: "Failed to parse server response", Cause: err}
 		}
 
 		return &result, nil
@@ -952,8 +966,13 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 			timeout = t
 		}
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// A nil channel never fires: no timer means no timeout.
+	var timerC <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timerC = timer.C
+	}
 
 	select {
 	case response := <-responseCh:
@@ -979,7 +998,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 		return nil
 
-	case <-timer.C:
+	case <-timerC:
 		return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
 
 	case <-ctx.Done():

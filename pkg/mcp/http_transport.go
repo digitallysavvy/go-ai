@@ -224,14 +224,12 @@ type OAuthConfig struct {
 // NewHTTPTransport creates a new HTTP transport
 func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	// No default: TS fetch has no request timeout, the caller's ctx governs.
 
 	httpClient := config.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
-	} else if httpClient.Timeout == 0 {
+	} else if httpClient.Timeout == 0 && timeout > 0 {
 		httpClient.Timeout = timeout
 	}
 
@@ -385,6 +383,14 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 // this.sessionId && ...`, no DELETE is sent for the modern (2026-07-28)
 // protocol era.
 func (t *HTTPTransport) Close() error {
+	return t.CloseContext(context.Background())
+}
+
+// CloseContext is Close with a context that bounds the session-termination
+// DELETE (TS close({ signal })). A context that is already done skips the
+// DELETE, as TS throwIfAborted does. The client uses it to bound cleanup after
+// a failed initialization by the initialization timeout.
+func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	// Cancel the transport-lifetime context (in-flight GET/POST requests, any
 	// POST-response SSE reader, and any scheduled inbound-SSE reconnect) and
 	// wait for every goroutine it owns to exit before proceeding, matching
@@ -406,8 +412,8 @@ func (t *HTTPTransport) Close() error {
 	t.connected = false
 	t.mu.Unlock()
 
-	if terminate && sessionID != "" && !t.isModernProtocol() {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, url, nil)
+	if terminate && sessionID != "" && !t.isModernProtocol() && ctx.Err() == nil {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err == nil {
 			req.Header.Set("mcp-session-id", sessionID)
 			if protocolVersion != "" {

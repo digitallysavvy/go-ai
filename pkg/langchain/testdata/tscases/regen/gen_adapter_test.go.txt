@@ -1,0 +1,48 @@
+package langchain
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"testing"
+)
+
+func TestZZGen(t *testing.T) {
+	in := os.Getenv("LC_IN")
+	if in == "" {
+		t.Skip()
+	}
+	data, _ := os.ReadFile(in)
+	var cases map[string]struct {
+		Events    []interface{} `json:"events"`
+		Opts      struct{ SendStart, SendFinish *bool } `json:"opts"`
+		Callbacks bool          `json:"callbacks"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]interface{}{}
+	for k, c := range cases {
+		ch := make(chan interface{}, len(c.Events))
+		for _, e := range c.Events {
+			ch <- e
+		}
+		close(ch)
+		cb := &StreamCallbacks{SendStart: c.Opts.SendStart, SendFinish: c.Opts.SendFinish}
+		o, errs := ToUIMessageStreamFromAnyWithCallbacks(context.Background(), ch, cb)
+		var chunks []interface{}
+		for x := range o {
+			chunks = append(chunks, x)
+		}
+		<-errs
+		b, _ := json.Marshal(chunks)
+		var norm interface{}
+		_ = json.Unmarshal(b, &norm)
+		if norm == nil {
+			norm = []interface{}{}
+		}
+		out[k] = norm
+	}
+	b, _ := json.Marshal(out)
+	_ = os.WriteFile(os.Getenv("LC_OUT"), b, 0o644)
+}

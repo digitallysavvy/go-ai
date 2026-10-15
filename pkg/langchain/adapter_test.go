@@ -84,16 +84,11 @@ func TestToUIMessageStreamHITLMatchesToolCallEmittedViaMessagesMode(t *testing.T
 	if len(starts) != 1 || starts[0]["toolCallId"] != "call_abc123" {
 		t.Fatalf("tool-input-start = %#v, want exactly one for call_abc123", starts)
 	}
-	// The tool call was only ever streamed as tool_call_chunks (which never
-	// carry a complete input), so its input becomes "available" once the
-	// values event finalizes the message - matching the TypeScript adapter's
-	// values-event finalization of `seen.tool` bookkeeping.
-	available := chunksOfType(chunks, "tool-input-available")
-	if len(available) != 1 || available[0]["toolCallId"] != "call_abc123" {
-		t.Fatalf("tool-input-available = %#v, want exactly one for call_abc123", available)
-	}
-	if name := available[0]["toolName"]; name != "delete_file" {
-		t.Fatalf("tool-input-available toolName = %#v, want delete_file", name)
+	// RemoteGraph yields plain JSON, so TS has no accumulated chunk instance
+	// (messageConcat) and never emits tool-input-available for a streamed
+	// call; the interrupt still resolves to the original id.
+	if available := chunksOfType(chunks, "tool-input-available"); len(available) != 0 {
+		t.Fatalf("tool-input-available = %#v, want none (TS plain-JSON parity)", available)
 	}
 }
 

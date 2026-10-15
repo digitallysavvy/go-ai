@@ -29,12 +29,12 @@ func TestToJSONPayload_TimeFormatsAsJSISOString(t *testing.T) {
 	}
 }
 
-func TestToJSONPayload_OmitsNilMapEntries(t *testing.T) {
+func TestToJSONPayload_KeepsNilMapEntriesAsNull(t *testing.T) {
 	got, err := toJSONPayload(map[string]interface{}{"a": "x", "b": nil}, 1024, "value")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != `{"a":"x"}` {
+	if got != `{"a":"x","b":null}` {
 		t.Fatalf("got %q", got)
 	}
 }

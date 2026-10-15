@@ -362,10 +362,9 @@ func CreateStdioMCPClient(command string, args []string) (*MCPClient, error) {
 	})
 
 	config := MCPClientConfig{
-		ClientName:       "go-ai-mcp-client",
-		ClientVersion:    "1.0.0",
-		RequestTimeoutMS: 30000,
-		EnableLogging:    false,
+		ClientName:    "go-ai-mcp-client",
+		ClientVersion: "1.0.0",
+		EnableLogging: false,
 	}
 
 	return CreateMCPClient(config, transport)
@@ -401,10 +400,9 @@ func CreateHTTPMCPClient(url string, oauth *OAuthConfig) (*MCPClient, error) {
 	})
 
 	config := MCPClientConfig{
-		ClientName:       "go-ai-mcp-client",
-		ClientVersion:    "1.0.0",
-		RequestTimeoutMS: 30000,
-		EnableLogging:    false,
+		ClientName:    "go-ai-mcp-client",
+		ClientVersion: "1.0.0",
+		EnableLogging: false,
 	}
 
 	return CreateMCPClient(config, transport)
@@ -432,10 +430,9 @@ func CreateSSEMCPClient(url string, oauth *OAuthConfig) (*MCPClient, error) {
 	})
 
 	config := MCPClientConfig{
-		ClientName:       "go-ai-mcp-client",
-		ClientVersion:    "1.0.0",
-		RequestTimeoutMS: 30000,
-		EnableLogging:    false,
+		ClientName:    "go-ai-mcp-client",
+		ClientVersion: "1.0.0",
+		EnableLogging: false,
 	}
 
 	return CreateMCPClient(config, transport)
