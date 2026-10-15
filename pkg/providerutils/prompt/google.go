@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // GoogleSkipThoughtSignatureValidator is the sentinel value Google documents
@@ -783,7 +784,7 @@ func serializeFunctionResponseContent(value interface{}) interface{} {
 	if !containsJSONSchemaReference(value) {
 		return value
 	}
-	encoded, err := marshalJSONLikeJS(value)
+	encoded, err := jsonstr.Marshal(value)
 	if err != nil {
 		return value
 	}
@@ -924,7 +925,7 @@ func fileBlockToContent(b types.FileContentBlock) types.FileContent {
 }
 
 func googleJSONText(v interface{}) string {
-	data, err := marshalJSONLikeJS(v)
+	data, err := jsonstr.Marshal(v)
 	if err != nil {
 		return fmt.Sprint(v)
 	}
