@@ -1,8 +1,10 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -58,3 +60,27 @@ func TestProviderAuthTokenAndEnvKey(t *testing.T) {
 type authRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f authRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// AuthToken is a credential: it must never appear in a serialized model.
+func TestSerializeRedactsAuthToken(t *testing.T) {
+	m, err := New(Config{AuthToken: "secret-auth-token", BaseURL: "https://example.com"}).LanguageModel("claude-sonnet-4-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := m.(interface {
+		Serialize() provider.SerializedModel
+	})
+	if !ok {
+		t.Fatal("model is not serializable")
+	}
+	data, err := json.Marshal(s.Serialize())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secret-auth-token") || strings.Contains(strings.ToLower(string(data)), "authtoken") {
+		t.Fatalf("serialized model leaks the auth token: %s", data)
+	}
+	if !strings.Contains(string(data), "https://example.com") {
+		t.Fatalf("serialized model lost BaseURL: %s", data)
+	}
+}
