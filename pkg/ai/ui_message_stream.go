@@ -505,7 +505,22 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 		close(errCh)
 		return out, errCh
 	}
-	return ToUIMessageStream(ctx, result.uiStream(), opts...)
+	return ToUIMessageStream(ctx, result.uiStream(), result.uiOptionsWithRequestTools(opts)...)
+}
+
+// uiOptionsWithRequestTools defaults the UI conversion's Tools to the tool set
+// the call was made with (TS toUIMessageStream passes `this.tools`), unless
+// the caller supplied its own.
+func (r *StreamTextResult) uiOptionsWithRequestTools(opts []UIMessageStreamResultOptions) []UIMessageStreamResultOptions {
+	if len(r.requestTools) == 0 || (len(opts) > 0 && len(opts[0].Tools) > 0) {
+		return opts
+	}
+	var options UIMessageStreamResultOptions
+	if len(opts) > 0 {
+		options = opts[0]
+	}
+	options.Tools = r.requestTools
+	return append([]UIMessageStreamResultOptions{options}, opts[min(len(opts), 1):]...)
 }
 
 // ToUIMessageStream converts a provider text stream into UI message chunks.
@@ -2182,16 +2197,17 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			part["providerMetadata"] = providerMetadata
 		}
 	}
+	// Mirrors TS toUIMessageChunk isDynamic: a registered tool decides on its
+	// own type (so an invalid call to a static tool stays a static UI part);
+	// only tools missing from the tool set (provider-executed dynamic tools,
+	// NoSuchTool calls) fall back to the part's own dynamic flag.
 	isDynamicTool := func(toolName string, dynamic bool) bool {
-		if dynamic {
-			return true
-		}
 		for _, tool := range opts.Tools {
-			if tool.Name == toolName && tool.Type == types.ToolTypeDynamic {
-				return true
+			if tool.Name == toolName {
+				return tool.Type == types.ToolTypeDynamic
 			}
 		}
-		return false
+		return dynamic
 	}
 
 	switch chunk.Type {

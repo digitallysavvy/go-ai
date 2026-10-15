@@ -455,6 +455,11 @@ func newIncompleteModelStreamError() error {
 
 // StreamTextResult contains the result of streaming text generation
 type StreamTextResult struct {
+	// requestTools is the tool set the call was made with. UI message stream
+	// conversion uses it to decide dynamic vs static tool parts (TS passes
+	// `this.tools` to toUIMessageChunk). Set once before any goroutine starts.
+	requestTools []types.Tool
+
 	// Stream of chunks
 	stream provider.TextStream
 
@@ -737,6 +742,7 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		cancelBootstrap:     cancelBootstrap,
 		resolvedToolCallers: resolvedToolCallers,
 		toolSearchState:     toolSearchState,
+		requestTools:        opts.Tools,
 	}
 	result.chunkBuf = newChunkBuffer()
 	result.processingDone = make(chan struct{})
@@ -3703,7 +3709,7 @@ func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextS
 //
 // Deprecated: use ToUIMessageStream with Stream.
 func (r *StreamTextResult) ToUIMessageStream(ctx context.Context, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
-	return ToUIMessageStream(ctx, r.uiStream(), opts...)
+	return ToUIMessageStream(ctx, r.uiStream(), r.uiOptionsWithRequestTools(opts)...)
 }
 
 // uiStream is the stream the UI converters read: the unfiltered sequence for
