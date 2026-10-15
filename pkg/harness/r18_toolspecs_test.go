@@ -41,3 +41,19 @@ func TestAgentToolSpecsHaveStableOrder(t *testing.T) {
 		}
 	}
 }
+
+// The tool map key is the tool name: a tool registered without a Name still
+// resolves when the harness validates and parses its tool calls.
+func TestAgentToolsAreNamedByMapKey(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart { return nil }})
+	a, err := NewAgent(AgentSettings{
+		Harness:   mock.harness,
+		UserTools: map[string]types.Tool{"weather": {Description: "w"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.tools["weather"].Name; got != "weather" {
+		t.Fatalf("tool Name = %q, want the map key", got)
+	}
+}

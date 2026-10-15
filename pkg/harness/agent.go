@@ -84,10 +84,16 @@ func NewAgent(settings AgentSettings) (*Agent, error) {
 	permissionMode := ResolvePermissionMode(settings.PermissionMode)
 
 	tools := make(map[string]types.Tool, len(settings.Harness.BuiltinTools())+len(userTools))
+	// The map key is the tool name (TS `tools` is keyed by name); tool-call
+	// parsing and spec building look tools up by Tool.Name, so keep the two in
+	// step for a tool registered without (or under a different) Name.
 	for name, bt := range settings.Harness.BuiltinTools() {
-		tools[name] = bt.Tool
+		t := bt.Tool
+		t.Name = name
+		tools[name] = t
 	}
 	for name, t := range userTools {
+		t.Name = name
 		tools[name] = t
 	}
 
@@ -120,6 +126,17 @@ func NewAgent(settings AgentSettings) (*Agent, error) {
 		permissionMode:       permissionMode,
 		headers:              headers,
 	}, nil
+}
+
+// withToolNames returns tools with each entry's Name set to its map key (TS
+// `tools` is keyed by name).
+func withToolNames(tools map[string]types.Tool) map[string]types.Tool {
+	out := make(map[string]types.Tool, len(tools))
+	for name, t := range tools {
+		t.Name = name
+		out[name] = t
+	}
+	return out
 }
 
 // Version returns "agent-v1".
@@ -597,7 +614,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 			instructionsRaw = prepared.Instructions
 		}
 		if prepared.Tools != nil {
-			tools = prepared.Tools
+			tools = withToolNames(prepared.Tools)
 		}
 		if prepared.ToolsContext != nil {
 			toolsContext = prepared.ToolsContext
