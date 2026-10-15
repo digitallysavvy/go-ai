@@ -138,3 +138,93 @@ func TestTSReplay_StreamText_OnEndOutputUndefinedWhenParseFails(t *testing.T) {
 		t.Fatalf("onEnd = %#v, want output nil", ended)
 	}
 }
+
+func collectElements[E any](ch <-chan ElementStreamResult[E]) []E {
+	var out []E
+	for e := range ch {
+		out = append(out, e.Element)
+	}
+	return out
+}
+
+// stream-text.test.ts 'array output': elements stream after an earlier tool
+// step emitted text (output state is per step).
+func TestTSReplay_ElementStream_AfterToolStep(t *testing.T) {
+	elemSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}})
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    toolThenAnswerModel("answer", `{"elements":[{"value":"done"}]}`),
+		Prompt:   "Look up the value and return it.",
+		Tools:    []types.Tool{lookupTool()},
+		Output:   ArrayOutput[valueObj](ArrayOutputOptions[valueObj]{ElementSchema: elemSchema}),
+		StopWhen: []StopCondition{IsStepCount(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectElements(ElementStream[valueObj](res, ElementStreamOptions[valueObj]{ElementSchema: elemSchema}))
+	if !reflect.DeepEqual(got, []valueObj{{Value: "done"}}) {
+		t.Fatalf("elements = %#v", got)
+	}
+}
+
+// An element is published only once it is complete: a string value that is
+// still streaming must not appear as a truncated element.
+func TestElementStream_HoldsBackTheElementStillStreaming(t *testing.T) {
+	elemSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}})
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(append(textChunks(`{"elements":[{"value":"do`, `ne"}`, `,{"value":"second"}]}`), finishChunk())), nil
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectElements(ElementStream[valueObj](res, ElementStreamOptions[valueObj]{ElementSchema: elemSchema}))
+	if !reflect.DeepEqual(got, []valueObj{{Value: "done"}, {Value: "second"}}) {
+		t.Fatalf("elements = %#v, want complete elements only", got)
+	}
+}
+
+// stream-text.test.ts 'should error elementStream when the model exceeds maxItems'.
+func TestTSReplay_ElementStream_MaxItems(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream(append(textChunks(`{"elements":[`, `"element 1",`, `"element 2",`, `"element 3"]}`), finishChunk())), nil
+		},
+	}
+	maxItems := 2
+	output := ArrayOutput[string](ArrayOutputOptions[string]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "string"}),
+		MaxItems:      &maxItems,
+	})
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "p", Output: output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := collectElements(ElementStreamWithOutput(res, output))
+	if !reflect.DeepEqual(got, []string{"element 1", "element 2"}) {
+		t.Fatalf("elements = %#v", got)
+	}
+	var streamErr error
+	got = collectElements(ElementStream[string](mustStream(t, model, output), ElementStreamOptions[string]{
+		ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "string"}),
+		MaxItems:      &maxItems,
+		OnError:       func(e error) { streamErr = e },
+	}))
+	if !reflect.DeepEqual(got, []string{"element 1", "element 2"}) {
+		t.Fatalf("elements = %#v", got)
+	}
+	if streamErr == nil || streamErr.Error() != "elements array must contain at most 2 items" {
+		t.Fatalf("error = %v", streamErr)
+	}
+}
+
+func mustStream(t *testing.T, model provider.LanguageModel, output interface{}) *StreamTextResult {
+	t.Helper()
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "p", Output: output})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
