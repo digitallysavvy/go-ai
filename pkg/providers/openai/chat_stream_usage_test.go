@@ -72,3 +72,32 @@ func TestChatStreamReturnsTrailingUsage(t *testing.T) {
 		t.Fatalf("finish = %+v usage=%+v", finish, finish.Usage)
 	}
 }
+
+// OpenAI-compatible wrappers (TS createOpenAICompatible without includeUsage)
+// must not send stream_options.
+func TestChatStreamOmitStreamUsage(t *testing.T) {
+	for _, omit := range []bool{false, true} {
+		var body map[string]interface{}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &body)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		}))
+		m, err := New(Config{APIKey: "k", BaseURL: srv.URL, OmitStreamUsage: omit}).ChatModel("gpt-4o")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := m.DoStream(context.Background(), &provider.GenerateOptions{
+			Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = st.Close()
+		srv.Close()
+		if _, has := body["stream_options"]; has == omit {
+			t.Fatalf("omit=%v but stream_options present=%v", omit, has)
+		}
+	}
+}

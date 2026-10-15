@@ -216,6 +216,10 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	// provider credentials (TS credentialedOrigin: baseURL).
 	downloadOpts.Headers = m.prov.credentialedHeaders(op.GetURL, opts.Headers)
 
+	if statusOptionsHook != nil {
+		statusOptionsHook(&downloadOpts)
+	}
+
 	var prediction replicatePredictionWire
 	result, err := fileutil.PollJSON(ctx, op.GetURL, downloadOpts, &prediction)
 	if err != nil {
@@ -423,3 +427,7 @@ type replicatePredictionWire struct {
 		PredictTime *float64 `json:"predict_time,omitempty"`
 	} `json:"metrics,omitempty"`
 }
+
+// statusOptionsHook lets tests observe the outgoing status request (swap the
+// transport) without loosening the SSRF guard in production. Nil in production.
+var statusOptionsHook func(*fileutil.DownloadOptions)

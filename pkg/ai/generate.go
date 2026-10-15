@@ -99,6 +99,14 @@ func isGatewayCallRetryable(err error) bool {
 			return *providerErr.Retryable
 		}
 		status := providerErr.StatusCode
+		if status == 0 && providerErr.Cause != nil {
+			// A provider wrapped a cause that classifies itself (e.g. a
+			// failure to connect to the API).
+			var retryable interface{ IsRetryable() bool }
+			if errors.As(providerErr.Cause, &retryable) {
+				return retryable.IsRetryable()
+			}
+		}
 		return status == 408 || status == 409 || status == 429 || status >= 500
 	}
 	// Errors that classify themselves (e.g. a failure to connect to the API,

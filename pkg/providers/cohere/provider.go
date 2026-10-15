@@ -3,6 +3,7 @@ package cohere
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -28,8 +29,8 @@ type Config struct {
 	APIKey string
 
 	// BaseURL is the base URL for the Cohere API including the version
-	// (default: https://api.cohere.com/v2). A host-only value such as
-	// "https://api.cohere.com" gets "/v2" appended
+	// (default: https://api.cohere.com/v2). A value without a version
+	// segment, such as "https://api.cohere.com" or a proxy path, gets "/v2" appended
 	BaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
@@ -125,16 +126,23 @@ func (p *Provider) Client() *http.Client {
 	return p.client
 }
 
-// normalizeBaseURL applies the default and keeps host-only base URLs working:
-// v0.5.2 appended "/v2/chat" to the configured base, so a base without a path
-// meant "<host>/v2".
+// normalizeBaseURL applies the default and keeps custom base URLs working:
+// v0.5.2 appended "/v2/chat" to the configured base, so a base that does not
+// already end in a version segment (a host, or a proxy path) meant "<base>/v2".
 func normalizeBaseURL(base string) string {
 	base = strings.TrimRight(base, "/")
 	if base == "" {
 		return DefaultBaseURL
 	}
-	if u, err := url.Parse(base); err == nil && u.Host != "" && u.Path == "" {
-		return base + "/v2"
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return base
 	}
-	return base
+	last := u.Path[strings.LastIndex(u.Path, "/")+1:]
+	if versionSegment.MatchString(last) {
+		return base
+	}
+	return base + "/v2"
 }
+
+var versionSegment = regexp.MustCompile(`^v[0-9]+$`)

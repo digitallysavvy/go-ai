@@ -45,6 +45,8 @@ func New(cfg Config) *Provider {
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:    true,
 		UserAgentName: "cerebras",
+		// TS sends stream_options only when includeUsage is set (it is not).
+		OmitStreamUsage: true,
 		// TransformRequestBody applies the structural (provider-options-
 		// independent) half of TS transformCerebrasRequestBody: renaming
 		// max_tokens -> max_completion_tokens and reasoning_content ->

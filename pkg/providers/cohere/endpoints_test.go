@@ -55,3 +55,18 @@ func TestEndpointsUseV2(t *testing.T) {
 		t.Fatalf("DefaultBaseURL = %q", DefaultBaseURL)
 	}
 }
+
+func TestNormalizeBaseURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                              DefaultBaseURL,
+		"https://api.cohere.com":        "https://api.cohere.com/v2",
+		"https://api.cohere.com/":       "https://api.cohere.com/v2",
+		"https://api.cohere.com/v2":     "https://api.cohere.com/v2",
+		"https://gw.example/cohere":     "https://gw.example/cohere/v2",
+		"https://gw.example/cohere/v2/": "https://gw.example/cohere/v2",
+	} {
+		if got := normalizeBaseURL(in); got != want {
+			t.Errorf("normalizeBaseURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

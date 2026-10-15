@@ -33,11 +33,16 @@ security fixes.
   timeout.
 - Retries: `GenerateText`, `StreamText`, agents and `GenerateObject` retried
   only AI Gateway models. They now retry every provider (default 2 retries),
-  honour `ProviderError.Retryable` and retry connection failures. 401 and 400
-  are not retried; 408 and 409 are.
+  honour `ProviderError.Retryable` and retry connection failures. 408, 409,
+  429 and 5xx are retried; 400 and 401 are not. Set `MaxRetries` to 0 to
+  disable. `NewProviderError` now takes the status code, headers and message
+  from an HTTP error in the cause chain when none is given.
 - OpenAI chat streaming never returned usage. It now requests
-  `stream_options.include_usage`, holds the finish chunk until usage arrives
-  and returns it.
+  `stream_options.include_usage` (as TS does for OpenAI, Azure, Baseten and
+  Bedrock Mantle), holds the finish chunk until usage arrives and returns it.
+  The OpenAI-compatible wrappers (Cerebras, DeepInfra, Vercel, Vertex MaaS)
+  do not send it, matching TS. A text delta carrying `finish_reason` no longer
+  drops the finish. New `openai.Config.OmitStreamUsage` controls this.
 - A call to an unknown tool no longer stops `GenerateText` / `StreamText`; it is
   answered with a tool error and the loop continues.
 - Bedrock: SigV4 signed the decoded path, so model IDs containing `:` (for
@@ -54,9 +59,12 @@ security fixes.
   image URLs.
 - Alibaba and Moonshot: non-streaming tool-call arguments sent as a JSON string
   were dropped.
-- Cohere: embed was sent to `/v1/v1/embed` and rerank to `/v1/rerank`. Both use
-  the v2 API (default base URL `https://api.cohere.com/v2`; a host-only base
-  gets `/v2` appended).
+- Cohere: embed was sent to `/v1/v1/embed` and rerank to `/v1/rerank`. Chat,
+  embed and rerank use the v2 API under the base URL (default
+  `https://api.cohere.com/v2`, was `https://api.cohere.ai/v1`). A custom
+  `BaseURL` without a version segment (a host or a proxy path) still gets `/v2`
+  appended, as chat did before; one ending in `/v1` or `/v2` is used as is.
+  Embed now sends `embedding_types: ["float"]`, which v2 requires.
 
 ## [0.5.2] - 2026-10-04
 

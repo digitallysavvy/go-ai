@@ -157,7 +157,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["stream"] = true
 		// Ask for usage: without it a streamed chat completion carries none
 		// (TS OpenAIChatLanguageModel always sets include_usage).
-		body["stream_options"] = map[string]interface{}{"include_usage": true}
+		if !m.provider.config.OmitStreamUsage {
+			body["stream_options"] = map[string]interface{}{"include_usage": true}
+		}
 	}
 
 	// Extract the "openai" provider options map once; every option below reads
