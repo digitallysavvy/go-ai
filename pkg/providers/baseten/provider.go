@@ -85,6 +85,7 @@ func New(cfg Config) *Provider {
 		BaseURL:          chatBaseURL,
 		Headers:          cfg.Headers,
 		HTTPClient:       cfg.HTTPClient,
+		Name:             "baseten",
 		ChatProviderName: "baseten.chat",
 		// TS createChatModel builds an OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).

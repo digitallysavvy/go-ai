@@ -13,6 +13,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providers/baseten"
+	"github.com/digitallysavvy/go-ai/pkg/providers/deepinfra"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
 	"github.com/digitallysavvy/go-ai/pkg/providers/ollama"
@@ -317,6 +319,51 @@ func TestCompatChatDropsProviderDefinedTools(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("warnings = %v", res.Warnings)
+			}
+		})
+	}
+}
+
+// TS deepinfra / baseten: provider ids "deepinfra.chat" / "baseten.chat" key
+// providerOptions (unknown options are spread into the body) and
+// providerMetadata.
+func TestCompatChatProviderNamesKeyOptionsAndMetadata(t *testing.T) {
+	type mk func(b string) provider.LanguageModel
+	must := func(m provider.LanguageModel, err error) provider.LanguageModel {
+		if err != nil {
+			panic(err)
+		}
+		return m
+	}
+	cases := map[string]mk{
+		"deepinfra": func(b string) provider.LanguageModel {
+			return must(deepinfra.New(deepinfra.Config{APIKey: "k", BaseURL: b}).LanguageModel("m"))
+		},
+		"baseten": func(b string) provider.LanguageModel {
+			return must(baseten.New(baseten.Config{APIKey: "k", ModelURL: b}).LanguageModel("m"))
+		},
+	}
+	for name, f := range cases {
+		name, f := name, f
+		t.Run(name, func(t *testing.T) {
+			var body map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"completion_tokens_details":{"accepted_prediction_tokens":1}}}`))
+			}))
+			defer srv.Close()
+			res, err := f(srv.URL).DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: compatPrompt,
+				ProviderOptions: map[string]interface{}{name: map[string]interface{}{"foo": "bar", "user": "u"}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body["foo"] != "bar" || body["user"] != "u" {
+				t.Errorf("options not applied: %v", body)
+			}
+			if _, ok := res.ProviderMetadata[name]; !ok {
+				t.Errorf("metadata = %v", res.ProviderMetadata)
 			}
 		})
 	}
