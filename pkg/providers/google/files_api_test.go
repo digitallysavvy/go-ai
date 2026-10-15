@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -243,5 +244,34 @@ func TestFilesAPI_UploadFile_InvalidProviderOptions(t *testing.T) {
 	}
 	if requests != 0 {
 		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
+
+// TS sends display_name whenever displayName != null, including "".
+func TestFilesAPI_UploadFile_EmptyDisplayNameIsSent(t *testing.T) {
+	var srv *httptest.Server
+	var initBody string
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/upload/v1beta/files":
+			b, _ := io.ReadAll(r.Body)
+			initBody = string(b)
+			w.Header().Set("x-goog-upload-url", srv.URL+"/upload-session")
+		case "/upload-session":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"file": map[string]interface{}{"name": "files/a", "mimeType": "text/plain", "uri": "u", "state": "ACTIVE"}})
+		}
+	}))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	_, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{
+		Data:            types.FileData{Type: types.FileDataTypeData, Data: []byte{1}},
+		MediaType:       "text/plain",
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"displayName": ""}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initBody != `{"file":{"display_name":""}}` {
+		t.Fatalf("init body = %s", initBody)
 	}
 }

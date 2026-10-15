@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -169,9 +170,8 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if lmResult.Usage.OutputTokens != nil {
 		usage.OutputTokens = int(*lmResult.Usage.OutputTokens)
 	}
-	if lmResult.Usage.TotalTokens != nil {
-		usage.TotalTokens = int(*lmResult.Usage.TotalTokens)
-	}
+	// TS: totalTokens = (inputTokens.total ?? 0) + (outputTokens.total ?? 0).
+	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
 	warnings := googleImageWarnings(opts)
 	warnings = append(warnings, lmResult.Warnings...)
@@ -187,7 +187,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		Usage:            usage,
 		Warnings:         warnings,
 		ProviderMetadata: map[string]interface{}{"google": metadata},
-		Response:         lmResult.ResponseMetadata,
+		Response:         imageResponseMetadata(m.modelID, lmResult.ResponseHeaders),
 	}
 	if len(out.Images) > 0 {
 		result.Image = out.Images[0]
@@ -378,4 +378,10 @@ type geminiImageResponse struct {
 type InlineData struct {
 	MimeType string `json:"mimeType"`
 	Data     string `json:"data"` // base64-encoded
+}
+
+// imageResponseMetadata is the TS image-model response: the call time, this
+// model's id (not the language model's response id) and the HTTP headers.
+func imageResponseMetadata(modelID string, headers map[string]string) *types.ResponseMetadata {
+	return &types.ResponseMetadata{Timestamp: time.Now(), ModelID: modelID, Headers: headers}
 }

@@ -1005,3 +1005,23 @@ func TestBatchImageRequestRejectsURLInput(t *testing.T) {
 	var unsupported *providererrors.UnsupportedFunctionalityError
 	require.ErrorAs(t, err, &unsupported)
 }
+
+// TS image response: {timestamp, modelId: this.modelId, headers} and
+// totalTokens = input + output (not the API's totalTokenCount).
+func TestImageModel_ResponseAndTotalTokensMatchTS(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Test", "yes")
+		_, _ = w.Write([]byte(`{"responseId":"resp-1","candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"AAEC"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":5,"totalTokenCount":99}}`))
+	}))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	require.NoError(t, err)
+	require.NotNil(t, result.Response)
+	assert.Equal(t, "gemini-2.5-flash-image", result.Response.ModelID)
+	assert.Empty(t, result.Response.ID)
+	assert.False(t, result.Response.Timestamp.IsZero())
+	assert.Equal(t, "yes", result.Response.Headers["X-Test"])
+	assert.Equal(t, 8, result.Usage.TotalTokens)
+}

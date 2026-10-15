@@ -201,7 +201,11 @@ type googleBatchUploadedFile struct {
 // GoogleBatch.doStartBatch.
 func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displayName string, headers map[string]string) (*googleBatchUploadedFile, error) {
 	baseOrigin := strings.TrimSuffix(b.provider.config.BaseURL, "/v1beta")
-	authHeaders := internalhttp.MergeHeaders(map[string]string{"x-goog-api-key": b.provider.APIKey()}, b.provider.config.Headers)
+	keyHeaders, err := b.provider.apiKeyHeaders()
+	if err != nil {
+		return nil, err
+	}
+	authHeaders := internalhttp.MergeHeaders(keyHeaders, b.provider.config.Headers)
 	authHeaders = internalhttp.MergeHeaders(authHeaders, headers)
 
 	initPayload, err := json.Marshal(map[string]interface{}{"file": map[string]interface{}{"display_name": displayName}})
@@ -420,7 +424,11 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	if err != nil {
 		return nil, err
 	}
-	authHeaders := internalhttp.MergeHeaders(map[string]string{"x-goog-api-key": b.provider.APIKey()}, b.provider.config.Headers)
+	keyHeaders, err := b.provider.apiKeyHeaders()
+	if err != nil {
+		return nil, err
+	}
+	authHeaders := internalhttp.MergeHeaders(keyHeaders, b.provider.config.Headers)
 	authHeaders = internalhttp.MergeHeaders(authHeaders, opts.Headers)
 	for k, v := range authHeaders {
 		req.Header.Set(k, v)

@@ -468,7 +468,9 @@ func addEmbeddingModelOptions(body map[string]interface{}, opts GoogleEmbeddingP
 func parseEmbeddingProviderOptions(opts *provider.EmbedModelOptions) (GoogleEmbeddingProviderOptions, error) {
 	out, err := parseEmbeddingProviderOptionsRaw(opts)
 	if err != nil {
-		return out, err
+		// TS parseProviderOptions: InvalidArgumentError "invalid google
+		// provider options" wrapping the schema failure.
+		return out, invalidGoogleFilesOptions(err)
 	}
 	if out.OutputDimensionality == nil && out.outputDimensionality == nil && opts != nil && opts.Dimensions != nil {
 		d := *opts.Dimensions

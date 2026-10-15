@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -66,16 +67,46 @@ func New(cfg Config) *Provider {
 		"x-goog-api-key": apiKey,
 	}, cfg.Headers), version.ProviderUserAgent("google"))
 
-	client := internalhttp.NewClient(internalhttp.Config{
+	p := &Provider{config: cfg}
+	p.client = internalhttp.NewClient(internalhttp.Config{
 		BaseURL:    baseURL,
 		Headers:    headers,
 		HTTPClient: cfg.HTTPClient,
+		// TS getHeaders runs per request: the key is (re)loaded then and a
+		// missing key fails the request with a LoadAPIKeyError.
+		HeadersFunc: p.apiKeyHeaders,
 	})
 
-	return &Provider{
-		config: cfg,
-		client: client,
+	return p
+}
+
+// apiKeyHeaders resolves the x-goog-api-key header at request time like TS
+// getHeaders/loadApiKey: Config.APIKey or GOOGLE_GENERATIVE_AI_API_KEY, and a
+// LoadAPIKeyError when neither is set. A non-empty x-goog-api-key in
+// Config.Headers already authenticates the request and is kept.
+func (p *Provider) apiKeyHeaders() (map[string]string, error) {
+	for k, v := range p.config.Headers {
+		if strings.EqualFold(k, "x-goog-api-key") && v != "" {
+			return nil, nil
+		}
 	}
+	key := p.APIKey()
+	if key == "" {
+		return nil, providererrors.NewLoadAPIKeyError("Google Generative AI", "GOOGLE_GENERATIVE_AI_API_KEY")
+	}
+	return map[string]string{"x-goog-api-key": key}, nil
+}
+
+// headersSnapshot returns the client's default headers with the lazily
+// loaded API key applied (a missing key leaves the header as configured).
+func (p *Provider) headersSnapshot() map[string]string {
+	h := p.client.Headers()
+	if extra, err := p.apiKeyHeaders(); err == nil {
+		for k, v := range extra {
+			h[k] = v
+		}
+	}
+	return h
 }
 
 // CreateGoogle creates a new Google Generative AI provider.

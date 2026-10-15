@@ -3,12 +3,14 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // intPtr is a small test helper shared across the google package's test
@@ -462,5 +464,28 @@ func TestVideoModel_DoStatus_NeverLeaksAPIKeyOffOrigin(t *testing.T) {
 	}
 	if result.Videos[2].URL != srvURL+"/ok.mp4?key=secret-key" {
 		t.Errorf("same-origin URL = %s", result.Videos[2].URL)
+	}
+}
+
+func TestVideoProviderOptionsValidationAndEmptySamplesMessage(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), "veo-3.0-generate-001")
+	_, _, err := m.buildRequest(&provider.VideoModelV3CallOptions{N: 1, ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"personGeneration": "nobody"}}})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) {
+		t.Fatalf("personGeneration err = %v", err)
+	}
+	_, _, err = m.buildRequest(&provider.VideoModelV3CallOptions{N: 1, ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"pollIntervalMs": 0}}})
+	if !errors.As(err, &ia) {
+		t.Fatalf("pollIntervalMs err = %v", err)
+	}
+
+	var op googleVideoOperationWire
+	if err := json.Unmarshal([]byte(`{"name":"op","done":true,"response":{"generateVideoResponse":{"generatedSamples":[]}}}`), &op); err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.buildCompletedResult(&op, provider.VideoModelV3ResponseInfo{})
+	want := `No videos in response. Response: {"name":"op","done":true,"response":{"generateVideoResponse":{"generatedSamples":[]}}}`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v", err)
 	}
 }

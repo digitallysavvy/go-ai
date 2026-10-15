@@ -135,7 +135,7 @@ func buildSpeechTranslationSetup(modelID, targetLanguage string, opts speechTran
 // per-call options.headers -- the same tagged getHeaders() closure used for
 // REST calls, not a freshly rebuilt untagged header set.
 func (m *SpeechTranslationModel) baseSpeechTranslationHeaders() map[string]string {
-	return m.prov.client.Headers()
+	return m.prov.headersSnapshot()
 }
 
 // getLiveSpeechTranslationWebSocketURL builds the wss:// Live API URL for

@@ -1,7 +1,11 @@
 package google
 
 import (
+	"errors"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestGeminiEmbedding2PreviewModel verifies the embedding model ID constant exists
@@ -106,5 +110,14 @@ func TestEmbeddingPartFileData(t *testing.T) {
 	}
 	if fileData["fileUri"] != "files/sample" {
 		t.Fatalf("fileData.fileUri = %v", fileData["fileUri"])
+	}
+}
+
+func TestEmbeddingInvalidProviderOptionsIsInvalidArgumentError(t *testing.T) {
+	m := NewEmbeddingModel(New(Config{APIKey: "k"}), "gemini-embedding-001")
+	_, err := m.DoEmbed(t.Context(), "x", &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"google": map[string]interface{}{"taskType": "NOPE"}}})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Message != "invalid google provider options" {
+		t.Fatalf("err = %v", err)
 	}
 }
