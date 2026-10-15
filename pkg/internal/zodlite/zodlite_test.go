@@ -1,6 +1,7 @@
 package zodlite
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -91,5 +92,41 @@ func TestValidationMessageValueIsJSStringify(t *testing.T) {
 	want := `Value: {"b":1,"a":"é<","n":200}.`
 	if !strings.Contains(msg, want) {
 		t.Fatalf("message %q lacks %q", msg, want)
+	}
+}
+
+func TestAllIssuesReported(t *testing.T) {
+	schema := Object(F("a", String), F("b", Number), F("c", Array(String)), F("r", RecordOf(Number)))
+	got := IssueText(ValidationMessage(schema, `{"a":1,"c":["x",2,3],"r":{"z":"s","y":"t"}}`))
+	var issues []struct {
+		Path    []interface{} `json:"path"`
+		Message string        `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(got), &issues); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, i := range issues {
+		b, _ := json.Marshal(i.Path)
+		paths = append(paths, string(b))
+	}
+	want := `["a"] ["b"] ["c",1] ["c",2] ["r","y"] ["r","z"]`
+	if strings.Join(paths, " ") != want {
+		t.Fatalf("paths = %s, want %s", strings.Join(paths, " "), want)
+	}
+}
+
+func TestUnionMemberReportsAllIssues(t *testing.T) {
+	u := Union(Object(F("a", String), F("b", String)))
+	got := IssueText(ValidationMessage(u, `{}`))
+	if strings.Count(got, `"code": "invalid_type"`) != 2 {
+		t.Fatalf("want both member issues, got %s", got)
+	}
+}
+
+func TestLiteralMessageIsRawQuoted(t *testing.T) {
+	got := Literal(`a"<b`)("x", true, nil).Message
+	if got != `Invalid input: expected "a"<b"` {
+		t.Fatalf("message = %q", got)
 	}
 }
