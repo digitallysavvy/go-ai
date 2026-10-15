@@ -4,7 +4,35 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 )
+
+const (
+	// mcpMaxResponseBodyBytes bounds a JSON response read from an MCP server
+	// (tool results can legitimately carry multi-megabyte base64 images).
+	mcpMaxResponseBodyBytes = 64 << 20
+	// mcpMaxErrorBodyBytes bounds the text kept from a failed HTTP response.
+	mcpMaxErrorBodyBytes = 1 << 20
+)
+
+// readErrorBody reads at most mcpMaxErrorBodyBytes of an error response body.
+func readErrorBody(r io.Reader) []byte {
+	body, _ := io.ReadAll(io.LimitReader(r, mcpMaxErrorBodyBytes))
+	return body
+}
+
+// readResponseBody reads a response body from an untrusted server, failing
+// instead of buffering more than mcpMaxResponseBodyBytes.
+func readResponseBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, mcpMaxResponseBodyBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > mcpMaxResponseBodyBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", mcpMaxResponseBodyBytes)
+	}
+	return body, nil
+}
 
 const (
 	defaultJSONMaxDepth  = 64

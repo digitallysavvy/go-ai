@@ -262,7 +262,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 	defer resp.Body.Close() //nolint:errcheck
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(resp.Body)
+		body := readErrorBody(resp.Body)
 		message := fmt.Sprintf("MCP SSE Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		return NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, endpoint.String(), string(body)))
 	}

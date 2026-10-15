@@ -612,6 +612,7 @@ func (c *MCPClient) GetSerializableTools(ctx context.Context) (*ListToolsResult,
 	if err := c.call(ctx, "tools/list", params, &result); err != nil {
 		return nil, fmt.Errorf("failed to get serializable tools: %w", err)
 	}
+	c.prepareToolDefinitions(&result, true)
 
 	return &result, nil
 }
@@ -715,20 +716,32 @@ func isRetryableMCPTransportError(err error) bool {
 	return false
 }
 
-// ListResources lists all available resources from the MCP server
+// ListResources lists the first page of resources from the MCP server. Use
+// ListResourcesWithCursor to follow NextCursor.
 func (c *MCPClient) ListResources(ctx context.Context) ([]MCPResource, error) {
+	result, err := c.ListResourcesWithCursor(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	return result.Resources, nil
+}
+
+// ListResourcesWithCursor lists one page of resources, honoring an explicit
+// pagination cursor (empty requests the first page), and returns the full
+// result including NextCursor (TS listResources({ params: { cursor } })).
+func (c *MCPClient) ListResourcesWithCursor(ctx context.Context, cursor string) (*ListResourcesResult, error) {
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
 
-	params := ListResourcesParams{}
+	params := ListResourcesParams{Cursor: cursor}
 	var result ListResourcesResult
 
 	if err := c.call(ctx, "resources/list", params, &result); err != nil {
 		return nil, fmt.Errorf("failed to list resources: %w", err)
 	}
 
-	return result.Resources, nil
+	return &result, nil
 }
 
 // ReadResource reads a resource from the MCP server
@@ -765,20 +778,32 @@ func (c *MCPClient) ListResourceTemplates(ctx context.Context) (*ListResourceTem
 	return &result, nil
 }
 
-// ListPrompts lists all available prompts from the MCP server
+// ListPrompts lists the first page of prompts from the MCP server. Use
+// ListPromptsWithCursor to follow NextCursor.
 func (c *MCPClient) ListPrompts(ctx context.Context) ([]MCPPrompt, error) {
+	result, err := c.ListPromptsWithCursor(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	return result.Prompts, nil
+}
+
+// ListPromptsWithCursor lists one page of prompts, honoring an explicit
+// pagination cursor (empty requests the first page), and returns the full
+// result including NextCursor (TS experimental_listPrompts({ params })).
+func (c *MCPClient) ListPromptsWithCursor(ctx context.Context, cursor string) (*ListPromptsResult, error) {
 	if !c.initialized {
 		return nil, fmt.Errorf("client not initialized")
 	}
 
-	params := ListPromptsParams{}
+	params := ListPromptsParams{Cursor: cursor}
 	var result ListPromptsResult
 
 	if err := c.call(ctx, "prompts/list", params, &result); err != nil {
 		return nil, fmt.Errorf("failed to list prompts: %w", err)
 	}
 
-	return result.Prompts, nil
+	return &result, nil
 }
 
 // GetPrompt gets a prompt from the MCP server

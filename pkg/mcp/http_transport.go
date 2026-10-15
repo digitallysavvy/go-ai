@@ -543,7 +543,19 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		var body []byte
 		if resp.Body != nil {
 			defer resp.Body.Close() //nolint:errcheck
-			body, _ = io.ReadAll(resp.Body)
+			body = readErrorBody(resp.Body)
+		}
+		// Matches TS send(): when the failed response to a request carries a
+		// JSON-RPC error, deliver it as the request's response (a null id is
+		// filled in with the request id) instead of an HTTP transport error.
+		if message.ID != nil && len(body) > 0 {
+			if msgs, perr := parseMCPHTTPJSONMessages(body); perr == nil && len(msgs) == 1 && msgs[0].Error != nil {
+				if msgs[0].ID == nil {
+					msgs[0].ID = message.ID
+				}
+				t.queueReceivedMessages(msgs)
+				return nil
+			}
 		}
 		errMessage := fmt.Sprintf("MCP HTTP Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		// Matches TS send()'s two distinct 404 suffixes: a request that
@@ -606,7 +618,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp.Body != nil {
 			defer resp.Body.Close() //nolint:errcheck
 			var readErr error
-			body, readErr = io.ReadAll(resp.Body)
+			body, readErr = readResponseBody(resp.Body)
 			if readErr != nil {
 				return fail(NewTransportError("failed to read response", readErr))
 			}
@@ -1036,7 +1048,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
 		var body []byte
 		if resp.Body != nil {
-			body, _ = io.ReadAll(resp.Body)
+			body = readErrorBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
