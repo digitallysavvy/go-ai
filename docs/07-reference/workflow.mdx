@@ -25,7 +25,7 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 | `AllowSystemInMessages` | `bool` | AllowSystemInMessages permits system-role messages in Messages. By default WorkflowAgent rejects system messages; use Instructions/System for default system prompts. |
 | `Tools` | `[]types.Tool` |  |
 | `ToolSet` | `map[string]types.Tool` |  |
-| `StopWhen` | `[]ai.StopCondition` |  |
+| `StopWhen` | `[]ai.StopCondition` | StopWhen is the default stop condition. When empty NewWorkflowAgent sets IsStepCount(20), which applies to Generate; Stream is unbounded unless StopWhen is set explicitly on the agent or the call (TS: only generate defaults to isStepCount(20)). |
 | `Output` | `interface{}` |  |
 | `Telemetry` | `*ai.TelemetrySettings` |  |
 | `ID` | `string` |  |
@@ -87,6 +87,17 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `Temperature` | `*float64` | Per-call generation settings (TS Partial&lt;GenerationSettings&gt;). A value set here replaces the agent's; Headers and ProviderOptions replace as a whole. |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
 | `Prompt` | `string` |  |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
@@ -131,6 +142,17 @@ func NewWorkflowAgent(agent WorkflowAgent) (*WorkflowAgent, error)
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `Temperature` | `*float64` | Per-call generation settings (TS Partial&lt;GenerationSettings&gt;). A value set here replaces the agent's; Headers and ProviderOptions replace as a whole. |
+| `MaxTokens` | `*int` |  |
+| `TopP` | `*float64` |  |
+| `TopK` | `*int` |  |
+| `FrequencyPenalty` | `*float64` |  |
+| `PresencePenalty` | `*float64` |  |
+| `StopSequences` | `[]string` |  |
+| `Seed` | `*int` |  |
+| `Headers` | `map[string]string` |  |
+| `Reasoning` | `*types.ReasoningLevel` |  |
+| `ProviderOptions` | `map[string]interface{}` |  |
 | `Prompt` | `string` |  |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
