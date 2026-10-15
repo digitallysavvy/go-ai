@@ -878,3 +878,24 @@ func assertDeepEqual(t *testing.T, got, want interface{}) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
 }
+
+// TS hands the sandbox argument to input validation unchanged: a non-object
+// argument is an input error, never silently replaced by an empty object.
+func TestRunCodeMode_NonObjectToolInputIsRejected(t *testing.T) {
+	var called bool
+	tools := ToolSet{"echo": {
+		Name:       "echo",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}}},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			called = true
+			return input, nil
+		},
+	}}
+	for _, js := range []string{`return await tools.echo("text");`, `return await tools.echo([1]);`, `return await tools.echo(null);`} {
+		_, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: tools})
+		assertErrMatches(t, err, `Invalid input for tool "echo"`)
+	}
+	if called {
+		t.Fatal("execute must not run for a non-object input")
+	}
+}
