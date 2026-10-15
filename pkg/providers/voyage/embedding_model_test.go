@@ -45,7 +45,7 @@ func TestVoyageEmbeddingRejectsTooManyInputs(t *testing.T) {
 	}
 
 	_, err := model.DoEmbedMany(t.Context(), inputs, nil)
-	if err == nil || !strings.Contains(err.Error(), "too many embedding values") {
+	if err == nil || !strings.Contains(err.Error(), "Too many values for a single embedding call") {
 		t.Fatalf("expected too many values error, got %v", err)
 	}
 }

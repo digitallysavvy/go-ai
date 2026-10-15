@@ -132,7 +132,13 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	}
 
 	var resp responses.ResponsesAPIResponse
-	if err := m.provider.client.PostJSON(ctx, "/responses", body, &resp); err != nil {
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: opts.Headers,
+	}, &resp)
+	if err != nil {
 		return nil, m.wrapErr(err)
 	}
 
@@ -143,6 +149,9 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	if len(warnings) > 0 {
 		result.Warnings = append(warnings, result.Warnings...)
 	}
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
 }
 
@@ -156,18 +165,17 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	}
 
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/responses",
-		Body:   body,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/responses",
+		Body:    body,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.wrapErr(err)
 	}
 
 	stream := newXAIResponsesStream(httpResp.Body, opts.IncludeRawChunks)
+	stream.responseHeaders = httpResp.Header
 	stream.requestBody = body
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
@@ -1012,12 +1020,13 @@ type xaiResponsesToolAccum struct {
 // xaiResponsesStream implements provider.TextStream for the XAI Responses API SSE stream.
 // XAI's Responses API uses the same SSE event schema as the OpenAI Responses API.
 type xaiResponsesStream struct {
-	reader     io.ReadCloser
-	parser     *streaming.SSEParser
-	err        error
-	toolAccum  map[int]*xaiResponsesToolAccum
-	itemTypes  map[int]string
-	flushQueue []*provider.StreamChunk
+	responseHeaders http.Header
+	reader          io.ReadCloser
+	parser          *streaming.SSEParser
+	err             error
+	toolAccum       map[int]*xaiResponsesToolAccum
+	itemTypes       map[int]string
+	flushQueue      []*provider.StreamChunk
 	// activeReasoning tracks item IDs for which a reasoning-start chunk has been emitted.
 	// Used to emit the matching reasoning-end in output_item.done, and to avoid
 	// double-emitting reasoning-start for encrypted reasoning (no summary events sent).
@@ -1150,6 +1159,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
+				Headers: providerutils.ExtractHeaders(s.responseHeaders),
 			}
 			if e.Response.CreatedAt != 0 {
 				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)

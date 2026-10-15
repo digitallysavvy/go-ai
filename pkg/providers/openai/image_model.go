@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -117,7 +119,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	reqBody := m.buildRequestBody(opts)
 	var response openaiImageResponse
-	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/images/generations",
 		Body:    reqBody,
@@ -131,6 +133,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	result.Warnings = imageWarnings(opts)
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(httpResp.Headers)}
 	return result, nil
 }
 
@@ -206,7 +209,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	}
 
 	var response openaiImageResponse
-	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/images/edits",
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
@@ -220,6 +223,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 		return nil, err
 	}
 	result.Warnings = imageWarnings(opts)
+	result.Response = &types.ResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID, Headers: providerutils.ExtractHeaders(httpResp.Headers)}
 	return result, nil
 }
 
@@ -412,26 +416,94 @@ func (m *ImageModel) convertResponse(response openaiImageResponse) (*types.Image
 	if len(response.Data) == 0 {
 		return nil, fmt.Errorf("no image data returned from OpenAI")
 	}
-	imageData := response.Data[0]
-	imageBytes, err := base64.StdEncoding.DecodeString(imageData.B64JSON)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+	images := make([][]byte, 0, len(response.Data))
+	b64 := make([]string, 0, len(response.Data))
+	for _, d := range response.Data {
+		raw, err := base64.StdEncoding.DecodeString(d.B64JSON)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+		}
+		images = append(images, raw)
+		b64 = append(b64, d.B64JSON)
 	}
-	return &types.ImageResult{
-		Image:    imageBytes,
-		MimeType: "image/png",
-		URL:      imageData.URL,
-		Usage: types.ImageUsage{
-			ImageCount: len(response.Data),
-		},
-	}, nil
+	result := &types.ImageResult{
+		Image:        images[0],
+		Images:       images,
+		Base64Image:  b64[0],
+		Base64Images: b64,
+		MimeType:     "image/png",
+		URL:          response.Data[0].URL,
+		Usage:        types.ImageUsage{ImageCount: len(response.Data)},
+	}
+	if u := response.Usage; u != nil {
+		result.Usage.InputTokens = u.InputTokens
+		result.Usage.OutputTokens = u.OutputTokens
+		result.Usage.TotalTokens = u.TotalTokens
+	}
+	// TS providerMetadata.openai.images: per-image revisedPrompt plus response
+	// fields, with input token details split evenly (remainder on the last).
+	total := len(response.Data)
+	imagesMeta := make([]map[string]interface{}, total)
+	for i, d := range response.Data {
+		item := map[string]interface{}{}
+		if d.RevisedPrompt != "" {
+			item["revisedPrompt"] = d.RevisedPrompt
+		}
+		if response.Created != 0 {
+			item["created"] = response.Created
+		}
+		if response.Size != "" {
+			item["size"] = response.Size
+		}
+		if response.Quality != "" {
+			item["quality"] = response.Quality
+		}
+		if response.Background != "" {
+			item["background"] = response.Background
+		}
+		if response.OutputFormat != "" {
+			item["outputFormat"] = response.OutputFormat
+		}
+		if det := response.Usage; det != nil && det.InputTokensDetails != nil {
+			if det.InputTokensDetails.ImageTokens != nil {
+				item["imageTokens"] = distributeTokens(*det.InputTokensDetails.ImageTokens, i, total)
+			}
+			if det.InputTokensDetails.TextTokens != nil {
+				item["textTokens"] = distributeTokens(*det.InputTokensDetails.TextTokens, i, total)
+			}
+		}
+		imagesMeta[i] = item
+	}
+	result.ProviderMetadata = map[string]interface{}{"openai": map[string]interface{}{"images": imagesMeta}}
+	return result, nil
+}
+
+func distributeTokens(totalTokens, index, count int) int {
+	base := totalTokens / count
+	if index == count-1 {
+		return totalTokens - base*(count-1)
+	}
+	return base
 }
 
 type openaiImageResponse struct {
-	Created int64 `json:"created"`
-	Data    []struct {
+	Created      int64  `json:"created"`
+	Size         string `json:"size"`
+	Quality      string `json:"quality"`
+	Background   string `json:"background"`
+	OutputFormat string `json:"output_format"`
+	Data         []struct {
 		B64JSON       string `json:"b64_json"`
 		URL           string `json:"url"`
 		RevisedPrompt string `json:"revised_prompt"`
 	} `json:"data"`
+	Usage *struct {
+		InputTokens        int `json:"input_tokens"`
+		OutputTokens       int `json:"output_tokens"`
+		TotalTokens        int `json:"total_tokens"`
+		InputTokensDetails *struct {
+			ImageTokens *int `json:"image_tokens"`
+			TextTokens  *int `json:"text_tokens"`
+		} `json:"input_tokens_details"`
+	} `json:"usage"`
 }

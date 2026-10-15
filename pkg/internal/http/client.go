@@ -9,10 +9,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -173,6 +175,22 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, string(e.Body))
 }
 
+// HTTPStatusDetails implements providererrors.HTTPStatusDetails so
+// providererrors.NewProviderError can lift the status code, headers and body
+// out of the cause chain.
+func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
+	if e == nil {
+		return 0, nil, nil
+	}
+	headers := make(map[string]string, len(e.Headers))
+	for k, v := range e.Headers {
+		if len(v) > 0 {
+			headers[strings.ToLower(k)] = v[0]
+		}
+	}
+	return e.StatusCode, headers, e.Body
+}
+
 // snapshot returns a point-in-time copy of the mutable client state (base
 // URL and default headers) under the read lock, so callers never range over
 // or concatenate the live fields while SetHeader/SetBaseURL may be running
@@ -315,6 +333,19 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 	return resp, nil
 }
 
+// streamClient returns the client used for streaming requests. The shared
+// DefaultHTTPClient carries a whole-request timeout that would abort a stream
+// still being read, so streams use a copy of it without that timeout. A
+// caller-supplied client (or an explicit Config.Timeout) is honoured as is.
+func (c *Client) streamClient() *http.Client {
+	if c.client == DefaultHTTPClient && DefaultHTTPClient.Timeout > 0 {
+		clone := *DefaultHTTPClient
+		clone.Timeout = 0
+		return &clone
+	}
+	return c.client
+}
+
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
 	baseURL, defaultHeaders := c.snapshot()
@@ -375,8 +406,10 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
-	// Perform request
-	httpResp, err := c.client.Do(httpReq)
+	// Perform request. http.Client.Timeout covers reading the response body,
+	// so the shared default client's 60s budget would cut off long-running
+	// streams (TS fetch has no overall timeout; callers cancel via ctx).
+	httpResp, err := c.streamClient().Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
 	}
@@ -475,4 +508,14 @@ func transportError(err error) error {
 		return err
 	}
 	return fmt.Errorf("Cannot connect to API: %w", err) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+// StatusProviderError builds a *providererrors.ProviderError for a non-2xx
+// provider response, mirroring the TS APICallError a failedResponseHandler
+// produces: the status code (and so retryability), response headers and body
+// are preserved and the message is taken from the JSON error body when
+// present.
+func StatusProviderError(providerName string, statusCode int, headers http.Header, body []byte) error {
+	cause := &HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderError(providerName, 0, "", cause.Error(), cause)
 }

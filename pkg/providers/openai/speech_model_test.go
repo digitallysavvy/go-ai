@@ -152,7 +152,7 @@ func TestSpeechModelDoGenerateSuccessAndError(t *testing.T) {
 
 	mErr := NewSpeechModel(New(Config{APIKey: "k", BaseURL: errServerURL + "/v1"}), "tts-1")
 	_, err = mErr.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hello"})
-	if err == nil || !strings.Contains(err.Error(), "returned status 400") {
+	if err == nil || !strings.Contains(err.Error(), "provider error (400)") {
 		t.Fatalf("expected status error, got %v", err)
 	}
 }

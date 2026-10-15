@@ -70,7 +70,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("OpenAI Whisper API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var response openaiTranscriptionResponse

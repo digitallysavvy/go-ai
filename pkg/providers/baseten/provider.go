@@ -1,12 +1,15 @@
 package baseten
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
@@ -86,6 +89,7 @@ func New(cfg Config) *Provider {
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:       true,
 		OpenAICompatible: true,
+		IncludeUsage:     true,
 		UserAgentName:    "baseten",
 	})
 
@@ -102,6 +106,7 @@ func New(cfg Config) *Provider {
 			HTTPClient:       cfg.HTTPClient,
 			Name:             "baseten.embedding",
 			OpenAICompatible: true,
+			IncludeUsage:     true,
 			UserAgentName:    "baseten",
 		})
 	}
@@ -180,6 +185,20 @@ type embeddingModel struct {
 
 func (m *embeddingModel) MaxEmbeddingsPerCall() int {
 	return maxEmbeddingsPerCall
+}
+
+// DoEmbedMany enforces Baseten's lower batch limit (TS maxEmbeddingsPerCall
+// check in the OpenAI-compatible embedding model).
+func (m *embeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	if len(inputs) > maxEmbeddingsPerCall {
+		return nil, &providerrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.ModelID(),
+			MaxEmbeddingsPerCall: maxEmbeddingsPerCall,
+			Values:               inputs,
+		}
+	}
+	return m.EmbeddingModel.DoEmbedMany(ctx, inputs, opts)
 }
 
 // Name returns the provider name.

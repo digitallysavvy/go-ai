@@ -144,7 +144,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var out openAIFilesResponse
@@ -187,7 +187,7 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files retrieve failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var out openAIFilesResponse
@@ -254,7 +254,7 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai files delete failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var out struct {

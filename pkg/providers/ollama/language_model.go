@@ -68,9 +68,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts, false)
 	var response ollamaResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    "/v1/chat/completions",
+		Body:    reqBody,
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -87,12 +88,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	reqBody := m.buildRequestBody(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/v1/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -199,7 +198,7 @@ func convertOllamaUsage(usage ollamaUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cachedTokens > 0 {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
@@ -207,8 +206,11 @@ func convertOllamaUsage(usage ollamaUsage) types.Usage {
 			CacheWriteTokens: nil,
 		}
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,

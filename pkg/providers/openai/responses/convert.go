@@ -124,6 +124,9 @@ func (o ConvertOptions) toolSearchName() string {
 func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 	var warnings []types.Warning
+	if err := validateToolOutputFileReferences(prompt, openAIProviderOptionsName(opts)); err != nil {
+		return nil, nil, err
+	}
 	opts.programmaticCallerIDs = collectProgrammaticCallerIDs(prompt, openAIProviderOptionsName(opts))
 	if opts.HasConversation || opts.HasPreviousResponseID {
 		opts.parallelToolResultGroups = collectCompleteParallelToolResultGroups(prompt, openAIProviderOptionsName(opts))
@@ -339,7 +342,11 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 					parts = append(parts, UserFilePart{Type: "input_file", FileURL: fileURL})
 				}
 			case types.FileDataTypeReference:
-				reference := firstNonEmpty(providerReferenceString(p.FileData.Reference, providerName), p.Reference)
+				reference, refErr := resolveProviderReferenceStrict(p.FileData.Reference, providerName)
+				if refErr != nil {
+					return UserMessage{}, refErr
+				}
+				reference = firstNonEmpty(reference, p.Reference)
 				if reference == "" {
 					continue
 				}
@@ -1260,6 +1267,24 @@ func openAIProviderOptionsName(opts ConvertOptions) string {
 	return "openai"
 }
 
+// resolveProviderReferenceStrict mirrors TS resolveProviderReference: a
+// reference that names other providers but not providerName is an error
+// (NoSuchProviderReferenceError) instead of silently borrowing another
+// provider's file ID. An empty reference, or the legacy single-ID form keyed
+// by "", resolves without error.
+func resolveProviderReferenceStrict(reference types.ProviderReference, providerName string) (string, error) {
+	if len(reference) == 0 {
+		return "", nil
+	}
+	if ref := reference[providerName]; ref != "" {
+		return ref, nil
+	}
+	if ref := reference[""]; ref != "" && len(reference) == 1 {
+		return ref, nil
+	}
+	return "", &providererrors.NoSuchProviderReferenceError{Provider: providerName, Reference: reference}
+}
+
 func providerReferenceString(reference types.ProviderReference, providerName string) string {
 	if len(reference) == 0 {
 		return ""
@@ -1975,6 +2000,43 @@ func shouldSkipApprovalDeniedOutput(part types.ToolResultContent) bool {
 	}
 	approvalID, _ := openaiOptions["approvalId"].(string)
 	return approvalID != ""
+}
+
+// validateToolOutputFileReferences mirrors TS resolveProviderReference for
+// file blocks inside tool-result content: a reference naming other providers
+// but not providerName is a NoSuchProviderReferenceError.
+func validateToolOutputFileReferences(prompt types.Prompt, providerName string) error {
+	for _, msg := range prompt.Messages {
+		for _, part := range msg.Content {
+			var tr types.ToolResultContent
+			switch p := part.(type) {
+			case types.ToolResultContent:
+				tr = p
+			case *types.ToolResultContent:
+				if p == nil {
+					continue
+				}
+				tr = *p
+			default:
+				continue
+			}
+			if tr.Output == nil {
+				continue
+			}
+			for _, block := range tr.Output.Content {
+				b, ok := block.(types.FileContentBlock)
+				if !ok {
+					continue
+				}
+				if len(b.FileData.Reference) > 0 && (b.FileData.Type == types.FileDataTypeReference || b.FileData.Type == "") {
+					if _, err := resolveProviderReferenceStrict(b.FileData.Reference, providerName); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // toolResultOutput converts a ToolResultContent to the Responses API output value.

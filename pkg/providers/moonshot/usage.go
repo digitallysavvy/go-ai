@@ -107,19 +107,17 @@ func ConvertMoonshotUsageRaw(raw json.RawMessage) (types.Usage, error) {
 	} else if known.PromptTokensDetails != nil && known.PromptTokensDetails.CachedTokens != nil {
 		cacheReadTokens = int64(*known.PromptTokensDetails.CachedTokens)
 	}
-	if cacheReadTokens > 0 {
+	{
 		result.InputDetails = &types.InputTokenDetails{CacheReadTokens: &cacheReadTokens}
 		noCacheTokens := promptTokens - cacheReadTokens
-		if noCacheTokens > 0 {
-			result.InputDetails.NoCacheTokens = &noCacheTokens
-		}
+		result.InputDetails.NoCacheTokens = &noCacheTokens
 	}
 
 	var reasoningTokens int64
 	if known.CompletionTokensDetails != nil && known.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*known.CompletionTokensDetails.ReasoningTokens)
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
 		if textTokens < 0 {
 			textTokens = 0

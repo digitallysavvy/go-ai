@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -48,13 +49,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	reqBody := m.buildRequestBody(opts)
 
-	resp, err := m.provider.client.Post(ctx, "/v1/images/generations", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/v1/images/generations", Body: reqBody, Headers: opts.Headers})
 	if err != nil {
 		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("together AI API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("together", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	result, err := m.convertResponse(resp.Body)

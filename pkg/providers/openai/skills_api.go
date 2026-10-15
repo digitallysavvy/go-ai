@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"mime/multipart"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -52,7 +51,7 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai skills upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var out struct {

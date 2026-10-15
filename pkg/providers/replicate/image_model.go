@@ -101,12 +101,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// Create prediction with Prefer: wait header
 	// This tells Replicate to wait for completion instead of returning immediately
 	req := internalhttp.Request{
-		Method: "POST",
-		Path:   "/predictions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Prefer": "wait",
-		},
+		Method:  "POST",
+		Path:    "/predictions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Prefer": "wait"}, opts.Headers),
 	}
 
 	resp, err := m.provider.client.Do(ctx, req)
@@ -115,7 +113,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode != 201 && resp.StatusCode != 200 {
-		return nil, fmt.Errorf("replicate API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("replicate", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var prediction replicateImagePrediction

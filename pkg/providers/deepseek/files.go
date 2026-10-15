@@ -128,7 +128,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("deepseek files upload failed: %d %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("deepseek", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var out struct {

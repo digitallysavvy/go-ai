@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -60,13 +61,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts)
 
 	// Create prediction
-	resp, err := m.provider.client.Post(ctx, "/predictions", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/predictions", Body: reqBody, Headers: opts.Headers})
 	if err != nil {
 		return nil, providererrors.NewProviderError("replicate", 0, "", err.Error(), err)
 	}
 
 	if resp.StatusCode != 201 && resp.StatusCode != 200 {
-		return nil, fmt.Errorf("replicate API returned status %d: %s", resp.StatusCode, string(resp.Body))
+		return nil, internalhttp.StatusProviderError("replicate", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	var prediction replicatePrediction

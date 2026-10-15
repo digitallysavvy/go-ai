@@ -64,13 +64,14 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 	webSearchToolName := responsesWebSearchToolName(opts.Tools)
 
 	var resp responses.ResponsesAPIResponse
-	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/responses",
 		Query:   m.provider.responsesQuery(),
 		Body:    body,
 		Headers: opts.Headers,
-	}, &resp); err != nil {
+	}, &resp)
+	if err != nil {
 		return nil, m.wrapErr(err)
 	}
 
@@ -96,6 +97,9 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
 }
 
@@ -2714,6 +2718,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
+				Headers: providerutils.ExtractHeaders(s.responseHeaders),
 			}
 			if e.Response.CreatedAt != 0 {
 				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)

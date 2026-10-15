@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"io"
 	"net/http"
 	"time"
@@ -86,7 +87,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, internalhttp.StatusProviderError("lmnt", resp.StatusCode, nil, []byte(bodyBytes))
 	}
 
 	// Read audio data

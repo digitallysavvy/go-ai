@@ -115,6 +115,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
+		Query:   m.provider.config.ChatQuery,
 		Body:    reqBody,
 		Headers: opts.Headers,
 	}, &response)
@@ -124,6 +125,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response)
+	m.applyChatLogprobs(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
@@ -147,6 +149,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
+		Query:   m.provider.config.ChatQuery,
 		Body:    reqBody,
 		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
@@ -156,6 +159,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	inner := newOpenAIStreamWithMetadata(httpResp.Body, opts.IncludeRawChunks, m.Provider(), httpResp.Header)
 	inner.requestBody = reqBody
+	inner.compat = m.provider.config.OpenAICompatible
+	if inner.compat {
+		inner.metaKey = providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())
+	}
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
 
@@ -183,6 +190,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	if stream {
 		body["stream"] = true
+		// TS OpenAIChatLanguageModel always asks for usage; the
+		// OpenAI-compatible model only when config.includeUsage is set.
+		if !m.provider.config.OpenAICompatible || m.provider.config.IncludeUsage {
+			body["stream_options"] = map[string]interface{}{"include_usage": true}
+		}
 	}
 
 	// Extract the "openai" provider options map once; every option below reads
@@ -190,6 +202,26 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	var openaiOpts map[string]interface{}
 	if opts.ProviderOptions != nil {
 		openaiOpts, _ = opts.ProviderOptions["openai"].(map[string]interface{})
+	}
+
+	// OpenAI-compatible wrappers (baseten, deepinfra, vertex MaaS, ...) read
+	// options from openaiCompatible / <providerName> / <camelCaseName> like
+	// TS OpenAICompatibleChatLanguageModel; the legacy "openai" key keeps
+	// working underneath. Unknown keys from the provider-named maps are
+	// forwarded to the request body (TS passes them through).
+	var compatPassthrough map[string]interface{}
+	if m.provider.config.OpenAICompatible {
+		resolved, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.fileReferenceProvider(), opts.ProviderOptions)
+		warnings = append(warnings, resolveWarnings...)
+		merged := make(map[string]interface{}, len(openaiOpts)+len(resolved))
+		for k, v := range openaiOpts {
+			merged[k] = v
+		}
+		for k, v := range resolved {
+			merged[k] = v
+		}
+		openaiOpts = merged
+		compatPassthrough = resolved
 	}
 
 	// reasoningSummary is a Responses API option; the chat options schema has
@@ -277,6 +309,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// to OpenAI's own chat conversion -- other ToOpenAIMessages callers
 	// (Groq/DeepSeek/openai-compatible/Alibaba/...) must not opt in.
 	native := !m.provider.config.OpenAICompatible
+	// A prompt with neither messages nor text (e.g. system-only) must still
+	// carry a concrete message slice for the system-message prepend below.
+	body["messages"] = []map[string]interface{}{}
 	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
@@ -298,7 +333,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// `openaiOptions.systemMessageMode ?? (isReasoningModel ? 'developer' :
 	// modelCapabilities.systemMessageMode)`).
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
+		messages, _ := body["messages"].([]map[string]interface{})
 		role := capabilities.SystemMessageMode
 		if isReasoningModel {
 			role = "developer"
@@ -581,6 +616,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["verbosity"] = v
 	}
 
+	for k, v := range compatPassthrough {
+		switch k {
+		case "user", "reasoningEffort", "textVerbosity", "strictJsonSchema",
+			"messages", "tools", "tool_choice", "reasoning_effort", "verbosity", "stream", "stream_options":
+			continue
+		}
+		body[k] = v
+	}
+
 	if m.provider.config.TransformRequestBody != nil {
 		body = m.provider.config.TransformRequestBody(body)
 	}
@@ -622,6 +666,18 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 			result.Text = choice.Message.Audio.Transcript
 		}
 
+		// Reasoning text from OpenAI-compatible hosts comes first (TS
+		// openai-compatible content order: reasoning, text, tool calls).
+		if m.provider.config.OpenAICompatible {
+			reasoning := choice.Message.ReasoningContent
+			if reasoning == nil {
+				reasoning = choice.Message.Reasoning
+			}
+			if reasoning != nil && *reasoning != "" {
+				result.Content = append(result.Content, types.ReasoningContent{Text: *reasoning})
+			}
+		}
+
 		// Extract tool calls
 		if len(choice.Message.ToolCalls) > 0 {
 			result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
@@ -629,10 +685,29 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 				var args map[string]interface{}
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 
+				id := tc.ID
+				if id == "" {
+					// TS: toolCall.id ?? generateId().
+					id = streaming.GenerateID()
+				}
 				result.ToolCalls[i] = types.ToolCall{
-					ID:        tc.ID,
+					ID:        id,
 					ToolName:  tc.Function.Name,
 					Arguments: args,
+				}
+			}
+		}
+
+		// url_citation annotations become url sources (TS OpenAIChatLanguageModel).
+		if !m.provider.config.OpenAICompatible {
+			for _, ann := range choice.Message.Annotations {
+				if ann.Type == "url_citation" && ann.URLCitation != nil {
+					result.Content = append(result.Content, types.SourceContent{
+						SourceType: "url",
+						ID:         streaming.GenerateID(),
+						URL:        ann.URLCitation.URL,
+						Title:      ann.URLCitation.Title,
+					})
 				}
 			}
 		}
@@ -640,9 +715,65 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 		// Extract finish reason
 		result.FinishReason = providerutils.MapOpenAIFinishReason(choice.FinishReason)
 		result.RawFinishReason = choice.FinishReason
+
+		result.ProviderMetadata = m.chatProviderMetadata(response.Usage.CompletionTokensDetails, nil)
+	} else {
+		result.ProviderMetadata = m.chatProviderMetadata(response.Usage.CompletionTokensDetails, nil)
 	}
 
 	return result
+}
+
+// applyChatLogprobs adds choices[0].logprobs.content to the provider metadata
+// (TS providerMetadata.openai.logprobs; native OpenAI chat only).
+func (m *LanguageModel) applyChatLogprobs(result *types.GenerateResult, body []byte) {
+	if m.provider.config.OpenAICompatible {
+		return
+	}
+	var wire struct {
+		Choices []struct {
+			Logprobs *struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"logprobs"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(body, &wire) != nil || len(wire.Choices) == 0 || wire.Choices[0].Logprobs == nil {
+		return
+	}
+	content := wire.Choices[0].Logprobs.Content
+	if len(content) == 0 || string(content) == "null" {
+		return
+	}
+	if meta, ok := result.ProviderMetadata["openai"].(map[string]interface{}); ok {
+		meta["logprobs"] = content
+	}
+}
+
+// chatProviderMetadata builds the provider metadata TS OpenAIChatLanguageModel
+// (key "openai") and OpenAICompatibleChatLanguageModel (key = providerOptions
+// name) attach to results: accepted/rejected prediction tokens and logprobs.
+func (m *LanguageModel) chatProviderMetadata(details *struct {
+	ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+	AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+	RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+}, logprobs json.RawMessage) map[string]interface{} {
+	key := "openai"
+	if m.provider.config.OpenAICompatible {
+		key = providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())
+	}
+	meta := map[string]interface{}{}
+	if details != nil {
+		if details.AcceptedPredictionTokens != nil {
+			meta["acceptedPredictionTokens"] = *details.AcceptedPredictionTokens
+		}
+		if details.RejectedPredictionTokens != nil {
+			meta["rejectedPredictionTokens"] = *details.RejectedPredictionTokens
+		}
+	}
+	if len(logprobs) > 0 && !m.provider.config.OpenAICompatible {
+		meta["logprobs"] = logprobs
+	}
+	return map[string]interface{}{key: meta}
 }
 
 // convertOpenAIUsage converts OpenAI usage to detailed Usage struct
@@ -692,7 +823,7 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 || cacheWriteTokens != nil || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		if cacheWriteTokens != nil {
 			noCacheTokens -= *cacheWriteTokens
@@ -707,8 +838,11 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 
 	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
@@ -786,6 +920,22 @@ type openAIMessage struct {
 	Audio *struct {
 		Transcript string `json:"transcript"`
 	} `json:"audio,omitempty"`
+	// ReasoningContent / Reasoning carry reasoning text from
+	// OpenAI-compatible hosts (TS openai-compatible: reasoning_content ??
+	// reasoning).
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
+	Reasoning        *string `json:"reasoning,omitempty"`
+	// Annotations carries url_citation entries (OpenAI web search).
+	Annotations []openAIAnnotation `json:"annotations,omitempty"`
+}
+
+// openAIAnnotation is a chat completion message/delta annotation.
+type openAIAnnotation struct {
+	Type        string `json:"type"`
+	URLCitation *struct {
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	} `json:"url_citation,omitempty"`
 }
 
 // openAIToolCall represents an OpenAI tool call
@@ -854,6 +1004,21 @@ type openAIStream struct {
 	providerName     string
 	responseHeaders  http.Header
 	requestBody      interface{}
+
+	// compat marks an OpenAI-compatible wrapper (reasoning deltas, no
+	// annotations/logprobs); metaKey is the providerMetadata namespace.
+	compat  bool
+	metaKey string
+
+	// The terminal finish chunk is held back until the stream ends so a
+	// trailing usage-only chunk (stream_options.include_usage) can be merged
+	// into it, as TS does in flush().
+	finishRaw         string
+	finishSeen        bool
+	finished          bool
+	isActiveReasoning bool
+	usage             *openAIUsage
+	logprobs          json.RawMessage
 }
 
 // newOpenAIStream creates a new OpenAI stream
@@ -906,14 +1071,18 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// Get next SSE event
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				s.endStream()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 
 		// Check for stream completion
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			s.endStream()
+			continue
 		}
 		// Parse the event data as JSON.
 		// Tool call deltas carry an "index" field not present in non-streaming responses,
@@ -924,8 +1093,10 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			Created int64  `json:"created"`
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					ToolCalls []struct {
+					Content          string  `json:"content"`
+					ReasoningContent *string `json:"reasoning_content,omitempty"`
+					Reasoning        *string `json:"reasoning,omitempty"`
+					ToolCalls        []struct {
 						Index    *int    `json:"index"`
 						ID       string  `json:"id"`
 						Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
@@ -934,9 +1105,14 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 							Arguments string `json:"arguments"`
 						} `json:"function"`
 					} `json:"tool_calls,omitempty"`
+					Annotations []openAIAnnotation `json:"annotations,omitempty"`
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
+				Logprobs     *struct {
+					Content json.RawMessage `json:"content"`
+				} `json:"logprobs,omitempty"`
 			} `json:"choices"`
+			Usage *openAIUsage    `json:"usage,omitempty"`
 			Error json.RawMessage `json:"error,omitempty"`
 		}
 
@@ -995,61 +1171,107 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			s.metadataEmitted = true
 		}
 
-		if len(chunkData.Choices) > 0 {
-			choice := chunkData.Choices[0]
+		// Usage may arrive on any chunk, typically a trailing choices-less one;
+		// the latest value wins (TS: if (value.usage != null) usage = ...).
+		if chunkData.Usage != nil {
+			s.usage = chunkData.Usage
+		}
 
-			// Text chunk
-			if choice.Delta.Content != "" {
-				s.outputStarted = true
+		produced := false
+		emit := func(c *provider.StreamChunk) {
+			if !produced {
+				produced = true
 				if rawChunk != nil {
 					s.pendingRaw = append(s.pendingRaw, rawChunk)
 				}
 				s.flushPendingMetadata()
-				textChunk := &provider.StreamChunk{
+			}
+			s.flushQueue = append(s.flushQueue, c)
+			s.outputStarted = true
+		}
+
+		if len(chunkData.Choices) > 0 {
+			choice := chunkData.Choices[0]
+
+			if choice.Logprobs != nil && len(choice.Logprobs.Content) > 0 && string(choice.Logprobs.Content) != "null" {
+				s.logprobs = choice.Logprobs.Content
+			}
+
+			// Reasoning text (OpenAI-compatible hosts): reasoning_content ?? reasoning.
+			if s.compat {
+				reasoning := choice.Delta.ReasoningContent
+				if reasoning == nil {
+					reasoning = choice.Delta.Reasoning
+				}
+				if reasoning != nil && *reasoning != "" {
+					if !s.isActiveReasoning {
+						s.isActiveReasoning = true
+						emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
+					}
+					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, Reasoning: *reasoning, ID: "reasoning-0"})
+				}
+			}
+
+			// Text chunk
+			if choice.Delta.Content != "" {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				}
+				emit(&provider.StreamChunk{
 					Type: provider.ChunkTypeText,
 					Text: choice.Delta.Content,
-				}
-				if len(s.flushQueue) > 0 {
-					s.flushQueue = append(s.flushQueue, textChunk)
-					continue
-				}
-				return textChunk, nil
+				})
 			}
 
 			// Tool call delta — accumulate partial arguments by index.
 			// OpenAI sends: first delta has id + name + empty/partial args;
 			// subsequent deltas for the same index carry argument fragments only.
-			if len(choice.Delta.ToolCalls) > 0 {
-				if rawChunk != nil {
-					s.pendingRaw = append(s.pendingRaw, rawChunk)
+			for _, tc := range choice.Delta.ToolCalls {
+				for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					c := chunk
+					emit(&c)
 				}
-				for _, tc := range choice.Delta.ToolCalls {
-					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
-						c := chunk
-						s.flushPendingMetadata()
-						s.flushQueue = append(s.flushQueue, &c)
-						s.outputStarted = true
-					}
-				}
-				if choice.FinishReason != nil {
-					s.flushOpenAIToolCalls(*choice.FinishReason)
-				}
-				// No chunk to emit yet — keep accumulating.
-				continue
 			}
 
-			// Finish chunk — flush all accumulated tool calls first.
-			if choice.FinishReason != nil {
-				if rawChunk != nil && !s.outputStarted {
-					s.pendingRaw = append(s.pendingRaw, rawChunk)
+			// url_citation annotations become url sources (native chat only).
+			if !s.compat {
+				for _, ann := range choice.Delta.Annotations {
+					if ann.Type == "url_citation" && ann.URLCitation != nil {
+						emit(&provider.StreamChunk{
+							Type: provider.ChunkTypeSource,
+							SourceContent: &types.SourceContent{
+								SourceType: "url",
+								ID:         streaming.GenerateID(),
+								URL:        ann.URLCitation.URL,
+								Title:      ann.URLCitation.Title,
+							},
+						})
+					}
 				}
-				s.flushPendingMetadata()
-				s.flushOpenAIToolCalls(*choice.FinishReason)
+			}
+
+			// Finish reason: close open blocks and flush tool calls now; the
+			// finish chunk itself waits for the end of the stream so trailing
+			// usage can be merged.
+			if choice.FinishReason != nil {
+				if !produced {
+					produced = true
+					if rawChunk != nil {
+						s.pendingRaw = append(s.pendingRaw, rawChunk)
+					}
+					s.flushPendingMetadata()
+				}
 				s.outputStarted = true
-				continue
+				s.finishSeen = true
+				s.finishRaw = *choice.FinishReason
+				s.closeBlocksAndToolCalls()
 			}
 		}
 
+		if produced {
+			continue
+		}
 		if rawChunk != nil {
 			s.pendingRaw = append(s.pendingRaw, rawChunk)
 		}
@@ -1109,17 +1331,66 @@ func (s *openAIStream) Err() error {
 	return s.err
 }
 
-func (s *openAIStream) flushOpenAIToolCalls(finishReason string) {
-	// Emit one ChunkTypeToolCall per accumulated entry in index order.
+// closeBlocksAndToolCalls ends an open reasoning block and emits the finalized
+// tool calls (TS: tool-call parts are emitted when the model finishes).
+func (s *openAIStream) closeBlocksAndToolCalls() {
+	if s.isActiveReasoning {
+		s.isActiveReasoning = false
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-		Type:            provider.ChunkTypeFinish,
-		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
-		RawFinishReason: finishReason,
-	})
+}
+
+// endStream queues the terminal finish chunk (usage, provider metadata) once
+// the SSE stream has ended, then marks the stream as complete.
+func (s *openAIStream) endStream() {
+	if !s.finished {
+		s.finished = true
+		s.flushPendingMetadata()
+		if !s.finishSeen {
+			// Stream ended without a finish_reason (TS default 'other').
+			s.closeBlocksAndToolCalls()
+		}
+		finish := &provider.StreamChunk{
+			Type:            provider.ChunkTypeFinish,
+			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
+			RawFinishReason: s.finishRaw,
+		}
+		var details *struct {
+			ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
+			AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
+			RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
+		}
+		if s.usage != nil {
+			u := convertOpenAIUsage(*s.usage)
+			finish.Usage = &u
+			details = s.usage.CompletionTokensDetails
+		}
+		key := s.metaKey
+		if key == "" {
+			key = "openai"
+		}
+		meta := map[string]interface{}{}
+		if details != nil {
+			if details.AcceptedPredictionTokens != nil {
+				meta["acceptedPredictionTokens"] = *details.AcceptedPredictionTokens
+			}
+			if details.RejectedPredictionTokens != nil {
+				meta["rejectedPredictionTokens"] = *details.RejectedPredictionTokens
+			}
+		}
+		if len(s.logprobs) > 0 && !s.compat {
+			meta["logprobs"] = s.logprobs
+		}
+		if raw, err := json.Marshal(map[string]interface{}{key: meta}); err == nil {
+			finish.ProviderMetadata = raw
+		}
+		s.flushQueue = append(s.flushQueue, finish)
+	}
+	s.err = io.EOF
 }
 
 // strictJSONSchema reads the strictJsonSchema provider option (default true).

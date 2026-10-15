@@ -56,6 +56,10 @@ type Config struct {
 	// Defaults to "openai.chat".
 	ChatProviderName string
 
+	// ChatQuery contains query parameters added to Chat Completions requests
+	// (Azure api-version).
+	ChatQuery map[string]string
+
 	// CompletionProviderName overrides the provider identifier returned by
 	// CompletionModel. Defaults to "openai.completion".
 	CompletionProviderName string
@@ -117,6 +121,12 @@ type Config struct {
 	// sanitized, no prompt_cache_breakpoint is forwarded, and file
 	// references resolve the wrapper's own provider key instead of "openai".
 	OpenAICompatible bool
+
+	// IncludeUsage sends stream_options.include_usage on streaming chat
+	// requests for OpenAICompatible wrappers (TS openai-compatible
+	// `includeUsage`; baseten sets it). Native OpenAI chat always requests
+	// usage.
+	IncludeUsage bool
 
 	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Every wrapper

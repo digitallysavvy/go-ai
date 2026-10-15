@@ -1,8 +1,10 @@
 package errors
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Error types for the AI SDK
@@ -134,15 +136,110 @@ func IsProviderError(err error) bool {
 	return errors.As(err, &providerErr)
 }
 
-// NewProviderError creates a new provider error
+// HTTPStatusDetails is implemented by errors that carry a non-2xx HTTP
+// response (internal/http.HTTPStatusError). NewProviderError uses it to
+// populate the status code, response headers and body, mirroring the data TS
+// APICallError carries.
+type HTTPStatusDetails interface {
+	error
+	HTTPStatusDetails() (statusCode int, headers map[string]string, body []byte)
+}
+
+// NewProviderError creates a new provider error.
+//
+// When statusCode is 0 and the cause chain carries an HTTP error response,
+// the status code, response headers and body are taken from it, and a message
+// that is just the raw cause text is replaced by the message extracted from
+// the JSON error body (TS failedResponseHandler behavior). This keeps
+// retryability honest: a 401 must not be classified as a retryable
+// no-status error.
 func NewProviderError(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
-	return &ProviderError{
+	e := &ProviderError{
 		Provider:   provider,
 		StatusCode: statusCode,
 		ErrorCode:  errorCode,
 		Message:    message,
 		Cause:      cause,
 	}
+	if statusCode != 0 || cause == nil {
+		return e
+	}
+	var hs HTTPStatusDetails
+	if !errors.As(cause, &hs) {
+		return e
+	}
+	code, headers, body := hs.HTTPStatusDetails()
+	if code == 0 {
+		return e
+	}
+	e.StatusCode = code
+	e.ResponseHeaders = headers
+	e.ResponseBody = string(body)
+	if len(body) > 0 {
+		var data interface{}
+		if json.Unmarshal(body, &data) == nil {
+			e.Data = data
+		}
+	}
+	if message == "" || message == cause.Error() || message == hs.Error() {
+		if msg := ExtractAPIErrorMessage(body); msg != "" {
+			e.Message = msg
+		}
+	}
+	return e
+}
+
+// ExtractAPIErrorMessage pulls a human-readable message out of a JSON error
+// body using the shapes common to provider APIs: {"error":{"message"}},
+// {"error":"msg"}, {"message"}, {"detail"}, {"errors":[{"message"}]}.
+// It returns "" when no message is found.
+func ExtractAPIErrorMessage(body []byte) string {
+	var v map[string]interface{}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return ""
+	}
+	str := func(x interface{}) string {
+		s, _ := x.(string)
+		return strings.TrimSpace(s)
+	}
+	switch e := v["error"].(type) {
+	case map[string]interface{}:
+		if m := str(e["message"]); m != "" {
+			return m
+		}
+	case string:
+		if m := str(e); m != "" {
+			return m
+		}
+	}
+	if m := str(v["message"]); m != "" {
+		return m
+	}
+	switch d := v["detail"].(type) {
+	case string:
+		if m := str(d); m != "" {
+			return m
+		}
+	case []interface{}:
+		if len(d) > 0 {
+			if first, ok := d[0].(map[string]interface{}); ok {
+				if m := str(first["msg"]); m != "" {
+					return m
+				}
+				if m := str(first["message"]); m != "" {
+					return m
+				}
+			}
+		}
+	}
+	if arr, ok := v["errors"].([]interface{}); ok && len(arr) > 0 {
+		if first, ok := arr[0].(map[string]interface{}); ok {
+			if m := str(first["message"]); m != "" {
+				return m
+			}
+		}
+	}
+	return ""
 }
 
 // ValidationContext provides detailed context for validation errors

@@ -77,9 +77,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	var response deepseekResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   m.provider.chatCompletionsPath(),
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    m.provider.chatCompletionsPath(),
+		Body:    reqBody,
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -103,12 +104,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, err
 	}
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   m.provider.chatCompletionsPath(),
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    m.provider.chatCompletionsPath(),
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -414,7 +413,7 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	choice := response.Choices[0]
 	result := &types.GenerateResult{
 		Text:            choice.Message.Content,
-		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
+		FinishReason:    mapDeepSeekFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
 		Usage:           convertDeepseekUsage(response.Usage),
 		RawResponse:     response,
@@ -933,7 +932,7 @@ func (s *deepseekStream) flushDeepseekToolCalls(finishReason string) {
 	// handling in Next()).
 	s.pendingFinish = &provider.StreamChunk{
 		Type:            provider.ChunkTypeFinish,
-		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
+		FinishReason:    mapDeepSeekFinishReason(finishReason),
 		RawFinishReason: finishReason,
 	}
 }
@@ -1006,4 +1005,23 @@ func (s *deepseekStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// mapDeepSeekFinishReason mirrors TS mapDeepSeekFinishReason: no legacy
+// function_call, and insufficient_system_resource maps to error.
+func mapDeepSeekFinishReason(reason string) types.FinishReason {
+	switch reason {
+	case "stop":
+		return types.FinishReasonStop
+	case "length":
+		return types.FinishReasonLength
+	case "content_filter":
+		return types.FinishReasonContentFilter
+	case "tool_calls":
+		return types.FinishReasonToolCalls
+	case "insufficient_system_resource":
+		return types.FinishReasonError
+	default:
+		return types.FinishReasonOther
+	}
 }

@@ -70,6 +70,14 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	if len(inputs) > m.MaxEmbeddingsPerCall() {
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
+	}
 	reqBody := map[string]interface{}{
 		"input": inputs,
 		"model": m.modelID,

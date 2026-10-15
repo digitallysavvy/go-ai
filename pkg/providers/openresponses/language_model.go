@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"strings"
@@ -94,7 +95,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	// Make API request
 	var response OpenResponsesResponse
-	err = m.provider.client.PostJSON(ctx, "", reqBody, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -135,6 +141,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	result.Warnings = warnings
+	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	result.ResponseMetadata = providerutils.BuildResponseMetadata(response.ID, response.Model, response.CreatedAt)
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 
 	return result, nil
 }
@@ -149,12 +158,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -165,7 +172,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.extensionRegistry = m.provider.extensionRegistry
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
-	return stream, nil
+	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
 // buildRequestBody builds the Open Responses API request body
@@ -1008,7 +1015,7 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	}
 
 	// Set input token details
-	if cachedTokens > 0 {
+	{
 		noCacheTokens := inputTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:   &noCacheTokens,
@@ -1017,8 +1024,11 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	}
 
 	// Set output token details
-	if reasoningTokens > 0 {
+	{
 		textTokens := outputTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,

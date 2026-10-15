@@ -178,7 +178,7 @@ func TestElevenLabsSpeechModelErrorPaths(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader(`{"error":"unauthorized"}`)),
 		}, nil
 	})
-	if _, err := NewSpeechModel(pStatus, "m").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"}); err == nil || !strings.Contains(err.Error(), "status 401") {
+	if _, err := NewSpeechModel(pStatus, "m").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"}); err == nil || !strings.Contains(err.Error(), "provider error (401)") {
 		t.Fatalf("expected status error, got %v", err)
 	}
 }

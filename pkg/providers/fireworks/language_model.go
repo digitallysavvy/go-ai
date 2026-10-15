@@ -70,9 +70,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response fireworksResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
+		Method:  http.MethodPost,
+		Path:    "/v1/chat/completions",
+		Body:    reqBody,
+		Headers: opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -90,12 +91,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/v1/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/v1/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -336,7 +335,7 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
+	{
 		noCacheTokens := promptTokens - cachedTokens
 		result.InputDetails = &types.InputTokenDetails{
 			NoCacheTokens:    &noCacheTokens,
@@ -346,8 +345,11 @@ func convertFireworksUsage(usage fireworksUsage) types.Usage {
 			ImageTokens:      imageTokens,
 		}
 	}
-	if reasoningTokens > 0 {
+	{
 		textTokens := completionTokens - reasoningTokens
+		if textTokens < 0 {
+			textTokens = 0
+		}
 		result.OutputDetails = &types.OutputTokenDetails{
 			TextTokens:      &textTokens,
 			ReasoningTokens: &reasoningTokens,
