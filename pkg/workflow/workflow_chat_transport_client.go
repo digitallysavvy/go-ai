@@ -146,15 +146,15 @@ func (t *WorkflowChatTransport) ReconnectToStream(ctx context.Context, req ai.Ch
 }
 
 func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTransportSendMessagesRequest, out chan<- ai.UIMessageChunk, errs chan<- error) {
-	body := map[string]interface{}{"messages": req.Messages}
-	if req.ChatID != "" {
-		body["chatId"] = req.ChatID
+	// TS default POST body is `{ messages, ...options.body }`: chatId,
+	// messageId and trigger reach the server only through
+	// prepareSendMessagesRequest.
+	body := map[string]interface{}{}
+	for k, v := range req.Body {
+		body[k] = v
 	}
-	if req.MessageID != "" {
-		body["messageId"] = req.MessageID
-	}
-	if req.Trigger != "" {
-		body["trigger"] = req.Trigger
+	if _, ok := req.Body["messages"]; !ok {
+		body["messages"] = req.Messages
 	}
 	api := t.api
 	headers := map[string]string{}

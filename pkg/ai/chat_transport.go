@@ -65,6 +65,11 @@ type ChatTransportSendMessagesRequest struct {
 
 	// Messages is the full message history sent to the transport.
 	Messages []types.Message
+
+	// Body holds extra request body fields (TS ChatRequestOptions.body).
+	// The workflow chat transport merges them into the default POST body
+	// after "messages".
+	Body map[string]interface{}
 }
 
 // ChatTransportReconnectToStreamRequest is the request payload passed to
