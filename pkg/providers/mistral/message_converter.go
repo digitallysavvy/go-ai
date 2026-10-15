@@ -295,22 +295,3 @@ func mistralToolResultText(tr types.ToolResultContent) string {
 	}
 	return ""
 }
-
-// mistralFileURL returns the URL to send for a file/image part: the URL
-// as-is when present, otherwise a base64 data: URL built from raw bytes.
-func mistralFileURL(url, mediaType string, data []byte) string {
-	if url != "" {
-		return url
-	}
-	return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(data))
-}
-
-// firstNonEmptyMistral returns the first non-empty string argument.
-func firstNonEmptyMistral(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
