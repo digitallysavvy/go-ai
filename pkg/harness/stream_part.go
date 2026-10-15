@@ -184,6 +184,12 @@ type ToolCallPart struct {
 	// client tool results are collected by pausing at the step's next
 	// finish-step instead, so adapters no longer need to populate it.
 	StepToolCallCount *int `json:"stepToolCallCount,omitempty"`
+	// ProviderExecutedOmitted is set by DecodeStreamPart when the wire frame
+	// carried no `providerExecuted` key. A Go bool cannot tell "absent" from
+	// false, but TS defaults a builtin approval's providerExecuted to true
+	// when the tool call left it undefined (`rawToolCall?.providerExecuted
+	// ?? true`). Never serialized.
+	ProviderExecutedOmitted bool `json:"-"`
 }
 
 // ToolApprovalRequestPart is the `tool-approval-request` part.
@@ -389,6 +395,10 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 	}
 	if err := validateStreamPart(part); err != nil {
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
+	}
+	if tc, ok := part.(*ToolCallPart); ok {
+		_, present := fields["providerExecuted"]
+		tc.ProviderExecutedOmitted = !present
 	}
 	return part, nil
 }
