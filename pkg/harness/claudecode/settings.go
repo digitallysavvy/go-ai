@@ -1,5 +1,5 @@
 // Package claudecode is the Go host-side port of TS `@ai-sdk/harness-claude-code`
-// (`createClaudeCode`), pinned to ai@7.0.113.
+// (`createClaudeCode`), pinned to ai@7.0.140.
 //
 // It implements harness.Harness/Session/PromptControl by launching the
 // embedded, unchanged TS bridge (pkg/harness/bridges, WG6) as `node

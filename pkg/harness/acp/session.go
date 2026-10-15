@@ -584,6 +584,11 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	go func() {
 		select {
 		case <-ctx.Done():
+			select {
+			case <-c.done:
+				return
+			default:
+			}
 			abortMu.Lock()
 			abortRequested = true
 			abortErr = context.Cause(ctx)

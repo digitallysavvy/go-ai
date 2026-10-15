@@ -208,7 +208,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 		timeout = bridge.DefaultStartupTimeout
 	}
 
-	onBridgeErr := func(*harness.ErrorPart) {}
+	onBridgeErr := bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID)
 	var onDiagnostic func(bridge.OutboundMessage)
 	if opts.Observability != nil {
 		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)

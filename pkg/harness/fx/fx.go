@@ -15,7 +15,6 @@ import (
 	"context"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
@@ -206,18 +205,13 @@ func sanitizeMCPToolNameSegment(value string) string {
 	if value == "" {
 		return "server"
 	}
-	out := make([]rune, 0, len(value))
-	for _, r := range value {
-		if (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || r == '-' || r == '_' {
-			out = append(out, r)
-			continue
-		}
-		if r > unicode.MaxLatin1 {
-			// TS encodes to UTF-8 bytes first; each non-ASCII byte becomes
-			// its own '_', so a single multi-byte rune becomes several '_'.
-			for range []byte(string(r)) {
-				out = append(out, '_')
-			}
+	// TS iterates the UTF-8 bytes of the string: every byte outside
+	// [0-9A-Za-z_-] becomes one '_' (so a multi-byte rune becomes several).
+	out := make([]byte, 0, len(value))
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		if (b >= '0' && b <= '9') || (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '-' || b == '_' {
+			out = append(out, b)
 			continue
 		}
 		out = append(out, '_')

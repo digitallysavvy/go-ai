@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -86,11 +85,6 @@ func (h *openCodeHarness) ValidateLifecycleStateData(data json.RawMessage) error
 	}
 	var v resumeStateData
 	return json.Unmarshal(data, &v)
-}
-
-func unsupported(capability string) error {
-	return harness.NewCapabilityUnsupportedError(
-		fmt.Sprintf("Harness 'opencode' does not support %s yet.", capability), HarnessID, nil)
 }
 
 func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {
@@ -218,7 +212,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	if helloTimeout > 5*time.Second {
 		helloTimeout = 5 * time.Second
 	}
-	onBridgeErr := func(*harness.ErrorPart) {}
+	onBridgeErr := bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID)
 	var onDiagnostic func(bridge.OutboundMessage)
 	if opts.Observability != nil {
 		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)

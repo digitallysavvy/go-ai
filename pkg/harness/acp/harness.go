@@ -381,7 +381,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	bridgeStateDir := privateSessionDir + "/bridge"
 
 	builtinToolCatalog := serializeBuiltinTools(settings.BuiltinTools)
-	onBridgeErr := func(*harness.ErrorPart) {}
+	onBridgeErr := bridge.CreateBridgeErrorHandler(settings.HarnessID, opts.SessionID)
 	var onDiagnostic func(bridge.OutboundMessage)
 	if opts.Observability != nil {
 		onDiagnostic = bridge.ReportDiagnostic(opts.Observability.Report, opts.SessionID)

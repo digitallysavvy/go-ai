@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -146,9 +147,14 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		claudeEnv[k] = v
 	}
 	if len(opts.Headers) > 0 {
+		names := make([]string, 0, len(opts.Headers))
+		for name := range opts.Headers {
+			names = append(names, name)
+		}
+		sort.Strings(names) // deterministic; TS preserves object insertion order
 		var lines []string
-		for name, value := range opts.Headers {
-			lines = append(lines, fmt.Sprintf("%s: %s", name, value))
+		for _, name := range names {
+			lines = append(lines, fmt.Sprintf("%s: %s", name, opts.Headers[name]))
 		}
 		claudeEnv["ANTHROPIC_CUSTOM_HEADERS"] = joinLines(lines)
 	}
@@ -229,7 +235,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if coords != nil {
 		if sess := h.tryAttach(ctx, attachOptions{
 			coords: coords, sandboxSession: sandboxSession, settings: settings, timeout: timeout,
-			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil,
+			sessionID: opts.SessionID, sandboxID: sandboxID, isContinue: opts.ContinueFrom != nil,
+			debug:    debugConfig(opts.Observability),
 			maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
 			resumeSessionID:              resumeData.ClaudeSessionID,
 			sandboxCredentialEnvironment: sandboxCredentialEnv,
@@ -307,8 +314,9 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 				},
 			})
 		},
-		Reconnect:    settings.Reconnect,
-		OnDiagnostic: onDiagnostic,
+		Reconnect:     settings.Reconnect,
+		OnDiagnostic:  onDiagnostic,
+		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
 	}
 	replaying := respawnStrategy == "replay"
 	if replaying {
@@ -395,6 +403,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		Reconnect:              opts.settings.Reconnect,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,
+		OnBridgeError:          bridge.CreateBridgeErrorHandler(HarnessID, opts.sessionID),
 	})
 	var finishAttachment func()
 	if opts.isContinue {

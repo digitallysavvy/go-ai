@@ -200,7 +200,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if coords != nil {
 		if sess := h.tryAttach(ctx, attachOptions{
 			coords: coords, sandboxSession: sandboxSession, settings: settings, timeout: timeout,
-			sessionID: opts.SessionID, isContinue: opts.ContinueFrom != nil,
+			sessionID: opts.SessionID, sandboxID: sandboxID, isContinue: opts.ContinueFrom != nil,
 			reasoningEffort: settings.ReasoningEffort, webSearch: settings.WebSearch,
 			builtinToolFiltering: opts.BuiltinToolFiltering,
 			codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
@@ -286,8 +286,9 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		Connect: func(ctx context.Context) (bridge.Conn, error) {
 			return bridge.Dial(ctx, launched.Endpoint, bridge.DialOptions{Name: "codex bridge"})
 		},
-		Reconnect:    settings.Reconnect,
-		OnDiagnostic: onDiagnostic,
+		Reconnect:     settings.Reconnect,
+		OnDiagnostic:  onDiagnostic,
+		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
 	}
 	replaying := respawnStrategy == "replay"
 	if replaying {
@@ -328,6 +329,7 @@ type attachOptions struct {
 	settings       Settings
 	timeout        time.Duration
 	sessionID      string
+	sandboxID      string
 	isContinue     bool
 
 	reasoningEffort              string
@@ -367,6 +369,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		Reconnect:              opts.settings.Reconnect,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,
+		OnBridgeError:          bridge.CreateBridgeErrorHandler(HarnessID, opts.sessionID),
 	})
 	var finishAttachment func()
 	if opts.isContinue {
@@ -386,7 +389,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		codexConfig:          opts.codexConfig, mcpServers: opts.mcpServers, headers: opts.headers,
 		isResume: true, seedResumeThreadOnFirstPrompt: false, rerunContinue: false,
 		resumeThreadID: opts.resumeThreadID,
-		bridgePort:     opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.coords.SandboxID,
+		bridgePort:     opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.sandboxID,
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
 		permissionMode:               opts.permissionMode, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 		turnConfigurationFingerprint: opts.turnConfigurationFingerprint,

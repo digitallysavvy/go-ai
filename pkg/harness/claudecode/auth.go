@@ -91,12 +91,14 @@ func pickAnthropic(ctx context.Context, env map[string]string, readHelper func()
 	}
 	out := map[string]string{}
 	helperKey := readHelper()
-	apiKey := env["ANTHROPIC_API_KEY"]
-	if apiKey == "" {
+	// TS uses `??`: a variable that is present but empty wins over the
+	// helper key (and then yields no credential at all).
+	apiKey, ok := env["ANTHROPIC_API_KEY"]
+	if !ok {
 		apiKey = helperKey
 	}
-	authToken := env["ANTHROPIC_AUTH_TOKEN"]
-	if authToken == "" {
+	authToken, ok := env["ANTHROPIC_AUTH_TOKEN"]
+	if !ok {
 		authToken = helperKey
 	}
 	if apiKey != "" {
