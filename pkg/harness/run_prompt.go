@@ -1700,9 +1700,20 @@ func harnessUsageToTypesUsageValue(u Usage) types.Usage {
 		v := int64(*u.OutputTokens.Total)
 		out.OutputTokens = &v
 	}
-	if u.InputTokens.Total != nil && u.OutputTokens.Total != nil {
-		v := int64(*u.InputTokens.Total + *u.OutputTokens.Total)
-		out.TotalTokens = &v
+	// TS addTokenCounts: undefined only when both are; otherwise a missing
+	// side counts as 0.
+	if u.InputTokens.Total != nil || u.OutputTokens.Total != nil {
+		var sum int64
+		if u.InputTokens.Total != nil {
+			sum += int64(*u.InputTokens.Total)
+		}
+		if u.OutputTokens.Total != nil {
+			sum += int64(*u.OutputTokens.Total)
+		}
+		out.TotalTokens = &sum
+	}
+	if len(u.Raw) > 0 {
+		out.Raw = u.Raw
 	}
 	if u.InputTokens.CacheRead != nil || u.InputTokens.CacheWrite != nil || u.InputTokens.NoCache != nil {
 		details := &types.InputTokenDetails{}

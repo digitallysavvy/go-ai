@@ -171,3 +171,19 @@ func TestRunPrompt_ResultContinuationInheritsPendingNameAndProviderOptions(t *te
 		t.Fatalf("providerOptions = %+v, want the pending call's", tr.ProviderOptions)
 	}
 }
+
+// TS asLanguageModelUsage: totalTokens is undefined only when both sides are;
+// a missing side counts as zero. Raw usage is kept.
+func TestHarnessUsageTotalTokensAndRaw(t *testing.T) {
+	in := 7
+	got := harnessUsageToTypesUsageValue(Usage{InputTokens: InputTokenUsage{Total: &in}, Raw: map[string]any{"k": 1}})
+	if got.TotalTokens == nil || *got.TotalTokens != 7 {
+		t.Fatalf("TotalTokens = %v, want 7", got.TotalTokens)
+	}
+	if got.Raw["k"] != 1 {
+		t.Fatalf("Raw = %v", got.Raw)
+	}
+	if empty := harnessUsageToTypesUsageValue(Usage{}); empty.TotalTokens != nil {
+		t.Fatalf("empty TotalTokens = %v, want nil", empty.TotalTokens)
+	}
+}
