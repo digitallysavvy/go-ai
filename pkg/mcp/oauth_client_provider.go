@@ -112,9 +112,10 @@ type OAuthClientProvider interface {
 
 // OAuthClientAuthenticator lets a provider fully customize how client
 // credentials are added to token requests (TS
-// OAuthClientProvider.addClientAuthentication, hash 78e0023).
+// OAuthClientProvider.addClientAuthentication, hash 78e0023). As in TS, the
+// string argument is the authorization server URL (not the token endpoint).
 type OAuthClientAuthenticator interface {
-	AddClientAuthentication(ctx context.Context, headers http.Header, params url.Values, tokenURL string, metadata *OAuthAuthorizationServerMetadata) error
+	AddClientAuthentication(ctx context.Context, headers http.Header, params url.Values, authorizationServerURL string, metadata *OAuthAuthorizationServerMetadata) error
 }
 
 // OAuthCredentialInvalidationScope selects which stored credentials

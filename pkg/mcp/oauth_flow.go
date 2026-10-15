@@ -684,7 +684,7 @@ func ExchangeOAuthAuthorization(ctx context.Context, authorizationServerURL stri
 	values.Set("code_verifier", params.CodeVerifier)
 	values.Set("redirect_uri", params.RedirectURI)
 
-	if err := applyOAuthTokenRequestAuthentication(ctx, params.AddClientAuthentication, params.ClientInformation, params.Metadata, headers, values, tokenURL.String()); err != nil {
+	if err := applyOAuthTokenRequestAuthentication(ctx, params.AddClientAuthentication, params.ClientInformation, params.Metadata, headers, values, authorizationServerURL); err != nil {
 		return nil, err
 	}
 	if params.Resource != nil {
@@ -743,7 +743,7 @@ func RefreshOAuthAuthorization(ctx context.Context, authorizationServerURL strin
 	values.Set("grant_type", grantType)
 	values.Set("refresh_token", params.RefreshToken)
 
-	if err := applyOAuthTokenRequestAuthentication(ctx, params.AddClientAuthentication, params.ClientInformation, params.Metadata, headers, values, tokenURL.String()); err != nil {
+	if err := applyOAuthTokenRequestAuthentication(ctx, params.AddClientAuthentication, params.ClientInformation, params.Metadata, headers, values, authorizationServerURL); err != nil {
 		return nil, err
 	}
 	if params.Resource != nil {
@@ -840,10 +840,12 @@ func applyOAuthTokenRequestAuthentication(
 	metadata *OAuthAuthorizationServerMetadata,
 	headers http.Header,
 	values url.Values,
-	tokenURL string,
+	authorizationServerURL string,
 ) error {
 	if addClientAuthentication != nil {
-		return addClientAuthentication(ctx, headers, values, tokenURL, metadata)
+		// TS passes the authorization server URL (not the token endpoint) as
+		// the url argument (oauth.ts exchangeAuthorization/refreshAuthorization).
+		return addClientAuthentication(ctx, headers, values, authorizationServerURL, metadata)
 	}
 	var supported []string
 	if metadata != nil {
