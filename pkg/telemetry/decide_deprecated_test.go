@@ -15,7 +15,9 @@ func (r *decideRecorder) OnDecideStart(ctx context.Context, _ DecideStartEvent) 
 	r.calls = append(r.calls, "start")
 	return ctx
 }
-func (r *decideRecorder) OnDecideEnd(context.Context, DecideEndEvent) { r.calls = append(r.calls, "end") }
+func (r *decideRecorder) OnDecideEnd(context.Context, DecideEndEvent) {
+	r.calls = append(r.calls, "end")
+}
 func (r *decideRecorder) OnDecisionModelCallStart(context.Context, DecisionModelCallStartEvent) {
 	r.calls = append(r.calls, "mstart")
 }

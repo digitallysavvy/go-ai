@@ -127,6 +127,7 @@ Applies the approvals at the end of `Messages`: it collects, validates and execu
 | `Secret` | `[]byte` | Secret verifies (and, when re-signing, produces) approval signatures. Nil disables signature verification. |
 | `RefineToolInput` | `map[string]ToolInputRefiner` | RefineToolInput refines parsed tool inputs by tool name before re-validation and execution. |
 | `CallID` | `string` | CallID correlates emitted tool execution events with the caller's call. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency bounds how many approved calls run at once. Nil runs them all concurrently; values below 1 return an InvalidArgumentError. |
 | `ModelProvider` | `string` | ModelProvider and ModelID identify the model for emitted events. |
 | `ModelID` | `string` |  |
 | `OnToolExecutionStart` | `func(ctx context.Context, e OnToolCallStartEvent)` | OnToolExecutionStart/OnToolExecutionEnd are notified around each approved tool's execution. |

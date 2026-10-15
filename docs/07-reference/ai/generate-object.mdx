@@ -238,6 +238,7 @@ This table is generated from the `ai.GenerateObjectOptions` source and lists eve
 | `Prompt` | `string` | Prompt can be a simple string or a list of messages |
 | `Messages` | `[]types.Message` |  |
 | `System` | `string` |  |
+| `ExperimentalDownload` | `DownloadFunction` | ExperimentalDownload downloads remote file URLs the model cannot read directly (per its SupportedURLs). Defaults to DefaultDownload, as in GenerateText. Mirrors TS experimental_download. |
 | `Schema` | `schema.Schema` | Schema for the output object (not required for no-schema mode) |
 | `OutputMode` | `ObjectOutputMode` | Output mode - object, array, enum, or no-schema |
 | `EnumValues` | `[]string` | Enum values (required for enum mode) |
