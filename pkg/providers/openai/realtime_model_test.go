@@ -275,3 +275,54 @@ func TestOpenAIRealtimeCreateClientSecretUsesEnvSettings(t *testing.T) {
 		t.Fatalf("secret url = %s", secret.URL)
 	}
 }
+
+// Ported from packages/openai/src/realtime/openai-realtime-event-mapper.test.ts.
+func TestRealtimeSerializePreservesEventID(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime")
+	instructions := "Be concise."
+	raw, err := m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "session-update", Config: provider.RealtimeSessionConfig{Instructions: &instructions}, EventID: "client-event"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"event_id":"client-event","session":{"instructions":"Be concise.","model":"gpt-realtime","type":"realtime"},"type":"session.update"}`
+	if string(raw) != want {
+		t.Fatalf("session-update = %s", raw)
+	}
+	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "AA==", EventID: "client-event"})
+	if string(raw) != `{"audio":"AA==","event_id":"client-event","type":"input_audio_buffer.append"}` {
+		t.Fatalf("append = %s", raw)
+	}
+	raw, _ = m.SerializeClientEvent(provider.RealtimeClientEvent{Type: "input-audio-append", Audio: "AA=="})
+	if strings.Contains(string(raw), "event_id") {
+		t.Fatalf("unset eventId leaked: %s", raw)
+	}
+}
+
+func TestRealtimeParseErrorClientEventID(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime")
+	cases := []struct{ raw, wantMsg, wantCode, wantClient string }{
+		{`{"type":"error","event_id":"server-event","error":{"message":"Invalid audio","code":"invalid_audio","event_id":"client-event","client_event_id":"live-client-event"}}`, "Invalid audio", "invalid_audio", "client-event"},
+		{`{"type":"error","event_id":"server-event","error":{"message":"Invalid audio","code":"invalid_audio","event_id":null}}`, "Invalid audio", "invalid_audio", ""},
+		{`{"type":"error","error":{"message":null,"code":null,"event_id":null}}`, "Unknown error", "", ""},
+		{`{"type":"error","message":"Invalid request","code":"invalid_request","error":{"message":null,"code":null}}`, "Invalid request", "invalid_request", ""},
+	}
+	for _, tc := range cases {
+		events, err := m.ParseServerEvent(json.RawMessage(tc.raw))
+		if err != nil || len(events) != 1 {
+			t.Fatal(err, events)
+		}
+		e := events[0]
+		if e.Type != "error" || e.Message != tc.wantMsg || e.Code != tc.wantCode || e.ClientEventID != tc.wantClient {
+			t.Errorf("%s -> %+v", tc.raw, e)
+		}
+	}
+}
+
+func TestRealtimeSessionConfigInputTranscription(t *testing.T) {
+	m := NewRealtimeModel(New(Config{APIKey: "k"}), "gpt-realtime")
+	session, _ := m.BuildSessionConfig(provider.RealtimeSessionConfig{InputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{}}).(map[string]interface{})
+	b, _ := json.Marshal(session["audio"])
+	if string(b) != `{"input":{"transcription":{"model":"gpt-realtime-whisper"}}}` {
+		t.Fatalf("audio = %s", b)
+	}
+}

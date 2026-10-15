@@ -449,6 +449,11 @@ func parseOpenAICompatibleRealtimeServerEvent(raw json.RawMessage, xai bool) pro
 		} else {
 			e.Code = stringField(event, "code")
 		}
+		// TS: clientEventId = error.event_id (the id of the client event the
+		// error answers).
+		if clientEventID, ok := nestedStringField(event, "error", "event_id"); ok {
+			e.ClientEventID = clientEventID
+		}
 	default:
 		e.Type = "custom"
 		e.RawType = rawType
@@ -460,9 +465,17 @@ func serializeOpenAICompatibleRealtimeClientEvent(event provider.RealtimeClientE
 	var out interface{}
 	switch event.Type {
 	case "session-update":
-		out = map[string]interface{}{"type": "session.update", "session": buildSession(event.Config)}
+		m := map[string]interface{}{"type": "session.update", "session": buildSession(event.Config)}
+		if event.EventID != "" {
+			m["event_id"] = event.EventID
+		}
+		out = m
 	case "input-audio-append":
-		out = map[string]interface{}{"type": "input_audio_buffer.append", "audio": event.Audio}
+		m := map[string]interface{}{"type": "input_audio_buffer.append", "audio": event.Audio}
+		if event.EventID != "" {
+			m["event_id"] = event.EventID
+		}
+		out = m
 	case "input-audio-commit":
 		out = map[string]interface{}{"type": "input_audio_buffer.commit"}
 	case "input-audio-clear":
