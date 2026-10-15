@@ -394,7 +394,6 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 	if d.in.Callbacks.OnEnd != nil {
 		d.in.Callbacks.OnEnd(d.ctx, ai.OnFinishEvent{
 			CallID: d.telCallID, StepNumber: finalStep.StepNumber, Model: finalStep.Model,
-			ModelProvider: finalStep.Model.Provider, ModelID: finalStep.Model.ModelID,
 			Text: finalStep.Text, Reasoning: finalStep.Reasoning, ReasoningText: finalStep.ReasoningText,
 			ToolCalls: toolCalls, ToolResults: toolResults,
 			FinishReason: finalStep.FinishReason, RawFinishReason: finalStep.RawFinishReason,

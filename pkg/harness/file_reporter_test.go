@@ -39,7 +39,7 @@ func readEventLines(t *testing.T, dir string) []map[string]any {
 	if err != nil {
 		t.Fatalf("open events.jsonl: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var out []map[string]any
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 1<<24)
@@ -81,7 +81,7 @@ func reporterStart(callID string) telemetry.TelemetryStartEvent {
 	}
 }
 
-func reporterSettings() *telemetry.Settings { return telemetry.DefaultSettings() }
+func reporterSettings() *telemetry.Options { return telemetry.DefaultSettings() }
 
 func TestFileReporter_RecordsErrorAndFlushesFailedTurnWithoutOnEnd(t *testing.T) {
 	r, dir := newTestReporter(t, true)
@@ -238,7 +238,7 @@ func TestFileReporter_WritesUnifiedEventsWithSpansAndDiagnostics(t *testing.T) {
 func TestFileReporter_RecordInputsOutputsFalseSuppressContent(t *testing.T) {
 	r, dir := newTestReporter(t, false)
 	ctx := context.Background()
-	st := &telemetry.Settings{} // RecordInputs/RecordOutputs false
+	st := &telemetry.Options{} // RecordInputs/RecordOutputs false
 	e := reporterStart("call-1")
 	e.Settings = st
 	r.OnStart(ctx, e)

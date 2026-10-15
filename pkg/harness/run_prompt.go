@@ -1122,7 +1122,6 @@ func (d *turnDriver) ensureStarted() {
 			CallID:         d.telCallID,
 			OperationID:    "ai.harness",
 			Provider:       provider,
-			ModelProvider:  provider,
 			ModelID:        d.in.Model,
 			Instructions:   d.in.Instructions,
 			Messages:       promptAsMessages(d.in.Prompt),
@@ -1146,7 +1145,6 @@ func (d *turnDriver) ensureStepOpen() {
 			CallID:         d.telCallID,
 			StepNumber:     d.stepNumber,
 			Provider:       provider,
-			ModelProvider:  provider,
 			ModelID:        d.in.Model,
 			Instructions:   d.in.Instructions,
 			Messages:       promptAsMessages(d.in.Prompt),
@@ -1246,7 +1244,7 @@ func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call typ
 
 	if d.in.Callbacks.OnToolExecutionStart != nil {
 		d.in.Callbacks.OnToolExecutionStart(d.ctx, ai.OnToolCallStartEvent{
-			CallID: d.telCallID, Args: call.Arguments, StepNumber: d.stepNumber,
+			CallID:     d.telCallID,
 			ToolCallID: call.ID, ToolName: call.ToolName, ToolCall: call,
 			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
@@ -1295,7 +1293,7 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 
 	if d.in.Callbacks.OnToolExecutionEnd != nil {
 		d.in.Callbacks.OnToolExecutionEnd(d.ctx, ai.OnToolCallFinishEvent{
-			CallID: d.telCallID, Args: call.Arguments, Result: toolResult.Result, Error: toolResult.Error,
+			CallID:     d.telCallID,
 			ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, ToolCall: call, ToolOutput: toolResult,
 			ToolExecutionMs: execMs,
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
@@ -1329,7 +1327,7 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metada
 	if d.in.Callbacks.OnStepEnd != nil {
 		d.in.Callbacks.OnStepEnd(d.ctx, ai.OnStepFinishEvent{
 			CallID: d.telCallID, StepNumber: step.StepNumber, Model: step.Model,
-			ModelProvider: step.Model.Provider, ModelID: step.Model.ModelID, Text: step.Text,
+			Text:          step.Text,
 			ReasoningText: step.ReasoningText,
 			ToolCalls:     step.ToolCalls, ToolResults: step.ToolResults,
 			FinishReason: step.FinishReason, RawFinishReason: step.RawFinishReason, Usage: step.Usage,
