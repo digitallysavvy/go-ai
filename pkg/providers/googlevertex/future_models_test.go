@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -72,5 +73,44 @@ func TestFutureGeminiModelsUseCurrentToolsAndThinking(t *testing.T) {
 				t.Errorf("toolConfig = %#v, want VALIDATED", cfg)
 			}
 		})
+	}
+}
+
+// Ports google-vertex-language-model.test.ts "should preserve local JSON
+// Schema references in tool requests" (express mode, API key).
+func TestVertexToolSchemaKeepsLocalRefs(t *testing.T) {
+	var body map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Done"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`))
+	}))
+	defer server.Close()
+	prov, err := New(Config{APIKey: "test-api-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := prov.LanguageModel("gemini-2.5-flash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var params map[string]interface{}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"locale":{"$ref":"#/$defs/Locale","description":"Locale for formatting"}},"required":["locale"],"additionalProperties":false,"$defs":{"Locale":{"type":"string","enum":["de","en"]}}}`), &params); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "Hello"},
+		Tools:  []types.Tool{{Type: types.ToolTypeFunction, Name: "format-date", Description: "Format a date", Parameters: params}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	tools := body["tools"].([]interface{})
+	decl := tools[0].(map[string]interface{})["functionDeclarations"].([]interface{})[0].(map[string]interface{})
+	got, _ := json.Marshal(decl["parametersJsonSchema"])
+	var gotV, wantV interface{}
+	_ = json.Unmarshal(got, &gotV)
+	_ = json.Unmarshal([]byte(`{"type":"object","properties":{"locale":{"$ref":"#/$defs/Locale","description":"Locale for formatting"}},"required":["locale"],"additionalProperties":false,"$defs":{"Locale":{"type":"string","enum":["de","en"]}}}`), &wantV)
+	if !reflect.DeepEqual(gotV, wantV) {
+		t.Fatalf("parametersJsonSchema = %s", got)
 	}
 }
