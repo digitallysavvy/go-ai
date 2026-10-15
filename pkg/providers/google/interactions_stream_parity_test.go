@@ -189,3 +189,48 @@ func TestInteractionsParseOutputsKeepsArgumentKeyOrder(t *testing.T) {
 		t.Fatalf("inputs = %s | %s", fc.Input, sc.Input)
 	}
 }
+
+func TestInteractionsConvertToolCallInputLikeSafeParseToolArgs(t *testing.T) {
+	t.Parallel()
+	m := &InteractionsLanguageModel{}
+	cases := map[string]string{
+		`{"b":1,"a":2}`: `{"b":1,"a":2}`,
+		`[1,2]`:         `{"value":[1,2]}`,
+		`not json`:      `{"value":"not json"}`,
+		`5`:             `{"value":5}`,
+	}
+	for input, want := range cases {
+		steps, _, _, err := m.convertPrompt(types.Prompt{Messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c", ToolName: "n", Input: input},
+		}}}}, GoogleInteractionsProviderOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := jsonStringify(steps[0]["arguments"])
+		if got != want {
+			t.Errorf("input %q: arguments = %s, want %s", input, got, want)
+		}
+	}
+}
+
+func TestInteractionsConvertBareTopLevelMediaTypeSniffsBytes(t *testing.T) {
+	t.Parallel()
+	m := &InteractionsLanguageModel{}
+	png := []byte("\x89PNG\r\n\x1a\n0000")
+	steps, _, _, err := m.convertPrompt(types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.FileContent{Data: png, MediaType: "image/*"},
+	}}}}, GoogleInteractionsProviderOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := steps[0]["content"].([]map[string]interface{})[0]
+	if block["mime_type"] != "image/png" {
+		t.Fatalf("mime_type = %v", block["mime_type"])
+	}
+	_, _, _, err = m.convertPrompt(types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.FileContent{Data: []byte("zzzz"), MediaType: "image/*"},
+	}}}}, GoogleInteractionsProviderOptions{})
+	if err == nil || !strings.Contains(err.Error(), "must specify subtype since it could not be auto-detected") {
+		t.Fatalf("err = %v", err)
+	}
+}

@@ -8,7 +8,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -168,18 +170,12 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			if p.ToolCallID != "" {
 				seenToolCallIDs[p.ToolCallID] = true
 			}
-			args := p.Arguments
-			if args == nil && p.Input != "" {
-				_ = json.Unmarshal([]byte(p.Input), &args)
-			}
-			if args == nil {
-				args = map[string]interface{}{}
-			}
+			args, orderRaw := interactionToolArgs(p.Arguments, p.Input)
 			steps = append(steps, pruneMap(map[string]interface{}{
 				"type":      "function_call",
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
-				"arguments": orderedArguments(args, p.Input),
+				"arguments": orderedArguments(args, orderRaw),
 				"signature": emptyToNil(firstNonEmpty(googleOptString(p.ProviderOptions, "signature"), p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
 			}))
 		case types.CustomContent:
@@ -229,15 +225,12 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			continue
 		}
 		flush()
-		args := call.Arguments
-		if args == nil {
-			args = map[string]interface{}{}
-		}
+		args, orderRaw := interactionToolArgs(call.Arguments, call.RawArguments)
 		steps = append(steps, pruneMap(map[string]interface{}{
 			"type":      "function_call",
 			"id":        call.ID,
 			"name":      call.ToolName,
-			"arguments": orderedArguments(args, call.RawArguments),
+			"arguments": orderedArguments(args, orderRaw),
 			"signature": emptyToNil(firstNonEmpty(call.ThoughtSignature, signatureFromMetadataMap(call.ProviderMetadata))),
 		}))
 	}
@@ -262,10 +255,18 @@ func fileContentToInteractionBlock(part types.FileContent, mediaResolution strin
 	switch {
 	case part.FileData.Type == types.FileDataTypeData:
 		block["data"] = encodeData(part.FileData.Data, part.FileData.DataString)
-		block["mime_type"] = mediaType
+		resolved, err := resolveInteractionMediaType(mediaType, part.FileData.Data, part.FileData.DataString)
+		if err != nil {
+			return nil, nil, err
+		}
+		block["mime_type"] = resolved
 	case len(part.Data) > 0:
 		block["data"] = base64.StdEncoding.EncodeToString(part.Data)
-		block["mime_type"] = mediaType
+		resolved, err := resolveInteractionMediaType(mediaType, part.Data, "")
+		if err != nil {
+			return nil, nil, err
+		}
+		block["mime_type"] = resolved
 	case part.FileData.Type == types.FileDataTypeURL:
 		block["uri"] = part.FileData.URL
 		if isFullMediaType(mediaType) {
@@ -948,4 +949,47 @@ func orderedArguments(args map[string]interface{}, raw string) interface{} {
 		return args
 	}
 	return jsonorder.Hinted{V: args, Hint: hint}
+}
+
+// interactionToolArgs ports TS's assistant tool-call input handling: an object
+// input is used as is, a string input goes through safeParseToolArgs (a
+// non-object JSON value becomes {value: parsed}, unparsable text {value:
+// input}). orderRaw is the wire text to take key order from, empty when the
+// result is not that object.
+func interactionToolArgs(args map[string]interface{}, input string) (map[string]interface{}, string) {
+	if args != nil {
+		return args, input
+	}
+	if input == "" {
+		return map[string]interface{}{}, ""
+	}
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+		return map[string]interface{}{"value": input}, ""
+	}
+	if obj, ok := parsed.(map[string]interface{}); ok {
+		return obj, input
+	}
+	return map[string]interface{}{"value": parsed}, ""
+}
+
+// resolveInteractionMediaType ports TS resolveFullMediaType for inline file
+// data: a full media type is kept, a bare top-level type ("image",
+// "image/*") is completed by sniffing the bytes and fails when it cannot be.
+func resolveInteractionMediaType(mediaType string, data []byte, dataString string) (string, error) {
+	if isFullMediaType(mediaType) {
+		return mediaType, nil
+	}
+	if len(data) == 0 && dataString != "" {
+		data, _ = base64.StdEncoding.DecodeString(dataString)
+	}
+	top, _, _ := strings.Cut(mediaType, "/")
+	if detected, ok := fileutil.DetectMediaTypeSignature(data, top); ok {
+		return detected, nil
+	}
+	functionality := fmt.Sprintf("file of media type %q must specify subtype since it could not be auto-detected", mediaType)
+	return "", &providererrors.UnsupportedFunctionalityError{
+		Functionality: functionality,
+		Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+	}
 }
