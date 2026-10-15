@@ -96,3 +96,12 @@ func TestChunkSchemaAcceptsValidFrames(t *testing.T) {
 		}
 	}
 }
+
+func TestValidationIssueTextSafeWithoutMarker(t *testing.T) {
+	if got := validationIssueText("no marker here"); got != "no marker here" {
+		t.Fatalf("got %q", got)
+	}
+	if got := validationIssueText("x.\nError message: [issues]"); got != "[issues]" {
+		t.Fatalf("got %q", got)
+	}
+}
