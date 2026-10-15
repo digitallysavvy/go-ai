@@ -6,6 +6,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -109,7 +110,7 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 					flush()
 					appendToolResult(p)
 				default:
-					return nil, "", fmt.Errorf("unsupported functionality: assistant content type: %s", part.ContentType())
+					return nil, "", &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("assistant content type: %s", part.ContentType())}
 				}
 			}
 			for _, tc := range msg.ToolCalls {

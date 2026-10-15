@@ -353,7 +353,7 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 			result.Content = append(result.Content, call, res)
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 				ID: call.ToolCallID, ToolName: call.ToolName, Arguments: call.Arguments, RawArguments: call.Input, ProviderExecuted: true,
-				ProviderMetadata: map[string]interface{}{"mistral": map[string]interface{}{"type": "tool.execution", "name": out.Name}},
+				ProviderMetadata: map[string]interface{}{"mistral": mistralExecutionMetadata(out.Name, out.Function)},
 			})
 		case "function.call":
 			hasFunctionCalls = true
