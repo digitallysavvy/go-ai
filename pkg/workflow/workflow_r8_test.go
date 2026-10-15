@@ -192,3 +192,26 @@ func TestCoreInternalContinueOnMissingProviderResult(t *testing.T) {
 		t.Fatalf("stream: calls=%d err=%v second=%#v", m.calls, err, m.second)
 	}
 }
+
+type lengthProviderToolModel struct{ providerToolModel }
+
+func (m *lengthProviderToolModel) DoGenerate(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+	m.calls++
+	return &types.GenerateResult{FinishReason: types.FinishReasonLength, ToolCalls: []types.ToolCall{m.first()}}, nil
+}
+
+// TS only answers the tool calls of a tool-calls or stop step; a length finish
+// ends the run.
+func TestWorkflowGenerateLengthFinishDoesNotAnswerProviderTool(t *testing.T) {
+	m := &lengthProviderToolModel{}
+	a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: []types.Tool{{Name: "web", ProviderExecuted: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if m.calls != 1 {
+		t.Fatalf("calls = %d, want 1", m.calls)
+	}
+}

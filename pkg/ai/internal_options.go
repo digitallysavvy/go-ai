@@ -26,6 +26,13 @@ type InternalOptions struct {
 	ContinueOnMissingProviderResult bool
 }
 
+// providerResultFinishAllowed reports whether TS WorkflowAgent processes the
+// tool calls of a step with this finish reason (tool-calls or stop); other
+// finish reasons end the run without answering missing provider results.
+func providerResultFinishAllowed(reason types.FinishReason) bool {
+	return reason == types.FinishReasonToolCalls || reason == types.FinishReasonStop
+}
+
 // missingProviderResultCalls returns the valid provider-executed calls of a step
 // that got no result and are not deferred (TS resolveProviderToolResult:
 // a result-less call is only left alone for deferred-result provider tools).
@@ -92,7 +99,10 @@ func internalGenerateCallID(internal *InternalOptions) IDGenerator {
 // (warning for each). It is the building block of
 // InternalOptions.ContinueOnMissingProviderResult for loops outside this
 // package.
-func EmptyProviderResults(calls []types.ToolCall, tools []types.Tool, content []types.ContentPart, provider, model string) []types.ToolResult {
+func EmptyProviderResults(calls []types.ToolCall, tools []types.Tool, content []types.ContentPart, finishReason types.FinishReason, provider, model string) []types.ToolResult {
+	if !providerResultFinishAllowed(finishReason) {
+		return nil
+	}
 	byName := make(map[string]*types.Tool, len(tools))
 	for i := range tools {
 		byName[tools[i].Name] = &tools[i]

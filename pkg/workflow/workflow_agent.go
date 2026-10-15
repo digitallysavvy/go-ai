@@ -407,7 +407,7 @@ type WorkflowStreamResult struct{ *ai.StreamTextResult }
 // (for example a tool-calls finish) would otherwise surface a parse error the
 // workflow agent never produces.
 func (r *WorkflowStreamResult) skipOutput() bool {
-	steps := r.StreamTextResult.Steps()
+	steps := r.Steps()
 	return len(steps) == 0 || steps[len(steps)-1].Text == ""
 }
 

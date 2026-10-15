@@ -1538,7 +1538,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// WorkflowAgent: answer provider-executed calls that got no result
 			// with an empty text result so the loop continues (TS
 			// resolveProviderToolResult).
-			if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult {
+			if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && providerResultFinishAllowed(genResult.FinishReason) {
 				answered := func(id string) bool {
 					for _, part := range stepResult.Content {
 						switch v := part.(type) {

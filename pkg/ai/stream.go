@@ -2334,7 +2334,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// an empty text result, as if the provider had streamed it, so the loop
 		// continues (TS resolveProviderToolResult).
 		injectedProviderResult := false
-		if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && !transformStopped {
+		if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && !transformStopped && providerResultFinishAllowed(r.finishReason) {
 			for _, call := range missingProviderResultCalls(stepToolCalls, toolsByName, func(id string) bool {
 				_, ok := streamedToolResults[id]
 				return ok
