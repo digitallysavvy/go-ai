@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // UIMessageChunk is a lightweight JSON-compatible chunk shape.
@@ -2523,7 +2524,18 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolResult.Error != nil {
 			errorText := opts.OnError(chunk.ToolResult.Error)
 			if chunk.ToolResult.ProviderExecuted {
+				// TS: typeof error === 'string' ? error : JSON.stringify(error).
+				// A structured provider error travels in Result.
 				errorText = chunk.ToolResult.Error.Error()
+				switch v := chunk.ToolResult.Result.(type) {
+				case nil:
+				case string:
+					errorText = v
+				default:
+					if b, err := jsonstr.Marshal(v); err == nil {
+						errorText = string(b)
+					}
+				}
 			}
 			partType = "tool-output-error"
 			part = map[string]interface{}{

@@ -526,12 +526,25 @@ func toolResultModelOutput(result interface{}) *types.ToolResultOutput {
 
 func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart {
 	if result.Error != nil {
+		// A provider-executed error is the provider's own error value (TS
+		// tool-error.error: a string or a structured object such as
+		// {type: 'web_fetch_tool_result_error', errorCode}), replayed as
+		// error-json. Providers that carry the structured payload put it in
+		// Result next to the Error summary.
+		var errValue interface{} = result.Error.Error()
+		errorText := providerutils.ToolErrorText(result.Error)
+		if result.ProviderExecuted {
+			errorText = ""
+			if result.Result != nil {
+				errValue = result.Result
+			}
+		}
 		return types.ToolErrorContent{
 			ToolCallID:       result.ToolCallID,
 			ToolName:         result.ToolName,
 			Input:            result.Input,
-			Error:            result.Error.Error(),
-			ErrorText:        providerutils.ToolErrorText(result.Error),
+			Error:            errValue,
+			ErrorText:        errorText,
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
