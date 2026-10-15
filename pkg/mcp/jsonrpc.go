@@ -204,6 +204,28 @@ func ValidateJSONRPCMessage(raw []byte) (*MCPMessage, error) {
 	}
 }
 
+// parseMCPMessage decodes one inbound JSON-RPC message the way TS
+// parseJSONRPCMessage does: the text must be safe JSON (no prototype keys, the
+// depth and field limits of unmarshalSafeJSON) and must match a JSON-RPC
+// request, notification, response or error shape. A transport reports a
+// failure through its error callback and keeps reading.
+func parseMCPMessage(data []byte) (*MCPMessage, error) {
+	var probe interface{}
+	if err := unmarshalSafeJSON(data, &probe); err != nil {
+		return nil, err
+	}
+	msg, err := ValidateJSONRPCMessage(data)
+	if err != nil {
+		return nil, err
+	}
+	// Transports have always delivered numeric ids as decoded into an
+	// interface{} (float64); keep that so Transport consumers see no change.
+	if id, ok := msg.ID.(int64); ok {
+		msg.ID = float64(id)
+	}
+	return msg, nil
+}
+
 // GetError extracts the error from a message
 func GetError(msg *MCPMessage) error {
 	if msg.Error == nil {

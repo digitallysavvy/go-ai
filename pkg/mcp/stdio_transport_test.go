@@ -129,7 +129,7 @@ func TestStdioTransportSkipsInvalidJSONLines(t *testing.T) {
 	var reported []error
 	transport := NewStdioTransport(StdioTransportConfig{
 		Command: "sh",
-		Args:    []string{"-c", `printf 'not-json\n\n{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		Args:    []string{"-c", `printf 'not-json\n{"level":"info"}\n\n{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
 		OnError: func(err error) { reported = append(reported, err) },
 	})
 
@@ -145,7 +145,9 @@ func TestStdioTransportSkipsInvalidJSONLines(t *testing.T) {
 	if msg.ID == nil {
 		t.Fatalf("message = %+v", msg)
 	}
-	if len(reported) != 1 || !strings.Contains(reported[0].Error(), "failed to unmarshal message") {
+	// JSON that is not a JSON-RPC message (a structured log line) is skipped
+	// too, as TS parseJSONRPCMessage rejects it.
+	if len(reported) != 2 || !strings.Contains(reported[0].Error(), "failed to unmarshal message") || !strings.Contains(reported[1].Error(), "failed to unmarshal message") {
 		t.Fatalf("reported = %v", reported)
 	}
 }

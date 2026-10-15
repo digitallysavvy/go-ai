@@ -442,14 +442,22 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 			aborted := t.cancel == nil // closed intentionally via Close
 			t.connected = false
 			t.endpoint = nil
+			var unexpected error
 			if readySent && wasConnected {
-				t.streamErr = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+				unexpected = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+				t.streamErr = unexpected
 			} else {
 				t.streamErr = io.EOF
 			}
 			t.mu.Unlock()
 			if !readySent && !aborted {
 				ready <- NewMCPClientError(0, "MCP SSE Transport Error: Connection closed before endpoint event was received", nil)
+			}
+			// TS processEvents: a stream that ends after the endpoint event
+			// throws into its catch, which reports through onerror (an
+			// intentional close returns silently first).
+			if unexpected != nil && !aborted {
+				t.reportError(unexpected)
 			}
 			return
 		}
@@ -466,6 +474,8 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 			t.mu.Unlock()
 			if !readySent {
 				ready <- NewTransportError("failed to read SSE event", err)
+			} else if !aborted {
+				t.reportError(NewTransportError("failed to read SSE event", err))
 			}
 			return
 		}
@@ -506,11 +516,13 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 		if event.Event != "" && event.Event != "message" {
 			continue
 		}
-		var msg MCPMessage
-		if err := unmarshalSafeJSON([]byte(event.Data), &msg); err != nil {
+		msg, err := parseMCPMessage([]byte(event.Data))
+		if err != nil {
+			// TS reports the parse failure through onerror and keeps reading.
+			t.reportError(&MCPClientError{Message: "MCP SSE Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
-		t.queueReceivedMessages([]*MCPMessage{&msg})
+		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
 }
 

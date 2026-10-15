@@ -59,8 +59,10 @@ func MCPAppClientCapabilities() ClientCapabilities {
 // legacy flat _meta["ui/resourceUri"] key.
 func GetMCPAppToolMeta(tool MCPTool) (*MCPAppToolMeta, error) {
 	uiMeta := mapFromInterface(tool.Meta["ui"])
+	// TS: `uiMeta?.resourceUri ?? tool._meta?.['ui/resourceUri']`; a null
+	// ui.resourceUri falls through to the legacy key like a missing one.
 	resourceValue, hasResource := uiMeta["resourceUri"]
-	if !hasResource {
+	if resourceValue == nil {
 		resourceValue, hasResource = tool.Meta[MCPAppLegacyResourceURIMetaKey]
 	}
 	if !hasResource && uiMeta == nil {
@@ -77,14 +79,14 @@ func GetMCPAppToolMeta(tool MCPTool) (*MCPAppToolMeta, error) {
 		meta.ResourceURI = resourceURI
 		meta.Extra["resourceUri"] = resourceURI
 	}
+	// TS parseVisibility: an array is filtered to "model"/"app" and replaces
+	// the raw value even when the result is empty (an empty visibility list
+	// hides the tool from both the model and the app); a non-array leaves the
+	// visibility unset.
 	if visibilityValue, ok := uiMeta["visibility"]; ok {
-		meta.Visibility = parseMCPAppVisibility(visibilityValue)
-		if len(meta.Visibility) > 0 {
+		if meta.Visibility = parseMCPAppVisibility(visibilityValue); meta.Visibility != nil {
 			meta.Extra["visibility"] = meta.Visibility
 		}
-	}
-	if len(meta.Extra) == 0 && meta.ResourceURI == "" {
-		return nil, nil
 	}
 	return meta, nil
 }
@@ -114,7 +116,7 @@ func SplitMCPAppTools(definitions ListToolsResult) (modelVisible ListToolsResult
 		if metaErr != nil {
 			return ListToolsResult{}, ListToolsResult{}, metaErr
 		}
-		if meta == nil || len(meta.Visibility) == 0 || containsString(meta.Visibility, "model") {
+		if meta == nil || meta.Visibility == nil || containsString(meta.Visibility, "model") {
 			modelVisible.Tools = append(modelVisible.Tools, tool)
 		}
 		if meta != nil && containsString(meta.Visibility, "app") {
@@ -244,14 +246,19 @@ func validateMCPAppResourceMeta(raw map[string]interface{}) map[string]interface
 	return out
 }
 
+// parseMCPAppVisibility filters an array to "model"/"app" entries. It returns
+// nil when value is not an array and a non-nil (possibly empty) slice
+// otherwise.
 func parseMCPAppVisibility(value interface{}) []string {
 	values, ok := value.([]interface{})
 	if !ok {
-		if stringsValue, ok := value.([]string); ok {
-			values = make([]interface{}, len(stringsValue))
-			for i, v := range stringsValue {
-				values[i] = v
-			}
+		stringsValue, isStrings := value.([]string)
+		if !isStrings {
+			return nil
+		}
+		values = make([]interface{}, len(stringsValue))
+		for i, v := range stringsValue {
+			values[i] = v
 		}
 	}
 	out := []string{}

@@ -301,15 +301,15 @@ func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
 		// Parse JSON. A line that is not a JSON-RPC message (servers often
 		// print log output on stdout) is reported and skipped, as TS does,
 		// rather than ending the connection.
-		var message MCPMessage
-		if err := unmarshalSafeJSON(line, &message); err != nil {
+		message, err := parseMCPMessage(line)
+		if err != nil {
 			if t.onError != nil {
 				t.onError(NewTransportError("failed to unmarshal message", err))
 			}
 			continue
 		}
 
-		return &message, nil
+		return message, nil
 	}
 }
 

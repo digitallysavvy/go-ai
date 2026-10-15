@@ -237,10 +237,6 @@ func TestHTTPTransportReportsMalformedPOSTResponseSSEMessage(t *testing.T) {
 		t.Fatalf("Send error: %v", err)
 	}
 
-	// Syntactically invalid JSON (unlike TS, this Go port's SSE message parse
-	// step is a plain unmarshal with no separate JSON-RPC shape validation,
-	// matching the existing inbound-SSE malformed-message test), so only a
-	// JSON syntax error takes the error path.
 	if _, err := writer.Write([]byte("event: message\ndata: {not-valid-json\n\n")); err != nil {
 		t.Fatalf("write malformed SSE event: %v", err)
 	}
@@ -1112,5 +1108,31 @@ func TestHTTPTransportEventStreamReaderReportsReadFailureWhenContextLive(t *test
 	}
 	if !strings.Contains(captured[0].Error(), "failed to read event-stream response") {
 		t.Fatalf("error = %v, want it to mention failed to read event-stream response", captured[0])
+	}
+}
+
+// TS send() runs validateJSONRPCMessage on a JSON response body, so a body that
+// is JSON but not JSON-RPC fails the send instead of leaving the request
+// waiting for a response that never arrives.
+func TestHTTPTransportRejectsJSONResponseThatIsNotJSONRPC(t *testing.T) {
+	for name, body := range map[string]string{
+		"object": `{"foo":1}`,
+		"batch":  `[{"jsonrpc":"2.0","id":1,"result":{}},{"foo":1}]`,
+		"empty":  `{"jsonrpc":"2.0","id":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			transport := NewHTTPTransport(HTTPTransportConfig{
+				URL: "http://localhost:9999/mcp",
+				SSEClient: responseSSEClient{
+					header: http.Header{"Content-Type": []string{"application/json"}},
+					body:   body,
+				},
+			})
+			transport.connected = true
+			msg, _ := CreateRequest(1, "ping", nil)
+			if err := transport.Send(t.Context(), msg); err == nil {
+				t.Fatal("expected Send to fail for a body that is not JSON-RPC")
+			}
+		})
 	}
 }
