@@ -1,7 +1,6 @@
 package codemode
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,9 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // signatureAlgorithm is the value stored in ContinuationAuth.Alg. Mirrors
@@ -221,15 +221,11 @@ func randomHex(n int) (string, error) {
 
 // canonicalJSON encodes value the way TypeScript's canonicalJson does:
 // object keys sorted lexicographically at every level, no whitespace, and
-// (unlike encoding/json.Marshal's default) no HTML-escaping of '<', '>' and
-// '&'. value is round-tripped through encoding/json first so nested Go
-// structs become map[string]interface{} (whose keys encoding/json already
-// sorts) and every numeric Go type collapses to float64, matching
-// JavaScript's single Number type. One narrow, accepted divergence from
-// true JSON.stringify: encoding/json always escapes U+2028/U+2029 inside
-// strings (a JS-safety measure with no opt-out), while JSON.stringify does
-// not; this only affects continuation fields containing those rare
-// line/paragraph-separator code points.
+// JSON.stringify's string escaping (no HTML-escaping of '<', '>' and '&', and
+// U+2028/U+2029 written as is). value is round-tripped through encoding/json
+// first so nested Go structs become map[string]interface{} (whose keys
+// encoding/json already sorts) and every numeric Go type collapses to
+// float64, matching JavaScript's single Number type.
 func canonicalJSON(value interface{}) (string, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -239,11 +235,9 @@ func canonicalJSON(value interface{}) (string, error) {
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return "", err
 	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(generic); err != nil {
+	out, err := jsonstr.Marshal(generic)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSuffix(buf.String(), "\n"), nil
+	return string(out), nil
 }

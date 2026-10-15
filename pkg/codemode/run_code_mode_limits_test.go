@@ -54,3 +54,12 @@ func TestExecutionPolicyRejectsLimitsAboveRunMaximum(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The continuation signature covers JSON.stringify text: U+2028 stays raw.
+func TestCanonicalJSONWritesLineSeparatorsRaw(t *testing.T) {
+	ls := string(rune(0x2028))
+	got, err := canonicalJSON(map[string]interface{}{"b": "<" + ls, "a": 1})
+	if err != nil || got != `{"a":1,"b":"<`+ls+`"}` {
+		t.Fatalf("canonicalJSON = %q, %v", got, err)
+	}
+}
