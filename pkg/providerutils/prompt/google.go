@@ -344,6 +344,21 @@ type googleFile struct {
 	text         string
 	hasText      bool
 	data         []byte
+	// raw is a base64 data string that does not decode (TS convertToBase64
+	// passes a string through unchanged); used only when data is empty.
+	raw string
+}
+
+// hasData reports whether the file carries inline data.
+func (f googleFile) hasData() bool { return len(f.data) > 0 || f.raw != "" }
+
+// base64Data is the inline data as base64 (the original string when it did
+// not decode).
+func (f googleFile) base64Data() string {
+	if len(f.data) > 0 {
+		return base64.StdEncoding.EncodeToString(f.data)
+	}
+	return f.raw
 }
 
 func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
@@ -363,6 +378,8 @@ func (c *googleConverter) resolveFile(file types.FileContent) googleFile {
 		if len(f.data) == 0 && file.FileData.DataString != "" {
 			if decoded, err := base64.StdEncoding.DecodeString(file.FileData.DataString); err == nil {
 				f.data = decoded
+			} else {
+				f.raw = file.FileData.DataString
 			}
 		}
 	}
@@ -416,7 +433,7 @@ func (c *googleConverter) fileContentPart(file types.FileContent, assistant bool
 			}
 		}
 		return map[string]interface{}{
-			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(f.data)},
+			"inlineData": map[string]interface{}{"mimeType": mimeType, "data": f.base64Data()},
 		}, nil
 	}
 }
@@ -901,9 +918,9 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 				} else {
 					textParts = append(textParts, googleJSONText(b))
 				}
-			case len(f.data) > 0:
+			case f.hasData():
 				responseParts = append(responseParts, map[string]interface{}{
-					"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": base64.StdEncoding.EncodeToString(f.data)},
+					"inlineData": map[string]interface{}{"mimeType": f.mediaType, "data": f.base64Data()},
 				})
 			default:
 				textParts = append(textParts, googleJSONText(b))
@@ -928,14 +945,14 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 // becomes a functionResponse; inline files become top-level inlineData parts
 // followed by a descriptive text part.
 func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
-	appendInline := func(mediaType string, data []byte) {
+	appendInline := func(mediaType, data string) {
 		kind := "file"
 		if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 			kind = "image"
 		}
 		*parts = append(*parts,
 			map[string]interface{}{
-				"inlineData": map[string]interface{}{"mimeType": mediaType, "data": base64.StdEncoding.EncodeToString(data)},
+				"inlineData": map[string]interface{}{"mimeType": mediaType, "data": data},
 			},
 			map[string]interface{}{"text": "Tool executed successfully and returned this " + kind + " as a response"},
 		)
@@ -945,11 +962,11 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 		case types.TextContentBlock:
 			*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponse(toolName, toolCallID, b.Text)})
 		case types.ImageContentBlock:
-			appendInline(b.MediaType, b.Data)
+			appendInline(b.MediaType, base64.StdEncoding.EncodeToString(b.Data))
 		case types.FileContentBlock:
 			f := c.resolveFile(fileBlockToContent(b))
-			if f.url == "" && f.reference == "" && !f.hasText && len(f.data) > 0 {
-				appendInline(f.mediaType, f.data)
+			if f.url == "" && f.reference == "" && !f.hasText && f.hasData() {
+				appendInline(f.mediaType, f.base64Data())
 			} else {
 				*parts = append(*parts, map[string]interface{}{"text": googleJSONText(b)})
 			}
