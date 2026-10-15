@@ -209,6 +209,17 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	capabilities := GetLanguageModelCapabilities(m.modelID)
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleChatLanguageModel has no model-id capability
+		// logic: no developer role, sampling-parameter removal, GPT-6 effort
+		// restrictions or service-tier gating.
+		capabilities = LanguageModelCapabilities{
+			SystemMessageMode:              "system",
+			SupportsFlexProcessing:         true,
+			SupportsPriorityProcessing:     true,
+			SupportsNonReasoningParameters: true,
+		}
+	}
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -237,12 +248,20 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if m.provider.config.OpenAICompatible {
 		resolved, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions(m.fileReferenceProvider(), opts.ProviderOptions)
 		warnings = append(warnings, resolveWarnings...)
-		merged := make(map[string]interface{}, len(openaiOpts)+len(resolved))
+		// Only the options TS OpenAICompatibleChatLanguageModel models itself
+		// (user, reasoningEffort, textVerbosity; strictJsonSchema is read
+		// separately) are interpreted from the provider-named maps; every
+		// other key there is passed through to the body verbatim (below), not
+		// also converted into the OpenAI-only snake_case fields. The legacy
+		// "openai" key keeps its v0.5.2 native handling.
+		merged := make(map[string]interface{}, len(openaiOpts)+3)
 		for k, v := range openaiOpts {
 			merged[k] = v
 		}
-		for k, v := range resolved {
-			merged[k] = v
+		for _, k := range []string{"user", "reasoningEffort", "textVerbosity"} {
+			if v, ok := resolved[k]; ok {
+				merged[k] = v
+			}
 		}
 		openaiOpts = merged
 		compatPassthrough = resolved
