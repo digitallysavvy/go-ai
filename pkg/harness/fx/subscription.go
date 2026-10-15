@@ -217,8 +217,13 @@ func readSubscription(ctx context.Context, provider subscriptionProvider, fxDire
 		return nil, nil
 	}
 	if provider == providerChatGPT {
+		// TS awaits extractChatGptAccountId without a catch: a token with no
+		// account id fails the whole resolution instead of being skipped.
 		accountID, err := extractChatGPTAccountID(cred.AccessToken)
-		if err != nil || accountID != cred.AccountID {
+		if err != nil {
+			return nil, err
+		}
+		if accountID != cred.AccountID {
 			return nil, nil
 		}
 	}

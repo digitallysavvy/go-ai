@@ -286,6 +286,19 @@ func TestResolveOpenCodeGitLabSubscriptionModel(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "because it authenticates over WebSocket") {
 		t.Fatalf("err = %v, want a WebSocket-authentication rejection", err)
 	}
+	// Exact TS error texts.
+	const wantWorkflow = "Harness 'opencode' cannot broker native GitLab subscription credentials for workflow model 'duo-workflow' because it authenticates over WebSocket. Use a sandbox without credential brokering to use the credential-forwarding fallback."
+	if err.Error() != wantWorkflow {
+		t.Fatalf("workflow err = %q, want %q", err.Error(), wantWorkflow)
+	}
+	_, err = resolveOpenCodeGitLabSubscriptionModel("gitlab/nope", "gitlab")
+	if err == nil || err.Error() != "Harness 'opencode' cannot broker native GitLab subscription credentials for unknown model 'nope'." {
+		t.Fatalf("unknown model err = %v", err)
+	}
+	_, err = resolveOpenCodeGitLabSubscriptionModel("", "gitlab")
+	if err == nil || err.Error() != "Harness 'opencode' requires an explicit GitLab model when native GitLab subscription credentials are brokered." {
+		t.Fatalf("missing model err = %v", err)
+	}
 }
 
 // Ports TS `creates a sanitized non-expiring OAuth record`.

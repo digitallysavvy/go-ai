@@ -87,8 +87,9 @@ func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool
 		}
 	}
 	out := map[string]string{}
-	apiKey := env["OPENAI_API_KEY"]
-	if apiKey == "" {
+	// TS uses `??`: a present-but-empty OPENAI_API_KEY wins over CODEX_API_KEY.
+	apiKey, ok := env["OPENAI_API_KEY"]
+	if !ok {
 		apiKey = env["CODEX_API_KEY"]
 	}
 	if apiKey != "" {

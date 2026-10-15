@@ -449,6 +449,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	go func() {
 		select {
 		case <-ctx.Done():
+			// Like TS `onAbort`, do nothing once the turn settled: a late
+			// abort frame would hit the bridge's next turn.
+			select {
+			case <-pc.done:
+				return
+			default:
+			}
 			_ = s.opts.channel.Send(bridge.AbortCommand{})
 			pc.settleError(context.Cause(ctx))
 		case <-pc.done:

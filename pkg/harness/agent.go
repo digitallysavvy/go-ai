@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -388,6 +389,8 @@ func (a *Agent) cleanupAfterStartFailure(ctx context.Context, sandboxSession pro
 }
 
 func validateLifecycleStateData(h Harness, state LifecycleState) error {
+	var data []byte
+	var nested *ContinueTurnState
 	switch s := state.(type) {
 	case *ResumeSessionState:
 		if err := s.Validate(); err != nil {
@@ -396,6 +399,7 @@ func validateLifecycleStateData(h Harness, state LifecycleState) error {
 		if s.HarnessID != h.HarnessID() {
 			return NewHarnessError(fmt.Sprintf("Lifecycle state was produced by harness '%s' but this agent uses '%s'.", s.HarnessID, h.HarnessID()), nil)
 		}
+		data, nested = s.Data, s.ContinueFrom
 	case *ContinueTurnState:
 		if err := s.Validate(); err != nil {
 			return err
@@ -403,18 +407,18 @@ func validateLifecycleStateData(h Harness, state LifecycleState) error {
 		if s.HarnessID != h.HarnessID() {
 			return NewHarnessError(fmt.Sprintf("Lifecycle state was produced by harness '%s' but this agent uses '%s'.", s.HarnessID, h.HarnessID()), nil)
 		}
+		data = s.Data
 	}
 	if v, ok := h.(LifecycleStateValidator); ok {
-		var data []byte
-		switch s := state.(type) {
-		case *ResumeSessionState:
-			data = s.Data
-		case *ContinueTurnState:
-			data = s.Data
-		}
 		if err := v.ValidateLifecycleStateData(data); err != nil {
-			return err
+			// Mirrors TS: a schema failure is reported as a HarnessError.
+			return NewHarnessError(fmt.Sprintf("Lifecycle state failed schema validation for harness '%s': %s", h.HarnessID(), err.Error()), err)
 		}
+	}
+	// TS validates a resume-session's nested `continueFrom` recursively
+	// (type, harness id and adapter data schema).
+	if nested != nil {
+		return validateLifecycleStateData(h, nested)
 	}
 	return nil
 }
@@ -661,6 +665,11 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		schema, _ := jsonschema.ParametersMap(t.Parameters)
 		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: schema})
 	}
+	// Go map iteration is random, while TS follows tool definition order.
+	// The specs feed order-sensitive consumers (Codex's turn-configuration
+	// fingerprint, ACP's lossy-rerun tool-catalog check), so a stable order
+	// keeps a resumed turn from looking like a changed tool catalog.
+	sort.Slice(toolSpecs, func(i, j int) bool { return toolSpecs[i].Name < toolSpecs[j].Name })
 
 	// Resolve the turn's settings. A fresh prompt persists them on the
 	// session; a continuation reuses the unfinished turn's (rebuilding them

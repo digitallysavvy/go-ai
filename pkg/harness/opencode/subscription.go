@@ -444,7 +444,8 @@ func gitlabModelsFor(providerID string) map[string]any {
 func resolveOpenCodeGitLabSubscriptionModel(model, provider string) (string, error) {
 	if model == "" {
 		if provider == string(SubscriptionGitLab) {
-			return "", unsupported("brokering native GitLab subscription credentials without an explicit model")
+			return "", harness.NewCapabilityUnsupportedError(
+				"Harness 'opencode' requires an explicit GitLab model when native GitLab subscription credentials are brokered.", HarnessID, nil)
 		}
 		return "", nil
 	}
@@ -457,11 +458,13 @@ func resolveOpenCodeGitLabSubscriptionModel(model, provider string) (string, err
 	}
 	mapping, ok := openCodeGitLabModels[modelID]
 	if !ok {
-		return "", unsupported(fmt.Sprintf("brokering native GitLab subscription credentials for unknown model %q", modelID))
+		return "", harness.NewCapabilityUnsupportedError(
+			fmt.Sprintf("Harness 'opencode' cannot broker native GitLab subscription credentials for unknown model '%s'.", modelID), HarnessID, nil)
 	}
 	if mapping.ProviderID == "workflow" {
-		return "", unsupported(fmt.Sprintf(
-			"brokering native GitLab subscription credentials for workflow model %q because it authenticates over WebSocket. Use a sandbox without credential brokering to use the credential-forwarding fallback", modelID))
+		return "", harness.NewCapabilityUnsupportedError(
+			fmt.Sprintf("Harness 'opencode' cannot broker native GitLab subscription credentials for workflow model '%s' because it authenticates over WebSocket. Use a sandbox without credential brokering to use the credential-forwarding fallback.", modelID),
+			HarnessID, nil)
 	}
 	return mapping.ProviderID + "/" + modelID, nil
 }

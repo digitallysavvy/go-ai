@@ -70,6 +70,8 @@ type session struct {
 	// tool result cannot finish before the continue answers it, so waiting on
 	// pendingTurnDrain would deadlock (TS #23331).
 	abortedTurnDrain chan struct{}
+	// destroyed is closed when the first DoDestroy finishes its teardown.
+	destroyed chan struct{}
 	// rerunContinue is the live copy of p.rerunContinue: true until the single
 	// recovery start has been sent. Mirrors TS `rerunContinue`.
 	rerunContinue bool
@@ -318,7 +320,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = s.p.channel.Send(bridge.AbortCommand{})
+			// Like TS `onAbort`, do nothing when the turn already settled: a
+			// late abort frame would hit the bridge's next turn.
+			select {
+			case <-c.done:
+				return
+			default:
+			}
 			turnMu.Lock()
 			if isSettled {
 				turnMu.Unlock()
@@ -327,6 +335,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			isSettled = true
 			drainingAfterAbort = true
 			turnMu.Unlock()
+			_ = s.p.channel.Send(bridge.AbortCommand{})
 			s.mu.Lock()
 			s.abortedTurnDrain = turnDrain
 			s.mu.Unlock()
@@ -526,6 +535,12 @@ func (s *session) DoCompact(ctx context.Context, customInstructions string) erro
 	msg.Operation = OperationCompact
 	msg.Prompt = ""
 	msg.Tools = nil
+	// TS `runCompactOperation` sends neither a reasoning variant nor a
+	// pending-seed resume id: only the latest OpenCode session id.
+	msg.Variant = ""
+	s.mu.Lock()
+	msg.ResumeSessionID = s.latestOpenCodeSessionID
+	s.mu.Unlock()
 	return s.runCompactOperation(msg)
 }
 
@@ -658,11 +673,24 @@ func (s *session) DoStop(ctx context.Context) (*harness.ResumeSessionState, erro
 func (s *session) DoDestroy(ctx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
+		// A second destroy awaits the first one's teardown (TS returns the
+		// same `stopPromise`). A destroy after stop/detach has nothing to do.
+		done := s.destroyed
 		s.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		return nil
 	}
 	s.stopped = true
+	s.destroyed = make(chan struct{})
+	done := s.destroyed
 	s.mu.Unlock()
+	defer close(done)
 
 	s.p.channel.BeginClose()
 	if !s.p.channel.IsClosed() {

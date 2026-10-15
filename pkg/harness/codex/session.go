@@ -71,6 +71,8 @@ type session struct {
 	pendingResumeThreadID              string
 	latestThreadID                     string
 	latestTurnConfigurationFingerprint string
+	// destroyed is closed when the first DoDestroy finishes its teardown.
+	destroyed chan struct{}
 	// rerunContinue is the live copy of opts.rerunContinue: true until the
 	// single recovery start has been sent. Mirrors TS `rerunContinue`.
 	rerunContinue bool
@@ -293,11 +295,24 @@ func (s *session) resumeData(lastSeenEventID float64) resumeStateData {
 func (s *session) DoDestroy(ctx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
+		// A second destroy awaits the first one's teardown (TS returns the
+		// same `stopPromise`). A destroy after stop/detach has nothing to do.
+		done := s.destroyed
 		s.mu.Unlock()
+		if done != nil {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 		return nil
 	}
 	s.stopped = true
+	s.destroyed = make(chan struct{})
+	done := s.destroyed
 	s.mu.Unlock()
+	defer close(done)
 
 	s.opts.channel.BeginClose()
 	if !s.opts.channel.IsClosed() {
@@ -446,6 +461,13 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 	go func() {
 		select {
 		case <-ctx.Done():
+			// Like TS `onAbort`, do nothing once the turn settled: a late
+			// abort frame would hit the bridge's next turn.
+			select {
+			case <-pc.done:
+				return
+			default:
+			}
 			_ = s.opts.channel.Send(bridge.AbortCommand{})
 			pc.settleError(context.Cause(ctx))
 		case <-pc.done:
