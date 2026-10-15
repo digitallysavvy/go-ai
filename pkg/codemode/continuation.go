@@ -1,7 +1,6 @@
 package codemode
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,9 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // signatureAlgorithm is the value stored in ContinuationAuth.Alg. Mirrors
@@ -49,9 +49,10 @@ func init() {
 // SetCodeModeContinuationSigningKey sets the process-wide default
 // continuation signing key and max age used whenever a call's
 // Options.ContinuationSecurity / ContinuationSecurityOptions doesn't
-// override them. key == nil generates a fresh random 32-byte key (as at
-// process start); a non-nil, empty key is an error. maxAge == 0 keeps the
-// current default (1 hour, unless already changed). Mirrors TypeScript's
+// override them. key == nil generates a fresh random 32-byte key (rotating
+// the key, which invalidates continuations signed with the old one); a
+// non-nil, empty key is an error. maxAge == 0 resets the default to 1 hour,
+// like TS (`options.maxAgeMs ?? DEFAULT_MAX_AGE_MS`). Mirrors TypeScript's
 // experimental_setCodeModeContinuationSigningKey.
 //
 // This mutates global state shared by every concurrent invocation in the
@@ -59,6 +60,15 @@ func init() {
 // every invocation in a JS realm; call it during setup, not from
 // concurrent request handling.
 func SetCodeModeContinuationSigningKey(key []byte, maxAge time.Duration) error {
+	if key == nil {
+		key = make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return fmt.Errorf("codemode: crypto/rand unavailable for the continuation signing key: %w", err)
+		}
+	}
+	if maxAge == 0 {
+		maxAge = defaultContinuationMaxAge
+	}
 	resolved, err := resolveContinuationSecurity(ContinuationSecurityOptions{SigningKey: key, MaxAge: maxAge})
 	if err != nil {
 		return err
@@ -221,15 +231,11 @@ func randomHex(n int) (string, error) {
 
 // canonicalJSON encodes value the way TypeScript's canonicalJson does:
 // object keys sorted lexicographically at every level, no whitespace, and
-// (unlike encoding/json.Marshal's default) no HTML-escaping of '<', '>' and
-// '&'. value is round-tripped through encoding/json first so nested Go
-// structs become map[string]interface{} (whose keys encoding/json already
-// sorts) and every numeric Go type collapses to float64, matching
-// JavaScript's single Number type. One narrow, accepted divergence from
-// true JSON.stringify: encoding/json always escapes U+2028/U+2029 inside
-// strings (a JS-safety measure with no opt-out), while JSON.stringify does
-// not; this only affects continuation fields containing those rare
-// line/paragraph-separator code points.
+// JSON.stringify's string escaping (no HTML-escaping of '<', '>' and '&', and
+// U+2028/U+2029 written as is). value is round-tripped through encoding/json
+// first so nested Go structs become map[string]interface{} (whose keys
+// encoding/json already sorts) and every numeric Go type collapses to
+// float64, matching JavaScript's single Number type.
 func canonicalJSON(value interface{}) (string, error) {
 	raw, err := json.Marshal(value)
 	if err != nil {
@@ -239,11 +245,9 @@ func canonicalJSON(value interface{}) (string, error) {
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return "", err
 	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(generic); err != nil {
+	out, err := jsonstr.Marshal(generic)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSuffix(buf.String(), "\n"), nil
+	return string(out), nil
 }

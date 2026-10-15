@@ -66,6 +66,11 @@ const (
 	DefaultMaxInFlightBridgeRequests = 32
 )
 
+// maxRunLimit is the largest value the sandbox runner accepts for a limit
+// (TS MAX_RUN_LIMIT, the largest 32-bit signed integer); larger values are
+// rejected like zero and negative ones.
+const maxRunLimit = 2_147_483_647
+
 // resolvedPolicy is ExecutionPolicy with every field defaulted.
 type resolvedPolicy struct {
 	TimeoutMs                 int
@@ -126,7 +131,7 @@ func resolveExecutionPolicy(p *ExecutionPolicy) (resolvedPolicy, error) {
 		{"maxInFlightBridgeRequests", p.MaxInFlightBridgeRequests, &r.MaxInFlightBridgeRequests},
 	}
 	for _, f := range fields {
-		if f.val < 0 {
+		if f.val < 0 || int64(f.val) > maxRunLimit {
 			return resolvedPolicy{}, fmt.Errorf("codemode: executionPolicy.%s must be a positive integer, got %d", f.name, f.val)
 		}
 		if f.val > 0 {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -342,7 +343,7 @@ func convertMCPContentToModelOutputBlock(part ToolResultContent) types.ToolResul
 }
 
 func marshalMCPContentForModelOutput(part ToolResultContent) string {
-	data, err := json.Marshal(part)
+	data, err := jsonstr.Marshal(part)
 	if err != nil {
 		return "{}"
 	}

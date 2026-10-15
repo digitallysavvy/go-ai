@@ -345,13 +345,11 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 			Error: errors.New(stringField(chunk, "errorText")),
 		}}, true
 	case "tool-output-denied":
+		// The reason shown is the one of the earlier approval response.
 		id := stringField(chunk, "toolCallId")
 		meta := toolMeta[id]
-		reason := "denied"
-		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolOutputDenied, ToolResult: &types.ToolResult{
 			ToolCallID: id, ToolName: meta.name, Title: meta.title,
-			ApprovalStatus: types.ToolApprovalStatusDenied,
-			ApprovalReason: &reason,
 		}}, true
 
 	case "tool-approval-request":
@@ -367,29 +365,14 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 			ApprovalID:     approvalID,
 		}}, true
 	case "tool-approval-response":
+		// The renderer maps the approval id back to its tool call: approved
+		// shows executing, denied the "denied" status with the reason (TS
+		// approval-responded); only a tool-output-denied chunk renders the
+		// tool as denied output.
 		approved := boolField(chunk, "approved")
 		approvalID := stringField(chunk, "approvalId")
-		if approved {
-			// The renderer maps the approval id back to its tool call and
-			// shows it as executing (TS approval-responded, approved).
-			return &provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
-				ApprovalID: approvalID, ToolCallID: approvalToToolCall[approvalID], Approved: true,
-			}}, true
-		}
-		id := approvalToToolCall[approvalID]
-		if id == "" {
-			return nil, false
-		}
-		meta := toolMeta[id]
-		reason := stringField(chunk, "reason")
-		if reason == "" {
-			reason = "denied"
-		}
-		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
-			ToolCallID: id, ToolName: meta.name, Title: meta.title,
-			ApprovalStatus: types.ToolApprovalStatusDenied,
-			ApprovalID:     approvalID,
-			ApprovalReason: &reason,
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
+			ApprovalID: approvalID, ToolCallID: approvalToToolCall[approvalID], Approved: approved, Reason: stringField(chunk, "reason"),
 		}}, true
 
 	case "start-step":

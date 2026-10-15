@@ -2,11 +2,11 @@ package mcp
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ConvertMCPContentToAISDK converts MCP tool result content to AI SDK content parts
@@ -51,7 +51,7 @@ func convertSingleContent(item ToolResultContent) (types.ContentPart, error) {
 }
 
 func convertMCPOpaqueContentToAISDK(item ToolResultContent) (types.ContentPart, error) {
-	data, err := json.Marshal(item)
+	data, err := jsonstr.Marshal(item)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal opaque MCP content: %w", err)
 	}

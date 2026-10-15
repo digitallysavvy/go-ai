@@ -1,13 +1,13 @@
 package codemode
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf16"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -224,11 +224,7 @@ func renderToolExampleCall(name string, tool types.Tool) string {
 			input = map[string]interface{}{}
 		}
 	}
-	encoded, err := jsonstr.Marshal(input)
-	if err != nil {
-		encoded = []byte("{}")
-	}
-	return fmt.Sprintf("tools%s(%s)", formatPropertyAccess(name), string(encoded))
+	return fmt.Sprintf("tools%s(%s)", formatPropertyAccess(name), jsonorder.Stringify(input))
 }
 
 func renderToolProjection(variableName string, tool types.Tool) string {
@@ -248,60 +244,153 @@ func firstObjectProperty(s jsonSchemaMap) string {
 	if !ok {
 		return ""
 	}
+	names := propertyNames(props)
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
+func resolveInputSchema(tool types.Tool) (jsonSchemaMap, bool) {
+	return toJSONSchemaMap(tool.Parameters, tool.ParameterKeyOrder)
+}
+
+func resolveOutputSchema(tool types.Tool) (jsonSchemaMap, bool) {
+	return toJSONSchemaMap(tool.OutputSchema, nil)
+}
+
+// orderKey is the reserved key under which a "properties" map carries its
+// property names in schema order (a Go map has none). Its value is a
+// []string, never a schema map, so every property walk skips it.
+const orderKey = "\x00go-ai:order"
+
+// toJSONSchemaMap returns the generic JSON form of a tool schema, with each
+// "properties" map annotated with its source key order (TS reads
+// Object.entries of the schema, so the prompt and the examples follow schema
+// order). Order comes from an ordered schema (*schema.OrderedSchema,
+// jsonorder.Hinted) or from keyOrder (Tool.ParameterKeyOrder); any other
+// schema has no order and falls back to sorted keys.
+func toJSONSchemaMap(v interface{}, keyOrder interface{}) (jsonSchemaMap, bool) {
+	var raw []byte
+	var err error
+	switch s := v.(type) {
+	case jsonorder.Hinted:
+		raw, err = s.MarshalJSON()
+	case *jsonorder.Hinted:
+		if s == nil {
+			return nil, false
+		}
+		raw, err = s.MarshalJSON()
+	case *schema.OrderedSchema:
+		if s == nil {
+			return nil, false
+		}
+		raw, err = s.MarshalJSON()
+	case jsonSchemaMap:
+		if len(s) == 0 {
+			return nil, false
+		}
+		if hint, ok := keyOrder.(*jsonorder.Object); ok && hint != nil {
+			raw, err = jsonorder.Hinted{V: s, Hint: hint}.MarshalJSON()
+		} else {
+			raw, err = jsonstr.Marshal(s)
+		}
+	case schema.Schema:
+		if s == nil {
+			return nil, false
+		}
+		m := s.Validator().JSONSchema()
+		if len(m) == 0 {
+			return nil, false
+		}
+		raw, err = jsonstr.Marshal(m)
+	default:
+		return nil, false
+	}
+	if err != nil {
+		return nil, false
+	}
+	tree, ok := jsonorder.Parse(raw)
+	if !ok {
+		return nil, false
+	}
+	obj, ok := convertSchemaNode(tree).(jsonSchemaMap)
+	if !ok || len(obj) == 0 {
+		return nil, false
+	}
+	return obj, true
+}
+
+// convertSchemaNode turns an ordered schema tree into the generic JSON shapes
+// the renderers read ([]interface{}, float64, nested maps -- the form TS sees
+// after serialization), recording property order on every "properties" map.
+func convertSchemaNode(v interface{}) interface{} {
+	o, ok := v.(*jsonorder.Object)
+	if !ok {
+		return jsonorder.Plain(v)
+	}
+	out := make(jsonSchemaMap, o.Len())
+	for _, k := range o.Keys() {
+		val, _ := o.Get(k)
+		switch k {
+		case "properties":
+			if po, ok := val.(*jsonorder.Object); ok {
+				props := make(jsonSchemaMap, po.Len()+1)
+				for _, name := range po.Keys() {
+					pv, _ := po.Get(name)
+					props[name] = convertSchemaNode(pv)
+				}
+				props[orderKey] = po.Keys()
+				out[k] = props
+				continue
+			}
+		case "$defs", "definitions", "patternProperties", "dependentSchemas":
+			if po, ok := val.(*jsonorder.Object); ok {
+				defs := make(jsonSchemaMap, po.Len())
+				for _, name := range po.Keys() {
+					pv, _ := po.Get(name)
+					defs[name] = convertSchemaNode(pv)
+				}
+				out[k] = defs
+				continue
+			}
+		case "items", "additionalProperties", "not", "if", "then", "else", "contains", "propertyNames",
+			"oneOf", "anyOf", "allOf", "prefixItems":
+			if arr, ok := val.([]interface{}); ok {
+				conv := make([]interface{}, len(arr))
+				for i, e := range arr {
+					conv[i] = convertSchemaNode(e)
+				}
+				out[k] = conv
+				continue
+			}
+			out[k] = convertSchemaNode(val)
+			continue
+		}
+		out[k] = jsonorder.Plain(val)
+	}
+	return out
+}
+
+// propertyNames returns the names of the schema-valued entries of a
+// "properties" map in schema order (sorted when no order was recorded).
+func propertyNames(props jsonSchemaMap) []string {
 	names := make([]string, 0, len(props))
+	if order, ok := props[orderKey].([]string); ok {
+		for _, name := range order {
+			if _, ok := props[name].(jsonSchemaMap); ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
 	for name, v := range props {
 		if _, ok := v.(jsonSchemaMap); ok {
 			names = append(names, name)
 		}
 	}
-	if len(names) == 0 {
-		return ""
-	}
 	sort.Strings(names)
-	return names[0]
-}
-
-func resolveInputSchema(tool types.Tool) (jsonSchemaMap, bool) {
-	return toJSONSchemaMap(tool.Parameters)
-}
-
-func resolveOutputSchema(tool types.Tool) (jsonSchemaMap, bool) {
-	return toJSONSchemaMap(tool.OutputSchema)
-}
-
-func toJSONSchemaMap(v interface{}) (jsonSchemaMap, bool) {
-	var raw map[string]interface{}
-	switch s := v.(type) {
-	case jsonSchemaMap:
-		raw = s
-	case schema.Schema:
-		if s == nil {
-			return nil, false
-		}
-		raw = s.Validator().JSONSchema()
-	default:
-		return nil, false
-	}
-	if len(raw) == 0 {
-		return nil, false
-	}
-	return normalizeJSONSchema(raw)
-}
-
-// normalizeJSONSchema turns a schema built from Go-typed values ([]string
-// for required/enum/type, int numbers, ...) into the generic JSON shapes the
-// renderers read ([]interface{}, float64, nested maps), as the schema looks
-// once serialized -- the form TS always sees.
-func normalizeJSONSchema(raw map[string]interface{}) (jsonSchemaMap, bool) {
-	data, err := jsonstr.Marshal(raw)
-	if err != nil {
-		return nil, false
-	}
-	var out jsonSchemaMap
-	if err := json.Unmarshal(data, &out); err != nil || len(out) == 0 {
-		return nil, false
-	}
-	return out, true
+	return names
 }
 
 func schemaToType(s jsonSchemaMap, root jsonSchemaMap) string {
@@ -398,13 +487,7 @@ func objectType(s jsonSchemaMap, ctx schemaContext) string {
 		}
 	}
 
-	names := make([]string, 0, len(props))
-	for name, v := range props {
-		if _, ok := v.(jsonSchemaMap); ok {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
+	names := propertyNames(props)
 
 	if len(names) == 0 {
 		switch additional := s["additionalProperties"].(type) {
@@ -533,11 +616,9 @@ func sampleFromSchemaInner(s jsonSchemaMap, ctx schemaContext) interface{} {
 	_, hasProps := s["properties"].(jsonSchemaMap)
 	if typeStr == "object" || hasProps {
 		props, _ := s["properties"].(jsonSchemaMap)
-		out := map[string]interface{}{}
-		for name, v := range props {
-			if m, ok := v.(jsonSchemaMap); ok {
-				out[name] = sampleFromSchemaInner(m, nextContext(ctx))
-			}
+		out := jsonorder.New()
+		for _, name := range propertyNames(props) {
+			out.Set(name, sampleFromSchemaInner(props[name].(jsonSchemaMap), nextContext(ctx)))
 		}
 		return out
 	}

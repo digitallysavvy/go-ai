@@ -117,7 +117,7 @@ func asInterrupt(value interface{}, security ContinuationSecurityOptions) (*Inte
 	}
 	if interrupt.Type != InterruptTypeValue || interrupt.InterruptID == "" ||
 		interrupt.ToolCallID == "" || interrupt.ToolName == "" ||
-		interrupt.OuterToolCallID == "" || interrupt.Payload.Kind() == "" {
+		interrupt.Payload.Kind() == "" {
 		return nil, false
 	}
 	if verifyContinuation(interrupt.Continuation, security) != nil {
