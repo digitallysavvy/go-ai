@@ -3,6 +3,7 @@ package elevenlabs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func transcriptionTestServer(t *testing.T, capture *map[string]string) *httptest.Server {
@@ -45,8 +47,9 @@ func TestElevenLabsTranscription_RejectsRealtimeModel(t *testing.T) {
 		Audio:    []byte("a"),
 		MimeType: "audio/wav",
 	})
-	if err == nil || !strings.Contains(err.Error(), "unsupported feature") {
-		t.Fatalf("expected unsupported feature error, got %v", err)
+	var unsupported *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &unsupported) || !errors.Is(err, providererrors.ErrUnsupportedFeature) {
+		t.Fatalf("expected UnsupportedFunctionalityError, got %v", err)
 	}
 }
 
