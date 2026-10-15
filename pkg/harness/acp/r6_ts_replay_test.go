@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -298,5 +299,154 @@ func TestTSReplay_CancelledTurnRejectsWhenConnectionFails(t *testing.T) {
 	defer mu.Unlock()
 	if len(types) != 2 || types[0] != "reasoning-start" || types[1] != "reasoning-end" {
 		t.Fatalf("parts = %v, want [reasoning-start reasoning-end]", types)
+	}
+}
+
+func partTypeRecorder() (func(harness.StreamPart), func() []string) {
+	var mu sync.Mutex
+	var types []string
+	return func(p harness.StreamPart) {
+			mu.Lock()
+			types = append(types, string(p.PartType()))
+			mu.Unlock()
+		}, func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]string(nil), types...)
+		}
+}
+
+func waitForParts(t *testing.T, get func() []string, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		if len(get()) >= n {
+			return
+		}
+	}
+	t.Fatalf("timed out waiting for %d parts, have %v", n, get())
+}
+
+// TS: 'suspends at an exact cursor and resumes a nested continuation by
+// replay only' and 'continues a terminal event replayed before the
+// continuation is wired'.
+func TestTSReplay_SuspendAndAttachContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		beforeSuspend []map[string]any
+		wantFirst     []string
+		afterAttach   []map[string]any
+		wantReplayed  []string
+	}{
+		{"nested continuation by replay", []map[string]any{
+			{"type": "bridge-thread", "threadId": "acp-session-1"}, {"type": "stream-start"},
+			{"type": "text-start", "id": "text-1"}, {"type": "text-delta", "id": "text-1", "delta": "before"},
+		}, []string{"stream-start", "text-start", "text-delta"}, []map[string]any{
+			{"type": "text-delta", "id": "text-1", "delta": " after"}, {"type": "text-end", "id": "text-1"}, finishFrame(),
+		}, []string{"text-delta", "text-end", "finish"}},
+		{"terminal event replayed before wiring", []map[string]any{{"type": "bridge-thread", "threadId": "acp-session-1"}}, nil,
+			[]map[string]any{finishFrame()}, []string{"finish"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var starts, resumes int
+			started := make(chan *bridgetest.Turn, 2)
+			srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+				OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn },
+				OnFrame: func(ft string) {
+					mu.Lock()
+					defer mu.Unlock()
+					switch ft {
+					case "start":
+						starts++
+					case "resume":
+						resumes++
+					}
+				}})
+			t.Cleanup(srv.Close)
+			sandbox := newFakeSandbox(srv)
+			h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+			ctx := context.Background()
+			first, err := h.DoStart(ctx, harness.StartOptions{SessionID: "session-1", SessionWorkDir: "/workspace/user-project", SandboxSession: sandbox})
+			if err != nil {
+				t.Fatal(err)
+			}
+			emit, delivered := partTypeRecorder()
+			turn1, err := first.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("Work for a while."), Emit: emit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bt := <-started
+			for _, f := range tc.beforeSuspend {
+				bt.Emit(f)
+			}
+			waitForParts(t, delivered, len(tc.wantFirst))
+			for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+				ss := first.(*session)
+				ss.mu.Lock()
+				id := ss.latestACPSessionID
+				ss.mu.Unlock()
+				if id != "" {
+					break
+				}
+			}
+			continueFrom, err := first.DoSuspendTurn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-turn1.Done()
+			if got := delivered(); !reflect.DeepEqual(got, append([]string(nil), tc.wantFirst...)) && !(len(got) == 0 && len(tc.wantFirst) == 0) {
+				t.Fatalf("delivered = %v, want %v", got, tc.wantFirst)
+			}
+			var data map[string]any
+			if err := json.Unmarshal(continueFrom.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if data["acpSessionId"] != "acp-session-1" || data["initialGuidanceApplied"] != true {
+				t.Fatalf("lifecycle data = %v", data)
+			}
+
+			if tc.name != "nested continuation by replay" {
+				// The terminal event is already in the bridge log before the
+				// continuation attaches.
+				bt.Emit(finishFrame())
+			}
+			resumed, err := h.DoStart(ctx, harness.StartOptions{
+				SessionID: "session-1", SessionWorkDir: "/workspace/user-project", SandboxSession: sandbox,
+				ResumeFrom: &harness.ResumeSessionState{Type: "resume-session", HarnessID: "test-acp", SpecificationVersion: harness.SpecificationVersion, Data: continueFrom.Data, ContinueFrom: continueFrom},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = resumed.DoDestroy(ctx) })
+			sandbox.mu.Lock()
+			spawns := len(sandbox.spawnCommands)
+			sandbox.mu.Unlock()
+			if spawns != 1 {
+				t.Fatalf("spawns = %d, want 1 (attach, no respawn)", spawns)
+			}
+			emit2, replayed := partTypeRecorder()
+			cont, err := resumed.DoContinueTurn(ctx, harness.ContinueTurnOptions{Emit: emit2})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			if starts != 1 {
+				t.Errorf("start frames = %d, want 1 (continuation must not send start)", starts)
+			}
+			mu.Unlock()
+			if tc.name == "nested continuation by replay" {
+				for _, f := range tc.afterAttach {
+					bt.Emit(f)
+				}
+			}
+			select {
+			case <-cont.Done():
+			case <-time.After(5 * time.Second):
+				t.Fatal("continuation did not finish")
+			}
+			if got := replayed(); !reflect.DeepEqual(got, tc.wantReplayed) {
+				t.Fatalf("replayed = %v, want %v", got, tc.wantReplayed)
+			}
+		})
 	}
 }
