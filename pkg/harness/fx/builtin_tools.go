@@ -148,7 +148,6 @@ func props(kv ...any) map[string]any {
 }
 
 func str() map[string]any     { return map[string]any{"type": "string"} }
-func number() map[string]any  { return map[string]any{"type": "number"} }
 func boolean() map[string]any { return map[string]any{"type": "boolean"} }
 
 func arr(items map[string]any) map[string]any {
