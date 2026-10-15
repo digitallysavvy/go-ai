@@ -196,6 +196,14 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 		}
 	}
 
+	// TS filters the whole input once at the end (a single warning), not per
+	// assistant message.
+	if !opts.Store {
+		filtered, filterWarnings := filterReasoningItemsWithoutEncryptedContent(input)
+		input = filtered
+		warnings = append(warnings, filterWarnings...)
+	}
+
 	return input, warnings, nil
 }
 
@@ -596,12 +604,6 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 			}
 		}
 	}
-	if !opts.Store {
-		filtered, filterWarnings := filterReasoningItemsWithoutEncryptedContent(items)
-		items = filtered
-		warnings = append(warnings, filterWarnings...)
-	}
-
 	// Each ToolCall on the message becomes a function_call item.
 	for _, tc := range msg.ToolCalls {
 		if toolCallContentIDs[tc.ID] {

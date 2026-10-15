@@ -504,3 +504,27 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// TS filters unencrypted reasoning once over the whole input, so several
+// assistant messages produce a single warning.
+func TestConvertPromptToInput_UnencryptedReasoningWarnsOnce(t *testing.T) {
+	reasoningMsg := func(id string) types.Message {
+		return types.Message{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ReasoningContent{Text: "hm", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"itemId": id}}},
+			types.TextContent{Text: "ok"},
+		}}
+	}
+	_, warnings, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{reasoningMsg("rs_1"), reasoningMsg("rs_2")}}, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, w := range warnings {
+		if w.Message == "Reasoning parts without encrypted content are not supported when store is false. Skipping reasoning parts." {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("warnings = %+v (want exactly one filter warning)", warnings)
+	}
+}
