@@ -193,10 +193,15 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 		{"model", m.modelID},
 		{"prompt", opts.Prompt},
 	}
-	jsonBody := map[string]interface{}{"model": m.modelID, "prompt": opts.Prompt}
+	// TS sends { model, prompt, width, height, auto_aspect_ratio, web_grounding }.
+	jsonBody := providerutils.OrderedMap{
+		Keys: []string{"model", "prompt"},
+		Vals: map[string]interface{}{"model": m.modelID, "prompt": opts.Prompt},
+	}
 	addField := func(jsonKey string, value interface{}) {
 		fields = append(fields, azureMaiField{jsonKey, fmt.Sprint(value)})
-		jsonBody[jsonKey] = value
+		jsonBody.Keys = append(jsonBody.Keys, jsonKey)
+		jsonBody.Vals[jsonKey] = value
 	}
 	if width != nil {
 		addField("width", *width)
@@ -301,9 +306,8 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 			allBase64 = append(allBase64, d.B64JSON)
 		}
 	}
-	if len(allImages) == 0 {
-		return nil, fmt.Errorf("no images generated")
-	}
+	// An empty `data` array is returned empty like TS (core retries and then
+	// throws NoImageGeneratedError); allImages[0] below is only read when set.
 	usage.ImageCount = len(allImages)
 	if hasUsage {
 		if inputSeen {
@@ -317,10 +321,15 @@ func (m *azureMaiImageModel) doGenerate(ctx context.Context, opts *provider.Imag
 		}
 	}
 
+	var firstImage []byte
+	var firstBase64 string
+	if len(allImages) > 0 {
+		firstImage, firstBase64 = allImages[0], allBase64[0]
+	}
 	return &types.ImageResult{
-		Image:        allImages[0],
+		Image:        firstImage,
 		Images:       allImages,
-		Base64Image:  allBase64[0],
+		Base64Image:  firstBase64,
 		Base64Images: allBase64,
 		MimeType:     "image/png",
 		Usage:        usage,
@@ -381,7 +390,7 @@ func (m *azureMaiImageModel) fileToImage(ctx context.Context, file provider.Imag
 	return azureMaiImageFile{data: data, mediaType: mediaType, name: fmt.Sprintf("image-%d.%s", index, ext)}, nil
 }
 
-func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, jsonBody map[string]interface{}, fields []azureMaiField, images []azureMaiImageFile) (azureMaiImageCallResult, error) {
+func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, jsonBody providerutils.OrderedMap, fields []azureMaiField, images []azureMaiImageFile) (azureMaiImageCallResult, error) {
 	path := "/images/generations"
 	if len(images) > 0 {
 		path = "/images/edits"

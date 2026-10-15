@@ -733,3 +733,85 @@ func TestParseGatewayTranscriptionStreamPart_AcceptsValidFrames(t *testing.T) {
 		})
 	}
 }
+
+// TS wraps connection errors, closed-before-finish and untyped server errors
+// with asGatewayError, so callers can match a GatewayError.
+func TestTranscriptionModel_DoStream_TerminalErrorsAreGatewayErrors(t *testing.T) {
+	// Dial failure (nothing listening).
+	model := newTestGatewayTranscriptionModel(t, "http://127.0.0.1:1")
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream([]byte{1}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	for {
+		if _, err = result.Stream.Next(); err != nil {
+			break
+		}
+	}
+	if !gatewayerrors.IsGatewayError(err) {
+		t.Fatalf("err = %T %v, want a GatewayError", err, err)
+	}
+}
+
+func TestTranscriptionModel_DoStream_UntypedServerErrorAndEarlyCloseAreGatewayErrors(t *testing.T) {
+	for _, withErrorPart := range []bool{false, true} {
+		server := newGatewayTranscriptionTestServer(t)
+		model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            newChanTestAudioStream(),
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+		if withErrorPart {
+			server.toSend <- map[string]interface{}{"type": "error", "error": "model overloaded"}
+			if _, err := result.Stream.Next(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		server.closeConnection()
+		_, err = result.Stream.Next()
+		if !gatewayerrors.IsGatewayError(err) {
+			t.Errorf("withErrorPart=%v: err = %T %v, want a GatewayError", withErrorPart, err, err)
+		}
+		want := "closed before a finish part"
+		if withErrorPart {
+			want = "model overloaded"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("withErrorPart=%v: err = %v, want containing %q", withErrorPart, err, want)
+		}
+		_ = result.Stream.Close()
+		server.close()
+	}
+}
+
+// TS derives the subprotocols from the merged headers, so a per-call
+// Authorization header (any casing) wins over the resolved credential.
+func TestTranscriptionModel_DoStream_PerCallAuthorizationDrivesSubprotocol(t *testing.T) {
+	server := newGatewayTranscriptionTestServer(t)
+	defer server.close()
+	model := newTestGatewayTranscriptionModel(t, server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanTestAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		Headers:          map[string]string{"AUTHORIZATION": "Bearer per-call"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	server.waitForFrame(t, transcriptionStreamStartFrameType, time.Second)
+	server.mu.Lock()
+	protocolHeader := server.protocolHeader
+	server.mu.Unlock()
+	if !strings.Contains(protocolHeader, GatewayAuthSubprotocolPrefix+"per-call") {
+		t.Errorf("Sec-WebSocket-Protocol = %q, want the per-call token", protocolHeader)
+	}
+}

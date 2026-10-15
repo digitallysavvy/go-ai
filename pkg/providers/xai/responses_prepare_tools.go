@@ -1,6 +1,51 @@
 package xai
 
-import "github.com/digitallysavvy/go-ai/pkg/provider/types"
+import (
+	"fmt"
+
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
+
+// validateXAIResponsesToolArgs mirrors the zod checks TS runs on provider tool
+// args with validateTypes before building the request: web search takes at
+// most 5 allowed and 5 excluded domains, X search at most 20 allowed and 20
+// excluded handles, and image generation `action` is auto, generate or edit.
+func validateXAIResponsesToolArgs(tools []types.Tool) error {
+	tooBig := func(tool, field string, limit int) error {
+		return providererrors.NewValidationError("tools",
+			fmt.Sprintf("Type validation failed for %s: %s: Too big: expected array to have <=%d items", tool, field, limit), nil)
+	}
+	for _, t := range tools {
+		switch t.Name {
+		case "xai.web_search":
+			cfg, _ := t.ProviderOptions.(WebSearchConfig)
+			if len(cfg.AllowedDomains) > 5 {
+				return tooBig(t.Name, "allowedDomains", 5)
+			}
+			if len(cfg.ExcludedDomains) > 5 {
+				return tooBig(t.Name, "excludedDomains", 5)
+			}
+		case "xai.x_search":
+			cfg, _ := t.ProviderOptions.(XSearchConfig)
+			if len(cfg.AllowedXHandles) > 20 {
+				return tooBig(t.Name, "allowedXHandles", 20)
+			}
+			if len(cfg.ExcludedXHandles) > 20 {
+				return tooBig(t.Name, "excludedXHandles", 20)
+			}
+		case "xai.image_generation":
+			cfg, _ := t.ProviderOptions.(ImageGenerationConfig)
+			switch cfg.Action {
+			case "", "auto", "generate", "edit":
+			default:
+				return providererrors.NewValidationError("tools",
+					fmt.Sprintf("Type validation failed for %s: action: Invalid option: expected one of \"auto\"|\"generate\"|\"edit\"", t.Name), nil)
+			}
+		}
+	}
+	return nil
+}
 
 // prepareXAIResponsesTools converts SDK tools to XAI Responses API wire format.
 // XAI provider tools are serialized using their ProviderOptions config.

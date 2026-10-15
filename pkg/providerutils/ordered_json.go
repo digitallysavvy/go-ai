@@ -7,7 +7,9 @@ import (
 	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // Key-order helpers. A JavaScript object keeps its insertion order, so TS
@@ -18,7 +20,8 @@ import (
 // Maps stay sorted (deterministic) because they carry no order.
 
 // RawJSONObject returns v as raw JSON when it is a json.RawMessage (or
-// []byte) holding a JSON object, boolean or other valid JSON value.
+// []byte) holding a JSON object, boolean or other valid JSON value, or an
+// *schema.OrderedSchema (its source-order JSON).
 func RawJSONObject(v interface{}) (json.RawMessage, bool) {
 	var raw []byte
 	switch x := v.(type) {
@@ -26,6 +29,15 @@ func RawJSONObject(v interface{}) (json.RawMessage, bool) {
 		raw = x
 	case []byte:
 		raw = x
+	case *schema.OrderedSchema:
+		if x == nil {
+			return nil, false
+		}
+		b, err := x.MarshalJSON()
+		if err != nil {
+			return nil, false
+		}
+		raw = b
 	default:
 		return nil, false
 	}
@@ -130,7 +142,7 @@ func schemaInstructionText(schema interface{}) (string, bool) {
 // provider can serialize in author order: a non-nil map or raw JSON. Anything
 // else (nil, nil map, unknown type) gives nil.
 func ResponseFormatSchemaOrRaw(value interface{}) interface{} {
-	switch s := ResponseFormatJSONSchema(value).(type) {
+	switch s := ResponseFormatJSONSchemaOrdered(value).(type) {
 	case map[string]interface{}:
 		if s == nil {
 			return nil
@@ -166,4 +178,44 @@ func ArgumentsJSONText(args map[string]interface{}, raw string) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// ResponseFormatJSONSchemaOrdered is ResponseFormatJSONSchema, except an
+// *schema.OrderedSchema comes back as raw JSON (json.RawMessage) in its
+// source key order instead of a map, so a provider that normalizes or injects
+// the schema can keep the order TS keeps.
+func ResponseFormatJSONSchemaOrdered(value interface{}) interface{} {
+	if o, ok := value.(*schema.OrderedSchema); ok {
+		if raw, ok := RawJSONObject(o); ok {
+			return raw
+		}
+	}
+	return ResponseFormatJSONSchema(value)
+}
+
+// AssistantToolCalls returns the tool calls of an assistant message: its
+// ToolCalls, or, for a TS-shaped message that carries them as tool-call
+// content parts, those parts (the raw input text is kept as RawArguments so
+// the wire key order survives).
+func AssistantToolCalls(msg types.Message) []types.ToolCall {
+	if len(msg.ToolCalls) > 0 {
+		return msg.ToolCalls
+	}
+	var calls []types.ToolCall
+	for _, part := range msg.Content {
+		var tc types.ToolCallContent
+		switch p := part.(type) {
+		case types.ToolCallContent:
+			tc = p
+		case *types.ToolCallContent:
+			if p == nil {
+				continue
+			}
+			tc = *p
+		default:
+			continue
+		}
+		calls = append(calls, types.ToolCall{ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: tc.Arguments, RawArguments: tc.Input})
+	}
+	return calls
 }

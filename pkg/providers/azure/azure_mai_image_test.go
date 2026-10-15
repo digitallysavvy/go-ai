@@ -361,3 +361,18 @@ func TestAzureMaiImage_DimensionsForAspectRatio(t *testing.T) {
 		}
 	}
 }
+
+// TS returns an empty `images` array for an empty `data` array; core then
+// retries and throws NoImageGeneratedError, so the model must not error.
+func TestAzureMaiImage_EmptyDataIsNotAnError(t *testing.T) {
+	server, _ := newMaiServer(t, func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	})
+	result, err := maiImageModel(t, server, "MAI-Image-2.6").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Images) != 0 || len(result.Base64Images) != 0 {
+		t.Errorf("images = %d, want 0", len(result.Images))
+	}
+}

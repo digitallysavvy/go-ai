@@ -585,3 +585,19 @@ func TestDecisionModel_UsesConfiguredProviderName(t *testing.T) {
 		t.Fatalf("provider = %q", m.Provider())
 	}
 }
+
+// zod objects strip unknown keys, so TS providerMetadata.openai.usage only
+// carries the schema's keys.
+func TestDecisionModel_MetadataUsageDropsUnknownKeys(t *testing.T) {
+	usage := `{"input_tokens": 1, "output_tokens": 2, "extra": 9, "input_tokens_details": {"cached_tokens": 3, "other": 4}}`
+	p, _ := newDecisionProvider(t, strings.Replace(decisionFixture, `"answers"`, `"usage": `+usage+`, "answers"`, 1), 200)
+	result, err := decide(t, p, decisionTestOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want interface{}
+	_ = json.Unmarshal([]byte(`{"input_tokens": 1, "output_tokens": 2, "input_tokens_details": {"cached_tokens": 3}}`), &want)
+	if got := result.ProviderMetadata["openai"].(map[string]interface{})["usage"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("usage = %v, want %v", got, want)
+	}
+}

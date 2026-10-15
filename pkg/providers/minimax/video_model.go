@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	stdhttp "net/http"
 	"strings"
 	"time"
 
@@ -819,15 +820,22 @@ func minimaxEncodeFile(f *provider.VideoModelV3File) (string, error) {
 // parseAPIError parses a MiniMax API error response (TS
 // minimaxVideoFailedResponseHandler / minimaxVideoErrorSchema).
 func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
+	// TS createJsonErrorResponseHandler: the message is
+	// `error?.message ?? 'MiniMax video generation error'`; a body that is
+	// empty or not a JSON object gives the HTTP status text.
+	message := stdhttp.StatusText(statusCode)
 	var errResp struct {
 		Error *struct {
-			Message string `json:"message"`
+			Message *string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error != nil && errResp.Error.Message != "" {
-		return NewAPIError(statusCode, errResp.Error.Message)
+	if json.Unmarshal(body, &errResp) == nil {
+		message = "MiniMax video generation error"
+		if errResp.Error != nil && errResp.Error.Message != nil {
+			message = *errResp.Error.Message
+		}
 	}
-	return NewAPIError(statusCode, string(body))
+	return &Error{Name: "MINIMAX_API_ERROR", Message: message, StatusCode: statusCode, ResponseBody: string(body)}
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError

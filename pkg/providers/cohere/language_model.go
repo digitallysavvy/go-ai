@@ -490,9 +490,10 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 			return nil, err
 		}
 		result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-			ID:        tc.ID,
-			ToolName:  tc.Function.Name,
-			Arguments: args,
+			ID:           tc.ID,
+			ToolName:     tc.Function.Name,
+			Arguments:    args,
+			RawArguments: cohereToolInputText(tc.Function.Arguments, args),
 		})
 	}
 	return result, nil
@@ -846,7 +847,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 						args = map[string]interface{}{}
 					}
 					delete(s.pendingTools, id)
-					input, _ := jsonstr.Marshal(args)
+					input := cohereToolInputText(tc.arguments, args)
 					s.flushQueue = append(s.flushQueue,
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}},
 						&provider.StreamChunk{
@@ -855,7 +856,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 								ID:           tc.id,
 								ToolName:     tc.name,
 								Arguments:    args,
-								RawArguments: string(input),
+								RawArguments: input,
 							},
 						})
 					break
@@ -881,4 +882,19 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		}
 
 	}
+}
+
+// cohereToolInputText is TS JSON.stringify(parseJSON(arguments?.trim() ||
+// '{}')): the arguments text compacted with its wire key order; args (sorted)
+// stands in when the text is not valid JSON.
+func cohereToolInputText(raw string, args map[string]interface{}) string {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		text = "{}"
+	}
+	if json.Valid([]byte(text)) {
+		return providerutils.CompactJSON(json.RawMessage(text))
+	}
+	b, _ := jsonstr.Marshal(args)
+	return string(b)
 }

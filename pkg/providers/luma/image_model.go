@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	stdhttp "net/http"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
@@ -346,12 +347,18 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 // parseErrorResponse converts a Luma error envelope
 // ({detail: [{msg, ...}]}) into a provider error.
 func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
+	// TS createJsonErrorResponseHandler: a body that does not match the error
+	// schema (or is empty) gives the HTTP status text as the message.
+	msg := stdhttp.StatusText(statusCode)
 	var errResp lumaErrorResponse
-	msg := "Unknown error"
-	if err := json.Unmarshal(body, &errResp); err == nil && len(errResp.Detail) > 0 && errResp.Detail[0].Msg != "" {
+	if err := json.Unmarshal(body, &errResp); err == nil && len(errResp.Detail) > 0 {
 		msg = errResp.Detail[0].Msg
+		if msg == "" {
+			msg = "Unknown error"
+		}
 	}
-	return providererrors.NewProviderError("luma", statusCode, "", msg, nil)
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Body: body}
+	return providererrors.NewProviderError("luma", 0, "", msg, cause)
 }
 
 func flattenHeaders(headers map[string][]string) map[string]string {

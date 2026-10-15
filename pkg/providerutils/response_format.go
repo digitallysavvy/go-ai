@@ -45,7 +45,8 @@ func ChatResponseFormat(rf *provider.ResponseFormat, opts ChatResponseFormatOpti
 	if !IsJSONResponseFormat(rf) {
 		return nil, nil
 	}
-	schema := ResponseFormatJSONSchema(rf.Schema)
+	// An *schema.OrderedSchema stays in source key order (raw JSON).
+	schema := ResponseFormatJSONSchemaOrdered(rf.Schema)
 	if rf.Type == "json_object" {
 		// Explicit JSON-object mode never sends a schema.
 		schema = nil

@@ -900,16 +900,7 @@ func (m *LanguageModel) convertContentPart(part types.ContentPart) (map[string]i
 		return result, nil
 
 	case types.ToolCallContent:
-		var input interface{} = v.Arguments
-		if v.Input != "" {
-			var parsed interface{}
-			if json.Unmarshal([]byte(v.Input), &parsed) == nil {
-				input = parsed
-			}
-		}
-		if input == nil {
-			input = map[string]interface{}{}
-		}
+		input := gatewayToolCallInput(v.Input, v.Arguments)
 		result := map[string]interface{}{
 			"type":       "tool-call",
 			"toolCallId": v.ToolCallID,
@@ -1198,17 +1189,7 @@ func (m *LanguageModel) buildPromptV4(opts *provider.GenerateOptions) ([]map[str
 		}
 		if msg.Role == types.RoleAssistant && !hasToolCallPart {
 			for _, tc := range msg.ToolCalls {
-				input := interface{}(tc.Arguments)
-				if tc.RawArguments != "" {
-					var parsed interface{}
-					if json.Unmarshal([]byte(tc.RawArguments), &parsed) == nil {
-						input = parsed
-					}
-				}
-				if input == nil {
-					input = map[string]interface{}{}
-				}
-				part := map[string]interface{}{"type": "tool-call", "toolCallId": tc.ID, "toolName": tc.ToolName, "input": input}
+				part := map[string]interface{}{"type": "tool-call", "toolCallId": tc.ID, "toolName": tc.ToolName, "input": gatewayToolCallInput(tc.RawArguments, tc.Arguments)}
 				if tc.ProviderExecuted {
 					part["providerExecuted"] = true
 				}
@@ -1219,4 +1200,17 @@ func (m *LanguageModel) buildPromptV4(opts *provider.GenerateOptions) ([]map[str
 		prompt = append(prompt, message)
 	}
 	return prompt, nil
+}
+
+// gatewayToolCallInput is the `input` of an assistant tool-call part: the
+// parsed JSON the call arrived with, in its wire key order (TS keeps the
+// parsed object's insertion order); a Go map has no order, so it is sorted.
+func gatewayToolCallInput(raw string, args map[string]interface{}) interface{} {
+	if raw != "" && json.Valid([]byte(raw)) {
+		return json.RawMessage(providerutils.CompactJSON(json.RawMessage(raw)))
+	}
+	if args == nil {
+		return map[string]interface{}{}
+	}
+	return args
 }

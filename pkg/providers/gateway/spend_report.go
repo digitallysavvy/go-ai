@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -75,39 +76,39 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 		return nil, fmt.Errorf("end date is required")
 	}
 
-	values := url.Values{}
-	values.Set("start_date", params.StartDate)
-	values.Set("end_date", params.EndDate)
-	if params.GroupBy != "" {
-		values.Set("group_by", params.GroupBy)
+	// Same order as TS URLSearchParams.set calls.
+	query := []string{
+		"start_date=" + url.QueryEscape(params.StartDate),
+		"end_date=" + url.QueryEscape(params.EndDate),
 	}
-	if params.DatePart != "" {
-		values.Set("date_part", params.DatePart)
-	}
-	if params.UserID != "" {
-		values.Set("user_id", params.UserID)
-	}
-	if params.Model != "" {
-		values.Set("model", params.Model)
-	}
-	if params.Provider != "" {
-		values.Set("provider", params.Provider)
-	}
-	if params.CredentialType != "" {
-		values.Set("credential_type", params.CredentialType)
+	for _, kv := range [][2]string{
+		{"group_by", params.GroupBy},
+		{"date_part", params.DatePart},
+		{"user_id", params.UserID},
+		{"model", params.Model},
+		{"provider", params.Provider},
+		{"credential_type", params.CredentialType},
+	} {
+		if kv[1] != "" {
+			query = append(query, kv[0]+"="+url.QueryEscape(kv[1]))
+		}
 	}
 	if len(params.Tags) > 0 {
-		values.Set("tags", strings.Join(params.Tags, ","))
+		query = append(query, "tags="+url.QueryEscape(strings.Join(params.Tags, ",")))
 	}
 
-	body, err := p.doOriginRequest(ctx, "/v1/report?"+values.Encode())
+	body, err := p.doOriginRequest(ctx, "/v1/report?"+strings.Join(query, "&"))
 	if err != nil {
 		return nil, err
 	}
 
 	var wire spendReportResponseWire
 	if err := json.Unmarshal(body, &wire); err != nil {
-		return nil, fmt.Errorf("failed to decode spend report response: %w", err)
+		return nil, p.handleErrorWithContext(ctx, fmt.Errorf("failed to decode spend report response: %w", err))
+	}
+	// TS schema: `results` must be an array.
+	if wire.Results == nil {
+		return nil, p.handleErrorWithContext(ctx, errors.New("Invalid JSON response: results must be an array")) //nolint:staticcheck // mirrors TS wording
 	}
 
 	response := &SpendReportResponse{Results: make([]SpendReportRow, 0, len(wire.Results))}

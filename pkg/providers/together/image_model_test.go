@@ -65,9 +65,10 @@ func TestImageModelBuildRequestBodyAndConvertResponse(t *testing.T) {
 		t.Fatalf("expected provider options merged, got %+v", body)
 	}
 
-	_, err := m.convertResponse([]byte(`{"data":[]}`))
-	if err == nil {
-		t.Fatal("expected error when no images returned")
+	// TS returns an empty `images` array (core throws NoImageGeneratedError).
+	empty, err := m.convertResponse([]byte(`{"data":[]}`))
+	if err != nil || len(empty.Images) != 0 || empty.URL != "" {
+		t.Fatalf("empty data: res=%+v err=%v", empty, err)
 	}
 
 	res, err := m.convertResponse([]byte(`{"data":[{"url":"https://example.com/a.png"}]}`))

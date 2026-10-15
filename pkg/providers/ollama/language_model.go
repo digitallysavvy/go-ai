@@ -177,9 +177,10 @@ func (m *LanguageModel) convertResponse(response ollamaResponse) *types.Generate
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
 			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
-				ToolName:  tc.Function.Name,
-				Arguments: args,
+				ID:           tc.ID,
+				ToolName:     tc.Function.Name,
+				Arguments:    args,
+				RawArguments: tc.Function.Arguments,
 			}
 		}
 	}

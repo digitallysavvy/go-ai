@@ -403,6 +403,9 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 
 	// Tools.
 	if len(opts.Tools) > 0 {
+		if err := validateXAIResponsesToolArgs(opts.Tools); err != nil {
+			return nil, nil, err
+		}
 		body["tools"] = prepareXAIResponsesTools(opts.Tools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = convertXAIResponsesToolChoice(opts.ToolChoice)
@@ -589,9 +592,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			var args map[string]interface{}
 			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: args,
+				ID:           item.CallID,
+				ToolName:     item.Name,
+				Arguments:    args,
+				RawArguments: item.Arguments,
 			})
 			hasFunctionCall = true
 

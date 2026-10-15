@@ -60,8 +60,7 @@ func TestXAIImageResolutionAndQualityOptions(t *testing.T) {
 	}
 }
 
-// TS #22225: xSearch accepts up to 20 allowed/excluded handles; Go imposes no
-// lower cap, so all 20 reach the wire.
+// TS #22225: xSearch accepts up to 20 allowed/excluded handles.
 func TestXSearchAcceptsTwentyHandles(t *testing.T) {
 	handles := make([]string, 20)
 	for i := range handles {
@@ -74,5 +73,31 @@ func TestXSearchAcceptsTwentyHandles(t *testing.T) {
 	}
 	if got, _ := m["excluded_x_handles"].([]string); len(got) != 20 {
 		t.Errorf("excluded_x_handles = %v", m["excluded_x_handles"])
+	}
+}
+
+// TS x-search.test.ts / web-search args: 21 handles (or 6 domains) fail
+// validation before the request is built.
+func TestXAIResponsesToolArgsAreValidated(t *testing.T) {
+	many := func(n int) []string { return make([]string, n) }
+	for name, tool := range map[string]types.Tool{
+		"21 allowed handles":  XSearch(XSearchConfig{AllowedXHandles: many(21)}),
+		"21 excluded handles": XSearch(XSearchConfig{ExcludedXHandles: many(21)}),
+		"6 allowed domains":   WebSearch(WebSearchConfig{AllowedDomains: many(6)}),
+		"6 excluded domains":  WebSearch(WebSearchConfig{ExcludedDomains: many(6)}),
+		"bad image action":    ImageGeneration(ImageGenerationConfig{Action: "remix"}),
+	} {
+		if err := validateXAIResponsesToolArgs([]types.Tool{tool}); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+	for name, tool := range map[string]types.Tool{
+		"20 handles": XSearch(XSearchConfig{AllowedXHandles: many(20), ExcludedXHandles: many(20)}),
+		"5 domains":  WebSearch(WebSearchConfig{AllowedDomains: many(5), ExcludedDomains: many(5)}),
+		"edit":       ImageGeneration(ImageGenerationConfig{Action: "edit"}),
+	} {
+		if err := validateXAIResponsesToolArgs([]types.Tool{tool}); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

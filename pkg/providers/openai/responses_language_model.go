@@ -676,7 +676,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				// (d5e3024, 411b3f2: drop propertyNames / lookaround
 				// patterns), matching the chat model's handling.
 				responseSchema := opts.ResponseFormat.Schema
-				if rawSchema := providerutils.ResponseFormatJSONSchema(responseSchema); rawSchema != nil {
+				if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(responseSchema); rawSchema != nil {
 					{
 						normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
 						if normErr != nil {
@@ -1398,6 +1398,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
+				RawArguments:     item.Arguments,
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async, item.Caller),
 			}
 			toolCalls = append(toolCalls, tc)

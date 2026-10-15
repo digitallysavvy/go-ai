@@ -818,3 +818,21 @@ func TestXAIImageCostInUsdTicks(t *testing.T) {
 		t.Errorf("CostInUsdTicks = %d, want 42", *xaiMeta.CostInUsdTicks)
 	}
 }
+
+// TS returns an empty `images` array for an empty `data` array; core retries
+// and then throws NoImageGeneratedError, so the model must not error.
+func TestXAIImageModelEmptyDataIsNotAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelGrokImagineImage)
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Images) != 0 {
+		t.Fatalf("images = %d, want 0", len(result.Images))
+	}
+}

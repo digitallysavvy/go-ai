@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
@@ -44,13 +44,15 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		return nil, err
 	}
 
-	headers := internalhttp.MergeHeaders(m.provider.headers, opts.Headers, m.getModelConfigHeaders())
+	// TS: combineHeaders(config.headers (auth included), options.headers,
+	// model headers, o11y) — so a per-call Authorization / auth-method /
+	// team header wins, and the subprotocols derive from the merged set.
+	headers := mergeHeadersFold(
+		map[string]string{"Authorization": "Bearer " + token, "ai-gateway-auth-method": authMethod},
+		m.provider.headers, opts.Headers, m.getModelConfigHeaders(),
+	)
 	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	// The handshake carries auth on both channels, matching TS
-	// createAuthHeaders: the raw Authorization/ai-gateway-auth-method headers
-	// alongside the ai-gateway-auth.<token> subprotocol below.
-	headers["Authorization"] = "Bearer " + token
-	headers["ai-gateway-auth-method"] = authMethod
+	authMethod = gatewayHeaderValue(headers, "ai-gateway-auth-method")
 
 	startFrame := map[string]interface{}{
 		"type":             transcriptionStreamStartFrameType,
@@ -64,12 +66,15 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	}
 
 	wsURL := ToGatewayTranscriptionURL(m.provider.baseURL, m.modelID)
-	// The team scope rides the subprotocol from the fully merged per-call
+	// The auth token and team scope ride the subprotocols from the fully merged per-call
 	// header set (headers, above — config headers + opts.Headers), not the
 	// static TeamIDOrSlug config field, so a caller overriding
 	// x-vercel-ai-gateway-team per call (e.g. via opts.Headers) takes effect
 	// here exactly like it does on every other Gateway request.
-	protocols := GetGatewayTranscriptionProtocols(token, gatewayTeamFromHeaders(headers))
+	protocols := []string{GatewayTranscriptionSubprotocol}
+	if bearer := gatewayHeaderValue(headers, "authorization"); strings.HasPrefix(bearer, "Bearer ") {
+		protocols = GetGatewayTranscriptionProtocols(strings.TrimPrefix(bearer, "Bearer "), gatewayTeamFromHeaders(headers))
+	}
 
 	abortCtx := opts.AbortSignal
 	if abortCtx == nil {
@@ -83,6 +88,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		startFrame: startFrame,
 		audio:      opts.Audio,
 		authMethod: authMethod,
+		wrapError:  m.provider.gatewayUnknownError,
 	})
 
 	return &provider.TranscriptionStreamResult{
@@ -90,6 +96,34 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		RequestBody: startFrame,
 		Response:    &provider.TranscriptionStreamResponseMetadata{Timestamp: time.Now(), ModelID: m.modelID},
 	}, nil
+}
+
+// mergeHeadersFold merges header layers, later layers winning, with header
+// names compared case-insensitively (a per-call "authorization" replaces the
+// default "Authorization" instead of sitting beside it).
+func mergeHeadersFold(layers ...map[string]string) map[string]string {
+	out := make(map[string]string)
+	for _, layer := range layers {
+		for k, v := range layer {
+			for existing := range out {
+				if strings.EqualFold(existing, k) {
+					delete(out, existing)
+				}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// gatewayHeaderValue looks a header up case-insensitively (TS normalizeHeaders).
+func gatewayHeaderValue(headers map[string]string, name string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
 }
 
 func transcriptionAudioFormatWire(f provider.AudioFormat) map[string]interface{} {
@@ -107,6 +141,8 @@ type gatewayTranscriptionStreamConfig struct {
 	startFrame map[string]interface{}
 	audio      provider.AudioStream
 	authMethod string
+	// wrapError mirrors TS asGatewayError (nil keeps errors unwrapped).
+	wrapError func(error) error
 }
 
 // gatewayTranscriptionStream implements provider.TranscriptionStream over the
@@ -135,6 +171,13 @@ func (s *gatewayTranscriptionStream) run(cfg gatewayTranscriptionStreamConfig) {
 	defer s.CancelContext()
 
 	fail := func(err error) {
+		// TS finishWithError runs every terminal error except an abort reason
+		// through asGatewayError, so callers always see a GatewayError for
+		// connection, protocol and audio-read failures.
+		if cfg.wrapError != nil && !gatewayerrors.IsGatewayError(err) &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			err = cfg.wrapError(err)
+		}
 		s.SetErr(err)
 		cfg.audio.Cancel(err)
 	}

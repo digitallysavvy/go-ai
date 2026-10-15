@@ -6,6 +6,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // HasFunctionTool reports whether tools contains a function tool (as opposed
@@ -39,11 +40,16 @@ func NewJSONResponseTool(format *provider.ResponseFormat, tools []types.Tool) ty
 	if description == "" {
 		description = "Respond with a JSON object."
 	}
+	parameters := ResponseFormatJSONSchema(format.Schema)
+	if ordered, ok := format.Schema.(*schema.OrderedSchema); ok && ordered != nil {
+		// Keeps the schema's source key order on the wire.
+		parameters = ordered
+	}
 	return types.Tool{
 		Type:        types.ToolTypeFunction,
 		Name:        name,
 		Description: description,
-		Parameters:  ResponseFormatJSONSchema(format.Schema),
+		Parameters:  parameters,
 	}
 }
 

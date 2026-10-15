@@ -550,6 +550,9 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 	if err := json.Unmarshal(resp.Body, &wire); err != nil {
 		return nil, p.handleErrorWithContext(ctx, err)
 	}
+	if err := validateMetadataResponse(resp.Body); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
 	metadata := MetadataResponse{Models: make([]ModelMetadata, 0, len(wire.Models))}
 	for _, model := range wire.Models {
 		if model.ModelType != "" {
@@ -933,4 +936,36 @@ func MarshalJSONField(v interface{}) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// validateMetadataResponse applies the required-field checks of TS
+// gatewayAvailableModelsResponseSchema that the lenient wire struct cannot
+// see: `models` must be an array and every model needs id, name and a
+// specification of version "v4" with provider and modelId.
+func validateMetadataResponse(body []byte) error {
+	var raw struct {
+		Models *[]struct {
+			ID            *string `json:"id"`
+			Name          *string `json:"name"`
+			Specification *struct {
+				SpecificationVersion *string `json:"specificationVersion"`
+				Provider             *string `json:"provider"`
+				ModelID              *string `json:"modelId"`
+			} `json:"specification"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return err
+	}
+	if raw.Models == nil {
+		return errors.New("Invalid JSON response: models must be an array") //nolint:staticcheck // mirrors TS wording
+	}
+	for i, m := range *raw.Models {
+		spec := m.Specification
+		if m.ID == nil || m.Name == nil || spec == nil || spec.Provider == nil || spec.ModelID == nil ||
+			spec.SpecificationVersion == nil || *spec.SpecificationVersion != "v4" {
+			return fmt.Errorf("Invalid JSON response: models[%d] does not match the gateway model schema", i) //nolint:staticcheck // mirrors TS wording
+		}
+	}
+	return nil
 }
