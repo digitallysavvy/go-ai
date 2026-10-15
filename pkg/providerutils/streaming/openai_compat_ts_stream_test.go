@@ -112,4 +112,22 @@ func TestOpenAICompatStream_TSEdgeCases(t *testing.T) {
 			t.Fatalf("signatures = %q / %q", calls[0].ToolCall.ThoughtSignature, calls[1].ToolCall.ThoughtSignature)
 		}
 	})
+
+	t.Run("text and tool call in one event", func(t *testing.T) {
+		chunks := collectStreamChunks(t, newTestStream(compatSSE(
+			`{"choices":[{"index":0,"delta":{"content":"Hi","tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)))
+		var text string
+		calls := 0
+		for _, c := range chunks {
+			switch c.Type {
+			case provider.ChunkTypeText:
+				text += c.Text
+			case provider.ChunkTypeToolCall:
+				calls++
+			}
+		}
+		if text != "Hi" || calls != 1 {
+			t.Fatalf("text=%q calls=%d chunks=%v", text, calls, chunks)
+		}
+	})
 }
