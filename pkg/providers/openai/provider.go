@@ -56,6 +56,10 @@ type Config struct {
 	// Defaults to "openai.chat".
 	ChatProviderName string
 
+	// ChatQuery contains query parameters added to Chat Completions requests
+	// (Azure api-version).
+	ChatQuery map[string]string
+
 	// CompletionProviderName overrides the provider identifier returned by
 	// CompletionModel. Defaults to "openai.completion".
 	CompletionProviderName string

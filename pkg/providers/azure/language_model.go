@@ -2,24 +2,50 @@ package azure
 
 import (
 	"context"
-	"encoding/json"
-	"io"
-	"net/http"
+	"sync"
 
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
+	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 )
 
-// LanguageModel implements the provider.LanguageModel interface for Azure OpenAI
+// LanguageModel implements the provider.LanguageModel interface for Azure
+// OpenAI Chat Completions. TS azure.chat() is an OpenAIChatLanguageModel
+// pointed at the deployment URL, so every request/response behavior
+// (provider options, structured output, usage, annotations, reasoning
+// models, file references) is delegated to the OpenAI chat model.
 type LanguageModel struct {
 	provider     *Provider
 	deploymentID string
+
+	once  sync.Once
+	inner *openai.LanguageModel
+}
+
+// delegate lazily builds the OpenAI chat model configured for this Azure
+// deployment (base URL, api-key header / token transport, api-version query).
+func (m *LanguageModel) delegate() *openai.LanguageModel {
+	m.once.Do(func() {
+		p := m.provider
+		var chatQuery map[string]string
+		if p.includeAPIVersionQuery() {
+			chatQuery = map[string]string{"api-version": p.config.APIVersion}
+		}
+		httpClient := p.httpClient
+		if p.client != nil {
+			httpClient = p.client.HTTPClient()
+		}
+		chatProvider := openai.New(openai.Config{
+			Name:             "azure",
+			BaseURL:          p.responsesBaseURL(m.deploymentID),
+			Headers:          p.staticAuthHeaders(),
+			ChatProviderName: "azure.chat",
+			ChatQuery:        chatQuery,
+			HTTPClient:       httpClient,
+		})
+		m.inner = openai.NewLanguageModel(chatProvider, m.deploymentID)
+	})
+	return m.inner
 }
 
 // NewLanguageModel creates a new Azure OpenAI language model
@@ -61,331 +87,12 @@ func (m *LanguageModel) SupportsImageInput() bool {
 	return true
 }
 
-// DoGenerate performs non-streaming text generation
+// DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	// TS Azure chat wraps OpenAIChatLanguageModel, which resolves provider
-	// file references with the fixed "openai" key.
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "openai"); err != nil {
-		return nil, err
-	}
-	// Build request body
-	reqBody := m.buildRequestBody(opts, false)
-
-	// Make API request to Azure-specific endpoint
-	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
-	headers, err := m.provider.requestHeaders(ctx, opts.Headers)
-	if err != nil {
-		return nil, m.handleError(err)
-	}
-
-	var response azureResponse
-	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: headers,
-	}, &response)
-	if err != nil {
-		return nil, m.handleError(err)
-	}
-
-	// Convert response to GenerateResult
-	result := m.convertResponse(response)
-	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
-	return result, nil
+	return m.delegate().DoGenerate(ctx, opts)
 }
 
-// DoStream performs streaming text generation
+// DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "openai"); err != nil {
-		return nil, err
-	}
-	// Build request body with streaming enabled
-	reqBody := m.buildRequestBody(opts, true)
-
-	// Make streaming API request to Azure-specific endpoint
-	path := m.provider.endpointPath(m.deploymentID, "/chat/completions")
-	headers, err := m.provider.requestHeaders(ctx, internalhttp.MergeHeaders(opts.Headers, map[string]string{
-		"Accept": "text/event-stream",
-	}))
-	if err != nil {
-		return nil, m.handleError(err)
-	}
-
-	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: headers,
-	})
-	if err != nil {
-		return nil, m.handleError(err)
-	}
-
-	// Create stream wrapper
-	stream := newAzureStream(httpResp.Body)
-	stream.SetRequestBody(reqBody)
-	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
-}
-
-// buildRequestBody builds the Azure OpenAI API request body
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
-	body := map[string]interface{}{
-		"model": m.deploymentID,
-	}
-	if stream {
-		body["stream"] = true
-	}
-
-	// Convert messages. Azure's chat() factory wraps OpenAIChatLanguageModel
-	// in TS, so it inherits OpenAI's serializeToolCallArguments sanitization
-	// for replayed tool-call arguments (see ToOpenAIMessagesOptions doc).
-	// Default to an empty slice so the System-prepend branch below always has
-	// a concrete []map[string]interface{} to type-assert, even for a
-	// system-only prompt (IsMessages() and IsSimple() both false: no
-	// Messages, no Text). The core TS SDK rejects such a prompt earlier, in
-	// standardizePrompt ("messages must not be empty"), before any provider
-	// is reached; the Go SDK does not perform that upstream validation, so
-	// the provider must not panic on it. Degrading to "just the system
-	// message" rather than crashing is the closest match to TS's intent
-	// (the message set is never allowed to be empty once it does reach a
-	// provider).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true, WrapToolErrorOutputs: true, Provider: "openai"}
-	body["messages"] = []map[string]interface{}{}
-	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
-	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), toOpenAIMessagesOpts)
-	}
-
-	// Add system message if present
-	if opts.Prompt.System != "" {
-		messages, _ := body["messages"].([]map[string]interface{})
-		systemMsg := map[string]interface{}{
-			"role":    "system",
-			"content": opts.Prompt.System,
-		}
-		body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
-	}
-
-	// Add optional parameters
-	if opts.MaxTokens != nil {
-		body["max_tokens"] = *opts.MaxTokens
-	}
-	if opts.Temperature != nil {
-		body["temperature"] = *opts.Temperature
-	}
-	if opts.TopP != nil {
-		body["top_p"] = *opts.TopP
-	}
-	if opts.FrequencyPenalty != nil {
-		body["frequency_penalty"] = *opts.FrequencyPenalty
-	}
-	if opts.PresencePenalty != nil {
-		body["presence_penalty"] = *opts.PresencePenalty
-	}
-	if len(opts.StopSequences) > 0 {
-		body["stop"] = opts.StopSequences
-	}
-	if opts.Seed != nil {
-		body["seed"] = *opts.Seed
-	}
-
-	// Add tools if present
-	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
-
-		// Add tool_choice if specified
-		if opts.ToolChoice.Type != "" {
-			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
-		}
-	}
-
-	// Add response format if specified
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
-	}
-
-	return body
-}
-
-// convertResponse converts an Azure OpenAI response to GenerateResult
-// Updated in v6.0 to support detailed usage tracking
-func (m *LanguageModel) convertResponse(response azureResponse) *types.GenerateResult {
-	if len(response.Choices) == 0 {
-		return &types.GenerateResult{
-			Text:         "",
-			FinishReason: types.FinishReasonOther,
-		}
-	}
-
-	choice := response.Choices[0]
-	result := &types.GenerateResult{
-		Text:            choice.Message.Content,
-		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
-		RawFinishReason: choice.FinishReason,
-		Usage:           convertAzureUsage(response.Usage),
-		RawResponse:     response,
-	}
-
-	// Add tool calls if present
-	if len(choice.Message.ToolCalls) > 0 {
-		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
-		for i, tc := range choice.Message.ToolCalls {
-			var args map[string]interface{}
-			if tc.Function.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args) //nolint:errcheck
-			}
-			result.ToolCalls[i] = types.ToolCall{
-				ID:        tc.ID,
-				ToolName:  tc.Function.Name,
-				Arguments: args,
-			}
-		}
-	}
-
-	return result
-}
-
-// handleError converts errors to provider errors
-func (m *LanguageModel) handleError(err error) error {
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
-}
-
-// convertAzureUsage converts Azure OpenAI usage to detailed Usage struct
-// Implements v6.0 detailed token tracking (OpenAI-compatible format)
-func convertAzureUsage(usage azureUsage) types.Usage {
-	promptTokens := int64(usage.PromptTokens)
-	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
-
-	result := types.Usage{
-		InputTokens:  &promptTokens,
-		OutputTokens: &completionTokens,
-		TotalTokens:  &totalTokens,
-	}
-
-	// Calculate cached tokens (cache read)
-	var cachedTokens int64
-	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
-		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
-	}
-
-	// Extract text and image tokens
-	var textTokens *int64
-	var imageTokens *int64
-	if usage.PromptTokensDetails != nil {
-		if usage.PromptTokensDetails.TextTokens != nil {
-			textVal := int64(*usage.PromptTokensDetails.TextTokens)
-			textTokens = &textVal
-		}
-		if usage.PromptTokensDetails.ImageTokens != nil {
-			imageVal := int64(*usage.PromptTokensDetails.ImageTokens)
-			imageTokens = &imageVal
-		}
-	}
-
-	// Calculate reasoning tokens
-	var reasoningTokens int64
-	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
-		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
-	}
-
-	// Set input token details
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
-		noCacheTokens := promptTokens - cachedTokens
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:    &noCacheTokens,
-			CacheReadTokens:  &cachedTokens,
-			CacheWriteTokens: nil, // Azure doesn't provide cache write tokens
-			TextTokens:       textTokens,
-			ImageTokens:      imageTokens,
-		}
-	}
-
-	// Set output token details
-	if reasoningTokens > 0 {
-		textTokens := completionTokens - reasoningTokens
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &textTokens,
-			ReasoningTokens: &reasoningTokens,
-		}
-	}
-
-	// Store raw usage
-	result.Raw = map[string]interface{}{
-		"prompt_tokens":     usage.PromptTokens,
-		"completion_tokens": usage.CompletionTokens,
-		"total_tokens":      usage.TotalTokens,
-	}
-
-	if usage.PromptTokensDetails != nil {
-		result.Raw["prompt_tokens_details"] = usage.PromptTokensDetails
-	}
-	if usage.CompletionTokensDetails != nil {
-		result.Raw["completion_tokens_details"] = usage.CompletionTokensDetails
-	}
-
-	return result
-}
-
-// Azure OpenAI response types (same as OpenAI)
-// Updated in v6.0 to support detailed usage tracking
-type azureResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index        int    `json:"index"`
-		FinishReason string `json:"finish_reason"`
-		Message      struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
-			ToolCalls []struct {
-				ID       string `json:"id"`
-				Type     string `json:"type"`
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
-	} `json:"choices"`
-	Usage azureUsage `json:"usage"`
-}
-
-// azureUsage represents Azure OpenAI usage information with detailed token tracking
-type azureUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
-
-	// Detailed token breakdown (v6.0)
-	PromptTokensDetails *struct {
-		CachedTokens *int `json:"cached_tokens,omitempty"`
-		AudioTokens  *int `json:"audio_tokens,omitempty"`
-		TextTokens   *int `json:"text_tokens,omitempty"`
-		ImageTokens  *int `json:"image_tokens,omitempty"`
-	} `json:"prompt_tokens_details,omitempty"`
-
-	CompletionTokensDetails *struct {
-		ReasoningTokens          *int `json:"reasoning_tokens,omitempty"`
-		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
-		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
-	} `json:"completion_tokens_details,omitempty"`
-}
-
-// azureStream implements provider.TextStream for Azure OpenAI streaming
-type azureStream struct {
-	*streaming.OpenAICompatStream
-}
-
-// newAzureStream creates a new Azure OpenAI stream
-func newAzureStream(reader io.ReadCloser) *azureStream {
-	return &azureStream{
-		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
-	}
+	return m.delegate().DoStream(ctx, opts)
 }

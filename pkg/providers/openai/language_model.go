@@ -115,6 +115,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
+		Query:   m.provider.config.ChatQuery,
 		Body:    reqBody,
 		Headers: opts.Headers,
 	}, &response)
@@ -148,6 +149,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
+		Query:   m.provider.config.ChatQuery,
 		Body:    reqBody,
 		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
@@ -287,6 +289,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// to OpenAI's own chat conversion -- other ToOpenAIMessages callers
 	// (Groq/DeepSeek/openai-compatible/Alibaba/...) must not opt in.
 	native := !m.provider.config.OpenAICompatible
+	// A prompt with neither messages nor text (e.g. system-only) must still
+	// carry a concrete message slice for the system-message prepend below.
+	body["messages"] = []map[string]interface{}{}
 	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
@@ -308,7 +313,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// `openaiOptions.systemMessageMode ?? (isReasoningModel ? 'developer' :
 	// modelCapabilities.systemMessageMode)`).
 	if opts.Prompt.System != "" {
-		messages := body["messages"].([]map[string]interface{})
+		messages, _ := body["messages"].([]map[string]interface{})
 		role := capabilities.SystemMessageMode
 		if isReasoningModel {
 			role = "developer"
