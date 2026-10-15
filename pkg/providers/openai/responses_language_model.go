@@ -441,6 +441,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		ProviderToolNames:                    openAIProviderToolNames(opts.Tools),
 		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
+		IncludePromptCacheBreakpoint:         true,
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
 		IsReasoningModel:                     isReasoning,
 		WebSearchToolName:                    responsesWebSearchToolName(opts.Tools),

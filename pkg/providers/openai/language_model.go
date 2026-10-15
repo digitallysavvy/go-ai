@@ -762,11 +762,19 @@ func chatStringSliceContains(list []string, s string) bool {
 	return false
 }
 
+// convertUsage converts the wire usage with the model's token accounting.
+func (m *LanguageModel) convertUsage(usage openAIUsage) types.Usage {
+	if m.provider.config.OpenAICompatible {
+		return convertCompatUsage(usage)
+	}
+	return convertOpenAIUsage(usage)
+}
+
 // convertResponse converts an OpenAI response to GenerateResult
 // Updated in v6.0 to support detailed usage tracking
 func (m *LanguageModel) convertResponse(response openAIResponse) *types.GenerateResult {
 	result := &types.GenerateResult{
-		Usage:       convertOpenAIUsage(response.Usage),
+		Usage:       m.convertUsage(response.Usage),
 		RawResponse: response,
 	}
 
@@ -908,6 +916,12 @@ func (m *LanguageModel) chatProviderMetadata(details *struct {
 // convertOpenAIUsage converts OpenAI usage to detailed Usage struct
 // Implements the v6.0 detailed token tracking with cache and reasoning tokens
 func convertOpenAIUsage(usage openAIUsage) types.Usage {
+	// TS: a response without a usage object yields the null usage (unknown
+	// token counts), not zero tokens.
+	if usage.rawWire == nil && usage.PromptTokens == 0 && usage.CompletionTokens == 0 && usage.TotalTokens == 0 &&
+		usage.PromptTokensDetails == nil && usage.CompletionTokensDetails == nil {
+		return types.Usage{}
+	}
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
 	totalTokens := int64(usage.TotalTokens)
@@ -998,6 +1012,24 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	return result
 }
 
+// convertCompatUsage is convertOpenAIUsage with the openai-compatible
+// accounting (TS convertOpenAICompatibleChatUsage): cache_write_tokens is not
+// modeled, so noCache is prompt - cached, and usage.raw is the loose object.
+func convertCompatUsage(usage openAIUsage) types.Usage {
+	u := convertOpenAIUsage(usage)
+	if u.InputDetails != nil && u.InputTokens != nil {
+		u.InputDetails.CacheWriteTokens = nil
+		if u.InputDetails.CacheReadTokens != nil {
+			noCache := *u.InputTokens - *u.InputDetails.CacheReadTokens
+			u.InputDetails.NoCacheTokens = &noCache
+		}
+	}
+	if usage.rawFull != nil {
+		u.Raw = usage.rawFull
+	}
+	return u
+}
+
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
 	// Try to parse as OpenAI error response
@@ -1040,8 +1072,11 @@ type openAIUsage struct {
 		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
 
-	// rawWire is the usage object exactly as the API sent it (TS usage.raw).
+	// rawWire is the usage object as the TS OpenAI chat schema keeps it
+	// (unmodeled keys stripped); rawFull is the object exactly as sent, which
+	// the loose openai-compatible schema keeps (TS usage.raw).
 	rawWire map[string]interface{}
+	rawFull map[string]interface{}
 }
 
 // UnmarshalJSON decodes the usage and keeps the wire object so Usage.Raw is
@@ -1054,8 +1089,9 @@ func (u *openAIUsage) UnmarshalJSON(b []byte) error {
 	}
 	*u = openAIUsage(p)
 	var raw map[string]interface{}
-	if json.Unmarshal(b, &raw) == nil {
+	if json.Unmarshal(b, &raw) == nil && raw != nil {
 		u.rawWire = filterChatUsageRaw(raw)
+		u.rawFull = raw
 	}
 	return nil
 }
@@ -1619,7 +1655,11 @@ func (s *openAIStream) endStream() {
 			RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 		}
 		if s.usage != nil {
-			u := convertOpenAIUsage(*s.usage)
+			convert := convertOpenAIUsage
+			if s.compat {
+				convert = convertCompatUsage
+			}
+			u := convert(*s.usage)
 			finish.Usage = &u
 			details = s.usage.CompletionTokensDetails
 		}

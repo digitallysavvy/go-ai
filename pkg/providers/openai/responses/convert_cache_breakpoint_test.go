@@ -39,7 +39,7 @@ func TestConvert_PromptCacheBreakpointOnSystemAndUserParts(t *testing.T) {
 			types.ImageContent{URL: "https://x/y.png", ProviderOptions: bpOpts("openai")},
 		}},
 	}
-	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: msgs}, "system", ConvertOptions{})
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: msgs}, "system", ConvertOptions{IncludePromptCacheBreakpoint: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestConvert_PromptCacheBreakpointOnToolOutputs(t *testing.T) {
 		}}},
 		types.ToolResultContent{ToolCallID: "c4", ToolName: "f", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "plain"}},
 	}}
-	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{tool}}, "system", ConvertOptions{})
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{tool}}, "system", ConvertOptions{IncludePromptCacheBreakpoint: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestConvert_PromptCacheBreakpointOnToolOutputs(t *testing.T) {
 	azTool := types.Message{Role: types.RoleTool, Content: []types.ContentPart{
 		types.ToolResultContent{ToolCallID: "c1", ToolName: "f", ProviderOptions: bpOpts("openai"), Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "ok"}},
 	}}
-	input, _, err = ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{azTool}}, "system", ConvertOptions{ProviderOptionsName: "azure"})
+	input, _, err = ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{azTool}}, "system", ConvertOptions{ProviderOptionsName: "azure", IncludePromptCacheBreakpoint: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestBuildParallelFunctionCallOutput_PromptCacheBreakpoint(t *testing.T) {
 		metadata: ParallelToolCallMetadata{ToolCallID: "wrap"},
 		results:  []types.ToolResultContent{mk("a", false, "one"), mk("b", true, "two")},
 	}
-	got := jsonRoundTrip(t, buildParallelFunctionCallOutput(group, ConvertOptions{}))
+	got := jsonRoundTrip(t, buildParallelFunctionCallOutput(group, ConvertOptions{IncludePromptCacheBreakpoint: true}))
 	want := jsonRoundTrip(t, map[string]interface{}{"type": "function_call_output", "call_id": "wrap", "output": []interface{}{
 		map[string]interface{}{"type": "input_text", "text": "one"},
 		map[string]interface{}{"type": "input_text", "text": "\ntwo", "prompt_cache_breakpoint": explicitBP},
@@ -129,7 +129,21 @@ func TestBuildParallelFunctionCallOutput_PromptCacheBreakpoint(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", mustJSON(got), mustJSON(want))
 	}
 	group.results = []types.ToolResultContent{mk("a", false, "one"), mk("b", false, "two")}
-	if out := buildParallelFunctionCallOutput(group, ConvertOptions{}).Output; out != "one\ntwo" {
+	if out := buildParallelFunctionCallOutput(group, ConvertOptions{IncludePromptCacheBreakpoint: true}).Output; out != "one\ntwo" {
 		t.Fatalf("no-breakpoint output = %#v", out)
+	}
+}
+
+// Callers that do not opt in (the xAI Responses converter) get no breakpoints.
+func TestConvert_PromptCacheBreakpointIsOptIn(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.TextContent{Text: "a", ProviderOptions: bpOpts("openai")},
+	}}}
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: msgs}, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(jsonRoundTrip(t, input)); got != `[{"content":[{"text":"a","type":"input_text"}],"role":"user"}]` {
+		t.Fatalf("got %s", got)
 	}
 }

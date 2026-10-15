@@ -250,3 +250,21 @@ data: {"type":"response.output_text.delta","item_id":"msg_x","output_index":3,"c
 		t.Fatalf("text chunks = %q", got)
 	}
 }
+
+// The OpenAI Responses model forwards per-part promptCacheBreakpoint.
+func TestResponsesModelForwardsPromptCacheBreakpoint(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-4o")
+	body, _, _, err := m.buildRequest(&provider.GenerateOptions{Prompt: types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.TextContent{Text: "a", ProviderOptions: map[string]interface{}{
+			"openai": map[string]interface{}{"promptCacheBreakpoint": map[string]interface{}{"mode": "explicit"}},
+		}}},
+	}}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(body["input"])
+	if !strings.Contains(string(raw), `"prompt_cache_breakpoint":{"mode":"explicit"}`) {
+		t.Fatalf("input = %s", raw)
+	}
+}

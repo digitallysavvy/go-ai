@@ -147,3 +147,48 @@ data: [DONE]
 		t.Fatalf("sawErr=%v finish=%+v", sawErr, finish)
 	}
 }
+
+// TS: a response without `usage` yields the null usage (unknown counts), and
+// the compat accounting ignores cache_write_tokens (noCache = prompt - cached).
+func TestChatUsageNullAndCompatAccounting(t *testing.T) {
+	serve := func(body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+	}
+	noUsage := serve(`{"choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`)
+	defer noUsage.Close()
+	m, _ := New(Config{APIKey: "k", BaseURL: noUsage.URL}).ChatModel("gpt-4o")
+	res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: chatTestPrompt()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.InputTokens != nil || res.Usage.OutputTokens != nil {
+		t.Fatalf("usage = %+v, want null usage", res.Usage)
+	}
+
+	withUsage := serve(`{"choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":20},"extra":1}}`)
+	defer withUsage.Close()
+	for _, compat := range []bool{false, true} {
+		cfg := Config{APIKey: "k", BaseURL: withUsage.URL}
+		if compat {
+			cfg.OpenAICompatible, cfg.Name, cfg.ChatProviderName = true, "my-host", "my-host.chat"
+		}
+		m, _ := New(cfg).ChatModel("gpt-4o")
+		res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: chatTestPrompt()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := res.Usage.InputDetails
+		wantNoCache := int64(70)
+		if compat {
+			wantNoCache = 90
+		}
+		if d == nil || *d.NoCacheTokens != wantNoCache || (compat && d.CacheWriteTokens != nil) || (!compat && d.CacheWriteTokens == nil) {
+			t.Fatalf("compat=%v input details = %+v", compat, d)
+		}
+		if _, hasExtra := res.Usage.Raw["extra"]; hasExtra != compat {
+			t.Fatalf("compat=%v raw=%v", compat, res.Usage.Raw)
+		}
+	}
+}

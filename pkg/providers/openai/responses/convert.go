@@ -69,6 +69,13 @@ type ConvertOptions struct {
 	// TS toolNameMapping.toProviderToolName. Names without an entry fall back
 	// to trimming an "openai." prefix.
 	ProviderToolNames map[string]string
+	// IncludePromptCacheBreakpoint forwards providerOptions.<name>.
+	// promptCacheBreakpoint as prompt_cache_breakpoint on system messages,
+	// user parts and tool outputs (TS convertToOpenAIResponsesInput). TS's
+	// separate xAI Responses converter has no such option, so it stays off
+	// for callers other than the OpenAI/Azure Responses models.
+	IncludePromptCacheBreakpoint bool
+
 	// OutputSchemaToolNames holds the names of function tools that declared
 	// providerOptions.openai.outputSchema. OpenAI parses their
 	// function_call_output.output as JSON, so text-like results must be
@@ -242,7 +249,7 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 
 	switch systemMessageMode {
 	case "system", "developer":
-		if bp := promptCacheBreakpoint(msg.ProviderOptions, providerName); bp != nil {
+		if bp := opts.cacheBreakpoint(msg.ProviderOptions, providerName); bp != nil {
 			item := map[string]interface{}{
 				"role": systemMessageMode,
 				"content": []interface{}{
@@ -327,11 +334,11 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 		pendingIdx = len(parts)
 		switch p := part.(type) {
 		case types.TextContent:
-			pendingBP = promptCacheBreakpoint(p.ProviderOptions, providerName)
+			pendingBP = opts.cacheBreakpoint(p.ProviderOptions, providerName)
 		case types.ImageContent:
-			pendingBP = promptCacheBreakpoint(p.ProviderOptions, providerName)
+			pendingBP = opts.cacheBreakpoint(p.ProviderOptions, providerName)
 		case types.FileContent:
-			pendingBP = promptCacheBreakpoint(p.ProviderOptions, providerName)
+			pendingBP = opts.cacheBreakpoint(p.ProviderOptions, providerName)
 		}
 		switch p := part.(type) {
 		case types.TextContent:
@@ -1670,7 +1677,7 @@ func buildParallelFunctionCallOutput(group parallelToolResultGroup, opts Convert
 	breakpoints := make([]interface{}, len(group.results))
 	hasBreakpoint := false
 	for i, r := range group.results {
-		breakpoints[i] = scalarToolResultPromptCacheBreakpoint(r, providerName)
+		breakpoints[i] = opts.scalarToolResultBreakpoint(r, providerName)
 		hasBreakpoint = hasBreakpoint || breakpoints[i] != nil
 		switch out := toolResultOutputBP(r, opts, false).(type) {
 		case string:
@@ -2121,7 +2128,7 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 	providerName := openAIProviderOptionsName(opts)
 	var scalarBP interface{}
 	if scalarBreakpoint {
-		scalarBP = scalarToolResultPromptCacheBreakpoint(tr, providerName)
+		scalarBP = opts.scalarToolResultBreakpoint(tr, providerName)
 	}
 	asOutput := func(value interface{}) interface{} {
 		text, isString := value.(string)
@@ -2169,7 +2176,7 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 			parts := make([]CustomToolCallOutputPart, 0, len(tr.Output.Content))
 			for _, block := range tr.Output.Content {
 				partsBefore := len(parts)
-				blockBP := promptCacheBreakpoint(toolResultBlockProviderOptions(block), providerName)
+				blockBP := opts.cacheBreakpoint(toolResultBlockProviderOptions(block), providerName)
 				switch b := block.(type) {
 				case types.TextContentBlock:
 					parts = append(parts, CustomToolCallOutputPart{
@@ -2502,4 +2509,21 @@ func scalarToolResultPromptCacheBreakpoint(tr types.ToolResultContent, providerN
 		}
 	}
 	return promptCacheBreakpoint(tr.ProviderOptions, providerName)
+}
+
+// cacheBreakpoint is promptCacheBreakpoint gated on the converter option.
+func (o ConvertOptions) cacheBreakpoint(providerOptions map[string]interface{}, providerName string) interface{} {
+	if !o.IncludePromptCacheBreakpoint {
+		return nil
+	}
+	return promptCacheBreakpoint(providerOptions, providerName)
+}
+
+// scalarToolResultBreakpoint is scalarToolResultPromptCacheBreakpoint gated on
+// the converter option.
+func (o ConvertOptions) scalarToolResultBreakpoint(tr types.ToolResultContent, providerName string) interface{} {
+	if !o.IncludePromptCacheBreakpoint {
+		return nil
+	}
+	return scalarToolResultPromptCacheBreakpoint(tr, providerName)
 }
