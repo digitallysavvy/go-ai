@@ -740,7 +740,6 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, err
 	}
 
-
 	// TS generate-object.ts tags every call's headers with `ai/${VERSION}`
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
 	// before building the onStart event, so the tagged value is what
