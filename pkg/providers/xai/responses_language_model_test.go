@@ -1023,8 +1023,8 @@ func TestXAIResponsesStreamEventsHandling(t *testing.T) {
 		wantChunkTypes []provider.ChunkType
 	}{
 		{
-			name:           "error",
-			event:          `{"type":"error","code":"bad_request","message":"boom"}`,
+			name:  "error",
+			event: `{"type":"error","code":"bad_request","message":"boom"}`,
 			// finish follows from TS flush() at the end of the stream.
 			wantChunkTypes: []provider.ChunkType{provider.ChunkTypeError, provider.ChunkTypeFinish},
 		},
