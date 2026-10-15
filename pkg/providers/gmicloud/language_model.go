@@ -122,7 +122,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// AllowVideo: true -- gmicloud wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "gmicloud"}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "gmicloud", ThoughtSignatureKey: "gmicloud"}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -169,6 +169,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// OpenAI-compatible common options (user, reasoningEffort, textVerbosity,
 	// strictJsonSchema) apply, resolved from providerOptions.gmicloud.
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("gmicloud", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, nil, nil, nil, opts.TopK, "gmicloud", opts.ProviderOptions)...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 
 	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{

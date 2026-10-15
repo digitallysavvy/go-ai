@@ -119,9 +119,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		"stream": stream,
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: "ollama"})
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama"})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: "ollama"})
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama"})
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})

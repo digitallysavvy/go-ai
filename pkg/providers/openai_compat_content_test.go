@@ -2,9 +2,12 @@ package providers_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -154,6 +157,88 @@ func TestCompatChatStreamContentArray(t *testing.T) {
 			}
 			if reasoning != "T" || text != "Ans!" || finish == nil || finish.FinishReason != types.FinishReasonStop {
 				t.Fatalf("reasoning=%q text=%q finish=%+v", reasoning, text, finish)
+			}
+		})
+	}
+}
+
+// TS convertToOpenAICompatibleChatMessages: a replayed tool call's
+// thoughtSignature (providerOptions[metadataKey] or .google) becomes
+// extra_content.google.thought_signature.
+func TestCompatChatReplaysThoughtSignature(t *testing.T) {
+	for _, f := range compatFactories() {
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			var body string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				body = string(b)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer srv.Close()
+			prompt := types.Prompt{Messages: []types.Message{
+				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{
+					ToolCallID: "c1", ToolName: "f", Input: "{}",
+					ProviderOptions: map[string]interface{}{f.key: map[string]interface{}{"thoughtSignature": "SIG"}},
+				}}},
+				{Role: types.RoleTool, Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "c1", ToolName: "f", Result: "r"}}},
+			}}
+			if _, err := f.mk(srv.URL).DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: prompt}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(body, `"extra_content":{"google":{"thought_signature":"SIG"}}`) {
+				t.Fatalf("request body lacks the thought signature: %s", body)
+			}
+		})
+	}
+}
+
+// TS OpenAICompatibleChatLanguageModel.getArgs: frequency/presence penalty and
+// seed are sent, topK warns, unknown provider options are spread into the body
+// and the unified reasoning level becomes reasoning_effort.
+func TestCompatChatRequestSettings(t *testing.T) {
+	temp, fp, seed, topK := 0.5, 0.1, 7, 3
+	level := types.ReasoningLow
+	for _, f := range compatFactories() {
+		if f.name == "zai" || f.name == "ollama" {
+			continue // not TS openai-compatible wrappers
+		}
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			var body map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+			}))
+			defer srv.Close()
+			res, err := f.mk(srv.URL).DoGenerate(context.Background(), &provider.GenerateOptions{
+				Prompt: compatPrompt, Temperature: &temp, TopK: &topK, FrequencyPenalty: &fp, PresencePenalty: &fp, Seed: &seed, Reasoning: &level,
+				ProviderOptions: map[string]interface{}{f.key: map[string]interface{}{"foo": "bar", "user": "u", "textVerbosity": "low"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if body["frequency_penalty"] != 0.1 || body["presence_penalty"] != 0.1 || body["seed"] != float64(7) {
+				t.Errorf("settings missing: %v", body)
+			}
+			if body["foo"] != "bar" || body["user"] != "u" || body["verbosity"] != "low" || body["reasoning_effort"] != "low" {
+				t.Errorf("options missing: %v", body)
+			}
+			if _, leaked := body["textVerbosity"]; leaked {
+				t.Errorf("chat option leaked into the body: %v", body)
+			}
+			found := false
+			for _, w := range res.Warnings {
+				if w.Type == "unsupported" && w.Feature == "topK" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("no topK warning: %v", res.Warnings)
 			}
 		})
 	}

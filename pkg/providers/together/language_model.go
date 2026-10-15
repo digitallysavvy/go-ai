@@ -133,7 +133,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// AllowVideo: true -- Together wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "togetherai"}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "togetherai", ThoughtSignatureKey: "togetherai"}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -166,6 +166,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("together", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, opts.TopK, "togetherai", opts.ProviderOptions)...)
 	mergeTogetherAIProviderOptions(compatibleOptions, opts.ProviderOptions)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	// Response format (TS openai-compatible chat model with
@@ -181,6 +182,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		body["response_format"] = responseFormat
 	}
 	warnings = append(warnings, formatWarnings...)
+	// TS: reasoning_effort = compatibleOptions.reasoningEffort ??
+	// (isCustomReasoning(reasoning) ? reasoning : undefined), the raw level.
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		body["reasoning_effort"] = string(*opts.Reasoning)
+	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	return body, warnings
 }

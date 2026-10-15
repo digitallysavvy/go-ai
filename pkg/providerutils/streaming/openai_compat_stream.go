@@ -384,7 +384,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 						ID:               tc.ID,
 						Name:             tc.Function.Name,
 						ArgumentsDelta:   tc.Function.Arguments,
-						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent),
+						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent, s.MetadataKey),
 					})
 					s.enqueueChunks(chunks)
 				}
@@ -420,6 +420,23 @@ func (s *OpenAICompatStream) enqueueChunks(chunks []ToolCallChunk) {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
+}
+
+// withThoughtSignature mirrors the thought signature held in a finished tool
+// call's provider metadata onto ToolCall.ThoughtSignature, like the
+// non-streaming path does.
+func withThoughtSignature(c *provider.StreamChunk) *provider.StreamChunk {
+	if c.Type != provider.ChunkTypeToolCall || c.ToolCall == nil {
+		return c
+	}
+	for _, v := range c.ToolCall.ProviderMetadata {
+		if m, ok := v.(map[string]interface{}); ok {
+			if sig, ok := m["thoughtSignature"].(string); ok && sig != "" {
+				c.ToolCall.ThoughtSignature = sig
+			}
+		}
+	}
+	return c
 }
 
 // recordFinish remembers the finish_reason. TS openai-compatible only records
@@ -466,7 +483,7 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
-		pending = append(pending, &c)
+		pending = append(pending, withThoughtSignature(&c))
 		if c.Type == provider.ChunkTypeError {
 			s.toolCallErrored = true
 		}
@@ -624,7 +641,10 @@ func (s *OpenAICompatStream) finishMetadata(usage *openAICompatStreamUsage) json
 	return raw
 }
 
-func openAICompatToolCallMetadata(extraContent map[string]interface{}) map[string]interface{} {
+func openAICompatToolCallMetadata(extraContent map[string]interface{}, metadataKey string) map[string]interface{} {
+	if metadataKey == "" {
+		metadataKey = "google"
+	}
 	if len(extraContent) == 0 {
 		return nil
 	}
@@ -637,7 +657,7 @@ func openAICompatToolCallMetadata(extraContent map[string]interface{}) map[strin
 		return nil
 	}
 	return map[string]interface{}{
-		"google": map[string]interface{}{
+		metadataKey: map[string]interface{}{
 			"thoughtSignature": signature,
 		},
 	}
