@@ -308,9 +308,15 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// tagged getHeaders() used for regular HTTP requests, which carries the
 	// `ai-sdk-elevenlabs/VERSION` tag. Match that here instead of building a
 	// fresh, untagged header set.
-	headers := internalhttp.MergeHeaders(version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
+	headers := version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 		"xi-api-key": m.provider.config.APIKey,
-	}, m.provider.config.Headers), version.ProviderUserAgent("elevenlabs")), opts.Headers)
+	}, m.provider.config.Headers), version.ProviderUserAgent("elevenlabs"))
+	// Per-call headers win over the provider headers (header names compare
+	// case-insensitively; the provider set is already lower-cased).
+	for k, v := range opts.Headers {
+		delete(headers, strings.ToLower(k))
+		headers[k] = v
+	}
 
 	var previousText *string
 	if streaming != nil {
