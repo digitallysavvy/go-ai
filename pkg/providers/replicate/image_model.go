@@ -423,6 +423,12 @@ func (m *ImageModel) convertResponse(ctx context.Context, prediction replicateIm
 	for _, u := range urls {
 		data, ct, err := m.downloadImage(ctx, u)
 		if err != nil {
+			// TS downloads with replicateFailedResponseHandler, so an HTTP
+			// failure is an API error whose message is `detail ?? error`.
+			var dlErr *providererrors.DownloadError
+			if errors.As(err, &dlErr) && dlErr.StatusCode >= 400 {
+				return nil, replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
+			}
 			return nil, fmt.Errorf("failed to download image: %w", err)
 		}
 		images = append(images, data)
