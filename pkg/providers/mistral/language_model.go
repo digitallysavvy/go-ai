@@ -433,18 +433,24 @@ func convertMistralUsage(raw json.RawMessage) types.Usage {
 	return result
 }
 
-// mapMistralFinishReason extends the standard OpenAI finish reason mapping with
+// mapMistralFinishReason mirrors TS mapMistralFinishReason, including
 // "model_length", a Mistral-specific variant of "length", and "error", which
 // maps to the unified "error" value rather than falling through to "other"
 // (TS commit c636bb4453, #21745).
 func mapMistralFinishReason(reason string) types.FinishReason {
+	// TS mapMistralFinishReason: only stop/length/model_length/tool_calls/error
+	// are recognised; content_filter and function_call map to "other".
 	switch reason {
-	case "model_length":
+	case "stop":
+		return types.FinishReasonStop
+	case "length", "model_length":
 		return types.FinishReasonLength
+	case "tool_calls":
+		return types.FinishReasonToolCalls
 	case "error":
 		return types.FinishReasonError
 	default:
-		return providerutils.MapOpenAIFinishReason(reason)
+		return types.FinishReasonOther
 	}
 }
 
