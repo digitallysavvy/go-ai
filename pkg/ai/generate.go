@@ -1881,6 +1881,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Text:             result.Text,
 		Reasoning:        result.ReasoningText,
 		ToolCalls:        result.ToolCalls,
+		ToolResults:      result.ToolResults,
+		ReasoningParts:   result.Reasoning,
 		Files:            result.Files,
 		ProviderMetadata: result.ProviderMetadata,
 		Settings:         telemetrySettings,
@@ -2534,6 +2536,25 @@ func telemetryCallbackInfo(t *TelemetrySettings) (functionID string, metadata ma
 	}
 	functionID = t.FunctionID
 	return functionID, metadata
+}
+
+// telemetryToolResultsOf returns the tool results of every step (TS
+// onEndEvent.toolResults).
+func telemetryToolResultsOf(steps []types.StepResult) []types.ToolResult {
+	var out []types.ToolResult
+	for _, step := range steps {
+		out = append(out, step.ToolResults...)
+	}
+	return out
+}
+
+// telemetryFinalReasoningOf returns the reasoning parts of the final step (TS
+// finalStep.reasoning).
+func telemetryFinalReasoningOf(steps []types.StepResult) []types.ReasoningContent {
+	if len(steps) == 0 {
+		return nil
+	}
+	return steps[len(steps)-1].Reasoning
 }
 
 func telemetryUsageFromUsage(usage types.Usage) telemetry.TelemetryUsage {

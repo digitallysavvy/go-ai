@@ -165,6 +165,13 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 	if n := len(result.Steps); n > 0 {
 		last = result.Steps[n-1]
 	}
+	// TS onEndEvent.toolCalls/toolResults span every step.
+	var allToolCalls []types.ToolCall
+	var allToolResults []types.ToolResult
+	for _, step := range result.Steps {
+		allToolCalls = append(allToolCalls, step.ToolCalls...)
+		allToolResults = append(allToolResults, step.ToolResults...)
+	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:           lt.callID,
 		OperationType:    "ai.generateText",
@@ -173,7 +180,9 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 		ModelProvider:    a.config.Model.Provider(),
 		ModelID:          a.config.Model.ModelID(),
 		Text:             result.Text,
-		ToolCalls:        last.ToolCalls,
+		ToolCalls:        allToolCalls,
+		ToolResults:      allToolResults,
+		ReasoningParts:   last.Reasoning,
 		ProviderMetadata: last.ProviderMetadata,
 		Settings:         lt.settings,
 		RuntimeContext:   telemetryRuntimeContextFor(lt.settings, a.runtimeContext()),
