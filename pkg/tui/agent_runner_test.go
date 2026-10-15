@@ -264,3 +264,44 @@ func textFromMessages(messages []types.Message) string {
 	}
 	return ""
 }
+
+// After an approval the resumed stream returns only the tool message and the
+// new assistant message. The assistant message holding the tool call must stay
+// in the history, or the next request has a tool result without a call.
+func TestAgentTUIRunnerKeepsToolCallMessageAfterApproval(t *testing.T) {
+	call := types.ToolCall{ID: "call-1", ToolName: "shell", Arguments: map[string]interface{}{"command": "date"}}
+	mock := &runnerMockAgent{}
+	renderer := &runnerMockRenderer{
+		prompts: []string{"run", "again"},
+		renderedMessages: [][]types.Message{
+			{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolApprovalRequestContent{ApprovalID: "approval-1", ToolCallID: "call-1", ToolCall: call},
+			}}},
+			{
+				{Role: types.RoleTool, Content: []types.ContentPart{types.TextContent{Text: "result"}}},
+				{Role: types.RoleAssistant, Content: []types.ContentPart{types.TextContent{Text: "done"}}},
+			},
+		},
+		approvalResponses: []AgentTUIToolApprovalResponse{{Approved: true}},
+	}
+	runner := NewAgentTUIRunner(AgentTUIRunnerOptions{Agent: mock, Renderer: renderer})
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	if len(mock.streamCalls) != 3 {
+		t.Fatalf("stream calls = %d, want 3", len(mock.streamCalls))
+	}
+	var roles []types.MessageRole
+	for _, m := range mock.streamCalls[2].Messages {
+		roles = append(roles, m.Role)
+	}
+	want := []types.MessageRole{types.RoleUser, types.RoleAssistant, types.RoleTool, types.RoleAssistant, types.RoleUser}
+	if len(roles) != len(want) {
+		t.Fatalf("roles = %v, want %v", roles, want)
+	}
+	for i := range want {
+		if roles[i] != want[i] {
+			t.Fatalf("roles = %v, want %v", roles, want)
+		}
+	}
+}
