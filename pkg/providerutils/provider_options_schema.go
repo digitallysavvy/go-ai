@@ -406,3 +406,11 @@ func OptNumberLiterals(values ...float64) OptionCheck {
 		return fmt.Errorf("Invalid input: expected one of %v (at %s)", values, path)
 	}
 }
+
+// OptTrue is z.literal(true).
+func OptTrue(path string, v interface{}) error {
+	if b, ok := v.(bool); ok && b {
+		return nil
+	}
+	return fmt.Errorf("Invalid input: expected true (at %s)", path)
+}

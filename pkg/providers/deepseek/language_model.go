@@ -277,15 +277,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				"type":        "json_schema",
 				"json_schema": jsonSchema,
 			}
-		case opts.ResponseFormat.Type != "":
-			responseFormatType := opts.ResponseFormat.Type
-			if responseFormatType == "json" {
-				responseFormatType = "json_object"
-			}
-			body["response_format"] = map[string]interface{}{
-				"type": responseFormatType,
-			}
+		case opts.ResponseFormat.Type == "json":
+			body["response_format"] = map[string]interface{}{"type": "json_object"}
 		}
+		// TS: `responseFormat?.type === 'json' ? ... : undefined` -- a text
+		// response format sends no response_format at all.
 	}
 	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
 

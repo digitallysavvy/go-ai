@@ -32,34 +32,6 @@ func firstNonEmptyDS(values ...string) string {
 	return ""
 }
 
-// deepseekProviderOptionsMap extracts the provider-options block for the
-// given provider namespace (usually "deepseek") from a generic
-// providerOptions map keyed by provider name.
-func deepseekProviderOptionsMap(providerOptionsName string, providerOptions map[string]interface{}) map[string]interface{} {
-	if providerOptions == nil {
-		return nil
-	}
-	if m, ok := providerOptions[providerOptionsName].(map[string]interface{}); ok {
-		return m
-	}
-	return nil
-}
-
-// deepseekValidateImageDetail rejects an imageDetail value outside TS's
-// deepseekFilePartProviderOptions zod enum (low/high/original/auto). Empty
-// means the option was not set and is always allowed.
-func deepseekValidateImageDetail(imageDetail string) error {
-	switch imageDetail {
-	case "", "low", "high", "original", "auto":
-		return nil
-	default:
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions.deepseek.imageDetail",
-			Message: "imageDetail must be one of \"low\", \"high\", \"original\", \"auto\".",
-		}
-	}
-}
-
 // convertMessages converts unified messages to DeepSeek's chat completions
 // wire format. It mirrors the TypeScript SDK's convertToDeepSeekChatMessages:
 // image content parts (inline data, URLs, and provider file references),
@@ -82,7 +54,11 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 	}
 
 	for index, msg := range messages {
-		msgOpts := deepseekProviderOptionsMap(providerOptionsName, msg.ProviderOptions)
+		// TS parses the message options (name, prefix) for every role.
+		msgOpts, err := providerutils.ParseProviderOptions(providerOptionsName, msg.ProviderOptions, deepseekMessageOptionsSchema)
+		if err != nil {
+			return nil, nil, err
+		}
 		name, hasName := msgOpts["name"].(string)
 		prefix, _ := msgOpts["prefix"].(bool)
 
@@ -96,7 +72,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 		switch msg.Role {
 		case types.RoleSystem:
 			entry := map[string]interface{}{"role": "system", "content": deepseekTextOnly(msg.Content)}
-			if hasName && name != "" {
+			if hasName {
 				entry["name"] = name
 			}
 			result = append(result, entry)
@@ -107,7 +83,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 				return nil, nil, err
 			}
 			warnings = append(warnings, userWarnings...)
-			if hasName && name != "" {
+			if hasName {
 				entry["name"] = name
 			}
 			result = append(result, entry)
@@ -128,7 +104,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 				}
 			}
 			entry := deepseekConvertAssistantMessage(msg, index, lastUserMessageIndex, isV4)
-			if hasName && name != "" {
+			if hasName {
 				entry["name"] = name
 			}
 			if prefix {
@@ -137,7 +113,7 @@ func (m *LanguageModel) convertMessages(messages []types.Message) ([]map[string]
 			result = append(result, entry)
 
 		case types.RoleTool:
-			if hasName && name != "" {
+			if hasName {
 				warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "message name on tool messages"})
 			}
 			entries, toolWarnings, err := m.convertToolMessage(msg, providerOptionsName)
@@ -276,11 +252,11 @@ func deepseekImageDataURL(mediaType string, data []byte) string {
 // file semantics instead of image_url). Mirrors the TypeScript SDK's inline
 // handling in convertToDeepSeekChatMessages for user messages.
 func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName string) (map[string]interface{}, error) {
-	fileOpts := deepseekProviderOptionsMap(providerOptionsName, f.ProviderOptions)
-	imageDetail, _ := fileOpts["imageDetail"].(string)
-	if err := deepseekValidateImageDetail(imageDetail); err != nil {
+	fileOpts, err := providerutils.ParseProviderOptions(providerOptionsName, f.ProviderOptions, deepseekFilePartOptionsSchema)
+	if err != nil {
 		return nil, err
 	}
+	imageDetail, _ := fileOpts["imageDetail"].(string)
 	fileData, _ := fileOpts["fileData"].(bool)
 
 	if ref, err := deepseekFileReference(f); err != nil {
@@ -349,14 +325,14 @@ func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName
 		return map[string]interface{}{"type": "file", "file_id": ref}, nil
 	}
 
-	mediaType, err := deepseekResolveImageMediaType(firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType))
+	fileOpts, err := providerutils.ParseProviderOptions(providerOptionsName, f.ProviderOptions, deepseekFilePartOptionsSchema)
 	if err != nil {
 		return nil, err
 	}
-
-	fileOpts := deepseekProviderOptionsMap(providerOptionsName, f.ProviderOptions)
 	imageDetail, _ := fileOpts["imageDetail"].(string)
-	if err := deepseekValidateImageDetail(imageDetail); err != nil {
+
+	mediaType, err := deepseekResolveImageMediaType(firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType))
+	if err != nil {
 		return nil, err
 	}
 

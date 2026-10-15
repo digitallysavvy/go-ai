@@ -26,3 +26,16 @@ func (m *LanguageModel) validateChatProviderOptions(providerOptions map[string]i
 	_, err := providerutils.ParseProviderOptions(m.provider.providerOptionsName(), providerOptions, deepseekChatOptionsSchema)
 	return err
 }
+
+// deepseekMessageOptionsSchema mirrors deepseekAssistantMessageProviderOptions
+// (name for every role; prefix only true), which TS parses for each message.
+var deepseekMessageOptionsSchema = providerutils.OptionSchema{
+	"name":   providerutils.OptString,
+	"prefix": providerutils.OptTrue,
+}
+
+// deepseekFilePartOptionsSchema mirrors deepseekFilePartProviderOptions.
+var deepseekFilePartOptionsSchema = providerutils.OptionSchema{
+	"imageDetail": providerutils.OptEnum("low", "high", "original", "auto"),
+	"fileData":    providerutils.OptTrue,
+}
