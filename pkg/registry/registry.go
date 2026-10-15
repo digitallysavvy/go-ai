@@ -28,7 +28,9 @@ type NoSuchProviderError struct {
 
 func (e *NoSuchProviderError) Error() string {
 	if e.Reason != "" {
-		return fmt.Sprintf("No such provider: %s (%s; available providers: %s)", e.ProviderID, e.Reason, strings.Join(e.AvailableProviders, ","))
+		// TS files()/skills() throw a plain Error with exactly this text for a
+		// registered provider that lacks the capability.
+		return e.Reason
 	}
 	return fmt.Sprintf("No such provider: %s (available providers: %s)", e.ProviderID, strings.Join(e.AvailableProviders, ","))
 }
@@ -323,7 +325,7 @@ func (r *Registry) Files(providerID string) (provider.FilesAPI, error) {
 			ProviderID:         providerID,
 			ModelType:          "files",
 			AvailableProviders: r.listProvidersLocked(),
-			Reason:             fmt.Sprintf("provider %q does not support file uploads; make sure it exposes a Files() method", providerID),
+			Reason:             fmt.Sprintf("The provider %q does not support file uploads. Make sure it exposes a Files() method.", providerID),
 		}
 	}
 	return api, nil
@@ -342,7 +344,7 @@ func (r *Registry) Skills(providerID string) (provider.SkillsAPI, error) {
 			ProviderID:         providerID,
 			ModelType:          "skills",
 			AvailableProviders: r.listProvidersLocked(),
-			Reason:             fmt.Sprintf("provider %q does not support skills; make sure it exposes a Skills() method", providerID),
+			Reason:             fmt.Sprintf("The provider %q does not support skills. Make sure it exposes a Skills() method.", providerID),
 		}
 	}
 	return api, nil

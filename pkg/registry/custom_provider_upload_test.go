@@ -97,8 +97,8 @@ func TestRegistryResolveFilesAPIUnsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), `provider "custom" does not support file uploads`) {
-		t.Fatalf("unexpected error: %v", err)
+	if want := `The provider "custom" does not support file uploads. Make sure it exposes a Files() method.`; err.Error() != want {
+		t.Fatalf("error = %q, want TS text %q", err.Error(), want)
 	}
 	if _, ok := err.(*NoSuchProviderError); !ok {
 		t.Fatalf("error = %T, want *NoSuchProviderError", err)
