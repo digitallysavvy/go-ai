@@ -242,6 +242,18 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 
 	switch systemMessageMode {
 	case "system", "developer":
+		if bp := promptCacheBreakpoint(msg.ProviderOptions, providerName); bp != nil {
+			item := map[string]interface{}{
+				"role": systemMessageMode,
+				"content": []interface{}{
+					UserTextPart{Type: "input_text", Text: content, PromptCacheBreakpoint: bp},
+				},
+			}
+			if opts.ExplicitMessageItemType {
+				item["type"] = "message"
+			}
+			return item, nil, nil
+		}
 		sysMsg := SystemMessage{Role: systemMessageMode, Content: content}
 		if opts.ExplicitMessageItemType {
 			sysMsg.Type = "message"
@@ -300,7 +312,27 @@ func systemMessageText(msg types.Message) string {
 func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, error) {
 	providerName := openAIProviderOptionsName(opts)
 	parts := make([]interface{}, 0, len(msg.Content))
+	// The per-part prompt cache breakpoint is applied to the wire part the
+	// iteration appended (a part may also be skipped via continue).
+	var pendingBP interface{}
+	pendingIdx := 0
+	applyPendingBP := func() {
+		if pendingBP != nil && len(parts) > pendingIdx {
+			parts[pendingIdx] = withPromptCacheBreakpoint(parts[pendingIdx], pendingBP)
+		}
+		pendingBP = nil
+	}
 	for index, part := range msg.Content {
+		applyPendingBP()
+		pendingIdx = len(parts)
+		switch p := part.(type) {
+		case types.TextContent:
+			pendingBP = promptCacheBreakpoint(p.ProviderOptions, providerName)
+		case types.ImageContent:
+			pendingBP = promptCacheBreakpoint(p.ProviderOptions, providerName)
+		case types.FileContent:
+			pendingBP = promptCacheBreakpoint(p.ProviderOptions, providerName)
+		}
 		switch p := part.(type) {
 		case types.TextContent:
 			parts = append(parts, UserTextPart{Type: "input_text", Text: p.Text})
@@ -419,6 +451,7 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 		}
 	}
 
+	applyPendingBP()
 	userMsg := UserMessage{Role: "user", Content: parts}
 	if opts.ExplicitMessageItemType {
 		userMsg.Type = "message"
@@ -1631,21 +1664,34 @@ func collectCompleteParallelToolResultGroups(prompt types.Prompt, providerName s
 // group's child outputs into the single function_call_output the server
 // expects for its original "parallel" wrapper call_id, in the same order as
 // the original tool_uses array (row 6be0f51).
-//
-// TS additionally supports per-child prompt-cache-breakpoints by emitting an
-// array-of-parts output in that case; this port always joins with "\n"
-// (matching TS's plain-string fallback), since attaching a prompt-cache
-// breakpoint to one child of a regrouped parallel call is a narrow edge case.
 func buildParallelFunctionCallOutput(group parallelToolResultGroup, opts ConvertOptions) FunctionCallOutputItem {
+	providerName := openAIProviderOptionsName(opts)
 	parts := make([]string, len(group.results))
+	breakpoints := make([]interface{}, len(group.results))
+	hasBreakpoint := false
 	for i, r := range group.results {
-		switch out := toolResultOutputWithOptions(r, opts).(type) {
+		breakpoints[i] = scalarToolResultPromptCacheBreakpoint(r, providerName)
+		hasBreakpoint = hasBreakpoint || breakpoints[i] != nil
+		switch out := toolResultOutputBP(r, opts, false).(type) {
 		case string:
 			parts[i] = out
 		default:
 			b, _ := jsonstr.Marshal(out)
 			parts[i] = string(b)
 		}
+	}
+	// TS: with any child breakpoint the output is an array of input_text
+	// parts (one per child, "\n"-prefixed after the first), each carrying its
+	// own breakpoint; otherwise the children are joined with "\n".
+	if hasBreakpoint {
+		out := make([]CustomToolCallOutputPart, len(parts))
+		for i, text := range parts {
+			if i > 0 {
+				text = "\n" + text
+			}
+			out[i] = CustomToolCallOutputPart{Type: "input_text", Text: text, PromptCacheBreakpoint: breakpoints[i]}
+		}
+		return FunctionCallOutputItem{Type: "function_call_output", CallID: group.metadata.ToolCallID, Output: out}
 	}
 	return FunctionCallOutputItem{
 		Type:   "function_call_output",
@@ -2063,7 +2109,27 @@ func toolResultOutput(tr types.ToolResultContent) interface{} {
 }
 
 func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions) interface{} {
+	return toolResultOutputBP(tr, opts, true)
+}
+
+// toolResultOutputBP is toolResultOutputWithOptions with control over scalar
+// prompt cache breakpoints: when scalarBreakpoint is set, a text/json/error/
+// denied output that carries a breakpoint becomes a one-element input_text
+// array (TS convertScalarOutput). A regrouped parallel call turns it off and
+// applies the breakpoints to its joined parts itself.
+func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarBreakpoint bool) interface{} {
 	providerName := openAIProviderOptionsName(opts)
+	var scalarBP interface{}
+	if scalarBreakpoint {
+		scalarBP = scalarToolResultPromptCacheBreakpoint(tr, providerName)
+	}
+	asOutput := func(value interface{}) interface{} {
+		text, isString := value.(string)
+		if scalarBP == nil || !isString {
+			return value
+		}
+		return []CustomToolCallOutputPart{{Type: "input_text", Text: text, PromptCacheBreakpoint: scalarBP}}
+	}
 	// OpenAI parses function_call_output.output as JSON when the function
 	// declared output_schema. Text-like results therefore need to be
 	// JSON-encoded to become valid JSON string literals.
@@ -2083,25 +2149,27 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 			// The wrapped text is already JSON, so it is not re-encoded for
 			// tools with an output schema.
 			if b, err := jsonstr.Marshal(map[string]interface{}{"error": tr.Output.Value}); err == nil {
-				return string(b)
+				return asOutput(string(b))
 			}
 		case types.ToolResultOutputText:
 			if s, ok := tr.Output.Value.(string); ok {
-				return scalarOutput(s)
+				return asOutput(scalarOutput(s))
 			}
 		case types.ToolResultOutputJSON:
 			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
-				return string(b)
+				return asOutput(string(b))
 			}
 		case types.ToolResultOutputExecutionDenied:
 			reason := tr.Output.Reason
 			if reason == "" {
 				reason = "Tool call execution denied."
 			}
-			return scalarOutput(reason)
+			return asOutput(scalarOutput(reason))
 		case types.ToolResultOutputContent:
 			parts := make([]CustomToolCallOutputPart, 0, len(tr.Output.Content))
 			for _, block := range tr.Output.Content {
+				partsBefore := len(parts)
+				blockBP := promptCacheBreakpoint(toolResultBlockProviderOptions(block), providerName)
 				switch b := block.(type) {
 				case types.TextContentBlock:
 					parts = append(parts, CustomToolCallOutputPart{
@@ -2190,6 +2258,9 @@ func toolResultOutputWithOptions(tr types.ToolResultContent, opts ConvertOptions
 							})
 						}
 					}
+				}
+				if blockBP != nil && len(parts) > partsBefore {
+					parts[partsBefore].PromptCacheBreakpoint = blockBP
 				}
 			}
 			if len(parts) > 0 {
@@ -2364,4 +2435,71 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 		"status": "completed",
 		"action": wireAction,
 	}
+}
+
+// promptCacheBreakpoint reads providerOptions[providerName].
+// promptCacheBreakpoint (TS getPromptCacheBreakpoint): only the request's own
+// provider-options key is consulted, and the value is forwarded verbatim.
+func promptCacheBreakpoint(providerOptions map[string]interface{}, providerName string) interface{} {
+	if providerOptions == nil {
+		return nil
+	}
+	opts, ok := providerOptions[providerName].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return opts["promptCacheBreakpoint"]
+}
+
+// withPromptCacheBreakpoint attaches a breakpoint to an already-built wire
+// part (a typed Responses part or a plain map).
+func withPromptCacheBreakpoint(part interface{}, bp interface{}) interface{} {
+	if bp == nil {
+		return part
+	}
+	switch p := part.(type) {
+	case UserTextPart:
+		p.PromptCacheBreakpoint = bp
+		return p
+	case UserImageURLPart:
+		p.PromptCacheBreakpoint = bp
+		return p
+	case UserFilePart:
+		p.PromptCacheBreakpoint = bp
+		return p
+	case map[string]interface{}:
+		p["prompt_cache_breakpoint"] = bp
+		return p
+	}
+	return part
+}
+
+// toolResultBlockProviderOptions returns the provider options of a tool result
+// content block.
+func toolResultBlockProviderOptions(block types.ToolResultContentBlock) map[string]interface{} {
+	switch b := block.(type) {
+	case types.TextContentBlock:
+		return b.ProviderOptions
+	case types.ImageContentBlock:
+		return b.ProviderOptions
+	case types.FileContentBlock:
+		return b.ProviderOptions
+	}
+	return nil
+}
+
+// scalarToolResultPromptCacheBreakpoint mirrors TS
+// getScalarToolResultPromptCacheBreakpoint: content outputs carry their
+// breakpoints per part; every other output uses its own providerOptions, then
+// the tool result part's.
+func scalarToolResultPromptCacheBreakpoint(tr types.ToolResultContent, providerName string) interface{} {
+	if tr.Output != nil {
+		if tr.Output.Type == types.ToolResultOutputContent {
+			return nil
+		}
+		if bp := promptCacheBreakpoint(tr.Output.ProviderOptions, providerName); bp != nil {
+			return bp
+		}
+	}
+	return promptCacheBreakpoint(tr.ProviderOptions, providerName)
 }
