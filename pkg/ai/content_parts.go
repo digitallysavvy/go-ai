@@ -91,6 +91,43 @@ func appendReasoningPart(parts []types.ContentPart, text string, metadata json.R
 	return append(parts, types.ReasoningContent{Text: text, ProviderMetadata: metadata})
 }
 
+// startNewReasoningPart marks a ChunkTypeReasoningStart boundary in
+// stepContent: a fresh ReasoningContent part seeded with the reasoning-start
+// chunk's ProviderMetadata (TS stream-text.ts pushes a record per
+// reasoning-start, keyed by id). Without it two adjacent reasoning blocks (a
+// thinking block followed by a redacted_thinking block, say) would merge into
+// one part, and a redacted block's redactedData would be lost.
+func startNewReasoningPart(parts []types.ContentPart, metadata json.RawMessage) []types.ContentPart {
+	return append(parts, types.ReasoningContent{ProviderMetadata: metadata})
+}
+
+// setTrailingReasoningMetadata applies a reasoning-end chunk's ProviderMetadata
+// to the trailing reasoning part (TS: activeReasoning.providerMetadata =
+// part.providerMetadata ?? activeReasoning.providerMetadata).
+func setTrailingReasoningMetadata(parts []types.ContentPart, metadata json.RawMessage) []types.ContentPart {
+	if len(metadata) == 0 {
+		return parts
+	}
+	if n := len(parts); n > 0 {
+		if last, ok := parts[n-1].(types.ReasoningContent); ok {
+			last.ProviderMetadata = metadata
+			parts[n-1] = last
+		}
+	}
+	return parts
+}
+
+// reasoningPartsOf returns the ReasoningContent parts of content in order.
+func reasoningPartsOf(content []types.ContentPart) []types.ReasoningContent {
+	var out []types.ReasoningContent
+	for _, p := range content {
+		if rc, ok := p.(types.ReasoningContent); ok && (rc.Text != "" || len(rc.ProviderMetadata) > 0) {
+			out = append(out, rc)
+		}
+	}
+	return out
+}
+
 func generateResultContentParts(result *types.GenerateResult) []types.ContentPart {
 	if result == nil {
 		return nil
