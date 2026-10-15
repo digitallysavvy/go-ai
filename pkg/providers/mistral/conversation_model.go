@@ -44,7 +44,7 @@ func NewConversationLanguageModel(p *Provider, modelID string) *ConversationLang
 	return &ConversationLanguageModel{provider: p, modelID: modelID}
 }
 
-func (m *ConversationLanguageModel) SpecificationVersion() string { return "v3" }
+func (m *ConversationLanguageModel) SpecificationVersion() string { return "v4" }
 func (m *ConversationLanguageModel) Provider() string             { return "mistral.conversation" }
 func (m *ConversationLanguageModel) ModelID() string              { return m.modelID }
 func (m *ConversationLanguageModel) SupportsTools() bool          { return true }

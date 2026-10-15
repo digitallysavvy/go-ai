@@ -46,7 +46,7 @@ func NewLanguageModel(provider *Provider, modelID string) *LanguageModel {
 
 // SpecificationVersion returns the specification version
 func (m *LanguageModel) SpecificationVersion() string {
-	return "v3"
+	return "v4"
 }
 
 // Provider returns the provider name
@@ -357,7 +357,7 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 		}
 	}
 	choice := response.Choices[0]
-	text, reasoningParts := parseMistralMessageContent(choice.Message.Content)
+	text, contentParts := parseMistralMessageContent(choice.Message.Content)
 	result := &types.GenerateResult{
 		Text:            text,
 		FinishReason:    mapMistralFinishReason(choice.FinishReason),
@@ -365,9 +365,7 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 		Usage:           convertMistralUsage(response.Usage),
 		RawResponse:     response,
 	}
-	for _, reasoningText := range reasoningParts {
-		result.Content = append(result.Content, types.ReasoningContent{Text: reasoningText})
-	}
+	result.Content = contentParts
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
@@ -520,38 +518,47 @@ type mistralContentPart struct {
 
 // parseMistralMessageContent parses a Mistral chat message's "content" field,
 // which is either a plain string or an array of content parts (text/thinking).
-// It returns the concatenated visible text and the text of each "thinking"
-// part in the order they appear, mirroring TS's extractTextContent /
-// extractReasoningContent in mistral-chat-language-model.ts.
-func parseMistralMessageContent(raw json.RawMessage) (text string, reasoningParts []string) {
+// Like TS doGenerate it returns the content parts in wire order: each
+// non-empty "thinking" part (the "text" chunks of its thinking array, joined)
+// becomes a reasoning part and each non-empty "text" part a text part. text is
+// the concatenation of the text parts.
+func parseMistralMessageContent(raw json.RawMessage) (text string, parts []types.ContentPart) {
 	if len(raw) == 0 {
 		return "", nil
 	}
 	switch raw[0] {
 	case '"':
 		_ = json.Unmarshal(raw, &text)
-		return text, nil
+		if text != "" {
+			parts = append(parts, types.TextContent{Text: text})
+		}
+		return text, parts
 	case '[':
-		var parts []mistralContentPart
-		if err := json.Unmarshal(raw, &parts); err != nil {
+		var wire []mistralContentPart
+		if err := json.Unmarshal(raw, &wire); err != nil {
 			return "", nil
 		}
 		var textBuilder strings.Builder
-		for _, part := range parts {
+		for _, part := range wire {
 			switch part.Type {
 			case "text":
-				textBuilder.WriteString(part.Text)
+				if part.Text != "" {
+					textBuilder.WriteString(part.Text)
+					parts = append(parts, types.TextContent{Text: part.Text})
+				}
 			case "thinking":
 				var thinkingText strings.Builder
 				for _, t := range part.Thinking {
-					thinkingText.WriteString(t.Text)
+					if t.Type == "text" {
+						thinkingText.WriteString(t.Text)
+					}
 				}
 				if thinkingText.Len() > 0 {
-					reasoningParts = append(reasoningParts, thinkingText.String())
+					parts = append(parts, types.ReasoningContent{Text: thinkingText.String()})
 				}
 			}
 		}
-		return textBuilder.String(), reasoningParts
+		return textBuilder.String(), parts
 	default:
 		return "", nil
 	}
