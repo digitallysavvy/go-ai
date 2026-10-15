@@ -2,10 +2,12 @@ package cohere
 
 import (
 	"context"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"net/http"
 	"time"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -45,7 +47,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 
 	// Make API request
 	var response cohereRerankResponse
-	err := m.provider.client.PostJSON(ctx, "/rerank", reqBody, &response)
+	err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: http.MethodPost, Path: "/rerank", Body: reqBody, Headers: opts.Headers}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -112,8 +114,8 @@ func (m *RerankingModel) handleError(err error) error {
 type cohereRerankResponse struct {
 	ID      string `json:"id"`
 	Results []struct {
-		Index          int     `json:"index"`
-		RelevanceScore float64 `json:"relevance_score"`
+		Index          int         `json:"index"`
+		RelevanceScore float64     `json:"relevance_score"`
 		Document       interface{} `json:"document,omitempty"`
 	} `json:"results"`
 	Meta *struct {
