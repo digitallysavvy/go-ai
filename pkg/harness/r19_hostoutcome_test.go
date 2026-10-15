@@ -187,3 +187,66 @@ func TestHarnessUsageTotalTokensAndRaw(t *testing.T) {
 		t.Fatalf("empty TotalTokens = %v, want nil", empty.TotalTokens)
 	}
 }
+
+// A panicking lifecycle callback never fails the turn (TS notify() uses
+// Promise.allSettled).
+func TestRunPrompt_PanickingCallbacksDoNotFailTurn(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t", Delta: "hi"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	boom := func() { panic("callback exploded") }
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Callbacks: Callbacks{
+			OnStart:     func(context.Context, ai.OnStartEvent) { boom() },
+			OnStepStart: func(context.Context, ai.OnStepStartEvent) { boom() },
+			OnStepEnd:   func(context.Context, ai.OnStepFinishEvent) { boom() },
+			OnEnd:       func(context.Context, ai.OnFinishEvent) { boom() },
+		},
+	})
+	drainRunPrompt(t, out)
+	if err := out.Result.Err(); err != nil {
+		t.Fatalf("turn failed: %v", err)
+	}
+}
+
+// A host tool that panics becomes a tool error; the turn goes on.
+func TestRunPrompt_PanickingHostToolIsToolError(t *testing.T) {
+	tool := types.Tool{
+		Name:       "boom",
+		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			panic("kaput")
+		},
+	}
+	mock := newScriptedHarness(
+		func(emit func(StreamPart)) {
+			emit(&StreamStartPart{})
+			emit(&ToolCallPart{ToolCallID: "c1", ToolName: "boom", Input: `{}`})
+		},
+		func(sub ToolResultSubmission, emit func(StreamPart)) {
+			emit(&ToolResultPart{ToolCallID: sub.ToolCallID, ToolName: "boom", IsError: sub.IsError, Result: sub.Output})
+			emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+			emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)})
+		},
+	)
+	tools := map[string]types.Tool{"boom": tool}
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"),
+		Tools: tools, ActiveTools: tools, SandboxSession: testSandbox(),
+	})
+	drainRunPrompt(t, out)
+	if err := out.Result.Err(); err != nil {
+		t.Fatalf("turn failed: %v", err)
+	}
+	if len(mock.toolResults) != 1 || !mock.toolResults[0].IsError {
+		t.Fatalf("submitted = %+v, want one error result", mock.toolResults)
+	}
+}

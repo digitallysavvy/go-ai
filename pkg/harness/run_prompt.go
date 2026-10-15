@@ -305,6 +305,7 @@ func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 	})
 
 	done := make(chan struct{})
+	in.Callbacks = in.Callbacks.panicSafe()
 	d := &turnDriver{ctx: ctx, in: in, stream: stream, telCallID: callID}
 	go func() {
 		defer close(done)
@@ -2042,7 +2043,15 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 		// can create nested spans for tool -> generateText chains (TS
 		// 59a2306's `wrappedExecuteTool`, matching pkg/ai/generate.go's own
 		// tool-loop wrapping of the same call).
-		runTool := func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
+		runTool := func(execCtx context.Context, args map[string]interface{}) (res interface{}, execErr error) {
+			// A throwing tool is a tool error in TS (the exception is caught
+			// and submitted as `String(err)`); a Go panic must not take the
+			// process down either.
+			defer func() {
+				if r := recover(); r != nil {
+					res, execErr = nil, fmt.Errorf("tool %q panicked: %v", raw.ToolName, r)
+				}
+			}()
 			return tool.Execute(execCtx, args, types.ToolExecutionOptions{
 				ToolCallID: raw.ToolCallID, RuntimeContext: d.in.RuntimeContext, ToolContext: toolCtx,
 				ExperimentalSandbox: d.in.SandboxSession,
