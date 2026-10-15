@@ -75,19 +75,27 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts, false)
 	var response vertexXaiResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
-	}, &response)
+		Method:  http.MethodPost,
+		Path:    "/chat/completions",
+		Body:    reqBody,
+		Headers: opts.Headers,
+	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	result := m.convertResponse(response)
+	// TS openai-compatible doGenerate: content parts, reasoning, tool calls
+	// (generated ids, raw arguments), metadata under "googleVertex".
+	if err := streaming.ApplyOpenAICompatibleChatResponse(result, resp.Body, providerutils.ExtractHeaders(resp.Headers), vertexXaiProviderKey); err != nil {
+		return nil, err
+	}
+	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
-	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
-	responseMetadata.Headers = result.ResponseHeaders
-	result.ResponseMetadata = responseMetadata
+	result.RawRequest = reqBody
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	return result, nil
 }
 
@@ -99,12 +107,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	warnings := m.checkUnsupportedOptions(opts)
 	reqBody := m.buildRequestBody(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/chat/completions",
-		Body:   reqBody,
-		Headers: map[string]string{
-			"Accept": "text/event-stream",
-		},
+		Method:  http.MethodPost,
+		Path:    "/chat/completions",
+		Body:    reqBody,
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "text/event-stream"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -125,7 +131,10 @@ func (m *LanguageModel) checkUnsupportedOptions(opts *provider.GenerateOptions) 
 	if opts.TopK != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
-	return warnings
+	// TS openai-compatible prepareTools: provider-defined tools are dropped
+	// with an unsupported warning.
+	_, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+	return append(warnings, dropped...)
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
@@ -173,7 +182,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["seed"] = *opts.Seed
 	}
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, _ := tool.DropProviderDefinedTools(opts.Tools, nil)
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
@@ -277,7 +287,12 @@ func (m *LanguageModel) handleError(err error) error {
 // promptTokens - cacheReadTokens, unconditionally -- no inclusive/exclusive
 // branching), and reasoning tokens are *additional to* completion_tokens
 // (outputTokens.total = completionTokens + reasoningTokens).
-func convertVertexXaiUsage(usage vertexXaiUsage) types.Usage {
+func convertVertexXaiUsage(u *vertexXaiUsage) types.Usage {
+	if u == nil {
+		// TS: usage == null leaves every count undefined.
+		return types.Usage{}
+	}
+	usage := *u
 	promptTokens := usage.PromptTokens
 	completionTokens := usage.CompletionTokens
 	var cacheReadTokens int64
@@ -343,7 +358,7 @@ type vertexXaiResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage vertexXaiUsage `json:"usage"`
+	Usage *vertexXaiUsage `json:"usage"`
 }
 
 // vertexXaiUsage mirrors TS GoogleVertexXaiUsage.
@@ -369,6 +384,21 @@ type vertexXaiStream struct {
 func newVertexXaiStream(reader io.ReadCloser) *vertexXaiStream {
 	s := &vertexXaiStream{
 		OpenAICompatStream: streaming.NewOpenAICompatStream(reader, providerutils.MapOpenAIFinishReason),
+	}
+	s.MetadataKey = vertexXaiProviderKey
+	s.ConvertUsage = func(wire map[string]interface{}) *types.Usage {
+		b, err := json.Marshal(wire)
+		if err != nil {
+			return nil
+		}
+		var u vertexXaiUsage
+		if json.Unmarshal(b, &u) != nil {
+			return nil
+		}
+		converted := convertVertexXaiUsage(&u)
+		// TS keeps the usage payload verbatim in usage.raw.
+		converted.Raw = wire
+		return &converted
 	}
 	return s
 }

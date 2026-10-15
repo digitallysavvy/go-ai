@@ -988,9 +988,11 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				ID:        normalizeToolCallID(rawID, isMistral),
 				ToolName:  name,
 				Arguments: args,
+				// TS: input: JSON.stringify(toolUse.input ?? {}), wire key order.
+				RawArguments: jsonorder.Text(part.ToolUse.Input, args),
 			}
 			result.ToolCalls = append(result.ToolCalls, call)
-			ordered = append(ordered, types.ToolCallContent{ToolCallID: call.ID, ToolName: call.ToolName, Arguments: args})
+			ordered = append(ordered, types.ToolCallContent{ToolCallID: call.ID, ToolName: call.ToolName, Arguments: args, Input: call.RawArguments})
 			hasNonText = true
 		}
 	}

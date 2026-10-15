@@ -64,6 +64,11 @@ type OpenAICompatStream struct {
 	// finish providerMetadata.
 	MetadataKey string
 
+	// ConvertUsage, when set, replaces the default usage conversion with a
+	// provider's own (TS openai-compatible `convertUsage` config). It receives
+	// the usage object exactly as sent.
+	ConvertUsage func(wire map[string]interface{}) *types.Usage
+
 	// isActiveReasoning tracks whether we are inside a reasoning block.
 	isActiveReasoning bool
 
@@ -499,7 +504,7 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 				Type:             provider.ChunkTypeFinish,
 				FinishReason:     s.finishReasonMapper(finishReason),
 				RawFinishReason:  finishReason,
-				Usage:            convertOpenAICompatStreamUsage(usage),
+				Usage:            s.convertUsage(usage),
 				ProviderMetadata: s.finishMetadata(usage),
 			}
 			if s.finishErrored {
@@ -520,7 +525,7 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 			pending = append(pending, &provider.StreamChunk{
 				Type:             provider.ChunkTypeFinish,
 				FinishReason:     types.FinishReasonError,
-				Usage:            convertOpenAICompatStreamUsage(s.pendingUsage),
+				Usage:            s.convertUsage(s.pendingUsage),
 				ProviderMetadata: s.finishMetadata(s.pendingUsage),
 			})
 		}
@@ -567,6 +572,14 @@ func (u *openAICompatStreamUsage) UnmarshalJSON(b []byte) error {
 		u.rawWire = raw
 	}
 	return nil
+}
+
+// convertUsage applies the provider's ConvertUsage hook, else the default.
+func (s *OpenAICompatStream) convertUsage(usage *openAICompatStreamUsage) *types.Usage {
+	if usage != nil && s.ConvertUsage != nil && usage.rawWire != nil {
+		return s.ConvertUsage(usage.rawWire)
+	}
+	return convertOpenAICompatStreamUsage(usage)
 }
 
 // convertOpenAICompatStreamUsage converts a raw OpenAI-compatible usage

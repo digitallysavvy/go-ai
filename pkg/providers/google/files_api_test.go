@@ -216,3 +216,32 @@ func TestFilesAPI_UploadFile_TSErrorsAndMetadata(t *testing.T) {
 		}
 	}
 }
+
+// TS parseProviderOptions rejects non-positive/non-number poll options and a
+// non-string displayName with "invalid google provider options" before any request.
+func TestFilesAPI_UploadFile_InvalidProviderOptions(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++ }))
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	for name, g := range map[string]interface{}{
+		"zero interval":    map[string]interface{}{"pollIntervalMs": 0},
+		"negative timeout": map[string]interface{}{"pollTimeoutMs": float64(-5)},
+		"string interval":  map[string]interface{}{"pollIntervalMs": "10"},
+		"number name":      map[string]interface{}{"displayName": 3},
+		"not an object":    "x",
+	} {
+		_, err := p.Files().UploadFile(context.Background(), types.UploadFileOptions{
+			Data:            types.FileData{Type: types.FileDataTypeData, Data: []byte{1}},
+			MediaType:       "application/pdf",
+			ProviderOptions: map[string]interface{}{"google": g},
+		})
+		var ia *providerrors.InvalidArgumentError
+		if !errors.As(err, &ia) || !strings.Contains(ia.Message, "invalid google provider options") {
+			t.Errorf("%s: err = %v, want InvalidArgumentError", name, err)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0", requests)
+	}
+}
