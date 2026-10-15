@@ -808,6 +808,7 @@ func resolveProviderToolNames(tools []types.Tool) map[string]string {
 		"xai.web_search": true, "xai.x_search": true,
 		"xai.code_execution": true, "xai.file_search": true,
 		"xai.mcp": true, "xai.view_image": true, "xai.view_x_video": true,
+		"xai.image_generation": true,
 	}
 	names := make(map[string]string)
 	for _, t := range tools {

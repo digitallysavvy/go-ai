@@ -97,3 +97,21 @@ func TestXAIResponsesConvertResponseReasoningAndZeroUsage(t *testing.T) {
 		t.Fatalf("usage = %+v, want explicit zeros", res.Usage)
 	}
 }
+
+// TS resolves the registered name of an xai.image_generation tool for the
+// provider-executed call and result.
+func TestXAIResponsesImageGenerationUsesRegisteredToolName(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-4")
+	var resp responses.ResponsesAPIResponse
+	if err := json.Unmarshal([]byte(`{"id":"r","status":"completed","output":[{"type":"image_generation_call","id":"ig_1","status":"completed","result":"b64"}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	tools := []types.Tool{{Name: "painter", ProviderID: "xai.image_generation", Type: types.ToolTypeProviderDefined}}
+	res, err := m.convertResponse(resp, tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ToolName != "painter" {
+		t.Fatalf("tool calls = %+v", res.ToolCalls)
+	}
+}
