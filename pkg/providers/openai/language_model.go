@@ -1170,7 +1170,6 @@ type openAIStream struct {
 	// trailing usage-only chunk (stream_options.include_usage) can be merged
 	// into it, as TS does in flush().
 	finishRaw         string
-	finishSeen        bool
 	finishErrored     bool // TS finishReason={unified:'error'} after an unparsable/error chunk
 	finished          bool
 	isActiveReasoning bool
@@ -1410,9 +1409,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 
-			// Finish reason: close open blocks and flush tool calls now; the
-			// finish chunk itself waits for the end of the stream so trailing
-			// usage can be merged.
+			// Finish reason: only recorded. TS closes blocks, finalizes tool
+			// calls and enqueues finish in flush(), so deltas and usage that
+			// arrive after finish_reason still count.
 			if choice.FinishReason != nil {
 				if !produced {
 					produced = true
@@ -1422,10 +1421,8 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					s.flushPendingMetadata()
 				}
 				s.outputStarted = true
-				s.finishSeen = true
 				s.finishErrored = false
 				s.finishRaw = *choice.FinishReason
-				s.closeBlocksAndToolCalls()
 			}
 		}
 
@@ -1492,7 +1489,7 @@ func (s *openAIStream) Err() error {
 }
 
 // closeBlocksAndToolCalls ends an open reasoning block and emits the finalized
-// tool calls (TS: tool-call parts are emitted when the model finishes).
+// tool calls (TS flush(): tool-call parts are emitted when the stream ends).
 func (s *openAIStream) closeBlocksAndToolCalls() {
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
@@ -1510,10 +1507,7 @@ func (s *openAIStream) endStream() {
 	if !s.finished {
 		s.finished = true
 		s.flushPendingMetadata()
-		if !s.finishSeen {
-			// Stream ended without a finish_reason (TS default 'other').
-			s.closeBlocksAndToolCalls()
-		}
+		s.closeBlocksAndToolCalls()
 		finish := &provider.StreamChunk{
 			Type:            provider.ChunkTypeFinish,
 			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),

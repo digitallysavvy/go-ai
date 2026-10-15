@@ -703,11 +703,13 @@ type deepseekStream struct {
 	metadataEmitted     bool
 	providerOptionsName string
 
-	// pendingFinish holds the Finish chunk built when finish_reason arrives.
-	// Emission is deferred until the stream actually ends (the [DONE]
-	// marker) so a trailing usage-only chunk (stream_options.include_usage)
-	// can still be attached to it.
-	pendingFinish *provider.StreamChunk
+	// The Finish chunk is only built when the stream ends (the [DONE] marker
+	// or EOF) so a trailing usage-only chunk (stream_options.include_usage)
+	// is attached to it. finishRaw is the last finish_reason seen; finishErrored is set by a
+	// parse/error chunk after it; endQueued guards queueEnd.
+	finishRaw     string
+	finishErrored bool
+	endQueued     bool
 
 	// State accumulated across the stream for the Finish chunk's
 	// providerMetadata and usage.
@@ -770,16 +772,15 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		}
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF && s.queueEnd() {
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 		if streaming.IsStreamDone(event) {
-			if s.pendingFinish != nil {
-				finish := s.pendingFinish
-				s.pendingFinish = nil
-				s.attachFinishMetadata(finish)
-				s.err = io.EOF
-				return finish, nil
+			if s.queueEnd() {
+				continue
 			}
 			s.err = io.EOF
 			return nil, io.EOF
@@ -798,6 +799,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		}
 		var chunkData deepseekStreamChunk
 		if err := json.Unmarshal([]byte(event.Data), &chunkData); err != nil {
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: fmt.Sprintf("failed to parse stream chunk: %v", err),
@@ -809,6 +811,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			return errorChunk, nil
 		}
 		if len(chunkData.Error) > 0 {
+			s.finishErrored = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: deepseekStreamErrorText(chunkData.Error),
@@ -865,61 +868,46 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 
-			// Handle reasoning content (emitted before text in DeepSeek thinking mode).
+			// TS records finish_reason before inspecting the delta.
+			if choice.FinishReason != "" {
+				s.finishRaw = choice.FinishReason
+				s.finishErrored = false
+			}
+
+			// TS handles reasoning, content and tool calls independently, in
+			// that order; chunks are appended behind anything already queued
+			// for this event (response-metadata).
 			if choice.Delta.ReasoningContent != "" {
 				if !s.isActiveReasoning {
 					s.isActiveReasoning = true
-					s.flushQueue = append([]*provider.StreamChunk{
-						{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"},
-						{Type: provider.ChunkTypeReasoning, Reasoning: choice.Delta.ReasoningContent, ID: "reasoning-0"},
-					}, s.flushQueue...)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: "reasoning-0"})
 				}
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type:      provider.ChunkTypeReasoning,
 					Reasoning: choice.Delta.ReasoningContent,
 					ID:        "reasoning-0",
 				})
-				if ok {
-					return chunk, nil
-				}
-				continue
 			}
-
-			// End reasoning block when text content arrives.
 			if choice.Delta.Content != "" {
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
-					s.flushQueue = append([]*provider.StreamChunk{
-						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-						{Type: provider.ChunkTypeText, Text: choice.Delta.Content},
-					}, s.flushQueue...)
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
-				if ok {
-					return chunk, nil
-				}
-				continue
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: choice.Delta.Content})
 			}
-			// Tool call delta — accumulate partial arguments by index.
-			// Finalize only when finish_reason is received, never mid-stream.
+			// Tool call deltas accumulate by index; the tracker finalizes them
+			// at stream end (TS flush()).
 			if len(choice.Delta.ToolCalls) > 0 {
+				if s.isActiveReasoning {
+					s.isActiveReasoning = false
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
+				}
 				for _, tc := range choice.Delta.ToolCalls {
 					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 						c := chunk
 						s.flushQueue = append(s.flushQueue, &c)
 					}
 				}
-				if choice.FinishReason != "" {
-					s.flushDeepseekToolCalls(choice.FinishReason)
-					continue
-				}
-				continue
-			}
-			if choice.FinishReason != "" {
-				s.flushDeepseekToolCalls(choice.FinishReason)
-				continue
 			}
 		}
 		continue
@@ -941,26 +929,35 @@ func deepseekStreamErrorText(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func (s *deepseekStream) flushDeepseekToolCalls(finishReason string) {
+// queueEnd mirrors TS flush(): close the reasoning block, finalize tool calls
+// and enqueue the terminal finish part (reason "other" when no finish_reason
+// arrived, "error" after a parse/error chunk). It reports whether it queued
+// anything; it queues at most once.
+func (s *deepseekStream) queueEnd() bool {
+	if s.endQueued {
+		return false
+	}
+	s.endQueued = true
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
-		s.flushQueue = append([]*provider.StreamChunk{
-			{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-		}, s.flushQueue...)
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 	}
 	for _, chunk := range s.toolCallTracker.Flush() {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	// Defer the Finish chunk itself: a stream_options.include_usage request
-	// delivers usage in a trailing chunk after finish_reason, so the chunk is
-	// only actually emitted once the stream ends (see the IsStreamDone
-	// handling in Next()).
-	s.pendingFinish = &provider.StreamChunk{
-		Type:            provider.ChunkTypeFinish,
-		FinishReason:    mapDeepSeekFinishReason(finishReason),
-		RawFinishReason: finishReason,
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	if s.finishRaw != "" {
+		finish.FinishReason = mapDeepSeekFinishReason(s.finishRaw)
+		finish.RawFinishReason = s.finishRaw
 	}
+	if s.finishErrored {
+		finish.FinishReason = types.FinishReasonError
+		finish.RawFinishReason = ""
+	}
+	s.attachFinishMetadata(finish)
+	s.flushQueue = append(s.flushQueue, finish)
+	return true
 }
 
 // attachFinishMetadata populates usage and providerMetadata on the deferred

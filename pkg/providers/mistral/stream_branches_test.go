@@ -162,7 +162,7 @@ func TestMistralFlushToolCallsReasoningEnd(t *testing.T) {
 		toolCallTracker:   tracker,
 		isActiveReasoning: true,
 	}
-	s.flushMistralToolCalls("stop")
+	s.finishSeen, s.finishRaw = true, "stop"
 	s.queueFinishAtEnd() // the finish part is emitted when the stream ends
 	if len(s.flushQueue) < 3 {
 		t.Fatalf("expected reasoning_end + tool_call + finish, got %#v", s.flushQueue)

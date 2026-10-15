@@ -783,26 +783,9 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal(contentRaw, &text); err == nil && text != "" {
 				if s.isActiveReasoning {
 					s.isActiveReasoning = false
-					s.flushQueue = append([]*provider.StreamChunk{
-						{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"},
-						{Type: provider.ChunkTypeText, Text: text},
-					}, s.flushQueue...)
-					if choice.FinishReason != "" {
-						s.flushMistralToolCalls(choice.FinishReason)
-					}
-					continue
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
-				if choice.FinishReason != "" {
-					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text})
-					s.flushMistralToolCalls(choice.FinishReason)
-					continue
-				}
-				textChunk := &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text}
-				if len(s.flushQueue) > 0 {
-					s.flushQueue = append(s.flushQueue, textChunk)
-					continue
-				}
-				return textChunk, nil
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text})
 			}
 		}
 
@@ -820,21 +803,16 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 
-		// Finish event — flush tool calls and emit finish chunk.
+		// finish_reason is only recorded; tool calls are finalized and the
+		// finish part is emitted when the stream ends (TS flush()).
 		if choice.FinishReason != "" {
-			s.flushMistralToolCalls(choice.FinishReason)
-			continue
+			s.finishSeen = true
+			s.finishRaw = choice.FinishReason
 		}
 
 		continue
 
 	}
-}
-
-func (s *mistralStream) flushMistralToolCalls(finishReason string) {
-	s.closeReasoningAndTools()
-	s.finishSeen = true
-	s.finishRaw = finishReason
 }
 
 func (s *mistralStream) closeReasoningAndTools() {
@@ -855,9 +833,7 @@ func (s *mistralStream) queueFinishAtEnd() bool {
 		return false
 	}
 	s.finishQueued = true
-	if !s.finishSeen {
-		s.closeReasoningAndTools()
-	}
+	s.closeReasoningAndTools()
 	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
 	if s.finishSeen {
 		finish.FinishReason = mapMistralFinishReason(s.finishRaw)
