@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // FingerprintMCPAppResource returns a stable SHA-256 digest (base64url,
@@ -69,7 +71,7 @@ func canonicalizeNormalizedJSON(value interface{}) string {
 		sort.Strings(keys)
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
-			keyJSON, _ := json.Marshal(k)
+			keyJSON, _ := jsonstr.Marshal(k)
 			parts = append(parts, string(keyJSON)+":"+canonicalizeNormalizedJSON(v[k]))
 		}
 		return "{" + strings.Join(parts, ",") + "}"
@@ -80,7 +82,9 @@ func canonicalizeNormalizedJSON(value interface{}) string {
 		}
 		return "[" + strings.Join(parts, ",") + "]"
 	default:
-		data, err := json.Marshal(v)
+		// JSON.stringify of a scalar: no HTML escaping of <, > and & (the
+		// digest covers the resource's html), U+2028/2029 written as is.
+		data, err := jsonstr.Marshal(v)
 		if err != nil {
 			return "null"
 		}
