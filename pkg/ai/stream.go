@@ -1693,6 +1693,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var modelCallEndFired bool
 		var stepUsage types.Usage
 		var stepSawTerminal bool
+		// stepSawErrorChunk: the step's stream carried a terminal error part (not
+		// retried). With InternalOptions.StopOnStreamError the step's tool calls
+		// are not processed and the loop ends (TS hasTerminalError).
+		var stepSawErrorChunk bool
 		var stepSawOutput bool
 		// stepFirstForwardedChunk gates the emission of ChunkTypeStartStep:
 		// the chunk is pushed before the first raw chunk of this step other
@@ -2305,6 +2309,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					modelCallEndFired = false
 					stepUsage = types.Usage{}
 					stepSawTerminal = false
+					stepSawErrorChunk = false
 					stepSawOutput = false
 					streamedToolResults = make(map[string]types.ToolResult)
 					stepTextIDRemap = make(map[string]string)
@@ -2330,6 +2335,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 
 				stepSawTerminal = true
+				stepSawErrorChunk = true
 				if r.finishReason == "" {
 					r.finishReason = types.FinishReasonError
 				}
@@ -2422,7 +2428,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// an empty text result, as if the provider had streamed it, so the loop
 		// continues (TS resolveProviderToolResult).
 		injectedProviderResult := false
-		if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && !transformStopped && providerResultFinishAllowed(r.finishReason) {
+		if opts.Internal != nil && opts.Internal.ContinueOnMissingProviderResult && !transformStopped && (!stepSawErrorChunk || !opts.Internal.StopOnStreamError) && providerResultFinishAllowed(r.finishReason) {
 			for _, call := range missingProviderResultCalls(stepToolCalls, toolsByName, func(id string) bool {
 				_, ok := streamedToolResults[id]
 				return ok || contentAnswersProviderCall(stepContent, id)
@@ -2470,7 +2476,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// All chunks (including tool call chunks) have already been forwarded above.
 		var stepToolResults []types.ToolResult
 		var toolExecutionMs map[string]int64
-		if len(stepToolCalls) > 0 && len(stepTools) > 0 {
+		skipStepTools := stepSawErrorChunk && opts.Internal != nil && opts.Internal.StopOnStreamError
+		if len(stepToolCalls) > 0 && len(stepTools) > 0 && !skipStepTools {
 			toolExecutionMs = map[string]int64{}
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              r.cbCallID,
@@ -2894,7 +2901,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		logModelWarnings(stepWarnings, stepProvider, stepModelID)
 		cancelStep()
 
-		if hasUserApproval {
+		if hasUserApproval || skipStepTools {
 			break
 		}
 
