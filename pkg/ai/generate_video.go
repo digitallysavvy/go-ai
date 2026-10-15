@@ -243,7 +243,6 @@ func doGenerateVideoWithRetry(ctx context.Context, model provider.VideoModelV3, 
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -463,7 +462,6 @@ func doStartVideoWithRetry(ctx context.Context, starter provider.VideoModelStart
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -487,7 +485,6 @@ func doStatusVideoWithRetry(ctx context.Context, checker provider.VideoModelStat
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   retries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,

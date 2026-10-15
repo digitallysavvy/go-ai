@@ -143,7 +143,6 @@ func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
@@ -164,7 +163,6 @@ func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
 		InitialDelay: 2 * time.Second,
-		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
 		ShouldRetry:  isGatewayCallRetryable,
