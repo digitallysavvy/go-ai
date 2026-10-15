@@ -763,3 +763,75 @@ func TestTSReplay_StructuredOutputMapping(t *testing.T) {
 		t.Fatalf("responseFormat = %v", start["responseFormat"])
 	}
 }
+
+// TS 'detaches between turns and attaches without spawning or reapplying
+// guidance and skills' and the cold-restore equivalent: the guidance
+// bookkeeping (initialGuidanceApplied, instructions fingerprint) survives
+// every resume path, so unchanged instructions are not prepended again.
+func TestTSReplay_ResumeDoesNotReapplyGuidance(t *testing.T) {
+	const instructions = "Remember user-provided facts."
+	for _, path := range []string{"attach", "cold-restore"} {
+		t.Run(path, func(t *testing.T) {
+			var mu sync.Mutex
+			var starts []map[string]any
+			srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+				mu.Lock()
+				starts = append(starts, start)
+				n := len(starts)
+				mu.Unlock()
+				if n == 1 {
+					turn.Emit(map[string]any{"type": "bridge-thread", "threadId": "acp-session-1"})
+				} else if tsc, _ := start["turnStartConfig"].(map[string]any); start["recoveryMode"] != nil && tsc != nil {
+					turn.Emit(map[string]any{"type": "raw", "rawValue": map[string]any{"type": "acp-session-restored", "method": "resume"}})
+				}
+				turn.Emit(finishFrame())
+			}})
+			t.Cleanup(srv.Close)
+			sandbox := newFakeSandbox(srv)
+			h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+			ctx := context.Background()
+			first, err := h.DoStart(ctx, harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			skills := []harness.Skill{{Name: "private-context", Description: "Use private context.", Content: "Private skill body."}}
+			runTurn(t, first, harness.PromptTurnOptions{Prompt: harness.TextPrompt("Remember the number 42."), TurnSettings: harness.TurnSettings{Skills: skills, Instructions: instructions}})
+			var resume *harness.ResumeSessionState
+			if path == "attach" {
+				resume, err = first.DoDetach(ctx)
+			} else {
+				resume, err = first.DoStop(ctx)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var data map[string]any
+			_ = json.Unmarshal(resume.Data, &data)
+			if data["initialGuidanceApplied"] != true {
+				t.Fatalf("lifecycle data = %v", data)
+			}
+			writes := len(sandbox.files)
+			second, err := h.DoStart(ctx, harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w", ResumeFrom: resume})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = second.DoDestroy(ctx) })
+			if path == "attach" && len(sandbox.spawnCommands) != 1 {
+				t.Fatalf("spawns = %d, want 1 (attach)", len(sandbox.spawnCommands))
+			}
+			if len(sandbox.files) != writes {
+				t.Fatalf("files written during resume: %d -> %d", writes, len(sandbox.files))
+			}
+			runTurn(t, second, harness.PromptTurnOptions{Prompt: harness.TextPrompt("What number did I ask you to remember?"), TurnSettings: harness.TurnSettings{Skills: skills, Instructions: instructions}})
+			mu.Lock()
+			last := starts[len(starts)-1]
+			mu.Unlock()
+			if !reflect.DeepEqual(promptTexts(last), []string{"What number did I ask you to remember?"}) {
+				t.Fatalf("prompt after %s = %q", path, promptTexts(last))
+			}
+			if b, _ := json.Marshal(last); strings.Contains(string(b), "<session-guidance>") || strings.Contains(string(b), "Private skill body.") {
+				t.Fatalf("guidance or skill body re-sent: %s", b)
+			}
+		})
+	}
+}
