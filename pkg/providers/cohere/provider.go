@@ -2,6 +2,8 @@ package cohere
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -9,8 +11,9 @@ import (
 )
 
 const (
-	// DefaultBaseURL is the default Cohere API base URL
-	DefaultBaseURL = "https://api.cohere.ai/v1"
+	// DefaultBaseURL is the default Cohere API base URL (TS createCohere
+	// baseURL). Endpoint paths (/chat, /embed, /rerank) are relative to it.
+	DefaultBaseURL = "https://api.cohere.com/v2"
 )
 
 // Provider implements the provider.Provider interface for Cohere
@@ -24,7 +27,9 @@ type Config struct {
 	// APIKey is the Cohere API key
 	APIKey string
 
-	// BaseURL is the base URL for the Cohere API (default: https://api.cohere.ai/v1)
+	// BaseURL is the base URL for the Cohere API including the version
+	// (default: https://api.cohere.com/v2). A host-only value such as
+	// "https://api.cohere.com" gets "/v2" appended
 	BaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
@@ -33,10 +38,7 @@ type Config struct {
 
 // New creates a new Cohere provider with the given configuration
 func New(cfg Config) *Provider {
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
+	baseURL := normalizeBaseURL(cfg.BaseURL)
 
 	// Create HTTP client with default headers
 	headers := map[string]string{
@@ -121,4 +123,18 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// normalizeBaseURL applies the default and keeps host-only base URLs working:
+// v0.5.2 appended "/v2/chat" to the configured base, so a base without a path
+// meant "<host>/v2".
+func normalizeBaseURL(base string) string {
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return DefaultBaseURL
+	}
+	if u, err := url.Parse(base); err == nil && u.Host != "" && u.Path == "" {
+		return base + "/v2"
+	}
+	return base
 }
