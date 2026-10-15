@@ -1,7 +1,6 @@
 package bedrock
 
 import (
-	"encoding/json"
 	"fmt"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -390,26 +389,6 @@ func streamDeltaMatches(d map[string]interface{}) bool {
 		}
 	}
 	return false
-}
-
-// validateConverseUsage validates a usage object (generate: totalTokens is
-// required). It returns nil for a valid or absent usage.
-func validateConverseUsage(raw json.RawMessage) *providererrors.ValidationError {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil
-	}
-	var v interface{}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return issue("usage", "expected object").validation()
-	}
-	u, bad := asObject(v, "usage")
-	if bad == nil {
-		bad = checkUsage(u, "usage", true)
-	}
-	if bad != nil {
-		return bad.validation()
-	}
-	return nil
 }
 
 // invalidConverseResponseError is the APICallError TS throws when the
