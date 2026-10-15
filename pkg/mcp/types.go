@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -877,4 +879,86 @@ type LoggingMessageNotification struct {
 	Level  LoggingLevel `json:"level"`
 	Logger string       `json:"logger,omitempty"`
 	Data   interface{}  `json:"data"`
+}
+
+// validateCallToolResult applies the TS CallToolResultSchema union to a
+// decoded result: it needs content (an array of valid blocks), structuredContent
+// or a legacy toolResult, and the known content types (text, image, resource,
+// resource_link) must match their schemas. Unknown block types pass.
+func validateCallToolResult(r *CallToolResult) error {
+	if !r.contentPresent && !r.structuredContentPresent && !r.toolResultPresent {
+		return errors.New("tool result needs content, structuredContent or toolResult")
+	}
+	raw, ok := r.rawFields["content"]
+	if !ok {
+		return nil
+	}
+	var blocks []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &blocks); err != nil || blocks == nil {
+		return errors.New("tool result content must be an array of objects")
+	}
+	for i, block := range blocks {
+		if err := validateToolContentBlock(block); err != nil {
+			return fmt.Errorf("invalid content[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func rawString(block map[string]json.RawMessage, key string) (string, bool) {
+	raw, ok := block[key]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+func isBase64String(s string) bool {
+	_, err := base64.StdEncoding.DecodeString(s)
+	return err == nil
+}
+
+func validateToolContentBlock(block map[string]json.RawMessage) error {
+	typ, ok := rawString(block, "type")
+	if !ok {
+		return errors.New("type must be a string")
+	}
+	switch typ {
+	case "text":
+		if _, ok := rawString(block, "text"); !ok {
+			return errors.New("text content needs a text string")
+		}
+	case "image":
+		if data, ok := rawString(block, "data"); !ok || !isBase64String(data) {
+			return errors.New("image content needs base64 data")
+		}
+		if _, ok := rawString(block, "mimeType"); !ok {
+			return errors.New("image content needs a mimeType string")
+		}
+	case "resource_link":
+		if _, ok := rawString(block, "uri"); !ok {
+			return errors.New("resource_link content needs a uri string")
+		}
+		if _, ok := rawString(block, "name"); !ok {
+			return errors.New("resource_link content needs a name string")
+		}
+	case "resource":
+		var resource map[string]json.RawMessage
+		if err := json.Unmarshal(block["resource"], &resource); err != nil || resource == nil {
+			return errors.New("resource content needs a resource object")
+		}
+		if _, ok := rawString(resource, "uri"); !ok {
+			return errors.New("resource needs a uri string")
+		}
+		_, hasText := rawString(resource, "text")
+		blob, hasBlob := rawString(resource, "blob")
+		if !hasText && !(hasBlob && isBase64String(blob)) {
+			return errors.New("resource needs text or base64 blob")
+		}
+	}
+	return nil
 }

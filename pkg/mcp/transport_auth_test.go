@@ -135,3 +135,46 @@ func TestSSETransportAuthProviderRecoversFrom401OnPost(t *testing.T) {
 		t.Fatalf("authorization headers = %v", got)
 	}
 }
+
+// Ports mcp-http-transport.test.ts "should use the scope from an OAuth
+// challenge for authorization".
+func TestHTTPTransportUsesScopeFromOAuthChallenge(t *testing.T) {
+	provider := newFakeOAuthProvider()
+	provider.clientInfo = &OAuthClientInformation{ClientID: "test-client"}
+	oauthClient := oauthFlowTestServer(t, map[string]func(*http.Request) (*http.Response, error){
+		"/.well-known/oauth-protected-resource": func(*http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"resource":"https://auth.example.com/mcp","authorization_servers":["https://auth.example.com"],"scopes_supported":["mcp.read","mcp.write"]}`), nil
+		},
+		"/.well-known/oauth-authorization-server": func(*http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, oauthFlowASMetadataJSON), nil
+		},
+	})
+	challenge := &challengeSSEClient{header: `Bearer resource_metadata="https://auth.example.com/.well-known/oauth-protected-resource", scope="mcp.challenge"`}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL: "https://auth.example.com/mcp", SSEClient: challenge, AuthProvider: provider, AuthHTTPClient: oauthClient,
+	})
+	transport.connected = true
+	msg, _ := CreateRequest(1, "initialize", map[string]interface{}{})
+	err := transport.Send(context.Background(), msg)
+	var unauthorized *UnauthorizedError
+	if !errors.As(err, &unauthorized) {
+		t.Fatalf("err = %v, want UnauthorizedError", err)
+	}
+	if len(provider.redirectedTo) != 1 {
+		t.Fatalf("redirects = %v", provider.redirectedTo)
+	}
+	u, _ := url.Parse(provider.redirectedTo[0])
+	if got := u.Query().Get("scope"); got != "mcp.challenge" {
+		t.Fatalf("scope = %q, want the challenge scope", got)
+	}
+}
+
+type challengeSSEClient struct{ header string }
+
+func (c *challengeSSEClient) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Header:     http.Header{"Www-Authenticate": []string{c.header}},
+		Body:       io.NopCloser(strings.NewReader("")),
+	}, nil
+}

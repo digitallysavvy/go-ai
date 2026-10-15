@@ -675,6 +675,9 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[str
 		if err := c.call(ctx, "tools/call", params, &result); err != nil {
 			return nil, fmt.Errorf("failed to call tool: %w", err)
 		}
+		if err := validateCallToolResult(&result); err != nil {
+			return nil, &MCPClientError{Message: "Failed to parse server response", Cause: err}
+		}
 
 		return &result, nil
 	})

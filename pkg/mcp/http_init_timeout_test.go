@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -98,5 +99,54 @@ func TestHTTPInitializationTimeoutBoundsSessionCleanup(t *testing.T) {
 	case <-deleteAborted:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the session DELETE was not aborted")
+	}
+}
+
+// Ports mcp-sse-transport.test.ts "should abort a hanging POST with the
+// request signal".
+func TestSSETransportAbortsHangingPOSTWithContext(t *testing.T) {
+	postStarted := make(chan struct{})
+	postAborted := make(chan struct{})
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: endpoint\ndata: " + srv.URL + "/messages\n\n"))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body) // the server notices a closed connection once the body is read
+		close(postStarted)
+		<-r.Context().Done()
+		close(postAborted)
+	}))
+	defer srv.Close()
+
+	transport := NewSSETransport(SSETransportConfig{URL: srv.URL + "/sse"})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close() //nolint:errcheck
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sent := make(chan error, 1)
+	go func() {
+		sent <- transport.Send(ctx, &MCPMessage{JSONRpc: "2.0", Method: "test", ID: "1"})
+	}()
+	<-postStarted
+	cancel()
+	select {
+	case err := <-sent:
+		if err == nil {
+			t.Fatal("Send should fail when its context is cancelled")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send did not return after the context was cancelled")
+	}
+	select {
+	case <-postAborted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the POST request was not aborted")
 	}
 }
