@@ -561,3 +561,129 @@ func TestTSReplay_StreamText_ProviderExecutedResultReplayedInNextPrompt(t *testi
 		t.Fatalf("assistant message lost provider call/result metadata: call=%v result=%v local=%v: %#v", sawCall, sawResult, sawLocalCall, msgs[1].Content)
 	}
 }
+
+// stream-text.test.ts 'context': tool context, sandbox in tool execution and
+// prepareStep, a step-only sandbox override, runtimeContext in prepareStep and
+// onFinish.
+func TestTSReplay_StreamText_ContextAndSandbox(t *testing.T) {
+	type sandbox struct{ name string }
+	callSandbox, stepSandbox := &sandbox{"default"}, &sandbox{"step"}
+
+	var mu sync.Mutex
+	var recordedSandboxes []interface{}
+	var recordedToolContext interface{}
+	responseCount := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			mu.Lock()
+			n := responseCount
+			responseCount++
+			mu.Unlock()
+			if n < 2 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-" + string(rune('1'+n)), ToolName: "t1", Arguments: map[string]interface{}{"value": "v"}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(3, 10)},
+				}), nil
+			}
+			return testutil.NewMockTextStream(append(textChunks("done"), finishChunk())), nil
+		},
+	}
+	tool := types.Tool{
+		Name:          "t1",
+		Parameters:    map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}},
+		ContextSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "properties": map[string]interface{}{"context": map[string]interface{}{"type": "string"}}, "required": []interface{}{"context"}}),
+		Execute: func(_ context.Context, in map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			mu.Lock()
+			recordedSandboxes = append(recordedSandboxes, o.ExperimentalSandbox)
+			recordedToolContext = o.ToolContext
+			mu.Unlock()
+			return map[string]interface{}{"value": in["value"]}, nil
+		},
+	}
+	var preparedRuntime []interface{}
+	var preparedSandbox []interface{}
+	var endRuntime interface{}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "test-input", Tools: []types.Tool{tool},
+		ToolsContext:        map[string]interface{}{"t1": map[string]interface{}{"context": "test"}},
+		RuntimeContext:      map[string]interface{}{"myData": "test-value"},
+		ExperimentalSandbox: callSandbox,
+		StopWhen:            []StopCondition{IsStepCount(3)},
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			mu.Lock()
+			preparedRuntime = append(preparedRuntime, step.RuntimeContext)
+			preparedSandbox = append(preparedSandbox, step.ExperimentalSandbox)
+			mu.Unlock()
+			if step.StepNumber == 0 {
+				return PrepareStepOptions{ExperimentalSandbox: stepSandbox}
+			}
+			return PrepareStepOptions{}
+		},
+		OnEndEvent: func(_ context.Context, e OnFinishEvent) { mu.Lock(); endRuntime = e.RuntimeContext; mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(recordedToolContext, map[string]interface{}{"context": "test"}) {
+		t.Errorf("tool context = %#v", recordedToolContext)
+	}
+	if len(recordedSandboxes) != 2 || recordedSandboxes[0] != stepSandbox || recordedSandboxes[1] != callSandbox {
+		t.Errorf("tool sandboxes = %v, want [step, default]", recordedSandboxes)
+	}
+	for i, rc := range preparedRuntime {
+		if !reflect.DeepEqual(rc, map[string]interface{}{"myData": "test-value"}) {
+			t.Errorf("prepareStep %d runtimeContext = %#v", i, rc)
+		}
+	}
+	if len(preparedSandbox) == 0 || preparedSandbox[0] != callSandbox {
+		t.Errorf("prepareStep sandbox = %v, want the call sandbox", preparedSandbox)
+	}
+	if !reflect.DeepEqual(endRuntime, map[string]interface{}{"myData": "test-value"}) {
+		t.Errorf("onEnd runtimeContext = %#v", endRuntime)
+	}
+}
+
+func TestTSReplay_GenerateText_StepSandboxAppliesToThatStepOnly(t *testing.T) {
+	type sandbox struct{ name string }
+	callSandbox, stepSandbox := &sandbox{"default"}, &sandbox{"step"}
+	var recorded []interface{}
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			calls++
+			if calls <= 2 {
+				return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "call-" + string(rune('0'+calls)), ToolName: "t1", Arguments: map[string]interface{}{"value": "v"}}}}, nil
+			}
+			return &types.GenerateResult{Text: "done", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	tool := types.Tool{
+		Name: "t1", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			recorded = append(recorded, o.ExperimentalSandbox)
+			return "ok", nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "p", Tools: []types.Tool{tool}, ExperimentalSandbox: callSandbox, StopWhen: []StopCondition{IsStepCount(3)},
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			if step.StepNumber == 0 {
+				return PrepareStepOptions{ExperimentalSandbox: stepSandbox}
+			}
+			return PrepareStepOptions{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recorded) != 2 || recorded[0] != stepSandbox || recorded[1] != callSandbox {
+		t.Fatalf("sandboxes = %v, want [step, default]", recorded)
+	}
+}

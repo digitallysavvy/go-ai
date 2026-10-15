@@ -603,6 +603,9 @@ type StreamTextResult struct {
 	// the stream; they are forwarded but not accumulated into step content.
 	resumeChunksRemaining int
 	cbExperimentalSandbox interface{}
+	// cbCallSandbox is the sandbox given to the call (before any per-step
+	// PrepareStep override).
+	cbCallSandbox interface{}
 	// Snapshot of the initial messages and tools for event population.
 	// cbMessages is step 0's post-announcement messages (used for step 0's
 	// own StepRequest.Messages and as the loop's starting currentMessages).
@@ -947,6 +950,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepToolOrder := opts.ToolOrder
 	stepProviderOptions := opts.ProviderOptions
 	stepSandbox := opts.ExperimentalSandbox
+	// The call-level sandbox: a PrepareStep sandbox applies to its step only.
+	r.cbCallSandbox = opts.ExperimentalSandbox
 	stepInstructionMessages := instructionMessages
 	// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see the
 	// analogous comment in generate.go's GenerateText.
@@ -2667,7 +2672,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextToolChoice := opts.ToolChoice
 		nextToolOrder := opts.ToolOrder
 		nextProviderOptions := opts.ProviderOptions
-		nextSandbox := opts.ExperimentalSandbox
+		nextSandbox := r.cbCallSandbox
 		nextInstructionMessages := r.cbInstructionMessages
 		// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see
 		// the analogous comment in generate.go's GenerateText.
