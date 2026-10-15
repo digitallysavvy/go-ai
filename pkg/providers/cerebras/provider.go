@@ -40,6 +40,7 @@ func New(cfg Config) *Provider {
 		baseURL = "https://api.cerebras.ai/v1"
 	}
 
+	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
 		APIKey:     cfg.APIKey,
 		Name:       "cerebras",
@@ -48,9 +49,10 @@ func New(cfg Config) *Provider {
 		HTTPClient: withCerebrasTransform(cfg.HTTPClient),
 		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:       true,
-		OpenAICompatible: true,
-		UserAgentName:    "cerebras",
+		AllowVideo:                true,
+		OpenAICompatible:          true,
+		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
+		UserAgentName:             "cerebras",
 		// TransformRequestBody applies the structural (provider-options-
 		// independent) half of TS transformCerebrasRequestBody: renaming
 		// max_tokens -> max_completion_tokens and reasoning_content ->

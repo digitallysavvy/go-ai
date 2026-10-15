@@ -51,15 +51,17 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 
+	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
 		APIKey:  cfg.APIKey,
 		BaseURL: baseURL,
 		Headers: cfg.Headers,
 		// TS DeepInfraChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:       true,
-		OpenAICompatible: true,
-		UserAgentName:    "deepinfra",
+		AllowVideo:                true,
+		OpenAICompatible:          true,
+		SupportsStructuredOutputs: &structuredOutputs, // TS supportsStructuredOutputs: true
+		UserAgentName:             "deepinfra",
 	})
 
 	return &Provider{

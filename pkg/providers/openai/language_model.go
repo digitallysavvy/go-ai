@@ -587,13 +587,14 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// The schema is normalized for OpenAI structured outputs first (d5e3024,
 	// 411b3f2: drop propertyNames / lookaround patterns).
 	responseFormat := opts.ResponseFormat
-	if m.provider.config.OpenAICompatible && m.provider.config.SupportsStructuredOutputs != nil {
+	if m.provider.config.OpenAICompatible {
+		supportsStructured := m.provider.config.SupportsStructuredOutputs != nil && *m.provider.config.SupportsStructuredOutputs // TS default false
 		// OpenAICompatibleChatLanguageModel: json_schema only when
 		// supportsStructuredOutputs and a schema is present (no strict flag, no
 		// OpenAI schema normalization), else json_object.
 		if responseFormat != nil && responseFormat.Type == "json" {
 			schema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema)
-			if *m.provider.config.SupportsStructuredOutputs && schema != nil {
+			if supportsStructured && schema != nil {
 				name := responseFormat.Name
 				if name == "" {
 					name = "response"
