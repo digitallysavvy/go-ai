@@ -1,11 +1,13 @@
 package openai
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // NormalizeOpenAIJSONSchema is a Go port of TypeScript's
@@ -49,6 +51,35 @@ func NormalizeOpenAIJSONSchema(schema map[string]interface{}) (map[string]interf
 	return normalizedMap, warnings, nil
 }
 
+// NormalizeOpenAISchemaValue normalizes a schema of any supported shape: a
+// map, or raw JSON (json.RawMessage), whose property order is kept on the
+// wire (a JS object keeps its insertion order; the model follows `properties`
+// order when generating). Other shapes pass through untouched.
+func NormalizeOpenAISchemaValue(schema interface{}) (interface{}, []types.Warning, error) {
+	switch s := schema.(type) {
+	case map[string]interface{}:
+		if s == nil {
+			return schema, nil, nil
+		}
+		return NormalizeOpenAIJSONSchema(s)
+	case json.RawMessage, []byte:
+		raw, ok := providerutils.RawJSONObject(s)
+		if !ok {
+			return schema, nil, nil
+		}
+		m := providerutils.DecodeRawJSONObject(raw)
+		if m == nil {
+			return schema, nil, nil
+		}
+		normalized, warnings, err := NormalizeOpenAIJSONSchema(m)
+		if err != nil {
+			return nil, nil, err
+		}
+		return providerutils.OrderLike(normalized, raw), warnings, nil
+	}
+	return schema, nil, nil
+}
+
 // normalizeOpenAIChatToolSchemas normalizes the "parameters" schema of each
 // function tool produced by tool.ToOpenAIFormat, mirroring TS
 // prepareChatTools's normalizeOpenAIJsonSchema(tool.inputSchema) call
@@ -60,11 +91,11 @@ func normalizeOpenAIChatToolSchemas(tools []map[string]interface{}) ([]map[strin
 		if !ok {
 			continue
 		}
-		params, ok := fn["parameters"].(map[string]interface{})
-		if !ok || params == nil {
+		params := fn["parameters"]
+		if params == nil {
 			continue
 		}
-		normalized, schemaWarnings, err := NormalizeOpenAIJSONSchema(params)
+		normalized, schemaWarnings, err := NormalizeOpenAISchemaValue(params)
 		if err != nil {
 			return nil, nil, err
 		}

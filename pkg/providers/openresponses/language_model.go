@@ -714,6 +714,9 @@ func convertToolsToOpenResponses(tools []types.Tool, registry *ExtensionRegistry
 			// Convert parameters to map if possible
 			if paramsMap, ok := t.Parameters.(map[string]interface{}); ok {
 				ft.Parameters = paramsMap
+			} else if raw, ok := providerutils.RawJSONObject(t.Parameters); ok {
+				ft.Parameters = providerutils.DecodeRawJSONObject(raw)
+				ft.rawParameters = raw
 			}
 		}
 

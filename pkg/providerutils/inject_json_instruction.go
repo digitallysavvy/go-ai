@@ -1,8 +1,6 @@
 package providerutils
 
 import (
-	"bytes"
-	"encoding/json"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -34,6 +32,16 @@ type InjectJSONInstructionOptions struct {
 // object mode). schema may be nil (no schema available) or an empty, non-nil
 // map (an empty JSON Schema, which is still serialized and included).
 func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts InjectJSONInstructionOptions) string {
+	if schema == nil {
+		return InjectJSONInstructionSchema(prompt, nil, opts)
+	}
+	return InjectJSONInstructionSchema(prompt, schema, opts)
+}
+
+// InjectJSONInstructionSchema is InjectJSONInstruction for a schema of any
+// shape. A json.RawMessage schema is serialized in its own key order (like
+// JSON.stringify of the parsed object); a map is serialized sorted.
+func InjectJSONInstructionSchema(prompt string, schema interface{}, opts InjectJSONInstructionOptions) string {
 	hasSchema := schema != nil
 	schemaPrefix := opts.SchemaPrefix
 	if schemaPrefix == "" && hasSchema {
@@ -57,11 +65,8 @@ func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts In
 	}
 	if hasSchema {
 		// JSON.stringify does not HTML-escape <, > and &; json.Marshal does.
-		var buf bytes.Buffer
-		enc := json.NewEncoder(&buf)
-		enc.SetEscapeHTML(false)
-		if err := enc.Encode(schema); err == nil {
-			lines = append(lines, strings.TrimSuffix(buf.String(), "\n"))
+		if text, ok := schemaInstructionText(schema); ok {
+			lines = append(lines, text)
 		}
 	}
 	if schemaSuffix != "" {
@@ -76,6 +81,15 @@ func InjectJSONInstruction(prompt string, schema map[string]interface{}, opts In
 // message, creating a new one when the prompt doesn't start with a system
 // message. The input slice and its messages are not mutated.
 func InjectJSONInstructionIntoMessages(messages []types.Message, schema map[string]interface{}, opts InjectJSONInstructionOptions) []types.Message {
+	if schema == nil {
+		return InjectJSONInstructionIntoMessagesSchema(messages, nil, opts)
+	}
+	return InjectJSONInstructionIntoMessagesSchema(messages, schema, opts)
+}
+
+// InjectJSONInstructionIntoMessagesSchema is InjectJSONInstructionIntoMessages
+// for a schema of any shape (see InjectJSONInstructionSchema).
+func InjectJSONInstructionIntoMessagesSchema(messages []types.Message, schema interface{}, opts InjectJSONInstructionOptions) []types.Message {
 	hasLeadingSystem := len(messages) > 0 && messages[0].Role == types.RoleSystem
 	existingText := ""
 	if hasLeadingSystem {
@@ -84,7 +98,7 @@ func InjectJSONInstructionIntoMessages(messages []types.Message, schema map[stri
 
 	systemMessage := types.Message{
 		Role:    types.RoleSystem,
-		Content: []types.ContentPart{types.TextContent{Text: InjectJSONInstruction(existingText, schema, opts)}},
+		Content: []types.ContentPart{types.TextContent{Text: InjectJSONInstructionSchema(existingText, schema, opts)}},
 	}
 
 	rest := messages

@@ -53,6 +53,28 @@ type FunctionTool struct {
 	Description string                 `json:"description,omitempty"`
 	Parameters  map[string]interface{} `json:"parameters,omitempty"`
 	Strict      *bool                  `json:"strict,omitempty"`
+
+	// rawParameters is the schema as raw JSON when the caller supplied one;
+	// it is written in its own key order (a JS object keeps insertion order).
+	rawParameters json.RawMessage
+}
+
+// MarshalJSON writes the tool with raw JSON parameters in author key order.
+func (t FunctionTool) MarshalJSON() ([]byte, error) {
+	w := struct {
+		Type        string      `json:"type"`
+		Name        string      `json:"name"`
+		Description string      `json:"description,omitempty"`
+		Parameters  interface{} `json:"parameters,omitempty"`
+		Strict      *bool       `json:"strict,omitempty"`
+	}{Type: t.Type, Name: t.Name, Description: t.Description, Strict: t.Strict}
+	switch {
+	case len(t.rawParameters) > 0:
+		w.Parameters = t.rawParameters
+	case len(t.Parameters) > 0:
+		w.Parameters = t.Parameters
+	}
+	return json.Marshal(w)
 }
 
 // CustomToolItem represents a caller-executed "custom" tool definition sent

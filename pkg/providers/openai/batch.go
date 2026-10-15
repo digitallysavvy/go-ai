@@ -105,12 +105,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			return nil, err
 		}
 
-		line, err := json.Marshal(map[string]interface{}{
-			"custom_id": textReq.ID,
-			"method":    "POST",
-			"url":       openaiBatchEndpoint,
-			"body":      body,
-		})
+		line, err := providerutils.BatchJSONLLine(textReq.ID, "POST", openaiBatchEndpoint, body)
 		if err != nil {
 			return nil, err
 		}

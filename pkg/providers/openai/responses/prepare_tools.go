@@ -7,6 +7,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // PrepareTools converts SDK tools to the OpenAI Responses API tool format.
@@ -383,6 +384,8 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 	if t.Parameters != nil {
 		if params, ok := t.Parameters.(map[string]interface{}); ok {
 			def.Parameters = params
+		} else if raw, ok := providerutils.RawJSONObject(t.Parameters); ok {
+			def.Parameters = providerutils.DecodeRawJSONObject(raw)
 		}
 	}
 

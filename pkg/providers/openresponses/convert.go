@@ -530,7 +530,7 @@ func customToolCallInputText(toolCall types.ToolCallContent) string {
 func serializeToolCallArguments(toolCall types.ToolCallContent) string {
 	if toolCall.Input != "" {
 		if json.Valid([]byte(toolCall.Input)) {
-			return toolCall.Input
+			return providerutils.CompactJSON(json.RawMessage(toolCall.Input))
 		}
 		data, err := jsonstr.Marshal(toolCall.Input)
 		if err == nil {

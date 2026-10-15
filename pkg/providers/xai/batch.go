@@ -141,12 +141,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		if err != nil {
 			return nil, err
 		}
-		line, err := json.Marshal(map[string]interface{}{
-			"custom_id": req.RequestID(),
-			"method":    "POST",
-			"url":       endpoint,
-			"body":      body,
-		})
+		line, err := providerutils.BatchJSONLLine(req.RequestID(), "POST", endpoint, body)
 		if err != nil {
 			return nil, err
 		}
