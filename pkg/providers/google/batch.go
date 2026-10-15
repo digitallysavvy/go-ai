@@ -231,7 +231,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	}
 	defer initResp.Body.Close() //nolint:errcheck
 	if initResp.StatusCode >= 400 {
-		body, _ := io.ReadAll(initResp.Body)
+		body, _ := io.ReadAll(io.LimitReader(initResp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: initResp.StatusCode, Headers: initResp.Header, Body: body})
 	}
 	uploadURL := initResp.Header.Get("x-goog-upload-url")
@@ -254,7 +254,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 	}
 	defer uploadResp.Body.Close() //nolint:errcheck
 	if uploadResp.StatusCode >= 400 {
-		body, _ := io.ReadAll(uploadResp.Body)
+		body, _ := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: uploadResp.StatusCode, Headers: uploadResp.Header, Body: body})
 	}
 
@@ -264,7 +264,7 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 			ExpirationTime string `json:"expirationTime"`
 		} `json:"file"`
 	}
-	if err := json.NewDecoder(uploadResp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes)).Decode(&result); err != nil {
 		return nil, err
 	}
 	return &googleBatchUploadedFile{Name: result.File.Name, ExpirationTime: result.File.ExpirationTime}, nil
@@ -440,7 +440,7 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 	}
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close() //nolint:errcheck
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, googleFilesMaxResponseBytes))
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: body})
 	}
 
@@ -725,8 +725,13 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 		errType := ""
 		var meta map[string]interface{}
 		if preview.PromptFeedback != nil {
+			// TS: blockReason ?? null.
+			var blockReason interface{}
+			if preview.PromptFeedback.BlockReason != "" {
+				blockReason = preview.PromptFeedback.BlockReason
+			}
 			meta = map[string]interface{}{"google": map[string]interface{}{
-				"promptFeedback": map[string]interface{}{"blockReason": preview.PromptFeedback.BlockReason},
+				"promptFeedback": map[string]interface{}{"blockReason": blockReason},
 			}}
 			if preview.PromptFeedback.BlockReason != "" {
 				message = fmt.Sprintf("Google blocked the batch request (%s).", preview.PromptFeedback.BlockReason)

@@ -803,3 +803,13 @@ func TestGoogleBatch_ImageRequestRejectsMultipleImages(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestBatchPromptFeedbackWithoutBlockReasonIsNullInMetadata(t *testing.T) {
+	b := NewBatch(New(Config{APIKey: "k"}))
+	item := b.convertGoogleBatchResultLine("r1", []byte(`{"promptFeedback":{}}`), nil)
+	meta, _ := item.ProviderMetadata["google"].(map[string]interface{})
+	pf, _ := meta["promptFeedback"].(map[string]interface{})
+	if v, ok := pf["blockReason"]; !ok || v != nil {
+		t.Fatalf("promptFeedback = %#v", pf)
+	}
+}
