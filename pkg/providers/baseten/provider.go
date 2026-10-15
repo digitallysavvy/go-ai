@@ -86,6 +86,7 @@ func New(cfg Config) *Provider {
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:       true,
 		OpenAICompatible: true,
+		IncludeUsage:     true,
 		UserAgentName:    "baseten",
 	})
 
@@ -102,6 +103,7 @@ func New(cfg Config) *Provider {
 			HTTPClient:       cfg.HTTPClient,
 			Name:             "baseten.embedding",
 			OpenAICompatible: true,
+			IncludeUsage:     true,
 			UserAgentName:    "baseten",
 		})
 	}

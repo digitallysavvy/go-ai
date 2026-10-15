@@ -118,6 +118,12 @@ type Config struct {
 	// references resolve the wrapper's own provider key instead of "openai".
 	OpenAICompatible bool
 
+	// IncludeUsage sends stream_options.include_usage on streaming chat
+	// requests for OpenAICompatible wrappers (TS openai-compatible
+	// `includeUsage`; baseten sets it). Native OpenAI chat always requests
+	// usage.
+	IncludeUsage bool
+
 	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Every wrapper
 	// provider whose TS counterpart is its own distinct npm package (and
