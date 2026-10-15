@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -763,4 +764,148 @@ func TestTSReplay_InvalidToolCallSkipsApprovalAndExecution(t *testing.T) {
 	if len(outs) != 1 || !strings.HasPrefix(outs[0], "error-text:AI_InvalidToolInputError: Invalid input for tool tool1: ") {
 		t.Fatalf("response tool outputs = %v", outs)
 	}
+}
+
+// stream-text.test.ts describe('options.onChunk') > 'should return events in
+// order'.
+func TestTSReplay_StreamText_OnChunkOrder(t *testing.T) {
+	meta := json.RawMessage(`{"provider":{"custom":"value"}}`)
+	model := &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+				{Type: provider.ChunkTypeTextEnd, ID: "1"},
+				{Type: provider.ChunkTypeToolInputStart, ID: "2", ToolCall: &types.ToolCall{ID: "2", ToolName: "tool1"}},
+				{Type: provider.ChunkTypeToolInputDelta, ID: "2", Text: `{"value": "`},
+				{Type: provider.ChunkTypeReasoningStart, ID: "3"},
+				{Type: provider.ChunkTypeReasoning, ID: "3", Text: "Feeling clever"},
+				{Type: provider.ChunkTypeReasoningEnd, ID: "3"},
+				{Type: provider.ChunkTypeToolInputDelta, ID: "2", Text: "test"},
+				{Type: provider.ChunkTypeToolInputDelta, ID: "2", Text: `"}`},
+				{Type: provider.ChunkTypeSource, SourceContent: &types.SourceContent{SourceType: "url", ID: "123", URL: "https://example.com", Title: "Example"}},
+				{Type: provider.ChunkTypeToolInputEnd, ID: "2", ToolCall: &types.ToolCall{ID: "2"}},
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "2", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test"}, ProviderMetadata: map[string]interface{}{"provider": map[string]interface{}{"custom": "value"}}}, ProviderMetadata: meta},
+				{Type: provider.ChunkTypeTextStart, ID: "4"},
+				{Type: provider.ChunkTypeText, ID: "4", Text: " World"},
+				{Type: provider.ChunkTypeTextEnd, ID: "4"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: usage(3, 10)},
+			}), nil
+		},
+	}
+	var got []string
+	echo := tool1()
+	echo.Execute = func(_ context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		return fmt.Sprint(args["value"]) + "-result", nil
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "test-input", Tools: []types.Tool{echo},
+		OnChunk: func(c provider.StreamChunk) {
+			switch c.Type {
+			case provider.ChunkTypeToolInputStart:
+				got = append(got, "tool-input-start:"+c.ID+":"+c.ToolCall.ToolName)
+			case provider.ChunkTypeToolInputDelta:
+				got = append(got, "tool-input-delta:"+c.ID+":"+c.Text)
+			case provider.ChunkTypeToolInputEnd:
+				got = append(got, "tool-input-end:"+c.ID)
+			case provider.ChunkTypeSource:
+				got = append(got, "source:"+c.SourceContent.ID)
+			default:
+				if name := tsPartName(&c); name != "" {
+					got = append(got, name)
+				}
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := result.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"start", "start-step",
+		"text-start:1", "text-delta:1:Hello", "text-end:1",
+		"tool-input-start:2:tool1", `tool-input-delta:2:{"value": "`,
+		"reasoning-start:3", "reasoning-delta:3:Feeling clever", "reasoning-end:3",
+		"tool-input-delta:2:test", `tool-input-delta:2:"}`,
+		"source:123", "tool-input-end:2", "tool-call:2:tool1",
+		"text-start:4", "text-delta:4: World", "text-end:4",
+		"tool-result:2:test-result", "finish-step:stop", "finish:stop",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("onChunk parts\n got %q\nwant %q", got, want)
+	}
+}
+
+// stream-text.test.ts describe('errors').
+func TestTSReplay_StreamText_Errors(t *testing.T) {
+	t.Run("doStream failure is an error part after start and reaches onError", func(t *testing.T) {
+		model := &testutil.MockLanguageModel{
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return nil, errors.New("test error")
+			},
+		}
+		var reported []error
+		result, err := StreamText(context.Background(), StreamTextOptions{
+			Model: model, Prompt: "test-input",
+			OnError: func(_ context.Context, e error) { reported = append(reported, e) },
+		})
+		if err != nil {
+			t.Fatalf("StreamText returned %v; TS swallows the failure into the stream", err)
+		}
+		var parts []string
+		s := result.FullStream()
+		for {
+			c, err := s.Next()
+			if err != nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeError {
+				parts = append(parts, "error")
+			} else if name := tsPartName(c); name != "" {
+				parts = append(parts, name)
+			}
+		}
+		if !reflect.DeepEqual(parts, []string{"start", "error"}) {
+			t.Fatalf("parts = %v, want [start error]", parts)
+		}
+		if len(reported) != 1 || !strings.Contains(reported[0].Error(), "test error") {
+			t.Fatalf("onError = %v", reported)
+		}
+	})
+	// TS reports `text part <id> not found` for a delta without a start part.
+	// The Go provider stream protocol lets providers send deltas without
+	// start/end boundaries (core opens an implicit block), so that error does
+	// not exist here.
+	t.Run("onEnd still runs after a mid-stream error chunk", func(t *testing.T) {
+		model := &testutil.MockLanguageModel{
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeTextStart, ID: "1"},
+					{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+					{Type: provider.ChunkTypeError, Err: errors.New("chunk error")},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonError, Usage: usage(3, 10)},
+				}), nil
+			},
+		}
+		var reported []error
+		var finish *OnFinishEvent
+		result, err := StreamText(context.Background(), StreamTextOptions{
+			Model: model, Prompt: "test-input",
+			OnError:    func(_ context.Context, e error) { reported = append(reported, e) },
+			OnEndEvent: func(_ context.Context, e OnFinishEvent) { finish = &e },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = result.ConsumeStream()
+		if len(reported) != 1 || !strings.Contains(reported[0].Error(), "chunk error") {
+			t.Fatalf("onError = %v", reported)
+		}
+		if finish == nil || finish.FinishReason != types.FinishReasonError || finish.Text != "Hello" || *finish.TotalUsage.TotalTokens != 13 {
+			t.Fatalf("onEnd event = %#v", finish)
+		}
+	})
 }

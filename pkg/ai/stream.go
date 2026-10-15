@@ -1266,7 +1266,19 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
-		r.fail(fmt.Errorf("failed to start stream: %w", err))
+		startErr := fmt.Errorf("failed to start stream: %w", err)
+		if !isAbortErr(stepCtx, err) {
+			// TS streamText turns a doStream failure into an `error` part
+			// after `start` and reports it to onError instead of throwing.
+			if opts.OnError != nil {
+				safeInvoke(func() { opts.OnError(ctx, startErr) })
+			}
+			if r.chunkBuf != nil {
+				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
+				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: startErr, Text: startErr.Error()})
+			}
+		}
+		r.fail(startErr)
 		return
 	}
 
@@ -2911,6 +2923,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			stepErr := r.err
 			if isAbort {
 				stepErr = nil
+			}
+			if !isAbort {
+				// Same as the first step: the failure is an error part and
+				// goes to onError.
+				if opts.OnError != nil {
+					startErr := r.err
+					safeInvoke(func() { opts.OnError(ctx, startErr) })
+				}
+				if onChunk != nil {
+					onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: r.err, Text: r.err.Error()})
+				}
 			}
 			telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
 			if isAbort {
