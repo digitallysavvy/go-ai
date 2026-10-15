@@ -1389,12 +1389,16 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			return
 		}
 		toolName, dynamic := toolInfoFromPart(part)
-		s.updateExistingToolPart(part, toolName, dynamic, UIMessageChunk{
+		update := UIMessageChunk{
 			"state":     "output-error",
 			"input":     part["input"],
-			"rawInput":  part["rawInput"],
 			"errorText": chunk["errorText"],
-		}, chunk)
+		}
+		// TS keeps rawInput for static tool parts only.
+		if !dynamic {
+			update["rawInput"] = part["rawInput"]
+		}
+		s.updateExistingToolPart(part, toolName, dynamic, update, chunk)
 	case "tool-output-denied":
 		toolCallID := stringValue(chunk["toolCallId"])
 		if part := s.findToolPart(toolCallID); part != nil {
@@ -1537,9 +1541,19 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	if toolName != "" && part["type"] == "dynamic-tool" {
 		part["toolName"] = toolName
 	}
+	// TS updateToolPart/updateDynamicToolPart assign output, errorText, rawInput
+	// and preliminary on every update, so a field the update does not carry is
+	// cleared rather than left over from the previous state.
+	for _, key := range []string{"output", "errorText", "rawInput", "preliminary"} {
+		delete(part, key)
+	}
 	for key, value := range update {
 		if value == uiOmitField {
 			delete(part, key)
+			continue
+		}
+		// A nil rawInput/preliminary is TS undefined (absent), not JSON null.
+		if value == nil && (key == "rawInput" || key == "preliminary") {
 			continue
 		}
 		part[key] = value

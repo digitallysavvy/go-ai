@@ -2946,3 +2946,30 @@ func TestToUIMessageStream_PartialStream(t *testing.T) {
 		t.Fatalf("empty partial stream = %v, %v", got, err)
 	}
 }
+
+// TS updateToolPart/updateDynamicToolPart assign output, errorText, rawInput
+// and preliminary on every update: undefined fields are absent (never JSON
+// null) and leftover streaming rawInput is cleared.
+func TestUIMessageCallbackStateToolPartUpdateClearsAbsentFields(t *testing.T) {
+	s := newUIMessageCallbackState(nil, "m1")
+	for _, c := range []UIMessageChunk{
+		{"type": "tool-input-start", "toolCallId": "c1", "toolName": "w"},
+		{"type": "tool-input-delta", "toolCallId": "c1", "inputTextDelta": `{"a":`},
+		{"type": "tool-input-error", "toolCallId": "c1", "toolName": "w", "input": "x", "errorText": "bad"},
+		{"type": "tool-input-available", "toolCallId": "c2", "toolName": "w2", "input": map[string]interface{}{}},
+		{"type": "tool-output-available", "toolCallId": "c2", "output": "o"},
+		{"type": "tool-input-available", "toolCallId": "c3", "toolName": "w3", "input": map[string]interface{}{}},
+		{"type": "tool-output-error", "toolCallId": "c3", "errorText": "e"},
+	} {
+		s.apply(c, nil)
+	}
+	parts := uiParts(s.responseMessage())
+	for i, raw := range parts {
+		part := asUIPartChunk(raw)
+		for _, key := range []string{"rawInput", "preliminary"} {
+			if _, ok := part[key]; ok {
+				t.Errorf("part %d (%v) has %s = %v; TS leaves it undefined", i, part["toolCallId"], key, part[key])
+			}
+		}
+	}
+}
