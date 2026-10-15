@@ -15,6 +15,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 )
 
+// maxTokenResponseBytes caps the OAuth token endpoint response read.
+const maxTokenResponseBytes = 1 << 20
+
 // DefaultRefreshWindow is the default window before expiry in which an access
 // token is considered expiring.
 const DefaultRefreshWindow = 5 * time.Minute
@@ -110,7 +113,9 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	responseText, err := io.ReadAll(resp.Body)
+	// A token response is a few hundred bytes; bound the read so a misbehaving
+	// endpoint cannot exhaust memory.
+	responseText, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
 	if err != nil {
 		return nil, err
 	}

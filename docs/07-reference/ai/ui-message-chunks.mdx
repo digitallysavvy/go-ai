@@ -329,6 +329,7 @@ Options for `ai.CreateUIMessageStream`, `ai.ToUIMessageStream` and the response 
 | `OnEnd` | `UIMessageStreamOnEndCallback` |  |
 | `OnFinish` | `UIMessageStreamOnFinishCallback` | Deprecated: use OnEnd. |
 | `OnError` | `func(error) string` |  |
+| `PartialStream` | `bool` | PartialStream marks a source that may end without a finish or error chunk because the producer intentionally suspended it mid-step (a time-sliced harness turn). The converter then forwards what arrived and stops: it does not close open parts, invent a trailing `finish-step` or `finish`, or report an incomplete-stream error. TS forwards stream parts as they come and repairs nothing. |
 
 {/* /gen:fields */}
 

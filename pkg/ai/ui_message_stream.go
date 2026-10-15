@@ -139,6 +139,13 @@ type UIMessageStreamResultOptions struct {
 	// Deprecated: use OnEnd.
 	OnFinish UIMessageStreamOnFinishCallback
 	OnError  func(error) string
+	// PartialStream marks a source that may end without a finish or error
+	// chunk because the producer intentionally suspended it mid-step (a
+	// time-sliced harness turn). The converter then forwards what arrived and
+	// stops: it does not close open parts, invent a trailing `finish-step` or
+	// `finish`, or report an incomplete-stream error. TS forwards stream parts
+	// as they come and repairs nothing.
+	PartialStream bool
 }
 
 // UIMessageStreamResponseInit mirrors the TypeScript response init shape used by
@@ -917,6 +924,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 
+		if !sawTerminal && options.PartialStream {
+			callOnEnd(finishReason)
+			return
+		}
 		if !sawTerminal {
 			if !sawOutput {
 				err := newIncompleteModelStreamError()

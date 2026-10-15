@@ -296,6 +296,9 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 	defer stopUI()
 	chunksCh, errCh := ai.ToUIMessageStream(uiCtx, result.Stream(), ai.UIMessageStreamResultOptions{
 		OnError: func(err error) string { return err.Error() },
+		// A time-sliced turn closes mid-step by design; the next slice
+		// continues it, so nothing may be repaired or invented here.
+		PartialStream: true,
 	})
 
 	sawError := false

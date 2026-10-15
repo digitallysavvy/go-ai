@@ -1188,6 +1188,12 @@ func TestRunHarnessAgentTimeSlice_ApprovalResponseMessagesResume(t *testing.T) {
 		},
 		stream: func(ctx context.Context, opts agent.AgentStreamOptions) (*ai.StreamTextResult, error) {
 			streamMessages = append(streamMessages, opts.Messages)
+			// The real agent would route a lone approval-response tool
+			// message to a continuation (and reject it without the prior
+			// approval request); this test only records the engine's
+			// routing, so run a plain prompt turn for the bookkeeping.
+			opts.Messages = nil
+			opts.Prompt = "continue"
 			return real.Stream(ctx, opts)
 		},
 		continueStream: func(context.Context, agent.AgentStreamOptions, []types.ToolApprovalResponseContent, []types.ToolResultContent) (*ai.StreamTextResult, error) {
