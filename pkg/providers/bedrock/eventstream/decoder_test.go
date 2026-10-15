@@ -305,3 +305,33 @@ func (r *chunkedReader) Read(p []byte) (int, error) {
 	r.pos += n
 	return n, nil
 }
+
+// A declared frame length above the 16 MiB event-stream limit is rejected
+// before any of it is buffered.
+func TestDecoder_OversizedFrameRejectedWithoutBuffering(t *testing.T) {
+	prelude := make([]byte, 12)
+	binary.BigEndian.PutUint32(prelude[0:4], 0xF0000000)
+	r := &countingReader{data: prelude}
+	_, err := NewDecoder(r).Next()
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("err = %v, want frame length limit error", err)
+	}
+	if r.reads != 1 {
+		t.Fatalf("reads = %d, want 1 (no further buffering)", r.reads)
+	}
+}
+
+type countingReader struct {
+	data  []byte
+	reads int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	c.reads++
+	if len(c.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, c.data)
+	c.data = c.data[n:]
+	return n, nil
+}
