@@ -362,3 +362,14 @@ func TestGenerateHTTPErrorIsProviderError(t *testing.T) {
 		t.Fatalf("err = %#v", err)
 	}
 }
+
+func TestUnsupportedModelTypesAreNoSuchModelErrors(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	var nsm *providererrors.NoSuchModelError
+	if _, err := p.EmbeddingModel("x"); !errors.As(err, &nsm) || nsm.ModelType != "embeddingModel" {
+		t.Errorf("EmbeddingModel err = %v", err)
+	}
+	if _, err := p.ImageModel("x"); !errors.As(err, &nsm) || nsm.ModelType != "imageModel" {
+		t.Errorf("ImageModel err = %v", err)
+	}
+}

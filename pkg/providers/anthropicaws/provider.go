@@ -131,11 +131,11 @@ func (p *Provider) LanguageModelWithOptions(modelID string, options *anthropic.M
 }
 
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("anthropicaws does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
