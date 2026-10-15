@@ -167,10 +167,9 @@ type NoObjectGeneratedError struct {
 	FinishReason types.FinishReason
 }
 
+// Error returns the message alone, as TS NoObjectGeneratedError.message does;
+// the underlying parse or validation error is Cause (errors.Unwrap).
 func (e *NoObjectGeneratedError) Error() string {
-	if e.Cause != nil {
-		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
-	}
 	return e.Message
 }
 

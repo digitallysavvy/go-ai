@@ -718,7 +718,7 @@ func TestGenerateObject_NoTextReturnsNoObjectGeneratedError(t *testing.T) {
 	if !errors.As(err, &noObjErr) {
 		t.Fatalf("expected NoObjectGeneratedError, got %T", err)
 	}
-	if noObjErr.Message != "No object generated: could not parse the response." {
+	if noObjErr.Message != "No object generated: the model did not return a response." {
 		t.Fatalf("message = %q", noObjErr.Message)
 	}
 	if noObjErr.Response == nil || noObjErr.Response.ID != "resp_empty" {

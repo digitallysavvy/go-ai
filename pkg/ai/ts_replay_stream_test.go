@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -426,4 +427,170 @@ func TestTSReplay_GenerateText_Approvals(t *testing.T) {
 			t.Fatalf("prompt tool result = %#v", tr.Output)
 		}
 	})
+}
+
+// abortingStream replays chunks, then cancels the caller's context and fails
+// with the context error, like the TS mock that aborts and errors with an
+// AbortError from pull().
+type abortingStream struct {
+	chunks []provider.StreamChunk
+	cancel context.CancelFunc
+	ctx    context.Context
+}
+
+func (s *abortingStream) Next() (*provider.StreamChunk, error) {
+	if len(s.chunks) > 0 {
+		c := s.chunks[0]
+		s.chunks = s.chunks[1:]
+		return &c, nil
+	}
+	s.cancel()
+	return nil, s.ctx.Err()
+}
+func (s *abortingStream) Err() error   { return nil }
+func (s *abortingStream) Close() error { return nil }
+
+// stream-text.test.ts describe('abort signal') > 'abort in 2nd step': onAbort
+// receives the completed first step, onError and onEnd stay silent and the
+// full stream ends with an abort part.
+func TestTSReplay_StreamText_AbortInSecondStep(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	call := 0
+	model := &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoStreamFunc: func(_ context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+			call++
+			if call == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "value"}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(3, 10)},
+				}), nil
+			}
+			return &abortingStream{ctx: ctx, cancel: cancel, chunks: []provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "1"},
+				{Type: provider.ChunkTypeText, ID: "1", Text: "Hello"},
+			}}, nil
+		},
+	}
+	var aborts []GenerateTextAbortEvent
+	var errs []error
+	ended := 0
+	result, err := StreamText(ctx, StreamTextOptions{
+		Model: model, Prompt: "test-input", Tools: []types.Tool{tool1()}, StopWhen: []StopCondition{StepCountIs(3)},
+		OnAbortEvent: func(_ context.Context, e GenerateTextAbortEvent) { aborts = append(aborts, e) },
+		OnError:      func(_ context.Context, e error) { errs = append(errs, e) },
+		OnEndEvent:   func(context.Context, OnFinishEvent) { ended++ },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var last *provider.StreamChunk
+	s := result.FullStream()
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if tsPartName(c) != "" {
+			cc := *c
+			last = &cc
+		}
+	}
+	if last == nil || last.Type != provider.ChunkTypeAbort {
+		t.Fatalf("last part = %v, want abort", last)
+	}
+	if len(aborts) != 1 {
+		t.Fatalf("onAbort calls = %d", len(aborts))
+	}
+	if len(aborts[0].Steps) != 1 {
+		t.Fatalf("onAbort steps = %d, want the completed first step", len(aborts[0].Steps))
+	}
+	if k := contentKinds(aborts[0].Steps[0].Content); !reflect.DeepEqual(k, []string{"tool-call", "other"}) {
+		t.Fatalf("onAbort step content = %v", k)
+	}
+	if aborts[0].Steps[0].FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("step finish reason = %v", aborts[0].Steps[0].FinishReason)
+	}
+	if len(errs) != 0 || ended != 0 {
+		t.Fatalf("onError=%v onEnd=%d, want none", errs, ended)
+	}
+}
+
+// stream-text.test.ts 'should fire the model-call callbacks before tool
+// execution and step finish', plus the same order through GenerateText.
+func TestTSReplay_CallbackOrderWithToolCall(t *testing.T) {
+	wantOrder := []string{"onStepStart", "onLanguageModelCallStart", "onLanguageModelCallEnd", "onToolExecutionStart", "onToolExecutionEnd", "onStepFinish"}
+	var order []string
+	var mu sync.Mutex
+	rec := func(name string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, name)
+	}
+	var modelEnd LanguageModelCallEndEvent
+	tool := tool1()
+	tool.Execute = func(_ context.Context, args map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+		return fmt.Sprint(args["value"]) + "-result", nil
+	}
+	call := types.ToolCall{ID: "call-1", ToolName: "tool1", Arguments: map[string]interface{}{"value": "test-arg"}}
+	for _, api := range []string{"streamText", "generateText"} {
+		order = nil
+		model := &testutil.MockLanguageModel{
+			ProviderName: "mock-provider", ModelName: "mock-model-id",
+			DoStreamFunc: func(ctx context.Context, o *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "response-1", ModelID: "response-model"}},
+					{Type: provider.ChunkTypeTextStart, ID: "1"},
+					{Type: provider.ChunkTypeText, ID: "1", Text: "Before tool."},
+					{Type: provider.ChunkTypeTextEnd, ID: "1"},
+					{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: usage(3, 10)},
+				}), nil
+			},
+			DoGenerateFunc: func(ctx context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{Text: "Before tool.", ToolCalls: []types.ToolCall{call}, FinishReason: types.FinishReasonToolCalls, Usage: *usage(3, 10)}, nil
+			},
+		}
+		onModelEnd := func(_ context.Context, e LanguageModelCallEndEvent) { rec("onLanguageModelCallEnd"); modelEnd = e }
+		onStepStart := func(context.Context, OnStepStartEvent) { rec("onStepStart") }
+		onModelStart := func(context.Context, LanguageModelCallStartEvent) { rec("onLanguageModelCallStart") }
+		onToolStart := func(context.Context, OnToolCallStartEvent) { rec("onToolExecutionStart") }
+		onToolEnd := func(context.Context, OnToolCallFinishEvent) { rec("onToolExecutionEnd") }
+		onStepEnd := func(context.Context, OnStepFinishEvent) { rec("onStepFinish") }
+		if api == "streamText" {
+			r, err := StreamText(context.Background(), StreamTextOptions{
+				Model: model, Prompt: "test-input", Tools: []types.Tool{tool},
+				OnStepStart: onStepStart, OnLanguageModelCallStart: onModelStart, OnLanguageModelCallEnd: onModelEnd,
+				OnToolExecutionStart: onToolStart, OnToolExecutionEnd: onToolEnd, OnStepEndEvent: onStepEnd,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.ConsumeStream(); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			_, err := GenerateText(context.Background(), GenerateTextOptions{
+				Model: model, Prompt: "test-input", Tools: []types.Tool{tool},
+				OnStepStart: onStepStart, OnLanguageModelCallStart: onModelStart, OnLanguageModelCallEnd: onModelEnd,
+				OnToolExecutionStart: onToolStart, OnToolExecutionEnd: onToolEnd, OnStepEndEvent: onStepEnd,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !reflect.DeepEqual(order, wantOrder) {
+			t.Fatalf("%s callback order\n got %v\nwant %v", api, order, wantOrder)
+		}
+		if k := contentKinds(modelEnd.Content); !reflect.DeepEqual(k, []string{"text", "tool-call"}) {
+			t.Fatalf("%s model-call end content = %v, want [text tool-call]", api, k)
+		}
+		if modelEnd.ResponseID != "response-1" && api == "streamText" {
+			t.Fatalf("model-call end response id = %q", modelEnd.ResponseID)
+		}
+		if modelEnd.FinishReason != types.FinishReasonToolCalls {
+			t.Fatalf("finish reason = %v", modelEnd.FinishReason)
+		}
+	}
 }
