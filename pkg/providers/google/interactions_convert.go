@@ -697,7 +697,7 @@ func reasoningSummary(text string) interface{} {
 func thoughtText(summary []interactionsContentBlock) string {
 	var parts []string
 	for _, item := range summary {
-		if item.Type == "text" && item.Text != "" {
+		if item.Type == "text" {
 			parts = append(parts, item.Text)
 		}
 	}

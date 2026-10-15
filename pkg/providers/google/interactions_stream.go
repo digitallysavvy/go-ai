@@ -156,9 +156,11 @@ func parseInteractionsCreated(created string) time.Time {
 func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response interactionsResponse, warnings []types.Warning, headers http.Header, includeRawChunks bool) provider.TextStream {
 	content, _, hasFunctionCall := model.parseOutputs(response.Steps, normalizedInteractionID(response.ID))
 	chunks := make([]*provider.StreamChunk, 0, len(content)+4)
-	if len(warnings) > 0 {
-		chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: warnings})
+	// TS always enqueues stream-start first, even without warnings.
+	if warnings == nil {
+		warnings = []types.Warning{}
 	}
+	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeStreamStart, Warnings: warnings})
 	// TS replays response-metadata and (optionally) the raw response before
 	// the content parts.
 	chunks = append(chunks, &provider.StreamChunk{
@@ -173,16 +175,25 @@ func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response
 	if includeRawChunks {
 		chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: response})
 	}
-	for i, part := range content {
-		id := fmt.Sprintf("%s:%d", firstNonEmpty(response.ID, "interaction"), i)
+	// TS nextBlockId: `${interactionId ?? 'agent'}:${counter++}`, counting
+	// only the text and reasoning blocks.
+	blockCounter := 0
+	nextBlockID := func() string {
+		id := fmt.Sprintf("%s:%d", firstNonEmpty(response.ID, "agent"), blockCounter)
+		blockCounter++
+		return id
+	}
+	for _, part := range content {
 		switch p := part.(type) {
 		case types.TextContent:
+			id := nextBlockID()
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: id})
 			if p.Text != "" {
 				chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: id, Text: p.Text})
 			}
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: id, ProviderMetadata: p.ProviderMetadata})
 		case types.ReasoningContent:
+			id := nextBlockID()
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: id})
 			if p.Text != "" {
 				chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: id, Reasoning: p.Text})
@@ -195,10 +206,19 @@ func newSynthesizedInteractionsStream(model *InteractionsLanguageModel, response
 		case types.ToolResultContent:
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: p.Result}})
 		case types.ToolCallContent:
-			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(p.ThoughtSignature, normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata})
+			// TS streams the tool input (start, one delta with the whole
+			// input, end) before the tool call itself.
+			chunks = append(chunks,
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, ProviderExecuted: p.ProviderExecuted}},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName}, Text: p.Input},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: p.ToolCallID}},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(p.ThoughtSignature, normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata},
+			)
 		}
 	}
-	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, firstNonEmpty(response.ServiceTier, headerServiceTier(providerutils.ExtractHeaders(headers))), response.Usage)})
+	// The synthesized finish carries no outputTokensByModality (TS only reads
+	// it from the streamed interaction.completed usage).
+	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, firstNonEmpty(response.ServiceTier, headerServiceTier(providerutils.ExtractHeaders(headers))), nil)})
 	return &sliceTextStream{chunks: chunks}
 }
 

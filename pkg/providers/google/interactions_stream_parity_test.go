@@ -342,3 +342,46 @@ func TestInteractionsBackgroundStreamDoesNotReconnectAfterError(t *testing.T) {
 		t.Fatalf("last chunk = %v", last.Type)
 	}
 }
+
+// TS joins every text summary item with a newline, empty items included.
+func TestInteractionsThoughtTextKeepsEmptySummaryItems(t *testing.T) {
+	got := thoughtText([]interactionsContentBlock{{Type: "text", Text: "a"}, {Type: "text", Text: ""}, {Type: "text", Text: "b"}, {Type: "image"}})
+	if got != "a\n\nb" {
+		t.Fatalf("thoughtText = %q", got)
+	}
+}
+
+// TS synthesizeGoogleInteractionsAgentStream: ids count only text/reasoning
+// blocks and use "agent" for a missing interaction id, tool inputs stream
+// (start, one delta, end) before the call, and the finish metadata has no
+// outputTokensByModality.
+func TestSynthesizedInteractionsStreamMatchesTSReplay(t *testing.T) {
+	model := &InteractionsLanguageModel{}
+	resp := interactionsResponse{Status: InteractionStatusCompleted, Usage: &interactionsUsage{OutputTokensByModality: []interactionsModalityTokens{{Modality: "text", Tokens: func() *int64 { n := int64(3); return &n }()}}}}
+	resp.Steps = []interactionsContentBlock{
+		{Type: "function_call", ID: "c1", Name: "lookup", Arguments: []byte(`{"q":"x"}`)},
+		{Type: "model_output", ContentRaw: []byte(`[{"type":"text","text":"hi"}]`)},
+	}
+	var seq []provider.ChunkType
+	var textID string
+	var finishMeta string
+	for _, c := range drainInteractions(t, newSynthesizedInteractionsStream(model, resp, nil, nil, false)) {
+		seq = append(seq, c.Type)
+		if c.Type == provider.ChunkTypeTextStart {
+			textID = c.ID
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finishMeta = string(c.ProviderMetadata)
+		}
+	}
+	want := []provider.ChunkType{provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata, provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd, provider.ChunkTypeToolCall, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, provider.ChunkTypeFinish}
+	if fmt.Sprint(seq) != fmt.Sprint(want) {
+		t.Fatalf("sequence = %v", seq)
+	}
+	if textID != "agent:0" {
+		t.Fatalf("text id = %q, want agent:0 (tool calls do not advance the counter)", textID)
+	}
+	if strings.Contains(finishMeta, "outputTokensByModality") {
+		t.Fatalf("finish metadata = %s", finishMeta)
+	}
+}
