@@ -1537,6 +1537,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 
 	stepTel.modelCallEnd(stepModel, genResult, modelCallStarted)
+	// An enforced tool choice (required, or a named tool) must produce a tool
+	// call, as in GenerateText (TS ToolChoiceViolationError).
+	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, violation
+	}
 	performance := ai.NonStreamingStepPerformance(time.Since(modelCallStarted).Milliseconds(), genResult.Usage)
 	rawFinishReason := genResult.RawFinishReason
 

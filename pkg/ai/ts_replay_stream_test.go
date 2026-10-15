@@ -909,3 +909,32 @@ func TestTSReplay_StreamText_Errors(t *testing.T) {
 		}
 	})
 }
+
+// generate-text.test.ts 'tool choice enforcement' > 'should reject when a
+// required tool choice produces no tool call': the error carries the whole
+// response content, reasoning and text, whichever shape the provider used.
+func TestTSReplay_GenerateText_ToolChoiceViolationContent(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		ProviderName: "mock-provider", ModelName: "mock-model-id",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         "No tool call.",
+				Content:      []types.ContentPart{types.ReasoningContent{Text: "I will not call the tool."}},
+				FinishReason: types.FinishReasonStop, Usage: *usage(3, 10),
+			}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "test-input", Tools: []types.Tool{tool1()}, ToolChoice: types.ToolChoice{Type: types.ToolChoiceRequired},
+	})
+	var v *ToolChoiceViolationError
+	if !errors.As(err, &v) {
+		t.Fatalf("err = %v", err)
+	}
+	if v.Error() != "Model response did not contain a tool call even though tool choice was required." || v.FinishReason != types.FinishReasonStop || v.Provider != "mock-provider" || v.ModelID != "mock-model-id" {
+		t.Fatalf("violation = %#v", v)
+	}
+	if k := contentKinds(v.Content); !reflect.DeepEqual(k, []string{"reasoning", "text"}) {
+		t.Fatalf("violation content = %v, want [reasoning text]", k)
+	}
+}
