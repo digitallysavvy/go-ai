@@ -436,8 +436,8 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 		rawBody = json.RawMessage(httpResp.Body)
 	}
 	serviceTier := response.ServiceTier
-	if serviceTier == "" && headers != nil {
-		serviceTier = headers["x-gemini-service-tier"]
+	if serviceTier == "" {
+		serviceTier = headerServiceTier(headers)
 	}
 	googleMeta := pruneMap(map[string]interface{}{
 		"interactionId":          emptyToNil(normalizedInteractionID(response.ID)),

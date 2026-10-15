@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -84,6 +85,7 @@ func newInteractionsStream(ctx context.Context, client *internalhttp.Client, int
 		timeoutMs:       timeoutMs,
 		open:            map[int]*interactionOpenBlock{},
 		resumable:       true,
+		serviceTier:     headerServiceTier(responseHeaders),
 	}
 	if err := s.openGETStream(); err != nil {
 		return nil, err
@@ -103,7 +105,20 @@ func newInteractionsEventStream(ctx context.Context, client *internalhttp.Client
 		warnings:        warnings,
 		timeoutMs:       timeoutMs,
 		open:            map[int]*interactionOpenBlock{},
+		serviceTier:     headerServiceTier(responseHeaders),
 	}
+}
+
+// headerServiceTier reads the applied service tier from the
+// x-gemini-service-tier response header (TS headerServiceTier). The lookup is
+// case-insensitive because header maps carry canonical keys.
+func headerServiceTier(headers map[string]string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, "x-gemini-service-tier") {
+			return v
+		}
+	}
+	return ""
 }
 
 // parseInteractionsCreated parses an Interactions `created` timestamp; the
@@ -164,7 +179,7 @@ func newSynthesizedInteractionsStream(response interactionsResponse, warnings []
 			chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: p.ToolCallID, ToolName: p.ToolName, Arguments: p.Arguments, RawArguments: p.Input, ProviderExecuted: p.ProviderExecuted, ProviderMetadata: providerMetaMap(p.ThoughtSignature, normalizedInteractionID(response.ID)), ThoughtSignature: p.ThoughtSignature}, ProviderMetadata: p.ProviderMetadata})
 		}
 	}
-	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, response.ServiceTier, response.Usage)})
+	chunks = append(chunks, &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: mapInteractionsFinishReason(response.Status, hasFunctionCall), RawFinishReason: response.Status, Usage: usagePtr(convertInteractionsUsage(response.Usage)), ProviderMetadata: finishMetadata(response.ID, firstNonEmpty(response.ServiceTier, headerServiceTier(providerutils.ExtractHeaders(headers))), response.Usage)})
 	return &sliceTextStream{chunks: chunks}
 }
 
