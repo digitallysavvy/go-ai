@@ -733,7 +733,7 @@ func (m *LanguageModel) converseURL(baseURL, suffix string) (*url.URL, string, e
 	return reqURL, rawPath, nil
 }
 
-func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, body []byte) (*http.Request, error) {
+func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, body []byte, callHeaders map[string]string) (*http.Request, error) {
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
@@ -756,7 +756,7 @@ func (m *LanguageModel) newConverseRequest(ctx context.Context, suffix string, b
 	req.Host = reqURL.Host
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	m.provider.applyRequestHeaders(req, nil)
+	m.provider.applyRequestHeaders(req, callHeaders)
 	if err := m.provider.authenticateRequest(ctx, req, body); err != nil {
 		return nil, err
 	}
@@ -775,7 +775,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := m.newConverseRequest(ctx, "/converse", bodyBytes)
+	req, err := m.newConverseRequest(ctx, "/converse", bodyBytes, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
@@ -1138,7 +1138,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := m.newConverseRequest(ctx, "/converse-stream", bodyBytes)
+	req, err := m.newConverseRequest(ctx, "/converse-stream", bodyBytes, opts.Headers)
 	if err != nil {
 		return nil, err
 	}
