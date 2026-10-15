@@ -130,7 +130,11 @@ func (o *computer20251124Opts) ToAnthropicAPIMap() map[string]interface{} {
 		"name":              "computer",
 		"display_width_px":  o.Args.DisplayWidthPx,
 		"display_height_px": o.Args.DisplayHeightPx,
-		"enable_zoom":       o.Args.EnableZoom,
+	}
+	// TS leaves enable_zoom out unless enableZoom is set (the API default is
+	// false); a Go bool cannot tell unset from false, so false is omitted.
+	if o.Args.EnableZoom {
+		m["enable_zoom"] = true
 	}
 	if o.Args.DisplayNumber != nil {
 		m["display_number"] = *o.Args.DisplayNumber
