@@ -18,7 +18,9 @@ func TestGetExtensionFromMimeType(t *testing.T) {
 		"audio/webm": "webm",
 		"audio/mp4":  "m4a",
 		"audio/m4a":  "m4a",
-		"audio/ogg":  "audio",
+		"audio/ogg":  "ogg",
+		"audio/opus": "ogg",
+		"audio/x-wav": "wav",
 	}
 	for in, want := range tests {
 		if got := getExtensionFromMimeType(in); got != want {
@@ -86,8 +88,9 @@ func TestTranscriptionGpt4oTranscribeDefaultsToJSON(t *testing.T) {
 	m := NewTranscriptionModel(p, "gpt-4o-transcribe")
 
 	body, _, err := m.buildMultipartBody(&provider.TranscriptionOptions{
-		Audio:    []byte("audio"),
-		MimeType: "audio/mpeg",
+		Audio:           []byte("audio"),
+		MimeType:        "audio/mpeg",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{}},
 	})
 	if err != nil {
 		t.Fatalf("buildMultipartBody error = %v", err)
@@ -319,5 +322,50 @@ func TestTranscriptionWhisper1AlwaysUsesVerboseJSON(t *testing.T) {
 	blob = string(raw)
 	if !strings.Contains(blob, "verbose_json") {
 		t.Fatalf("expected verbose_json response_format for whisper-1 even with responseFormat override: %s", blob)
+	}
+}
+
+// TS getArgs: without providerOptions.openai only whisper-1 (verbose_json) and
+// the diarize model send a response_format; with options present the schema
+// defaults temperature=0 and timestampGranularities=["segment"] are sent and
+// providerOptions.openai.language is honored.
+func TestTranscriptionOptionsDefaultsAndLanguage(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	read := func(model string, po map[string]interface{}) string {
+		m := NewTranscriptionModel(p, model)
+		body, _, err := m.buildMultipartBody(&provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg", ProviderOptions: po})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(body)
+		return string(raw)
+	}
+	if blob := read("gpt-4o-mini-transcribe-2025-03-20", nil); strings.Contains(blob, "response_format") || strings.Contains(blob, "temperature") {
+		t.Fatalf("no options must send no response_format/temperature: %s", blob)
+	}
+	blob := read("whisper-1", map[string]interface{}{"openai": map[string]interface{}{"language": "de"}})
+	for _, want := range []string{`name="language"`, "de", `name="temperature"`, `name="timestamp_granularities[]"`, "segment", "verbose_json"} {
+		if !strings.Contains(blob, want) {
+			t.Fatalf("missing %q: %s", want, blob)
+		}
+	}
+	if blob := read("gpt-4o-mini-transcribe-2025-03-20", map[string]interface{}{"openai": map[string]interface{}{}}); !strings.Contains(blob, "verbose_json") {
+		t.Fatalf("unknown model with options defaults to verbose_json: %s", blob)
+	}
+}
+
+func TestTranscriptionLanguageMapAndMetadata(t *testing.T) {
+	serverURL, closeServer := newOpenAIIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"text":"hallo","language":"german","duration":2.5,"words":[{"word":"hallo","start":0,"end":1}]}`))
+	}))
+	defer closeServer()
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: serverURL + "/v1"}), "whisper-1")
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Language != "de" || res.DurationInSeconds == nil || *res.DurationInSeconds != 2.5 || res.Response == nil || res.Response.ModelID != "whisper-1" || len(res.Segments) != 1 {
+		t.Fatalf("result = %+v", res)
 	}
 }
