@@ -180,19 +180,6 @@ func ArgumentsJSONText(args map[string]interface{}, raw string) string {
 	return string(b)
 }
 
-// ResponseFormatJSONSchemaOrdered is ResponseFormatJSONSchema, except an
-// *schema.OrderedSchema comes back as raw JSON (json.RawMessage) in its
-// source key order instead of a map, so a provider that normalizes or injects
-// the schema can keep the order TS keeps.
-func ResponseFormatJSONSchemaOrdered(value interface{}) interface{} {
-	if o, ok := value.(*schema.OrderedSchema); ok {
-		if raw, ok := RawJSONObject(o); ok {
-			return raw
-		}
-	}
-	return ResponseFormatJSONSchema(value)
-}
-
 // AssistantToolCalls returns the tool calls of an assistant message: its
 // ToolCalls, or, for a TS-shaped message that carries them as tool-call
 // content parts, those parts (the raw input text is kept as RawArguments so
