@@ -2487,6 +2487,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Usage:              stepUsage,
 			Performance:        performance,
 			Sources:            stepSources,
+			Files:              stepFiles,
 			Request: types.StepRequest{
 				Body:     streamRequestBody(r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
