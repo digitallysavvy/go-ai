@@ -53,7 +53,7 @@ func TestProviderTSCases(t *testing.T) {
 		{"huggingface", "huggingface/testdata/tscases/responses.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return huggingface.New(huggingface.Config{APIKey: "k", BaseURL: b}).LanguageModel(id)
 		}, "moonshotai/Kimi-K2-Instruct", map[string]string{
-			"should handle function call tool responses": "vitest snapshot of a string with embedded quotes is not machine-extractable",
+			"should handle function_call tool responses": "vitest snapshot of a string with embedded quotes is not machine-extractable",
 		}},
 		{"openresponses", "openresponses/testdata/tscases/responses.json.gz", func(b, id string) (provider.LanguageModel, error) {
 			return openresponses.New(openresponses.Config{Name: "openresponses", BaseURL: b}).LanguageModel(id)
