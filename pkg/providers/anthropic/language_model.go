@@ -199,12 +199,12 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return providerutils.WithResponseMetadata(stream, httpResp.Header, m.ModelID()), nil
 }
 
-// failOnFirstStreamError peeks the stream's first part (past one raw chunk)
+// failOnFirstStreamError peeks the stream's first part (past the stream-start and one raw chunk)
 // and converts an error part into a *ProviderError, mirroring doStream's
 // "first chunk is an error" check. Peeked parts are replayed to the consumer.
 func (m *LanguageModel) failOnFirstStreamError(stream *anthropicStream, headers http.Header, body interface{}) error {
 	var peeked []*provider.StreamChunk
-	for len(peeked) < 2 {
+	for len(peeked) < 3 {
 		chunk, err := stream.Next()
 		if err != nil {
 			// EOF or a read failure: nothing to convert; the consumer sees the
@@ -212,7 +212,7 @@ func (m *LanguageModel) failOnFirstStreamError(stream *anthropicStream, headers 
 			break
 		}
 		peeked = append(peeked, chunk)
-		if chunk.Type == provider.ChunkTypeRaw {
+		if chunk.Type == provider.ChunkTypeRaw || chunk.Type == provider.ChunkTypeStreamStart {
 			continue
 		}
 		if chunk.Type == provider.ChunkTypeError {
@@ -1495,24 +1495,29 @@ type anthropicStream struct {
 	fallbackWebCitations []map[string]interface{}
 }
 
-// newAnthropicStream creates a new Anthropic stream.
+// newAnthropicStream creates a new Anthropic stream without the leading
+// stream-start chunk (used by tests).
 // usesJsonResponseTool must match the req.usesJSONResponseTool value DoStream computed via prepareRequest.
 func newAnthropicStream(reader io.ReadCloser, usesJsonResponseTool bool, toolsOpt ...[]types.Tool) *anthropicStream {
 	var tools []types.Tool
 	if len(toolsOpt) > 0 {
 		tools = toolsOpt[0]
 	}
-	return newAnthropicStreamWithWarnings(reader, usesJsonResponseTool, tools, nil)
+	// Test-facing constructor: DoStream always goes through
+	// newAnthropicStreamWithWarnings and so always emits stream-start; this one
+	// starts directly at the first SSE event.
+	s := newAnthropicStreamWithWarnings(reader, usesJsonResponseTool, tools, nil)
+	s.pending = nil
+	return s
 }
 
 func newAnthropicStreamWithWarnings(reader io.ReadCloser, usesJsonResponseTool bool, tools []types.Tool, warnings []types.Warning) *anthropicStream {
 	var pending []*provider.StreamChunk
-	if len(warnings) > 0 {
-		pending = append(pending, &provider.StreamChunk{
-			Type:     provider.ChunkTypeStreamStart,
-			Warnings: warnings,
-		})
-	}
+	// TS always enqueues stream-start (warnings may be empty).
+	pending = append(pending, &provider.StreamChunk{
+		Type:     provider.ChunkTypeStreamStart,
+		Warnings: warnings,
+	})
 	return &anthropicStream{
 		reader:                  reader,
 		parser:                  streaming.NewSSEParser(reader),
@@ -1573,7 +1578,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			}
 			if err == io.EOF && s.finish != nil && !s.finishIssued {
 				s.finishIssued = true
-				return s.issueFinish(), nil
+				return s.issueFinish(true), nil
 			}
 			s.err = err
 			return nil, err
@@ -2086,6 +2091,9 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
+				// A new message gets its own finish chunk.
+				s.finishIssued = false
+				s.finish = nil
 				// Expose the initial message accounting as an
 				// anthropic.message_start custom chunk (TS #21979). The raw
 				// usage object is passed through unchanged.
@@ -2759,13 +2767,14 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		case "message_stop":
 			s.isMessageOpen = false
 			s.activeMessageID = ""
+			// TS emits one finish part per message_stop and keeps reading, so a
+			// stream of several concatenated messages yields one finish each.
+			// The stream ends when the underlying body does.
 			if s.finish != nil && !s.finishIssued {
 				s.finishIssued = true
-				return s.issueFinish(), nil
+				return s.issueFinish(false), nil
 			}
-			// Stream complete
-			s.err = io.EOF
-			return nil, io.EOF
+			continue
 		}
 
 		// Unknown event, get next
@@ -2778,7 +2787,10 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 // citation-derived web-search sources that were deferred because no
 // web_search_tool_result supplied retrieved sources (TS: fallbackWebCitations
 // are enqueued just before the finish part), followed by the finish chunk.
-func (s *anthropicStream) issueFinish() *provider.StreamChunk {
+//
+// final marks the end of the underlying stream; otherwise more messages may
+// follow and the stream stays open.
+func (s *anthropicStream) issueFinish(final bool) *provider.StreamChunk {
 	finish := s.finalizeFinish()
 	var sources []*provider.StreamChunk
 	if !s.hasWebSearchResults {
@@ -2791,7 +2803,9 @@ func (s *anthropicStream) issueFinish() *provider.StreamChunk {
 	}
 	s.fallbackWebCitations = nil
 	if len(sources) == 0 {
-		s.err = io.EOF
+		if final {
+			s.err = io.EOF
+		}
 		return finish
 	}
 	s.pending = append(s.pending, sources[1:]...)
