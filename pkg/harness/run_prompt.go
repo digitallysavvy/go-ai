@@ -1117,10 +1117,16 @@ func (d *turnDriver) ensureStarted() {
 	d.startCalled = true
 	d.telStart()
 	if d.in.Callbacks.OnStart != nil {
+		provider := "harness:" + d.in.Harness.HarnessID()
 		d.in.Callbacks.OnStart(d.ctx, ai.OnStartEvent{
-			OperationID:    "ai.harnessAgent",
+			CallID:         d.telCallID,
+			OperationID:    "ai.harness",
+			Provider:       provider,
+			ModelProvider:  provider,
 			ModelID:        d.in.Model,
 			Instructions:   d.in.Instructions,
+			Messages:       promptAsMessages(d.in.Prompt),
+			Output:         d.in.Output,
 			RuntimeContext: d.in.RuntimeContext,
 			ToolsContext:   d.in.ToolsContext,
 		})
@@ -1135,18 +1141,27 @@ func (d *turnDriver) ensureStepOpen() {
 	d.stepOpen = true
 	d.telStepStart()
 	if d.in.Callbacks.OnStepStart != nil {
+		provider := "harness:" + d.in.Harness.HarnessID()
 		d.in.Callbacks.OnStepStart(d.ctx, ai.OnStepStartEvent{
+			CallID:         d.telCallID,
 			StepNumber:     d.stepNumber,
+			Provider:       provider,
+			ModelProvider:  provider,
 			ModelID:        d.in.Model,
 			Instructions:   d.in.Instructions,
+			Messages:       promptAsMessages(d.in.Prompt),
+			Output:         d.in.Output,
+			Steps:          append([]types.StepResult(nil), d.completedSteps...),
+			PreviousSteps:  append([]types.StepResult(nil), d.completedSteps...),
 			RuntimeContext: d.in.RuntimeContext,
 			ToolsContext:   d.in.ToolsContext,
 		})
 	}
 	if d.in.Callbacks.OnLanguageModelCallStart != nil {
 		d.in.Callbacks.OnLanguageModelCallStart(d.ctx, ai.LanguageModelCallStartEvent{
-			Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model,
-			Instructions: d.in.Instructions,
+			CallID: d.telCallID, Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model,
+			Instructions: d.in.Instructions, Messages: promptAsMessages(d.in.Prompt),
+			Tools: toolSpecsAsTypesTools(d.in.ToolSpecs),
 		})
 	}
 }
@@ -1231,6 +1246,7 @@ func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call typ
 
 	if d.in.Callbacks.OnToolExecutionStart != nil {
 		d.in.Callbacks.OnToolExecutionStart(d.ctx, ai.OnToolCallStartEvent{
+			CallID: d.telCallID, Args: call.Arguments, StepNumber: d.stepNumber,
 			ToolCallID: call.ID, ToolName: call.ToolName, ToolCall: call,
 			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
@@ -1279,6 +1295,7 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 
 	if d.in.Callbacks.OnToolExecutionEnd != nil {
 		d.in.Callbacks.OnToolExecutionEnd(d.ctx, ai.OnToolCallFinishEvent{
+			CallID: d.telCallID, Args: call.Arguments, Result: toolResult.Result, Error: toolResult.Error,
 			ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, ToolCall: call, ToolOutput: toolResult,
 			ToolExecutionMs: execMs,
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
@@ -1291,35 +1308,33 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 // and step-end callbacks from locally-tracked step data (see turnDriver
 // doc), pushes the step boundary chunk, and advances stepNumber.
 func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metadata Metadata) {
-	if d.in.Callbacks.OnLanguageModelCallEnd != nil {
-		d.in.Callbacks.OnLanguageModelCallEnd(d.ctx, ai.LanguageModelCallEndEvent{
-			Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model,
-			FinishReason: unifiedFinishReason(finishReason),
-			Usage:        harnessUsageToTypesUsageValue(usage),
-		})
-	}
-	d.telLanguageModelCallEnd(finishReason, usage)
+	d.languageModelCallEnd(finishReason, usage, metadata)
 	d.flushBufferedResultChunks()
 
 	step := types.StepResult{
-		StepNumber:    d.stepNumber,
-		Model:         types.StepModel{Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model},
-		Text:          d.stepText,
-		ReasoningText: d.stepReasoning,
-		ToolCalls:     append([]types.ToolCall(nil), d.stepToolCalls...),
-		ToolResults:   append([]types.ToolResult(nil), d.stepToolResults...),
-		FinishReason:  unifiedFinishReason(finishReason),
-		Usage:         harnessUsageToTypesUsageValue(usage),
+		CallID:          d.telCallID,
+		StepNumber:      d.stepNumber,
+		Model:           types.StepModel{Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model},
+		Text:            d.stepText,
+		ReasoningText:   d.stepReasoning,
+		ToolCalls:       append([]types.ToolCall(nil), d.stepToolCalls...),
+		ToolResults:     append([]types.ToolResult(nil), d.stepToolResults...),
+		FinishReason:    unifiedFinishReason(finishReason),
+		RawFinishReason: finishReason.Raw,
+		Usage:           harnessUsageToTypesUsageValue(usage),
 	}
 	if len(metadata) > 0 {
 		step.ProviderMetadata = convertProviderMetadata(ProviderMetadata(metadata))
 	}
 	if d.in.Callbacks.OnStepEnd != nil {
 		d.in.Callbacks.OnStepEnd(d.ctx, ai.OnStepFinishEvent{
-			StepNumber: step.StepNumber, Model: step.Model, Text: step.Text,
-			ToolCalls: step.ToolCalls, ToolResults: step.ToolResults,
-			FinishReason: step.FinishReason, Usage: step.Usage,
-			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
+			CallID: d.telCallID, StepNumber: step.StepNumber, Model: step.Model,
+			ModelProvider: step.Model.Provider, ModelID: step.Model.ModelID, Text: step.Text,
+			ReasoningText: step.ReasoningText,
+			ToolCalls:     step.ToolCalls, ToolResults: step.ToolResults,
+			FinishReason: step.FinishReason, RawFinishReason: step.RawFinishReason, Usage: step.Usage,
+			ProviderMetadata: step.ProviderMetadata,
+			RuntimeContext:   d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
 	d.telStepEnd(step.StepNumber, step)

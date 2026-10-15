@@ -503,7 +503,11 @@ type countingIntegration struct {
 	calls []string
 }
 
-func (c *countingIntegration) note(s string) { c.mu.Lock(); c.calls = append(c.calls, s); c.mu.Unlock() }
+func (c *countingIntegration) note(s string) {
+	c.mu.Lock()
+	c.calls = append(c.calls, s)
+	c.mu.Unlock()
+}
 func (c *countingIntegration) OnStart(ctx context.Context, _ telemetry.TelemetryStartEvent) context.Context {
 	c.note("start")
 	return ctx

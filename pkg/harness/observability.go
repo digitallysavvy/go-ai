@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-
 )
 
 // This file mirrors TS `agent/observability/types.ts` and
@@ -130,4 +129,3 @@ func buildObservability(settings AgentSettings) *Observability {
 		},
 	}
 }
-
