@@ -1141,6 +1141,13 @@ func TestInteractionsStreamFinishMetadataAlwaysGoogleObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream.Next: %v", err)
 	}
+	if chunk.Type != provider.ChunkTypeStreamStart {
+		t.Fatalf("first chunk type = %s, want stream-start (TS always enqueues it)", chunk.Type)
+	}
+	chunk, err = stream.Next()
+	if err != nil {
+		t.Fatalf("stream.Next: %v", err)
+	}
 	if chunk.Type != provider.ChunkTypeFinish {
 		t.Fatalf("chunk type = %s", chunk.Type)
 	}

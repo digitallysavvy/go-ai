@@ -936,3 +936,15 @@ func TestConvertResponse_EmptySignedTextAttachesToAnyLastContent(t *testing.T) {
 		t.Fatalf("file content = %#v", result.Content[1])
 	}
 }
+
+func TestJSONResponseToolTextIsNotHTMLEscaped(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"functionCall":{"name":"json","args":{"html":"<b>&</b>"}}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "json", nil)
+	if result.Text != `{"html":"<b>&</b>"}` {
+		t.Fatalf("text = %q", result.Text)
+	}
+}

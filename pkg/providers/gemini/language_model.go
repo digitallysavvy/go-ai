@@ -421,8 +421,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			raw, _ := json.Marshal(args) //nolint:errcheck // a decoded map always marshals
-			tc := types.TextContent{Text: string(raw)}
+			tc := types.TextContent{Text: marshalJSONCompact(args)}
 			if part.ThoughtSignature != "" {
 				tc.ProviderMetadata, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
 					"thoughtSignature": part.ThoughtSignature,

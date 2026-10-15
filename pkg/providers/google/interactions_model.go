@@ -831,11 +831,33 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 	if usage == nil {
 		return types.Usage{}
 	}
+	// TS convertGoogleInteractionsUsage: output total is output + thought
+	// tokens, text is total_output_tokens, noCache is input - cached, raw is
+	// the API's usage object untouched.
+	var totalInput, totalCached int64
+	if usage.TotalInputTokens != nil {
+		totalInput = *usage.TotalInputTokens
+	}
+	if usage.TotalCachedTokens != nil {
+		totalCached = *usage.TotalCachedTokens
+	}
 	out := types.Usage{
-		InputTokens:  usage.TotalInputTokens,
-		OutputTokens: usage.TotalOutputTokens,
-		TotalTokens:  usage.TotalTokens,
-		Raw: map[string]interface{}{
+		InputTokens: usage.TotalInputTokens,
+		TotalTokens: usage.TotalTokens,
+		Raw:         usage.raw,
+	}
+	if usage.TotalOutputTokens != nil || usage.TotalThoughtTokens != nil {
+		var total int64
+		if usage.TotalOutputTokens != nil {
+			total += *usage.TotalOutputTokens
+		}
+		if usage.TotalThoughtTokens != nil {
+			total += *usage.TotalThoughtTokens
+		}
+		out.OutputTokens = &total
+	}
+	if out.Raw == nil {
+		out.Raw = map[string]interface{}{
 			"total_input_tokens":          usage.TotalInputTokens,
 			"total_output_tokens":         usage.TotalOutputTokens,
 			"total_thought_tokens":        usage.TotalThoughtTokens,
@@ -847,19 +869,24 @@ func convertInteractionsUsage(usage *interactionsUsage) types.Usage {
 			"cached_tokens_by_modality":   usage.CachedTokensByModality,
 			"tool_use_tokens_by_modality": usage.ToolUseTokensByModality,
 			"grounding_tool_count":        usage.GroundingToolCount,
-		},
+		}
 	}
-	if usage.TotalCachedTokens != nil || len(usage.InputTokensByModality) > 0 {
-		out.InputDetails = &types.InputTokenDetails{
+	if usage.TotalInputTokens != nil || usage.TotalCachedTokens != nil || len(usage.InputTokensByModality) > 0 {
+		details := &types.InputTokenDetails{
 			CacheReadTokens: usage.TotalCachedTokens,
 			TextTokens:      modalityToken(usage.InputTokensByModality, "text"),
 			ImageTokens:     modalityToken(usage.InputTokensByModality, "image"),
 		}
+		if usage.TotalInputTokens != nil {
+			noCache := totalInput - totalCached
+			details.NoCacheTokens = &noCache
+		}
+		out.InputDetails = details
 	}
-	if usage.TotalThoughtTokens != nil || len(usage.OutputTokensByModality) > 0 {
+	if usage.TotalThoughtTokens != nil || usage.TotalOutputTokens != nil {
 		out.OutputDetails = &types.OutputTokenDetails{
 			ReasoningTokens: usage.TotalThoughtTokens,
-			TextTokens:      modalityToken(usage.OutputTokensByModality, "text"),
+			TextTokens:      usage.TotalOutputTokens,
 		}
 	}
 	return out

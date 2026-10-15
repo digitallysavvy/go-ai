@@ -126,6 +126,26 @@ type interactionsUsage struct {
 	CachedTokensByModality  []interactionsModalityTokens `json:"cached_tokens_by_modality,omitempty"`
 	ToolUseTokensByModality []interactionsModalityTokens `json:"tool_use_tokens_by_modality,omitempty"`
 	GroundingToolCount      []map[string]interface{}     `json:"grounding_tool_count,omitempty"`
+
+	// raw is the usage object exactly as the API sent it (TS passes it through
+	// as usage.raw).
+	raw map[string]interface{}
+}
+
+// UnmarshalJSON keeps the wire object next to the typed fields.
+func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
+	type plain interactionsUsage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = interactionsUsage(p)
+	u.raw = nil
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.raw = raw
+	}
+	return nil
 }
 
 type interactionsModalityTokens struct {

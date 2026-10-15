@@ -129,3 +129,20 @@ func TestStreamFinishReasonAndUsageCarryAcrossMessages(t *testing.T) {
 		t.Fatalf("second finish = %v/%q usage %+v", fins[1].FinishReason, fins[1].RawFinishReason, fins[1].Usage)
 	}
 }
+
+// TS JSON.stringify leaves <, > and & alone; the JSON tool text and streamed
+// tool input must not carry < escapes.
+func TestJSONToolAndToolInputAreNotHTMLEscaped(t *testing.T) {
+	model, closeFn := haikuModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"m","type":"message","role":"assistant","model":"c","content":[{"type":"tool_use","id":"t1","name":"json","input":{"html":"<b>&</b>"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`)
+	})
+	defer closeFn()
+	res, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ResponseFormat: jsonFormat(map[string]interface{}{"html": map[string]interface{}{"type": "string"}}, "html")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != `{"html":"<b>&</b>"}` {
+		t.Fatalf("text = %q", res.Text)
+	}
+}

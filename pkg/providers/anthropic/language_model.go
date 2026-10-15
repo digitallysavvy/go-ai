@@ -560,8 +560,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			if usesJsonResponseTool && content.Name == "json" {
 				// jsonTool mode: the model responded via the synthetic json tool.
 				// Extract the tool input as the structured text result.
-				inputJSON, _ := json.Marshal(content.Input)
-				result.Text = string(inputJSON)
+				result.Text = jsonStringify(content.Input)
 				isJsonResponseFromTool = true
 			} else if content.ToolsetName != "" {
 				// Toolset member calls (e.g. the computer toolset) map to the
@@ -1685,9 +1684,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// emits the correct arguments even with no following deltas.
 				var initialInput string
 				if len(start.ContentBlock.Input) > 0 {
-					if b, err := json.Marshal(start.ContentBlock.Input); err == nil {
-						initialInput = string(b)
-					}
+					initialInput = jsonStringify(start.ContentBlock.Input)
 				}
 				block := &streamContentBlock{
 					blockType:    "tool-call",
@@ -1788,10 +1785,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					// Dynamic web tools provide their input here; other tools
 					// stream it via deltas, so only non-empty input is used.
 					if len(start.ContentBlock.Input) > 0 {
-						if b, err := json.Marshal(start.ContentBlock.Input); err == nil {
-							block.inputBuf.Write(b)
-							block.firstDelta = false
-						}
+						block.inputBuf.WriteString(jsonStringify(start.ContentBlock.Input))
+						block.firstDelta = false
 					}
 				}
 				// TS streams provider-executed tool input like any other tool
@@ -2184,20 +2179,19 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 						if s.usesJsonResponseTool && part.Name == "json" {
 							// jsonTool mode: emit the tool input as a text chunk.
 							s.isJsonResponseFromTool = true
-							inputJSON, _ := json.Marshal(args)
 							s.pending = append(s.pending, &provider.StreamChunk{
 								Type: provider.ChunkTypeText,
-								Text: string(inputJSON),
+								Text: jsonStringify(args),
 							})
 						} else {
 							// TS emits the full tool-input sequence for a tool_use
 							// block pre-populated in message_start, then the call
 							// with its caller metadata.
 							toolName := mapAnthropicToolName(part.Name, s.toolNameMap)
-							inputJSON, _ := json.Marshal(args) //nolint:errcheck // a decoded map always marshals
+							inputJSON := jsonStringify(args)
 							s.pending = append(s.pending,
 								&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: part.ID, ToolName: toolName}},
-								&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: part.ID, Text: string(inputJSON)},
+								&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: part.ID, Text: inputJSON},
 								&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: part.ID}},
 								&provider.StreamChunk{
 									Type: provider.ChunkTypeToolCall,
@@ -2541,8 +2535,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				var toolsetDelta *provider.StreamChunk
 				if block.toolsetName != "" {
 					args = toToolsetMemberInput(block.memberName, args)
-					b, _ := json.Marshal(args)
-					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: string(b)}
+					toolsetDelta = &provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: block.toolCallID, Text: jsonStringify(args)}
 				}
 				if block.providerToolName == "code_execution" {
 					_, hasCode := args["code"]

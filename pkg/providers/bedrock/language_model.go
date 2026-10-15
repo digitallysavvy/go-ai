@@ -636,13 +636,13 @@ func injectBedrockJSONInstruction(messages []types.Message, schema interface{}) 
 		}
 	}
 
-	schemaJSON, _ := json.Marshal(schema)
+	schemaJSON := jsonStringify(schema)
 
 	lines := []string{}
 	if existingText != "" {
 		lines = append(lines, existingText, "")
 	}
-	lines = append(lines, "JSON schema:", string(schemaJSON), suffix)
+	lines = append(lines, "JSON schema:", schemaJSON, suffix)
 
 	newSystem := types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: strings.Join(lines, "\n")}}}
 

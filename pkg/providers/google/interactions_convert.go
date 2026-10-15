@@ -148,7 +148,7 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 			flush()
 			steps = append(steps, pruneMap(map[string]interface{}{
 				"type":      "thought",
-				"signature": emptyToNil(firstNonEmpty(p.Signature, googleSignature(p.ProviderMetadata))),
+				"signature": emptyToNil(firstNonEmpty(googleOptString(p.ProviderOptions, "signature"), p.Signature, googleSignature(p.ProviderMetadata))),
 				"summary":   reasoningSummary(p.Text),
 			}))
 		case types.FileContent:
@@ -178,11 +178,22 @@ func (m *InteractionsLanguageModel) convertAssistantSteps(parts []types.ContentP
 				"id":        p.ToolCallID,
 				"name":      p.ToolName,
 				"arguments": args,
-				"signature": emptyToNil(firstNonEmpty(p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
+				"signature": emptyToNil(firstNonEmpty(googleOptString(p.ProviderOptions, "signature"), p.ThoughtSignature, signatureFromRawMetadata(p.ProviderMetadata))),
 			}))
 		case types.CustomContent:
 			flush()
 			google := extractGoogleMetadata(p.ProviderMetadata)
+			if opt, ok := p.ProviderOptions["google"].(map[string]interface{}); ok {
+				// TS reads these from providerOptions.google; options win.
+				merged := map[string]interface{}{}
+				for k, v := range google {
+					merged[k] = v
+				}
+				for k, v := range opt {
+					merged[k] = v
+				}
+				google = merged
+			}
 			signature, _ := google["signature"].(string)
 			switch p.Kind {
 			case "google.processing_call":
@@ -390,6 +401,9 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 		"call_id": part.ToolCallID,
 		"name":    part.ToolName,
 	}
+	if sig := googleOptString(part.ProviderOptions, "signature"); sig != "" {
+		base["signature"] = sig
+	}
 	if part.Output == nil {
 		if part.Error != "" {
 			base["is_error"] = true
@@ -403,8 +417,7 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 	case types.ToolResultOutputText:
 		base["result"] = fmt.Sprintf("%v", part.Output.Value)
 	case types.ToolResultOutputJSON:
-		b, _ := json.Marshal(part.Output.Value)
-		base["result"] = string(b)
+		base["result"] = jsonStringify(part.Output.Value)
 	case types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
 		base["is_error"] = true
 		base["result"] = fmt.Sprintf("%v", part.Output.Value)
@@ -532,7 +545,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 				args = map[string]interface{}{}
 			}
 			id := firstNonEmpty(block.ID, "call_"+fmt.Sprint(len(toolCalls)+1))
-			argsJSON, _ := json.Marshal(args)
+			argsJSON := jsonStringify(args)
 			metaRaw := providerMetaRaw(block.Signature, interactionID)
 			content = append(content, types.ToolCallContent{
 				ToolCallID:       id,
@@ -560,7 +573,7 @@ func (m *InteractionsLanguageModel) parseOutputs(outputs []interactionsContentBl
 					args = map[string]interface{}{}
 				}
 				id := firstNonEmpty(block.ID, fmt.Sprintf("call_%d", len(toolCalls)+1))
-				argsJSON, _ := json.Marshal(args)
+				argsJSON := jsonStringify(args)
 				content = append(content, types.ToolCallContent{
 					ToolCallID:       id,
 					ToolName:         builtinToolName(block),
@@ -599,11 +612,15 @@ func compactMessagesForInteraction(messages []types.Message, interactionID strin
 			for _, part := range msg.Content {
 				switch p := part.(type) {
 				case types.TextContent:
-					matches = matches || googleInteractionID(p.ProviderMetadata) == interactionID
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				case types.ReasoningContent:
-					matches = matches || googleInteractionID(p.ProviderMetadata) == interactionID
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				case types.ToolCallContent:
-					matches = matches || googleInteractionID(p.ProviderMetadata) == interactionID
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				case types.CustomContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
+				case types.FileContent:
+					matches = matches || partMatchesInteraction(p.ProviderOptions, p.ProviderMetadata, interactionID)
 				}
 			}
 			for _, call := range msg.ToolCalls {
@@ -663,7 +680,13 @@ func interactionMediaKind(mediaType string) string {
 }
 
 func isFullMediaType(mediaType string) bool {
-	return strings.Contains(mediaType, "/")
+	// TS: has a slash, a non-empty subtype, and the subtype is not "*".
+	i := strings.Index(mediaType, "/")
+	if i < 0 {
+		return false
+	}
+	sub := mediaType[i+1:]
+	return sub != "" && sub != "*"
 }
 
 func resolveGoogleReference(ref types.ProviderReference) string {
@@ -878,4 +901,22 @@ func baseName(uriOrName string) string {
 		return ""
 	}
 	return parts[len(parts)-1]
+}
+
+// googleOptString reads providerOptions.google.<key> as a string (the TS
+// converter reads signatures, interaction ids and processing ids from the
+// prompt part's providerOptions).
+func googleOptString(opts map[string]interface{}, key string) string {
+	if google, ok := opts["google"].(map[string]interface{}); ok {
+		if v, ok := google[key].(string); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// partMatchesInteraction: TS compares providerOptions.google.interactionId; Go
+// parts that came back from this provider carry it in providerMetadata.
+func partMatchesInteraction(opts map[string]interface{}, meta json.RawMessage, interactionID string) bool {
+	return googleOptString(opts, "interactionId") == interactionID || googleInteractionID(meta) == interactionID
 }
