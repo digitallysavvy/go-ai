@@ -105,12 +105,12 @@ func buildNativeToolEntry(t types.Tool) map[string]interface{} {
 	case "google.code_execution":
 		return map[string]interface{}{"codeExecution": map[string]interface{}{}}
 	case "google.vertex_rag_store":
-		ragCorpus, _ := args["ragCorpus"].(string)
-		ragStoreArgs := map[string]interface{}{
-			"rag_resources": map[string]interface{}{
-				"rag_corpus": ragCorpus,
-			},
+		// TS: rag_corpus: tool.args.ragCorpus, left out of the JSON when undefined.
+		ragResources := map[string]interface{}{}
+		if ragCorpus, ok := args["ragCorpus"]; ok && ragCorpus != nil {
+			ragResources["rag_corpus"] = ragCorpus
 		}
+		ragStoreArgs := map[string]interface{}{"rag_resources": ragResources}
 		if topK, ok := args["topK"]; ok {
 			ragStoreArgs["similarity_top_k"] = topK
 		}

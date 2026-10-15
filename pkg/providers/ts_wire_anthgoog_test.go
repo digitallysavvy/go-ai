@@ -1,6 +1,8 @@
 package providers_test
 
 import (
+	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
@@ -10,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock"
 	"github.com/digitallysavvy/go-ai/pkg/providers/google"
+	"github.com/digitallysavvy/go-ai/pkg/providers/googlevertex"
 )
 
 // Wire suites for the Anthropic / Google / Bedrock families live in this file
@@ -121,4 +124,47 @@ func init() {
 			return bedrock.New(bedrock.Config{APIKey: "test-api-key", Region: region, BaseURL: b, Headers: h}), nil
 		},
 	}
+	wireSuites["google-vertex"] = tsfixture.WireSuite{
+		RawSchemas:      true,
+		LanguageResults: true,
+		SkipModel: func(m tsfixture.WireModel) string {
+			if m.Cls == "AnthropicLanguageModel" {
+				return "replayed through the Vertex Anthropic sub-provider"
+			}
+			return ""
+		},
+		Skip: map[string]string{
+			"~tools and thinking config for":                                 "the TS test sets Authorization as a provider-level header, which the recording does not carry",
+			"~predict dimensions >":                                          "the TS fixture returns two predictions for one value and TS does not check; Go rejects a count mismatch",
+			"~should pass headers and user agent":                            "provider-level headers are not captured in the recording config",
+			"~GoogleVertexEmbeddingModel > should pass headers correctly":    "provider-level headers are not captured in the recording config",
+			"~should preserve local JSON Schema references in tool requests": "the TS test creates the provider with apiKey (express mode), which the recording does not carry",
+		},
+		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
+			u, err := url.Parse(b)
+			if err != nil {
+				return nil, err
+			}
+			// Speech-to-text and Cloud TTS use fixed Google hosts: send every
+			// request to the replay server, keeping the path.
+			client := &http.Client{Transport: hostRewriter{host: u.Host, scheme: u.Scheme}}
+			token := "test-oauth-token"
+			hdrs := wireHeaders(m)
+			if auth, ok := hdrs["Authorization"]; ok { // the TS test sets the token as a provider header
+				token = strings.TrimPrefix(auth, "Bearer ")
+				delete(hdrs, "Authorization")
+			}
+			return googlevertex.New(googlevertex.Config{Project: "test-project", Location: "us-central1", AccessToken: token,
+				BaseURL: b, CloudTTSBaseURL: u.Scheme + "://" + u.Host + "/v1/text:synthesize", HTTPClient: client, Headers: hdrs})
+		},
+	}
+}
+
+// hostRewriter sends every request to one host, keeping the path and query.
+type hostRewriter struct{ host, scheme string }
+
+func (h hostRewriter) RoundTrip(r *http.Request) (*http.Response, error) {
+	r2 := r.Clone(r.Context())
+	r2.URL.Host, r2.URL.Scheme, r2.Host = h.host, h.scheme, h.host
+	return http.DefaultTransport.RoundTrip(r2)
 }

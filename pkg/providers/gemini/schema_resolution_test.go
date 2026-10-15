@@ -46,3 +46,17 @@ func TestRawResponseSchemaKeepsPropertyOrder(t *testing.T) {
 		t.Fatalf("property order lost: %s", b)
 	}
 }
+
+// TS leaves rag_corpus out of the body when the tool has no ragCorpus.
+func TestVertexRagStoreOmitsUndefinedCorpus(t *testing.T) {
+	entry := buildNativeToolEntry(types.Tool{Type: "provider", ProviderID: "google.vertex_rag_store", ProviderArgs: map[string]interface{}{}})
+	b, _ := json.Marshal(entry)
+	if string(b) != `{"retrieval":{"vertex_rag_store":{"rag_resources":{}}}}` {
+		t.Fatalf("entry = %s", b)
+	}
+	entry = buildNativeToolEntry(types.Tool{Type: "provider", ProviderID: "google.vertex_rag_store", ProviderArgs: map[string]interface{}{"ragCorpus": "projects/p/locations/l/ragCorpora/c", "topK": 3}})
+	b, _ = json.Marshal(entry)
+	if !strings.Contains(string(b), `"rag_corpus":"projects/p/locations/l/ragCorpora/c"`) || !strings.Contains(string(b), `"similarity_top_k":3`) {
+		t.Fatalf("entry = %s", b)
+	}
+}
