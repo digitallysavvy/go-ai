@@ -434,28 +434,34 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 	}
 
 	xaiOpts, ok := opts["xai"]
-	if !ok {
+	if !ok || xaiOpts == nil {
 		return &XAIImageProviderOptions{}, nil
+	}
+
+	// TS parseProviderOptions: a schema violation is an InvalidArgumentError
+	// ("invalid xai provider options").
+	invalid := func(cause error) error {
+		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid xai provider options", Cause: cause}
 	}
 
 	// Convert to JSON and back to struct
 	jsonData, err := json.Marshal(xaiOpts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal provider options: %w", err)
+		return nil, invalid(fmt.Errorf("failed to marshal provider options: %w", err))
 	}
 
 	var provOpts XAIImageProviderOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal provider options: %w", err)
+		return nil, invalid(fmt.Errorf("failed to unmarshal provider options: %w", err))
 	}
 	if provOpts.Resolution != nil && *provOpts.Resolution != "1k" && *provOpts.Resolution != "1.5k" && *provOpts.Resolution != "2k" {
-		return nil, fmt.Errorf("invalid xai image resolution %q: expected \"1k\", \"1.5k\", or \"2k\"", *provOpts.Resolution)
+		return nil, invalid(fmt.Errorf("invalid xai image resolution %q: expected \"1k\", \"1.5k\", or \"2k\"", *provOpts.Resolution))
 	}
 	if provOpts.Quality != nil {
 		switch *provOpts.Quality {
 		case "low", "medium", "high", "auto":
 		default:
-			return nil, fmt.Errorf("invalid xai image quality %q: expected \"low\", \"medium\", \"high\", or \"auto\"", *provOpts.Quality)
+			return nil, invalid(fmt.Errorf("invalid xai image quality %q: expected \"low\", \"medium\", \"high\", or \"auto\"", *provOpts.Quality))
 		}
 	}
 
