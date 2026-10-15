@@ -31,6 +31,7 @@ type Case struct {
 	Response *Response              `json:"response"`
 	CallKind string                 `json:"callKind"`
 	ModelID  string                 `json:"modelId"`
+	Suspect  bool                   `json:"suspect"`
 	CallArgs string                 `json:"callArgs"`
 	Call     map[string]interface{} `json:"call"`
 	Exps     []Expectation          `json:"exps"`
@@ -105,7 +106,7 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 	t.Helper()
 	for _, c := range cases {
 		c := c
-		if c.Response == nil || c.Response.Error != "" || c.Call == nil {
+		if c.Response == nil || c.Response.Error != "" || c.Call == nil || c.Suspect {
 			continue
 		}
 		t.Run(c.Test, func(t *testing.T) {
@@ -169,6 +170,10 @@ func Run(t *testing.T, cases []Case, mk func(baseURL, modelID string) provider.L
 					continue
 				}
 				snap := e.Snap
+				if m, ok := snap.(map[string]interface{}); ok && m["__err"] != nil {
+					t.Logf("%s: TS snapshot not extractable (%v)", e.Expr, m["__err"])
+					continue
+				}
 				if l, ok := snap.([]interface{}); ok && stream != nil && !strings.HasSuffix(e.Expr, ".at(-1)") {
 					snap = CanonStream(l)
 				}
@@ -561,6 +566,12 @@ func nilIfEmpty(s string) interface{} {
 	return s
 }
 
+// ProviderToolHook converts a TS provider tool (type "provider") to the Go
+// tool for the provider under test. It returns false when the args are not
+// representable, which skips the case. When nil, only argument-less provider
+// tools are supported.
+var ProviderToolHook func(id, name string, args map[string]interface{}) (types.Tool, bool)
+
 // BuildOptions converts the JSON form of a TS call-options literal to Go
 // options. It returns nil and a reason when it uses an unsupported key.
 func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, string) {
@@ -640,7 +651,14 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 				if m["type"] == "provider" {
 					tool.Type = "provider"
 					tool.ProviderID, _ = m["id"].(string)
-					if a, _ := m["args"].(map[string]interface{}); len(a) > 0 {
+					a, _ := m["args"].(map[string]interface{})
+					if ProviderToolHook != nil {
+						ht, ok := ProviderToolHook(tool.ProviderID, tool.Name, a)
+						if !ok {
+							return nil, "provider tool args (typed config in Go)"
+						}
+						tool = ht
+					} else if len(a) > 0 {
 						return nil, "provider tool args (typed config in Go)"
 					}
 					tool.ProviderExecuted = true

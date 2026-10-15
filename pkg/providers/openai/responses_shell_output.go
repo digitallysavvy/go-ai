@@ -70,7 +70,7 @@ func openAIShellToolCall(providerName string, tools []types.Tool, raw json.RawMe
 	}{Commands: commands}})
 	return types.ToolCall{
 		ID:               item.CallID,
-		ToolName:         openAIProviderToolDisplayName(tools, "openai.shell", "shell"),
+		ToolName:         openAIDeclaredToolName(tools, "openai.shell", "shell"),
 		Arguments:        args,
 		RawArguments:     string(input),
 		ProviderExecuted: isOpenAIShellProviderExecuted(tools),
@@ -94,7 +94,7 @@ func openAIShellToolResult(tools []types.Tool, raw json.RawMessage) (types.ToolR
 	}
 	return types.ToolResultContent{
 		ToolCallID: item.CallID,
-		ToolName:   openAIProviderToolDisplayName(tools, "openai.shell", "shell"),
+		ToolName:   openAIDeclaredToolName(tools, "openai.shell", "shell"),
 		Result:     map[string]interface{}{"output": output},
 	}, true
 }
@@ -124,7 +124,7 @@ func openAILocalShellToolCall(providerName string, tools []types.Tool, raw json.
 	_ = json.Unmarshal(input, &args)
 	return types.ToolCall{
 		ID:               item.CallID,
-		ToolName:         openAIProviderToolDisplayName(tools, "openai.local_shell", "local_shell"),
+		ToolName:         openAIDeclaredToolName(tools, "openai.local_shell", "local_shell"),
 		Arguments:        args,
 		RawArguments:     string(input),
 		ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", nil, nil),

@@ -1207,6 +1207,20 @@ func toolSearchToolName(tools []types.Tool) string {
 // TS's untouched fallback -- TS's providerToolNames table maps every one of
 // these ids to its bare identity string, and toCustomToolName returns that
 // input unchanged when no custom mapping exists.
+// openAIDeclaredToolName resolves the SDK-facing name of the declared OpenAI
+// provider tool with the given id: a tool identified by ProviderID, or by a
+// Name equal to the id (the openai.* constructors), reports its own Name (TS
+// toolNameMapping.toCustomToolName); an undeclared tool reports the bare
+// provider name.
+func openAIDeclaredToolName(tools []types.Tool, providerID, bareName string) string {
+	for _, tool := range tools {
+		if tool.ProviderID == providerID || (tool.ProviderID == "" && tool.Name == providerID) {
+			return tool.Name
+		}
+	}
+	return bareName
+}
+
 func openAIProviderToolDisplayName(tools []types.Tool, providerID, bareName string) string {
 	for _, tool := range tools {
 		if tool.ProviderID == providerID {
@@ -1408,7 +1422,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         openAIProviderToolDisplayName(tools, "openai.apply_patch", "apply_patch"),
+				ToolName:         openAIDeclaredToolName(tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, itemID, "", nil, nil),
@@ -1457,7 +1471,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			args, rawArgs := computerCallArguments(item)
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               *item.CallID,
-				ToolName:         openAIProviderToolDisplayName(tools, "openai.computer", "computer"),
+				ToolName:         openAIDeclaredToolName(tools, "openai.computer", "computer"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, computerItemID, "", nil, nil),
@@ -1521,7 +1535,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			args, rawArgs := programCallArguments(item)
 			tc := types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         openAIProviderToolDisplayName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
+				ToolName:         openAIDeclaredToolName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
@@ -1530,7 +1544,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			toolCalls = append(toolCalls, tc)
 			result.Content = append(result.Content, types.ToolCallContent{
 				ToolCallID:       item.CallID,
-				ToolName:         openAIProviderToolDisplayName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
+				ToolName:         openAIDeclaredToolName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Input:            rawArgs,
 				Arguments:        args,
 				ProviderExecuted: true,
@@ -1544,7 +1558,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID: item.CallID,
-				ToolName:   openAIProviderToolDisplayName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
+				ToolName:   openAIDeclaredToolName(tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 				// TS never sets providerExecuted on this tool-result, only
 				// on the tool-call.
@@ -3074,7 +3088,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				isDelete := opType == "delete_file"
 				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
-					toolName:   openAIProviderToolDisplayName(s.tools, "openai.apply_patch", "apply_patch"),
+					toolName:   openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 					toolCallID: callID,
 					applyPatch: &applyPatchStreamState{hasDiff: isDelete, endEmitted: isDelete},
 				}
@@ -3082,7 +3096,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					Type: provider.ChunkTypeToolInputStart,
 					ToolCall: &types.ToolCall{
 						ID:       callID,
-						ToolName: openAIProviderToolDisplayName(s.tools, "openai.apply_patch", "apply_patch"),
+						ToolName: openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 					},
 				})
 				if isDelete {
@@ -3998,7 +4012,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         openAIProviderToolDisplayName(s.tools, "openai.apply_patch", "apply_patch"),
+				ToolName:         openAIDeclaredToolName(s.tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
 				RawArguments:     string(rawArgs),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, itemID, "", nil, nil),
@@ -4054,7 +4068,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               *item.CallID,
-				ToolName:         openAIProviderToolDisplayName(s.tools, "openai.computer", "computer"),
+				ToolName:         openAIDeclaredToolName(s.tools, "openai.computer", "computer"),
 				Arguments:        computerArgs,
 				RawArguments:     computerRawArgs,
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, computerItemID, "", nil, nil),
@@ -4127,7 +4141,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
 				ID:               item.CallID,
-				ToolName:         openAIProviderToolDisplayName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
+				ToolName:         openAIDeclaredToolName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Arguments:        args,
 				RawArguments:     rawArgs,
 				ProviderExecuted: true,
@@ -4146,7 +4160,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			Type: provider.ChunkTypeToolResult,
 			ToolResult: &types.ToolResult{
 				ToolCallID: item.CallID,
-				ToolName:   openAIProviderToolDisplayName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
+				ToolName:   openAIDeclaredToolName(s.tools, "openai.programmatic_tool_calling", "programmatic_tool_calling"),
 				Result:     map[string]interface{}{"result": item.Result, "status": item.Status},
 			},
 		})
