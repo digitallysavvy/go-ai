@@ -362,7 +362,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 					ProviderMetadata: sigMeta,
 				})
 			} else if sigMeta != nil {
-				attachSignatureToLastContent(result.Content, sigMeta)
+				attachSignatureToLastContent(result, sigMeta)
 			}
 			continue
 		}
@@ -396,13 +396,13 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		if part.Text != "" && jsonResponseToolName != "" {
 			continue
 		}
-		if part.Text == "" && part.ThoughtSignature != "" && part.FunctionCall == nil {
+		if part.Text == "" && part.ThoughtSignature != "" && part.FunctionCall == nil && part.ToolCall == nil && part.ToolResponse == nil {
 			// TS: an empty text part carrying a thoughtSignature attaches it
 			// to the previous content part.
 			meta, _ := json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
 				"thoughtSignature": part.ThoughtSignature,
 			}))
-			attachSignatureToLastContent(result.Content, meta)
+			attachSignatureToLastContent(result, meta)
 		}
 		if part.Text != "" {
 			textParts = append(textParts, part.Text)
@@ -642,18 +642,62 @@ func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	}
 }
 
-// attachSignatureToLastContent sets providerMetadata on the last text or
-// reasoning part (TS: lastContent.providerMetadata = thoughtSignatureMetadata).
-func attachSignatureToLastContent(content []types.ContentPart, meta json.RawMessage) {
+// attachSignatureToLastContent sets providerMetadata on whatever content part
+// came last (TS: lastContent.providerMetadata = thoughtSignatureMetadata): text,
+// reasoning, files, sources, tool calls and tool results. For a tool call the
+// matching entry of result.ToolCalls is updated too so replays keep the
+// signature.
+func attachSignatureToLastContent(result *types.GenerateResult, meta json.RawMessage) {
+	content := result.Content
 	if len(content) == 0 {
 		return
 	}
-	switch c := content[len(content)-1].(type) {
+	last := len(content) - 1
+	switch c := content[last].(type) {
 	case types.TextContent:
 		c.ProviderMetadata = meta
-		content[len(content)-1] = c
+		content[last] = c
 	case types.ReasoningContent:
 		c.ProviderMetadata = meta
-		content[len(content)-1] = c
+		content[last] = c
+	case types.GeneratedFileContent:
+		c.ProviderMetadata = meta
+		content[last] = c
+	case types.ReasoningFileContent:
+		c.ProviderMetadata = meta
+		content[last] = c
+	case types.SourceContent:
+		c.ProviderMetadata = meta
+		content[last] = c
+	case types.ToolResultContent:
+		c.ProviderMetadata = meta
+		content[last] = c
+	case types.ToolCallContent:
+		c.ProviderMetadata = meta
+		var md map[string]interface{}
+		if json.Unmarshal(meta, &md) == nil {
+			for i := range result.ToolCalls {
+				if result.ToolCalls[i].ID == c.ToolCallID {
+					result.ToolCalls[i].ProviderMetadata = md
+					if sig := signatureFromMetadata(md); sig != "" {
+						result.ToolCalls[i].ThoughtSignature = sig
+						c.ThoughtSignature = sig
+					}
+				}
+			}
+		}
+		content[last] = c
 	}
+}
+
+// signatureFromMetadata reads providerMetadata.<key>.thoughtSignature.
+func signatureFromMetadata(md map[string]interface{}) string {
+	for _, v := range md {
+		if m, ok := v.(map[string]interface{}); ok {
+			if s, ok := m["thoughtSignature"].(string); ok {
+				return s
+			}
+		}
+	}
+	return ""
 }

@@ -903,3 +903,36 @@ func TestConvertResponse_ThoughtSignatureInReasoningProviderMetadata(t *testing.
 		t.Fatalf("text providerMetadata = %s (%v)", tc.ProviderMetadata, err)
 	}
 }
+
+// TS sets the signature of an empty text part on whatever content is last
+// (tool calls and files included), not only on text and reasoning.
+func TestConvertResponse_EmptySignedTextAttachesToAnyLastContent(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"functionCall":{"name":"lookup","id":"c1","args":{"q":"x"}}},
+		{"text":"","thoughtSignature":"sig-after-call"},
+		{"inlineData":{"mimeType":"image/png","data":"aGk="}},
+		{"text":"","thoughtSignature":"sig-after-file"}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponse(resp, nil)
+	sig := func(raw json.RawMessage) string {
+		var meta map[string]map[string]string
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			return ""
+		}
+		return meta["google"]["thoughtSignature"]
+	}
+	call, ok := result.Content[0].(types.ToolCallContent)
+	if !ok || sig(call.ProviderMetadata) != "sig-after-call" || call.ThoughtSignature != "sig-after-call" {
+		t.Fatalf("tool call content = %#v", result.Content[0])
+	}
+	if result.ToolCalls[0].ThoughtSignature != "sig-after-call" {
+		t.Fatalf("ToolCalls[0] = %#v", result.ToolCalls[0])
+	}
+	file, ok := result.Content[1].(types.GeneratedFileContent)
+	if !ok || sig(file.ProviderMetadata) != "sig-after-file" {
+		t.Fatalf("file content = %#v", result.Content[1])
+	}
+}
