@@ -50,7 +50,7 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 // environment plus the request headers (ChatGPT account id) of a native
 // subscription credential. storeMode is the `cli_auth_credentials_store`
 // override from CodexConfig.
-func resolveAuthentication(ctx context.Context, auth harness.Authentication, processEnv map[string]string, storeMode string) (map[string]string, map[string]string) {
+func resolveAuthentication(ctx context.Context, auth harness.Authentication, processEnv map[string]string, storeMode string) (map[string]string, map[string]string, error) {
 	authEnv := processEnv
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
@@ -68,17 +68,21 @@ func resolveAuthentication(ctx context.Context, auth harness.Authentication, pro
 	}
 	gw := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
 	if auth.Mode == harness.AuthModeAIGateway || gw.APIKey != "" {
-		return pickGateway(gw), nil
+		return pickGateway(gw), nil, nil
 	}
 	return pickOpenAI(ctx, authEnv, trySubscription, authModeString, storeMode)
 }
 
-func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool, authModeString, storeMode string) (map[string]string, map[string]string) {
+func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool, authModeString, storeMode string) (map[string]string, map[string]string, error) {
 	if trySubscription {
 		hasDirect := env["OPENAI_API_KEY"] != "" || env["CODEX_API_KEY"] != ""
 		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
-			if sub, ok := readCodexSubscriptionWithMode(ctx, storeMode); ok {
-				return sub.Environment, sub.RequestHeaders
+			sub, ok, err := resolveCodexSubscription(ctx, storeMode)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ok {
+				return sub.Environment, sub.RequestHeaders, nil
 			}
 		}
 	}
@@ -99,7 +103,7 @@ func pickOpenAI(ctx context.Context, env map[string]string, trySubscription bool
 	if v := env["OPENAI_PROJECT"]; v != "" {
 		out["OPENAI_PROJECT"] = v
 	}
-	return out, nil
+	return out, nil, nil
 }
 
 func pickGateway(gw harnessutil.AIGatewayAuth) map[string]string {

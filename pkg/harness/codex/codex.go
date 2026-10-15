@@ -126,7 +126,10 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	authMode := resolveAuthenticationMode(settings.Auth, harnessutil.ProcessEnv())
 	storeMode, _ := settings.CodexConfig["cli_auth_credentials_store"].(string)
-	resolvedAuthEnv, resolvedRequestHeaders := resolveAuthentication(ctx, settings.Auth, harnessutil.ProcessEnv(), storeMode)
+	resolvedAuthEnv, resolvedRequestHeaders, err := resolveAuthentication(ctx, settings.Auth, harnessutil.ProcessEnv(), storeMode)
+	if err != nil {
+		return nil, err
+	}
 
 	sandboxAuthEnv := resolvedAuthEnv
 	var sandboxCredentialEnv map[string]string

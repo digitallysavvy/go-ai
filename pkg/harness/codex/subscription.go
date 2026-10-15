@@ -83,7 +83,7 @@ type codexSubscription struct {
 // readCodexSubscription reads the native Codex (ChatGPT) subscription from
 // the file store with no store-mode override.
 func readCodexSubscription(ctx context.Context) (map[string]string, bool) {
-	sub, ok := readCodexSubscriptionWithMode(ctx, "")
+	sub, ok, _ := resolveCodexSubscription(ctx, "")
 	return sub.Environment, ok
 }
 
@@ -96,9 +96,18 @@ func readCodexSubscription(ctx context.Context) (map[string]string, bool) {
 // refresh failure is treated as "not found". Mirrors TS `readCodexSubscription`
 // (codex-subscription.ts).
 func readCodexSubscriptionWithMode(ctx context.Context, storeMode string) (codexSubscription, bool) {
+	sub, ok, _ := resolveCodexSubscription(ctx, storeMode)
+	return sub, ok
+}
+
+// resolveCodexSubscription is readCodexSubscriptionWithMode with the refresh
+// / write-back error reported: like TS, a failed OAuth refresh (or a failed
+// write-back of the rotated credential) fails the caller instead of being
+// treated as "no credential".
+func resolveCodexSubscription(ctx context.Context, storeMode string) (codexSubscription, bool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return codexSubscription{}, false
+		return codexSubscription{}, false, nil
 	}
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
@@ -117,24 +126,24 @@ func readCodexSubscriptionWithMode(ctx context.Context, storeMode string) (codex
 	}
 	store := readCodexAuthStore(ctx, codexHome, authPath, mode)
 	if store == nil {
-		return codexSubscription{}, false
+		return codexSubscription{}, false, nil
 	}
 	value := store.value
 	if authMode, _ := value["auth_mode"].(string); authMode != "chatgpt" {
-		return codexSubscription{}, false
+		return codexSubscription{}, false, nil
 	}
 	tokens, ok := value["tokens"].(map[string]any)
 	if !ok {
-		return codexSubscription{}, false
+		return codexSubscription{}, false, nil
 	}
 	accessToken, _ := tokens["access_token"].(string)
 	refreshToken, _ := tokens["refresh_token"].(string)
 	if accessToken == "" || refreshToken == "" {
-		return codexSubscription{}, false
+		return codexSubscription{}, false, nil
 	}
 	expiresAt, hasExpiry := subscription.GetJWTExpiresAt(accessToken)
 	if !hasExpiry {
-		return codexSubscription{}, false
+		return codexSubscription{}, false, nil
 	}
 	accountID, _ := tokens["account_id"].(string)
 
@@ -143,7 +152,7 @@ func readCodexSubscriptionWithMode(ctx context.Context, storeMode string) (codex
 			TokenURL: openaiTokenURL, ClientID: openaiClientID, RefreshToken: refreshToken, RequestFormat: "json",
 		})
 		if err != nil {
-			return codexSubscription{}, false
+			return codexSubscription{}, false, err
 		}
 		accessToken = refreshed.AccessToken
 		tokens["access_token"] = refreshed.AccessToken
@@ -152,9 +161,9 @@ func readCodexSubscriptionWithMode(ctx context.Context, storeMode string) (codex
 		}
 		value["tokens"] = tokens
 		value["last_refresh"] = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
-		// A failed write-back never invalidates the freshly refreshed token
-		// for this call: it just means the next call refreshes again.
-		_ = store.write(value)
+		if err := store.write(value); err != nil {
+			return codexSubscription{}, false, err
+		}
 	}
 
 	sub := codexSubscription{Environment: map[string]string{
@@ -164,7 +173,7 @@ func readCodexSubscriptionWithMode(ctx context.Context, storeMode string) (codex
 	if accountID != "" {
 		sub.RequestHeaders = map[string]string{"ChatGPT-Account-ID": accountID}
 	}
-	return sub, true
+	return sub, true, nil
 }
 
 type codexAuthStore struct {

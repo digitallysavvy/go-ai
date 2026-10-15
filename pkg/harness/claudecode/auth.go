@@ -49,7 +49,7 @@ func resolveAuthenticationMode(auth harness.Authentication, processEnv map[strin
 
 // resolveAuthenticationEnvironment mirrors TS `resolveClaudeCodeEnv`,
 // including the native-subscription fallback (`resolveClaudeCodeAuthentication`).
-func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) map[string]string {
+func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authentication, processEnv map[string]string) (map[string]string, error) {
 	authEnv := processEnv
 	if auth.IsEnvironment() {
 		authEnv = auth.Environment
@@ -71,17 +71,21 @@ func resolveAuthenticationEnvironment(ctx context.Context, auth harness.Authenti
 	}
 	gw := harnessutil.GetAIGatewayAuthFromEnv(authEnv)
 	if auth.Mode == harness.AuthModeAIGateway || gw.APIKey != "" {
-		return pickGateway(gw)
+		return pickGateway(gw), nil
 	}
 	return pickAnthropic(ctx, authEnv, readHelper, trySubscription, authModeString)
 }
 
-func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) map[string]string {
+func pickAnthropic(ctx context.Context, env map[string]string, readHelper func() string, trySubscription bool, authModeString string) (map[string]string, error) {
 	if trySubscription {
 		hasDirect := env["ANTHROPIC_API_KEY"] != "" || env["ANTHROPIC_AUTH_TOKEN"] != "" || env["CLAUDE_CODE_OAUTH_TOKEN"] != ""
 		if harnessutil.ShouldResolveNativeSubscription(authModeString, env, hasDirect) {
-			if subEnv, ok := readClaudeCodeSubscription(ctx); ok {
-				return subEnv
+			subEnv, ok, err := resolveClaudeCodeSubscription(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				return subEnv, nil
 			}
 		}
 	}
@@ -107,7 +111,7 @@ func pickAnthropic(ctx context.Context, env map[string]string, readHelper func()
 	if v := env["ANTHROPIC_BASE_URL"]; v != "" {
 		out["ANTHROPIC_BASE_URL"] = v
 	}
-	return out
+	return out, nil
 }
 
 func pickGateway(gw harnessutil.AIGatewayAuth) map[string]string {

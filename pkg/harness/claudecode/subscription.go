@@ -106,12 +106,21 @@ func readClaudeCredentialStore(ctx context.Context, home, configDir, credentialP
 // `~/.claude/.credentials.json`) or, on macOS with the default config dir,
 // the Keychain; refreshes the OAuth access token when it is expiring soon and
 // writes the refreshed credential back to the store it came from. Returns
-// (nil, false) when no usable credential is found; a refresh failure is
-// treated as "not found". Mirrors TS `readClaudeCodeSubscription`.
+// (nil, false) when no usable credential is found; use
+// resolveClaudeCodeSubscription to observe refresh errors. Mirrors TS `readClaudeCodeSubscription`.
 func readClaudeCodeSubscription(ctx context.Context) (map[string]string, bool) {
+	env, ok, _ := resolveClaudeCodeSubscription(ctx)
+	return env, ok
+}
+
+// resolveClaudeCodeSubscription is readClaudeCodeSubscription with the
+// refresh / write-back error reported: like TS, a failed OAuth refresh (or a
+// failed write-back of the rotated credential) fails the caller instead of
+// being treated as "no credential".
+func resolveClaudeCodeSubscription(ctx context.Context) (map[string]string, bool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return nil, false
+		return nil, false, nil
 	}
 	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
 	if configDir == "" {
@@ -124,17 +133,17 @@ func readClaudeCodeSubscription(ctx context.Context) (map[string]string, bool) {
 
 	store := readClaudeCredentialStore(ctx, home, configDir, credentialPath)
 	if store == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	oauth, ok := claudeOAuth(store.value)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	accessToken, _ := oauth["accessToken"].(string)
 	refreshToken, _ := oauth["refreshToken"].(string)
 	expiresAt, _ := oauth["expiresAt"].(float64)
 	if accessToken == "" || refreshToken == "" {
-		return nil, false
+		return nil, false, nil
 	}
 
 	if harnessutil.IsAccessTokenExpiringSoon(int64(expiresAt), time.Now().UnixMilli(), 0) {
@@ -142,7 +151,7 @@ func readClaudeCodeSubscription(ctx context.Context) (map[string]string, bool) {
 			TokenURL: claudeTokenURL, ClientID: claudeClientID, RefreshToken: refreshToken, RequestFormat: "json",
 		})
 		if err != nil {
-			return nil, false
+			return nil, false, err
 		}
 		accessToken = refreshed.AccessToken
 		oauth["accessToken"] = refreshed.AccessToken
@@ -151,15 +160,15 @@ func readClaudeCodeSubscription(ctx context.Context) (map[string]string, bool) {
 			oauth["refreshToken"] = refreshed.RefreshToken
 		}
 		store.value["claudeAiOauth"] = oauth
-		// A failed write-back never invalidates the freshly refreshed token
-		// for this call: it just means the next call refreshes again.
-		_ = store.write(store.value)
+		if err := store.write(store.value); err != nil {
+			return nil, false, err
+		}
 	}
 
 	return map[string]string{
 		"CLAUDE_CODE_OAUTH_TOKEN": accessToken,
 		"ANTHROPIC_BASE_URL":      claudeSubscriptionBaseURL,
-	}, true
+	}, true, nil
 }
 
 // writeClaudeCredentialFile atomically rewrites the credential file (temp

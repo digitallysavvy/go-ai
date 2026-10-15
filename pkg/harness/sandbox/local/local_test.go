@@ -240,3 +240,27 @@ func TestSessionDirIsOwnerOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestHostEnvAllowlist(t *testing.T) {
+	t.Setenv("LOCAL_SANDBOX_SECRET", "s3cret")
+	t.Setenv("LOCAL_SANDBOX_KEEP", "ok")
+	run := func(opts Options) string {
+		opts.RootDir = t.TempDir()
+		sess, err := NewProvider(opts).CreateSession(context.Background(), harness.CreateSandboxSessionOptions{SessionID: "e"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = sess.Destroy(context.Background()) }()
+		res, err := sess.Run(context.Background(), providerutils.SandboxProcessOptions{Command: `printf "%s|%s|%s" "$LOCAL_SANDBOX_SECRET" "$LOCAL_SANDBOX_KEEP" "$EXTRA"`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Stdout
+	}
+	if got := run(Options{}); got != "s3cret|ok|" {
+		t.Fatalf("default inherits everything, got %q", got)
+	}
+	if got := run(Options{HostEnv: []string{"LOCAL_SANDBOX_KEEP", "PATH"}, Env: map[string]string{"EXTRA": "x"}}); got != "|ok|x" {
+		t.Fatalf("allowlist, got %q", got)
+	}
+}

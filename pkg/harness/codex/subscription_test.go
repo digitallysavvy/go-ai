@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
 )
 
 // fakeJWT builds a minimal (unsigned) JWT with the given `exp` claim (epoch
@@ -322,5 +324,29 @@ func TestReadCodexSubscription_KeyringRefreshWritesBack(t *testing.T) {
 	}
 	if k.writes != 1 || !strings.Contains(k.store["Codex Auth|"+k.lastAcc], refreshed) {
 		t.Fatalf("keyring write-back missing: writes=%d", k.writes)
+	}
+}
+
+// TS lets a failed OAuth refresh propagate out of resolveCodexAuthentication
+// (and so out of doStart) instead of treating it as "no credential".
+func TestResolveAuthentication_RefreshFailureFailsStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	for _, k := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"} {
+		t.Setenv(k, "")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	old := openaiTokenURL
+	openaiTokenURL = srv.URL
+	t.Cleanup(func() { openaiTokenURL = old })
+	writeAuthFile(t, home, chatgptAuth(t, fakeJWT(t, time.Now().Add(time.Minute).Unix())))
+
+	_, _, err := resolveAuthentication(context.Background(), harness.Authentication{}, map[string]string{}, "")
+	if err == nil {
+		t.Fatal("expected the refresh failure to be returned")
 	}
 }

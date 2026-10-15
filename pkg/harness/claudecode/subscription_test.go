@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 )
 
@@ -222,5 +223,29 @@ func TestReadClaudeCodeSubscription_KeychainSkippedForCustomDirOrOtherOS(t *test
 	claudeGOOS = "linux"
 	if _, ok := readClaudeCodeSubscription(context.Background()); ok {
 		t.Fatal("non-macOS must not use the Keychain")
+	}
+}
+
+func TestResolveAuthenticationEnvironment_RefreshFailureFailsStart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(srv.Close)
+	old := claudeTokenURL
+	claudeTokenURL = srv.URL
+	t.Cleanup(func() { claudeTokenURL = old })
+	dir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cred := `{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1}}`
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(cred), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveAuthenticationEnvironment(context.Background(), harness.Authentication{}, map[string]string{}); err == nil {
+		t.Fatal("expected the refresh failure to be returned")
 	}
 }
