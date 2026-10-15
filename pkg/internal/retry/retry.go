@@ -97,6 +97,12 @@ func Do(ctx context.Context, cfg Config, fn RetryFunc) error {
 			return nil // Success!
 		}
 
+		// An aborted call is never retried and never wrapped (TS rethrows
+		// abort errors as is, even after earlier failed attempts).
+		if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			return err
+		}
+
 		lastErr = err
 		errs = append(errs, err)
 		attempt++
@@ -238,6 +244,16 @@ func IsRetryable(err error) bool {
 	var providerErr *providererrors.ProviderError
 	if errors.As(err, &providerErr) {
 		return providerErr.IsRetryable()
+	}
+
+	// A bare HTTP error response (not wrapped in a ProviderError) follows the
+	// TS APICallError rule: only 408, 409, 429 and 5xx are retryable.
+	var httpErr providererrors.HTTPStatusDetails
+	if errors.As(err, &httpErr) {
+		code, _, _ := httpErr.HTTPStatusDetails()
+		if code != 0 {
+			return code == 408 || code == 409 || code == 429 || code >= 500
+		}
 	}
 
 	return true

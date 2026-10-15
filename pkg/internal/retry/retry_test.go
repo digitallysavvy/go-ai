@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 )
@@ -477,5 +478,14 @@ func TestDo_ContextCancelledBeforeStart(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Errorf("expected 0 calls, got %d", calls)
+	}
+}
+
+func TestIsRetryableBareHTTPStatus(t *testing.T) {
+	if IsRetryable(&internalhttp.HTTPStatusError{StatusCode: 401}) {
+		t.Error("401 must not be retryable")
+	}
+	if !IsRetryable(&internalhttp.HTTPStatusError{StatusCode: 503}) {
+		t.Error("503 must be retryable")
 	}
 }

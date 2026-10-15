@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -177,6 +178,22 @@ func (e *HTTPStatusError) Error() string {
 		return "HTTP <nil>"
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, string(e.Body))
+}
+
+// HTTPStatusDetails implements providererrors.HTTPStatusDetails so
+// providererrors.NewProviderError can lift the status code, headers and body
+// out of the cause chain.
+func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
+	if e == nil {
+		return 0, nil, nil
+	}
+	headers := make(map[string]string, len(e.Headers))
+	for k, v := range e.Headers {
+		if len(v) > 0 {
+			headers[strings.ToLower(k)] = v[0]
+		}
+	}
+	return e.StatusCode, headers, e.Body
 }
 
 // snapshot returns a point-in-time copy of the mutable client state (base
@@ -495,5 +512,16 @@ func transportError(err error) error {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return err
 	}
-	return fmt.Errorf("Cannot connect to API: %w", err) //nolint:staticcheck // matches TS SDK's exact error text
+	return &connectError{err: err}
 }
+
+// connectError is a failure to reach the API (TS: an APICallError with
+// isRetryable=true built by handleFetchError). The cause stays wrapped for
+// errors.Is/As.
+type connectError struct{ err error }
+
+func (e *connectError) Error() string { return "Cannot connect to API: " + e.err.Error() }
+func (e *connectError) Unwrap() error { return e.err }
+
+// IsRetryable reports true: TS retries connection failures.
+func (e *connectError) IsRetryable() bool { return true }

@@ -37,7 +37,7 @@ func abortReason(ctx context.Context, fallback error) error {
 }
 
 func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
-	if model == nil || model.Provider() != "gateway" {
+	if model == nil {
 		return 0
 	}
 	if maxRetries == nil {
@@ -46,9 +46,9 @@ func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 	return *maxRetries
 }
 
-// GatewayMaxRetries is the exported form of gatewayMaxRetries: 0 unless model
-// is an AI Gateway model, in which case it is maxRetries (default 2 when
-// nil). Exported so other packages (e.g. pkg/agent) can share this logic
+// GatewayMaxRetries is the exported form of gatewayMaxRetries: the retry
+// limit for a model call, maxRetries (default 2 when nil, as TS), or 0 for a
+// nil model. The name is historical; it applies to every provider. Exported so other packages (e.g. pkg/agent) can share this logic
 // instead of maintaining their own copy.
 func GatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 	return gatewayMaxRetries(model, maxRetries)
@@ -95,8 +95,17 @@ func isGatewayCallRetryable(err error) bool {
 	}
 	var providerErr *providererrors.ProviderError
 	if errors.As(err, &providerErr) {
+		if providerErr.Retryable != nil {
+			return *providerErr.Retryable
+		}
 		status := providerErr.StatusCode
 		return status == 408 || status == 409 || status == 429 || status >= 500
+	}
+	// Errors that classify themselves (e.g. a failure to connect to the API,
+	// which TS treats as a retryable APICallError).
+	var retryable interface{ IsRetryable() bool }
+	if errors.As(err, &retryable) {
+		return retryable.IsRetryable()
 	}
 	return false
 }
@@ -326,8 +335,10 @@ type GenerateTextOptions struct {
 	//   }
 	ProviderOptions map[string]interface{}
 
-	// MaxRetries controls transient provider call retries. For Gateway models,
-	// nil uses the TypeScript SDK default of 2 retries; set to 0 to disable.
+	// MaxRetries controls transient provider call retries (HTTP 408, 409, 429
+	// and 5xx, or errors a provider marks retryable). nil uses the TypeScript
+	// SDK default of 2 retries with exponential backoff starting at 2s; set to
+	// 0 to disable.
 	MaxRetries *int
 
 	// ExperimentalSandbox is passed through to tool execution. PrepareStep can
