@@ -2,20 +2,17 @@ package google
 
 import (
 	"encoding/json"
-	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
-// jsonStringify is JS JSON.stringify for one value: compact and without Go's
-// HTML escaping of <, > and & (model-visible JSON must not contain \u003c).
-// Local copy; replace with prompt.JSONStringify once that is on the
-// integration branch.
+// jsonStringify is JS JSON.stringify for one value (prompt.JSONStringify:
+// compact, no HTML escaping of <, > and &). Model-visible JSON must not
+// contain <. Values JSONStringify cannot encode fall back to json.Marshal.
 func jsonStringify(v interface{}) string {
-	var buf strings.Builder
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		b, _ := json.Marshal(v) //nolint:errcheck // fallback for unencodable values
-		return string(b)
+	if s, err := prompt.JSONStringify(v); err == nil {
+		return s
 	}
-	return strings.TrimRight(buf.String(), "\n")
+	b, _ := json.Marshal(v) //nolint:errcheck // fallback for unencodable values
+	return string(b)
 }
