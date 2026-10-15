@@ -559,27 +559,6 @@ func TestAzureEmbeddingUsageTokensUsesPromptTokensLikeTypeScript(t *testing.T) {
 
 func TestImageAndSpeechBuildHelpers(t *testing.T) {
 	p := mustNewProvider(t, Config{APIKey: "k", ResourceName: "r", DeploymentID: "d"})
-	im := NewImageModel(p, "img-dep")
-	n := 2
-	ib := im.buildRequestBody(&provider.ImageGenerateOptions{
-		Prompt:  "draw cat",
-		N:       &n,
-		Size:    "1024x1024",
-		Quality: "hd",
-		Style:   "vivid",
-	})
-	if ib["n"] != 2 || ib["size"] != "1024x1024" {
-		t.Fatalf("image request body mismatch: %#v", ib)
-	}
-	if _, err := im.convertResponse([]byte(`{"data":[]}`)); err == nil {
-		t.Fatal("convertResponse should fail when no images are returned")
-	}
-	okResp := []byte(`{"data":[{"url":"https://example.com/i.png"}]}`)
-	ir, err := im.convertResponse(okResp)
-	if err != nil || ir.URL == "" {
-		t.Fatalf("convertResponse result=%#v err=%v", ir, err)
-	}
-
 	sm := NewSpeechModel(p, "speech-dep")
 	speed := 1.2
 	sb := sm.buildRequestBody(&provider.SpeechGenerateOptions{

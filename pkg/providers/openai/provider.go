@@ -60,6 +60,10 @@ type Config struct {
 	// (Azure api-version).
 	ChatQuery map[string]string
 
+	// ImageQuery contains query parameters added to image generation and edit
+	// requests (Azure api-version).
+	ImageQuery map[string]string
+
 	// CompletionProviderName overrides the provider identifier returned by
 	// CompletionModel. Defaults to "openai.completion".
 	CompletionProviderName string

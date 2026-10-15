@@ -80,6 +80,40 @@ var openaiFileInputSupportedModels = map[string]bool{
 	"chatgpt-image-latest":              true,
 }
 
+// openaiModelMaxImagesPerCall mirrors TS modelMaxImagesPerCall.
+var openaiModelMaxImagesPerCall = map[string]int{
+	"dall-e-3":                          1,
+	"dall-e-2":                          10,
+	"gpt-image-1":                       10,
+	"gpt-image-1-mini":                  10,
+	"gpt-image-1.5":                     10,
+	"gpt-image-2":                       10,
+	"gpt-image-2.5-flare":               10,
+	"gpt-image-2.5-flare-2026-09-08":    10,
+	"gpt-image-2.5-sunburst":            10,
+	"gpt-image-2.5-sunburst-2026-09-08": 10,
+	"chatgpt-image-latest":              10,
+}
+
+// ImageMaxImagesPerCall returns the per-call image limit for an OpenAI image
+// model ID (TS getMaxImagesPerCall): known IDs per the table, any other
+// gpt-image-* ID 10, everything else 1.
+func ImageMaxImagesPerCall(modelID string) int {
+	if n, ok := openaiModelMaxImagesPerCall[modelID]; ok {
+		return n
+	}
+	if strings.HasPrefix(modelID, "gpt-image-") {
+		return 10
+	}
+	return 1
+}
+
+// MaxImagesPerCall returns the number of images the model can generate in a
+// single call (TS OpenAIImageModel#maxImagesPerCall).
+func (m *ImageModel) MaxImagesPerCall() int {
+	return ImageMaxImagesPerCall(m.modelID)
+}
+
 // SupportsFileInputs reports whether the model accepts file inputs for image
 // editing. Returns nil when support is unknown for the model ID.
 func (m *ImageModel) SupportsFileInputs() *bool {
@@ -122,6 +156,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/images/generations",
+		Query:   m.provider.config.ImageQuery,
 		Body:    reqBody,
 		Headers: opts.Headers,
 	}, &response)
@@ -143,10 +178,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // because they use a different default format (#12838).
 var defaultResponseFormatPrefixes = []string{
 	"chatgpt-image-",
-	"gpt-image-1-mini",
-	"gpt-image-1.5",
-	"gpt-image-1",
-	"gpt-image-2",
+	"gpt-image-",
 }
 
 // hasDefaultResponseFormat returns true when the model has its own built-in
@@ -212,6 +244,7 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/images/edits",
+		Query:   m.provider.config.ImageQuery,
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 		Body:    body,
 	}, &response)
