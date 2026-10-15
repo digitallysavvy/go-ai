@@ -157,7 +157,7 @@ func responseFormatSchema(t *testing.T, rf *provider.ResponseFormat) map[string]
 		return nil
 	}
 	// TS sends the JSON schema itself; accept a map or a schema value.
-	var raw interface{} = rf.Schema
+	raw := rf.Schema
 	if js, ok := rf.Schema.(interface{ JSONSchema() map[string]interface{} }); ok {
 		raw = js.JSONSchema()
 	}
