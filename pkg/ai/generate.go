@@ -1973,6 +1973,10 @@ type toolCallEventCallbacks struct {
 	// (generator-style) tools as preliminary tool results. Nil when the caller
 	// does not stream (TS generateText ignores preliminary results).
 	onPreliminary func(result types.ToolResult)
+	// preApprovals holds approval decisions already made while the step's
+	// stream was running (StreamText); executeTools reuses them instead of
+	// resolving the approval a second time.
+	preApprovals map[string]preResolvedApproval
 }
 
 // isToolExecutionAllowedFinishReason reports whether client tools may be
@@ -2129,12 +2133,18 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		providerExecuted := tool.ProviderExecuted
 
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
-		approval, approvalErr := resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+		var approval types.ToolApprovalResult
+		var approvalErr error
 		approvalID := ""
-		if approval.Status == types.ToolApprovalStatusUserApproval ||
-			approval.Status == types.ToolApprovalStatusApproved ||
-			approval.Status == types.ToolApprovalStatusDenied {
-			approvalID = newCallID()
+		if pre, ok := callbacks.preApprovals[call.ID]; ok {
+			approval, approvalErr, approvalID = pre.approval, pre.err, pre.id
+		} else {
+			approval, approvalErr = resolveToolApproval(ctx, call, availableTools, callbacks.messages, runtimeContext, toolsContext, toolApproval)
+			if approval.Status == types.ToolApprovalStatusUserApproval ||
+				approval.Status == types.ToolApprovalStatusApproved ||
+				approval.Status == types.ToolApprovalStatusDenied {
+				approvalID = newCallID()
+			}
 		}
 		if approvalErr != nil {
 			results[i] = types.ToolResult{
