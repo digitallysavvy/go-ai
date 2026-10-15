@@ -45,7 +45,6 @@ func tsUIParts(t *testing.T, r *StreamTextResult, opts ...UIMessageStreamResultO
 	return out
 }
 
-
 func TestTSReplay_ToUIMessageStream(t *testing.T) {
 	meta := func(sig string) json.RawMessage {
 		return json.RawMessage(`{"testProvider":{"signature":"` + sig + `"}}`)

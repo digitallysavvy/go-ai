@@ -273,3 +273,26 @@ func (o *Object) Map() map[string]interface{} {
 	m, _ := Plain(o).(map[string]interface{})
 	return m
 }
+
+// Normalize is the order-preserving case of a tool-result JSON round trip:
+// a json.RawMessage (or an *Object) that holds a JSON object or array comes
+// back as an ordered tree whose marshaled text keeps the source key order, as
+// JSON.parse(JSON.stringify(value)) does in TS. ok is false for any other
+// value, which the caller round-trips through plain Go values.
+func Normalize(v interface{}) (interface{}, bool) {
+	switch x := v.(type) {
+	case *Object:
+		return x, x != nil
+	case json.RawMessage:
+		tree, ok := Parse(x)
+		if !ok {
+			return nil, false
+		}
+		switch tree.(type) {
+		case *Object, []interface{}:
+			return tree, true
+		}
+		return Plain(tree), true
+	}
+	return nil, false
+}

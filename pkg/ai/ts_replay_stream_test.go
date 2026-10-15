@@ -74,7 +74,9 @@ func tool1() types.Tool {
 	return types.Tool{
 		Name:       "tool1",
 		Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}, "additionalProperties": false},
-		Execute:    func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "result1", nil },
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "result1", nil
+		},
 	}
 }
 
@@ -110,7 +112,9 @@ func TestTSReplay_StreamText_TwoStepsToolResult(t *testing.T) {
 	var finish OnFinishEvent
 	result, err := StreamText(context.Background(), StreamTextOptions{
 		Model: model, Prompt: "test-input", Tools: []types.Tool{tool1()}, StopWhen: []StopCondition{StepCountIs(3)},
-		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { order = append(order, fmt.Sprintf("step-end:%d", e.StepNumber)) },
+		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) {
+			order = append(order, fmt.Sprintf("step-end:%d", e.StepNumber))
+		},
 		OnEndEvent: func(_ context.Context, e OnFinishEvent) {
 			order = append(order, "end")
 			finish = e

@@ -2,10 +2,12 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -50,5 +52,28 @@ func TestToolSchemaParametersReachProvidersAsMaps(t *testing.T) {
 	}
 	if _, ok := tools[0].Parameters.(*schema.SimpleJSONSchema); !ok {
 		t.Fatal("caller's tool was modified")
+	}
+}
+
+// A tool that returns raw JSON text hands the model that text in its source key
+// order (TS JSON.stringify of the parsed value keeps insertion order).
+func TestToolResultRawJSONKeepsKeyOrderInModelOutput(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`{"zebra":1,"apple":{"y":[1,2],"b":true},"mango":"<x>"}`)
+	out := toolResultModelOutput(raw)
+	if out.Type != types.ToolResultOutputJSON {
+		t.Fatalf("type = %v", out.Type)
+	}
+	b, err := jsonstr.Marshal(out.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"zebra":1,"apple":{"y":[1,2],"b":true},"mango":"<x>"}` {
+		t.Fatalf("model-visible JSON = %s", b)
+	}
+	// A plain map still round-trips to sorted keys (deterministic).
+	m := toolResultModelOutput(map[string]interface{}{"b": 1, "a": 2})
+	if _, ok := m.Value.(map[string]interface{}); !ok {
+		t.Fatalf("map result Value = %T", m.Value)
 	}
 }

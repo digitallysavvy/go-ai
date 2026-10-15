@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
@@ -474,6 +475,9 @@ func uiErrorMessage(value interface{}) string {
 func toJSONValue(value interface{}) interface{} {
 	if value == nil {
 		return nil
+	}
+	if ordered, ok := jsonorder.Normalize(value); ok {
+		return ordered
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
