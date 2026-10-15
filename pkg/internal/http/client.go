@@ -39,14 +39,20 @@ func applyUserAgentSuffix(h http.Header) {
 	h.Set("User-Agent", merged["user-agent"])
 }
 
-// DefaultHTTPClient is a shared HTTP client with sensible defaults
+// DefaultHTTPClient is a shared HTTP client with sensible defaults.
+//
+// It has no whole-request timeout: TS fetch has none, so a slow
+// non-streaming call (a reasoning model, an image generation) or a long
+// stream must not be cut off at an arbitrary limit; callers bound a call with
+// its context. As with Node's fetch (undici headersTimeout), the server must
+// start responding within 5 minutes.
 var DefaultHTTPClient = &http.Client{
-	Timeout: 60 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+		DisableCompression:    false,
 	},
 }
 
@@ -76,7 +82,7 @@ type Config struct {
 	// Headers are default headers to send with all requests
 	Headers map[string]string
 
-	// Timeout for requests (default: 60 seconds)
+	// Timeout for requests (default: none; bound a call with its context)
 	Timeout time.Duration
 
 	// HTTPClient is the underlying HTTP client to use
@@ -315,6 +321,19 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 	return resp, nil
 }
 
+// streamClient returns the client used for streaming requests. The shared
+// DefaultHTTPClient carries a whole-request timeout that would abort a stream
+// still being read, so streams use a copy of it without that timeout. A
+// caller-supplied client (or an explicit Config.Timeout) is honoured as is.
+func (c *Client) streamClient() *http.Client {
+	if c.client == DefaultHTTPClient && DefaultHTTPClient.Timeout > 0 {
+		clone := *DefaultHTTPClient
+		clone.Timeout = 0
+		return &clone
+	}
+	return c.client
+}
+
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
 	baseURL, defaultHeaders := c.snapshot()
@@ -375,8 +394,10 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
-	// Perform request
-	httpResp, err := c.client.Do(httpReq)
+	// Perform request. http.Client.Timeout covers reading the response body,
+	// so the shared default client's 60s budget would cut off long-running
+	// streams (TS fetch has no overall timeout; callers cancel via ctx).
+	httpResp, err := c.streamClient().Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
 	}
