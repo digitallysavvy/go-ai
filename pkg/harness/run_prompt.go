@@ -1355,9 +1355,12 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	}
 	var toolResult types.ToolResult
 	if tr.IsError {
-		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Error: fmt.Errorf("%v", tr.Result), ProviderExecuted: ok && call.ProviderExecuted}
+		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Error: fmt.Errorf("%v", tr.Result), ProviderExecuted: ok && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
+		if toolResult.ProviderExecuted {
+			toolResult.Result = tr.Result
+		}
 	} else {
-		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Result: tr.Result, ProviderExecuted: ok && call.ProviderExecuted}
+		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Result: tr.Result, ProviderExecuted: ok && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
 	}
 	d.stepToolResults = append(d.stepToolResults, toolResult)
 	// Host tool goroutines write toolExecMs under execMu.

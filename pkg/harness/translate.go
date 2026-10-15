@@ -132,8 +132,12 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
 					ToolCallID: p.ToolCallID, ToolName: p.ToolName,
-					Input:            call.Input,
-					Error:            fmt.Errorf("%v", p.Result),
+					Input: call.Input,
+					Error: fmt.Errorf("%v", p.Result),
+					// The raw error value (TS tool-error.error): core replays a
+					// structured one as error-json and JSON-encodes it in the
+					// UI error text.
+					Result:           p.Result,
 					ProviderExecuted: true,
 					Dynamic:          p.Dynamic,
 					Preliminary:      p.Preliminary,
