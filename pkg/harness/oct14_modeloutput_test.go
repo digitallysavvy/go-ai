@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -207,5 +208,17 @@ func TestRunPrompt_ContinuationUnsupportedModelOutputFallsBackToText(t *testing.
 	tr, ok := mock.toolResults[0].ToolResult.(*types.ToolResultContent)
 	if !ok || tr.Output == nil || tr.Output.Type != types.ToolResultOutputText {
 		t.Fatalf("ToolResult = %+v, want text fallback", mock.toolResults[0].ToolResult)
+	}
+}
+
+// TS convertHarnessToolModelOutput's unsupported-content message.
+func TestConvertToolModelOutputUnsupportedContentMessage(t *testing.T) {
+	_, _, err := ConvertToolModelOutput(types.ToolResultOutput{
+		Type:    types.ToolResultOutputContent,
+		Content: []types.ToolResultContentBlock{types.FileContentBlock{URL: "https://x/y.pdf", MediaType: "application/pdf"}},
+	})
+	want := "Harnesses support only text and inline images in tool model output; unsupported content '"
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("err = %v, want prefix %q", err, want)
 	}
 }
