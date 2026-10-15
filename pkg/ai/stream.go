@@ -2210,7 +2210,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				alreadyDecided := replayed && chunk == decidedErr
 				if alreadyDecided {
 					normalizedErr = decidedErrNormalized
-				} else if opts.OnError != nil {
+				} else if opts.OnError != nil && (!stepSawErrorChunk || opts.Internal == nil || !opts.Internal.StopOnStreamError) {
+					// With StopOnStreamError only the step's first error part is
+					// reported (TS retains the first model error as the step's
+					// terminalError and fires onError once for the run).
 					safeInvoke(func() { opts.OnError(ctx, normalizedErr) })
 				}
 
@@ -2342,7 +2345,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// Keep the error for Err(): TS rejects the result promises
 				// with the stream's error (original object, typed).
 				r.mu.Lock()
-				r.chunkErr = normalizedErr
+				if r.chunkErr == nil || opts.Internal == nil || !opts.Internal.StopOnStreamError {
+					r.chunkErr = normalizedErr
+				}
 				r.mu.Unlock()
 			}
 

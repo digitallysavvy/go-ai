@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,5 +52,37 @@ func TestWorkflowStreamErrorPartSkipsToolCalls(t *testing.T) {
 				t.Fatalf("executed=%d errs=%d aborts=%d steps=%d err=%v", executed, errs, aborts, len(st.Steps()), st.Err())
 			}
 		})
+	}
+}
+
+// TS do-stream-step keeps only the first error part as the step's
+// terminalError, so several bad frames in one step fire onError once with the
+// first error.
+func TestWorkflowStreamMultipleErrorPartsReportFirstOnce(t *testing.T) {
+	var mu sync.Mutex
+	var got []error
+	m := &fnModel{chunks: []provider.StreamChunk{
+		{Type: provider.ChunkTypeError, Text: "first bad frame"},
+		{Type: provider.ChunkTypeError, Text: "second bad frame"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	}}
+	a, _ := NewWorkflowAgent(WorkflowAgent{Model: m})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	st, err := a.StreamWithOptions(ctx, WorkflowStreamOptions{
+		Prompt:  "x",
+		OnError: func(_ context.Context, e error) { mu.Lock(); got = append(got, e); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.ConsumeStream()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || !strings.Contains(got[0].Error(), "first bad frame") {
+		t.Fatalf("onError calls = %v", got)
+	}
+	if st.Err() == nil || !strings.Contains(st.Err().Error(), "first bad frame") {
+		t.Fatalf("Err() = %v", st.Err())
 	}
 }
