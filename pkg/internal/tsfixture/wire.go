@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -54,6 +55,49 @@ type WireCall struct {
 	Result   interface{}   `json:"result"`
 	Error    interface{}   `json:"error"`
 	Streamed bool          `json:"streamed"`
+
+	// argsRaw is the call arguments as recorded, keeping the key order of
+	// the TS objects (Args holds Go maps, which sort keys).
+	argsRaw json.RawMessage
+}
+
+// UnmarshalJSON decodes the call and keeps the raw arguments text.
+func (c *WireCall) UnmarshalJSON(b []byte) error {
+	type plain WireCall
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var aux struct {
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*c = WireCall(p)
+	c.argsRaw = aux.Args
+	return nil
+}
+
+// RawResponseFormatSchema returns the responseFormat schema of the first call
+// argument as recorded (TS key order), or nil.
+func (c WireCall) RawResponseFormatSchema() json.RawMessage {
+	if len(c.argsRaw) == 0 {
+		return nil
+	}
+	tree, ok := jsonorder.Parse(c.argsRaw)
+	if !ok {
+		return nil
+	}
+	args, _ := tree.([]interface{})
+	if len(args) == 0 {
+		return nil
+	}
+	rf, ok := jsonorder.Get(args[0], "responseFormat", "schema")
+	if !ok || rf == nil {
+		return nil
+	}
+	return json.RawMessage(jsonorder.Stringify(rf))
 }
 
 // Arg returns the first argument as an object (the call options).

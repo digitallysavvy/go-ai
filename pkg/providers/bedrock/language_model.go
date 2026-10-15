@@ -282,7 +282,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	if topK != nil {
 		inferenceConfig["topK"] = *topK
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS: stopSequences != null (an empty list is still sent).
+	if opts.StopSequences != nil {
 		inferenceConfig["stopSequences"] = opts.StopSequences
 	}
 

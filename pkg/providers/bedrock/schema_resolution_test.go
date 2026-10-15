@@ -48,3 +48,39 @@ func TestSchemaSchemaReachesTheWire(t *testing.T) {
 		t.Fatalf("function tool schema lost: %s", b)
 	}
 }
+
+// TS: a whitespace-only tool description is omitted, and an empty (non-null)
+// stopSequences list is still sent, or warned about for OpenAI models.
+func TestBedrockEmptyToolDescriptionAndEmptyStopSequences(t *testing.T) {
+	args, err := newBedrockModelWithID("us.anthropic.claude-sonnet-4-5-20250929-v1:0").getArgs(&provider.GenerateOptions{
+		Prompt:        types.Prompt{Text: "hi"},
+		StopSequences: []string{},
+		Tools: []types.Tool{{Name: "t", Description: "   ", Type: types.ToolTypeFunction,
+			Parameters: map[string]interface{}{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(args.Body)
+	if strings.Contains(string(b), `"description"`) {
+		t.Fatalf("whitespace description sent: %s", b)
+	}
+	if !strings.Contains(string(b), `"stopSequences":[]`) {
+		t.Fatalf("empty stopSequences dropped: %s", b)
+	}
+
+	args, err = newBedrockModelWithID("openai.gpt-oss-120b-1:0").getArgs(&provider.GenerateOptions{
+		Prompt:        types.Prompt{Text: "hi"},
+		StopSequences: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range args.Warnings {
+		found = found || w.Feature == "stopSequences"
+	}
+	if !found {
+		t.Fatalf("no stopSequences warning: %v", args.Warnings)
+	}
+}

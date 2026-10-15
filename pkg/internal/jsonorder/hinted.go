@@ -76,3 +76,19 @@ func reorder(v, hint interface{}) interface{} {
 	}
 	return v
 }
+
+// Get walks an ordered tree from Parse by object keys and returns the value at
+// the path.
+func Get(v interface{}, path ...string) (interface{}, bool) {
+	for _, k := range path {
+		o, ok := v.(*Object)
+		if !ok {
+			return nil, false
+		}
+		v, ok = o.vals[k]
+		if !ok {
+			return nil, false
+		}
+	}
+	return v, true
+}

@@ -223,7 +223,8 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		}
 
 		toolSpec := map[string]interface{}{"name": tool.Name}
-		if tool.Description != "" {
+		// TS: description is omitted when it trims to the empty string.
+		if strings.TrimSpace(tool.Description) != "" {
 			toolSpec["description"] = tool.Description
 		}
 		if strictSet && supportsStrictForTool {

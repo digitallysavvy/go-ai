@@ -70,6 +70,12 @@ type WireSuite struct {
 	SkipLanguage bool
 	// ProviderTool maps a TS provider tool for language-model calls.
 	ProviderTool func(id, name string, args map[string]interface{}) (types.Tool, bool)
+	// RawSchemas passes the responseFormat schema of language-model calls as
+	// raw JSON (keeping the TS key order) instead of a Go map.
+	RawSchemas bool
+	// SkipStream is a reason to skip tests that stream (doStream calls) when
+	// the recording cannot carry the response body (binary frames).
+	SkipStream string
 	// SkipModel returns a reason to skip a test that calls a model this suite
 	// does not replay (for example a model another suite covers).
 	SkipModel func(m WireModel) string
@@ -158,6 +164,9 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		kind := WireKind(c)
 		if kind == "" {
 			skip(fmt.Sprintf("unsupported TS call %s on %s", c.Method, c.Model.Cls))
+		}
+		if s.SkipStream != "" && c.Method == "doStream" {
+			skip(s.SkipStream)
 		}
 		if s.SkipModel != nil {
 			if why := s.SkipModel(c.Model); why != "" {
@@ -940,6 +949,11 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 	ProviderToolHook = prev
 	if opts == nil {
 		return map[string]interface{}{"skip": "unsupported call options: " + why}, errWireSkip
+	}
+	if s.RawSchemas && opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil {
+		if raw := c.RawResponseFormatSchema(); raw != nil {
+			opts.ResponseFormat.Schema = raw
+		}
 	}
 	if c.Method == "doStream" {
 		st, err := m.DoStream(ctx, opts)
