@@ -302,7 +302,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: `reasoning "none"`,
-				Details: "Use providerOptions.moonshot.thinking to control thinking on custom models.",
+				Details: "Use providerOptions.moonshotai.thinking to control thinking on custom models.",
 			})
 		}
 		if requestedReasoningEffort != "" {
