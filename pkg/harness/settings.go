@@ -171,6 +171,12 @@ type AgentSettings struct {
 	// host-executed tools.
 	ToolApproval AgentToolApprovalConfiguration
 
+	// ToolApprovalReasons carries the optional `reason` of a ToolApproval
+	// entry (TS `{ type: 'denied', reason }`). The reason of a denied tool is
+	// sent to the model in the execution-denied result and recorded on the
+	// automatic approval response.
+	ToolApprovalReasons map[string]string
+
 	// ActiveTools / InactiveTools limit the tools available to the harness
 	// without changing the tool call/result types in the result. Mutually
 	// exclusive; leave both nil to allow every tool.

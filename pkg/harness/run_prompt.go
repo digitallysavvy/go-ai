@@ -182,6 +182,8 @@ type runPromptInput struct {
 	Callbacks      Callbacks
 	StopConditions []ai.StopCondition
 	ToolApproval   ToolApprovalConfiguration
+	// ToolApprovalReasons are the per-tool reasons for ToolApproval entries.
+	ToolApprovalReasons map[string]string
 
 	PendingToolApprovals      []PendingToolApproval
 	PendingToolResults        []PendingToolResult
@@ -1661,7 +1663,13 @@ func harnessUsageToTypesUsageValue(u Usage) types.Usage {
 // value submitted back to the harness when a tool call is filtered out or
 // denied. Mirrors TS's inline object literal of the same shape.
 func executionDeniedOutput(reason string) map[string]interface{} {
-	return map[string]interface{}{"type": "execution-denied", "reason": reason}
+	out := map[string]interface{}{"type": "execution-denied"}
+	// TS leaves `reason` undefined (and so absent from the JSON) when the
+	// tool has no denial reason.
+	if reason != "" {
+		out["reason"] = reason
+	}
+	return out
 }
 
 // handleApprovalRequest processes a `tool-approval-request` event from the
@@ -1769,6 +1777,9 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	}
 
 	decision := ResolveCustomToolApproval(raw.ToolName, d.in.ToolApproval)
+	if decision.Type == CustomToolApprovalDeny && decision.Reason == "" {
+		decision.Reason = d.in.ToolApprovalReasons[raw.ToolName]
+	}
 	switch decision.Type {
 	case CustomToolApprovalDeny:
 		approvalID := generateApprovalID()

@@ -336,7 +336,9 @@ func TestContinueFailsWhenPersistedToolIsNoLongerAvailable(t *testing.T) {
 func TestCompactDuringRunningTurn(t *testing.T) {
 	finish := make(chan struct{})
 	mock := newMockHarness(mockHarnessOptions{
-		script:     func(func(string, interface{})) []StreamPart { return append([]StreamPart{&StreamStartPart{}}, finishScript("x")...) },
+		script: func(func(string, interface{})) []StreamPart {
+			return append([]StreamPart{&StreamStartPart{}}, finishScript("x")...)
+		},
 		promptDone: func() <-chan struct{} { return finish },
 	})
 	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
@@ -354,5 +356,54 @@ func TestCompactDuringRunningTurn(t *testing.T) {
 	}
 	if err := session.Compact(context.Background(), ""); err == nil || !strings.Contains(err.Error(), "has ended and cannot be reused") {
 		t.Fatalf("Compact after stop err = %v", err)
+	}
+}
+
+// TS `toolApproval: { danger: { type: 'denied', reason } }` sends the reason to
+// the model in the execution-denied output; without a reason the key is absent.
+func TestDeniedToolApprovalReason(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		reasons map[string]string
+		want    string
+	}{
+		{"with reason", map[string]string{"danger": "Blocked by policy."}, "Blocked by policy."},
+		{"without reason", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			danger := types.Tool{Name: "danger", Parameters: map[string]any{"type": "object"},
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					t.Error("denied tool executed")
+					return nil, nil
+				}}
+			mock := newMockHarness(mockHarnessOptions{script: func(func(string, interface{})) []StreamPart {
+				return []StreamPart{&StreamStartPart{}, &ToolCallPart{ToolCallID: "c1", ToolName: "danger", Input: "{}"},
+					&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+					&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)}}
+			}})
+			a, err := NewAgent(AgentSettings{
+				Harness: mock.harness, UserTools: map[string]types.Tool{"danger": danger},
+				ToolApproval:        ToolApprovalConfiguration{"danger": "denied"},
+				ToolApprovalReasons: tc.reasons,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := a.CreateSession(context.Background(), CreateSessionOptions{SandboxSession: testSandbox()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session}); err != nil {
+				t.Fatal(err)
+			}
+			if len(mock.toolResults) != 1 {
+				t.Fatalf("toolResults = %+v", mock.toolResults)
+			}
+			out, _ := mock.toolResults[0].Output.(map[string]interface{})
+			reason, has := out["reason"]
+			if out["type"] != "execution-denied" || (tc.want == "" && has) || (tc.want != "" && reason != tc.want) {
+				t.Fatalf("Output = %#v", mock.toolResults[0].Output)
+			}
+		})
 	}
 }

@@ -694,7 +694,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		BuiltinToolFiltering: active.builtinToolFiltering,
 		SandboxSession:       session.sandboxSession, SessionWorkDir: session.sessionWorkDir,
 		ResponseFormat: responseFormat, Output: a.settings.Output, Telemetry: a.settings.Telemetry,
-		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval,
+		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval, ToolApprovalReasons: a.settings.ToolApprovalReasons,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		ToolApprovalContinuations: toolApprovalContinuations, ToolResultContinuations: toolResultContinuations,
 		OnPendingToolApproval: session.recordPendingApproval,
@@ -719,7 +719,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		// awaiting-tool-result at the moment the pause was discovered.
 		IsTurnSuspending: func() bool { return session.isTurnSuspending(turnID) },
 		OnTurnFinished:   func() { session.finishTrackedTurn(turnID) },
-		OnTurnFailed:   func() { session.finishTrackedTurn(turnID) },
+		OnTurnFailed:     func() { session.finishTrackedTurn(turnID) },
 		// OnStopConditionMet suspends the underlying harness session's turn
 		// in place when StopWhen stops the result early, so it stays
 		// resumable via ContinueGenerate/ContinueStream instead of being
