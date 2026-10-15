@@ -175,6 +175,7 @@ func (m *ResponsesLanguageModel) DoStream(ctx context.Context, opts *provider.Ge
 	}
 
 	stream := newXAIResponsesStream(httpResp.Body, opts.IncludeRawChunks)
+	stream.responseHeaders = httpResp.Header
 	stream.requestBody = body
 	return streaming.NewWarningsStream(stream, warnings), nil
 }
@@ -1019,12 +1020,13 @@ type xaiResponsesToolAccum struct {
 // xaiResponsesStream implements provider.TextStream for the XAI Responses API SSE stream.
 // XAI's Responses API uses the same SSE event schema as the OpenAI Responses API.
 type xaiResponsesStream struct {
-	reader     io.ReadCloser
-	parser     *streaming.SSEParser
-	err        error
-	toolAccum  map[int]*xaiResponsesToolAccum
-	itemTypes  map[int]string
-	flushQueue []*provider.StreamChunk
+	responseHeaders http.Header
+	reader          io.ReadCloser
+	parser          *streaming.SSEParser
+	err             error
+	toolAccum       map[int]*xaiResponsesToolAccum
+	itemTypes       map[int]string
+	flushQueue      []*provider.StreamChunk
 	// activeReasoning tracks item IDs for which a reasoning-start chunk has been emitted.
 	// Used to emit the matching reasoning-end in output_item.done, and to avoid
 	// double-emitting reasoning-start for encrypted reasoning (no summary events sent).
@@ -1157,6 +1159,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
+				Headers: providerutils.ExtractHeaders(s.responseHeaders),
 			}
 			if e.Response.CreatedAt != 0 {
 				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)

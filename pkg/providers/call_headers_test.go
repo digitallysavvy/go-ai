@@ -215,3 +215,48 @@ func TestImageModelsForwardPerCallHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestResponsesStreamMetadataCarriesHeaders(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Resp", "hdr")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":1700000000,\"model\":\"m\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	}))
+	defer srv.Close()
+	for name, mk := range map[string]func() (provider.LanguageModel, error){
+		"openai": func() (provider.LanguageModel, error) {
+			return openai.New(openai.Config{APIKey: "k", BaseURL: srv.URL}).ResponsesModel("gpt-4o")
+		},
+		"xai": func() (provider.LanguageModel, error) {
+			return xai.New(xai.Config{APIKey: "k", BaseURL: srv.URL}).LanguageModel("m")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := mk()
+			if err != nil {
+				t.Fatal(err)
+			}
+			st, err := m.DoStream(context.Background(), &provider.GenerateOptions{
+				Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close() //nolint:errcheck
+			for {
+				ch, err := st.Next()
+				if err != nil {
+					t.Fatalf("no response-metadata chunk: %v", err)
+				}
+				if ch != nil && ch.Type == provider.ChunkTypeResponseMetadata {
+					h := ch.ResponseMetadata.Headers
+					if h["X-Resp"] == "" && h["x-resp"] == "" {
+						t.Fatalf("headers missing: %v", h)
+					}
+					return
+				}
+			}
+		})
+	}
+}

@@ -2718,6 +2718,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			metadata := &provider.ResponseMetadata{
 				ID:      e.Response.ID,
 				ModelID: e.Response.Model,
+				Headers: providerutils.ExtractHeaders(s.responseHeaders),
 			}
 			if e.Response.CreatedAt != 0 {
 				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
