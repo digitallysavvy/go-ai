@@ -240,5 +240,15 @@ func IsRetryable(err error) bool {
 		return providerErr.IsRetryable()
 	}
 
+	// A bare HTTP error response (not wrapped in a ProviderError) follows the
+	// TS APICallError rule: only 408, 409, 429 and 5xx are retryable.
+	var httpErr providererrors.HTTPStatusDetails
+	if errors.As(err, &httpErr) {
+		code, _, _ := httpErr.HTTPStatusDetails()
+		if code != 0 {
+			return code == 408 || code == 409 || code == 429 || code >= 500
+		}
+	}
+
 	return true
 }
