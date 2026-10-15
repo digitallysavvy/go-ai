@@ -640,7 +640,7 @@ func (s *stream) processNonFuncPart(part Part) {
 				ID:               toolCallID,
 				ToolName:         "server:" + part.ToolCall.ToolType,
 				Arguments:        args,
-				RawArguments:     jsonorder.Text(part.toolCallArgsRaw, args),
+				RawArguments:     jsonorder.Text(json.RawMessage(part.toolCallArgsRaw), args),
 				ProviderExecuted: true,
 				Dynamic:          true,
 			},

@@ -1017,9 +1017,9 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	// typed struct cannot tell them apart, so consult the wire object when
 	// present (hand-built usage keeps the details it carries).
 	cachedPresent, reasoningPresent := true, true
-	if usage.rawWire != nil {
-		cachedPresent = wireNumberPresent(usage.rawWire, "input_tokens_details", "cached_tokens")
-		reasoningPresent = wireNumberPresent(usage.rawWire, "output_tokens_details", "reasoning_tokens")
+	if wire := usage.wire(); wire != nil {
+		cachedPresent = wireNumberPresent(wire, "input_tokens_details", "cached_tokens")
+		reasoningPresent = wireNumberPresent(wire, "output_tokens_details", "reasoning_tokens")
 	}
 	var cachedTokens, reasoningTokens int64
 	if usage.InputTokensDetails != nil {
@@ -1055,8 +1055,8 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	}
 
 	// Store raw usage: the wire object verbatim (TS raw: response.usage).
-	if usage.rawWire != nil {
-		result.Raw = usage.rawWire
+	if wire := usage.wire(); wire != nil {
+		result.Raw = wire
 	} else {
 		result.Raw = map[string]interface{}{
 			"input_tokens":  usage.InputTokens,

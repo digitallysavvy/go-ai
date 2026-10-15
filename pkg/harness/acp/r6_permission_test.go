@@ -41,7 +41,7 @@ func startFrameFor(t *testing.T, pm *PermissionModeMapping) map[string]any {
 // sent to the bridge); a complete one, with explicit null no-ops, is sent.
 func TestPermissionModeMapping_PartialIsNotSentToBridge(t *testing.T) {
 	target := &PermissionModeTarget{Type: PermissionTargetSessionMode, ModeID: "full"}
-	partial := &PermissionModeMapping{AllowAll: target, Unset: []harness.PermissionMode{harness.PermissionModeAllowReads, harness.PermissionModeAllowEdits}}
+	partial := &PermissionModeMapping{AllowAll: target, UnsetAllowReads: true, UnsetAllowEdits: true}
 	if got := startFrameFor(t, partial); got["permissionModeMapping"] != nil {
 		t.Fatalf("partial mapping sent: %v", got["permissionModeMapping"])
 	}
@@ -54,13 +54,13 @@ func TestPermissionModeMapping_PartialIsNotSentToBridge(t *testing.T) {
 
 func TestPermissionModeMapping_PartialWireAndIdentity(t *testing.T) {
 	target := &PermissionModeTarget{Type: PermissionTargetSessionMode, ModeID: "full"}
-	partial := PermissionModeMapping{AllowAll: target, Unset: []harness.PermissionMode{harness.PermissionModeAllowReads}}
+	partial := PermissionModeMapping{AllowAll: target, UnsetAllowReads: true}
 	b, _ := json.Marshal(partial)
 	if want := `{"allow-edits":null,"allow-all":{"type":"session-mode","modeId":"full"}}`; string(b) != want {
 		t.Fatalf("got %s want %s", b, want)
 	}
 	var back PermissionModeMapping
-	if err := json.Unmarshal(b, &back); err != nil || len(back.Unset) != 1 || back.Unset[0] != harness.PermissionModeAllowReads || back.AllowAll == nil {
+	if err := json.Unmarshal(b, &back); err != nil || !back.UnsetAllowReads || back.UnsetAllowEdits || back.UnsetAllowAll || back.AllowAll == nil {
 		t.Fatalf("round trip = %+v, %v", back, err)
 	}
 	if partial.IsComplete() || !(&PermissionModeMapping{}).IsComplete() || (*PermissionModeMapping)(nil).IsComplete() {
@@ -76,5 +76,14 @@ func TestPermissionModeMapping_PartialWireAndIdentity(t *testing.T) {
 	}
 	if id(&partial) == id(nil) || id(&partial) == id(&PermissionModeMapping{AllowAll: target}) {
 		t.Fatal("identity ignores partial mapping")
+	}
+}
+
+// v0.5.2 callers compare mappings with ==; the Unset flags must keep that valid.
+func TestPermissionModeMapping_Comparable(t *testing.T) {
+	a := PermissionModeMapping{UnsetAllowReads: true}
+	b := PermissionModeMapping{UnsetAllowReads: true}
+	if a != b || a == (PermissionModeMapping{}) {
+		t.Fatal("comparison")
 	}
 }
