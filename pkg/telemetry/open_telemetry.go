@@ -479,7 +479,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		}
 	}
 	toolDefs := toolDefinitionsList(e.Tools)
-	if len(toolDefs) > 0 {
+	if recordInputs && len(toolDefs) > 0 {
 		if b, err := json.Marshal(toolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
@@ -491,9 +491,11 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	return ctx
 }
 
-// toolDefinitionsList builds the gen_ai.tool.definitions SemConv value (a
-// list of {name, description?} objects) from the tools declared for this
-// call, matching TS's gen_ai.tool.definitions shape. The returned slice is
+// toolDefinitionsList builds the gen_ai.tool.definitions value from the tools
+// declared for this call. TS stringifies the prepared language-model tools
+// (prepareTools), so function tools carry {type:"function", name,
+// inputSchema, description?, inputExamples?, providerOptions?, strict?} and
+// provider tools {type:"provider", name, id, args}. The returned slice is
 // also retained on the span entry so OnLanguageModelCallEnd can append
 // provider-executed tools observed only in the response (5ad6abf).
 func toolDefinitionsList(tools interface{}) []map[string]interface{} {
@@ -503,13 +505,46 @@ func toolDefinitionsList(tools interface{}) []map[string]interface{} {
 	}
 	defs := make([]map[string]interface{}, 0, len(list))
 	for _, t := range list {
-		def := map[string]interface{}{"name": t.Name}
+		if t.Type == "provider" {
+			def := map[string]interface{}{"type": "provider", "name": t.Name, "id": t.ProviderID}
+			if t.ProviderArgs != nil {
+				def["args"] = t.ProviderArgs
+			} else {
+				def["args"] = map[string]interface{}{}
+			}
+			defs = append(defs, def)
+			continue
+		}
+		def := map[string]interface{}{"type": "function", "name": t.Name, "inputSchema": toolInputSchema(t.Parameters)}
 		if t.Description != "" {
 			def["description"] = t.Description
+		}
+		if len(t.InputExamples) > 0 {
+			examples := make([]map[string]interface{}, 0, len(t.InputExamples))
+			for _, ex := range t.InputExamples {
+				examples = append(examples, map[string]interface{}{"input": ex.Input})
+			}
+			def["inputExamples"] = examples
+		}
+		if t.ProviderOptions != nil {
+			def["providerOptions"] = t.ProviderOptions
+		}
+		if t.Strict != nil {
+			def["strict"] = *t.Strict
 		}
 		defs = append(defs, def)
 	}
 	return defs
+}
+
+// toolInputSchema returns the JSON Schema of a function tool for the tool
+// definitions attribute, falling back to the empty object schema TS uses for
+// a tool without input.
+func toolInputSchema(parameters interface{}) interface{} {
+	if parameters == nil {
+		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
+	}
+	return parameters
 }
 
 // mergeProviderExecutedToolDefs appends {type:"extension", name} entries for
@@ -592,7 +627,8 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_to_first_chunk", msToSeconds(*e.Performance.TimeToFirstOutputMs))
 	}
 	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", msToSeconds(stats.Median)/1000)
+		// TS: msToSeconds(performance.timeBetweenOutputChunksMs?.avg).
+		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 	if recordOutputs && len(content) > 0 {
@@ -613,7 +649,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		}
 	}
 	mergedToolDefs, changed := mergeProviderExecutedToolDefs(entry.toolDefs, content)
-	if changed {
+	if changed && (e.Settings == nil || e.Settings.RecordInputs) {
 		if b, err := json.Marshal(mergedToolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}

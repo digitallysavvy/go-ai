@@ -1372,7 +1372,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Settings:         telemetrySettings,
 			CallID:           callID,
 			ModelProvider:    stepModel.Provider(),
-			ModelID:          stepModel.ModelID(),
+			ModelID:          responseModelID, // the response model (TS event.modelId), not the request model
 			FinishReason:     string(genResult.FinishReason),
 			Usage:            modelCallUsage,
 			Content:          generateResultContentParts(genResult),

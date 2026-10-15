@@ -2,6 +2,8 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
+	"math"
 	"testing"
 
 	"go.opentelemetry.io/otel/codes"
@@ -573,5 +575,93 @@ func TestOpenTelemetryOnStartRequestSettingsOnRootSpan(t *testing.T) {
 	}
 	if v, ok := attrValue(obj, "gen_ai.request.max_tokens"); !ok || v != int64(100) {
 		t.Errorf("object root max_tokens = %v (ok=%v)", v, ok)
+	}
+}
+
+// TS open-telemetry.test.ts "sets GenAI client performance attributes on the
+// chat span": time_per_output_chunk is the average gap in seconds (67ms -> 0.067).
+func TestOpenTelemetryLanguageModelCallEndPerformanceAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test")})
+	settings := &Settings{IsEnabled: Bool(true)}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "perf-1", ModelID: "m"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "perf-1"})
+	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "perf-1", ModelID: "m"})
+	first := int64(345)
+	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
+		Settings:     settings,
+		CallID:       "perf-1",
+		FinishReason: "stop",
+		Performance: LanguageModelCallPerformance{
+			ResponseTimeMs:            1234,
+			TimeToFirstOutputMs:       &first,
+			TimeBetweenOutputChunksMs: &types.OutputChunkTimingStats{Min: 10, P10: 20, Median: 50, Avg: 67, P90: 90, Max: 100},
+		},
+	})
+
+	span := findSpan(rec, "chat m")
+	if span == nil {
+		t.Fatal("missing chat span")
+	}
+	for key, want := range map[string]float64{
+		"gen_ai.client.operation.duration":              1.234,
+		"gen_ai.client.operation.time_to_first_chunk":   0.345,
+		"gen_ai.client.operation.time_per_output_chunk": 0.067,
+	} {
+		v, ok := attrValue(span, key)
+		if !ok || math.Abs(v.(float64)-want) > 1e-9 {
+			t.Errorf("%s = %v (ok=%v), want %v", key, v, ok, want)
+		}
+	}
+}
+
+// TS stringifies the prepared tools for gen_ai.tool.definitions (function
+// tools keep type and inputSchema, provider tools id and args) and gates the
+// attribute on recordInputs.
+func TestOpenTelemetryToolDefinitionsShapeAndInputGate(t *testing.T) {
+	strict := true
+	tools := []types.Tool{
+		{Name: "get_weather", Description: "Get weather", Parameters: map[string]interface{}{"type": "object"}, Strict: &strict},
+		{Name: "web_search", Type: "provider", ProviderID: "openai.web_search", ProviderArgs: map[string]interface{}{"k": "v"}},
+	}
+	run := func(recordInputs bool) *tracetest.SpanRecorder {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+		integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test")})
+		settings := &Settings{IsEnabled: Bool(true), RecordInputs: recordInputs, RecordOutputs: true}
+		ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "td", ModelID: "m"})
+		ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "td"})
+		ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "td", ModelID: "m", Tools: tools})
+		integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{Settings: settings, CallID: "td", FinishReason: "stop"})
+		return rec
+	}
+
+	span := findSpan(run(true), "chat m")
+	if span == nil {
+		t.Fatal("missing chat span")
+	}
+	raw, ok := attrValue(span, "gen_ai.tool.definitions")
+	if !ok {
+		t.Fatal("missing gen_ai.tool.definitions")
+	}
+	var defs []map[string]interface{}
+	if err := json.Unmarshal([]byte(raw.(string)), &defs); err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 2 ||
+		defs[0]["type"] != "function" || defs[0]["name"] != "get_weather" || defs[0]["description"] != "Get weather" ||
+		defs[0]["inputSchema"] == nil || defs[0]["strict"] != true ||
+		defs[1]["type"] != "provider" || defs[1]["id"] != "openai.web_search" || defs[1]["args"] == nil {
+		t.Fatalf("definitions = %v", defs)
+	}
+
+	if span := findSpan(run(false), "chat m"); span != nil {
+		if _, ok := attrValue(span, "gen_ai.tool.definitions"); ok {
+			t.Error("tool definitions are inputs: must be omitted when recordInputs is false")
+		}
 	}
 }

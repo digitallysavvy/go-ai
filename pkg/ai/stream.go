@@ -2106,7 +2106,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						Settings:         r.telemetrySettings,
 						CallID:           r.cbCallID,
 						ModelProvider:    stepProvider,
-						ModelID:          stepModelID,
+						ModelID:          stepResponseModelID, // the response model (TS event.modelId)
 						FinishReason:     string(chunk.FinishReason),
 						Usage:            telemetryUsageFromUsage(stepUsage),
 						Content:          append([]types.ContentPart(nil), stepContent...),
