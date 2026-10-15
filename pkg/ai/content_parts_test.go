@@ -745,3 +745,36 @@ func TestStreamText_AdjacentTextStartBoundariesDoNotMerge(t *testing.T) {
 		t.Errorf("textParts[1].ProviderMetadata = %s, want nil (must not inherit the compaction block's metadata)", textParts[1].ProviderMetadata)
 	}
 }
+
+func TestStreamTextToModelOutputErrorSurfaces(t *testing.T) {
+	convertErr := errors.New("conversion failed")
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "call-1", ToolName: "lookup", Arguments: map[string]interface{}{}}},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "lookup",
+		Tools: []types.Tool{{
+			Name: "lookup",
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "raw", nil
+			},
+			ToModelOutput: func(context.Context, types.ToModelOutputOptions) (*types.ToolResultOutput, error) {
+				return nil, convertErr
+			},
+		}},
+		StopWhen: []StopCondition{StepCountIs(2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := result.ReadAll()
+	if !errors.Is(readErr, convertErr) {
+		t.Fatalf("StreamText error = %v, want conversion error", readErr)
+	}
+}

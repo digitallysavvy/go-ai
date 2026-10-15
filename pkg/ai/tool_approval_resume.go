@@ -27,8 +27,8 @@ type toolApprovalResumeOptions struct {
 	// chunks are produced for every outcome.
 	streaming bool
 	// toolCallConcurrency is the validated ToolCallConcurrency (0 = unset).
-	// When unset, streamText runs resumed approvals unbounded in parallel and
-	// generateText runs them sequentially.
+	// When unset, resumed approvals run unbounded in parallel in both
+	// generateText and streamText (TS Promise.all).
 	toolCallConcurrency int
 }
 

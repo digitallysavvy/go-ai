@@ -2254,7 +2254,30 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
-			stepToolResults, _ = executeToolsConfigured(stepCtx, stepToolCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
+			var toolsErr error
+			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, stepToolCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
+			// A failing ToModelOutput conversion is a stream error (as in
+			// GenerateText); cancellation errors are handled by the
+			// abort/timeout checks below.
+			var conversionErr *toolResultModelOutputError
+			if errors.As(toolsErr, &conversionErr) {
+				r.err = conversionErr.Unwrap()
+				cancelStep()
+				break
+			}
+			// The caller's context ended while tools ran: queued tool calls
+			// were not started, so the step is incomplete. Report the abort
+			// instead of finishing as if the model had stopped.
+			if toolsErr != nil && ctx.Err() != nil {
+				abortErr := toolsErr
+				if r.timeout != nil && r.timeout.HasTotal() {
+					abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
+				}
+				r.err = abortErr
+				fireAbort(r.err)
+				cancelStep()
+				break
+			}
 			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
 		}
 		if stepCtx.Err() != nil && r.timeout != nil && r.timeout.HasPerStep() {
