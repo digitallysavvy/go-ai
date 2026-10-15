@@ -2815,20 +2815,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		// Fire step-finish telemetry — OTel implementation ends the child step span.
 		{
-			stepTelUsage := telemetry.TelemetryUsage{
-				InputTokens:  r.usage.InputTokens,
-				OutputTokens: r.usage.OutputTokens,
-				TotalTokens:  r.usage.TotalTokens,
-			}
-			if r.usage.InputDetails != nil {
-				stepTelUsage.NoCacheInputTokens = r.usage.InputDetails.NoCacheTokens
-				stepTelUsage.CacheReadInputTokens = r.usage.InputDetails.CacheReadTokens
-				stepTelUsage.CacheCreationInputTokens = r.usage.InputDetails.CacheWriteTokens
-			}
-			if r.usage.OutputDetails != nil {
-				stepTelUsage.OutputTextTokens = r.usage.OutputDetails.TextTokens
-				stepTelUsage.ReasoningTokens = r.usage.OutputDetails.ReasoningTokens
-			}
+			// The step's own usage (r.usage is the running total across steps).
+			stepTelUsage := telemetryUsageFromUsage(stepResult.Usage)
 			var stepFiles []types.GeneratedFileContent
 			r.mu.Lock()
 			if len(r.files) > stepFilesStart {

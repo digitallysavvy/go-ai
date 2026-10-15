@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -317,5 +320,67 @@ func TestStreamText_ForwardsEmptyTextDeltaWithProviderMetadata(t *testing.T) {
 	}
 	if len(texts) != 2 || texts[0] != `"hi"/0` || !strings.HasPrefix(texts[1], `""/`) || texts[1] == `""/0` {
 		t.Fatalf("forwarded text chunks = %v, want hi and the empty one carrying metadata", texts)
+	}
+}
+
+type stepEndUsageRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	inputs []int64
+}
+
+func (r *stepEndUsageRecorder) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e.Usage.InputTokens != nil {
+		r.inputs = append(r.inputs, *e.Usage.InputTokens)
+	}
+}
+
+// The step-end telemetry event carries that step's usage (generateText does);
+// streamText used to hand over the running total across steps.
+func TestStreamText_StepEndTelemetryUsageIsPerStep(t *testing.T) {
+	t.Parallel()
+
+	in1, in2 := int64(10), int64(7)
+	var calls int32
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			if atomic.AddInt32(&calls, 1) == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls, Usage: &types.Usage{InputTokens: &in1}},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "done"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &in2}},
+			}), nil
+		},
+	}
+	rec := &stepEndUsageRecorder{}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "hi",
+		StopWhen: []StopCondition{IsStepCount(3)},
+		Tools: []types.Tool{{
+			Name:       "t",
+			Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		}},
+		Telemetry: &telemetry.Options{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.inputs) != 2 || rec.inputs[0] != 10 || rec.inputs[1] != 7 {
+		t.Fatalf("per-step input tokens = %v, want [10 7] (not the running total [10 17])", rec.inputs)
 	}
 }
