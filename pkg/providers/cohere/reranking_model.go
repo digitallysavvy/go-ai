@@ -64,12 +64,6 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	return result, nil
 }
 
-// buildRequestBody builds the Cohere rerank API request body
-func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) map[string]interface{} {
-	body, _ := m.buildRequestBodyWithWarnings(opts)
-	return body
-}
-
 // buildRequestBodyWithWarnings mirrors the TS request: object documents are
 // converted to JSON strings (with a compatibility warning) and the
 // providerOptions.cohere maxTokensPerDoc/priority options are forwarded.
