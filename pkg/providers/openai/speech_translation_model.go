@@ -117,7 +117,7 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		return nil, err
 	}
 
-	var warnings []types.Warning
+	warnings := []types.Warning{}
 	if opts.SourceLanguage != "" {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
