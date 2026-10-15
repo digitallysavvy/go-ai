@@ -123,6 +123,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 
+	// TS: a response without choices is InvalidResponseDataError.
+	if len(response.Choices) == 0 {
+		return nil, providererrors.NewInvalidResponseDataError(response, "Response did not contain any choices.")
+	}
+
 	// Convert response to GenerateResult and attach HTTP headers.
 	result := m.convertResponse(response)
 	// TS result.request.body / result.response.body: the request as sent and
@@ -319,7 +324,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// A prompt with neither messages nor text (e.g. system-only) must still
 	// carry a concrete message slice for the system-message prepend below.
 	body["messages"] = []map[string]interface{}{}
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{ThoughtSignatureKey: m.thoughtSignatureKey(), SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo, Provider: m.fileReferenceProvider()}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
 		if convErr != nil {
@@ -339,15 +344,42 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// which takes precedence over the capability-derived default (TS getArgs:
 	// `openaiOptions.systemMessageMode ?? (isReasoningModel ? 'developer' :
 	// modelCapabilities.systemMessageMode)`).
+	// The same mode applies to system-role messages carried in Messages (TS
+	// convertToOpenAIChatMessages handles every system message alike).
+	systemRole := capabilities.SystemMessageMode
+	if isReasoningModel {
+		systemRole = "developer"
+	}
+	if v, ok := openaiOpts["systemMessageMode"].(string); ok && v != "" {
+		systemRole = v
+	}
+	if msgs, ok := body["messages"].([]map[string]interface{}); ok {
+		kept := make([]map[string]interface{}, 0, len(msgs))
+		removed := false
+		for _, mm := range msgs {
+			if mm["role"] == "system" {
+				switch systemRole {
+				case "developer":
+					mm["role"] = "developer"
+				case "remove":
+					removed = true
+					continue
+				}
+			}
+			kept = append(kept, mm)
+		}
+		body["messages"] = kept
+		if removed {
+			warnings = append(warnings, types.Warning{
+				Type:    "other",
+				Message: "system messages are removed for this model",
+				Details: "system messages are removed for this model",
+			})
+		}
+	}
 	if opts.Prompt.System != "" {
 		messages, _ := body["messages"].([]map[string]interface{})
-		role := capabilities.SystemMessageMode
-		if isReasoningModel {
-			role = "developer"
-		}
-		if v, ok := openaiOpts["systemMessageMode"].(string); ok && v != "" {
-			role = v
-		}
+		role := systemRole
 		switch role {
 		case "remove":
 			warnings = append(warnings, types.Warning{
@@ -676,6 +708,10 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 		// Reasoning text from OpenAI-compatible hosts comes first (TS
 		// openai-compatible content order: reasoning, text, tool calls).
 		if m.provider.config.OpenAICompatible {
+			// content may carry thinking parts (TS convertOpenAICompatibleContent).
+			if choice.Message.ContentThinking != "" {
+				result.Content = append(result.Content, types.ReasoningContent{Text: choice.Message.ContentThinking})
+			}
 			reasoning := choice.Message.ReasoningContent
 			if reasoning == nil {
 				reasoning = choice.Message.Reasoning
@@ -701,6 +737,13 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 					ID:        id,
 					ToolName:  tc.Function.Name,
 					Arguments: args,
+				}
+				if m.provider.config.OpenAICompatible && tc.ExtraContent != nil && tc.ExtraContent.Google != nil &&
+					tc.ExtraContent.Google.ThoughtSignature != nil && *tc.ExtraContent.Google.ThoughtSignature != "" {
+					sig := *tc.ExtraContent.Google.ThoughtSignature
+					key := providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())
+					result.ToolCalls[i].ThoughtSignature = sig
+					result.ToolCalls[i].ProviderMetadata = map[string]interface{}{key: map[string]interface{}{"thoughtSignature": sig}}
 				}
 			}
 		}
@@ -966,9 +1009,12 @@ func filterChatUsageRaw(raw map[string]interface{}) map[string]interface{} {
 
 // openAIMessage represents an OpenAI message
 type openAIMessage struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ContentThinking is the reasoning text carried by "thinking" content
+	// parts (OpenAI-compatible hosts); Content holds the text parts.
+	ContentThinking string           `json:"-"`
+	ToolCalls       []openAIToolCall `json:"tool_calls,omitempty"`
 	// Audio carries the transcript for audio-output chat completions
 	// (gpt-4o-audio-preview etc.); used as fallback text when Content is
 	// empty (6d1f881).
@@ -1001,6 +1047,13 @@ type openAIToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"` // JSON string
 	} `json:"function"`
+	// ExtraContent carries Gemini thought signatures on OpenAI-compatible
+	// endpoints (extra_content.google.thought_signature).
+	ExtraContent *struct {
+		Google *struct {
+			ThoughtSignature *string `json:"thought_signature"`
+		} `json:"google"`
+	} `json:"extra_content,omitempty"`
 }
 
 // filterUnencryptedReasoningParts removes ReasoningContent parts that have no
@@ -1469,4 +1522,68 @@ func (m *LanguageModel) strictJSONSchema(providerOptions map[string]interface{})
 		}
 	}
 	return strict
+}
+
+// UnmarshalJSON accepts a string, null, or (on OpenAI-compatible hosts) an
+// array of text / thinking parts for "content" (TS
+// convertOpenAICompatibleContent); unknown parts are ignored.
+func (m *openAIMessage) UnmarshalJSON(b []byte) error {
+	type plain openAIMessage
+	aux := struct {
+		*plain
+		Content json.RawMessage `json:"content"`
+	}{plain: (*plain)(m)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	m.Content, m.ContentThinking = "", ""
+	if len(aux.Content) == 0 || string(aux.Content) == "null" {
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(aux.Content, &s); err == nil {
+		m.Content = s
+		return nil
+	}
+	var parts []struct {
+		Type     string            `json:"type"`
+		Text     json.RawMessage   `json:"text"`
+		Thinking []json.RawMessage `json:"thinking"`
+	}
+	if err := json.Unmarshal(aux.Content, &parts); err != nil {
+		return err
+	}
+	var text, thinking strings.Builder
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			var t string
+			if json.Unmarshal(p.Text, &t) == nil {
+				text.WriteString(t)
+			}
+		case "thinking":
+			for _, raw := range p.Thinking {
+				var chunk struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}
+				if json.Unmarshal(raw, &chunk) == nil && chunk.Type == "text" {
+					thinking.WriteString(chunk.Text)
+				}
+			}
+		}
+	}
+	m.Content, m.ContentThinking = text.String(), thinking.String()
+	return nil
+}
+
+// thoughtSignatureKey is the providerOptions key holding a replayed tool
+// call's thoughtSignature on OpenAI-compatible hosts (TS providerOptionsKey);
+// empty for native OpenAI.
+func (m *LanguageModel) thoughtSignatureKey() string {
+	if !m.provider.config.OpenAICompatible {
+		return ""
+	}
+	name, _, _ := strings.Cut(m.provider.Name(), ".")
+	return strings.TrimSpace(name)
 }

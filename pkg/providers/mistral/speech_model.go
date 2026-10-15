@@ -54,6 +54,10 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 	}
 
+	if resp.StatusCode >= 400 {
+		return nil, internalhttp.StatusProviderError("mistral", resp.StatusCode, resp.Headers, resp.Body)
+	}
+
 	var response mistralSpeechResponse
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode speech response: %w", err)
@@ -78,7 +82,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      providerutils.RawJSONBody(resp.Body),
 		},
 	}, nil
 }

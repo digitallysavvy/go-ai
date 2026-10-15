@@ -141,6 +141,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if m.provider.config.OpenAICompatible {
+		return m.doCompat(ctx, opts)
+	}
 	if len(opts.Files) > 0 {
 		if err := validateOpenAIImageProviderOptions(opts.ProviderOptions, true); err != nil {
 			return nil, err
@@ -331,7 +334,9 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 }
 
 func (m *ImageModel) writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
-	part, err := writer.CreateFormFile(fieldName, filename)
+	// TS appends a Blob typed with the file's media type; FormData names a
+	// Blob "blob". Providers reject application/octet-stream image parts.
+	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", file.MediaType)
 	if err != nil {
 		return err
 	}

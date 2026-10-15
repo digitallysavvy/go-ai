@@ -30,3 +30,9 @@ node <go-ai repo>/pkg/internal/tsfixture/extract.mjs <path/to/provider test.ts> 
 Use `gzip -9n` (no file name, no timestamp) so regenerating unchanged cases
 produces identical bytes. Then run the provider's `ts_cases` tests and update
 the Go skip lists for any case that changed.
+
+## Wire replay
+
+`wire.go` / `wire_run.go` replay recordings of the whole TS test run
+(requests, responses and call results) against Go providers; see
+`record/README.md`.

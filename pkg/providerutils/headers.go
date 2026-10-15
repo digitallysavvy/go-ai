@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -122,4 +123,15 @@ func WithResponseMetadata(stream provider.TextStream, h http.Header, modelID str
 		},
 	}
 	return &responseMetadataStream{meta: meta, inner: stream}
+}
+
+// RawJSONBody decodes a JSON response body for ResponseMetadata.Body, which
+// mirrors the TS `response.body` (the parsed raw JSON, not bytes). Bodies that
+// are not valid JSON are returned as a string.
+func RawJSONBody(b []byte) interface{} {
+	var v interface{}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return string(b)
+	}
+	return v
 }

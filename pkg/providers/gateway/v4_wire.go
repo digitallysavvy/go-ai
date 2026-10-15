@@ -303,7 +303,7 @@ func decodeV4Content(p v4Part) (types.ContentPart, *types.ToolCall) {
 // decodeV4GenerateResult builds a GenerateResult from the gateway's V4 JSON.
 func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 	var wire struct {
-		Content          []json.RawMessage      `json:"content"`
+		Content          rawContentList         `json:"content"`
 		Text             string                 `json:"text"`
 		FinishReason     v4FinishReason         `json:"finishReason"`
 		Usage            v4Usage                `json:"usage"`
@@ -353,4 +353,22 @@ func decodeV4GenerateResult(body []byte) (*types.GenerateResult, error) {
 		result.ResponseMetadata = md
 	}
 	return result, nil
+}
+
+// rawContentList decodes the V4 content array and, like TS (which passes the
+// response through untouched), tolerates a single content object.
+type rawContentList []json.RawMessage
+
+func (c *rawContentList) UnmarshalJSON(b []byte) error {
+	var list []json.RawMessage
+	if err := json.Unmarshal(b, &list); err == nil {
+		*c = list
+		return nil
+	}
+	var one json.RawMessage
+	if err := json.Unmarshal(b, &one); err != nil {
+		return err
+	}
+	*c = rawContentList{one}
+	return nil
 }

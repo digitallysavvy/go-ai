@@ -231,11 +231,25 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	if err != nil {
 		return nil, warnings, err
 	}
+	// xAI function_call input items carry id (the xai itemId, else the call
+	// id) and status "completed" (TS convertToXaiResponsesInput).
+	for i, item := range input {
+		if fc, ok := item.(responses.FunctionCallItem); ok {
+			if fc.ID == "" {
+				fc.ID = fc.CallID
+			}
+			fc.Status = "completed"
+			input[i] = fc
+		}
+	}
 
 	body := map[string]interface{}{
-		"model":  m.modelID,
-		"stream": stream,
-		"input":  input,
+		"model": m.modelID,
+		"input": input,
+	}
+	if stream {
+		// TS sends stream only when streaming.
+		body["stream"] = true
 	}
 
 	// Reasoning effort: provider option takes precedence over top-level

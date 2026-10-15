@@ -42,7 +42,7 @@ func New(cfg Config) *Provider {
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(http.MergeHeaders(map[string]string{
-			"Authorization": "Token " + cfg.APIKey,
+			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("replicate")),
 	})

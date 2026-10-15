@@ -263,7 +263,7 @@ func gladiaAudioExtension(mimeType string) string {
 func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"x-gladia-key": m.provider.config.APIKey}, headers)
+	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"x-gladia-key": m.provider.config.APIKey}, m.provider.config.Headers, headers)
 
 	start := time.Now()
 	for {
@@ -343,7 +343,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 				Headers:   headers,
 				Body:      raw,
 			},
-			ProviderMetadata: map[string]interface{}{"gladia": raw},
+			ProviderMetadata: map[string]interface{}{"gladia": gladiaSchemaResult(raw)},
 		}
 	}
 
@@ -377,7 +377,7 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 		// preserving per-utterance speaker/channel/confidence/words/language
 		// and diarization info that the AI SDK's `segments` shape can't
 		// represent (matches TS: providerMetadata: { gladia: transcriptionResult }).
-		ProviderMetadata: map[string]interface{}{"gladia": raw},
+		ProviderMetadata: map[string]interface{}{"gladia": gladiaSchemaResult(raw)},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
 			// Gladia's model ID is not selectable in the pre-recorded API;
@@ -435,4 +435,55 @@ func parseGladiaErrorBody(body []byte) (message string, code string) {
 		code = fmt.Sprintf("%d", payload.Error.Code)
 	}
 	return message, code
+}
+
+// gladiaSchemaResult applies the TS result schema (zod strips unknown keys):
+// providerMetadata.gladia holds the parsed result, not the raw response.
+func gladiaSchemaResult(raw map[string]interface{}) map[string]interface{} {
+	pick := func(m map[string]interface{}, keys ...string) map[string]interface{} {
+		out := map[string]interface{}{}
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	out := pick(raw, "status")
+	res, ok := raw["result"].(map[string]interface{})
+	if !ok {
+		if v, present := raw["result"]; present && v == nil {
+			out["result"] = nil
+		}
+		return out
+	}
+	r := map[string]interface{}{}
+	if md, ok := res["metadata"].(map[string]interface{}); ok {
+		r["metadata"] = pick(md, "audio_duration")
+	}
+	if tr, ok := res["transcription"].(map[string]interface{}); ok {
+		t := pick(tr, "full_transcript", "languages")
+		if us, ok := tr["utterances"].([]interface{}); ok {
+			utts := make([]interface{}, 0, len(us))
+			for _, u := range us {
+				um, _ := u.(map[string]interface{})
+				item := pick(um, "start", "end", "text", "speaker", "confidence", "language")
+				if ws, ok := um["words"].([]interface{}); ok {
+					words := make([]interface{}, 0, len(ws))
+					for _, w := range ws {
+						wm, _ := w.(map[string]interface{})
+						words = append(words, pick(wm, "word", "start", "end", "confidence"))
+					}
+					item["words"] = words
+				} else if v, present := um["words"]; present && v == nil {
+					item["words"] = nil
+				}
+				utts = append(utts, item)
+			}
+			t["utterances"] = utts
+		}
+		r["transcription"] = t
+	}
+	out["result"] = r
+	return out
 }

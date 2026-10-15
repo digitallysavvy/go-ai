@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -231,7 +232,7 @@ func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpt
 			return nil, "", err
 		}
 	} else {
-		part, err := writer.CreateFormFile("image", "image"+topazImageExtension(file.MediaType))
+		part, err := providerutils.CreateTypedFormFile(writer, "image", "image"+topazImageExtension(file.MediaType), file.MediaType)
 		if err != nil {
 			return nil, "", err
 		}

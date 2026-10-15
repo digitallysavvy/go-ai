@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"net/http"
 	"time"
 
@@ -154,7 +155,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(resp.Headers),
-			Body:      resp.Body,
+			Body:      providerutils.RawJSONBody(resp.Body),
 		},
 	}, nil
 }

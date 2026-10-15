@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -260,6 +259,15 @@ func validateFlux3Options(raw map[string]interface{}) error {
 	return nil
 }
 
+// bflImageOptionOrder is the key order of TS blackForestLabsImageProviderOptions.
+var bflImageOptionOrder = []string{
+	"resolution", "grounding", "version", "imagePrompt", "imagePromptStrength",
+	"inputImage", "inputImage2", "inputImage3", "inputImage4", "inputImage5",
+	"inputImage6", "inputImage7", "inputImage8", "inputImage9", "inputImage10",
+	"steps", "guidance", "width", "height", "outputFormat", "promptUpsampling",
+	"raw", "safetyTolerance", "webhookSecret", "webhookUrl", "pollIntervalMillis", "pollTimeoutMillis",
+}
+
 // buildFlux3Request builds the FLUX 3 request body and its warnings, mirroring
 // the flux-3-image branch of TS BlackForestLabsImageModel.getArgs.
 func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map[string]interface{}, []types.Warning, error) {
@@ -319,15 +327,12 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map
 	if opts.Seed != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
 	}
-	keys := make([]string, 0, len(raw))
-	for key, value := range raw {
-		if value != nil && !flux3SupportedOptions[key] {
-			keys = append(keys, key)
+	// TS iterates the zod-parsed options, so warnings follow the schema's key
+	// order and unknown keys (stripped by zod) never warn.
+	for _, key := range bflImageOptionOrder {
+		if value, ok := raw[key]; ok && value != nil && !flux3SupportedOptions[key] {
+			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "blackForestLabs." + key})
 		}
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "blackForestLabs." + key})
 	}
 
 	body := map[string]interface{}{"prompt": opts.Prompt}
@@ -693,9 +698,7 @@ func bflProviderMetadata(createResp bflCreateResponse, result bflResult) map[str
 	if createResp.OutputMP != nil {
 		image["outputMegapixels"] = *createResp.OutputMP
 	}
-	if len(image) == 0 {
-		return nil
-	}
+	// TS always reports one (possibly empty) entry per image.
 	return map[string]interface{}{
 		"blackForestLabs": map[string]interface{}{
 			"images": []map[string]interface{}{image},

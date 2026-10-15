@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -112,10 +113,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 
 	reqBody := map[string]interface{}{
-		"model": m.modelID,
-		"input": inputs,
+		"model":           m.modelID,
+		"input":           inputs,
+		"encoding_format": "float",
 	}
-	m.applyDimensions(reqBody, opts)
+	warnings := m.applyDimensions(reqBody, opts)
 
 	var response openAIEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -140,15 +142,27 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		embeddings[i] = data.Embedding
 	}
 
-	return &types.EmbeddingsResult{
+	// TS response.body is the raw parsed JSON.
+	var rawBody interface{} = response
+	_ = json.Unmarshal(httpResp.Body, &rawBody)
+	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
+		Warnings:   warnings,
 		Usage: types.EmbeddingUsage{
 			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
-		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response}},
-	}, nil
+		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: rawBody}},
+	}
+	if m.provider.config.OpenAICompatible && len(response.ProviderMetadata) > 0 {
+		// OpenAICompatibleEmbeddingModel passes the response providerMetadata through.
+		result.ProviderMetadata = map[string]interface{}{}
+		for k, v := range response.ProviderMetadata {
+			result.ProviderMetadata[k] = v
+		}
+	}
+	return result, nil
 }
 
 // handleError converts various errors to provider errors
@@ -177,6 +191,7 @@ type openAIEmbeddingResponse struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata"`
 }
 
 // applyDimensions sets the request's dimensions and user. Native OpenAI reads
@@ -184,14 +199,16 @@ type openAIEmbeddingResponse struct {
 // read openaiCompatible and their own provider-name namespace, like TS
 // OpenAICompatibleEmbeddingModel. The provider option wins over the top-level
 // dimensions setting (TS #22338).
-func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) {
+func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) []types.Warning {
 	if opts == nil {
-		return
+		return nil
 	}
 	var dimensionsOption, userOption interface{}
+	var warnings []types.Warning
 	if m.provider.config.OpenAICompatible {
 		name, _, _ := strings.Cut(m.provider.Name(), ".")
-		resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(name, opts.ProviderOptions)
+		var resolved map[string]interface{}
+		resolved, warnings = providerutils.ResolveOpenAICompatibleProviderOptions(name, opts.ProviderOptions)
 		dimensionsOption, userOption = resolved["dimensions"], resolved["user"]
 	} else {
 		dimensionsOption = providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "dimensions")
@@ -203,4 +220,5 @@ func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *p
 	if u, ok := userOption.(string); ok && u != "" {
 		reqBody["user"] = u
 	}
+	return warnings
 }

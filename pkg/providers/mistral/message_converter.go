@@ -204,8 +204,18 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[s
 	if isLastMessage {
 		result["prefix"] = true
 	}
-	if len(msg.ToolCalls) > 0 {
-		result["tool_calls"] = mistralToolCalls(msg.ToolCalls)
+	// TS-shaped history carries tool calls as content parts; Message.ToolCalls
+	// is the older Go shape.
+	toolCalls := msg.ToolCalls
+	if len(toolCalls) == 0 {
+		for _, part := range msg.Content {
+			if tc, ok := part.(types.ToolCallContent); ok {
+				toolCalls = append(toolCalls, types.ToolCall{ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: tc.Arguments, RawArguments: tc.Input})
+			}
+		}
+	}
+	if len(toolCalls) > 0 {
+		result["tool_calls"] = mistralToolCalls(toolCalls)
 	}
 	return result
 }

@@ -55,6 +55,10 @@ type FunctionCallItem struct {
 	// CallID links this call to its output.
 	CallID string `json:"call_id"`
 
+	// Status is set by providers whose input items carry one (xAI sends
+	// "completed" on replayed function calls).
+	Status string `json:"status,omitempty"`
+
 	// Name is the function name.
 	Name string `json:"name"`
 

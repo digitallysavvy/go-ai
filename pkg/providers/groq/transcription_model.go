@@ -97,7 +97,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  "POST",
-		Path:    "/audio/transcriptions",
+		Path:    "/v1/audio/transcriptions",
 		Body:    body,
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	})
@@ -164,7 +164,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Timestamp: timestamp,
 		ModelID:   m.modelID,
 		Headers:   responseHeaders,
-		Body:      response,
+		Body:      providerutils.RawJSONBody(resp.Body),
 	}
 	return result, nil
 }

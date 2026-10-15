@@ -1,6 +1,7 @@
 package bytedance
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -209,10 +210,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		})
 	}
 
-	body, err := m.buildRequestBody(&opts.VideoModelV3CallOptions, provOpts)
+	body, bodyWarnings, err := m.buildRequestBodyWithWarnings(&opts.VideoModelV3CallOptions, provOpts)
 	if err != nil {
 		return nil, err
 	}
+	warnings = append(warnings, bodyWarnings...)
 
 	// Progress notifications require a protocol-aware receiver, so we don't
 	// implement VideoModelWebhookHandler; forward webhookUrl as callback_url
@@ -333,7 +335,13 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			}
 		}
 		if details == "" {
-			details = mustMarshal(statusResp)
+			// TS JSON.stringify(response) of the parsed body.
+			var compact bytes.Buffer
+			if json.Compact(&compact, result.Data) == nil {
+				details = compact.String()
+			} else {
+				details = mustMarshal(statusResp)
+			}
 		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
@@ -426,7 +434,15 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 // buildRequestBody builds the API request body from call options
 func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, error) {
-	var warnings []types.Warning // unused feature warnings are attached by DoStart; kept local for resolveReferenceContent
+	body, _, err := m.buildRequestBodyWithWarnings(opts, provOpts)
+	return body, err
+}
+
+// buildRequestBodyWithWarnings is buildRequestBody plus the warnings the
+// request construction raises (for example a URL input reference without a
+// media type), which DoStart reports.
+func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, []types.Warning, error) {
+	var warnings []types.Warning
 
 	content := []map[string]interface{}{}
 
@@ -446,7 +462,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 	if startImage != nil {
 		imageURL, err := encodeImage(startImage)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encode image: %w", err)
+			return nil, nil, fmt.Errorf("failed to encode image: %w", err)
 		}
 		imagePart := map[string]interface{}{
 			"type": "image_url",
@@ -542,7 +558,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, pr
 		body[k] = v
 	}
 
-	return body, nil
+	return body, warnings, nil
 }
 
 // parseAPIError parses a ByteDance API error response

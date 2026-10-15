@@ -304,6 +304,11 @@ func (p *Provider) completionProviderOptionsName() string {
 	if strings.Contains(p.completionProviderName(), "azure") {
 		return "azure"
 	}
+	if p.config.OpenAICompatible {
+		// TS OpenAICompatibleCompletionLanguageModel: provider.split('.')[0].
+		name, _, _ := strings.Cut(p.Name(), ".")
+		return strings.TrimSpace(name)
+	}
 	return "openai"
 }
 

@@ -271,8 +271,9 @@ func TestGatewayLanguageModelConvertContentPart(t *testing.T) {
 	if _, ok := reasoningPart["providerOptions"]; !ok {
 		t.Fatalf("reasoning file missing provider options: %#v", reasoningPart)
 	}
-	if _, ok := reasoningPart["providerMetadata"].(map[string]interface{}); !ok {
-		t.Fatalf("reasoning file metadata type = %T", reasoningPart["providerMetadata"])
+	// LanguageModelV4ReasoningFilePart has no providerMetadata.
+	if _, ok := reasoningPart["providerMetadata"]; ok {
+		t.Fatalf("reasoning file part must not carry providerMetadata: %#v", reasoningPart)
 	}
 
 	base64Data := "YWxyZWFkeQ=="

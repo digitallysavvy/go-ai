@@ -280,17 +280,14 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 				}
 			}
 
-			imageField := "image"
-			if len(opts.Files) > 1 {
-				imageField = "image[]"
-			}
-			for i, file := range opts.Files {
-				if err := writeImageFilePart(ctx, writer, imageField, fmt.Sprintf("image-%d.png", i), file); err != nil {
+			// TS convertToFormData(..., { useArrayBrackets: false }): repeated "image".
+			for _, file := range opts.Files {
+				if err := writeImageFilePart(ctx, writer, "image", "", file); err != nil {
 					return err
 				}
 			}
 			if opts.Mask != nil {
-				if err := writeImageFilePart(ctx, writer, "mask", "mask.png", *opts.Mask); err != nil {
+				if err := writeImageFilePart(ctx, writer, "mask", "", *opts.Mask); err != nil {
 					return err
 				}
 			}
@@ -307,7 +304,8 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 }
 
 func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName, filename string, file provider.ImageFile) error {
-	part, err := writer.CreateFormFile(fieldName, filename)
+	// TS appends a typed Blob (filename "blob").
+	part, err := providerutils.CreateTypedFormFile(writer, fieldName, "blob", file.MediaType)
 	if err != nil {
 		return err
 	}
