@@ -2,7 +2,6 @@ package voyage
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"sort"
 
@@ -42,7 +41,12 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
-		return nil, fmt.Errorf("too many embedding values for %s/%s: max %d, got %d", m.Provider(), m.modelID, m.MaxEmbeddingsPerCall(), len(inputs))
+		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
+			Provider:             m.Provider(),
+			ModelID:              m.modelID,
+			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
+			Values:               inputs,
+		}
 	}
 
 	reqBody := map[string]interface{}{"input": inputs, "model": m.modelID}
