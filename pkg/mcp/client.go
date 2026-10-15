@@ -100,8 +100,8 @@ type MCPClientConfig struct {
 	// Capabilities are optional client capabilities advertised during initialize.
 	Capabilities ClientCapabilities
 
-	// RequestTimeoutMS is the timeout for individual requests in milliseconds
-	// Default: 30000 (30 seconds)
+	// RequestTimeoutMS is the timeout for individual requests in milliseconds.
+	// Default: 0, no timeout (TS has none; the call's context governs).
 	RequestTimeoutMS int
 
 	// InitializationOptions bounds Connect (TS initializationOptions):
@@ -170,9 +170,6 @@ func NewMCPClient(transport Transport, config MCPClientConfig) *MCPClient {
 	}
 	if config.ClientVersion == "" {
 		config.ClientVersion = "1.0.0"
-	}
-	if config.RequestTimeoutMS == 0 {
-		config.RequestTimeoutMS = 30000 // 30 seconds
 	}
 	// config.MaxRetries is intentionally left as given (even if negative):
 	// Connect validates and rejects a negative value, matching TS's
@@ -952,8 +949,13 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 			timeout = t
 		}
 	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
+	// A nil channel never fires: no timer means no timeout.
+	var timerC <-chan time.Time
+	if timeout > 0 {
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		timerC = timer.C
+	}
 
 	select {
 	case response := <-responseCh:
@@ -979,7 +981,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 		return nil
 
-	case <-timer.C:
+	case <-timerC:
 		return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
 
 	case <-ctx.Done():

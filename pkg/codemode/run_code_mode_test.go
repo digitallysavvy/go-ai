@@ -674,7 +674,7 @@ func TestRunCodeMode_HostToolOutputDateFormatting(t *testing.T) {
 	}
 }
 
-func TestRunCodeMode_OmitsNilPropertiesFromHostToolOutputs(t *testing.T) {
+func TestRunCodeMode_KeepsNilPropertiesAsNullInHostToolOutputs(t *testing.T) {
 	tools := ToolSet{"catalog": {
 		Name:       "catalog",
 		Parameters: map[string]interface{}{"type": "object"},
@@ -694,7 +694,7 @@ func TestRunCodeMode_OmitsNilPropertiesFromHostToolOutputs(t *testing.T) {
 	want := map[string]interface{}{
 		"concepts": []interface{}{
 			map[string]interface{}{"name": "first", "recommendedNextAction": "open"},
-			map[string]interface{}{"name": "second"},
+			map[string]interface{}{"name": "second", "recommendedNextAction": nil},
 		},
 	}
 	assertDeepEqual(t, got, want)

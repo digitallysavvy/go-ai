@@ -10,7 +10,7 @@ import (
 // ({ signal, timeout, maxTotalTimeout }). The signal is the call's context.
 //
 // When both limits are set the smaller applies (TS getEffectiveTimeout). When
-// neither is set the client's RequestTimeoutMS applies.
+// neither is set the client's RequestTimeoutMS applies (0: no timeout).
 type RequestOptions struct {
 	// TimeoutMS is the per-request timeout in milliseconds.
 	TimeoutMS int

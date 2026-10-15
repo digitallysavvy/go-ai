@@ -1101,8 +1101,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 	eventNS := namespaceKey(event.Namespace)
 	var chunks []ai.UIMessageChunk
 
-	toolCallsByID := extractToolCallsByID(root)
-	chunks = append(chunks, finalizeSeenPartsForValues(state, toolCallsByID)...)
+	chunks = append(chunks, finalizeSeenPartsForValues(state)...)
 
 	messages := messageMaps(root)
 	if len(messages) > 0 {
@@ -1543,12 +1542,11 @@ func finalizeStreamEventParts(state *eventState) []ai.UIMessageChunk {
 	return chunks
 }
 
-func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall) []ai.UIMessageChunk {
+func finalizeSeenPartsForValues(state *eventState) []ai.UIMessageChunk {
 	var chunks []ai.UIMessageChunk
 	for _, id := range sortedMessageSeenIDs(state) {
 		seen := state.messageSeen[id]
 		ns, hasNS := state.messageNamespaces[id]
-		msgNSKey := namespaceKey(ns)
 
 		// Tag with the per-message namespace before deleting it below.
 		if seen.text {
@@ -1558,18 +1556,10 @@ func finalizeSeenPartsForValues(state *eventState, callsByID map[string]toolCall
 			}
 			chunks = append(chunks, chunk)
 		}
-		for _, callID := range seen.toolOrder {
-			call, ok := callsByID[callID]
-			if !ok || call.name == "" {
-				continue
-			}
-			state.markToolCallEmitted(callID, msgNSKey)
-			state.emittedToolCallsByKey[toolCallKey(call.name, call.args)] = callID
-			if !state.hasEmittedToolInputInCurrentStep(callID, msgNSKey) {
-				state.markToolInputEmitted(callID, msgNSKey)
-				chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": callID, "toolName": call.name, "input": call.args, "dynamic": true})
-			}
-		}
+		// TS emits tool-input-available here only from an accumulated
+		// AIMessageChunk class instance (messageConcat); RemoteGraph yields
+		// plain JSON, so it never does. The values message pass below
+		// registers the key mapping for streamed calls instead.
 		if seen.reasoning {
 			chunk := ai.UIMessageChunk{"type": "reasoning-end", "id": id}
 			if hasNS {
@@ -1657,17 +1647,6 @@ func openAIToolCalls(source map[string]interface{}) []interface{} {
 	return raw
 }
 
-func extractToolCallsByID(root map[string]interface{}) map[string]toolCall {
-	out := map[string]toolCall{}
-	for _, msg := range messageMaps(root) {
-		for _, call := range extractToolCalls(msg) {
-			if call.id != "" {
-				out[call.id] = call
-			}
-		}
-	}
-	return out
-}
 
 func messageMaps(root map[string]interface{}) []map[string]interface{} {
 	raw, ok := asSlice(root["messages"])

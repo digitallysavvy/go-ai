@@ -224,14 +224,12 @@ type OAuthConfig struct {
 // NewHTTPTransport creates a new HTTP transport
 func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
+	// No default: TS fetch has no request timeout, the caller's ctx governs.
 
 	httpClient := config.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
-	} else if httpClient.Timeout == 0 {
+	} else if httpClient.Timeout == 0 && timeout > 0 {
 		httpClient.Timeout = timeout
 	}
 
