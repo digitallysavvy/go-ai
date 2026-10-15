@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"net/http"
 	"strings"
@@ -584,7 +585,7 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		if args == nil {
 			args = map[string]interface{}{}
 		}
-		argsJSON, _ := jsonstr.Marshal(args)
+		argsJSON := []byte(providerutils.ArgumentsJSONText(args, tc.RawArguments))
 		namespace := ""
 		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[providerName].(map[string]interface{}); ok {
@@ -705,8 +706,7 @@ func toolResultCaller(part types.ToolResultContent, providerName string) *ToolCa
 
 func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{}, string) {
 	if part.Arguments != nil {
-		argsJSON, _ := jsonstr.Marshal(part.Arguments)
-		return part.Arguments, string(argsJSON)
+		return part.Arguments, providerutils.ArgumentsJSONText(part.Arguments, part.Input)
 	}
 	if part.Input == "" {
 		return map[string]interface{}{}, "{}"
@@ -717,8 +717,7 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 		return map[string]interface{}{}, string(argsJSON)
 	}
 	if args, ok := parsed.(map[string]interface{}); ok {
-		argsJSON, _ := jsonstr.Marshal(args)
-		return args, string(argsJSON)
+		return args, providerutils.ArgumentsJSONText(args, part.Input)
 	}
 	argsJSON, _ := jsonstr.Marshal(parsed)
 	return map[string]interface{}{}, string(argsJSON)

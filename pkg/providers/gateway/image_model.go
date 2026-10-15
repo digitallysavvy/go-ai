@@ -90,15 +90,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		body["mask"] = gatewayImageFile(*opts.Mask)
 	}
 
-	// Add headers
-	headers := m.getModelConfigHeaders()
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
-
-	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
+	// TS combineHeaders(config, options.headers, model headers, o11y)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	// Make API request
 	var response gatewayImageResponse

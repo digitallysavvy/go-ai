@@ -85,11 +85,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Create headers for the request
 	// TS combineHeaders(config, options.headers, model headers, o11y): per-call
 	// headers sit between the client's and the model's own.
-	headers := internalhttp.MergeHeaders(opts.Headers, m.getModelConfigHeaders(false))
-
-	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders(false))
 
 	// Make the API request; the body is a LanguageModelV4GenerateResult.
 	var raw json.RawMessage
@@ -146,12 +142,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Create headers for the request
-	headers := internalhttp.MergeHeaders(opts.Headers, m.getModelConfigHeaders(true))
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders(true))
 	headers["Accept"] = "text/event-stream"
-
-	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
 
 	// Make streaming API request
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{

@@ -56,9 +56,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	headers = internalhttp.MergeHeaders(headers, opts.Headers)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewaySpeechResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{

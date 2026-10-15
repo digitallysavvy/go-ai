@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -175,9 +176,14 @@ func TestDoTranscribe_ProviderOptions(t *testing.T) {
 		t.Fatalf("DoTranscribe: %v", err)
 	}
 
-	for _, want := range []string{"keyterm=Vercel", "paragraphs=true", "intents=true", "sentiment=true", "replace=foo:bar", "diarize=false"} {
-		if !strings.Contains(seenQuery, want) {
-			t.Fatalf("query missing %q: %s", want, seenQuery)
+	// The query is URL-encoded like URLSearchParams (replace=foo%3Abar).
+	parsed, perr := url.ParseQuery(seenQuery)
+	if perr != nil {
+		t.Fatalf("ParseQuery: %v", perr)
+	}
+	for key, want := range map[string]string{"keyterm": "Vercel", "paragraphs": "true", "intents": "true", "sentiment": "true", "replace": "foo:bar", "diarize": "false"} {
+		if parsed.Get(key) != want {
+			t.Fatalf("query %s = %q, want %q: %s", key, parsed.Get(key), want, seenQuery)
 		}
 	}
 }

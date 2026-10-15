@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -93,7 +95,10 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		})
 	}
 
-	inputFileExpiresAfterSeconds := openaiBatchInputFileExpiresAfter(opts.ProviderOptions)
+	inputFileExpiresAfterSeconds, err := openaiBatchInputFileExpiresAfter(b.provider.Name(), opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	var fileParts bytes.Buffer
 	for _, req := range opts.Requests {
@@ -105,12 +110,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			return nil, err
 		}
 
-		line, err := json.Marshal(map[string]interface{}{
-			"custom_id": textReq.ID,
-			"method":    "POST",
-			"url":       openaiBatchEndpoint,
-			"body":      body,
-		})
+		line, err := providerutils.BatchJSONLLine(textReq.ID, "POST", openaiBatchEndpoint, body)
 		if err != nil {
 			return nil, err
 		}
@@ -346,17 +346,53 @@ func validateOpenAISingleModel(requests []provider.BatchV4Request) error {
 }
 
 // openaiBatchInputFileExpiresAfter extracts
-// providerOptions.openai.inputFileExpiresAfter (or providerOptions.azure.*
-// for Azure-hosted OpenAI), defaulting to 48 hours.
-func openaiBatchInputFileExpiresAfter(providerOptions map[string]interface{}) int {
-	for _, key := range []string{"openai", "azure"} {
-		if opts, ok := providerOptions[key].(map[string]interface{}); ok {
-			if v, ok := opts["inputFileExpiresAfter"].(float64); ok {
-				return int(v)
-			}
-		}
+// providerOptions.<name>.inputFileExpiresAfter, defaulting to 48 hours. Like
+// TS parseBatchProviderOptions it reads "azure" first for Azure-hosted OpenAI
+// (falling back to "openai"), only "openai" otherwise, and rejects values that
+// are not integers between 3600 and 2592000.
+func openaiBatchInputFileExpiresAfter(providerName string, providerOptions map[string]interface{}) (int, error) {
+	keys := []string{"openai"}
+	if strings.Contains(providerName, "azure") {
+		keys = []string{"azure", "openai"}
 	}
-	return openaiBatchInputFileDefaultExpiresAfterSeconds
+	for _, key := range keys {
+		raw, present := providerOptions[key]
+		if !present || raw == nil {
+			continue
+		}
+		opts, ok := raw.(map[string]interface{})
+		if !ok {
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("expected an object"))
+		}
+		v, present := opts["inputFileExpiresAfter"]
+		if !present || v == nil {
+			return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+		}
+		var n float64
+		switch x := v.(type) {
+		case float64:
+			n = x
+		case int:
+			n = float64(x)
+		case int64:
+			n = float64(x)
+		default:
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be a number"))
+		}
+		if n != math.Trunc(n) || n < 3600 || n > 2_592_000 {
+			return 0, invalidOpenAIBatchOptions(key, fmt.Errorf("inputFileExpiresAfter must be an integer between 3600 and 2592000"))
+		}
+		return int(n), nil
+	}
+	return openaiBatchInputFileDefaultExpiresAfterSeconds, nil
+}
+
+func invalidOpenAIBatchOptions(key string, cause error) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "providerOptions",
+		Message: fmt.Sprintf("invalid %s provider options", key),
+		Cause:   cause,
+	}
 }
 
 // --- Wire types -------------------------------------------------------
@@ -659,7 +695,59 @@ func convertOpenAIBatchResponseBodyBytes(body json.RawMessage) (*types.GenerateR
 	if err != nil {
 		return nil, &provider.BatchError{Message: err.Error(), Code: "invalid_response"}
 	}
+	shapeOpenAIBatchResult(genResult, resp.ResponsesAPIResponse)
 	return genResult, nil
+}
+
+// openaiBatchDynamicToolNames are the provider-executed tools TS's batch
+// converter reports as dynamic tool calls and results.
+var openaiBatchDynamicToolNames = map[string]bool{
+	"web_search":       true,
+	"file_search":      true,
+	"code_interpreter": true,
+}
+
+// shapeOpenAIBatchResult adapts the shared Responses conversion to what TS's
+// batch-local convertOpenAIBatchResult returns: no sources, citations or
+// text/message metadata (it only reads output_text), provider-executed web
+// search, file search and code interpreter calls and results marked dynamic,
+// message logprobs and the response id/timestamp/model in the result.
+func shapeOpenAIBatchResult(res *types.GenerateResult, resp responses.ResponsesAPIResponse) {
+	content := make([]types.ContentPart, 0, len(res.Content))
+	for _, part := range res.Content {
+		switch c := part.(type) {
+		case types.SourceContent:
+			continue
+		case *types.SourceContent:
+			continue
+		case types.TextContent:
+			c.ProviderMetadata, c.ProviderOptions, c.Citations = nil, nil, nil
+			part = c
+		case types.ToolCallContent:
+			if c.ProviderExecuted && openaiBatchDynamicToolNames[c.ToolName] {
+				c.Dynamic = true
+			}
+			part = c
+		case types.ToolResultContent:
+			if openaiBatchDynamicToolNames[c.ToolName] {
+				c.Dynamic = true
+			}
+			part = c
+		}
+		content = append(content, part)
+	}
+	res.Content = content
+	for i := range res.ToolCalls {
+		if res.ToolCalls[i].ProviderExecuted && openaiBatchDynamicToolNames[res.ToolCalls[i].ToolName] {
+			res.ToolCalls[i].Dynamic = true
+		}
+	}
+	if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
+		if pm, ok := res.ProviderMetadata["openai"].(map[string]interface{}); ok {
+			pm["logprobs"] = logprobs
+		}
+	}
+	res.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
 }
 
 // openaiBatchKnownOutputItemTypes are the Responses output-item types TS's

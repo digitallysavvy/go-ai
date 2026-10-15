@@ -10,6 +10,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -84,7 +85,10 @@ func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provid
 		return provider.ClientSecretResult{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return provider.ClientSecretResult{}, internalhttp.StatusProviderError("xai", resp.StatusCode, resp.Headers, resp.Body)
+		// TS: `xAI realtime client secret request failed: ${status} ${text}`.
+		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body}
+		return provider.ClientSecretResult{}, providererrors.NewProviderError("xai", 0, "",
+			fmt.Sprintf("xAI realtime client secret request failed: %d %s", resp.StatusCode, string(resp.Body)), cause)
 	}
 	var data struct {
 		Value     string `json:"value"`

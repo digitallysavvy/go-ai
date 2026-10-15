@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,13 +61,10 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	idempotencyKey, forwardedProviderOptions := extractGatewayBatchIdempotencyKey(opts.ProviderOptions)
 
-	headers := map[string]string{"ai-model-id": modelID}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	// TS combineHeaders(config, options.headers, {ai-model-id}, o11y, idempotency-key)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, map[string]string{"ai-model-id": modelID})
 	if idempotencyKey != "" {
 		headers["idempotency-key"] = idempotencyKey
-	}
-	for k, v := range opts.Headers {
-		headers[k] = v
 	}
 
 	wireRequests := make([]map[string]interface{}, 0, len(opts.Requests))
@@ -111,11 +109,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 // DoGetBatchStatus retrieves the lifecycle status of a Gateway batch job
 // (`POST {baseURL}/batch/status`).
 func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4Status, error) {
-	headers := map[string]string{}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, nil)
 
 	var response gatewayBatchStatusFields
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
@@ -134,11 +128,7 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 // DoCancelBatch requests cancellation of a Gateway batch job (`POST
 // {baseURL}/batch/cancel`). Status and partial results remain separate reads.
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
-	headers := map[string]string{}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, nil)
 
 	var response gatewayBatchStatusFields
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
@@ -158,11 +148,7 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 // result JSON object per line). The route responds with an error while the
 // batch is non-terminal.
 func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
-	headers := map[string]string{}
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, nil)
 
 	maxLineBytes, err := b.provider.config.BatchResultDownloads.ResolveMaxLineBytes()
 	if err != nil {
@@ -183,6 +169,12 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 }
 
 func (b *Batch) handleError(ctx context.Context, err error) error {
+	// TS isAbortOrTimeoutError: an aborted or timed-out batch call keeps its
+	// own error (a start may still have been accepted server-side) instead of
+	// becoming a retryable Gateway 500 / client-timeout error.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	lm := &LanguageModel{provider: b.provider}
 	return lm.handleErrorWithContext(ctx, err)
 }
@@ -221,15 +213,15 @@ func validateGatewayTextBatchRequests(requests []provider.BatchV4Request) (strin
 		}
 	}
 
-	var modelID string
+	// TS asserts every request is text before validating the shared model.
 	for _, req := range requests {
 		if req.Type != provider.BatchRequestTypeText || req.Text == nil {
 			return "", unsupportedGatewayBatchRequestType(req.Type)
 		}
-		if modelID == "" {
-			modelID = req.Text.ModelID
-			continue
-		}
+	}
+
+	modelID := requests[0].Text.ModelID
+	for _, req := range requests {
 		if req.Text.ModelID != modelID {
 			return "", &providererrors.InvalidArgumentError{
 				Field: "requests",

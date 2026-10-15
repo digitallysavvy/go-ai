@@ -100,9 +100,9 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 		StrictJSONSchema:  strict,
 	}); format != nil {
 		completion["response_format"] = format
-		schema, _ := providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema).(map[string]interface{})
+		schema := providerutils.ResponseFormatSchemaOrRaw(opts.ResponseFormat.Schema)
 		if !structuredOutputs || schema == nil || opts.ResponseFormat.Type == "json_object" {
-			messages = providerutils.InjectJSONInstructionIntoMessages(messages, schema, providerutils.InjectJSONInstructionOptions{})
+			messages = providerutils.InjectJSONInstructionIntoMessagesSchema(messages, schema, providerutils.InjectJSONInstructionOptions{})
 		}
 	}
 

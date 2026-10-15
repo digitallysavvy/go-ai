@@ -320,7 +320,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		// discarded from response_format, so inject it into the prompt
 		// instead so the model still sees the intended shape (TS commit
 		// 5fa97cd0af, #21744).
-		schema, _ := providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema).(map[string]interface{})
+		schema := providerutils.ResponseFormatSchemaOrRaw(opts.ResponseFormat.Schema)
 		if !structuredOutputs || schema == nil || opts.ResponseFormat.Type == "json_object" {
 			injectMistralJSONInstruction(body, schema)
 		}
@@ -883,22 +883,22 @@ func (s *mistralStream) queueFinishAtEnd() bool {
 // must still be merged into the existing leading system message -- by
 // appending a text part -- rather than falling through to prepending a
 // second system message.
-func injectMistralJSONInstruction(body map[string]interface{}, schema map[string]interface{}) {
+func injectMistralJSONInstruction(body map[string]interface{}, schema interface{}) {
 	messages, _ := body["messages"].([]map[string]interface{})
 	if len(messages) > 0 && messages[0]["role"] == "system" {
 		switch content := messages[0]["content"].(type) {
 		case string:
-			messages[0]["content"] = providerutils.InjectJSONInstruction(content, schema, providerutils.InjectJSONInstructionOptions{})
+			messages[0]["content"] = providerutils.InjectJSONInstructionSchema(content, schema, providerutils.InjectJSONInstructionOptions{})
 			return
 		case []map[string]interface{}:
-			instruction := providerutils.InjectJSONInstruction("", schema, providerutils.InjectJSONInstructionOptions{})
+			instruction := providerutils.InjectJSONInstructionSchema("", schema, providerutils.InjectJSONInstructionOptions{})
 			messages[0]["content"] = append(content, map[string]interface{}{"type": "text", "text": instruction})
 			return
 		case nil:
-			messages[0]["content"] = providerutils.InjectJSONInstruction("", schema, providerutils.InjectJSONInstructionOptions{})
+			messages[0]["content"] = providerutils.InjectJSONInstructionSchema("", schema, providerutils.InjectJSONInstructionOptions{})
 			return
 		}
 	}
-	instruction := providerutils.InjectJSONInstruction("", schema, providerutils.InjectJSONInstructionOptions{})
+	instruction := providerutils.InjectJSONInstructionSchema("", schema, providerutils.InjectJSONInstructionOptions{})
 	body["messages"] = append([]map[string]interface{}{{"role": "system", "content": instruction}}, messages...)
 }

@@ -282,3 +282,38 @@ func TestDeepSeekProviderFilesReturnsFilesAPI(t *testing.T) {
 		t.Fatalf("Files() = %T, want *FilesAPI", p.Files())
 	}
 }
+
+func TestDeepSeekFilesUploadFileSendsCallHeaders(t *testing.T) {
+	var gotCall, gotAuth string
+	p := newDeepseekProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		gotCall, gotAuth = r.Header.Get("X-Call"), r.Header.Get("Authorization")
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"id":"file-1","object":"file"}`))}, nil
+	})
+	files := &FilesAPI{provider: p}
+	_, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+		Data:      types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 0x50, 0x4e, 0x47}},
+		MediaType: "image/png",
+		Headers:   map[string]string{"X-Call": "c"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCall != "c" || gotAuth == "" {
+		t.Fatalf("call header %q, auth %q", gotCall, gotAuth)
+	}
+}
+
+func TestDeepSeekFilesUploadFileExpiresAfterMustBeInteger(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	files := &FilesAPI{provider: p}
+	for _, v := range []interface{}{3600.5, "3600"} {
+		_, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+			Data:            types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 0x50, 0x4e, 0x47}},
+			MediaType:       "image/png",
+			ProviderOptions: map[string]interface{}{"deepseek": map[string]interface{}{"expiresAfter": v}},
+		})
+		if err == nil {
+			t.Fatalf("expiresAfter %v should be rejected", v)
+		}
+	}
+}

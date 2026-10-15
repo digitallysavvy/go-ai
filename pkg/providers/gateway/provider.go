@@ -897,6 +897,16 @@ func GetO11yHeaders(ctx context.Context) O11yHeaders {
 	}
 }
 
+// gatewayRequestHeaders merges the per-call headers, the model's own headers
+// and the observability headers in the TS order (later wins):
+// combineHeaders(config, options.headers, model headers, o11y). The client's
+// own headers are applied by the HTTP client underneath.
+func gatewayRequestHeaders(ctx context.Context, call, model map[string]string) map[string]string {
+	headers := internalhttp.MergeHeaders(call, model)
+	AddO11yHeaders(headers, GetO11yHeaders(ctx))
+	return headers
+}
+
 // AddO11yHeaders adds observability headers to the request headers
 func AddO11yHeaders(headers map[string]string, o11y O11yHeaders) {
 	if o11y.DeploymentID != "" {

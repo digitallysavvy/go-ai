@@ -667,3 +667,20 @@ func assertJSONEqual(t *testing.T, got, want interface{}) {
 		t.Fatalf("got  %s\nwant %s", gs, ws)
 	}
 }
+
+// TS parses providerOptions.openai with z.strictObject({channel: enum}) and
+// delegationId with z.string().min(1): a bad channel must never become part of
+// the event type on the wire.
+func TestOpenAIRealtimeModelLive_ContextAppendRejectsInvalidOptions(t *testing.T) {
+	model := NewRealtimeModelLive(New(Config{APIKey: "test-key"}), "gpt-live-1")
+	empty := ""
+	for name, event := range map[string]provider.RealtimeClientEvent{
+		"unknown channel": {Type: "context-append", Content: "c", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"channel": "evil.start"}}},
+		"extra key":       {Type: "context-append", Content: "c", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"channel": "thinking", "other": 1}}},
+		"empty delegate":  {Type: "context-append", Content: "c", DelegationID: &empty},
+	} {
+		if raw, err := model.SerializeClientEvent(event); err == nil {
+			t.Errorf("%s: want an error, got %s", name, raw)
+		}
+	}
+}

@@ -10,7 +10,6 @@ import (
 	"mime/multipart"
 	stdhttp "net/http"
 	"net/textproto"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -141,12 +140,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		if err != nil {
 			return nil, err
 		}
-		line, err := json.Marshal(map[string]interface{}{
-			"custom_id": req.RequestID(),
-			"method":    "POST",
-			"url":       endpoint,
-			"body":      body,
-		})
+		line, err := providerutils.BatchJSONLLine(req.RequestID(), "POST", endpoint, body)
 		if err != nil {
 			return nil, err
 		}
@@ -295,9 +289,7 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		query["limit"] = strconv.Itoa(*opts.Limit)
 	}
 	if opts.Cursor != "" {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(opts.Cursor)
+		query["pagination_token"] = opts.Cursor
 	}
 
 	var page xaiBatchListResponseWire
@@ -496,7 +488,16 @@ func (s *xaiBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) {
 		if s.idx < len(s.buffer) {
 			item := s.buffer[s.idx]
 			s.idx++
-			return s.batch.convertBatchResult(s.ctx, item), nil
+			result, err := s.batch.convertBatchResult(s.ctx, item)
+			if err != nil {
+				// TS throws from the result generator (image download or
+				// missing image data), which errors the whole stream.
+				s.err = err
+				s.done = true
+				s.buffer, s.idx = nil, 0
+				return nil, err
+			}
+			return result, nil
 		}
 		if s.done {
 			return nil, io.EOF
@@ -512,9 +513,7 @@ func (s *xaiBatchResultsStream) fetchPage() error {
 	s.started = true
 	query := map[string]string{"limit": strconv.Itoa(xaiBatchResultsPageSize)}
 	if s.nextToken != nil {
-		// Pre-escaped: internalhttp.Client.Do concatenates query values
-		// verbatim without percent-encoding them.
-		query["pagination_token"] = url.QueryEscape(*s.nextToken)
+		query["pagination_token"] = *s.nextToken
 	}
 
 	var page xaiBatchResultsPageWire
@@ -543,7 +542,7 @@ func (s *xaiBatchResultsStream) Err() error { return s.err }
 func (s *xaiBatchResultsStream) Close() error { return nil }
 
 // convertBatchResult mirrors TS XaiBatch#convertBatchResult.
-func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire) *provider.BatchV4ItemResult {
+func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire) (*provider.BatchV4ItemResult, error) {
 	var errWire *xaiBatchErrorWire
 	if wire.BatchResult != nil {
 		errWire = wire.BatchResult.Error
@@ -558,7 +557,7 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 			ID:     wire.BatchRequestID,
 			Status: status,
 			Error:  convertXAIBatchError(wire.ErrorMessage, errWire),
-		}
+		}, nil
 	}
 
 	var response *struct {
@@ -569,25 +568,25 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 		response = wire.BatchResult.Response
 	}
 	if response == nil {
-		return invalidXAIBatchTextResult(wire.BatchRequestID)
+		return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 	}
 
 	if isPresentRawJSON(response.ChatGetCompletion) {
 		var textResp xaiBatchTextResponseWire
 		if err := json.Unmarshal(response.ChatGetCompletion, &textResp); err != nil {
-			return invalidXAIBatchTextResult(wire.BatchRequestID)
+			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 		}
 		genResult, convErr := convertXAIBatchTextResponse(textResp)
 		if convErr != nil {
-			return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemFailed, Error: convErr}
+			return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemFailed, Error: convErr}, nil
 		}
-		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, TextResult: genResult}
+		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeText, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, TextResult: genResult}, nil
 	}
 
 	if isPresentRawJSON(response.ImageGeneration) {
 		var imgResp xaiImageResponse
 		if err := json.Unmarshal(response.ImageGeneration, &imgResp); err != nil {
-			return invalidXAIBatchImageResult(wire.BatchRequestID)
+			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
 		}
 		for _, d := range imgResp.Data {
 			if d.RespectModeration != nil && !*d.RespectModeration {
@@ -596,17 +595,17 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 					ID:     wire.BatchRequestID,
 					Status: provider.BatchItemFailed,
 					Error:  &provider.BatchError{Message: "Image generation was blocked due to a content policy violation."},
-				}
+				}, nil
 			}
 		}
 		imgResult, err := b.convertImageBatchResponse(ctx, imgResp)
 		if err != nil {
-			return invalidXAIBatchImageResult(wire.BatchRequestID)
+			return nil, err
 		}
-		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeImage, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, ImageResult: imgResult}
+		return &provider.BatchV4ItemResult{Type: provider.BatchRequestTypeImage, ID: wire.BatchRequestID, Status: provider.BatchItemSucceeded, ImageResult: imgResult}, nil
 	}
 
-	return invalidXAIBatchTextResult(wire.BatchRequestID)
+	return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 }
 
 func isPresentRawJSON(raw json.RawMessage) bool {

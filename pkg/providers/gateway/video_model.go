@@ -138,17 +138,8 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		return nil, err
 	}
 
-	// Build headers
-	headers := m.getModelConfigHeaders()
-
-	// Add observability headers if in Vercel environment
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
-
-	// Add custom headers from options
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	// TS combineHeaders(config, options.headers, model headers, o11y, accept)
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	// Set Accept header to request SSE stream for video generation
 	headers["Accept"] = "text/event-stream"
@@ -212,11 +203,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		body["callbackUrl"] = opts.WebhookURL
 	}
 
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewayVideoStartResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -244,11 +231,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // DoStatus checks the status of an asynchronous video generation started
 // with DoStart via the Gateway's /video-model/status endpoint.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
-	headers := m.getModelConfigHeaders()
-	AddO11yHeaders(headers, GetO11yHeaders(ctx))
-	for k, v := range opts.Headers {
-		headers[k] = v
-	}
+	headers := gatewayRequestHeaders(ctx, opts.Headers, m.getModelConfigHeaders())
 
 	var response gatewayVideoStatusResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{

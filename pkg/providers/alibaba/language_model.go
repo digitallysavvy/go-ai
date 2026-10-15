@@ -175,9 +175,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// plain-text instruction (TS: useJsonSchema/useJsonObject).
 	useJsonSchema := false
 	useJsonObject := false
-	var responseSchema map[string]interface{}
+	var responseSchema interface{}
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
-		responseSchema, _ = providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema).(map[string]interface{})
+		responseSchema = providerutils.ResponseFormatSchemaOrRaw(opts.ResponseFormat.Schema)
 		useJsonSchema = responseSchema != nil && supportsJsonSchemaOutput(m.modelID)
 		useJsonObject = !useJsonSchema
 	}
@@ -213,7 +213,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if useJsonObject {
 		// TS injects the instruction whenever JSON Object mode is used,
 		// with or without a schema.
-		promptMessages = providerutils.InjectJSONInstructionIntoMessages(promptMessages, responseSchema, providerutils.InjectJSONInstructionOptions{})
+		promptMessages = providerutils.InjectJSONInstructionIntoMessagesSchema(promptMessages, responseSchema, providerutils.InjectJSONInstructionOptions{})
 	}
 
 	// Convert prompt to messages with optional cache control support

@@ -61,14 +61,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
+	var callHeaders map[string]string
 	if opts != nil {
-		for k, v := range opts.Headers {
-			headers[k] = v
-		}
+		callHeaders = opts.Headers
 	}
+	headers := gatewayRequestHeaders(ctx, callHeaders, m.getModelConfigHeaders())
 
 	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -109,14 +106,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		body["providerOptions"] = opts.ProviderOptions
 	}
 
-	headers := m.getModelConfigHeaders()
-	o11y := GetO11yHeaders(ctx)
-	AddO11yHeaders(headers, o11y)
+	var callHeaders map[string]string
 	if opts != nil {
-		for k, v := range opts.Headers {
-			headers[k] = v
-		}
+		callHeaders = opts.Headers
 	}
+	headers := gatewayRequestHeaders(ctx, callHeaders, m.getModelConfigHeaders())
 
 	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{

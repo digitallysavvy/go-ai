@@ -677,8 +677,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				// patterns), matching the chat model's handling.
 				responseSchema := opts.ResponseFormat.Schema
 				if rawSchema := providerutils.ResponseFormatJSONSchema(responseSchema); rawSchema != nil {
-					if schemaMap, ok := rawSchema.(map[string]interface{}); ok {
-						normalizedSchema, schemaWarnings, normErr := NormalizeOpenAIJSONSchema(schemaMap)
+					{
+						normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
 						if normErr != nil {
 							return nil, false, warnings, normErr
 						}
@@ -1044,9 +1044,8 @@ func normalizeResponsesToolSchemas(tools []interface{}, supportsAsync bool) ([]t
 
 func normalizeResponsesFunctionToolDef(fn responses.FunctionToolDef, supportsAsync bool) (responses.FunctionToolDef, []types.Warning, error) {
 	var warnings []types.Warning
-	schemaMap, ok := fn.Parameters.(map[string]interface{})
-	if ok && schemaMap != nil {
-		normalized, schemaWarnings, err := NormalizeOpenAIJSONSchema(schemaMap)
+	if fn.Parameters != nil {
+		normalized, schemaWarnings, err := NormalizeOpenAISchemaValue(fn.Parameters)
 		if err != nil {
 			return fn, nil, err
 		}
