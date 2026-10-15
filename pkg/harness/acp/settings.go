@@ -62,19 +62,41 @@ type PermissionModeTarget struct {
 }
 
 // PermissionModeMapping maps every harness.PermissionMode to a target (nil =
-// explicit no-op for that mode). Mirrors TS `ACPPermissionModeMapping`; Go's
-// three named fields make it inherently "complete" once constructed, unlike
-// TS's runtime completeness check on an optional record.
+// explicit no-op for that mode). Mirrors TS `ACPPermissionModeMapping`.
+//
+// TS also accepts a partial record (a key left out). Such a mapping is part of
+// the implementation identity but is otherwise ignored: it is never sent to the
+// bridge. Go expresses a left-out key by listing its mode in Unset; the zero
+// value (Unset empty) is a complete mapping, so existing callers are unchanged.
 type PermissionModeMapping struct {
 	AllowReads *PermissionModeTarget
 	AllowEdits *PermissionModeTarget
 	AllowAll   *PermissionModeTarget
+	// Unset lists modes whose key is absent (TS `undefined`). The target field
+	// of a listed mode is ignored.
+	Unset []harness.PermissionMode
+}
+
+// IsComplete reports whether every mode has an entry (a target or an explicit
+// nil no-op). Mirrors TS `isCompletePermissionModeMapping`; a nil mapping is
+// not complete.
+func (m *PermissionModeMapping) IsComplete() bool {
+	return m != nil && len(m.Unset) == 0
+}
+
+func (m *PermissionModeMapping) isUnset(mode harness.PermissionMode) bool {
+	for _, u := range m.Unset {
+		if u == mode {
+			return true
+		}
+	}
+	return false
 }
 
 // Get returns the target configured for mode (nil if mode is unmapped or
 // explicitly a no-op).
 func (m *PermissionModeMapping) Get(mode harness.PermissionMode) *PermissionModeTarget {
-	if m == nil {
+	if m == nil || m.isUnset(mode) {
 		return nil
 	}
 	switch mode {
