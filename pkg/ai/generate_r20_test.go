@@ -219,3 +219,45 @@ func TestEmbedMany_PanickingCallbacksDoNotBreakCall(t *testing.T) {
 		t.Fatalf("res=%v err=%v", res, err)
 	}
 }
+
+func TestExperimentalGetBatchResults_ValidatesToolCallsAgainstTools(t *testing.T) {
+	t.Parallel()
+
+	calls := []types.ToolCall{
+		{ID: "ok", ToolName: "weather", Arguments: map[string]interface{}{"city": "Berlin"}},
+		{ID: "bad", ToolName: "missing", Arguments: map[string]interface{}{}},
+	}
+	stream := &mockBatchItemStream{items: []provider.BatchV4ItemResult{{
+		Type: provider.BatchRequestTypeText, ID: "req-1", Status: provider.BatchItemSucceeded,
+		TextResult: &types.GenerateResult{ToolCalls: calls, FinishReason: types.FinishReasonToolCalls},
+	}}}
+	mock := &mockBatchV4{
+		providerName: "mock.batch",
+		resultsFn: func(context.Context, provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
+			return stream, nil
+		},
+	}
+	rs, err := ExperimentalGetBatchResults(context.Background(), GetBatchResultsOptions{
+		Provider: mock,
+		Batch:    BatchReference{Version: 2, ID: "job_1", Provider: "mock.batch"},
+		Tools: []types.Tool{{
+			Name: "weather",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"city": map[string]interface{}{"type": "string"}},
+				"required":   []interface{}{"city"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := rs.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := item.Text.ToolCalls
+	if len(got) != 2 || got[0].Invalid || !got[1].Invalid || got[1].Error == nil {
+		t.Fatalf("tool calls = %+v, want first valid and second invalid", got)
+	}
+}

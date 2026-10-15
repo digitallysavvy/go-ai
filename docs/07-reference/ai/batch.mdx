@@ -98,6 +98,7 @@ An image request inside a batch.
 | `MaxRetries` | `*int` |  |
 | `Headers` | `map[string]string` |  |
 | `Timeout` | `*time.Duration` |  |
+| `Tools` | `[]types.Tool` | Tools are the client tool definitions given to the StartBatch requests. They are used only to validate and normalize the tool calls of succeeded text results (TS getBatchResults `tools`): calls to unknown tools or with invalid input come back with Invalid and Error set. Their Execute functions are never invoked. |
 
 {/* /gen:fields */}
 

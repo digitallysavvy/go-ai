@@ -292,6 +292,13 @@ type GetBatchResultsOptions struct {
 	MaxRetries      *int
 	Headers         map[string]string
 	Timeout         *time.Duration
+
+	// Tools are the client tool definitions given to the StartBatch requests.
+	// They are used only to validate and normalize the tool calls of
+	// succeeded text results (TS getBatchResults `tools`): calls to unknown
+	// tools or with invalid input come back with Invalid and Error set. Their
+	// Execute functions are never invoked.
+	Tools []types.Tool
 }
 
 // BatchItemResult is a complete terminal result for one request in a batch.
@@ -316,6 +323,8 @@ type BatchItemResult struct {
 type BatchResultsStream struct {
 	inner  provider.BatchV4ItemResultStream
 	cancel context.CancelFunc
+	ctx    context.Context
+	tools  []types.Tool
 }
 
 // Next returns the next item result in the stream. Returns io.EOF when the
@@ -325,11 +334,21 @@ func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	textResult := item.TextResult
+	if textResult != nil && item.Status == provider.BatchItemSucceeded {
+		// TS convertGenerateResult runs parseToolCall (no repair) on every
+		// tool call against the tools given to getBatchResults.
+		parsed, parseErr := parseBatchToolCalls(s.ctx, textResult, s.tools)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		textResult = parsed
+	}
 	return &BatchItemResult{
 		Type:             item.Type,
 		ID:               item.ID,
 		Status:           item.Status,
-		Text:             item.TextResult,
+		Text:             textResult,
 		Image:            item.ImageResult,
 		Error:            item.Error,
 		ProviderMetadata: item.ProviderMetadata,
@@ -388,7 +407,23 @@ func ExperimentalGetBatchResults(ctx context.Context, opts GetBatchResultsOption
 		return nil, err
 	}
 
-	return &BatchResultsStream{inner: inner, cancel: cancel}, nil
+	return &BatchResultsStream{inner: inner, cancel: cancel, ctx: callCtx, tools: opts.Tools}, nil
+}
+
+// parseBatchToolCalls validates the tool calls of a succeeded text result
+// against tools and returns a copy of the result carrying the parsed calls.
+func parseBatchToolCalls(ctx context.Context, result *types.GenerateResult, tools []types.Tool) (*types.GenerateResult, error) {
+	if len(result.ToolCalls) == 0 {
+		return result, nil
+	}
+	parsed, _, err := parseToolCalls(ctx, result.ToolCalls, ParseToolCallOptions{Tools: tools})
+	if err != nil {
+		return nil, err
+	}
+	out := *result
+	out.ToolCalls = parsed
+	out.Content = replaceToolCallContentParts(append([]types.ContentPart(nil), result.Content...), parsed)
+	return &out, nil
 }
 
 // CancelBatchOptions are options for requesting cancellation of a batch.
