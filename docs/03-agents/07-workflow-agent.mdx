@@ -148,6 +148,12 @@ if err != nil {
 }
 ```
 
+### Output and provider tool calls
+
+Like TS stream mode, the stream result parses `Output` from the last step's text only when that text is non-empty, whatever the finish reason; a step with no text (for example a tool-calls finish) leaves `Output()` nil and `OutputErr()` nil. A parse failure also surfaces from `Err()`.
+
+When a provider-executed tool call gets no result from the provider, WorkflowAgent logs a warning, answers the call with an empty text result and continues the loop (deferred-result tools are left pending). `ai.GenerateText` and `ai.StreamText` stop the loop instead.
+
 ## Chat Transport
 
 `WorkflowRunMultiplexer` is the server-side `http.Handler` that emits run-scoped SSE and
