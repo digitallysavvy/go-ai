@@ -553,9 +553,9 @@ func TestInteractionsAssistantToolCallContentRoundTrips(t *testing.T) {
 	if call["signature"] != "sig-1" {
 		t.Fatalf("signature = %#v", call["signature"])
 	}
-	args := call["arguments"].(map[string]interface{})
-	if args["q"] != "x" {
-		t.Fatalf("arguments = %#v", args)
+	argsJSON, _ := json.Marshal(call["arguments"]) //nolint:errcheck // test
+	if string(argsJSON) != `{"q":"x"}` {
+		t.Fatalf("arguments = %s", argsJSON)
 	}
 }
 
@@ -1223,5 +1223,23 @@ func writeSSE(w http.ResponseWriter, data string) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
+	}
+}
+
+func TestInteractionsReplayedToolArgumentsKeepKeyOrder(t *testing.T) {
+	t.Parallel()
+	const raw = `{"zeta":1,"alpha":{"yy":1,"aa":2}}`
+	args := map[string]interface{}{"zeta": 1, "alpha": map[string]interface{}{"yy": 1, "aa": 2}}
+	msgs := []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: raw, Arguments: args},
+	}, ToolCalls: []types.ToolCall{{ID: "c2", ToolName: "t", RawArguments: raw, Arguments: args}}}}
+	model := NewInteractionsLanguageModel(New(Config{APIKey: "test-key"}), ModelGemini25Flash)
+	steps, _, err := model.convertAssistantSteps(msgs[0].Content, msgs[0].ToolCalls, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(steps) //nolint:errcheck // test
+	if got := strings.Count(string(b), `"arguments":`+raw); got != 2 {
+		t.Fatalf("want 2 ordered arguments objects, got %d in %s", got, b)
 	}
 }

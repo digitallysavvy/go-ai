@@ -72,3 +72,22 @@ func TestAnthropicProviderToolSchemaTableCoversEveryTool(t *testing.T) {
 		}
 	}
 }
+
+func TestBedrockReplayedToolInputKeepsKeyOrderAndLegacyToolCalls(t *testing.T) {
+	const raw = `{"zeta":1,"alpha":{"yy":1,"aa":2}}`
+	args := map[string]interface{}{"zeta": 1, "alpha": map[string]interface{}{"yy": 1, "aa": 2}}
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "t", Input: raw, Arguments: args},
+		}, ToolCalls: []types.ToolCall{{ID: "c2", ToolName: "t", RawArguments: raw, Arguments: args}}},
+	}
+	_, out, err := convertToBedrockChatMessages(msgs, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(out) //nolint:errcheck // test
+	if got := strings.Count(string(b), `"input":`+raw); got != 2 {
+		t.Fatalf("want 2 ordered tool inputs (content part + legacy ToolCalls), got %d in %s", got, b)
+	}
+}
