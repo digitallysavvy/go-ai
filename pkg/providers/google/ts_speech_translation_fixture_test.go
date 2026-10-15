@@ -31,7 +31,7 @@ func TestSpeechTranslationModel_RecordedFixture(t *testing.T) {
 
 	server := newLiveTranscriptionTestServer(t)
 	defer server.close()
-	model := newSpeechTranslationTestModel(t, server.ts.URL, 0)
+	model := newSpeechTranslationTestModel(t, server.ts.URL, time.Nanosecond) // TS finishGraceMs: 0
 	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
 		Audio:            newChanAudioStream([]byte{1, 2, 3}),
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
