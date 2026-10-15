@@ -213,6 +213,21 @@ type WorkflowAgent struct {
 
 // WorkflowGenerateOptions configures a single generate invocation.
 type WorkflowGenerateOptions struct {
+	// Per-call generation settings (TS Partial<GenerationSettings>). A value
+	// set here replaces the agent's; Headers and ProviderOptions replace as a
+	// whole.
+	Temperature      *float64
+	MaxTokens        *int
+	TopP             *float64
+	TopK             *int
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	StopSequences    []string
+	Seed             *int
+	Headers          map[string]string
+	Reasoning        *types.ReasoningLevel
+	ProviderOptions  map[string]interface{}
+
 	Prompt                      string
 	Messages                    []types.Message
 	System                      string
@@ -276,6 +291,21 @@ type WorkflowGenerateOptions struct {
 
 // WorkflowStreamOptions configures a single stream invocation.
 type WorkflowStreamOptions struct {
+	// Per-call generation settings (TS Partial<GenerationSettings>). A value
+	// set here replaces the agent's; Headers and ProviderOptions replace as a
+	// whole.
+	Temperature      *float64
+	MaxTokens        *int
+	TopP             *float64
+	TopK             *int
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
+	StopSequences    []string
+	Seed             *int
+	Headers          map[string]string
+	Reasoning        *types.ReasoningLevel
+	ProviderOptions  map[string]interface{}
+
 	Prompt                string
 	Messages              []types.Message
 	System                string
@@ -495,6 +525,35 @@ func resolveToolCallConcurrency(values ...*int) (int, error) {
 		return *v, nil
 	}
 	return 0, nil
+}
+
+// callSetting picks the first non-nil setting: the stream call, then the
+// generate call, then the agent default.
+func callSetting[T any](values ...*T) *T {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func callSlice[T any](values ...[]T) []T {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
+}
+
+func callMap[K comparable, V any](values ...map[K]V) map[K]V {
+	for _, v := range values {
+		if v != nil {
+			return v
+		}
+	}
+	return nil
 }
 
 func firstNonNil(values ...interface{}) interface{} {
@@ -1311,9 +1370,14 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: stopWhen,
 		AllowSystemInMessages: allowSystemInMessages,
 		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx),
-		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
-		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: version.WithUserAgentSuffix(w.Headers, "ai-sdk-agent/workflow"), Reasoning: w.Reasoning,
-		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
+		Temperature: callSetting(ovr.Temperature, govr.Temperature, w.Temperature), MaxTokens: callSetting(ovr.MaxTokens, govr.MaxTokens, w.MaxTokens),
+		TopP: callSetting(ovr.TopP, govr.TopP, w.TopP), TopK: callSetting(ovr.TopK, govr.TopK, w.TopK),
+		FrequencyPenalty: callSetting(ovr.FrequencyPenalty, govr.FrequencyPenalty, w.FrequencyPenalty),
+		PresencePenalty:  callSetting(ovr.PresencePenalty, govr.PresencePenalty, w.PresencePenalty),
+		StopSequences:    callSlice(ovr.StopSequences, govr.StopSequences, w.StopSequences), Seed: callSetting(ovr.Seed, govr.Seed, w.Seed),
+		Headers:       version.WithUserAgentSuffix(callMap(ovr.Headers, govr.Headers, w.Headers), "ai-sdk-agent/workflow"),
+		Reasoning:     callSetting(ovr.Reasoning, govr.Reasoning, w.Reasoning),
+		SendReasoning: w.SendReasoning, ProviderOptions: callMap(ovr.ProviderOptions, govr.ProviderOptions, w.ProviderOptions), RuntimeContext: runtimeContext, ToolsContext: toolsContext,
 		ToolChoice:                     toolChoice,
 		ToolCallConcurrency:            toolCallConcurrency,
 		Output:                         output,
