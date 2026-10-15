@@ -11,10 +11,10 @@ import (
 // types are accepted silently.
 func TestXAIResponsesStream_ChunkSchemaValidation(t *testing.T) {
 	for frame, wantErr := range map[string]bool{
-		`{"foo":1}`:                                     true,
-		`{"type":"response.brand_new"}`:                 true,
-		`{"type":"response.content_part.added"}`:        false,
-		`{"type":"response.web_search_call.searching"}`: false,
+		`{"foo":1}`:                     true,
+		`{"type":"response.brand_new"}`: true,
+		`{"type":"response.content_part.added","item_id":"i1","output_index":0,"content_index":0,"part":{"type":"output_text"}}`: false,
+		`{"type":"response.web_search_call.searching","item_id":"i1","output_index":0}`:                                          false,
 	} {
 		chunks := drainXAIResponses(t, "data: "+frame+"\n\ndata: [DONE]\n\n")
 		sawError := false

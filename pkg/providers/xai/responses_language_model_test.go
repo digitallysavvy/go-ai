@@ -47,9 +47,9 @@ func TestXAIResponsesDoStreamIncludesRawChunks(t *testing.T) {
 			t.Fatalf("path = %q, want /responses", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","item_id":"it1","delta":"Hello"}
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","item_id":"it1","output_index":0,"content_index":0,"delta":"Hello"}
 
-data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
 
 data: [DONE]
 
@@ -102,9 +102,9 @@ data: [DONE]
 }
 
 func TestXAIResponsesDoStreamEmitsResponseMetadataLikeTypeScript(t *testing.T) {
-	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","created_at":1741269019,"model":"grok-3"}}
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.created","response":{"id":"resp_1","object":"response","output":[],"created_at":1741269019,"model":"grok-3"}}
 
-data: {"type":"response.in_progress","response":{"id":"resp_1","created_at":1741269019,"model":"grok-3"}}
+data: {"type":"response.in_progress","response":{"id":"resp_1","object":"response","output":[],"created_at":1741269019,"model":"grok-3"}}
 
 data: [DONE]
 
@@ -145,7 +145,7 @@ func TestXAIResponsesDoStreamWarningsMatchTypeScript(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"Hello"}
 
-data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
+data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}
 
 data: [DONE]
 
@@ -1433,7 +1433,7 @@ func TestXAIResponsesServiceTier(t *testing.T) {
 func TestXAIResponsesServiceTierStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","service_tier":"priority","usage":{"input_tokens":1,"output_tokens":1}}}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","service_tier":"priority","usage":{"input_tokens":1,"output_tokens":1}}}
 
 `)
 	}))
@@ -1570,7 +1570,7 @@ func TestXAIResponsesEchoedRequestIdentifiers(t *testing.T) {
 func TestXAIResponsesEchoedRequestIdentifiersStreaming(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","prompt_cache_key":"conversation-123","safety_identifier":"hashed-user-123","usage":{"input_tokens":1,"output_tokens":1}}}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp_1","object":"response","output":[],"status":"completed","prompt_cache_key":"conversation-123","safety_identifier":"hashed-user-123","usage":{"input_tokens":1,"output_tokens":1}}}
 
 `)
 	}))
