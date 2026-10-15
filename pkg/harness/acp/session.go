@@ -547,7 +547,14 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		} else {
 			err = errors.New("acp: bridge reported an error")
 		}
-		forward(f.Part)
+		// Mirrors TS `forward({ ...event, error })`: the forwarded error part
+		// carries the deserialized error (e.g. the capability-unsupported
+		// error), not the raw wire object.
+		if errPart != nil {
+			forward(&harness.ErrorPart{Error: err})
+		} else {
+			forward(f.Part)
+		}
 		settle(err)
 	}))
 

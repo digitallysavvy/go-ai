@@ -234,13 +234,18 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			"The %s ACP harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", settings.HarnessID))
 	}
 
-	isContinue := opts.ContinueFrom != nil
+	// Mirrors TS `startOptions.continueFrom ?? startOptions.resumeFrom?.continueFrom`.
+	continueFrom := opts.ContinueFrom
+	if continueFrom == nil && opts.ResumeFrom != nil {
+		continueFrom = opts.ResumeFrom.ContinueFrom
+	}
+	isContinue := continueFrom != nil
 	isResume := isContinue || opts.ResumeFrom != nil
 	var lifecycleData json.RawMessage
 	var lifecycleHarnessID string
 	switch {
-	case opts.ContinueFrom != nil:
-		lifecycleData, lifecycleHarnessID = opts.ContinueFrom.Data, opts.ContinueFrom.HarnessID
+	case continueFrom != nil:
+		lifecycleData, lifecycleHarnessID = continueFrom.Data, continueFrom.HarnessID
 	case opts.ResumeFrom != nil:
 		lifecycleData, lifecycleHarnessID = opts.ResumeFrom.Data, opts.ResumeFrom.HarnessID
 	}

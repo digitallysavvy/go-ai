@@ -835,3 +835,37 @@ func TestTSReplay_ResumeDoesNotReapplyGuidance(t *testing.T) {
 		})
 	}
 }
+
+// TS 'preserves capability errors reported by the sandbox bridge'.
+func TestTSReplay_PreservesBridgeCapabilityErrors(t *testing.T) {
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) {
+		turn.Emit(map[string]any{"type": "error", "error": map[string]any{"name": "AI_HarnessBridgeCapabilityUnsupportedError", "message": "The catalog was not refreshed."}})
+	}})
+	t.Cleanup(srv.Close)
+	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" }; s.HarnessID = "codex-acp" }))
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: newFakeSandbox(srv), SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	var parts []harness.StreamPart
+	c, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("Use time."), Emit: func(p harness.StreamPart) { parts = append(parts, p) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c.Done()
+	var unsupported *harness.CapabilityUnsupportedError
+	if !errors.As(c.Err(), &unsupported) || unsupported.HarnessID != "codex-acp" || !strings.Contains(unsupported.Error(), "The catalog was not refreshed.") {
+		t.Fatalf("control.Err() = %#v", c.Err())
+	}
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d", len(parts))
+	}
+	ep, ok := parts[0].(*harness.ErrorPart)
+	if !ok {
+		t.Fatalf("part = %T", parts[0])
+	}
+	if e, _ := ep.Error.(error); !errors.As(e, &unsupported) {
+		t.Fatalf("forwarded error = %#v, want a *CapabilityUnsupportedError", ep.Error)
+	}
+}
