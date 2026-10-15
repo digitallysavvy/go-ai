@@ -73,3 +73,14 @@ func TestConverseStreamIncludeRawChunks(t *testing.T) {
 		t.Fatalf("non-raw chunk count changed: %d vs %d", len(plain), nonRaw)
 	}
 }
+
+func TestImageConvertResponseDecodesImageBytes(t *testing.T) {
+	m := NewImageModel(nil, "amazon.nova-canvas-v1:0")
+	res, err := m.convertResponse([]byte(`{"images":["aGVsbG8="]}`), http.Header{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.Image) != "hello" || string(res.Images[0]) != "hello" || res.Base64Images[0] != "aGVsbG8=" {
+		t.Fatalf("Image=%q Images=%q Base64Images=%q", res.Image, res.Images[0], res.Base64Images[0])
+	}
+}
