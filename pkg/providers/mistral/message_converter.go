@@ -274,34 +274,5 @@ func convertMistralToolMessages(msg types.Message) []map[string]interface{} {
 // JSON-stringified. Falls back to the legacy Result/Error fields when Output
 // is unset.
 func mistralToolResultText(tr types.ToolResultContent) string {
-	if tr.Output != nil {
-		switch tr.Output.Type {
-		case types.ToolResultOutputText, types.ToolResultOutputErrorText:
-			if v, ok := tr.Output.Value.(string); ok {
-				return v
-			}
-			return fmt.Sprintf("%v", tr.Output.Value)
-		case types.ToolResultOutputExecutionDenied:
-			if tr.Output.Reason != "" {
-				return tr.Output.Reason
-			}
-			return "Tool call execution denied."
-		case types.ToolResultOutputContent, types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
-			if b, err := jsonstr.Marshal(tr.Output.Value); err == nil {
-				return string(b)
-			}
-		}
-	}
-	if tr.Result != nil {
-		if s, ok := tr.Result.(string); ok {
-			return s
-		}
-		if b, err := jsonstr.Marshal(tr.Result); err == nil {
-			return string(b)
-		}
-	}
-	if tr.Error != "" {
-		return tr.Error
-	}
-	return ""
+	return prompt.ToolResultText(tr)
 }
