@@ -104,6 +104,12 @@ type MCPClientConfig struct {
 	// Default: 30000 (30 seconds)
 	RequestTimeoutMS int
 
+	// InitializationOptions bounds Connect (TS initializationOptions):
+	// TimeoutMS / MaxTotalTimeoutMS limit the whole handshake, which then fails
+	// with "MCP client initialization timed out after <n>ms". A cancelled
+	// Connect context fails with "MCP client initialization was aborted".
+	InitializationOptions *RequestOptions `json:"-"`
+
 	// EnableLogging enables client-level logging
 	EnableLogging bool
 
@@ -279,20 +285,43 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		return c.eventsErr
 	}
 
+	// TS initializationOptions: the timeout bounds the whole handshake,
+	// including the initialize request itself.
+	var initTimeout time.Duration
+	if o := c.config.InitializationOptions; o != nil {
+		initTimeout = o.effectiveTimeout()
+	}
+	parent := ctx
+	if initTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeoutCause(ctx, initTimeout, errInitTimeout)
+		defer cancel()
+		ctx = WithRequestOptions(ctx, RequestOptions{TimeoutMS: int(initTimeout / time.Millisecond)})
+	}
+	fail := func(err error) error {
+		// TS init() closes the transport and the client when the handshake
+		// fails, so a failed Connect never leaves a live subprocess,
+		// connection or receive goroutine behind.
+		_ = c.Close()
+		if initTimeout > 0 && errors.Is(context.Cause(ctx), errInitTimeout) && parent.Err() == nil {
+			return &MCPClientError{Message: fmt.Sprintf("MCP client initialization timed out after %dms", initTimeout/time.Millisecond), Cause: err}
+		}
+		if parent.Err() != nil {
+			return &MCPClientError{Message: "MCP client initialization was aborted", Cause: parent.Err()}
+		}
+		return err
+	}
+
 	// Connect transport
 	if err := c.transport.Connect(ctx); err != nil {
-		return fmt.Errorf("failed to connect transport: %w", err)
+		return fail(fmt.Errorf("failed to connect transport: %w", err))
 	}
 
 	// Start message receiver
 	go c.receiveLoop()
 
 	if err := c.handshake(ctx); err != nil {
-		// TS init() closes the transport and the client when the handshake
-		// fails, so a failed Connect never leaves a live subprocess,
-		// connection or receive goroutine behind.
-		_ = c.Close()
-		return err
+		return fail(err)
 	}
 	c.initialized = true
 	return nil
@@ -918,6 +947,11 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 	// Wait for response with timeout
 	timeout := time.Duration(c.config.RequestTimeoutMS) * time.Millisecond
+	if opts, ok := requestOptionsFrom(ctx); ok {
+		if t := opts.effectiveTimeout(); t > 0 {
+			timeout = t
+		}
+	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -946,10 +980,11 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		return nil
 
 	case <-timer.C:
-		return NewTimeoutError(method)
+		return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
 
 	case <-ctx.Done():
-		return ctx.Err()
+		// TS: "Request was aborted" with the abort reason as cause.
+		return &MCPClientError{Message: "Request was aborted", Cause: ctx.Err()}
 
 	case <-c.connLost:
 		return NewMCPClientError(0, "Connection closed", nil)
@@ -1015,6 +1050,13 @@ func (c *MCPClient) receiveLoop() {
 		}
 
 		// Handle message
+		if msg.Method == "" && msg.ID == nil && (msg.Result != nil || msg.Error != nil) {
+			// TS onResponse: a response without a message ID is a protocol
+			// error reported through onError; it cannot match a request.
+			raw, _ := json.Marshal(msg)
+			c.reportError(NewMCPClientError(0, "Protocol error: Received a response without a message ID: "+string(raw), nil))
+			continue
+		}
 		if IsResponse(msg) {
 			// Response to a request
 			c.pendingMu.RLock()
@@ -1027,6 +1069,10 @@ func (c *MCPClient) receiveLoop() {
 				default:
 					// Channel full or closed
 				}
+			} else if c.ctx.Err() == nil {
+				// TS onResponse: a response for an id with no waiting request.
+				raw, _ := json.Marshal(msg)
+				c.reportError(NewMCPClientError(0, "Protocol error: Received a response for an unknown message ID: "+string(raw), nil))
 			}
 		} else if IsNotification(msg) {
 			// Handle notification (server -> client)
@@ -1041,6 +1087,13 @@ func (c *MCPClient) receiveLoop() {
 			// would deadlock any such nested call against its own response.
 			go c.handleRequest(msg)
 		}
+	}
+}
+
+// reportError hands a non-fatal error to MCPClientConfig.OnError (TS onError).
+func (c *MCPClient) reportError(err error) {
+	if c.config.OnError != nil {
+		c.config.OnError(err)
 	}
 }
 

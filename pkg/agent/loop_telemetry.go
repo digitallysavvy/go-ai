@@ -286,7 +286,7 @@ func (s *loopStepTelemetry) modelCallEnd(model interface {
 		return
 	}
 	elapsed := time.Since(started).Milliseconds()
-	perf := telemetry.LanguageModelCallPerformance{ResponseTimeMs: elapsed}
+	perf := ai.NonStreamingModelCallPerformance(elapsed, res.Usage)
 	telemetry.FireOnLanguageModelCallEnd(s.stepCtx, telemetry.LanguageModelCallEndEvent{
 		Settings:         s.lt.settings,
 		CallID:           s.lt.callID,

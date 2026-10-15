@@ -85,6 +85,12 @@ type AgentTUIRunner struct {
 	responseStatistics ResponseStatisticsMode
 	contextSize        int
 	sandbox            interface{}
+
+	// transportUI is the assistant message of the last ChatTransport turn and
+	// transportUICount the number of history messages it was converted to. A
+	// resumed turn replaces them with the merged message (TS upsertResponseMessage).
+	transportUI      *ai.UIMessage
+	transportUICount int
 }
 
 func NewAgentTUIRunner(options AgentTUIRunnerOptions) *AgentTUIRunner {
@@ -183,7 +189,11 @@ func (r *AgentTUIRunner) Run(ctx context.Context) error {
 		var streamResult AgentTUIStreamResult
 		var err error
 		if r.transport != nil {
-			streamResult, err = r.streamViaTransport(streamCtx, messages)
+			var seed *ai.UIMessage
+			if streamWithoutPrompt {
+				seed = r.transportUI
+			}
+			streamResult, err = r.streamViaTransport(streamCtx, messages, seed)
 		} else {
 			var result *ai.StreamTextResult
 			result, err = r.agent.Stream(streamCtx, agent.AgentStreamOptions{
@@ -243,12 +253,13 @@ func (r *AgentTUIRunner) Run(ctx context.Context) error {
 					if err := applyToolApprovalResponse(responseMessages, request, response); err != nil {
 						return err
 					}
+					applyUIToolApproval(streamResult.Stream.uiMessage, request.ToolCallID, request.ApprovalID, response)
 				}
-				messages = upsertResponseMessages(messages, responseMessages, streamWithoutPrompt)
+				messages = r.recordResponse(messages, responseMessages, streamResult.Stream, streamWithoutPrompt)
 				streamWithoutPrompt = true
 				continue
 			}
-			messages = upsertResponseMessages(messages, responseMessages, streamWithoutPrompt)
+			messages = r.recordResponse(messages, responseMessages, streamResult.Stream, streamWithoutPrompt)
 		}
 		if !hasRunTurn {
 			return nil
@@ -268,22 +279,56 @@ func rendererSupportsPrompt(renderer AgentTUIRenderer) bool {
 	return ok
 }
 
+// upsertResponseMessages adds a turn's response messages to the history.
+//
+// TS replaces the last assistant UIMessage because the continuation stream
+// keeps appending parts to it. Response messages here are deltas: after an
+// approval, the resumed stream returns the tool message with the results and
+// the new assistant message, not the assistant message that holds the tool
+// call. Replacing the last assistant message (which holds that call and its
+// approval response) with them would leave a tool result with no call in the
+// next request. So they are always appended; replaceLast is kept for callers
+// of the signature.
+// recordResponse adds a turn's response to the history. A ChatTransport turn
+// that resumed the previous assistant message returns that message merged with
+// the new parts, so it replaces the messages the previous turn produced.
+func (r *AgentTUIRunner) recordResponse(messages, responseMessages []types.Message, stream *StreamRenderSource, resumed bool) []types.Message {
+	if r.transport == nil {
+		return upsertResponseMessages(messages, responseMessages, resumed)
+	}
+	if resumed && r.transportUICount > 0 && r.transportUICount <= len(messages) {
+		messages = messages[:len(messages)-r.transportUICount]
+	}
+	r.transportUI = stream.uiMessage
+	r.transportUICount = len(responseMessages)
+	return append(messages, responseMessages...)
+}
+
 func upsertResponseMessages(messages, responseMessages []types.Message, replaceLast bool) []types.Message {
+	_ = replaceLast
 	if len(responseMessages) == 0 {
 		return messages
-	}
-	if replaceLast && len(messages) > 0 && messages[len(messages)-1].Role == types.RoleAssistant {
-		return append(append([]types.Message(nil), messages[:len(messages)-1]...), responseMessages...)
 	}
 	return append(messages, responseMessages...)
 }
 
 func findPendingToolApprovalRequests(messages []types.Message) []AgentTUIToolApprovalRequest {
 	var requests []AgentTUIToolApprovalRequest
+	// A request answered elsewhere in the messages (a resumed transport turn
+	// returns the whole merged assistant message, with the response in the
+	// tool message) is not pending.
+	answered := map[string]bool{}
+	for _, message := range messages {
+		for _, part := range message.Content {
+			if response, ok := part.(types.ToolApprovalResponseContent); ok {
+				answered[response.ApprovalID] = true
+			}
+		}
+	}
 	for messageIndex, message := range messages {
 		for partIndex, part := range message.Content {
 			request, ok := part.(types.ToolApprovalRequestContent)
-			if !ok || request.IsAutomatic {
+			if !ok || request.IsAutomatic || answered[request.ApprovalID] {
 				continue
 			}
 			toolCall := request.ToolCall

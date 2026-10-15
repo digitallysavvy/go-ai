@@ -384,6 +384,15 @@ OnFinish
 
 ---
 
+## Step performance for custom loops
+
+`GenerateText`, `StreamText` and `ToolLoopAgent` fill `StepResult.Performance` and the `Performance` of the model-call end event. A custom loop around a non-streaming `DoGenerate` call can build the same values:
+
+- `ai.NonStreamingStepPerformance(responseTimeMs, usage)` returns the `StepPerformance` TS `generateText` builds: `ResponseTimeMs`, `StepTimeMs` (equal to the response time until you set it to the whole step), an empty `ToolExecutionMs` map and the two effective tokens-per-second rates. The streaming-only rates stay unset.
+- `ai.NonStreamingModelCallPerformance(responseTimeMs, usage)` returns the `LanguageModelCallPerformance` for the model-call end event.
+
+---
+
 ## Callback Merging in Agents
 
 When using `ToolLoopAgent`, callbacks set in `AgentConfig` are merged with any per-call callbacks. Both fire in order: **settings-level first, then call-level**.

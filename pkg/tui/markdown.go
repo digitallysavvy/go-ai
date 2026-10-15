@@ -13,13 +13,17 @@ const (
 	ansiItalicOff = "\x1b[23m"
 )
 
+// jsSpaceClass is JavaScript's \s (RE2's \s is ASCII-only and lacks \v, the
+// no-break space and the other Unicode spaces).
+const jsSpaceClass = `[\s\x{000b}\x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+
 var (
 	inlineCodePattern       = regexp.MustCompile("`([^`]+)`")
 	boldAsteriskPattern     = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
 	boldUnderscorePattern   = regexp.MustCompile(`__([^_\n]+)__`)
 	italicAsteriskPattern   = regexp.MustCompile(`\*([^*\n]+)\*`)
 	italicUnderscorePattern = regexp.MustCompile(`_([^_\n]+)_`)
-	unorderedListPattern    = regexp.MustCompile(`^(\s*)[-+*]\s+(.*)$`)
+	unorderedListPattern    = regexp.MustCompile(`^(` + jsSpaceClass + `*)[-+*]` + jsSpaceClass + `+(.*)$`)
 	numberedListPattern     = regexp.MustCompile(`^(\d+)\. (.*)$`)
 )
 
@@ -119,7 +123,7 @@ func parseMarkdownTableCells(line string) ([]string, bool) {
 	if !strings.Contains(line, "|") {
 		return nil, false
 	}
-	tableLine := strings.TrimSpace(line)
+	tableLine := jsTrim(line)
 	tableLine = strings.TrimPrefix(tableLine, "|")
 	if strings.HasSuffix(tableLine, "|") && !strings.HasSuffix(tableLine, `\|`) {
 		tableLine = tableLine[:len(tableLine)-1]
@@ -134,13 +138,13 @@ func parseMarkdownTableCells(line string) ([]string, bool) {
 			continue
 		}
 		if ch == '|' {
-			cells = append(cells, strings.TrimSpace(cell.String()))
+			cells = append(cells, jsTrim(cell.String()))
 			cell.Reset()
 			continue
 		}
 		cell.WriteByte(ch)
 	}
-	cells = append(cells, strings.TrimSpace(cell.String()))
+	cells = append(cells, jsTrim(cell.String()))
 	return cells, true
 }
 

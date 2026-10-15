@@ -262,3 +262,63 @@ func TestAgentTUIRunnerChatTransportToolApprovalFlow(t *testing.T) {
 		t.Fatalf("missing final assistant text in:\n%s", rendered)
 	}
 }
+
+// A resumed turn streams the approved tool's output for a call that is in the
+// previous assistant message. The next request must still carry the tool call,
+// its result and the answer; otherwise the server sees an approved call with no
+// result and runs the tool again.
+func TestAgentTUIRunnerChatTransportKeepsResumedToolResultInHistory(t *testing.T) {
+	transport := &fakeChatTransport{
+		responses: [][]ai.UIMessageChunk{
+			{
+				{"type": "start", "messageId": "m1"},
+				{"type": "tool-input-start", "toolCallId": "call-1", "toolName": "shell"},
+				{"type": "tool-input-available", "toolCallId": "call-1", "toolName": "shell", "input": map[string]interface{}{"command": "date"}},
+				{"type": "tool-approval-request", "toolCallId": "call-1", "approvalId": "approval-1"},
+				{"type": "finish"},
+			},
+			{
+				{"type": "start", "messageId": "m1"},
+				{"type": "tool-output-available", "toolCallId": "call-1", "output": "Tue"},
+				{"type": "text-start", "id": "t2"},
+				{"type": "text-delta", "id": "t2", "delta": "it is Tuesday"},
+				{"type": "text-end", "id": "t2"},
+				{"type": "finish"},
+			},
+			{
+				{"type": "text-start", "id": "t3"},
+				{"type": "text-delta", "id": "t3", "delta": "ok"},
+				{"type": "text-end", "id": "t3"},
+				{"type": "finish"},
+			},
+		},
+	}
+	out := &recordingWriter{}
+	useSync := false
+	frame := NewTerminalFrameBuffer(out, TerminalFrameBufferOptions{UseSynchronizedUpdates: &useSync})
+	renderer := NewTerminalRenderer(TerminalRendererOptions{Input: strings.NewReader("run\ryagain\r"), Output: out, FrameBuffer: frame, Columns: 60, Rows: 20})
+	runner := NewAgentTUIRunner(AgentTUIRunnerOptions{Transport: transport, ChatID: "chat-1", Renderer: renderer})
+	if err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run error: %v", err)
+	}
+	calls := transport.requests()
+	if len(calls) != 3 {
+		t.Fatalf("SendMessages calls = %d, want 3", len(calls))
+	}
+	var sawCall, sawResult, sawAnswer bool
+	for _, message := range calls[2].Messages {
+		for _, part := range message.Content {
+			switch p := part.(type) {
+			case types.ToolCallContent:
+				sawCall = sawCall || p.ToolCallID == "call-1"
+			case types.ToolResultContent:
+				sawResult = sawResult || p.ToolCallID == "call-1"
+			case types.TextContent:
+				sawAnswer = sawAnswer || p.Text == "it is Tuesday"
+			}
+		}
+	}
+	if !sawCall || !sawResult || !sawAnswer {
+		t.Fatalf("third request history: call=%v result=%v answer=%v: %#v", sawCall, sawResult, sawAnswer, calls[2].Messages)
+	}
+}

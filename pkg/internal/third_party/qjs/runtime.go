@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"runtime/debug"
 	"sync"
 
 	"github.com/tetratelabs/wazero"
@@ -379,8 +378,10 @@ func (r *Runtime) call(name string, args ...uint64) uint64 {
 
 	results, err := fn.Call(r.context, args...)
 	if err != nil {
-		stack := debug.Stack()
-		panic(fmt.Errorf("failed to call %s: %w\nstack: %s", name, err, stack))
+		// The Go stack is deliberately not included: this error can reach
+		// sandboxed scripts and, through them, a model, and must not leak
+		// host source paths.
+		panic(fmt.Errorf("failed to call %s: %w", name, err))
 	}
 
 	if len(results) == 0 {

@@ -3,6 +3,7 @@ package tui
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
@@ -75,18 +76,17 @@ func wrapVisibleLine(line string, width int) []string {
 	remaining := line
 	for visibleLength(remaining) > width {
 		breakAt := findVisibleBreakPoint(remaining, width)
-		lines = append(lines, strings.TrimRight(remaining[:breakAt], " "))
-		remaining = strings.TrimLeft(remaining[breakAt:], " ")
+		lines = append(lines, jsTrimEnd(remaining[:breakAt]))
+		remaining = jsTrimStart(remaining[breakAt:])
 	}
 	lines = append(lines, remaining)
 	return lines
 }
 
 func nextRune(input string) (rune, int) {
-	for _, r := range input {
-		return r, len(string(r))
-	}
-	return 0, 0
+	// DecodeRuneInString reports the real width of an invalid byte (1), where
+	// len(string(utf8.RuneError)) would claim 3 and skip following text.
+	return utf8.DecodeRuneInString(input)
 }
 
 func codePointWidth(r rune) int {
@@ -164,3 +164,18 @@ func findVisibleBreakPoint(input string, width int) int {
 	}
 	return len(sliceVisible(input, width))
 }
+
+// isJSSpace reports whether r is JavaScript WhiteSpace or LineTerminator, the
+// set String.prototype.trim removes. It differs from unicode.IsSpace on U+0085
+// (JS keeps it) and U+FEFF (JS trims it).
+func isJSSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200a
+}
+
+func jsTrim(s string) string      { return jsTrimEnd(jsTrimStart(s)) }
+func jsTrimStart(s string) string { return strings.TrimLeftFunc(s, isJSSpace) }
+func jsTrimEnd(s string) string   { return strings.TrimRightFunc(s, isJSSpace) }
