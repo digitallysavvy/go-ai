@@ -6,9 +6,12 @@ import (
 	"errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 )
 
@@ -182,5 +185,118 @@ func TestTSReplay_BasicSandboxSession(t *testing.T) {
 	}
 	if _, ok := b["sandboxId"]; ok {
 		t.Fatalf("basic session must not record a sandboxId: %v", b)
+	}
+}
+
+func startSession(t *testing.T, srv *bridgetest.Server) harness.Session {
+	t.Helper()
+	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	return sess
+}
+
+// TS: 'rejects standard ACP v1 manual compaction without sending a command'.
+func TestTSReplay_CompactionUnsupported(t *testing.T) {
+	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) { t.Error("no frame expected") })
+	sess := startSession(t, srv)
+	for i := 0; i < 2; i++ {
+		err := sess.DoCompact(context.Background(), "")
+		var cu *harness.CapabilityUnsupportedError
+		if !errors.As(err, &cu) || !strings.Contains(err.Error(), "ACP v1 does not define manual session compaction") {
+			t.Fatalf("err = %v", err)
+		}
+	}
+}
+
+// TS: 'keeps stop and destroy idempotent without stopping the framework sandbox'.
+func TestTSReplay_StopAndDestroyIdempotent(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[string]int{}
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { turn.Emit(finishFrame()) },
+		OnFrame: func(ft string) { mu.Lock(); counts[ft]++; mu.Unlock() }})
+	t.Cleanup(srv.Close)
+	for _, cmd := range []string{"stop", "destroy"} {
+		sess := startSession(t, srv)
+		c, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("p"), Emit: func(harness.StreamPart) {}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		<-c.Done()
+		if cmd == "stop" {
+			first, err := sess.DoStop(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			second, err := sess.DoStop(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, _ := json.Marshal(first)
+			b, _ := json.Marshal(second)
+			if string(a) != string(b) {
+				t.Fatalf("second stop differs:\n%s\n%s", a, b)
+			}
+		}
+		_ = sess.DoDestroy(context.Background())
+		_ = sess.DoDestroy(context.Background())
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if counts["stop"] != 1 || counts["destroy"] != 1 {
+		t.Fatalf("frames = %v, want exactly one stop and one destroy", counts)
+	}
+}
+
+// TS: 'rejects a cancelled turn when the bridge connection fails': partial
+// blocks are closed and the turn rejects with the abort reason.
+func TestTSReplay_CancelledTurnRejectsWhenConnectionFails(t *testing.T) {
+	started := make(chan *bridgetest.Turn, 1)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn }})
+	t.Cleanup(srv.Close)
+	h, _ := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.Reconnect = bridge.ReconnectOptions{MaxElapsed: 300 * time.Millisecond, InitialDelay: 20 * time.Millisecond, MaxDelay: 50 * time.Millisecond}
+	}))
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	ctx, cancel := context.WithCancelCause(context.Background())
+	abortErr := errors.New("cancel before disconnect")
+	var mu sync.Mutex
+	var types []string
+	c, err := sess.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("p"), Emit: func(p harness.StreamPart) {
+		mu.Lock()
+		types = append(types, string(p.PartType()))
+		mu.Unlock()
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := <-started
+	cancel(abortErr)
+	turn.Emit(map[string]any{"type": "reasoning-start", "id": "partial"})
+	time.Sleep(50 * time.Millisecond)
+	srv.Close() // stop accepting, so every reconnect attempt fails
+	srv.DropActive()
+	select {
+	case <-c.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn did not settle after the connection failed")
+	}
+	if !errors.Is(c.Err(), abortErr) {
+		t.Fatalf("Err = %v, want the abort reason", c.Err())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(types) != 2 || types[0] != "reasoning-start" || types[1] != "reasoning-end" {
+		t.Fatalf("parts = %v, want [reasoning-start reasoning-end]", types)
 	}
 }
