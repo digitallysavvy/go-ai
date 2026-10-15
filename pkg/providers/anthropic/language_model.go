@@ -294,6 +294,12 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	}
 	toolNameMap := anthropicProviderToolNameMap(tools)
 
+	// byBlock collects the text and reasoning parts each response block
+	// produced, so result.Content follows the order the model emitted them.
+	// A thinking block must stay ahead of the text that follows it, or the
+	// API rejects the replayed assistant turn on the next request.
+	byBlock := make([][]types.ContentPart, len(response.Content))
+
 	// Extract text and reasoning content from content blocks.
 	// When jsonTool mode is active the model responds via a synthetic tool, not
 	// a text block — skip text blocks entirely in that case, matching the TS SDK.
@@ -303,6 +309,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// (TS: `content.push({type: 'text', text: part.content, providerMetadata})`).
 	// An empty or null compaction content is omitted entirely (TS: `if
 	// (!part.content) break;`).
+	textInContent := false
 	if !usesJsonResponseTool {
 		var textParts []string
 		var textBlocks []types.ContentPart
@@ -315,7 +322,8 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		// A citation can only resolve against a web-fetched document that
 		// appears earlier in the content array, same as TS.
 		citationDocs := append([]citationDocument(nil), co.citationDocuments...)
-		for _, content := range response.Content {
+		for blockIdx, content := range response.Content {
+			prevBlocks := len(textBlocks)
 			switch content.Type {
 			case "text":
 				textParts = append(textParts, content.Text)
@@ -363,6 +371,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 					ProviderMetadata: anthropicCompactionMetadata(content.Signature),
 				})
 			}
+			byBlock[blockIdx] = append(byBlock[blockIdx], textBlocks[prevBlocks:]...)
 		}
 		if len(textParts) > 0 {
 			result.Text = strings.Join(textParts, "")
@@ -372,24 +381,25 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		// no-citations case, result.Text alone carries the content
 		// (generateResultContentParts synthesizes the content part from it),
 		// matching existing behavior.
-		if hasExtraContent {
-			result.Content = append(result.Content, textBlocks...)
-		}
+		textInContent = hasExtraContent
 	}
 
 	// Extract reasoning/thinking content blocks from the response.
 	// These are surfaced as ReasoningContent parts in result.Content so callers
 	// can include them in subsequent requests (round-tripping thinking blocks).
-	for _, content := range response.Content {
+	hasReasoning := false
+	for blockIdx, content := range response.Content {
 		switch content.Type {
 		case "thinking":
-			result.Content = append(result.Content, types.ReasoningContent{
+			hasReasoning = true
+			byBlock[blockIdx] = append(byBlock[blockIdx], types.ReasoningContent{
 				Text:      content.Thinking,
 				Signature: content.Signature,
 			})
 		case "redacted_thinking":
 			// Redacted blocks have no visible text — only the opaque data blob.
-			result.Content = append(result.Content, types.ReasoningContent{
+			hasReasoning = true
+			byBlock[blockIdx] = append(byBlock[blockIdx], types.ReasoningContent{
 				RedactedData: content.Data,
 			})
 		case "container_upload":
@@ -404,7 +414,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			metadata, _ := json.Marshal(map[string]interface{}{
 				"anthropic": map[string]interface{}{"fileId": content.FileID},
 			})
-			result.Content = append(result.Content, types.CustomContent{
+			byBlock[blockIdx] = append(byBlock[blockIdx], types.CustomContent{
 				Kind:             "anthropic.container_upload",
 				ProviderMetadata: metadata,
 			})
@@ -422,11 +432,24 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 					"to":   content.To,
 				},
 			})
-			result.Content = append(result.Content, types.CustomContent{
+			byBlock[blockIdx] = append(byBlock[blockIdx], types.CustomContent{
 				Kind:             "anthropic.fallback",
 				ProviderMetadata: metadata,
 			})
 		}
+	}
+
+	// Surface the parts in response order. Plain text stays on result.Text
+	// alone unless citations, compaction or reasoning accompany it, in which
+	// case the text parts join result.Content in place so they are not
+	// hoisted ahead of the thinking blocks that precede them.
+	includeText := textInContent || hasReasoning
+	for i, parts := range byBlock {
+		isText := response.Content[i].Type == "text" || response.Content[i].Type == "compaction"
+		if isText && !includeText {
+			continue
+		}
+		result.Content = append(result.Content, parts...)
 	}
 
 	// Track whether the response was actually delivered via the json tool so we
