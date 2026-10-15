@@ -164,9 +164,7 @@ func TestTSReplay_MultipleStreamConsumption(t *testing.T) {
 		t.Fatal(err)
 	}
 	var full []string
-	for _, p := range collectTSParts(t, res.Stream()) {
-		full = append(full, p)
-	}
+	full = append(full, collectTSParts(t, res.Stream())...)
 	want := []string{"start", "start-step", "text-start:1", "text-delta:1:Hello", "text-delta:1:, ", "text-delta:1:world!", "text-end:1", "finish-step:stop", "finish:stop"}
 	if !reflect.DeepEqual(full, want) {
 		t.Fatalf("full stream\n got %q\nwant %q", full, want)
@@ -216,12 +214,6 @@ func TestTSReplay_ProviderExecutedToolApprovalRequest(t *testing.T) {
 	}
 	var request *types.ToolApprovalRequestContent
 	var order []string
-	for {
-		c, err := res.NewStream().Next()
-		_ = c
-		_ = err
-		break
-	}
 	s := res.NewStream()
 	for {
 		c, err := s.Next()
