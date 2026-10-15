@@ -96,17 +96,7 @@ func convertUserMessage(msg types.Message, validator *CacheControlValidator) map
 		return nil
 	}
 
-	// Single text part without cache control: use the compact string form
-	if len(msg.Content) == 1 && validator == nil {
-		if tc, ok := msg.Content[0].(types.TextContent); ok {
-			return map[string]interface{}{
-				"role":    "user",
-				"content": tc.Text,
-			}
-		}
-	}
-
-	// Multi-part or cache control needed: use content array
+	// TS always sends user content as a part array.
 	parts := make([]map[string]interface{}, 0, len(msg.Content))
 	for i, part := range msg.Content {
 		var p map[string]interface{}
@@ -125,6 +115,35 @@ func convertUserMessage(msg types.Message, validator *CacheControlValidator) map
 			} else if len(cp.Image) > 0 {
 				url = fmt.Sprintf("data:%s;base64,%s",
 					cp.MimeType, base64.StdEncoding.EncodeToString(cp.Image))
+			}
+			p = map[string]interface{}{
+				"type":      "image_url",
+				"image_url": map[string]interface{}{"url": url},
+			}
+		case types.FileContent:
+			// TS: image file parts become image_url; other files are
+			// rejected there, and skipped here (no error path).
+			fd := cp.FileData
+			mediaType := firstNonEmptyString(cp.MediaType, cp.MimeType, fd.MediaType)
+			if !strings.HasPrefix(mediaType, "image/") && mediaType != "image" {
+				continue
+			}
+			url := cp.URL
+			data := cp.Data
+			if fd.Type == types.FileDataTypeURL {
+				url = fd.URL
+			} else if fd.Type == types.FileDataTypeData && len(fd.Data) > 0 {
+				data = fd.Data
+			}
+			if url == "" && len(data) > 0 {
+				mt := mediaType
+				if mt == "image" || mt == "image/*" {
+					mt = "image/jpeg"
+				}
+				url = fmt.Sprintf("data:%s;base64,%s", mt, base64.StdEncoding.EncodeToString(data))
+			}
+			if url == "" {
+				continue
 			}
 			p = map[string]interface{}{
 				"type":      "image_url",
@@ -323,6 +342,15 @@ func extractToolResultText(tr types.ToolResultContent) string {
 	}
 	if tr.Error != "" {
 		return tr.Error
+	}
+	return ""
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
 	}
 	return ""
 }

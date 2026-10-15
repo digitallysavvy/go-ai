@@ -143,10 +143,12 @@ const ctx = vm.createContext({ JSON, Date, Math, Buffer, Uint8Array, TextEncoder
     if ('{[('.includes(src[j])) end = balanced(src, j); else end = src.indexOf('\n', j);
     let e2 = end;
     while (e2 < src.length && src[e2] !== ';' && src[e2] !== '\n') e2++;
-    try { vm.runInContext(`var ${m[1]} = (${src.slice(k, e2)})`, ctx); } catch (e) { /* skip */ }
+    try { vm.runInContext(`var ${m[1]} = (${stripTS(src.slice(k, e2))})`, ctx); } catch (e) { /* skip */ }
   }
 }
-function evalExpr(s) { return vm.runInContext('(' + s + ')', ctx); }
+// strip TS-only syntax so the literal evaluates as JS
+function stripTS(s) { return s.replace(/\s+satisfies\s+[\w.]+(<[^>]*>)?/g, '').replace(/\s+as\s+const\b/g, ''); }
+function evalExpr(s) { return vm.runInContext('(' + stripTS(s) + ')', ctx); }
 
 const re = /\n(\s*)(it|test)(?:\.each\([^)]*\))?\(\s*(['"`])((?:\\.|(?!\3).)*)\3/g;
 const starts = [];
@@ -225,7 +227,7 @@ for (let i = 0; i < starts.length; i++) {
     const e = balanced(body, st);
     const inner = body.slice(st + 1, e - 1).trim();
     callArgs = inner.replace(/\s+/g, ' ');
-    try { callObj = JSON.parse(JSON.stringify(vm.runInContext('(' + inner + ')', ctx), (k, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : v)); } catch (err) { callObj = null; }
+    try { callObj = JSON.parse(JSON.stringify(vm.runInContext('(' + stripTS(inner) + ')', ctx), (k, v) => v instanceof Uint8Array ? { __bytes: Buffer.from(v).toString('base64') } : v)); } catch (err) { callObj = null; }
   }
 
   const exps = [];
