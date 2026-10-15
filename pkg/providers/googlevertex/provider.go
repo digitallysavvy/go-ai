@@ -190,14 +190,15 @@ func New(cfg Config) (*Provider, error) {
 		if baseURL == "" {
 			baseURL = "https://aiplatform.googleapis.com/v1/publishers/google"
 		}
-		headers["x-goog-api-key"] = cfg.APIKey
 	} else {
-		// Validate project/location for standard Vertex endpoints.
-		if cfg.Project == "" {
-			return nil, fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
-		}
-		if cfg.Location == "" {
-			return nil, fmt.Errorf("Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+		// Project and location are only needed to derive the base URL (TS
+		// loadBaseURL returns an explicit baseURL before loading either), so
+		// they are required here only without a BaseURL. Models that address
+		// the project directly (transcription) check them when created.
+		if baseURL == "" {
+			if err := requireProjectLocation(cfg); err != nil {
+				return nil, err
+			}
 		}
 		// With no AuthToken, AccessToken or TokenSource, authentication falls
 		// back to Application Default Credentials, resolved lazily on the
@@ -269,7 +270,18 @@ func New(cfg Config) (*Provider, error) {
 		}
 	}
 
-	mergedHeaders := version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("google-vertex"))
+	mergedHeaders := http.MergeHeaders(headers, cfg.Headers)
+	if cfg.APIKey != "" {
+		// TS express mode fetch sets x-goog-api-key last, so the key wins over
+		// any header of the same name.
+		for k := range mergedHeaders {
+			if strings.EqualFold(k, "x-goog-api-key") {
+				delete(mergedHeaders, k)
+			}
+		}
+		mergedHeaders["x-goog-api-key"] = cfg.APIKey
+	}
+	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent("google-vertex"))
 	client := http.NewClient(http.Config{
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
@@ -309,6 +321,18 @@ func New(cfg Config) (*Provider, error) {
 		endpointClient: endpointClient,
 		cloudTTSClient: cloudTTSClient,
 	}, nil
+}
+
+// requireProjectLocation ports TS loadSetting for the project and location:
+// both must be set.
+func requireProjectLocation(cfg Config) error {
+	if cfg.Project == "" {
+		return fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+	}
+	if cfg.Location == "" {
+		return fmt.Errorf("Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+	}
+	return nil
 }
 
 func vertexHost(location string) string {
@@ -528,6 +552,16 @@ func (p *Provider) Speech(modelID string) (provider.SpeechModel, error) {
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	if p.config.APIKey != "" {
 		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	// TS loads the project and location settings when it creates either model.
+	if err := requireProjectLocation(p.config); err != nil {
+		return nil, err
+	}
+	if !providerutils.IsValidHostnamePart(p.config.Location) {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "location",
+			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
+		}
 	}
 	if strings.HasPrefix(modelID, "gemini") {
 		return NewGeminiTranscriptionModel(p, modelID), nil

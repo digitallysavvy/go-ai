@@ -12,6 +12,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 func TestVertexProvider_CreateAliasesAndClient(t *testing.T) {
@@ -213,9 +214,9 @@ func TestVertexTranscriptionRejectsRegionThatWouldRewriteHost(t *testing.T) {
 	}
 }
 
-// TestVertexTranscriptionRejectsInvalidLocationFallback ports the
-// location-fallback half of the same fix: an invalid provider-level
-// Location is also rejected when no per-call region overrides it.
+// TestVertexTranscriptionRejectsInvalidLocationFallback ports TS
+// google-vertex-location-validation.test.ts: provider.transcription() validates
+// the location for the separate transcription host, even with a custom baseURL.
 func TestVertexTranscriptionRejectsInvalidLocationFallback(t *testing.T) {
 	p, err := New(Config{
 		Project:     "test-project",
@@ -226,17 +227,68 @@ func TestVertexTranscriptionRejectsInvalidLocationFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	model, err := p.TranscriptionModel("chirp_2")
+	for _, id := range []string{"chirp_2", "gemini-3.5-transcribe-live"} {
+		_, err = p.TranscriptionModel(id)
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) || invalid.Field != "location" {
+			t.Fatalf("TranscriptionModel(%s) error = %v, want InvalidArgumentError for location", id, err)
+		}
+	}
+}
+
+// TS: a custom baseURL needs neither project nor location (loadBaseURL returns
+// it before loading either); transcription models still need both.
+func TestVertexCustomBaseURLNeedsNoProjectOrLocation(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
+	p, err := New(Config{BaseURL: "https://proxy.example/v1", AccessToken: "token"})
 	if err != nil {
-		t.Fatalf("TranscriptionModel: %v", err)
+		t.Fatalf("New: %v", err)
 	}
-	_, err = model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{AudioBase64: "AQIDBAUGBwg="})
-	var invalid *providererrors.InvalidArgumentError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("DoTranscribe error = %v, want InvalidArgumentError", err)
+	if _, err := p.LanguageModel("gemini-2.5-flash"); err != nil {
+		t.Fatalf("LanguageModel: %v", err)
 	}
-	if invalid.Field != "location" {
-		t.Fatalf("Field = %q, want location", invalid.Field)
+	if _, err := p.TranscriptionModel("chirp_2"); err == nil || !strings.Contains(err.Error(), "project setting is missing") {
+		t.Fatalf("TranscriptionModel error = %v", err)
+	}
+	if _, err := New(Config{AccessToken: "token"}); err == nil || !strings.Contains(err.Error(), "project setting is missing") {
+		t.Fatalf("New without baseURL error = %v", err)
+	}
+}
+
+// TS: the generated bearer token comes first and the caller's headers are
+// spread after it, so a caller-supplied Authorization header wins; in express
+// mode the API key is set last and wins over a same-named header.
+func TestVertexCallerAuthorizationHeaderWinsAndAPIKeyWins(t *testing.T) {
+	var got http.Header
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		got = r.Header.Clone()
+		return jsonResponse(200, `{"candidates":[{"content":{"parts":[{"text":"x"}]},"finishReason":"STOP"}]}`), nil
+	})
+	call := func(cfg Config) http.Header {
+		cfg.HTTPClient = &http.Client{Transport: rt}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := p.LanguageModel("gemini-2.5-flash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+		return got
+	}
+	h := call(Config{Project: "p", Location: "us-central1", AccessToken: "generated", Headers: map[string]string{"Authorization": "Bearer mine"}})
+	if h.Get("Authorization") != "Bearer mine" {
+		t.Fatalf("Authorization = %q", h.Get("Authorization"))
+	}
+	h = call(Config{Project: "p", Location: "us-central1", AccessToken: "generated"})
+	if h.Get("Authorization") != "Bearer generated" {
+		t.Fatalf("Authorization = %q", h.Get("Authorization"))
+	}
+	h = call(Config{APIKey: "key", Headers: map[string]string{"X-Goog-Api-Key": "other"}})
+	if h.Get("X-Goog-Api-Key") != "key" {
+		t.Fatalf("x-goog-api-key = %q", h.Get("X-Goog-Api-Key"))
 	}
 }
 
