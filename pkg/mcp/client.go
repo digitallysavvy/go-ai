@@ -588,29 +588,29 @@ func (c *MCPClient) prepareToolDefinitions(result *ListToolsResult, resetHeaderB
 // toolCallHeaders computes the x-mcp-header-derived request headers for a
 // `tools/call` invocation, matching TS getToolRequestHeaders (mcp-client.ts,
 // hash 0c60a40). Returns nil outside the modern era, for any other method,
-// or when the tool has no header bindings.
-func (c *MCPClient) toolCallHeaders(method string, params interface{}) map[string]string {
+// or when the tool has no header bindings. It returns an error when an
+// argument does not match its binding's declared type.
+func (c *MCPClient) toolCallHeaders(method string, params interface{}) (map[string]string, error) {
 	if c.protocolEra != "modern" || method != "tools/call" {
-		return nil
+		return nil, nil
 	}
 	callParams, ok := params.(CallToolParams)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	c.toolHeaderBindingsMu.Lock()
 	bindings := c.toolHeaderBindings[callParams.Name]
 	c.toolHeaderBindingsMu.Unlock()
 	if len(bindings) == 0 {
-		return nil
+		return nil, nil
 	}
 	headers, err := CreateMCPToolHeaders(bindings, callParams.Arguments)
 	if err != nil {
-		if c.config.OnError != nil {
-			c.config.OnError(NewMCPClientError(0, fmt.Sprintf("Failed to create MCP headers for tool %q", callParams.Name), err))
-		}
-		return nil
+		// TS getToolRequestHeaders throws inside request(), so the call is
+		// rejected rather than sent without its routing headers.
+		return nil, &MCPClientError{Message: fmt.Sprintf("Failed to create MCP headers for tool %q", callParams.Name), Cause: err}
 	}
-	return headers
+	return headers, nil
 }
 
 // ListAllTools fetches every page of tools from the MCP server, following
@@ -715,7 +715,8 @@ func (c *MCPClient) callToolWithRetry(ctx context.Context, execute func() (*Call
 	if err != nil {
 		var retryErr *providererrors.RetryError
 		if errors.As(err, &retryErr) {
-			return nil, NewMCPClientError(0, retryErr.Message, nil)
+			// TS createRetryError: MCPClientError with the last error as cause.
+			return nil, &MCPClientError{Message: retryErr.Message, Cause: retryErr.LastError}
 		}
 		return nil, err
 	}
@@ -942,6 +943,10 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 	if err != nil {
 		return err
 	}
+	headers, err := c.toolCallHeaders(method, params)
+	if err != nil {
+		return err
+	}
 
 	// Create response channel
 	responseCh := make(chan *MCPMessage, 1)
@@ -959,7 +964,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 	// Send request, attaching x-mcp-header-derived headers for a modern-era
 	// tools/call when the transport supports per-request headers (hash
 	// 0c60a40).
-	if err := c.sendMessage(ctx, msg, c.toolCallHeaders(method, params)); err != nil {
+	if err := c.sendMessage(ctx, msg, headers); err != nil {
 		return NewTransportError("failed to send request", err)
 	}
 

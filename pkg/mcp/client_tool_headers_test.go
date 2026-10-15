@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"sync"
 	"testing"
@@ -250,5 +251,43 @@ func TestToolsFromDefinitionsRegistersHeaderBindings(t *testing.T) {
 	defer transport.mu.Unlock()
 	if transport.lastCallHeaders["Mcp-Param-Region"] == "" {
 		t.Fatalf("headers = %v, want Mcp-Param-Region", transport.lastCallHeaders)
+	}
+}
+
+// TestMCPClientToolCallRejectsArgumentThatBreaksHeaderBinding mirrors TS
+// getToolRequestHeaders throwing inside request(): the call fails with
+// `Failed to create MCP headers for tool "x"` and is never sent.
+func TestMCPClientToolCallRejectsArgumentThatBreaksHeaderBinding(t *testing.T) {
+	tool := MCPTool{
+		Name: "search",
+		InputSchema: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"limit": map[string]interface{}{"type": "integer", "x-mcp-header": "Limit"},
+			},
+		},
+	}
+	transport := newHeaderCapableTransport([]MCPTool{tool})
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect error: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+	if _, err := client.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools error: %v", err)
+	}
+
+	_, err := client.CallTool(context.Background(), "search", map[string]interface{}{"limit": "ten"})
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || mcpErr.Message != `Failed to create MCP headers for tool "search"` {
+		t.Fatalf("err = %v, want MCPClientError Failed to create MCP headers", err)
+	}
+	if mcpErr.Cause == nil {
+		t.Fatal("expected the type mismatch as the cause")
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if transport.sendWithHeadersCalled {
+		t.Fatal("the tools/call request must not be sent")
 	}
 }

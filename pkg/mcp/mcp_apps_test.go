@@ -246,3 +246,62 @@ func TestDetectMCPAppResourceDrift(t *testing.T) {
 		t.Fatal("expected no drift between identical fingerprints")
 	}
 }
+
+// TS parseVisibility keeps an array even when filtering empties it, so a tool
+// whose visibility lists no known audience is hidden from both the model and
+// the app; a non-array visibility is ignored and the tool stays model-visible.
+func TestSplitMCPAppToolsEmptyVisibilityHidesTool(t *testing.T) {
+	mk := func(name string, visibility interface{}) MCPTool {
+		return MCPTool{Name: name, Meta: map[string]interface{}{"ui": map[string]interface{}{
+			"resourceUri": "ui://x/" + name,
+			"visibility":  visibility,
+		}}}
+	}
+	definitions := ListToolsResult{Tools: []MCPTool{
+		mk("empty", []interface{}{}),
+		mk("unknown", []interface{}{"other"}),
+		mk("notArray", "app"),
+		mk("model", []interface{}{"model"}),
+	}}
+	modelVisible, appVisible, err := SplitMCPAppTools(definitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tool := range modelVisible.Tools {
+		got = append(got, tool.Name)
+	}
+	if !reflect.DeepEqual(got, []string{"notArray", "model"}) {
+		t.Fatalf("model visible = %v", got)
+	}
+	if len(appVisible.Tools) != 0 {
+		t.Fatalf("app visible = %v", appVisible.Tools)
+	}
+	meta, err := GetMCPAppToolMeta(mk("unknown", []interface{}{"other"}))
+	if err != nil || meta == nil || meta.Visibility == nil || len(meta.Visibility) != 0 {
+		t.Fatalf("meta = %#v err=%v", meta, err)
+	}
+	encoded, _ := json.Marshal(meta)
+	if string(encoded) != `{"resourceUri":"ui://x/unknown","visibility":[]}` {
+		t.Fatalf("encoded = %s", encoded)
+	}
+}
+
+// TS `uiMeta?.resourceUri ?? tool._meta?.['ui/resourceUri']`: a null
+// ui.resourceUri falls back to the legacy key, and with no legacy key the tool
+// simply has no app resource.
+func TestGetMCPAppToolMetaNullResourceURIFallsBack(t *testing.T) {
+	uri, err := GetMCPAppResourceURI(MCPTool{Meta: map[string]interface{}{
+		"ui":                           map[string]interface{}{"resourceUri": nil},
+		MCPAppLegacyResourceURIMetaKey: "ui://legacy/app",
+	}})
+	if err != nil || uri != "ui://legacy/app" {
+		t.Fatalf("uri = %q err=%v", uri, err)
+	}
+	uri, err = GetMCPAppResourceURI(MCPTool{Meta: map[string]interface{}{
+		"ui": map[string]interface{}{"resourceUri": nil},
+	}})
+	if err != nil || uri != "" {
+		t.Fatalf("uri = %q err=%v, want no resource and no error", uri, err)
+	}
+}

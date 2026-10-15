@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -1194,5 +1195,26 @@ func TestMCPClientElicitationRequestUnsupportedMethodRespondsMethodNotFound(t *t
 	response := awaitResponseTo(t, transport, "unsupported-1")
 	if response.Error == nil || response.Error.Code != ErrorCodeMethodNotFound {
 		t.Fatalf("response.Error = %#v, want code %d", response.Error, ErrorCodeMethodNotFound)
+	}
+}
+
+// TestCallToolRetryExhaustionKeepsLastErrorAsCause mirrors TS
+// createRetryError: the MCPClientError that reports exhausted retries carries
+// the last attempt's error as its cause.
+func TestCallToolRetryExhaustionKeepsLastErrorAsCause(t *testing.T) {
+	transport := newRetryableCallTransport(2, fmt.Errorf("dial tcp 127.0.0.1:1234: connect: %w", syscall.ECONNREFUSED))
+	client := NewMCPClient(transport, MCPClientConfig{MaxRetries: 1})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	_, err := client.CallTool(context.Background(), "retry-tool", nil)
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || !strings.Contains(mcpErr.Message, "Failed after 2 attempts") {
+		t.Fatalf("err = %v, want MCPClientError Failed after 2 attempts", err)
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Fatalf("err = %v, want the last attempt's error as cause", err)
 	}
 }
