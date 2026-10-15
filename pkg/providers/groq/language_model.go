@@ -353,14 +353,17 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 		TotalTokens:  &totalTokens,
 	}
 
-	// Parse detailed token information if available
-	var cachedTokens int64
-	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil {
-		cachedTokens = int64(*usage.PromptTokensDetails.CachedTokens)
-	}
-	var textTokens *int64
-	var imageTokens *int64
+	// TS convertGroqUsage: cacheRead and reasoning stay undefined when the
+	// wire omits them (a reported 0 stays 0), noCache subtracts only a
+	// reported cache count, and text is the full completion count unless
+	// reasoning tokens were reported.
+	var cacheRead *int64
+	var textTokens, imageTokens *int64
 	if usage.PromptTokensDetails != nil {
+		if usage.PromptTokensDetails.CachedTokens != nil {
+			v := int64(*usage.PromptTokensDetails.CachedTokens)
+			cacheRead = &v
+		}
 		if usage.PromptTokensDetails.TextTokens != nil {
 			textVal := int64(*usage.PromptTokensDetails.TextTokens)
 			textTokens = &textVal
@@ -370,46 +373,33 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 			imageTokens = &imageVal
 		}
 	}
-	var reasoningTokens int64
+	noCacheTokens := promptTokens
+	if cacheRead != nil {
+		noCacheTokens = promptTokens - *cacheRead
+	}
+	result.InputDetails = &types.InputTokenDetails{
+		NoCacheTokens:    &noCacheTokens,
+		CacheReadTokens:  cacheRead,
+		CacheWriteTokens: nil,
+		TextTokens:       textTokens,
+		ImageTokens:      imageTokens,
+	}
+
+	var reasoning *int64
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
-		reasoningTokens = int64(*usage.CompletionTokensDetails.ReasoningTokens)
+		v := int64(*usage.CompletionTokensDetails.ReasoningTokens)
+		reasoning = &v
 	}
-
-	// Set input details (always set, even if just with basic values)
-	if cachedTokens > 0 || textTokens != nil || imageTokens != nil {
-		noCacheTokens := promptTokens - cachedTokens
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:    &noCacheTokens,
-			CacheReadTokens:  &cachedTokens,
-			CacheWriteTokens: nil,
-			TextTokens:       textTokens,
-			ImageTokens:      imageTokens,
-		}
-	} else {
-		result.InputDetails = &types.InputTokenDetails{
-			NoCacheTokens:    &promptTokens,
-			CacheReadTokens:  nil,
-			CacheWriteTokens: nil,
-		}
-	}
-
-	// Set output details. 2214258: clamp to zero -- some providers report
-	// reasoning tokens that exceed the completion token count (TS
-	// convertGroqUsage: Math.max(0, completionTokens - reasoningTokens)).
-	if reasoningTokens > 0 {
-		textOutputTokens := completionTokens - reasoningTokens
+	textOutputTokens := completionTokens
+	if reasoning != nil {
+		textOutputTokens = completionTokens - *reasoning
 		if textOutputTokens < 0 {
 			textOutputTokens = 0
 		}
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &textOutputTokens,
-			ReasoningTokens: &reasoningTokens,
-		}
-	} else {
-		result.OutputDetails = &types.OutputTokenDetails{
-			TextTokens:      &completionTokens,
-			ReasoningTokens: nil,
-		}
+	}
+	result.OutputDetails = &types.OutputTokenDetails{
+		TextTokens:      &textOutputTokens,
+		ReasoningTokens: reasoning,
 	}
 
 	// Store raw usage
