@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -96,4 +97,45 @@ func TestWorkflowGenerateResponseMessagesIncludeResumedApprovalResults(t *testin
 	if last := res.ResponseMessages[len(res.ResponseMessages)-1]; last.Role != types.RoleAssistant {
 		t.Fatalf("last response message role = %s, want assistant", last.Role)
 	}
+}
+
+// TS onAbort receives the steps completed before the abort.
+func TestWorkflowGenerateOnAbortReceivesCompletedSteps(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := &ctxAwareModel{} // step 1: tool call t1; later steps fail once ctx is done
+	var got []types.StepResult
+	called := 0
+	a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: []types.Tool{{
+		Name: "t1",
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			cancel() // abort after the first step's tool ran
+			return "ok", nil
+		},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = a.GenerateWithOptions(ctx, WorkflowGenerateOptions{
+		Prompt: "hi",
+		OnAbort: func(_ context.Context, steps []types.StepResult) {
+			called++
+			got = steps
+		},
+	})
+	if err == nil {
+		t.Fatal("expected an abort error")
+	}
+	if called != 1 || len(got) != 1 || len(got[0].ToolCalls) != 1 {
+		t.Fatalf("OnAbort called=%d steps=%+v, want the one completed step", called, got)
+	}
+}
+
+type ctxAwareModel struct{ wfMockModel }
+
+func (m *ctxAwareModel) DoGenerate(ctx context.Context, o *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return m.wfMockModel.DoGenerate(ctx, o)
 }

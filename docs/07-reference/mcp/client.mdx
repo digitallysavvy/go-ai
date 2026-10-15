@@ -129,6 +129,7 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `Env` | `[]string` | Env are additional environment variables to set, in "KEY=VALUE" form (the os.Environ()/exec.Cmd.Env convention). The child process does not inherit the full parent environment: only Env plus a small safe allowlist of inherited vars (PATH, HOME, etc. — see getEnvironment) are passed through, mirroring TS mcp-stdio/get-environment.ts. |
 | `WorkingDir` | `string` | WorkingDir is the working directory for the command |
 | `Config` | `TransportConfig` | Config is the base transport configuration |
+| `Stderr` | `io.Writer` | Stderr receives the child's stderr (TS StdioConfig.stderr). Nil inherits the parent's stderr (os.Stderr), TS's default 'inherit'. Use io.Discard to drop it. When Config.EnableLogging is set and Stderr is nil, stderr lines are logged as "MCP stderr: ..." instead. |
 | `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics such as a stdout line that is not a valid JSON-RPC message (TS onerror). Such lines are skipped instead of ending the connection. |
 
 {/* /gen:fields */}
@@ -177,7 +178,7 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 
 Set `AuthProvider` (an [`mcp.OAuthClientProvider`](./oauth.mdx)) on `HTTPTransportConfig` or `SSETransportConfig` to let the transport run the OAuth flow itself. Every request carries the provider's access token as a bearer token. On a 401 response the transport calls [`mcp.Auth`](./oauth.mdx) once, shared by all concurrent requests, and retries the request. If `Auth` returns `REDIRECT`, the provider's `RedirectToAuthorization` has been called and the request fails with `*mcp.UnauthorizedError`; finish the flow by calling `Auth` with the authorization code. `AuthHTTPClient` sets the HTTP client used for the discovery, registration and token requests.
 
-Event-stream bodies are not subject to `TimeoutMS`: the timeout bounds a POST until its response headers arrive (and the whole exchange for non-streamed responses), but a standing SSE stream or a streamed POST response stays open. The stdio transport keeps its child process alive after the context given to `Connect` is cancelled, always drains the child's stderr, and skips stdout lines that are not JSON-RPC (reporting them through `StdioTransportConfig.OnError`).
+Event-stream bodies are not subject to `TimeoutMS`: the timeout bounds a POST until its response headers arrive (and the whole exchange for non-streamed responses), but a standing SSE stream or a streamed POST response stays open. The stdio transport keeps its child process alive after the context given to `Connect` is cancelled, inherits the parent's stderr (or writes it to `StdioTransportConfig.Stderr`, for example `io.Discard`), and skips stdout lines that are not JSON-RPC (reporting them through `StdioTransportConfig.OnError`).
 
 ### OAuthConfig
 

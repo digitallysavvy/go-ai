@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -40,6 +41,7 @@ type StdioTransport struct {
 	writeMu   sync.Mutex
 
 	onError func(error)
+	stderrW io.Writer
 
 	// Configuration
 	config TransportConfig
@@ -65,6 +67,12 @@ type StdioTransportConfig struct {
 
 	// Config is the base transport configuration
 	Config TransportConfig
+
+	// Stderr receives the child's stderr (TS StdioConfig.stderr). Nil
+	// inherits the parent's stderr (os.Stderr), TS's default 'inherit'. Use
+	// io.Discard to drop it. When Config.EnableLogging is set and Stderr is
+	// nil, stderr lines are logged as "MCP stderr: ..." instead.
+	Stderr io.Writer `json:"-"`
 
 	// OnError, when set, receives non-fatal diagnostics such as a stdout line
 	// that is not a valid JSON-RPC message (TS onerror). Such lines are
@@ -104,6 +112,7 @@ func NewStdioTransport(config StdioTransportConfig) *StdioTransport {
 		workingDir: config.WorkingDir,
 		config:     config.Config,
 		onError:    config.OnError,
+		stderrW:    config.Stderr,
 	}
 }
 
@@ -147,9 +156,19 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 		return NewTransportError("failed to create stdout pipe", err)
 	}
 
-	t.stderr, err = t.cmd.StderrPipe()
-	if err != nil {
-		return NewTransportError("failed to create stderr pipe", err)
+	// stderr: an explicit writer or the inherited os.Stderr is wired straight
+	// to the process (exec drains it); only logging mode needs a pipe.
+	t.stderr = nil
+	logStderr := t.stderrW == nil && t.config.EnableLogging
+	if logStderr {
+		t.stderr, err = t.cmd.StderrPipe()
+		if err != nil {
+			return NewTransportError("failed to create stderr pipe", err)
+		}
+	} else if t.stderrW != nil {
+		t.cmd.Stderr = t.stderrW
+	} else {
+		t.cmd.Stderr = os.Stderr
 	}
 
 	// Start the command
@@ -165,12 +184,8 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 
 	t.writer = bufio.NewWriter(t.stdin)
 
-	// Always drain stderr: a child that writes more than the OS pipe buffer
-	// to an unread stderr blocks and hangs the server.
-	if t.config.EnableLogging {
+	if logStderr {
 		go t.logStderr()
-	} else {
-		go func(stderr io.Reader) { _, _ = io.Copy(io.Discard, stderr) }(t.stderr)
 	}
 
 	t.connected = true

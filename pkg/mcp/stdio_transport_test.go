@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -166,12 +167,27 @@ func TestStdioTransportChildOutlivesConnectContext(t *testing.T) {
 	}
 }
 
-// Without logging, stderr is still drained so a chatty child cannot block.
-func TestStdioTransportDrainsStderrWithoutLogging(t *testing.T) {
+type countingWriter struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.n += len(p)
+	return len(p), nil
+}
+
+// StdioTransportConfig.Stderr (TS StdioConfig.stderr) receives the child's
+// stderr, and a chatty child never blocks on it.
+func TestStdioTransportStderrWriter(t *testing.T) {
+	w := &countingWriter{}
 	transport := NewStdioTransport(StdioTransportConfig{
 		Command: "sh",
 		// ~1 MiB on stderr (far more than the pipe buffer), then a message.
-		Args: []string{"-c", `head -c 1048576 /dev/zero >&2; printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		Args:   []string{"-c", `head -c 1048576 /dev/zero >&2; printf '{"jsonrpc":"2.0","id":1,"result":{}}\n'`},
+		Stderr: w,
 	})
 	if err := transport.Connect(context.Background()); err != nil {
 		t.Fatalf("Connect() error = %v", err)
@@ -181,6 +197,25 @@ func TestStdioTransportDrainsStderrWithoutLogging(t *testing.T) {
 	defer cancel()
 	if _, err := transport.Receive(ctx); err != nil {
 		t.Fatalf("Receive() error = %v (child blocked on stderr?)", err)
+	}
+	_ = transport.Close()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.n != 1048576 {
+		t.Fatalf("stderr writer received %d bytes, want 1048576", w.n)
+	}
+}
+
+// With no Stderr option the child's stderr is inherited from the parent
+// process (TS default 'inherit').
+func TestStdioTransportInheritsStderrByDefault(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{Command: "true"})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = transport.Close() }()
+	if transport.cmd.Stderr != os.Stderr {
+		t.Fatalf("cmd.Stderr = %v, want os.Stderr", transport.cmd.Stderr)
 	}
 }
 

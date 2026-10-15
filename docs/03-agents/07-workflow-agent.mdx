@@ -84,7 +84,7 @@ Both `WorkflowGenerateOptions` and `WorkflowStreamOptions` accept `ToolChoice`, 
 `PrepareStep`, which override the agent's values for that call (a per-call `PrepareStep` runs after the
 agent's). `ToolSet` entries reach the model sorted by name, so the tool list is stable between runs.
 
-`OnError` and `OnAbort` fire for failures that happen while a stream is being consumed (provider error chunks,
+`OnAbort` receives the steps completed before the abort (generate and stream). `OnError` and `OnAbort` fire for failures that happen while a stream is being consumed (provider error chunks,
 cancellation), not only before it starts.
 
 ### Continuing the conversation

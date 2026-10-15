@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
@@ -1406,6 +1407,20 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 		return nil, ctx.Err()
 	}
+	// Collect completed steps so OnAbort can report them (the agent loop
+	// returns no partial result on error).
+	var stepsMu sync.Mutex
+	var completedSteps []types.StepResult
+	prevStepEnd := resolveStepEnd(opts.OnStepEnd, opts.OnStepFinish)
+	opts.OnStepFinish = nil
+	opts.OnStepEnd = func(c context.Context, e ai.OnStepFinishEvent) {
+		stepsMu.Lock()
+		completedSteps = append(completedSteps, stepResultFromFinishEvent(e))
+		stepsMu.Unlock()
+		if prevStepEnd != nil {
+			prevStepEnd(c, e)
+		}
+	}
 	a := w.makeAgent(WorkflowStreamOptions{}, opts)
 	system := opts.System
 	if opts.Instructions != nil {
@@ -1417,9 +1432,12 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil {
-			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
+			stepsMu.Lock()
+			steps := append([]types.StepResult(nil), completedSteps...)
+			stepsMu.Unlock()
+			telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Steps: steps})
 			if onAbort != nil {
-				onAbort(ctx, nil)
+				onAbort(ctx, steps)
 			}
 		} else {
 			telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
@@ -1448,6 +1466,30 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		responseMessages = append(responseMessages, step.Response.Messages...)
 	}
 	return &WorkflowResult{AgentResult: result, ResponseMessages: responseMessages}, nil
+}
+
+// stepResultFromFinishEvent converts a step-end event to the StepResult handed
+// to OnAbort.
+func stepResultFromFinishEvent(e ai.OnStepFinishEvent) types.StepResult {
+	return types.StepResult{
+		CallID:             e.CallID,
+		StepNumber:         e.StepNumber,
+		Model:              e.Model,
+		Text:               e.Text,
+		Reasoning:          e.Reasoning,
+		ReasoningText:      e.ReasoningText,
+		Files:              e.Files,
+		ToolCalls:          e.ToolCalls,
+		StaticToolCalls:    e.StaticToolCalls,
+		DynamicToolCalls:   e.DynamicToolCalls,
+		ToolResults:        e.ToolResults,
+		StaticToolResults:  e.StaticToolResults,
+		DynamicToolResults: e.DynamicToolResults,
+		FinishReason:       e.FinishReason,
+		RawFinishReason:    e.RawFinishReason,
+		Usage:              e.Usage,
+		Warnings:           e.Warnings,
+	}
 }
 
 // workflowModelInfo returns the model's provider and model id, or two empty
