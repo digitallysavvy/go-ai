@@ -164,6 +164,9 @@ func toolInputValidator(tool *types.Tool) schema.Validator {
 		}
 		return schema.NewSimpleJSONSchema(s).Validator()
 	default:
+		if m, ok := schema.ParametersMap(tool.Parameters); ok {
+			return schema.NewSimpleJSONSchema(m).Validator()
+		}
 		return nil
 	}
 }

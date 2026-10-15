@@ -42,3 +42,27 @@ func TestNewProviderErrorKeepsCustomMessageAndRetryable(t *testing.T) {
 		t.Fatal("400 must not be retryable")
 	}
 }
+
+// TS createJsonErrorResponseHandler: an empty or non-JSON error body gives the
+// response status text as the message; the body stays on ResponseBody.
+func TestNewProviderErrorNonJSONBodyUsesStatusText(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   string
+	}{
+		{502, "<html>bad gateway</html>", "Bad Gateway"},
+		{500, "", "Internal Server Error"},
+		{429, "plain text", "Too Many Requests"},
+		{400, `{"unrelated":true}`, "Bad Request"},
+	} {
+		cause := &internalhttp.HTTPStatusError{StatusCode: tc.status, Body: []byte(tc.body)}
+		e := providererrors.NewProviderError("p", 0, "", cause.Error(), cause)
+		if e.Message != tc.want {
+			t.Errorf("status %d: message = %q, want %q", tc.status, e.Message, tc.want)
+		}
+		if e.ResponseBody != tc.body {
+			t.Errorf("status %d: ResponseBody = %q, want %q", tc.status, e.ResponseBody, tc.body)
+		}
+	}
+}

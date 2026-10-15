@@ -482,6 +482,11 @@ type StreamTextResult struct {
 
 	// Accumulated text (built as chunks arrive)
 	text string
+	// finalText is the final step's own text (TS StreamTextResult.text); text
+	// above concatenates every step's text. hasFinalText is false until a
+	// multi-step call has recorded its last step.
+	finalText    string
+	hasFinalText bool
 
 	// Finish reason (set when stream completes)
 	finishReason types.FinishReason
@@ -661,11 +666,10 @@ type StreamTextResult struct {
 	// result.
 	chunkBufReader *chunkBufferReader
 
-	// uiChunkBuf/uiChunkBufReader hold the unfiltered chunk sequence of an
+	// uiChunkBuf holds the unfiltered chunk sequence of an
 	// external stream result (stream-start included), which
 	// ToUIMessageStream uses as its step boundary. Nil for StreamText results.
-	uiChunkBuf       *chunkBuffer
-	uiChunkBufReader *chunkBufferReader
+	uiChunkBuf *chunkBuffer
 
 	processingDone chan struct{}
 
@@ -1534,6 +1538,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		rec = &transformRecorder{}
 	}
 	transformStopped := false
+	var outputTracker partialOutputTracker
+	var sinkPartialErr error
 	var preliminaryMu sync.Mutex
 	stopTransformStream := StreamTransformStopper(func() { transformStopped = true })
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
@@ -1547,6 +1553,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			for _, c := range chunks {
 				if rec != nil {
 					rec.record(c)
+					if r.outputSpec != nil && sinkPartialErr == nil {
+						partial, publish, perr := outputTracker.observe(ctx, r.outputSpec, c)
+						if perr != nil {
+							sinkPartialErr = perr
+						} else if publish {
+							r.mu.Lock()
+							r.partialOutput = partial
+							r.mu.Unlock()
+						}
+					}
 				}
 				if onChunk != nil {
 					onChunk(c)
@@ -1665,9 +1681,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// hasPublishedPartial replaces relying on stepLastPartialJSON=="" as
 		// a "nothing published yet" sentinel, which incorrectly suppressed a
 		// genuine first empty-string partial (audit row 84f5d1b / WG4).
-		hasPublishedPartial := false
-		stepLastPartialJSON := ""
+		var stepPartialTracker partialOutputTracker
 		var stepToolCalls []types.ToolCall
+		// eagerApprovals: approvals resolved on each tool-call chunk (TS
+		// resolves them in the stream, right after the call part).
+		eagerApprovals := make(map[string]preResolvedApproval)
+		var pendingApprovalChunks []provider.StreamChunk
 		var stepContent []types.ContentPart
 		var stepBlocks blockContent
 		var stepReasoningBuilder strings.Builder
@@ -1712,6 +1731,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	stepAttempt:
 		for {
+			if sinkPartialErr != nil {
+				r.err = sinkPartialErr
+				chunkDeadlineCancel()
+				break
+			}
 			chunk, err := r.nextChunk(chunkDeadlineCtx)
 			if err == io.EOF {
 				break
@@ -1878,27 +1902,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// this step's text only (audit row 2a5ed55 / WG4): in a multi-step
 				// tool-loop call, only the final step's text is ever a candidate
 				// structured-output response.
-				if r.outputSpec != nil {
-					currentText := strings.Join(stepTextParts, "")
-					partial, hasPartial, partialErr := r.outputSpec.parsePartialOutput(ctx, ParsePartialOutputOptions{
-						Text: currentText,
-					})
+				// With transforms the partial follows the transformed stream
+				// (see the sink in forwardThroughTransformChain).
+				if r.outputSpec != nil && rec == nil {
+					partial, publish, partialErr := stepPartialTracker.observe(ctx, r.outputSpec, *chunk)
 					if partialErr != nil {
 						r.err = partialErr
 						break
 					}
-					// A nil partial is a legitimate JSON null value, not "no
-					// partial yet": hasPartial distinguishes the two so a
-					// null value still publishes (audit row 84f5d1b / WG4).
-					if hasPartial {
-						newJSONStr, ok := partialOutputDedupKey(partial)
-						if ok && (!hasPublishedPartial || newJSONStr != stepLastPartialJSON) {
-							hasPublishedPartial = true
-							stepLastPartialJSON = newJSONStr
-							r.mu.Lock()
-							r.partialOutput = partial
-							r.mu.Unlock()
-						}
+					if publish {
+						r.mu.Lock()
+						r.partialOutput = partial
+						r.mu.Unlock()
 					}
 				}
 			}
@@ -1963,6 +1978,35 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				chunk.ToolCall = &refined
 				stepToolCalls = append(stepToolCalls, refined)
 				stepContent = append(stepContent, toolCallContentOf(refined))
+				if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret); handled {
+					eagerApprovals[refined.ID] = pre
+					stepContent = append(stepContent, approvalParts...)
+					pendingApprovalChunks = approvalChunks
+				}
+			}
+
+			// A provider-emitted approval request (an MCP server asking for
+			// approval of its provider-executed call) carries the call it
+			// belongs to and is part of the step's content (TS
+			// stream-language-model-call tool-approval-request). One without a
+			// matching call is an error part.
+			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil && chunk.ToolApprovalRequest.ToolCall.ID == "" {
+				request := *chunk.ToolApprovalRequest
+				var matched *types.ToolCall
+				for i := range stepToolCalls {
+					if stepToolCalls[i].ID == request.ToolCallID {
+						matched = &stepToolCalls[i]
+						break
+					}
+				}
+				if matched == nil {
+					notFound := &ToolCallNotFoundForApprovalError{ToolCallID: request.ToolCallID, ApprovalID: request.ApprovalID}
+					chunk = &provider.StreamChunk{Type: provider.ChunkTypeError, Err: notFound, Text: notFound.Error()}
+				} else {
+					request.ToolCall = *matched
+					chunk.ToolApprovalRequest = &request
+					stepContent = append(stepContent, request)
+				}
 			}
 
 			// Track provider-inline tool results for the deferred hasResult check.
@@ -2231,9 +2275,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					toolInputCallbacks = newStreamToolInputCallbacks(stepTools, currentMessages, r.cbToolsCtx)
 					preRefinementCalls = nil
 					stepTextParts = nil
-					hasPublishedPartial = false
-					stepLastPartialJSON = ""
+					stepPartialTracker.reset()
+					outputTracker.reset()
 					stepToolCalls = nil
+					eagerApprovals = make(map[string]preResolvedApproval)
+					pendingApprovalChunks = nil
 					stepContent = nil
 					stepBlocks.reset()
 					stepReasoningBuilder.Reset()
@@ -2274,6 +2320,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Forward chunk(s) to consumer before any tool Execute fires.
 			if forwardChunk {
 				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
+			}
+			if len(pendingApprovalChunks) > 0 {
+				approvalChunks := pendingApprovalChunks
+				pendingApprovalChunks = nil
+				forwardThroughTransformChain(0, approvalChunks)
 			}
 
 			// Notify tool input lifecycle callbacks (OnInputStart/OnInputDelta/
@@ -2404,6 +2455,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				experimentalSandbox: opts.ExperimentalSandbox,
 				toolExecutionMs:     toolExecutionMs,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
+				preApprovals:        eagerApprovals,
 				onPreliminary: func(result types.ToolResult) {
 					// Tools may run concurrently; the transform chain is not
 					// concurrency-safe.
@@ -2462,6 +2514,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			switch tr.ApprovalStatus {
 			case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+				// The request/response/output-denied chunks were already
+				// emitted in stream position (right after the tool-call
+				// chunk); only results remain.
+				if pre, inline := eagerApprovals[tr.ToolCallID]; inline && pre.err == nil && pre.id != "" {
+					if tr.ApprovalStatus != types.ToolApprovalStatusApproved {
+						continue
+					}
+					if tr.ProviderExecuted && tr.Result == nil && tr.Error == nil {
+						continue
+					}
+					break
+				}
 				request := toolApprovalRequestFromToolResult(*tr)
 				if input, ok := stepInputSchemaInputs[tr.ToolCallID]; ok {
 					request.InputSchemaInput = input
@@ -2489,12 +2553,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					continue
 				}
 			}
+			// A provider-executed call whose result has not arrived is only a
+			// pending marker: TS emits no tool-result part for it (the real
+			// result arrives in the stream, now or in a later step).
+			if isPendingProviderResult(*tr) {
+				continue
+			}
 			emitChunk(provider.StreamChunk{
 				Type:       provider.ChunkTypeToolResult,
 				ToolResult: tr,
 			})
 		}
-		stepContent = append(stepContent, attachInputSchemaInputs(toolResultsToContentParts(stepToolResults, opts.ExperimentalToolApprovalSecret), stepInputSchemaInputs)...)
+		stepContent = append(stepContent, attachInputSchemaInputs(withoutInlineApprovalParts(toolResultsToContentParts(stepToolResults, opts.ExperimentalToolApprovalSecret), eagerApprovals), stepInputSchemaInputs)...)
 
 		// Deferred provider tool tracking, mirroring the TS SDK pendingDeferredToolCalls map.
 		// Add tool calls whose results haven't arrived yet.
@@ -3157,6 +3227,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// 'finish' part enqueued only on the non-continuation branch of the
 	// step-decision check (stream-text.ts:3129-3136), carrying the call's
 	// finishReason/rawFinishReason and totalUsage.
+	if r.err == nil && sinkPartialErr != nil {
+		r.err = sinkPartialErr
+	}
+	if len(allSteps) > 0 {
+		r.finalText = allSteps[len(allSteps)-1].Text
+		r.hasFinalText = true
+	}
 	if r.err == nil {
 		totalUsage := r.usage
 		callFinishChunk := provider.StreamChunk{
@@ -3272,7 +3349,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Usage:            streamTelUsage,
 		ModelProvider:    r.cbModelProvider,
 		ModelID:          r.cbModelID,
-		Text:             r.text,
+		Text:             r.finalStepText(),
 		Reasoning:        streamReasoningText,
 		ToolCalls:        streamToolCalls,
 		Files:            streamFiles,
@@ -3357,7 +3434,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		Model:              lastStep.Model,
 		ModelProvider:      lastStep.Model.Provider,
 		ModelID:            lastStep.Model.ModelID,
-		Text:               r.text,
+		Text:               r.finalStepText(),
 		Reasoning:          lastStep.Reasoning,
 		ReasoningText:      lastStep.ReasoningText,
 		ToolCalls:          lastStep.ToolCalls,
@@ -3505,6 +3582,19 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 	return r.chunkBufReader
 }
 
+// NewStream returns a new, independent cursor over the full chunk stream,
+// replaying every chunk from the start (blocking for chunks not produced yet).
+// It is the Go form of reading TS `result.stream` more than once: every
+// access there is its own tee, so the text, UI-message and full streams of one
+// result can each be consumed completely, in any order. Unlike Stream, which
+// hands out one shared cursor, each call here starts over.
+func (r *StreamTextResult) NewStream() provider.TextStream {
+	if r.chunkBuf == nil {
+		return r.stream
+	}
+	return r.chunkBuf.reader()
+}
+
 // FullStream returns the underlying text stream.
 //
 // Deprecated: use Stream.
@@ -3555,7 +3645,7 @@ func (r *StreamTextResult) ConsumeStream() error {
 //
 // Deprecated: use CreateTextStreamResponseFromStream with Stream.
 func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextStreamResponseInit) (*http.Response, error) {
-	return CreateTextStreamResponseFromStream(ctx, r.Stream(), init)
+	return CreateTextStreamResponseFromStream(ctx, r.NewStream(), init)
 }
 
 // ToUIMessageStream converts the stream result into UI message chunks.
@@ -3566,17 +3656,13 @@ func (r *StreamTextResult) ToUIMessageStream(ctx context.Context, opts ...UIMess
 }
 
 // uiStream is the stream the UI converters read: the unfiltered sequence for
-// external results, the public stream otherwise.
+// external results, the public stream otherwise. Each call is an independent
+// cursor (TS: every stream access is its own tee).
 func (r *StreamTextResult) uiStream() provider.TextStream {
 	if r.uiChunkBuf == nil {
-		return r.Stream()
+		return r.NewStream()
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.uiChunkBufReader == nil {
-		r.uiChunkBufReader = r.uiChunkBuf.reader()
-	}
-	return r.uiChunkBufReader
+	return r.uiChunkBuf.reader()
 }
 
 // ToUIMessageStreamResponse creates an SSE response from the stream result.
@@ -3591,7 +3677,7 @@ func (r *StreamTextResult) ToUIMessageStreamResponse(ctx context.Context, init *
 //
 // Deprecated: use PipeTextStreamToWriter with Stream.
 func (r *StreamTextResult) PipeTextStreamToResponse(ctx context.Context, w io.Writer) error {
-	return PipeTextStreamToWriter(ctx, r.Stream(), w)
+	return PipeTextStreamToWriter(ctx, r.NewStream(), w)
 }
 
 // PipeUIMessageStreamToResponse writes UI message chunk output to the writer.
@@ -3610,6 +3696,10 @@ func (r *StreamTextResult) Text() string {
 	// processingDone channel close — establishes a happens-before edge for
 	// every field processStream wrote, matching the pattern used by Usage().
 	_ = r.ensureConsumed()
+	if r.hasFinalText {
+		// TS StreamTextResult.text: the final step's text, not every step's.
+		return r.finalText
+	}
 	return r.text
 }
 
@@ -4703,4 +4793,13 @@ func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
 	}()
 
 	return ch
+}
+
+// finalStepText is the text TS reports for a finished call (the final step's
+// text); r.text when no step was recorded.
+func (r *StreamTextResult) finalStepText() string {
+	if r.hasFinalText {
+		return r.finalText
+	}
+	return r.text
 }

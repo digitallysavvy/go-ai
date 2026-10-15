@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	jsonschema "github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // AgentVersion is the agent-interface specification version HarnessAgent
@@ -657,7 +658,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// excluded too — mirrors TS `_toToolSpecs(toolFiltering.activeUserTools)`.
 	toolSpecs := make([]ToolSpec, 0, len(activeTools))
 	for name, t := range activeTools {
-		schema, _ := t.Parameters.(map[string]any)
+		schema, _ := jsonschema.ParametersMap(t.Parameters)
 		toolSpecs = append(toolSpecs, ToolSpec{Name: name, Description: t.Description, InputSchema: schema})
 	}
 

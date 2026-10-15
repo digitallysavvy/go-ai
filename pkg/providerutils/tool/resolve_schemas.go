@@ -16,8 +16,14 @@ import (
 func ResolveToolSchemas(tools []types.Tool) []types.Tool {
 	var out []types.Tool
 	for i := range tools {
-		resolved, ok := resolveParameters(tools[i].Parameters)
-		if !ok {
+		var resolved interface{}
+		if ordered, ok := schema.OrderedParameters(tools[i].Parameters); ok {
+			// A jsonorder.Hinted schema (MCP tools) becomes an
+			// *schema.OrderedSchema, which every converter sends in key order.
+			resolved = ordered
+		} else if m, ok := resolveParameters(tools[i].Parameters); ok {
+			resolved = m
+		} else {
 			continue
 		}
 		if out == nil {

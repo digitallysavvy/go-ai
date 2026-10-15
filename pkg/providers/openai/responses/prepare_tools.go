@@ -383,9 +383,13 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 	}
 
 	if t.Parameters != nil {
-		if params, ok := t.Parameters.(map[string]interface{}); ok {
+		parameters := t.Parameters
+		if ordered, ok := jsonschema.OrderedParameters(parameters); ok {
+			parameters = ordered
+		}
+		if params, ok := parameters.(map[string]interface{}); ok {
 			def.Parameters = params
-		} else if raw, ok := providerutils.RawJSONObject(t.Parameters); ok {
+		} else if raw, ok := providerutils.RawJSONObject(parameters); ok {
 			def.Parameters = providerutils.DecodeRawJSONObject(raw)
 		}
 	}

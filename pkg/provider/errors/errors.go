@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
 
@@ -184,6 +185,11 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 	if message == "" || message == cause.Error() || message == hs.Error() {
 		if msg := ExtractAPIErrorMessage(body); msg != "" {
 			e.Message = msg
+		} else if text := http.StatusText(code); text != "" {
+			// TS createJsonErrorResponseHandler: an empty or unparseable
+			// body falls back to the response status text. The body stays
+			// available on ResponseBody.
+			e.Message = text
 		}
 	}
 	return e
