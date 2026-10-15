@@ -1398,6 +1398,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
+				RawArguments:     item.Arguments,
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async, item.Caller),
 			}
 			toolCalls = append(toolCalls, tc)

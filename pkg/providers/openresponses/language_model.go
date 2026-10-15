@@ -916,6 +916,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        args,
+				RawArguments:     item.Arguments,
 				ProviderMetadata: openResponsesToolCallMetadata(m.providerName(), item.ID, item.Namespace),
 			})
 

@@ -589,9 +589,10 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			var args map[string]interface{}
 			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
 			toolCalls = append(toolCalls, types.ToolCall{
-				ID:        item.CallID,
-				ToolName:  item.Name,
-				Arguments: args,
+				ID:           item.CallID,
+				ToolName:     item.Name,
+				Arguments:    args,
+				RawArguments: item.Arguments,
 			})
 			hasFunctionCall = true
 
