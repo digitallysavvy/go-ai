@@ -284,3 +284,18 @@ func TestHostEnvAllowlist(t *testing.T) {
 		t.Fatalf("allowlist, got %q", got)
 	}
 }
+
+// A signal-killed command reports the TS reference sandbox's exit code (129),
+// not Go's -1.
+func TestSignalKilledCommandExitCode(t *testing.T) {
+	ctx := context.Background()
+	s, err := newTestProvider(t).CreateSession(ctx, harness.CreateSandboxSessionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Destroy(ctx) //nolint:errcheck
+	res, err := s.Run(ctx, providerutils.SandboxProcessOptions{Command: "kill -9 $$"})
+	if err != nil || res.ExitCode != 129 {
+		t.Fatalf("exit code = %d err=%v, want 129", res.ExitCode, err)
+	}
+}
