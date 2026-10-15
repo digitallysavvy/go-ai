@@ -1059,11 +1059,6 @@ func readCaseFile(path string) ([]byte, error) {
 	return b, err
 }
 
-func stringOf(v interface{}) string {
-	s, _ := v.(string)
-	return s
-}
-
 func lowerHeaders(h map[string]string) map[string]interface{} {
 	out := map[string]interface{}{}
 	for k, v := range h {
