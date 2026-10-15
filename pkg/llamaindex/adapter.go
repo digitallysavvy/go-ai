@@ -154,7 +154,17 @@ func ToUIMessageStream(ctx context.Context, stream <-chan EngineResponse, callba
 // leading Unicode whitespace only, matching `text.trimStart()` in the
 // TypeScript adapter.
 func trimStart(text string) string {
-	return strings.TrimLeftFunc(text, unicode.IsSpace)
+	return strings.TrimLeftFunc(text, isJSWhitespace)
+}
+
+// isJSWhitespace reports whether r is ECMAScript WhiteSpace or LineTerminator
+// (what trimStart strips). It differs from unicode.IsSpace: JS trims U+FEFF
+// but not U+0085.
+func isJSWhitespace(r rune) bool {
+	if r == 0xFEFF {
+		return true
+	}
+	return r != 0x85 && unicode.IsSpace(r)
 }
 
 func sendChunk(ctx context.Context, out chan<- ai.UIMessageChunk, chunk ai.UIMessageChunk) bool {
