@@ -83,6 +83,12 @@ agent, err := workflow.NewWorkflowAgent(workflow.WorkflowAgent{
 Workflow telemetry events carry only the runtime context keys you opt in to with
 `Telemetry.IncludeRuntimeContext`. With no entries, events carry an empty runtime context.
 
+`Generate` and `Stream` open one `ai.workflowAgent.generate` / `ai.workflowAgent.stream` root span, and the
+agent's step, model-call and tool-call spans nest under it. If you open a telemetry root yourself (with
+`telemetry.FireOnStart` and a `CallID`) and then run a `ToolLoopAgent` directly, pass the root's call ID with
+`agent.WithTelemetryCallID(ctx, callID)` so the agent loop reports under that root instead of opening a
+second one.
+
 ## Stream
 
 ```go

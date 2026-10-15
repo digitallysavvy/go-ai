@@ -142,4 +142,6 @@ file := types.FileContent{
 }
 ```
 
-Custom providers built on `prompt.ToOpenAIMessages` can opt in with `prompt.ToOpenAIMessagesOptions{Provider: "myprovider"}` and `prompt.ToOpenAIMessagesWithError`, which also returns the resolution error.
+Custom providers built on `prompt.ToOpenAIMessages` can opt in with `prompt.ToOpenAIMessagesOptions{Provider: "myprovider"}` and `prompt.ToOpenAIMessagesWithError`, which also returns the resolution error. Providers with no file-ID API can call `prompt.RejectProviderReferenceFiles(messages)` before building a request; it returns an `*errors.UnsupportedFunctionalityError` for any file part that holds a provider reference, as the TS converters do.
+
+To map the portable `Reasoning` level to a provider's effort strings, use `providerutils.MapReasoningToProviderEffort(level, effortMap, &warnings)`. A level missing from the map adds an `unsupported` warning and returns `ok == false`. A level mapped to a different string, such as `minimal` to `low`, adds a `compatibility` warning.

@@ -154,7 +154,7 @@ Telemetry integrations receive `OnDecideStart`, `OnDecisionModelCallStart`, `OnD
 | --- | --- |
 | `ai.ExperimentalEvaluate`, `ai.EvaluateOptions`, `ai.EvaluateResult`, `ai.EvaluateUsage`, `ai.EvaluateResponse` | `ai.ExperimentalDecide`, `ai.DecideOptions`, `ai.DecideResult`, `ai.DecideUsage`, `ai.DecideResponse` |
 | `ai.EvaluateOnStartEvent`, `ai.EvaluateOnEndEvent` | `ai.DecideOnStartEvent`, `ai.DecideOnEndEvent` |
-| `ai.NewEvaluationLanguageModel`, `ai.EvaluationLanguageModel` | `ai.NewDecisionLanguageModel`, `ai.DecisionLanguageModel` |
+| `ai.NewEvaluationLanguageModel`, `ai.EvaluationLanguageModel`, `ai.EvaluationLanguageModelOptions` | `ai.NewDecisionLanguageModel`, `ai.DecisionLanguageModel`, `ai.DecisionLanguageModelOptions` |
 | `provider.EvaluationModel` (`DoEvaluate`), `provider.EvaluationModelProvider` | `provider.DecisionModel` (`DoDecide`), `provider.DecisionModelProvider` |
 | `provider.EvaluationQuestion`, `EvaluationAnswer`, `EvaluationResult`, `EvaluationCallOptions`, `EvaluationRounding`, `EvaluationUsage`, `EvaluationResponseInfo` | the matching `provider.Decision...` types |
 | `errors.EvaluationUnsupportedQuestionTypeError` | `errors.DecisionUnsupportedQuestionTypeError` |
