@@ -280,7 +280,8 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 
 	if response.Status == "Request Moderated" {
 		reasons := []string{"Unknown"}
-		if rawReasons, ok := response.Details["Moderation Reasons"].([]interface{}); ok && len(rawReasons) > 0 {
+		// TS: Array.isArray(reasons) ? reasons : ['Unknown'] -- an empty array stays empty.
+		if rawReasons, ok := response.Details["Moderation Reasons"].([]interface{}); ok {
 			reasons = reasons[:0]
 			for _, reason := range rawReasons {
 				reasons = append(reasons, fmt.Sprint(reason))
@@ -289,9 +290,10 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 		return nil, fmt.Errorf("Amazon Bedrock request was moderated: %s", strings.Join(reasons, ", ")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 	if len(response.Images) == 0 {
-		message := "Amazon Bedrock returned no images."
+		// Same text as TS, including the space before an absent status.
+		message := "Amazon Bedrock returned no images. "
 		if response.Status != "" {
-			message += " Status: " + response.Status
+			message += "Status: " + response.Status
 		}
 		return nil, fmt.Errorf("%s", message)
 	}

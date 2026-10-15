@@ -48,6 +48,8 @@ gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT=your-project-id
 ```
 
+When `googlevertex.Config` has no `AccessToken`, `AuthToken`, `TokenSource` or `APIKey`, the provider authenticates with Application Default Credentials (like `createVertex` in the TypeScript SDK): `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login` user credentials, or the metadata server. Credentials are resolved lazily on the first request, so a missing credential surfaces as a request error rather than from `googlevertex.New`.
+
 The Vertex provider reuses auth per provider instance. You can provide an explicit access token or token generator to override default Google credential discovery, which is useful for tests, service-account impersonation, and custom credential brokers.
 
 ## Available Models

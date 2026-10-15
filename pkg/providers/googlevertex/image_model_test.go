@@ -479,14 +479,6 @@ func TestProvider_New_ValidationErrors(t *testing.T) {
 			},
 			expectError: "location is required",
 		},
-		{
-			name: "Missing access token",
-			config: Config{
-				Project:  "my-project",
-				Location: "us-central1",
-			},
-			expectError: "access token is required",
-		},
 	}
 
 	for _, tt := range tests {

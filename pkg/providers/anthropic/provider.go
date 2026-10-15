@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -255,13 +256,13 @@ func (p *Provider) LanguageModelWithOptions(modelID string, options *ModelOption
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
 	// Anthropic doesn't provide embedding models
-	return nil, fmt.Errorf("anthropic does not support embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 	// Anthropic doesn't provide image generation models
-	return nil, fmt.Errorf("anthropic does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID

@@ -471,16 +471,24 @@ func (s *bedrockConverseStream) handleContentBlockStop(value map[string]interfac
 			input = "{}"
 		}
 		var args map[string]interface{}
-		_ = json.Unmarshal([]byte(input), &args)
-		if args == nil {
+		rawInvalid := ""
+		if err := json.Unmarshal([]byte(input), &args); err != nil {
+			// Truncated or malformed input: hand the raw text to the core so
+			// the call is marked invalid (or repaired) instead of running
+			// with silently emptied arguments (TS emits the input string).
+			args = nil
+			rawInvalid = input
+		}
+		if args == nil && rawInvalid == "" {
 			args = map[string]interface{}{}
 		}
 		s.enqueue(&provider.StreamChunk{
 			Type: provider.ChunkTypeToolCall,
 			ToolCall: &types.ToolCall{
-				ID:        block.ToolCallID,
-				ToolName:  block.ToolName,
-				Arguments: args,
+				ID:           block.ToolCallID,
+				ToolName:     block.ToolName,
+				Arguments:    args,
+				RawArguments: rawInvalid,
 			},
 		})
 	}

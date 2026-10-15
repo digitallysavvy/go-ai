@@ -67,25 +67,22 @@ func (s *AWSSigner) SignRequest(req *http.Request, payload []byte) error {
 }
 
 func (s *AWSSigner) buildCanonicalRequest(req *http.Request, payload []byte) string {
-	// Canonical URI. When the caller has set req.URL.Opaque (used by the
-	// Converse endpoints to preserve a literal, already-percent-encoded model
-	// ID/ARN on the wire — see converseURL/jsEncodeURIComponent), AWS SigV4
-	// requires the canonical URI to be that same wire path *encoded a second
-	// time* (RFC 3986 unreserved chars pass through, '/' stays a delimiter,
-	// everything else — including the '%' from the first encoding pass — is
-	// re-escaped). This is the standard SigV4 "double URI-encode" rule used by
-	// every AWS service except S3. Requests that don't set Opaque keep the
-	// prior, single-encoded behavior to avoid changing already-correct
-	// signing for the embeddings/image/rerank endpoints.
-	var canonicalURI string
-	if req.URL.Opaque != "" {
-		canonicalURI = awsDoubleEncodeURIPath(req.URL.Opaque)
-	} else {
-		canonicalURI = req.URL.Path
-		if canonicalURI == "" {
-			canonicalURI = "/"
-		}
+	// Canonical URI. AWS SigV4 (every service except S3) canonicalizes the
+	// path by URI-encoding the path as sent a second time: RFC 3986 unreserved
+	// characters pass through, '/' stays a delimiter, everything else --
+	// including the '%' of an existing escape -- is re-escaped.
+	// The signature must cover the path exactly as it is sent: the Opaque
+	// form when set, otherwise the escaped path (a literal ':' in a model ID
+	// such as amazon.titan-embed-text-v2:0 is sent as-is, and the service
+	// canonicalizes it to %3A; signing the decoded path would be rejected).
+	wirePath := req.URL.Opaque
+	if wirePath == "" {
+		wirePath = req.URL.EscapedPath()
 	}
+	if wirePath == "" {
+		wirePath = "/"
+	}
+	canonicalURI := awsDoubleEncodeURIPath(wirePath)
 
 	// Canonical query string
 	canonicalQueryString := s.buildCanonicalQueryString(req)

@@ -1797,6 +1797,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 			}
 
+			// Reasoning block boundaries: start a fresh part (carrying the
+			// start chunk's metadata, e.g. Anthropic redactedData) and let the
+			// end chunk's metadata (e.g. Bedrock redactedContent) land on it.
+			if chunk.Type == provider.ChunkTypeReasoningStart {
+				stepContent = startNewReasoningPart(stepContent, chunk.ProviderMetadata)
+			}
+			if chunk.Type == provider.ChunkTypeReasoningEnd {
+				stepContent = setTrailingReasoningMetadata(stepContent, chunk.ProviderMetadata)
+			}
+
 			// Accumulate reasoning text from reasoning chunks. A chunk with
 			// empty text but non-nil ProviderMetadata (e.g. Anthropic's
 			// signature_delta) still carries signature metadata that must
@@ -2381,8 +2391,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.mu.Unlock()
 
 		// Build reasoning content from deltas accumulated during this step.
-		var stepReasoning []types.ReasoningContent
-		if stepReasoningBuilder.Len() > 0 {
+		stepReasoning := reasoningPartsOf(stepContent)
+		if len(stepReasoning) == 0 && stepReasoningBuilder.Len() > 0 {
 			stepReasoning = []types.ReasoningContent{{Text: stepReasoningBuilder.String()}}
 		}
 

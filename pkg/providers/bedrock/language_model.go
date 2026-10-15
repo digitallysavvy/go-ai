@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	tool "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
@@ -882,6 +883,12 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 
 	isJSONResponseFromTool := false
 
+	// ordered keeps text, reasoning and tool calls in the order the model
+	// produced them (TS builds a single ordered content array); it is only
+	// surfaced on result.Content when something other than text is present.
+	var ordered []types.ContentPart
+	hasNonText := false
+
 	for _, part := range resp.Output.Message.Content {
 		var textParts []string
 		if part.Text != nil {
@@ -898,25 +905,31 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				text = extractor.process(text)
 			}
 			result.Text += text
+			ordered = append(ordered, types.TextContent{Text: text})
 		}
 
 		if rc := part.ReasoningContent; rc != nil {
+			var reasoning types.ContentPart
 			switch {
 			case rc.ReasoningText != nil:
-				reasoning := types.ReasoningContent{Text: rc.ReasoningText.Text}
+				r := types.ReasoningContent{Text: rc.ReasoningText.Text}
 				if rc.ReasoningText.Signature != "" {
-					reasoning.Signature = rc.ReasoningText.Signature
+					r.Signature = rc.ReasoningText.Signature
 				}
-				result.Content = append(result.Content, reasoning)
+				reasoning = r
 			case rc.RedactedReasoning != nil:
-				result.Content = append(result.Content, types.ReasoningContent{RedactedData: rc.RedactedReasoning.Data})
+				reasoning = types.ReasoningContent{RedactedData: rc.RedactedReasoning.Data}
 			case rc.RedactedContent != "":
-				result.Content = append(result.Content, types.ReasoningContent{
+				reasoning = types.ReasoningContent{
 					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
 						"amazonBedrock": map[string]interface{}{"redactedContent": rc.RedactedContent},
 						"bedrock":       map[string]interface{}{"redactedContent": rc.RedactedContent},
 					}),
-				})
+				}
+			}
+			if reasoning != nil {
+				ordered = append(ordered, reasoning)
+				hasNonText = true
 			}
 		}
 
@@ -924,6 +937,7 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 			if usesJSONResponseTool && part.ToolUse.Name == "json" {
 				isJSONResponseFromTool = true
 				result.Text = string(part.ToolUse.Input)
+				ordered = append(ordered, types.TextContent{Text: result.Text})
 				continue
 			}
 			var args map[string]interface{}
@@ -931,12 +945,27 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 			if args == nil {
 				args = map[string]interface{}{}
 			}
-			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
-				ID:        normalizeToolCallID(part.ToolUse.ToolUseID, isMistral),
-				ToolName:  part.ToolUse.Name,
+			// TS: toolUseId || generateId(), name ?? `tool-${generateId()}`.
+			rawID := part.ToolUse.ToolUseID
+			if rawID == "" {
+				rawID = streaming.GenerateID()
+			}
+			name := part.ToolUse.Name
+			if name == "" {
+				name = "tool-" + streaming.GenerateID()
+			}
+			call := types.ToolCall{
+				ID:        normalizeToolCallID(rawID, isMistral),
+				ToolName:  name,
 				Arguments: args,
-			})
+			}
+			result.ToolCalls = append(result.ToolCalls, call)
+			ordered = append(ordered, types.ToolCallContent{ToolCallID: call.ID, ToolName: call.ToolName, Arguments: args})
+			hasNonText = true
 		}
+	}
+	if hasNonText {
+		result.Content = ordered
 	}
 
 	var stopSequence *string

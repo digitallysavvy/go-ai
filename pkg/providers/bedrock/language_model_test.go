@@ -349,8 +349,12 @@ func TestDoGenerate_ParsesToolCallsReasoningAndUsage(t *testing.T) {
 	if res.ToolCalls[0].Arguments["city"] != "SF" {
 		t.Fatalf("tool call arguments = %#v", res.ToolCalls[0].Arguments)
 	}
-	if len(res.Content) != 1 {
-		t.Fatalf("Content = %#v, want one reasoning part", res.Content)
+	// Content keeps the response order: reasoning, then the tool call.
+	if len(res.Content) != 2 {
+		t.Fatalf("Content = %#v, want reasoning then tool call", res.Content)
+	}
+	if call, ok := res.Content[1].(types.ToolCallContent); !ok || call.ToolCallID != "tool_1" {
+		t.Fatalf("Content[1] = %#v, want the tool call", res.Content[1])
 	}
 	reasoning, ok := res.Content[0].(types.ReasoningContent)
 	if !ok || reasoning.Text != "thinking..." || reasoning.Signature != "sig123" {

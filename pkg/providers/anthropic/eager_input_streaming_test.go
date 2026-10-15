@@ -273,9 +273,10 @@ func TestAnthropicToolInputStartEndWithPrePopulatedInput(t *testing.T) {
 	}
 }
 
-func TestAnthropicServerToolUseNoInputEvents(t *testing.T) {
-	// server_tool_use (provider-executed web_search, etc.) must NOT emit
-	// tool-input-start/delta/end — only tool-call at block stop.
+func TestAnthropicServerToolUseEmitsInputEvents(t *testing.T) {
+	// server_tool_use (provider-executed web_search, etc.) streams its input
+	// like any tool call in TS: tool-input-start (providerExecuted), one
+	// tool-input-delta per input_json_delta, tool-input-end, then tool-call.
 	body := io.NopCloser(strings.NewReader(
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n\n" +
 			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srv_001\",\"name\":\"web_search\"}}\n\n" +
@@ -303,14 +304,15 @@ func TestAnthropicServerToolUseNoInputEvents(t *testing.T) {
 	endChunks := filterChunks(chunks, provider.ChunkTypeToolInputEnd)
 	callChunks := filterChunks(chunks, provider.ChunkTypeToolCall)
 
-	if len(startChunks) != 0 {
-		t.Errorf("server_tool_use must not emit tool-input-start, got %d", len(startChunks))
+	if len(startChunks) != 1 || startChunks[0].ToolCall == nil || !startChunks[0].ToolCall.ProviderExecuted ||
+		startChunks[0].ToolCall.ID != "srv_001" || startChunks[0].ToolCall.ToolName != "web_search" {
+		t.Errorf("server_tool_use must emit one provider-executed tool-input-start, got %#v", startChunks)
 	}
-	if len(deltaChunks) != 0 {
-		t.Errorf("server_tool_use must not emit tool-input-delta, got %d", len(deltaChunks))
+	if len(deltaChunks) != 1 || deltaChunks[0].ID != "srv_001" || deltaChunks[0].Text != `{"query":"test"}` {
+		t.Errorf("server_tool_use must emit tool-input-delta with the raw delta, got %#v", deltaChunks)
 	}
-	if len(endChunks) != 0 {
-		t.Errorf("server_tool_use must not emit tool-input-end, got %d", len(endChunks))
+	if len(endChunks) != 1 {
+		t.Errorf("server_tool_use must emit tool-input-end, got %d", len(endChunks))
 	}
 	// tool-call IS still emitted for server_tool_use
 	if len(callChunks) != 1 {

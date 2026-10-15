@@ -866,3 +866,40 @@ func TestConvertResponse_ServerToolCallAndResult(t *testing.T) {
 		t.Fatalf("text = %q", text)
 	}
 }
+
+// TS puts a part's thoughtSignature in providerMetadata.google.thoughtSignature
+// for reasoning parts as well as text; an empty text part carrying a signature
+// attaches it to the previous content part.
+func TestConvertResponse_ThoughtSignatureInReasoningProviderMetadata(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{Text: "thinking...", Thought: true, ThoughtSignature: "sealed-token"},
+				{Text: "answer"},
+				{Text: "", ThoughtSignature: "trailing-sig"},
+			}},
+			FinishReason: "STOP",
+		}},
+	}
+	result := m.convertResponse(resp, nil)
+	rc, ok := result.Content[0].(types.ReasoningContent)
+	if !ok || rc.Signature != "sealed-token" {
+		t.Fatalf("content[0] = %#v", result.Content[0])
+	}
+	var meta map[string]map[string]string
+	if err := json.Unmarshal(rc.ProviderMetadata, &meta); err != nil || meta["google"]["thoughtSignature"] != "sealed-token" {
+		t.Fatalf("reasoning providerMetadata = %s (%v)", rc.ProviderMetadata, err)
+	}
+	tc, ok := result.Content[1].(types.TextContent)
+	if !ok {
+		t.Fatalf("content[1] = %#v", result.Content[1])
+	}
+	meta = nil
+	if err := json.Unmarshal(tc.ProviderMetadata, &meta); err != nil || meta["google"]["thoughtSignature"] != "trailing-sig" {
+		t.Fatalf("text providerMetadata = %s (%v)", tc.ProviderMetadata, err)
+	}
+}

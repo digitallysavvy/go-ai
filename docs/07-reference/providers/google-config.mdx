@@ -57,6 +57,8 @@ The tables on this page are generated from the Go source. For usage, see the [Go
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `SpeechMetadata` | `*GoogleSpeechMetadata` | SpeechMetadata is turn-level direction for the top-level text (Gemini 3.8 TTS). |
+| `Turns` | `[]GoogleSpeechTurn` | Turns is a structured transcript that replaces the top-level text (Gemini 3.8 TTS). Pass an empty Text when using turns; each multi-speaker turn must name a configured speaker in SpeechMetadata. |
 | `MultiSpeakerVoiceConfig` | `map[string]interface{}` | MultiSpeakerVoiceConfig configures Gemini multi-speaker TTS. When set it takes precedence over the top-level voice. |
 
 {/* /gen:fields */}

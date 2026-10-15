@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -309,12 +310,21 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		RawResponse: response,
 	}
 
-	if len(response.Candidates) == 0 {
-		return result
+	// TS reads candidates?.[0]: a response without candidates (a blocked
+	// prompt, for one) still maps usage, finish reason and metadata.
+	var candidate Candidate
+	if len(response.Candidates) > 0 {
+		candidate = response.Candidates[0]
 	}
-	candidate := response.Candidates[0]
 
 	var textParts []string
+	// addToolCall records a tool call both on result.ToolCalls and, in
+	// position, on result.Content, so the content order matches the order of
+	// the response parts (TS builds one ordered content array).
+	addToolCall := func(tc types.ToolCall) {
+		result.ToolCalls = append(result.ToolCalls, tc)
+		result.Content = append(result.Content, toolCallContentOf(tc))
+	}
 	var lastCodeExecID string
 	var lastServerToolCallID string
 
@@ -337,11 +347,22 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		}
 		// Thought text → ReasoningContent.
 		if part.Thought {
+			var sigMeta json.RawMessage
+			if part.ThoughtSignature != "" {
+				// TS carries the signature in providerMetadata.google
+				// .thoughtSignature; Signature stays for existing callers.
+				sigMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+					"thoughtSignature": part.ThoughtSignature,
+				}))
+			}
 			if part.Text != "" {
 				result.Content = append(result.Content, types.ReasoningContent{
-					Text:      part.Text,
-					Signature: part.ThoughtSignature,
+					Text:             part.Text,
+					Signature:        part.ThoughtSignature,
+					ProviderMetadata: sigMeta,
 				})
+			} else if sigMeta != nil {
+				attachSignatureToLastContent(result.Content, sigMeta)
 			}
 			continue
 		}
@@ -349,7 +370,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
 			toolCallID := fmt.Sprintf("code-exec-%d", len(result.ToolCalls)+1)
 			lastCodeExecID = toolCallID
-			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+			addToolCall(types.ToolCall{
 				ID:               toolCallID,
 				ToolName:         tnm.toCustomToolName("code_execution"),
 				Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
@@ -374,6 +395,14 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		// Regular text → TextContent (ThoughtSignature forwarded via ProviderMetadata).
 		if part.Text != "" && jsonResponseToolName != "" {
 			continue
+		}
+		if part.Text == "" && part.ThoughtSignature != "" && part.FunctionCall == nil {
+			// TS: an empty text part carrying a thoughtSignature attaches it
+			// to the previous content part.
+			meta, _ := json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+				"thoughtSignature": part.ThoughtSignature,
+			}))
+			attachSignatureToLastContent(result.Content, meta)
 		}
 		if part.Text != "" {
 			textParts = append(textParts, part.Text)
@@ -414,11 +443,13 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 					"thoughtSignature": part.ThoughtSignature,
 				})
 			}
+			// TS: functionCall.id || generateId(). The tool name is not an id:
+			// parallel calls to one function would collide on it.
 			toolCallID := part.FunctionCall.ID
 			if toolCallID == "" {
-				toolCallID = part.FunctionCall.Name
+				toolCallID = m.generateID()
 			}
-			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+			addToolCall(types.ToolCall{
 				ID:               toolCallID,
 				ToolName:         part.FunctionCall.Name,
 				Arguments:        args,
@@ -446,7 +477,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 			if part.ThoughtSignature != "" {
 				meta["thoughtSignature"] = part.ThoughtSignature
 			}
-			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
+			addToolCall(types.ToolCall{
 				ID:               toolCallID,
 				ToolName:         "server:" + part.ToolCall.ToolType,
 				Arguments:        args,
@@ -486,7 +517,8 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 	}
 
 	if len(textParts) > 0 {
-		result.Text = textParts[0]
+		// TS text = every text part joined (a candidate may carry several).
+		result.Text = strings.Join(textParts, "")
 	}
 
 	// A confirmed prompt block (promptFeedback.blockReason, excluding the
@@ -591,4 +623,37 @@ func rawOrNull(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage("null")
 	}
 	return raw
+}
+
+// toolCallContentOf is the ordered-content form of a ToolCall.
+func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
+	var meta json.RawMessage
+	if len(tc.ProviderMetadata) > 0 {
+		meta, _ = json.Marshal(tc.ProviderMetadata)
+	}
+	return types.ToolCallContent{
+		ToolCallID:       tc.ID,
+		ToolName:         tc.ToolName,
+		Arguments:        tc.Arguments,
+		ProviderExecuted: tc.ProviderExecuted,
+		ProviderMetadata: meta,
+		Dynamic:          tc.Dynamic,
+		ThoughtSignature: tc.ThoughtSignature,
+	}
+}
+
+// attachSignatureToLastContent sets providerMetadata on the last text or
+// reasoning part (TS: lastContent.providerMetadata = thoughtSignatureMetadata).
+func attachSignatureToLastContent(content []types.ContentPart, meta json.RawMessage) {
+	if len(content) == 0 {
+		return
+	}
+	switch c := content[len(content)-1].(type) {
+	case types.TextContent:
+		c.ProviderMetadata = meta
+		content[len(content)-1] = c
+	case types.ReasoningContent:
+		c.ProviderMetadata = meta
+		content[len(content)-1] = c
+	}
 }

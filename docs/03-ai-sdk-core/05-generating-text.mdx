@@ -132,6 +132,8 @@ fmt.Printf("Raw request: %+v\n", result.RawRequest)
 fmt.Printf("Raw response: %+v\n", result.RawResponse)
 ```
 
+Response header keys use Go canonical casing (for example `Content-Type`, `X-Request-Id`), whereas the TypeScript SDK exposes them lower-cased. Look headers up with `http.Header.Get`, or canonicalize the key before indexing a map.
+
 ### OnFinish Callback
 
 When using `GenerateText`, you can provide an `OnFinish` callback that is triggered after the last step is finished. It contains the text, usage information, finish reason, and more:

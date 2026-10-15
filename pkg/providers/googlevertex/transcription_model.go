@@ -116,7 +116,14 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("google vertex transcription request failed: %d %s", resp.StatusCode, string(respBody))
+		message := providererrors.ExtractAPIErrorMessage(respBody)
+		if message == "" {
+			message = fmt.Sprintf("google vertex transcription request failed: %d %s", resp.StatusCode, string(respBody))
+		}
+		perr := providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", message, nil)
+		perr.ResponseBody = string(respBody)
+		perr.ResponseHeaders = providerutils.ExtractHeaders(resp.Header)
+		return nil, perr
 	}
 
 	var parsed vertexTranscriptionResponse
