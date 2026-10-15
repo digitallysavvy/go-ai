@@ -1594,22 +1594,19 @@ func TestGenerateText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	if !approvalCalled {
 		t.Fatal("expected approval function to be called")
 	}
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	// TS toolResults holds tool-result parts only: an auto-denied call is a
+	// tool-approval-request + tool-approval-response pair in the content.
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %#v", result.ToolResults)
 	}
-	tr := result.ToolResults[0]
-	if tr.ApprovalStatus != types.ToolApprovalStatusDenied {
-		t.Fatalf("expected denied approval status, got %s", tr.ApprovalStatus)
+	var resp *types.ToolApprovalResponseContent
+	for _, part := range result.Content {
+		if r, ok := part.(types.ToolApprovalResponseContent); ok {
+			resp = &r
+		}
 	}
-	if tr.ApprovalReason == nil || *tr.ApprovalReason != denyReason {
-		t.Fatalf("expected denial reason %q, got %#v", denyReason, tr.ApprovalReason)
-	}
-	output, ok := tr.Result.(types.ToolResultOutput)
-	if !ok {
-		t.Fatalf("expected ToolResultOutput, got %T", tr.Result)
-	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != denyReason {
-		t.Fatalf("unexpected denied output: %#v", output)
+	if resp == nil || resp.Approved || resp.Reason != denyReason {
+		t.Fatalf("expected denied approval response with reason %q, got %#v", denyReason, resp)
 	}
 }
 
@@ -1652,18 +1649,22 @@ func TestGenerateText_ToolApprovalUserApprovalPauses(t *testing.T) {
 	if result.FinishReason != types.FinishReasonToolCalls {
 		t.Fatalf("expected tool-calls finish reason, got %s", result.FinishReason)
 	}
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
+	// TS toolResults holds tool-result parts only; the pending call is a
+	// tool-approval-request part in the content.
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %#v", result.ToolResults)
 	}
-	request, ok := result.ToolResults[0].Result.(map[string]interface{})
-	if !ok {
-		t.Fatalf("expected approval request output, got %T", result.ToolResults[0].Result)
+	var request *types.ToolApprovalRequestContent
+	for _, part := range result.Content {
+		if r, ok := part.(types.ToolApprovalRequestContent); ok {
+			request = &r
+		}
 	}
-	if request["type"] != "tool-approval-request" || request["approvalId"] == "" || request["approvalId"] == "call_1" {
-		t.Fatalf("unexpected approval request output: %#v", request)
+	if request == nil {
+		t.Fatalf("expected a tool-approval-request in content, got %#v", result.Content)
 	}
-	if result.ToolResults[0].ApprovalID != request["approvalId"] {
-		t.Fatalf("tool result ApprovalID = %q, want %q", result.ToolResults[0].ApprovalID, request["approvalId"])
+	if request.ApprovalID == "" || request.ApprovalID == "call_1" || request.ToolCallID != "call_1" {
+		t.Fatalf("unexpected approval request: %#v", request)
 	}
 }
 
@@ -1868,8 +1869,8 @@ func TestGenerateText_ProviderExecutedResolvesApproval(t *testing.T) {
 	if approvalCalls != 1 {
 		t.Fatalf("approval calls = %d, want 1", approvalCalls)
 	}
-	if len(result.ToolResults) != 1 || !result.ToolResults[0].ProviderExecuted || result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-		t.Fatalf("expected provider-executed denied result, got %#v", result.ToolResults)
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results (denied calls are approval parts), got %#v", result.ToolResults)
 	}
 	if got, want := len(result.Content), 3; got != want {
 		t.Fatalf("content len = %d, want %d: %#v", got, want, result.Content)

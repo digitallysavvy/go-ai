@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -491,6 +492,10 @@ type StreamTextResult struct {
 	// Error that occurred during streaming
 	err error
 
+	// chunkErr is the error of the stream's terminal error chunk (guarded by
+	// mu). Err() reports it when no other error ended the stream.
+	chunkErr error
+
 	// Output spec resolved from StreamTextOptions.Output.
 	// nil when no Output option was provided.
 	outputSpec outputProcessor
@@ -598,6 +603,9 @@ type StreamTextResult struct {
 	// the stream; they are forwarded but not accumulated into step content.
 	resumeChunksRemaining int
 	cbExperimentalSandbox interface{}
+	// cbCallSandbox is the sandbox given to the call (before any per-step
+	// PrepareStep override).
+	cbCallSandbox interface{}
 	// Snapshot of the initial messages and tools for event population.
 	// cbMessages is step 0's post-announcement messages (used for step 0's
 	// own StepRequest.Messages and as the loop's starting currentMessages).
@@ -942,6 +950,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepToolOrder := opts.ToolOrder
 	stepProviderOptions := opts.ProviderOptions
 	stepSandbox := opts.ExperimentalSandbox
+	// The call-level sandbox: a PrepareStep sandbox applies to its step only.
+	r.cbCallSandbox = opts.ExperimentalSandbox
 	stepInstructionMessages := instructionMessages
 	// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see the
 	// analogous comment in generate.go's GenerateText.
@@ -1153,7 +1163,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		StopSequences:         stepStopSequences,
 		Seed:                  stepSeed,
 		Headers:               opts.Headers,
-		Tools:                 stepTools,
+		Tools:                 toolutil.ResolveToolSchemas(stepTools),
 		ToolChoice:            stepToolChoice,
 		IncludeRawChunks:      includeRawChunksValue(include),
 		RuntimeContext:        runtimeContext,
@@ -1348,7 +1358,14 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// never race with processStream's own reads of the raw per-step stream.
 	userOnChunk := opts.OnChunk
 	combinedOnChunk := func(c provider.StreamChunk) {
-		r.chunkBuf.push(c)
+		// The public full stream carries the TS TextStreamPart set. The
+		// internal lifecycle markers (provider stream-start, response-metadata,
+		// ai.stream.firstChunk, ai.stream.finish) are not TS stream parts
+		// (their data is on start-step, the step response and the callbacks);
+		// they stay available through OnChunk.
+		if !isInternalStreamMarker(c.Type) {
+			r.chunkBuf.push(c)
+		}
 		if userOnChunk != nil {
 			safeInvoke(func() { userOnChunk(c) })
 		}
@@ -1610,6 +1627,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepLastPartialJSON := ""
 		var stepToolCalls []types.ToolCall
 		var stepContent []types.ContentPart
+		var stepBlocks blockContent
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		var stepUsage types.Usage
@@ -1680,6 +1698,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
 			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, remapGenerateID)
+			// A tool-input-start for a dynamic tool carries dynamic: true (TS).
+			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil && !chunk.ToolCall.Dynamic {
+				if t := toolsByName[chunk.ToolCall.ToolName]; t != nil && t.Type == types.ToolTypeDynamic {
+					startCall := *chunk.ToolCall
+					startCall.Dynamic = true
+					chunk.ToolCall = &startCall
+				}
+			}
 			forwardChunk := !suppressReasoningBoundaries || !isReasoningBoundaryChunk(chunk.Type)
 			if chunk.Type == provider.ChunkTypeRaw && !includeRawChunksValue(r.cbInclude) {
 				forwardChunk = false
@@ -1764,19 +1790,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// block followed by plain text) doesn't merge into the previous
 			// block's part and inherit its providerMetadata.
 			if chunk.Type == provider.ChunkTypeTextStart {
-				stepContent = startNewTextPart(stepContent, chunk.ProviderMetadata)
+				stepContent = stepBlocks.openText(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// A text-end boundary: attach its citations to the text part.
 			if chunk.Type == provider.ChunkTypeTextEnd {
-				stepContent = setTrailingTextCitations(stepContent, chunk.Citations)
+				stepContent = stepBlocks.closeText(stepContent, chunk.ID, chunk.Citations)
 			}
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
 				stepTextParts = append(stepTextParts, chunk.Text)
 				accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
-				stepContent = appendTextPart(stepContent, chunk.Text, chunk.ProviderMetadata)
+				stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
@@ -1813,10 +1839,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// start chunk's metadata, e.g. Anthropic redactedData) and let the
 			// end chunk's metadata (e.g. Bedrock redactedContent) land on it.
 			if chunk.Type == provider.ChunkTypeReasoningStart {
-				stepContent = startNewReasoningPart(stepContent, chunk.ProviderMetadata)
+				stepContent = stepBlocks.openReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 			if chunk.Type == provider.ChunkTypeReasoningEnd {
-				stepContent = setTrailingReasoningMetadata(stepContent, chunk.ProviderMetadata)
+				stepContent = stepBlocks.closeReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// Accumulate reasoning text from reasoning chunks. A chunk with
@@ -1830,7 +1856,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					reasoningText = chunk.Text
 				}
 				stepReasoningBuilder.WriteString(reasoningText)
-				stepContent = appendReasoningPart(stepContent, reasoningText, chunk.ProviderMetadata)
+				stepContent = stepBlocks.reasoningDelta(stepContent, chunk.ID, reasoningText, chunk.ProviderMetadata)
 			}
 
 			// Parse (validate/repair), then refine, and accumulate tool call
@@ -2054,7 +2080,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// raises it as a chunk can't accidentally make it retryable.
 				isToolChoiceViolation := IsToolChoiceViolationError(rawErr)
 				normalizedErr := rawErr
-				if !isToolChoiceViolation {
+				// TS normalizeStreamProviderError returns Error instances
+				// unchanged and only normalizes error payloads (records), so a
+				// chunk that carries a real error keeps its type.
+				if !isToolChoiceViolation && chunk.Err == nil {
 					// chunk.Raw is nil here today: no provider populates it
 					// on a ChunkTypeError chunk (it's documented for
 					// ChunkTypeRaw passthrough only), so
@@ -2151,6 +2180,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepLastPartialJSON = ""
 					stepToolCalls = nil
 					stepContent = nil
+					stepBlocks.reset()
 					stepReasoningBuilder.Reset()
 					modelCallEndFired = false
 					stepUsage = types.Usage{}
@@ -2175,6 +2205,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				if r.finishReason == "" {
 					r.finishReason = types.FinishReasonError
 				}
+				// Keep the error for Err(): TS rejects the result promises
+				// with the stream's error (original object, typed).
+				r.mu.Lock()
+				r.chunkErr = normalizedErr
+				r.mu.Unlock()
 			}
 
 			// Apply experimental transforms to produce the consumer-facing
@@ -2234,7 +2269,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// 3033). r.finishReason (set above, either from the provider's own
 		// finish chunk or synthesized as FinishReasonOther) already carries
 		// what a raw finish chunk used to forward directly.
-		stepText := strings.Join(stepTextParts, "")
+		// The step text is the text parts of its content, in block order (TS
+		// extractTextContent), which differs from arrival order only when the
+		// provider interleaved text blocks.
+		stepText := textOfContent(stepContent)
+		if stepText != strings.Join(stepTextParts, "") && len(stepTextParts) > 0 {
+			accumulatedTextParts = append(accumulatedTextParts[:stepTextPartsStart], stepText)
+		}
 		lastStepText = stepText
 		r.text = strings.Join(accumulatedTextParts, "")
 		// stepToolCalls were already parsed (with repair) and refined
@@ -2386,7 +2427,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		for callID := range streamedToolResults {
 			delete(pendingDeferredToolCalls, callID)
 		}
-		publicStepToolResults := mergeStreamedToolResults(stepToolResults, streamedToolResults)
+		publicStepToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults))
 
 		// Accumulate step tool calls and results into the overall result.
 		r.mu.Lock()
@@ -2631,7 +2672,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextToolChoice := opts.ToolChoice
 		nextToolOrder := opts.ToolOrder
 		nextProviderOptions := opts.ProviderOptions
-		nextSandbox := opts.ExperimentalSandbox
+		nextSandbox := r.cbCallSandbox
 		nextInstructionMessages := r.cbInstructionMessages
 		// Per-step call-setting overrides (audit row 60f97f6 / WG-STEP); see
 		// the analogous comment in generate.go's GenerateText.
@@ -2833,7 +2874,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			StopSequences:         nextStopSequences,
 			Seed:                  nextSeed,
 			Headers:               opts.Headers,
-			Tools:                 nextTools,
+			Tools:                 toolutil.ResolveToolSchemas(nextTools),
 			ToolChoice:            nextToolChoice,
 			IncludeRawChunks:      includeRawChunksValue(r.cbInclude),
 			RuntimeContext:        r.cbRuntimeCtx,
@@ -3579,7 +3620,18 @@ func (r *StreamTextResult) Resume(ctx context.Context) error {
 // Err returns any error that occurred during streaming
 func (r *StreamTextResult) Err() error {
 	_ = r.ensureConsumed()
-	return r.err
+	return r.terminalErr()
+}
+
+// terminalErr is the error that ended the stream: r.err, else the error of the
+// terminal error chunk. Call it after the stream has been consumed.
+func (r *StreamTextResult) terminalErr() error {
+	if r.err != nil {
+		return r.err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.chunkErr
 }
 
 // Steps returns all completed stream steps, consuming the stream if needed.
@@ -3686,7 +3738,7 @@ func (r *StreamTextResult) Close() error {
 func (r *StreamTextResult) ReadAll() (string, error) {
 	if r.processingDone != nil {
 		<-r.processingDone
-		return r.text, r.err
+		return r.text, r.terminalErr()
 	}
 	return r.readAllLegacy()
 }
@@ -4090,6 +4142,19 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
 
 	return r.text, nil
+}
+
+// isInternalStreamMarker reports chunk types that exist only for Go-side
+// bookkeeping and are not parts of the TS fullStream.
+func isInternalStreamMarker(t provider.ChunkType) bool {
+	switch t {
+	case provider.ChunkTypeStreamStart,
+		provider.ChunkTypeResponseMetadata,
+		provider.ChunkTypeFirstChunk,
+		provider.ChunkTypeStreamFinish:
+		return true
+	}
+	return false
 }
 
 func isFirstChunkContent(chunkType provider.ChunkType) bool {

@@ -33,3 +33,43 @@ func TestInputFallsBackToSortedMap(t *testing.T) {
 		t.Fatalf("invalid raw = %s", got)
 	}
 }
+
+func TestObjectMarshalSetDeleteAndPlain(t *testing.T) {
+	var o Object
+	if err := json.Unmarshal([]byte(`{"z":1,"a":{"y":[1.5,"<"],"b":null}}`), &o); err != nil {
+		t.Fatal(err)
+	}
+	o.Set("m", true)
+	o.Set("z", 2) // existing key keeps its place
+	o.Delete("a")
+	b, err := json.Marshal(&o)
+	if err != nil || string(b) != `{"z":2,"m":true}` {
+		t.Fatalf("marshal = %s, %v", b, err)
+	}
+	if keys := o.Keys(); len(keys) != 2 || keys[0] != "z" {
+		t.Fatalf("keys = %v", keys)
+	}
+	v, _ := Parse([]byte(`{"n":3,"o":{"k":[1]}}`))
+	plain, _ := Plain(v).(map[string]interface{})
+	if plain["n"] != float64(3) {
+		t.Fatalf("plain = %#v", plain)
+	}
+	// Embedded in a struct or map, json.Marshal keeps the order.
+	out, _ := json.Marshal(map[string]interface{}{"schema": mustParseObject(t, `{"b":1,"a":2}`)})
+	if string(out) != `{"schema":{"b":1,"a":2}}` {
+		t.Fatalf("nested = %s", out)
+	}
+	if err := json.Unmarshal([]byte(`[1]`), &Object{}); err == nil {
+		t.Fatal("array accepted as object")
+	}
+}
+
+func mustParseObject(t *testing.T, raw string) *Object {
+	t.Helper()
+	v, ok := Parse([]byte(raw))
+	o, isObj := v.(*Object)
+	if !ok || !isObj {
+		t.Fatalf("bad object %s", raw)
+	}
+	return o
+}

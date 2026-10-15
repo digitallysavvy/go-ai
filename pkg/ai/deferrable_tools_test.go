@@ -187,12 +187,10 @@ func TestDeferrableTools_ErrorResult(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Tool result should be present but marked as provider-executed
-	if len(result.ToolResults) != 1 {
-		t.Fatalf("expected 1 tool result, got %d", len(result.ToolResults))
-	}
-	if !result.ToolResults[0].ProviderExecuted {
-		t.Error("expected tool result to be marked as provider-executed")
+	// A provider-executed call without a result yet is not a tool result (TS
+	// toolResults holds tool-result content parts only).
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("expected no tool results, got %d", len(result.ToolResults))
 	}
 }
 
@@ -356,6 +354,10 @@ func TestDeferrableTools_MixedLocalAndProvider(t *testing.T) {
 			return &types.GenerateResult{
 				Text:         "Weather is 72 degrees, found search results",
 				FinishReason: types.FinishReasonStop,
+				// The provider delivers the deferred result of call_2.
+				Content: []types.ContentPart{types.ToolResultContent{
+					ToolCallID: "call_2", ToolName: "tool-search-bm25", Result: "found",
+				}},
 			}, nil
 		},
 	}

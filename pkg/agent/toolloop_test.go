@@ -209,8 +209,10 @@ func TestToolLoopAgent_ProviderExecutedToolResolvesApproval(t *testing.T) {
 		t.Fatalf("steps len = %d, want 1", len(result.Steps))
 	}
 	step := result.Steps[0]
-	if len(step.ToolResults) != 1 || !step.ToolResults[0].ProviderExecuted || step.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusApproved {
-		t.Fatalf("tool results = %#v, want approved provider-executed result", step.ToolResults)
+	// The provider returns the result itself; until it does there is no
+	// tool-result part, so TS toolResults is empty.
+	if len(step.ToolResults) != 0 {
+		t.Fatalf("tool results = %#v, want none", step.ToolResults)
 	}
 	if got, want := len(step.Content), 3; got != want {
 		t.Fatalf("step content len = %d, want tool-call + approval request/response: %#v", got, step.Content)
@@ -2018,8 +2020,17 @@ func TestToolLoopAgent_ApprovalNilAndDenied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied || *result.ToolResults[0].ApprovalReason != "policy" {
-		t.Fatalf("denial not preserved: %+v", result.ToolResults[0])
+	if len(result.ToolResults) != 0 {
+		t.Fatalf("denied call must not be a tool result: %+v", result.ToolResults)
+	}
+	var resp *types.ToolApprovalResponseContent
+	for _, part := range result.Steps[0].Content {
+		if r, ok := part.(types.ToolApprovalResponseContent); ok {
+			resp = &r
+		}
+	}
+	if resp == nil || resp.Approved || resp.Reason != "policy" {
+		t.Fatalf("denial not preserved: %+v", resp)
 	}
 }
 
@@ -2889,8 +2900,14 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 		if err != nil {
 			t.Fatalf("Execute() error = %v", err)
 		}
-		if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-			t.Fatalf("approval = %q, want denied", result.ToolResults[0].ApprovalStatus)
+		var denied bool
+		for _, part := range result.Steps[0].Content {
+			if r, ok := part.(types.ToolApprovalResponseContent); ok && !r.Approved {
+				denied = true
+			}
+		}
+		if !denied || len(result.ToolResults) != 0 {
+			t.Fatalf("want a denied approval response and no tool results, got %+v / %+v", result.Steps[0].Content, result.ToolResults)
 		}
 	})
 
@@ -2980,8 +2997,14 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 		if !called {
 			t.Fatal("generic approval callback should run before per-tool context validation")
 		}
-		if result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-			t.Fatalf("approval = %q, want denied", result.ToolResults[0].ApprovalStatus)
+		var denied bool
+		for _, part := range result.Steps[0].Content {
+			if r, ok := part.(types.ToolApprovalResponseContent); ok && !r.Approved {
+				denied = true
+			}
+		}
+		if !denied || len(result.ToolResults) != 0 {
+			t.Fatalf("want a denied approval response and no tool results, got %+v / %+v", result.Steps[0].Content, result.ToolResults)
 		}
 	})
 
@@ -3071,8 +3094,14 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 		if !called {
 			t.Fatal("tool-defined approval callback was not called")
 		}
-		if len(result.ToolResults) != 1 || result.ToolResults[0].ApprovalStatus != types.ToolApprovalStatusUserApproval {
-			t.Fatalf("tool results = %+v, want user-approval", result.ToolResults)
+		var pending bool
+		for _, part := range result.Steps[0].Content {
+			if _, ok := part.(types.ToolApprovalRequestContent); ok {
+				pending = true
+			}
+		}
+		if !pending || len(result.ToolResults) != 0 {
+			t.Fatalf("want a tool-approval-request and no tool results, got %+v / %+v", result.Steps[0].Content, result.ToolResults)
 		}
 	})
 }

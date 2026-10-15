@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -776,12 +777,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 			stepToolResults = toolResults
 			stepResult.Performance.ToolExecutionMs = timings.snapshot()
-			stepResult.ToolResults = toolResults
-			stepResult.StaticToolResults = filterAgentStaticToolResults(toolResults)
-			stepResult.DynamicToolResults = filterAgentDynamicToolResults(toolResults)
+			// TS toolResults holds only tool-result content parts; approval
+			// bookkeeping entries stay in the content parts and response
+			// messages (built from the full list below).
+			publicResults := types.ResultsForPublicView(toolResults)
+			stepResult.ToolResults = publicResults
+			stepResult.StaticToolResults = filterAgentStaticToolResults(publicResults)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(publicResults)
 			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(toolResults, callConfig.ExperimentalToolApprovalSecret)...)
 			responseContent = stepResult.Content
-			result.ToolResults = append(result.ToolResults, toolResults...)
+			result.ToolResults = append(result.ToolResults, publicResults...)
 			if len(toolResults) == 0 {
 				shouldContinue = false
 			}
@@ -1501,7 +1506,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		FrequencyPenalty:      callConfig.FrequencyPenalty,
 		PresencePenalty:       callConfig.PresencePenalty,
 		StopSequences:         callConfig.StopSequences,
-		Tools:                 callConfig.Tools,
+		Tools:                 toolutil.ResolveToolSchemas(callConfig.Tools),
 		ToolChoice:            toolChoice,
 		RuntimeContext:        callConfig.RuntimeContext,
 		ToolsContext:          callConfig.ToolsContext,
@@ -1917,7 +1922,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 		}
 		return results, nil
 	}
-	return a.runToolCalls(ctx, toolCalls, runCall)
+	results, err := a.runToolCalls(ctx, toolCalls, runCall)
+	ai.MarkDynamicToolResults(results, toolCalls)
+	return results, err
 }
 
 func (a *ToolLoopAgent) runtimeContext() interface{} {

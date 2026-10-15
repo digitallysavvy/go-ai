@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
 // ToJSONSchema converts a Tool to JSON Schema format
@@ -47,6 +48,14 @@ func defaultObjectSchema(parameters interface{}) interface{} {
 			"type":       "object",
 			"properties": map[string]interface{}{},
 		}
+	}
+	if ordered, ok := parameters.(*schema.OrderedSchema); ok {
+		// Keeps the source key order on the wire; a schema without a type
+		// gets the default object type like a map does.
+		if _, hasType := ordered.JSONSchema()["type"]; hasType {
+			return ordered
+		}
+		parameters = ordered.JSONSchema()
 	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
 		if _, hasType := schema["type"]; !hasType {

@@ -2,6 +2,8 @@ package ai
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -524,12 +526,25 @@ func toolResultModelOutput(result interface{}) *types.ToolResultOutput {
 
 func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart {
 	if result.Error != nil {
+		// A provider-executed error is the provider's own error value (TS
+		// tool-error.error: a string or a structured object such as
+		// {type: 'web_fetch_tool_result_error', errorCode}), replayed as
+		// error-json. Providers that carry the structured payload put it in
+		// Result next to the Error summary.
+		var errValue interface{} = result.Error.Error()
+		errorText := providerutils.ToolErrorText(result.Error)
+		if result.ProviderExecuted {
+			errorText = ""
+			if result.Result != nil {
+				errValue = result.Result
+			}
+		}
 		return types.ToolErrorContent{
 			ToolCallID:       result.ToolCallID,
 			ToolName:         result.ToolName,
 			Input:            result.Input,
-			Error:            result.Error.Error(),
-			ErrorText:        providerutils.ToolErrorText(result.Error),
+			Error:            errValue,
+			ErrorText:        errorText,
 			ProviderExecuted: result.ProviderExecuted,
 			ProviderMetadata: providerMetadataRaw(result.ProviderMetadata),
 			ToolMetadata:     result.ToolMetadata,
@@ -620,4 +635,204 @@ func normalizeGenerateResultText(result *types.GenerateResult) {
 		}
 	}
 	result.Text = text.String()
+}
+
+// providerToolResultsFromContent converts the tool-result and tool-error parts
+// a model response carries (results the provider executed) into ToolResults,
+// skipping calls that already have an executed result in executed. TS
+// `toolResults` holds these parts alongside the locally executed results.
+func providerToolResultsFromContent(content []types.ContentPart, executed []types.ToolResult) []types.ToolResult {
+	var out []types.ToolResult
+	seen := make(map[string]bool, len(executed))
+	for _, tr := range executed {
+		if !tr.ProviderExecuted || tr.Result != nil || tr.Error != nil {
+			seen[tr.ToolCallID] = true
+		}
+	}
+	for _, part := range content {
+		var tr types.ToolResult
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			tr = providerToolResultFromResult(p)
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			tr = providerToolResultFromResult(*p)
+		case types.ToolErrorContent:
+			tr = providerToolResultFromError(p)
+		case *types.ToolErrorContent:
+			if p == nil {
+				continue
+			}
+			tr = providerToolResultFromError(*p)
+		default:
+			continue
+		}
+		if seen[tr.ToolCallID] {
+			continue
+		}
+		seen[tr.ToolCallID] = true
+		out = append(out, tr)
+	}
+	return out
+}
+
+func providerToolResultFromResult(p types.ToolResultContent) types.ToolResult {
+	tr := types.ToolResult{
+		ToolCallID:       p.ToolCallID,
+		ToolName:         p.ToolName,
+		Title:            p.Title,
+		Input:            p.Input,
+		Result:           p.Result,
+		ProviderExecuted: true,
+		ProviderMetadata: decodeProviderMetadataMap(p.ProviderMetadata),
+		ToolMetadata:     p.ToolMetadata,
+		Dynamic:          p.Dynamic,
+		Preliminary:      p.Preliminary,
+	}
+	if p.Error != "" {
+		tr.Error = errors.New(p.Error)
+	}
+	if tr.Result == nil && p.Output != nil {
+		tr.Result = p.Output.Value
+		tr.ModelOutput = p.Output
+	}
+	return tr
+}
+
+func providerToolResultFromError(p types.ToolErrorContent) types.ToolResult {
+	var err error
+	switch e := p.Error.(type) {
+	case error:
+		err = e
+	case string:
+		err = errors.New(e)
+	default:
+		err = fmt.Errorf("%v", e)
+	}
+	return types.ToolResult{
+		ToolCallID:       p.ToolCallID,
+		ToolName:         p.ToolName,
+		Title:            p.Title,
+		Input:            p.Input,
+		Error:            err,
+		ProviderExecuted: true,
+		ProviderMetadata: decodeProviderMetadataMap(p.ProviderMetadata),
+		ToolMetadata:     p.ToolMetadata,
+		Dynamic:          p.Dynamic,
+	}
+}
+
+// blockContent tracks the text and reasoning blocks a model stream opened with
+// an explicit start part, by block id. TS stream-text records content per id
+// (activeText / activeReasoning), so blocks the provider interleaves (a
+// second text block starting before the first ended) keep their own deltas.
+// A delta whose id has no open block (providers without start parts) falls
+// back to merging into the trailing part, as before.
+type blockContent struct {
+	text      map[string]int
+	reasoning map[string]int
+}
+
+func (b *blockContent) reset() { b.text, b.reasoning = nil, nil }
+
+func (b *blockContent) openText(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	parts = startNewTextPart(parts, metadata)
+	if id != "" {
+		if b.text == nil {
+			b.text = map[string]int{}
+		}
+		b.text[id] = len(parts) - 1
+	}
+	return parts
+}
+
+func (b *blockContent) textDelta(parts []types.ContentPart, id, text string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.text[id]; ok && id != "" {
+		if text == "" && len(metadata) == 0 {
+			return parts
+		}
+		if tc, ok := parts[i].(types.TextContent); ok {
+			tc.Text += text
+			if len(metadata) > 0 {
+				tc.ProviderMetadata = metadata
+			}
+			parts[i] = tc
+			return parts
+		}
+	}
+	return appendTextPart(parts, text, metadata)
+}
+
+func (b *blockContent) closeText(parts []types.ContentPart, id string, citations []types.Citation) []types.ContentPart {
+	if i, ok := b.text[id]; ok && id != "" {
+		delete(b.text, id)
+		if len(citations) > 0 {
+			if tc, ok := parts[i].(types.TextContent); ok {
+				tc.Citations = citations
+				parts[i] = tc
+			}
+		}
+		return parts
+	}
+	return setTrailingTextCitations(parts, citations)
+}
+
+func (b *blockContent) openReasoning(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	parts = startNewReasoningPart(parts, metadata)
+	if id != "" {
+		if b.reasoning == nil {
+			b.reasoning = map[string]int{}
+		}
+		b.reasoning[id] = len(parts) - 1
+	}
+	return parts
+}
+
+func (b *blockContent) reasoningDelta(parts []types.ContentPart, id, text string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.reasoning[id]; ok && id != "" {
+		if text == "" && len(metadata) == 0 {
+			return parts
+		}
+		if rc, ok := parts[i].(types.ReasoningContent); ok {
+			rc.Text += text
+			if len(metadata) > 0 {
+				rc.ProviderMetadata = metadata
+			}
+			parts[i] = rc
+			return parts
+		}
+	}
+	return appendReasoningPart(parts, text, metadata)
+}
+
+func (b *blockContent) closeReasoning(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.reasoning[id]; ok && id != "" {
+		delete(b.reasoning, id)
+		if len(metadata) > 0 {
+			if rc, ok := parts[i].(types.ReasoningContent); ok {
+				rc.ProviderMetadata = metadata
+				parts[i] = rc
+			}
+		}
+		return parts
+	}
+	return setTrailingReasoningMetadata(parts, metadata)
+}
+
+// textOfContent joins the text parts of content in order (TS extractTextContent).
+func textOfContent(parts []types.ContentPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			b.WriteString(p.Text)
+		case *types.TextContent:
+			if p != nil {
+				b.WriteString(p.Text)
+			}
+		}
+	}
+	return b.String()
 }

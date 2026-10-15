@@ -59,7 +59,9 @@ func TestRunHarnessAgentTimeSlice_FailedRunDestroysWhenDestroyOnFinish(t *testin
 		t.Fatal(err)
 	}
 	stub := stubHarnessWorkflowAgent{
-		createSession: func(context.Context, harness.CreateSessionOptions) (*harness.AgentSession, error) { return session, nil },
+		createSession: func(context.Context, harness.CreateSessionOptions) (*harness.AgentSession, error) {
+			return session, nil
+		},
 		stream: func(context.Context, agent.AgentStreamOptions) (*ai.StreamTextResult, error) {
 			return nil, errors.New("configuration unavailable")
 		},

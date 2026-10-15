@@ -190,7 +190,12 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 		}
 
 	case *ErrorPart:
-		return []provider.StreamChunk{{Type: provider.ChunkTypeError, Text: fmt.Sprintf("%v", p.Error)}}
+		chunk := provider.StreamChunk{Type: provider.ChunkTypeError, Text: fmt.Sprintf("%v", p.Error)}
+		if err, ok := p.Error.(error); ok {
+			// Keep the typed error so errors.As works on the result's Err().
+			chunk.Err = err
+		}
+		return []provider.StreamChunk{chunk}
 
 	case *RawPart:
 		return []provider.StreamChunk{{Type: provider.ChunkTypeRaw, Raw: p.RawValue}}
