@@ -231,6 +231,9 @@ func (d *turnDriver) telStepContent() []types.ContentPart {
 			ProviderExecuted: tc.ProviderExecuted,
 		})
 	}
+	for _, ar := range d.stepApprovalRequests {
+		content = append(content, ar)
+	}
 	// TS buildModelCallContent also carries the provider-executed tool
 	// results of the step. Host tool results are not part of the model call:
 	// TS ends the model call before publishing them.

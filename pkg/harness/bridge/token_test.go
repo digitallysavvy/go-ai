@@ -66,3 +66,14 @@ func TestWithBridgeTokenReplacesExisting(t *testing.T) {
 		t.Fatalf("expected no headers, got %+v", out.Headers)
 	}
 }
+
+// WHATWG URL#toString gives a special-scheme URL an explicit "/" path.
+func TestWithBridgeToken_EmptyPathGetsSlash(t *testing.T) {
+	endpoint, err := WithBridgeToken(harness.PortEndpoint{URL: "ws://Host.Example:1234"}, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "ws://host.example:1234/?agent_bridge_token=tok"; endpoint.URL != want {
+		t.Fatalf("got %q want %q", endpoint.URL, want)
+	}
+}

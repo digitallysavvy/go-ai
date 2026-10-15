@@ -47,7 +47,7 @@ func ResolveSubscriptionEnvironment(ctx context.Context, opts ResolveSubscriptio
 	if harnessutil.IsAuthenticationEnvironment(opts.Auth) {
 		return opts.Auth.Environment, nil
 	}
-	hasDirect := opts.Env["COPILOT_GITHUB_TOKEN"] != "" || opts.Env["GH_TOKEN"] != "" || opts.Env["GITHUB_TOKEN"] != ""
+	hasDirect := envHas(opts.Env, "COPILOT_GITHUB_TOKEN") || envHas(opts.Env, "GH_TOKEN") || envHas(opts.Env, "GITHUB_TOKEN")
 	if !harnessutil.ShouldResolveNativeSubscription(opts.Auth.Mode, opts.Env, hasDirect) {
 		return opts.Env, nil
 	}
@@ -107,9 +107,12 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	copilotHome := env["COPILOT_HOME"]
-	if copilotHome == "" {
+	copilotHome, ok := env["COPILOT_HOME"]
+	if !ok {
 		copilotHome = filepath.Join(homeDirectory, ".copilot")
+	}
+	if abs, err := filepath.Abs(copilotHome); err == nil {
+		copilotHome = abs // TS resolve()
 	}
 	config := readCopilotConfig(filepath.Join(copilotHome, "config.json"))
 	account := selectAccount(config)
@@ -134,7 +137,7 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 	host := ""
 	if account != nil {
 		host = account.Host
-	} else if normalized := normalizeGitHubOrigin(firstNonEmpty(env["COPILOT_GH_HOST"], env["GH_HOST"], "github.com")); normalized != "" {
+	} else if normalized := normalizeGitHubOrigin(firstPresent(env, "github.com", "COPILOT_GH_HOST", "GH_HOST")); normalized != "" {
 		host = normalized
 	}
 	if host == "" {
@@ -164,7 +167,7 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 // FindGitHubCliExecutable searches env's PATH for a `gh` executable. Mirrors
 // TS `findHostGitHubCliExecutable`.
 func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos string) (string, error) {
-	path := firstNonEmpty(env["PATH"], env["Path"], env["path"])
+	path := firstPresent(env, "", "PATH", "Path", "path")
 	if path == "" {
 		return "", nil
 	}
@@ -341,4 +344,22 @@ func normalizeGitHubHost(host string) string {
 
 func isNonEmpty(s string) bool {
 	return strings.TrimSpace(s) != ""
+}
+
+// envHas mirrors TS `env.X != null`: a variable that is set to the empty
+// string still counts as a direct credential.
+func envHas(env map[string]string, key string) bool {
+	_, ok := env[key]
+	return ok
+}
+
+// firstPresent mirrors a TS `a ?? b ?? fallback` chain over env: the first
+// variable that is set (even to "") wins.
+func firstPresent(env map[string]string, fallback string, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := env[k]; ok {
+			return v
+		}
+	}
+	return fallback
 }

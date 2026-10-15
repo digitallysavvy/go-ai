@@ -176,8 +176,9 @@ func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string) ([]harne
 	if env["XAI_API_KEY"] == "" || sandboxEnv["XAI_API_KEY"] == "" {
 		return nil, nil
 	}
-	matchURL := env["GROK_XAI_API_BASE_URL"]
-	if matchURL == "" {
+	// TS `??`: only an absent variable falls back; a set-but-empty one is kept.
+	matchURL, hasBaseURL := env["GROK_XAI_API_BASE_URL"]
+	if !hasBaseURL {
 		matchURL = "https://api.x.ai/v1"
 	}
 	transformHeaders := map[string]string{}
@@ -185,7 +186,7 @@ func CredentialBrokeringErr(env, sandboxEnv, headers map[string]string) ([]harne
 		transformHeaders[k] = v
 	}
 	transformHeaders["Authorization"] = "Bearer " + env["XAI_API_KEY"]
-	if env["GROK_CLI_CHAT_PROXY_BASE_URL"] != "" {
+	if _, hasProxy := env["GROK_CLI_CHAT_PROXY_BASE_URL"]; hasProxy {
 		transformHeaders["X-XAI-Token-Auth"] = "xai-grok-cli"
 	}
 	tr, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{

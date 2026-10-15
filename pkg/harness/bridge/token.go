@@ -70,6 +70,14 @@ func WithBridgeToken(endpoint harness.PortEndpoint, token string) (harness.PortE
 	}
 	u.RawQuery = strings.Join(encoded, "&")
 	u.ForceQuery = false
+	// WHATWG URL serialization: a special-scheme URL always has a path.
+	switch u.Scheme {
+	case "http", "https", "ws", "wss":
+		if u.Path == "" && u.Opaque == "" {
+			u.Path = "/"
+		}
+		u.Host = strings.ToLower(u.Host)
+	}
 
 	out := harness.PortEndpoint{URL: u.String()}
 	if endpoint.Headers != nil {

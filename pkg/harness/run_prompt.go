@@ -366,7 +366,10 @@ type turnDriver struct {
 	stepReasoning   string
 	stepToolCalls   []types.ToolCall
 	stepToolResults []types.ToolResult
-	toolExecMs      map[string]int64
+	// stepApprovalRequests mirrors TS stepApprovalRequests: approval-request
+	// parts enqueued this step, reported in onLanguageModelCallEnd content.
+	stepApprovalRequests []types.ToolApprovalRequestContent
+	toolExecMs           map[string]int64
 	// hostOutcomes keeps the host-side outcome of each executed host tool
 	// (raw output or the original error), so tool-execution-end callbacks
 	// and telemetry report it rather than the runtime's echoed, stringified
@@ -1283,11 +1286,19 @@ func (d *turnDriver) ensureStepOpen() {
 	}
 }
 
+// pushApprovalRequest emits an approval-request chunk and records it for the
+// step's language-model-call-end content (TS enqueueApprovalRequest).
+func (d *turnDriver) pushApprovalRequest(req *types.ToolApprovalRequestContent) {
+	d.stepApprovalRequests = append(d.stepApprovalRequests, *req)
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: req})
+}
+
 func (d *turnDriver) resetStepAccum() {
 	d.stepText = ""
 	d.stepReasoning = ""
 	d.stepToolCalls = nil
 	d.stepToolResults = nil
+	d.stepApprovalRequests = nil
 	d.toolExecMs = map[string]int64{}
 	d.stepOpen = false
 	d.ignoredFinishStep = nil
@@ -1798,7 +1809,8 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 		nativeName := ""
 		input := ""
 		if raw != nil {
-			providerExecuted = raw.ProviderExecuted
+			// TS: rawToolCall?.providerExecuted ?? true.
+			providerExecuted = raw.ProviderExecuted || raw.ProviderExecutedOmitted
 			nativeName = raw.NativeName
 			input = raw.Input
 		}
@@ -1821,9 +1833,9 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 	if d.in.OnPendingToolApproval != nil {
 		d.in.OnPendingToolApproval(*pending)
 	}
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
+	d.pushApprovalRequest(&types.ToolApprovalRequestContent{
 		ApprovalID: pending.ApprovalID, ToolCallID: pending.ToolCallID, ToolCall: call,
-	}})
+	})
 	d.hostInputPauseRequested = true
 	return false, nil
 }
@@ -1871,9 +1883,9 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	switch decision.Type {
 	case CustomToolApprovalDeny:
 		approvalID := generateApprovalID()
-		d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
+		d.pushApprovalRequest(&types.ToolApprovalRequestContent{
 			ApprovalID: approvalID, ToolCallID: raw.ToolCallID, ToolCall: call, IsAutomatic: true,
-		}})
+		})
 		d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
 			ApprovalID: approvalID, ToolCallID: raw.ToolCallID, ToolCall: call, Approved: false, Reason: decision.Reason,
 		}})
@@ -1904,9 +1916,9 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		if d.in.OnPendingToolApproval != nil {
 			d.in.OnPendingToolApproval(*pending)
 		}
-		d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{
+		d.pushApprovalRequest(&types.ToolApprovalRequestContent{
 			ApprovalID: pending.ApprovalID, ToolCallID: pending.ToolCallID, ToolCall: call,
-		}})
+		})
 		d.hostInputPauseRequested = true
 		return false, nil
 

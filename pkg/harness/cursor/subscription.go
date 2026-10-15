@@ -20,7 +20,7 @@ func ResolveSubscriptionEnvironment(ctx context.Context, auth AuthenticationMode
 	if harnessutil.IsAuthenticationEnvironment(auth) {
 		return auth.Environment, nil
 	}
-	if !harnessutil.ShouldResolveNativeSubscription(auth.Mode, env, env["CURSOR_API_KEY"] != "") {
+	if !harnessutil.ShouldResolveNativeSubscription(auth.Mode, env, envHas(env, "CURSOR_API_KEY")) {
 		return env, nil
 	}
 	token, err := ReadSubscription(ctx, ReadSubscriptionOptions{Env: env})
@@ -93,15 +93,15 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (string
 // Mirrors TS `resolveCursorAuthPath`.
 func ResolveAuthPath(env map[string]string, homeDirectory, goos string) string {
 	if harnessutil.IsWindows(goos) {
-		appData := env["APPDATA"]
-		if appData == "" {
+		appData, ok := env["APPDATA"] // TS `??`: only an absent variable falls back
+		if !ok {
 			appData = filepath.Join(homeDirectory, "AppData", "Roaming")
 		}
 		return filepath.Join(appData, "Cursor", "auth.json")
 	}
 	if harnessutil.IsLinux(goos) {
-		xdg := env["XDG_CONFIG_HOME"]
-		if xdg == "" {
+		xdg, ok := env["XDG_CONFIG_HOME"]
+		if !ok {
 			xdg = filepath.Join(homeDirectory, ".config")
 		}
 		return filepath.Join(xdg, "cursor", "auth.json")
@@ -116,4 +116,11 @@ func parseAccessToken(text []byte) string {
 	}
 	token, _ := parsed["accessToken"].(string)
 	return token
+}
+
+// envHas mirrors TS `env.X != null`: a variable that is set to the empty
+// string still counts as a direct credential.
+func envHas(env map[string]string, key string) bool {
+	_, ok := env[key]
+	return ok
 }
