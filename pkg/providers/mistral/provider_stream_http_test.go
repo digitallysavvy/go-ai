@@ -54,9 +54,9 @@ func TestMistralDoGenerateAndDoStream(t *testing.T) {
 		if strings.Contains(seenPath, "/chat/completions") {
 			_ = json.NewDecoder(r.Body).Decode(&seenBody)
 			if r.Header.Get("Accept") == "text/event-stream" {
-				sse := `data: {"choices":[{"delta":{"content":"hello"},"finish_reason":""}]}
+				sse := `data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 

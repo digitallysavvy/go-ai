@@ -51,7 +51,7 @@ func runAlibabaStreamRecursionChild() {
 		// branch.
 		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 
 	s := newAlibabaStream(io.NopCloser(strings.NewReader(sb.String())))
 	// This call used to recurse once per choices-less event -- 300,000 deep
@@ -72,7 +72,7 @@ func runAlibabaStreamRecursionChild() {
 // parse failure surfaced as an error chunk (not silently skipped), and the
 // stream keeps going.
 func TestStream_FrameWithoutChoicesIsAnErrorChunk(t *testing.T) {
-	sse := "data: {\"error\":{\"message\":\"boom\"}}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"
+	sse := "data: {\"error\":{\"message\":\"boom\"}}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\n"
 	s := newAlibabaStream(io.NopCloser(strings.NewReader(sse)))
 	first, err := s.Next()
 	if err != nil || first.Type != provider.ChunkTypeError {

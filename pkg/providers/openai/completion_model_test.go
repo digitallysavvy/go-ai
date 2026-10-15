@@ -33,7 +33,7 @@ func TestCompletionModelDoGenerateMatchesTypeScriptRequestAndResponse(t *testing
 			"id":"cmpl_1",
 			"created":1711363706,
 			"model":"gpt-3.5-turbo-instruct",
-			"choices":[{"text":"Hello, World!","finish_reason":"stop","logprobs":{"tokens":["Hello"],"token_logprobs":[-0.1]}}],
+			"choices":[{"index":0,"text":"Hello, World!","finish_reason":"stop","logprobs":{"tokens":["Hello"],"token_logprobs":[-0.1]}}],
 			"usage":{"prompt_tokens":4,"completion_tokens":30,"total_tokens":34}
 		}`))
 	}))
@@ -161,8 +161,8 @@ func TestCompletionModelDoStreamMatchesTypeScriptChunkOrder(t *testing.T) {
 			t.Fatalf("stream_options missing: %#v", body)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"text":"Hello","index":0,"logprobs":null,"finish_reason":null}]}`+"\n\n")
-		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"text":" world","index":0,"logprobs":null,"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"Hello","index":0,"logprobs":null,"finish_reason":null}]}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":" world","index":0,"logprobs":null,"finish_reason":"stop"}]}`+"\n\n")
 		_, _ = io.WriteString(w, `data: {"id":"cmpl_1","created":1711363440,"model":"gpt-3.5-turbo-instruct","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}`+"\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
@@ -235,7 +235,7 @@ func TestCompletionModelDoStreamMatchesTypeScriptChunkOrder(t *testing.T) {
 
 func TestCompletionModelDoStreamFinishesWhenProviderClosesWithoutDone(t *testing.T) {
 	stream := newCompletionStream(io.NopCloser(strings.NewReader(
-		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"text":"hi","index":0,"finish_reason":"stop"}]}`+"\n\n",
+		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"hi","index":0,"finish_reason":"stop"}]}`+"\n\n",
 	)), false)
 	defer stream.Close() //nolint:errcheck
 

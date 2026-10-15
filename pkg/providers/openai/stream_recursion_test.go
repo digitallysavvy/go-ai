@@ -112,7 +112,7 @@ func runOpenAIStreamRecursionChild() {
 		// `return s.Next()` (now `continue`).
 		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
 
 	s := newOpenAIStream(io.NopCloser(strings.NewReader(sb.String())))
@@ -169,7 +169,7 @@ func runCompletionStreamRecursionChild() {
 		// `return s.Next()` (now `continue`).
 		sb.WriteString(`data: {"choices":[]}` + "\n\n")
 	}
-	sb.WriteString(`data: {"choices":[{"text":"hello"}]}` + "\n\n")
+	sb.WriteString(`data: {"choices":[{"index":0,"text":"hello"}]}` + "\n\n")
 	sb.WriteString("data: [DONE]\n\n")
 
 	s := newCompletionStream(io.NopCloser(strings.NewReader(sb.String())), false)

@@ -827,7 +827,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		// TS deepseekChatChunkSchema: choices[] with tool_calls[].index required.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{}); err != nil {
+		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ToolCallIndexRequired: true}); err != nil {
 			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,

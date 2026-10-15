@@ -623,7 +623,7 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 		}
 		// TS groqChatChunkSchema: choices[] with a required index and
 		// tool_calls[].index; anything else fails the parse.
-		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{}); err != nil {
+		if err := providerutils.ValidateChatChunk([]byte(event.Data), providerutils.ChatChunkShape{ChoiceIndexRequired: true, ToolCallIndexRequired: true}); err != nil {
 			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,

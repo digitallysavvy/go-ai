@@ -11,15 +11,15 @@ import (
 )
 
 func TestMistralStreamReasoningToolCallsAndErr(t *testing.T) {
-	sse := `data: {"choices":[{"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"think-1"}]}]},"finish_reason":""}]}
+	sse := `data: {"choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"think-1"}]}]},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{"content":[{"type":"text","text":"hello"}]},"finish_reason":""}]}
+data: {"choices":[{"index":0,"delta":{"content":[{"type":"text","text":"hello"}]},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":""}]}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]},"finish_reason":""}]}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
 
 data: [DONE]
 
@@ -112,11 +112,11 @@ data: [DONE]
 // start/delta chunks must be emitted as arguments stream in, not only the
 // final buffered tool-call chunk at flush.
 func TestMistralStreamEmitsToolInputLifecycleChunks(t *testing.T) {
-	sse := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":""}]}
+	sse := `data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]},"finish_reason":""}]}
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"x\"}"}}]},"finish_reason":""}]}
 
-data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
 
 data: [DONE]
 
