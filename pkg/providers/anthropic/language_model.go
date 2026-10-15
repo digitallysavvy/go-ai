@@ -2978,9 +2978,17 @@ func rawSSEPayload(data string) interface{} {
 // response headers and body are kept like TS APICallError.
 func anthropicHTTPError(providerName string, status int, headers http.Header, body []byte, cause error) *providererrors.ProviderError {
 	var perr *providererrors.ProviderError
-	var parsed anthropicErrorBody
-	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && (parsed.Error.Type != "" || parsed.Error.Message != "") {
-		perr = providererrors.NewProviderError(providerName, status, parsed.Error.Type, parsed.Error.Message, cause)
+	// TS anthropicErrorDataSchema: {type: 'error', error: {type: string, message: string}}.
+	var parsed struct {
+		Type  *string `json:"type"`
+		Error *struct {
+			Type    *string `json:"type"`
+			Message *string `json:"message"`
+		} `json:"error"`
+	}
+	if jsonErr := json.Unmarshal(body, &parsed); jsonErr == nil && parsed.Type != nil && *parsed.Type == "error" &&
+		parsed.Error != nil && parsed.Error.Type != nil && parsed.Error.Message != nil {
+		perr = providererrors.NewProviderError(providerName, status, *parsed.Error.Type, *parsed.Error.Message, cause)
 	} else {
 		// TS createJsonErrorResponseHandler: an empty or unparseable body gives
 		// the response status text (the body stays on ResponseBody).

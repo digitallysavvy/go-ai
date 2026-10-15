@@ -14,3 +14,19 @@ func TestAnthropicHTTPErrorUnparseableBodyUsesStatusText(t *testing.T) {
 		t.Fatalf("message %q", ok.Message)
 	}
 }
+
+// TS anthropicErrorDataSchema requires {type:'error', error:{type, message}};
+// any other JSON body gives the status text.
+func TestAnthropicHTTPErrorSchemaIsStrict(t *testing.T) {
+	for name, body := range map[string]string{
+		"no top-level type":    `{"error":{"type":"x","message":"boom"}}`,
+		"wrong top-level type": `{"type":"oops","error":{"type":"x","message":"boom"}}`,
+		"missing message":      `{"type":"error","error":{"type":"overloaded_error"}}`,
+		"vertex shape":         `{"error":{"code":400,"message":"boom","status":"INVALID_ARGUMENT"}}`,
+	} {
+		err := anthropicHTTPError("anthropic", 400, nil, []byte(body), nil)
+		if err.Message != "Bad Request" {
+			t.Errorf("%s: message %q, want status text", name, err.Message)
+		}
+	}
+}
