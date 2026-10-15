@@ -250,7 +250,7 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 			if keptToolCallIDs[toolCallID] {
 				return true
 			}
-			return len(rule.Tools) > 0 && toolName != "" && !containsString(rule.Tools, toolName)
+			return rule.Tools != nil && toolName != "" && !containsString(rule.Tools, toolName)
 		}
 		switch p := part.(type) {
 		case types.ToolApprovalRequestContent:
@@ -259,13 +259,13 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 				return true
 			}
 			toolName := approvalIDToToolName[approvalID]
-			return len(rule.Tools) > 0 && toolName != "" && !containsString(rule.Tools, toolName)
+			return rule.Tools != nil && toolName != "" && !containsString(rule.Tools, toolName)
 		case types.ToolApprovalResponseContent:
 			if keptApprovalIDs[p.ApprovalID] {
 				return true
 			}
 			toolName := approvalIDToToolName[p.ApprovalID]
-			return len(rule.Tools) > 0 && toolName != "" && !containsString(rule.Tools, toolName)
+			return rule.Tools != nil && toolName != "" && !containsString(rule.Tools, toolName)
 		default:
 			// Not a tool-related part: always kept.
 			return true
@@ -305,7 +305,7 @@ func applyPruneToolCallsRule(messages []types.Message, rule PruneToolCallsRule) 
 					newCalls = append(newCalls, call)
 					continue
 				}
-				if len(rule.Tools) > 0 && call.ToolName != "" && !containsString(rule.Tools, call.ToolName) {
+				if rule.Tools != nil && call.ToolName != "" && !containsString(rule.Tools, call.ToolName) {
 					newCalls = append(newCalls, call)
 				}
 			}
