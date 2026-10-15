@@ -146,6 +146,7 @@ Options for streaming array elements as they complete.
 | Field | Type | Description |
 | --- | --- | --- |
 | `ElementSchema` | `schema.Schema` | ElementSchema defines the structure of each array element |
+| `MaxItems` | `*int` | MaxItems is an optional upper bound on the number of elements. When the model streams more, the element stream ends and OnError receives the TS validation error ("elements array must contain at most N items"). |
 | `OnElement` | `func(element ElementStreamResult[ELEMENT])` | OnElement is called when a new element is parsed |
 | `OnError` | `func(err error)` | OnError is called when an error occurs during parsing |
 | `OnComplete` | `func()` | OnComplete is called when the stream completes |
