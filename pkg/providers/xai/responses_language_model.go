@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"regexp"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -402,45 +401,6 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	}
 
 	return body, warnings, nil
-}
-
-func validateXAIResponsesFileParts(prompt types.Prompt) error {
-	for _, msg := range prompt.Messages {
-		if msg.Role != types.RoleUser {
-			continue
-		}
-		for _, part := range msg.Content {
-			file, ok := part.(types.FileContent)
-			if !ok {
-				continue
-			}
-			mediaType := xaiFileMediaType(file)
-			fileData := file.FileData
-			switch {
-			case fileData.Type == types.FileDataTypeText || file.Text != "":
-				return fmt.Errorf("xAI Responses API does not support text file parts")
-			case fileData.Type == types.FileDataTypeData && !isXAIImageMediaType(mediaType):
-				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
-			case fileData.Type == "" && len(file.Data) > 0 && !isXAIImageMediaType(mediaType):
-				return fmt.Errorf("xAI Responses API does not support file part media type %s as inline data; use a URL or Files API reference for non-image files", mediaType)
-			}
-		}
-	}
-	return nil
-}
-
-func xaiFileMediaType(file types.FileContent) string {
-	if file.FileData.MediaType != "" {
-		return file.FileData.MediaType
-	}
-	if file.MediaType != "" {
-		return file.MediaType
-	}
-	return file.MimeType
-}
-
-func isXAIImageMediaType(mediaType string) bool {
-	return strings.HasPrefix(mediaType, "image/") || mediaType == "image"
 }
 
 // convertXAIResponsesToolChoice maps a types.ToolChoice to the Responses API format.
