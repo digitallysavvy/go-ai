@@ -25,6 +25,7 @@ type AWSSigner struct {
 	secretAccessKey string
 	sessionToken    string
 	region          string
+	service         string
 }
 
 // NewAWSSigner creates a new AWS signer
@@ -34,7 +35,19 @@ func NewAWSSigner(accessKeyID, secretAccessKey, sessionToken, region string) *AW
 		secretAccessKey: secretAccessKey,
 		sessionToken:    sessionToken,
 		region:          region,
+		service:         serviceName,
 	}
+}
+
+// NewAWSSignerForService creates a signer whose SigV4 credential scope uses
+// service instead of the default "bedrock" (TS createSigV4FetchFunction's
+// `service` argument; Bedrock Mantle signs as "bedrock-mantle").
+func NewAWSSignerForService(accessKeyID, secretAccessKey, sessionToken, region, service string) *AWSSigner {
+	s := NewAWSSigner(accessKeyID, secretAccessKey, sessionToken, region)
+	if service != "" {
+		s.service = service
+	}
+	return s
 }
 
 // SignRequest signs an HTTP request with AWS Signature V4
@@ -199,14 +212,14 @@ func (s *AWSSigner) getCredentialScope(t time.Time) string {
 	return fmt.Sprintf("%s/%s/%s/%s",
 		t.Format(shortTimeFormat),
 		s.region,
-		serviceName,
+		s.service,
 		requestType)
 }
 
 func (s *AWSSigner) calculateSignature(t time.Time, stringToSign string) string {
 	kDate := s.hmac([]byte("AWS4"+s.secretAccessKey), []byte(t.Format(shortTimeFormat)))
 	kRegion := s.hmac(kDate, []byte(s.region))
-	kService := s.hmac(kRegion, []byte(serviceName))
+	kService := s.hmac(kRegion, []byte(s.service))
 	kSigning := s.hmac(kService, []byte(requestType))
 	signature := s.hmac(kSigning, []byte(stringToSign))
 
