@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -329,7 +330,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			s.mu.Lock()
 			s.abortedTurnDrain = turnDrain
 			s.mu.Unlock()
-			err := ctx.Err()
+			err := context.Cause(ctx)
 			if c.submitter != nil {
 				c.submitter.Close(err)
 			}
@@ -694,13 +695,13 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	if err != nil {
 		return nil, false
 	}
-	var supportsUserMessageResponses bool
+	var supportsUserMessageResponses atomic.Bool
 	channel := bridge.NewChannel(bridge.ChannelOptions{
 		Connect: bridge.NewConnectFunc(endpoint, bridge.DialOptions{
 			Name: "OpenCode bridge", WaitForHello: true, HelloTimeout: helloTimeout,
 			OnHello: func(h *bridge.Hello) {
 				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
-					supportsUserMessageResponses = *h.Capabilities.ExperimentalUserMessageResponses
+					supportsUserMessageResponses.Store(*h.Capabilities.ExperimentalUserMessageResponses)
 				}
 			},
 		}),
@@ -717,7 +718,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.rerunContinue = false
 	p.bridgePort = coords.Port
 	p.bridgeToken = coords.Token
-	p.supportsUserMessageResponses = func() bool { return supportsUserMessageResponses }
+	p.supportsUserMessageResponses = supportsUserMessageResponses.Load
 	return newSession(p), true
 }
 

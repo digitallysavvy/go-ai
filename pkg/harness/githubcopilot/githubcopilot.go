@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	ClientAppName    = "ai-sdk/harness-github-copilot"
+	ClientAppName    = "ai-sdk-harness-github-copilot"
 	ClientAppVersion = "0.0.0-go"
 	HarnessID        = "github-copilot"
 

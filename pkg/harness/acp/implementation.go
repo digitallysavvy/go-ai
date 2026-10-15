@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -128,12 +129,14 @@ func createImplementationManifest(impl implementation) *string {
 		if version == "" {
 			version = "latest"
 		}
-		payload := map[string]any{
-			"name": "harness-acp-implementation", "version": "0.0.0", "private": true, "type": "module",
-			"dependencies": map[string]string{impl.Source.PackageName: version},
-		}
-		data, _ := json.MarshalIndent(payload, "", "  ")
-		s := string(data) + "\n"
+		payload := struct {
+			Name         string            `json:"name"`
+			Version      string            `json:"version"`
+			Private      bool              `json:"private"`
+			Type         string            `json:"type"`
+			Dependencies map[string]string `json:"dependencies"`
+		}{"harness-acp-implementation", "0.0.0", true, "module", map[string]string{impl.Source.PackageName: version}}
+		s := marshalIndentNoEscape(payload) + "\n"
 		return &s
 	}
 }
@@ -164,14 +167,14 @@ func createImplementationDescriptor(impl implementation) string {
 	if args == nil {
 		args = []string{}
 	}
-	payload := map[string]any{
-		"executablePath": executablePath,
-		"privateHome":    impl.Source.Type == SourceInstallCommand,
-		"args":           args,
-		"envKeys":        implementationEnvironmentKeys(impl),
-	}
-	data, _ := json.MarshalIndent(payload, "", "  ")
-	return string(data) + "\n"
+	payload := struct {
+		ExecutablePath string   `json:"executablePath"`
+		PrivateHome    bool     `json:"privateHome"`
+		Args           []string `json:"args"`
+		EnvKeys        []string `json:"envKeys"`
+	}{executablePath, impl.Source.Type == SourceInstallCommand, args, implementationEnvironmentKeys(impl)}
+	data := marshalIndentNoEscape(payload)
+	return data + "\n"
 }
 
 // implementationIdentityInput is the input of createImplementationIdentity.
@@ -196,7 +199,11 @@ func createImplementationIdentity(in implementationIdentityInput) string {
 	case SourceNPMLocked:
 		sourceIdentity = map[string]any{
 			"type": impl.Source.Type, "packageJson": impl.Source.PackageJSON,
-			"pnpmLockYaml": impl.Source.PnpmLockYAML, "pnpmWorkspaceYaml": impl.Source.PnpmWorkspaceYAML,
+			"pnpmLockYaml": impl.Source.PnpmLockYAML,
+		}
+		// JSON.stringify drops an undefined workspace file.
+		if impl.Source.PnpmWorkspaceYAML != "" {
+			sourceIdentity["pnpmWorkspaceYaml"] = impl.Source.PnpmWorkspaceYAML
 		}
 	case SourceNPMSimple:
 		sourceIdentity = map[string]any{"type": impl.Source.Type, "packageName": impl.Source.PackageName}
@@ -339,9 +346,43 @@ func sortedUnique(values []string) []string {
 // not required — only that the same Go value always encodes the same way.
 // encoding/json already sorts map[string]T keys, which is sufuficient.
 func stableStringify(value any) string {
-	data, err := json.Marshal(value)
+	raw, err := encodeNoEscape(value)
 	if err != nil {
 		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
 	}
-	return string(data)
+	// Round-trip through a generic value so object keys are sorted at every
+	// level (struct fields otherwise keep declaration order), like TS
+	// `sortValue`.
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	var generic any
+	if err := dec.Decode(&generic); err != nil {
+		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
+	}
+	sorted, err := encodeNoEscape(generic)
+	if err != nil {
+		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
+	}
+	return sorted
+}
+
+// encodeNoEscape is json.Marshal without HTML escaping (`<`, `>`, `&` stay
+// literal, like JSON.stringify), so identity digests can match TS byte for byte.
+func encodeNoEscape(value any) (string, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), nil
+}
+
+func marshalIndentNoEscape(value any) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(value)
+	return strings.TrimSuffix(buf.String(), "\n")
 }

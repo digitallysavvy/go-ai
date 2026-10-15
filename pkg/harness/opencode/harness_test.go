@@ -496,7 +496,7 @@ func TestDoStartSpawnsBridgeWithSkillsDirFlag(t *testing.T) {
 	if !strings.Contains(cmd, "--skills-dir '/home/vercel-sandbox/.agents/skills'") {
 		t.Fatalf("spawn command = %q", cmd)
 	}
-	if len(sandbox.spawnEnvs) == 0 || sandbox.spawnEnvs[0]["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk/harness-opencode/"+Version {
+	if len(sandbox.spawnEnvs) == 0 || sandbox.spawnEnvs[0]["AI_SDK_HARNESS_CLIENT_APP"] != "ai-sdk-harness-opencode/"+Version {
 		t.Fatalf("spawn env = %v", sandbox.spawnEnvs)
 	}
 }

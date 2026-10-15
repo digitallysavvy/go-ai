@@ -100,7 +100,7 @@ type resumeStateData struct {
 	TurnStartConfig              *TurnStartConfig               `json:"turnStartConfig,omitempty"`
 	Recovery                     *recoveryInfo                  `json:"recovery,omitempty"`
 	Restoration                  *restorationInfo               `json:"restoration,omitempty"`
-	InitialGuidanceApplied       bool                           `json:"initialGuidanceApplied,omitempty"`
+	InitialGuidanceApplied       *bool                          `json:"initialGuidanceApplied,omitempty"` // pointer: an explicit false must round-trip (absent means true on resume)
 	InstructionsFingerprint      string                         `json:"instructionsFingerprint,omitempty"`
 	SkillsDirectory              string                         `json:"skillsDirectory,omitempty"`
 }
@@ -113,12 +113,38 @@ type bridgeCoords struct {
 	StateDir        string  `json:"stateDir,omitempty"`
 }
 
+// ValidateLifecycleStateData mirrors TS `acpResumeStateSchema` (zod): the data
+// must be an object carrying a string `implementationIdentity`, well-typed
+// bridge coordinates, and enum-valued recovery/restoration markers.
 func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 {
-		return nil
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil || probe == nil {
+		return fmt.Errorf("ACP lifecycle state data must be an object.") //nolint:staticcheck // mirrors the TS zod object requirement
+	}
+	var identity string
+	if raw, ok := probe["implementationIdentity"]; !ok || json.Unmarshal(raw, &identity) != nil {
+		return fmt.Errorf("ACP lifecycle state data: implementationIdentity must be a string.") //nolint:staticcheck // mirrors the TS zod string requirement
 	}
 	var v resumeStateData
-	return json.Unmarshal(data, &v)
+	if err := json.Unmarshal(data, &v); err != nil {
+		return fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
+	}
+	if b := v.Bridge; b != nil {
+		var bridgeProbe map[string]json.RawMessage
+		_ = json.Unmarshal(probe["bridge"], &bridgeProbe)
+		for _, key := range []string{"port", "token", "lastSeenEventId"} {
+			if _, ok := bridgeProbe[key]; !ok {
+				return fmt.Errorf("ACP lifecycle state data: bridge.%s is required.", key) //nolint:staticcheck // mirrors the TS zod requirement
+			}
+		}
+	}
+	if r := v.Recovery; r != nil && r.Mode != "disk-replay" && r.Mode != "lossy-rerun" {
+		return fmt.Errorf("ACP lifecycle state data: recovery.mode must be 'disk-replay' or 'lossy-rerun'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	if r := v.Restoration; r != nil && r.Method != "resume" && r.Method != "load" {
+		return fmt.Errorf("ACP lifecycle state data: restoration.method must be 'resume' or 'load'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	return nil
 }
 
 func unsupported(harnessID, message string) error {
@@ -208,13 +234,18 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			"The %s ACP harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", settings.HarnessID))
 	}
 
-	isContinue := opts.ContinueFrom != nil
+	// Mirrors TS `startOptions.continueFrom ?? startOptions.resumeFrom?.continueFrom`.
+	continueFrom := opts.ContinueFrom
+	if continueFrom == nil && opts.ResumeFrom != nil {
+		continueFrom = opts.ResumeFrom.ContinueFrom
+	}
+	isContinue := continueFrom != nil
 	isResume := isContinue || opts.ResumeFrom != nil
 	var lifecycleData json.RawMessage
 	var lifecycleHarnessID string
 	switch {
-	case opts.ContinueFrom != nil:
-		lifecycleData, lifecycleHarnessID = opts.ContinueFrom.Data, opts.ContinueFrom.HarnessID
+	case continueFrom != nil:
+		lifecycleData, lifecycleHarnessID = continueFrom.Data, continueFrom.HarnessID
 	case opts.ResumeFrom != nil:
 		lifecycleData, lifecycleHarnessID = opts.ResumeFrom.Data, opts.ResumeFrom.HarnessID
 	}
@@ -229,7 +260,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		if resumeData.ImplementationIdentity != implementationIdentity {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
-		if resumeData.AuthenticationProfile != nil && resumeData.AuthenticationProfile.Digest != authProfile.Digest {
+		if resumeData.AuthenticationProfile == nil || resumeData.AuthenticationProfile.Digest != authProfile.Digest {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if coords := resumeData.Bridge; coords != nil && coords.SandboxID != "" && sandboxID != "" && coords.SandboxID != sandboxID {
@@ -249,17 +280,24 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	sandboxProviderAuthEnvironment := resolvedProviderAuth.Env
 	var sandboxProviderEnvironment map[string]string
 	credentialEnvironmentVariables := uniqueStrings(append(append([]string{}, settings.CredentialEnv...), "AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"))
+	credentialForwardingEnvironmentVariables := uniqueStrings(append(append([]string{}, credentialEnvironmentVariables...), providerCredentialEnvironmentVariables(resolvedProviderAuth)...))
 	var sandboxCredentialEnvironment map[string]string
-	credentialsBrokered := false
 
 	if settings.CredentialBrokering != nil {
 		if adder, ok := sandboxSession.(harness.RequestTransformationAdder); ok {
+			providerEnvironment, err := resolveProviderEnvironment(resolvedProviderAuth, h.clientApp)
+			if err != nil {
+				return nil, err
+			}
 			brokeringEnvironment := map[string]string{}
 			for k, v := range implementationEnvironment {
 				brokeringEnvironment[k] = v
 			}
+			for k, v := range providerEnvironment {
+				brokeringEnvironment[k] = v
+			}
 			sandboxCredentialEnvironment, err = harnessutil.ResolveSandboxCredentialEnvironment(ctx, harnessutil.CredentialForwardingOptions{
-				Environment: brokeringEnvironment, CredentialEnvironmentVariables: credentialEnvironmentVariables,
+				Environment: brokeringEnvironment, CredentialEnvironmentVariables: credentialForwardingEnvironmentVariables,
 				CredentialForwarding:                 settings.CredentialForwarding,
 				PreviousSandboxCredentialEnvironment: resumeData.SandboxCredentialEnvironment,
 			})
@@ -274,26 +312,32 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				merged[k] = v
 			}
 			sandboxImplementationEnvironment = merged
-			headers := opts.Headers
-			transformations := settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, headers)
+			transformations := settings.CredentialBrokering(brokeringEnvironment, sandboxImplementationEnvironment, opts.Headers)
 			if len(transformations) > 0 {
 				if err := adder.AddRequestTransformations(ctx, transformations); err != nil {
 					return nil, err
 				}
 			}
-			credentialsBrokered = true
 			if resolvedProviderAuth.Type == "ai-gateway" {
 				sandboxProviderEnvironment = map[string]string{}
 			}
 		}
 	}
 	if settings.CredentialForwarding != nil && sandboxProviderEnvironment == nil && resolvedProviderAuth.Type == "ai-gateway" {
-		sandboxProviderEnvironment = map[string]string{}
+		sandboxProviderEnvironment, err = resolveProviderEnvironment(resolvedProviderAuth, h.clientApp)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if sandboxProviderEnvironment != nil {
-		for k, v := range sandboxProviderEnvironment {
-			sandboxImplementationEnvironment[k] = v
+		merged := map[string]string{}
+		for k, v := range sandboxImplementationEnvironment {
+			merged[k] = v
 		}
+		for k, v := range sandboxProviderEnvironment {
+			merged[k] = v
+		}
+		sandboxImplementationEnvironment = merged
 		filtered := map[string]string{}
 		for k, v := range resolvedProviderAuth.Env {
 			if k != "AI_SDK_ACP_GATEWAY_API_KEY" && k != "AI_SDK_ACP_GATEWAY_BASE_URL" {
@@ -344,6 +388,12 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		homePath: implementationHomeDir, skillsDir: skillsDir, skillsDirectory: skillsDirectory,
 		sandboxID: sandboxID, sandboxCredentialEnvironment: sandboxCredentialEnvironment,
 		reconnect: settings.Reconnect, bridgeStateDir: bridgeStateDir,
+		debug: debugConfig(opts.Observability), instructionsFingerprint: resumeData.InstructionsFingerprint,
+	}
+	// Mirrors TS `resolveACPInitialGuidanceApplied`: false for a fresh
+	// session, else the persisted flag (default true).
+	if isResume {
+		sessionArgs.initialGuidanceApplied = resumeData.InitialGuidanceApplied == nil || *resumeData.InitialGuidanceApplied
 	}
 
 	// Attach to a still-running bridge when coordinates are known (TS's
@@ -411,7 +461,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	forwardedImplementationEnvironment := sandboxImplementationEnvironment
 	if sandboxCredentialEnvironment == nil {
 		forwardedImplementationEnvironment, err = harnessutil.ApplyCredentialForwarding(ctx, harnessutil.CredentialForwardingOptions{
-			Environment: sandboxImplementationEnvironment, CredentialEnvironmentVariables: credentialEnvironmentVariables,
+			Environment: sandboxImplementationEnvironment, CredentialEnvironmentVariables: credentialForwardingEnvironmentVariables,
 			CredentialForwarding: settings.CredentialForwarding,
 		})
 		if err != nil {
@@ -435,10 +485,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		}
 		harnessutil.WarnCredentialBrokeringUnavailable(harnessutil.WarnCredentialBrokeringUnavailableOptions{
 			Environment: env, ForwardedEnvironment: forwarded,
-			CredentialEnvironmentVariables: append(append([]string{}, credentialEnvironmentVariables...), "AI_SDK_ACP_GATEWAY_API_KEY"),
+			CredentialEnvironmentVariables: append(append([]string{}, credentialForwardingEnvironmentVariables...), "AI_SDK_ACP_GATEWAY_API_KEY"),
 		})
 	}
-	_ = credentialsBrokered
 
 	if settings.AuthenticationFiles != nil {
 		files := settings.AuthenticationFiles(implementationEnvironment, forwardedImplementationEnvironment, sandboxCredentialEnvironment != nil)
@@ -467,9 +516,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	if resolvedProviderAuth.Type != "" {
 		bridgeProviderAuthentication = &bridgeProviderAuth{Type: resolvedProviderAuth.Type, Env: resolvedProviderAuth.GatewayEnv}
 	}
-	var providerEnvironment map[string]string
+	var providerEnvironment *map[string]string
 	if sandboxProviderEnvironment != nil {
-		providerEnvironment = map[string]string{}
+		providerEnvironment = &map[string]string{}
 	}
 	for k, v := range createBridgeEnvironment(bridgeConfiguration{
 		Authentication: settings.Authentication, ProviderAuthentication: bridgeProviderAuthentication,

@@ -195,7 +195,7 @@ func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFun
 		select {
 		case <-ctx.Done():
 			_ = channel.Send(bridge.AbortCommand{})
-			c.settleError(ctx.Err())
+			c.settleError(context.Cause(ctx))
 		case <-c.done:
 		}
 	}()

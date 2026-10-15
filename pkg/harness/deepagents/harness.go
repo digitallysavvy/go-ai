@@ -273,7 +273,9 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "deepagents bridge", Source: HarnessID, Sandbox: toolSafeSandboxSession,
-		Command: command, Env: env, Port: port, Token: token, ReplayFromDisk: isResume,
+		Command: command, Env: env, Port: port, Token: token, // The TS adapter never sets BRIDGE_REPLAY_FROM_DISK: a respawned
+		// deepagents bridge resumes through `--resume true` only.
+		ReplayFromDisk: false,
 		BridgeStateDir: bridgeStateDir, BridgeType: HarnessID, StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
 			return resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort)

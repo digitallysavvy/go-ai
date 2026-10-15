@@ -126,8 +126,8 @@ const (
 // ModelMapping maps the HarnessAgent model identifier to an ACP session
 // operation. Mirrors TS `ACPModelMapping`.
 type ModelMapping struct {
-	Type ModelMappingType
-	Path string
+	Type ModelMappingType `json:"type"`
+	Path string           `json:"path"`
 }
 
 // ProviderAuthentication configures the ACP implementation to authenticate
@@ -143,9 +143,9 @@ type ProviderAuthentication struct {
 // for the implementation (methodId from `authenticate`). Mirrors TS
 // `ACPAuthentication`.
 type Authentication struct {
-	MethodID           string
-	Meta               map[string]any
-	ClientCapabilities map[string]any
+	MethodID           string         `json:"methodId"`
+	Meta               map[string]any `json:"meta,omitempty"`
+	ClientCapabilities map[string]any `json:"clientCapabilities,omitempty"`
 }
 
 // CredentialBrokering builds request transformations from resolved
@@ -221,7 +221,7 @@ type Settings struct {
 	StartupTimeout time.Duration
 	Reconnect      bridge.ReconnectOptions
 
-	// ClientApp overrides the default "ai-sdk/harness-acp"/Version identity
+	// ClientApp overrides the default "ai-sdk-harness-acp"/Version identity
 	// sent to the ACP implementation and used in the implementation identity
 	// hash. Concrete wrapper adapters normally set their own.
 	ClientApp ClientApp
@@ -270,4 +270,4 @@ type ClientApp struct {
 }
 
 // DefaultClientApp is used when Settings.ClientApp is the zero value.
-var DefaultClientApp = ClientApp{Name: "ai-sdk/harness-acp", Version: Version}
+var DefaultClientApp = ClientApp{Name: "ai-sdk-harness-acp", Version: Version}

@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	ClientAppName    = "ai-sdk/harness-grok-build"
+	ClientAppName    = "ai-sdk-harness-grok-build"
 	ClientAppVersion = "0.0.0-go"
 	HarnessID        = "grok-build"
 )

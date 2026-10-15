@@ -30,7 +30,7 @@ import (
 // Go SDK does not (yet) stamp a package version into adapter packages, so it
 // is fixed to "0.0.0-go" until a release process defines one.
 const (
-	ClientAppName    = "ai-sdk/harness-cursor"
+	ClientAppName    = "ai-sdk-harness-cursor"
 	ClientAppVersion = "0.0.0-go"
 	HarnessID        = "cursor"
 )

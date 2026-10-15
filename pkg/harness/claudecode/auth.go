@@ -158,7 +158,8 @@ func extractAPIKeyHelperCommand(raw []byte) string {
 	return settings.APIKeyHelper
 }
 
-// requestTransformations mirrors TS `createClaudeCodeRequestTransformations`.
+// requestTransformations mirrors TS `createClaudeCodeRequestTransformations`
+// followed by `createClaudeCodeSubscriptionRequestTransformations`.
 // TS throws synchronously on an invalid matchUrl (`new URL(matchUrl)`),
 // failing the whole `doStart` call; the Go port propagates the same error
 // instead of silently dropping the transformation.
@@ -184,6 +185,19 @@ func requestTransformations(env, sandboxEnv map[string]string, authMode Resolved
 			MatchURL:         matchURL,
 			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxEnv["ANTHROPIC_AUTH_TOKEN"]},
 			TransformHeaders: map[string]string{"Authorization": "Bearer " + env["ANTHROPIC_AUTH_TOKEN"]},
+		})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	// Mirrors TS `createClaudeCodeSubscriptionRequestTransformations`: the
+	// native-subscription OAuth token is brokered the same way.
+	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "" && sandboxEnv["CLAUDE_CODE_OAUTH_TOKEN"] != "" {
+		t, err := harnessutil.CreateCredentialRequestTransformation(harnessutil.CreateCredentialRequestTransformationOptions{
+			MatchURL:         matchURL,
+			MatchHeaders:     map[string]string{"Authorization": "Bearer " + sandboxEnv["CLAUDE_CODE_OAUTH_TOKEN"]},
+			TransformHeaders: map[string]string{"Authorization": "Bearer " + env["CLAUDE_CODE_OAUTH_TOKEN"]},
 		})
 		if err != nil {
 			return nil, err

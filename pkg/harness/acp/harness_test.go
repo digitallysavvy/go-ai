@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
+var mvForce = regexp.MustCompile(`^mv -f '([^']+)' '([^']+)'$`)
+
 // fakeSandbox is a minimal harness.NetworkSandboxSession mirroring the
 // deepagents/opencode test doubles.
 type fakeSandbox struct {
@@ -26,10 +29,20 @@ type fakeSandbox struct {
 	addReqTrans   [][]harness.RequestTransformation
 	bridgeAddr    string
 	files         map[string]string
+	runs          []string
 }
 
 func (s *fakeSandbox) Description() string { return "acp fake sandbox" }
 func (s *fakeSandbox) Run(_ context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+	s.mu.Lock()
+	s.runs = append(s.runs, opts.Command)
+	// Mirror the TS fake sandbox: `mv -f src dst` publishes a staged file.
+	if m := mvForce.FindStringSubmatch(opts.Command); m != nil {
+		if content, ok := s.files[m[1]]; ok {
+			s.files[m[2]] = content
+		}
+	}
+	s.mu.Unlock()
 	if opts.Command == `printf "%s" "$HOME"` {
 		return providerutils.SandboxRunResult{ExitCode: 0, Stdout: "/home/vercel-sandbox"}, nil
 	}

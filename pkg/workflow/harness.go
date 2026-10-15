@@ -351,6 +351,14 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 			if e != nil && suspend.triggered() && isAbortErrorValue(e.Error()) {
 				e = nil
 			}
+			// A genuine error part was already surfaced as an "error" chunk
+			// above (sawError): the run fails through the failed-state path
+			// below, with the session detached and resume state returned,
+			// instead of rejecting the whole execution (TS reads the same
+			// failure once, as the stream's error chunk).
+			if e != nil && sawError {
+				e = nil
+			}
 			pipelineErr = e
 		default:
 		}
@@ -454,7 +462,7 @@ func RunHarnessAgent(ctx context.Context, opts RunHarnessAgentOptions) (HarnessW
 		// — actually came back. Both cases funnel into the same
 		// failed-session handling TS's single try/catch already shares.
 		if oerr == nil && output == nil {
-			oerr = errors.New("harness agent result does not expose structured output")
+			oerr = errors.New("Harness agent result does not expose structured output.") //nolint:staticcheck // matches TS SDK exact error text
 		}
 		if oerr != nil {
 			resumeFrom, continueFrom, ferr := endFailedHarnessSession(ctx, session, destroyOnFinish, nil)

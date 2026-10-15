@@ -3,6 +3,7 @@ package acp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -38,6 +39,35 @@ type providerAuthenticationCompatibility struct {
 	BaseURL          string
 }
 
+// MarshalJSON mirrors the TS `ACPProviderAuthenticationCompatibility` shape,
+// which feeds the authentication profile digest: `direct` carries only type
+// and mode; `ai-gateway` adds the profile env, the credential source (null
+// when none) and the base URL.
+func (c providerAuthenticationCompatibility) MarshalJSON() ([]byte, error) {
+	if c.Type != "ai-gateway" {
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Mode string `json:"mode"`
+		}{c.Type, c.Mode})
+	}
+	var source *string
+	if c.CredentialSource != "" {
+		s := string(c.CredentialSource)
+		source = &s
+	}
+	env := c.GatewayEnv
+	if env == nil {
+		env = map[string]any{}
+	}
+	return json.Marshal(struct {
+		Type             string         `json:"type"`
+		Mode             string         `json:"mode"`
+		Env              map[string]any `json:"env"`
+		CredentialSource *string        `json:"credentialSource"`
+		BaseURL          string         `json:"baseUrl"`
+	}{c.Type, c.Mode, env, source, c.BaseURL})
+}
+
 // authenticationProfileIdentity is a stable digest of the authentication
 // configuration, used to reject an incompatible resume. Mirrors TS
 // `ACPAuthenticationProfileIdentity`.
@@ -56,18 +86,13 @@ func createAuthenticationProfileIdentity(authentication *Authentication, compat 
 	if compat != nil {
 		providerKind = compat.Type
 	}
-	payload := map[string]any{}
+	// Mirrors TS `{ authentication: authentication ?? null, providerAuthentication: compat ?? null }`.
+	payload := map[string]any{"authentication": nil, "providerAuthentication": nil}
 	if authentication != nil {
-		payload["authentication"] = map[string]any{
-			"methodId": authentication.MethodID, "meta": authentication.Meta, "clientCapabilities": authentication.ClientCapabilities,
-		}
-	} else {
-		payload["authentication"] = nil
+		payload["authentication"] = authentication
 	}
 	if compat != nil {
 		payload["providerAuthentication"] = compat
-	} else {
-		payload["providerAuthentication"] = nil
 	}
 	sum := sha256.Sum256([]byte(stableStringify(payload)))
 	id := authenticationProfileIdentity{Digest: hex.EncodeToString(sum[:]), ProviderKind: providerKind}

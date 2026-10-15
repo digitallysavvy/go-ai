@@ -209,10 +209,6 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		timeout = bridge.DefaultStartupTimeout
 	}
 
-	if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
-		return nil, err
-	}
-
 	// Normalize each forwarded bridge diagnostics frame into the general
 	// harness.Diagnostic and report it. Mirrors TS `claude-code-harness.ts`
 	// `onDiagnostic` (report ? frame => report(harnessV1DiagnosticFromBridgeFrame(...)) : undefined).
@@ -263,6 +259,15 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		}
 	}
 
+	// A fresh start creates the workdir and bridge-state directory; resumes
+	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
+	// undefined` mkdir.
+	if respawnStrategy == "" {
+		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
+			return nil, err
+		}
+	}
+
 	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
 	if err != nil {
 		return nil, harness.NewCapabilityUnsupportedError(
@@ -275,7 +280,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "claude-code bridge", Source: HarnessID, Sandbox: restricted,
-		Command:        fmt.Sprintf("node %s/bridge.mjs --workdir %s --bridge-state-dir %s", harnessutil.ShellQuote(bootstrapDir), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
+		Command:        fmt.Sprintf("node %s --workdir %s --bridge-state-dir %s", harnessutil.ShellQuote(bootstrapDir+"/bridge.mjs"), harnessutil.ShellQuote(workDir), harnessutil.ShellQuote(bridgeStateDir)),
 		Port:           port,
 		Token:          token,
 		ReplayFromDisk: respawnStrategy == "replay",
@@ -314,24 +319,23 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if replaying {
 		finishAttachment = channel.BeginListenerAttachment()
 	}
-	err = channel.Open(ctx, replaying)
-	if finishAttachment != nil {
-		finishAttachment()
-	}
-	if err != nil {
+	if err := channel.Open(ctx, replaying); err != nil {
+		if finishAttachment != nil {
+			finishAttachment()
+		}
 		return nil, err
 	}
 
 	return newSession(sessionOptions{
-		sessionID: opts.SessionID, channel: channel, proc: launched.Proc,
+		sessionID: opts.SessionID, channel: channel, proc: launched.Proc, finishListenerAttachment: finishAttachment, debug: debugConfig(opts.Observability),
 		maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
-		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: isResume,
+		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun",
 		resumeSessionID: resumeData.ClaudeSessionID,
 		bridgePort:      port, bridgeToken: token, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
 		permissionMode:               opts.PermissionMode, builtinToolFiltering: opts.BuiltinToolFiltering,
 		mcpServers: settings.MCPServers, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
-		supportsUserMessages: supportsUserMessages.Load(),
+		supportsUserMessages: supportsUserMessages.Load,
 	}), nil
 }
 
@@ -342,6 +346,7 @@ type attachOptions struct {
 	settings       Settings
 	timeout        time.Duration
 	sessionID      string
+	sandboxID      string
 	isContinue     bool
 
 	maxTurns                     int
@@ -358,6 +363,7 @@ type attachOptions struct {
 	sandbox                      providerutils.SandboxSession
 	sandboxHomeDir               string
 	onDiagnostic                 func(bridge.OutboundMessage)
+	debug                        *harness.DebugConfig
 }
 
 // tryAttach reopens a socket to a still-running bridge using persisted
@@ -394,35 +400,41 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 	if opts.isContinue {
 		finishAttachment = channel.BeginListenerAttachment()
 	}
-	err = channel.Open(ctx, opts.isContinue)
-	if finishAttachment != nil {
-		finishAttachment()
-	}
-	if err != nil {
+	if err := channel.Open(ctx, opts.isContinue); err != nil {
+		if finishAttachment != nil {
+			finishAttachment()
+		}
 		return nil
 	}
 	return newSession(sessionOptions{
-		sessionID: opts.sessionID, channel: channel, proc: nil,
+		sessionID: opts.sessionID, channel: channel, proc: nil, finishListenerAttachment: finishAttachment, debug: opts.debug,
 		maxTurns: opts.maxTurns, agentProgressSummaries: opts.agentProgressSummaries, forwardSubagentText: opts.forwardSubagentText, env: opts.env, thinking: opts.thinking, effort: opts.effort,
 		isResume: true, continueOnFirstPrompt: false, rerunContinue: false,
 		resumeSessionID: opts.resumeSessionID,
-		bridgePort:      opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.coords.SandboxID,
+		bridgePort:      opts.coords.Port, bridgeToken: opts.coords.Token, sandboxID: opts.sandboxID,
 		sandboxCredentialEnvironment: opts.sandboxCredentialEnvironment,
-		supportsUserMessages:         supportsUserMessages.Load(),
+		supportsUserMessages:         supportsUserMessages.Load,
 		permissionMode:               opts.permissionMode, builtinToolFiltering: opts.builtinToolFiltering,
 		mcpServers: opts.mcpServers, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 	})
 }
 
 func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {
-	for _, dir := range dirs {
-		if _, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{
-			Command: "mkdir -p " + harnessutil.ShellQuote(dir),
-		}); err != nil {
-			return err
-		}
+	quoted := make([]string, len(dirs))
+	for i, dir := range dirs {
+		quoted[i] = harnessutil.ShellQuote(dir)
 	}
-	return nil
+	_, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{
+		Command: "mkdir -p " + strings.Join(quoted, " "),
+	})
+	return err
+}
+
+func debugConfig(o *harness.Observability) *harness.DebugConfig {
+	if o == nil {
+		return nil
+	}
+	return o.Debug
 }
 
 func joinLines(lines []string) string { return strings.Join(lines, "\n") }

@@ -60,6 +60,7 @@ type sessionOptions struct {
 	sandboxHomeDir string
 
 	turnConfigurationFingerprint string
+	debug                        *harness.DebugConfig
 }
 
 type session struct {
@@ -216,7 +217,7 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 	frame := &StartFrame{
 		StartBase: bridge.StartBase{
 			Prompt: prompt, Tools: ts.Tools, Model: firstNonEmpty(ts.Model, s.opts.model), ResponseFormat: rf,
-			PermissionMode: s.opts.permissionMode, BuiltinToolFiltering: s.opts.builtinToolFiltering,
+			PermissionMode: s.opts.permissionMode, BuiltinToolFiltering: s.opts.builtinToolFiltering, Debug: s.opts.debug,
 		},
 		Instructions:    ts.Instructions,
 		ReasoningEffort: s.opts.reasoningEffort,
@@ -446,7 +447,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		select {
 		case <-ctx.Done():
 			_ = s.opts.channel.Send(bridge.AbortCommand{})
-			pc.settleError(ctx.Err())
+			pc.settleError(context.Cause(ctx))
 		case <-pc.done:
 		}
 	}()

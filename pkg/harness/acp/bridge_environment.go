@@ -13,7 +13,7 @@ const BridgeConfigurationEnv = "AI_SDK_ACP_BRIDGE_CONFIGURATION"
 type bridgeConfiguration struct {
 	Authentication                *Authentication      `json:"authentication,omitempty"`
 	ProviderAuthentication        *bridgeProviderAuth  `json:"providerAuthentication,omitempty"`
-	ProviderEnvironment           map[string]string    `json:"providerEnvironment,omitempty"`
+	ProviderEnvironment           *map[string]string   `json:"providerEnvironment,omitempty"` // pointer: an empty map must still serialize as {}
 	SessionMeta                   map[string]any       `json:"sessionMeta,omitempty"`
 	ClientCapabilities            map[string]any       `json:"clientCapabilities,omitempty"`
 	AskUserQuestionsRequestMethod string               `json:"askUserQuestionsRequestMethod,omitempty"`

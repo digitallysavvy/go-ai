@@ -16,7 +16,7 @@ import (
 func TestBuildConfig_Recipe(t *testing.T) {
 	cfg := BuildConfig(Settings{})
 
-	if cfg.HarnessID != "fx" || cfg.ClientApp.Name != "ai-sdk/harness-fx" {
+	if cfg.HarnessID != "fx" || cfg.ClientApp.Name != "ai-sdk-harness-fx" {
 		t.Errorf("harnessID/clientApp = %q/%q", cfg.HarnessID, cfg.ClientApp.Name)
 	}
 	if cfg.Executable != "fx" || !reflect.DeepEqual(cfg.Args, []string{"acp"}) {
@@ -336,7 +336,7 @@ func TestCredentialBrokering_AIGatewayOnly(t *testing.T) {
 	if tr.Transform.Headers["Authorization"] != "Bearer oidc-secret" {
 		t.Errorf("authorization = %q", tr.Transform.Headers["Authorization"])
 	}
-	if tr.Transform.Headers["x-client-app"] != "ai-sdk/harness-fx/0.0.0-go" {
+	if tr.Transform.Headers["x-client-app"] != "ai-sdk-harness-fx/0.0.0-go" {
 		t.Errorf("x-client-app = %q", tr.Transform.Headers["x-client-app"])
 	}
 	if tr.Transform.Headers["x-tenant"] != "acme" {
@@ -433,7 +433,7 @@ func TestBuildConfig_SuppliedAuthenticationEnvironmentGateway(t *testing.T) {
 	if tr.Transform.Headers["Authorization"] != "Bearer explicit-gateway-key" {
 		t.Errorf("authorization = %q", tr.Transform.Headers["Authorization"])
 	}
-	if tr.Transform.Headers["x-client-app"] != "ai-sdk/harness-fx/0.0.0-go" {
+	if tr.Transform.Headers["x-client-app"] != "ai-sdk-harness-fx/0.0.0-go" {
 		t.Errorf("x-client-app = %q", tr.Transform.Headers["x-client-app"])
 	}
 }
