@@ -710,3 +710,116 @@ func providerToolResultFromError(p types.ToolErrorContent) types.ToolResult {
 		Dynamic:          p.Dynamic,
 	}
 }
+
+// blockContent tracks the text and reasoning blocks a model stream opened with
+// an explicit start part, by block id. TS stream-text records content per id
+// (activeText / activeReasoning), so blocks the provider interleaves (a
+// second text block starting before the first ended) keep their own deltas.
+// A delta whose id has no open block (providers without start parts) falls
+// back to merging into the trailing part, as before.
+type blockContent struct {
+	text      map[string]int
+	reasoning map[string]int
+}
+
+func (b *blockContent) reset() { b.text, b.reasoning = nil, nil }
+
+func (b *blockContent) openText(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	parts = startNewTextPart(parts, metadata)
+	if id != "" {
+		if b.text == nil {
+			b.text = map[string]int{}
+		}
+		b.text[id] = len(parts) - 1
+	}
+	return parts
+}
+
+func (b *blockContent) textDelta(parts []types.ContentPart, id, text string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.text[id]; ok && id != "" {
+		if text == "" && len(metadata) == 0 {
+			return parts
+		}
+		if tc, ok := parts[i].(types.TextContent); ok {
+			tc.Text += text
+			if len(metadata) > 0 {
+				tc.ProviderMetadata = metadata
+			}
+			parts[i] = tc
+			return parts
+		}
+	}
+	return appendTextPart(parts, text, metadata)
+}
+
+func (b *blockContent) closeText(parts []types.ContentPart, id string, citations []types.Citation) []types.ContentPart {
+	if i, ok := b.text[id]; ok && id != "" {
+		delete(b.text, id)
+		if len(citations) > 0 {
+			if tc, ok := parts[i].(types.TextContent); ok {
+				tc.Citations = citations
+				parts[i] = tc
+			}
+		}
+		return parts
+	}
+	return setTrailingTextCitations(parts, citations)
+}
+
+func (b *blockContent) openReasoning(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	parts = startNewReasoningPart(parts, metadata)
+	if id != "" {
+		if b.reasoning == nil {
+			b.reasoning = map[string]int{}
+		}
+		b.reasoning[id] = len(parts) - 1
+	}
+	return parts
+}
+
+func (b *blockContent) reasoningDelta(parts []types.ContentPart, id, text string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.reasoning[id]; ok && id != "" {
+		if text == "" && len(metadata) == 0 {
+			return parts
+		}
+		if rc, ok := parts[i].(types.ReasoningContent); ok {
+			rc.Text += text
+			if len(metadata) > 0 {
+				rc.ProviderMetadata = metadata
+			}
+			parts[i] = rc
+			return parts
+		}
+	}
+	return appendReasoningPart(parts, text, metadata)
+}
+
+func (b *blockContent) closeReasoning(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {
+	if i, ok := b.reasoning[id]; ok && id != "" {
+		delete(b.reasoning, id)
+		if len(metadata) > 0 {
+			if rc, ok := parts[i].(types.ReasoningContent); ok {
+				rc.ProviderMetadata = metadata
+				parts[i] = rc
+			}
+		}
+		return parts
+	}
+	return setTrailingReasoningMetadata(parts, metadata)
+}
+
+// textOfContent joins the text parts of content in order (TS extractTextContent).
+func textOfContent(parts []types.ContentPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		switch p := part.(type) {
+		case types.TextContent:
+			b.WriteString(p.Text)
+		case *types.TextContent:
+			if p != nil {
+				b.WriteString(p.Text)
+			}
+		}
+	}
+	return b.String()
+}

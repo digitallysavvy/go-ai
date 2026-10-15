@@ -228,3 +228,79 @@ func mustStream(t *testing.T, model provider.LanguageModel, output interface{}) 
 	}
 	return res
 }
+
+// stream-text.test.ts 'mixed multi content streaming with interleaving parts'
+// ('mixed text and reasoning blocks'): blocks are recorded per id, in start order.
+func TestTSReplay_StreamText_InterleavedTextAndReasoningBlocks(t *testing.T) {
+	ch := func(ty provider.ChunkType, id, text string) provider.StreamChunk {
+		return provider.StreamChunk{Type: ty, ID: id, Text: text}
+	}
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				ch(provider.ChunkTypeReasoningStart, "0", ""),
+				ch(provider.ChunkTypeTextStart, "1", ""),
+				ch(provider.ChunkTypeReasoning, "0", "Thinking..."),
+				ch(provider.ChunkTypeText, "1", "Hello"),
+				ch(provider.ChunkTypeText, "1", ", "),
+				ch(provider.ChunkTypeTextStart, "2", ""),
+				ch(provider.ChunkTypeText, "2", "This "),
+				ch(provider.ChunkTypeText, "2", "is "),
+				ch(provider.ChunkTypeReasoningStart, "3", ""),
+				ch(provider.ChunkTypeReasoning, "0", "I'm thinking..."),
+				ch(provider.ChunkTypeReasoning, "3", "Separate thoughts"),
+				ch(provider.ChunkTypeText, "2", "a"),
+				ch(provider.ChunkTypeText, "1", "world!"),
+				ch(provider.ChunkTypeReasoningEnd, "0", ""),
+				ch(provider.ChunkTypeText, "2", " test."),
+				ch(provider.ChunkTypeTextEnd, "2", ""),
+				ch(provider.ChunkTypeReasoningEnd, "3", ""),
+				ch(provider.ChunkTypeTextEnd, "1", ""),
+				finishChunk(),
+			}), nil
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "test-input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	s := res.Stream()
+	for {
+		c, err := s.Next()
+		if err != nil || c == nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeReasoningStart, provider.ChunkTypeTextStart, provider.ChunkTypeReasoningEnd, provider.ChunkTypeTextEnd, provider.ChunkTypeText, provider.ChunkTypeReasoning:
+			ids = append(ids, string(c.Type)+":"+c.ID+":"+c.Text)
+		}
+	}
+	wantIDs := []string{
+		"reasoning-start:0:", "text-start:1:", "reasoning:0:Thinking...", "text:1:Hello", "text:1:, ",
+		"text-start:2:", "text:2:This ", "text:2:is ", "reasoning-start:3:", "reasoning:0:I'm thinking...",
+		"reasoning:3:Separate thoughts", "text:2:a", "text:1:world!", "reasoning-end:0:", "text:2: test.",
+		"text-end:2:", "reasoning-end:3:", "text-end:1:",
+	}
+	if !reflect.DeepEqual(ids, wantIDs) {
+		t.Fatalf("full stream block parts:\n got %q\nwant %q", ids, wantIDs)
+	}
+
+	type part struct{ Kind, Text string }
+	var got []part
+	for _, c := range res.Content() {
+		switch p := c.(type) {
+		case types.TextContent:
+			got = append(got, part{"text", p.Text})
+		case types.ReasoningContent:
+			got = append(got, part{"reasoning", p.Text})
+		}
+	}
+	want := []part{{"reasoning", "Thinking...I'm thinking..."}, {"text", "Hello, world!"}, {"text", "This is a test."}, {"reasoning", "Separate thoughts"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("content = %#v, want %#v", got, want)
+	}
+	if res.Text() != "Hello, world!This is a test." {
+		t.Fatalf("text = %q", res.Text())
+	}
+}

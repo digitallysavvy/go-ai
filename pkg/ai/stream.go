@@ -1622,6 +1622,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepLastPartialJSON := ""
 		var stepToolCalls []types.ToolCall
 		var stepContent []types.ContentPart
+		var stepBlocks blockContent
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		var stepUsage types.Usage
@@ -1776,19 +1777,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// block followed by plain text) doesn't merge into the previous
 			// block's part and inherit its providerMetadata.
 			if chunk.Type == provider.ChunkTypeTextStart {
-				stepContent = startNewTextPart(stepContent, chunk.ProviderMetadata)
+				stepContent = stepBlocks.openText(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// A text-end boundary: attach its citations to the text part.
 			if chunk.Type == provider.ChunkTypeTextEnd {
-				stepContent = setTrailingTextCitations(stepContent, chunk.Citations)
+				stepContent = stepBlocks.closeText(stepContent, chunk.ID, chunk.Citations)
 			}
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
 				stepTextParts = append(stepTextParts, chunk.Text)
 				accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
-				stepContent = appendTextPart(stepContent, chunk.Text, chunk.ProviderMetadata)
+				stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
@@ -1825,10 +1826,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// start chunk's metadata, e.g. Anthropic redactedData) and let the
 			// end chunk's metadata (e.g. Bedrock redactedContent) land on it.
 			if chunk.Type == provider.ChunkTypeReasoningStart {
-				stepContent = startNewReasoningPart(stepContent, chunk.ProviderMetadata)
+				stepContent = stepBlocks.openReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 			if chunk.Type == provider.ChunkTypeReasoningEnd {
-				stepContent = setTrailingReasoningMetadata(stepContent, chunk.ProviderMetadata)
+				stepContent = stepBlocks.closeReasoning(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// Accumulate reasoning text from reasoning chunks. A chunk with
@@ -1842,7 +1843,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					reasoningText = chunk.Text
 				}
 				stepReasoningBuilder.WriteString(reasoningText)
-				stepContent = appendReasoningPart(stepContent, reasoningText, chunk.ProviderMetadata)
+				stepContent = stepBlocks.reasoningDelta(stepContent, chunk.ID, reasoningText, chunk.ProviderMetadata)
 			}
 
 			// Parse (validate/repair), then refine, and accumulate tool call
@@ -2166,6 +2167,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepLastPartialJSON = ""
 					stepToolCalls = nil
 					stepContent = nil
+					stepBlocks.reset()
 					stepReasoningBuilder.Reset()
 					modelCallEndFired = false
 					stepUsage = types.Usage{}
@@ -2254,7 +2256,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// 3033). r.finishReason (set above, either from the provider's own
 		// finish chunk or synthesized as FinishReasonOther) already carries
 		// what a raw finish chunk used to forward directly.
-		stepText := strings.Join(stepTextParts, "")
+		// The step text is the text parts of its content, in block order (TS
+		// extractTextContent), which differs from arrival order only when the
+		// provider interleaved text blocks.
+		stepText := textOfContent(stepContent)
+		if stepText != strings.Join(stepTextParts, "") && len(stepTextParts) > 0 {
+			accumulatedTextParts = append(accumulatedTextParts[:stepTextPartsStart], stepText)
+		}
 		lastStepText = stepText
 		r.text = strings.Join(accumulatedTextParts, "")
 		// stepToolCalls were already parsed (with repair) and refined
