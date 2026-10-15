@@ -63,6 +63,11 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	// TS Azure chat wraps OpenAIChatLanguageModel, which resolves provider
+	// file references with the fixed "openai" key.
+	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "openai"); err != nil {
+		return nil, err
+	}
 	// Build request body
 	reqBody := m.buildRequestBody(opts, false)
 
@@ -92,6 +97,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "openai"); err != nil {
+		return nil, err
+	}
 	// Build request body with streaming enabled
 	reqBody := m.buildRequestBody(opts, true)
 
@@ -142,7 +150,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// message" rather than crashing is the closest match to TS's intent
 	// (the message set is never allowed to be empty once it does reach a
 	// provider).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true, WrapToolErrorOutputs: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{SanitizeReplayedToolCallArguments: true, IncludePromptCacheBreakpoint: true, WrapToolErrorOutputs: true, Provider: "openai"}
 	body["messages"] = []map[string]interface{}{}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)

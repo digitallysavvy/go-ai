@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -170,17 +171,28 @@ type openAIEmbeddingResponse struct {
 	} `json:"usage"`
 }
 
-// applyDimensions sets the request's dimensions: providerOptions.openai.dimensions
-// wins over the top-level dimensions setting (TS #22338).
+// applyDimensions sets the request's dimensions and user. Native OpenAI reads
+// providerOptions.openai; the openai-compatible wrappers (baseten, deepinfra)
+// read openaiCompatible and their own provider-name namespace, like TS
+// OpenAICompatibleEmbeddingModel. The provider option wins over the top-level
+// dimensions setting (TS #22338).
 func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) {
 	if opts == nil {
 		return
 	}
-	if d, ok := providerutils.ResolveEmbeddingDimensions(providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "dimensions"), opts.Dimensions); ok {
+	var dimensionsOption, userOption interface{}
+	if m.provider.config.OpenAICompatible {
+		name, _, _ := strings.Cut(m.provider.Name(), ".")
+		resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(name, opts.ProviderOptions)
+		dimensionsOption, userOption = resolved["dimensions"], resolved["user"]
+	} else {
+		dimensionsOption = providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "dimensions")
+		userOption = providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "user")
+	}
+	if d, ok := providerutils.ResolveEmbeddingDimensions(dimensionsOption, opts.Dimensions); ok {
 		reqBody["dimensions"] = d
 	}
-	// providerOptions.openai.user (TS openaiEmbeddingModelOptions.user).
-	if u, ok := providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "user").(string); ok && u != "" {
+	if u, ok := userOption.(string); ok && u != "" {
 		reqBody["user"] = u
 	}
 }

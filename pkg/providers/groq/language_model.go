@@ -64,6 +64,9 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response groqResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
@@ -89,6 +92,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if err := prompt.RejectProviderReferenceFiles(opts.Prompt.Messages); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -197,13 +203,16 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 					Details: `reasoning "none" is not supported by this model.`,
 				})
 			}
-		case types.ReasoningMinimal, types.ReasoningLow:
-			body["reasoning_effort"] = "low"
-		case types.ReasoningMedium:
-			body["reasoning_effort"] = "medium"
-		case types.ReasoningHigh, types.ReasoningXHigh, types.ReasoningMax:
-			body["reasoning_effort"] = "high"
-			// ReasoningDefault: omit
+		case types.ReasoningDefault:
+			// provider-default: omit
+		default:
+			if effort, ok := providerutils.MapReasoningToProviderEffort(*opts.Reasoning, map[types.ReasoningLevel]string{
+				types.ReasoningMinimal: "low", types.ReasoningLow: "low",
+				types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
+				types.ReasoningXHigh: "high", types.ReasoningMax: "high",
+			}, &warnings); ok {
+				body["reasoning_effort"] = effort
+			}
 		}
 	}
 	// Response format (TS groq-chat-language-model.ts): structuredOutputs and

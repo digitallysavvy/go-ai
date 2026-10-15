@@ -43,8 +43,9 @@ func New(cfg Config) *Provider {
 		HTTPClient: withCerebrasTransform(cfg.HTTPClient),
 		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:    true,
-		UserAgentName: "cerebras",
+		AllowVideo:       true,
+		OpenAICompatible: true,
+		UserAgentName:    "cerebras",
 		// TransformRequestBody applies the structural (provider-options-
 		// independent) half of TS transformCerebrasRequestBody: renaming
 		// max_tokens -> max_completion_tokens and reasoning_content ->

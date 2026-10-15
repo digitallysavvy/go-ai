@@ -946,3 +946,16 @@ func TestNormalizeJSONSchemaForMFJS_MovesTypeIntoAnyOfBranches(t *testing.T) {
 		t.Errorf("expected second branch to keep its own type, got %#v", second)
 	}
 }
+
+func TestMoonshotReferenceAcceptsMoonshotaiKey(t *testing.T) {
+	part, err := convertMoonshotFilePart(types.FileContent{
+		MediaType: "image/png",
+		FileData:  types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"moonshotai": "ms://abc"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part["image_url"].(map[string]interface{})["url"] != "ms://abc" {
+		t.Fatalf("part = %#v", part)
+	}
+}

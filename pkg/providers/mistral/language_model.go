@@ -87,18 +87,43 @@ func (m *LanguageModel) checkReasoningWarnings(opts *provider.GenerateOptions) [
 	if opts.TopK != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
-	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault && !m.supportsReasoningEffort() {
+	if prov, err := extractMistralProviderOptions(opts); err == nil {
+		warnings = append(warnings, mistralReasoningMapWarnings(m.supportsReasoningEffort(), prov.ReasoningEffort, opts.Reasoning)...)
+	}
+	return warnings
+}
+
+// mistralReasoningMapWarnings returns the warnings TS emits for the top-level
+// reasoning setting: every non-"none" level maps to effort "high" (a
+// compatibility warning unless the level already is "high"), and models
+// without reasoning_effort support get an "unsupported" warning. An explicit
+// providerOptions.mistral.reasoningEffort short-circuits the mapping.
+func mistralReasoningMapWarnings(supported bool, explicitEffort string, reasoning *types.ReasoningLevel) []types.Warning {
+	if reasoning == nil || *reasoning == types.ReasoningDefault {
+		return nil
+	}
+	var warnings []types.Warning
+	switch {
+	case !supported:
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "reasoning",
 			Details: "This model does not support reasoning configuration.",
 		})
+	case explicitEffort == "" && *reasoning != types.ReasoningNone:
+		providerutils.MapReasoningToProviderEffort(*reasoning, map[types.ReasoningLevel]string{
+			types.ReasoningMinimal: "high", types.ReasoningLow: "high", types.ReasoningMedium: "high",
+			types.ReasoningHigh: "high", types.ReasoningXHigh: "high", types.ReasoningMax: "high",
+		}, &warnings)
 	}
 	return warnings
 }
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if _, err := ConvertToMistralChatMessagesWithError(opts.Prompt.Messages); err != nil {
+		return nil, err
+	}
 	if _, err := extractMistralProviderOptions(opts); err != nil {
 		return nil, err
 	}
@@ -124,6 +149,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+	if _, err := ConvertToMistralChatMessagesWithError(opts.Prompt.Messages); err != nil {
+		return nil, err
+	}
 	if _, err := extractMistralProviderOptions(opts); err != nil {
 		return nil, err
 	}

@@ -108,6 +108,16 @@ type Config struct {
 	// as its OpenAI-compatible base (baseten, cerebras, deepinfra).
 	AllowVideo bool
 
+	// OpenAICompatible marks a wrapper whose TS counterpart is built on
+	// @ai-sdk/openai-compatible's OpenAICompatibleChatLanguageModel (baseten,
+	// cerebras, deepinfra, vertex MaaS) rather than OpenAI's own
+	// OpenAIChatLanguageModel. Chat requests then use the compatible
+	// converter's semantics: tool error outputs are sent verbatim (not
+	// wrapped as {"error": ...}), replayed tool-call arguments are not
+	// sanitized, no prompt_cache_breakpoint is forwarded, and file
+	// references resolve the wrapper's own provider key instead of "openai".
+	OpenAICompatible bool
+
 	// UserAgentName selects the `ai-sdk-<name>/VERSION` User-Agent tag this
 	// provider construction adds (version.ProviderUserAgent). Every wrapper
 	// provider whose TS counterpart is its own distinct npm package (and

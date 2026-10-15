@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/http"
 	"regexp"
@@ -247,21 +248,18 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 				Details: fmt.Sprintf("reasoning %q is not supported by this model.", string(*opts.Reasoning)),
 			})
 		} else {
-			switch *opts.Reasoning {
-			case types.ReasoningNone:
+			if *opts.Reasoning == types.ReasoningNone {
 				effort = "none"
-			case types.ReasoningMinimal, types.ReasoningLow:
-				effort = "low"
-			case types.ReasoningMedium:
-				effort = "medium"
-			case types.ReasoningHigh:
-				effort = "high"
-			case types.ReasoningXHigh, types.ReasoningMax:
+			} else {
+				xhigh := "high"
 				if m.modelID == "grok-4.6" {
-					effort = "xhigh"
-				} else {
-					effort = "high"
+					xhigh = "xhigh"
 				}
+				effort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, map[types.ReasoningLevel]string{
+					types.ReasoningMinimal: "low", types.ReasoningLow: "low",
+					types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
+					types.ReasoningXHigh: xhigh, types.ReasoningMax: xhigh,
+				}, &warnings)
 			}
 		}
 	}

@@ -57,8 +57,9 @@ func New(cfg Config) *Provider {
 		Headers: cfg.Headers,
 		// TS DeepInfraChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
-		AllowVideo:    true,
-		UserAgentName: "deepinfra",
+		AllowVideo:       true,
+		OpenAICompatible: true,
+		UserAgentName:    "deepinfra",
 	})
 
 	return &Provider{

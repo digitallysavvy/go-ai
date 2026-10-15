@@ -4,9 +4,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ConvertToMistralChatMessages converts unified SDK messages into Mistral's
@@ -30,6 +33,15 @@ import (
 //   - Tool results are stringified per Mistral's rules (JSON.stringify for
 //     content/json outputs, the reason text for execution-denied, etc.).
 func ConvertToMistralChatMessages(messages []types.Message) []map[string]interface{} {
+	result, _ := ConvertToMistralChatMessagesWithError(messages)
+	return result
+}
+
+// ConvertToMistralChatMessagesWithError is ConvertToMistralChatMessages that
+// also reports the unsupported-file errors TS throws while converting user
+// file parts: provider references, text file parts, and anything other than
+// images and PDFs (*errors.UnsupportedFunctionalityError).
+func ConvertToMistralChatMessagesWithError(messages []types.Message) ([]map[string]interface{}, error) {
 	result := make([]map[string]interface{}, 0, len(messages))
 	lastIndex := len(messages) - 1
 
@@ -39,7 +51,11 @@ func ConvertToMistralChatMessages(messages []types.Message) []map[string]interfa
 		case types.RoleSystem:
 			result = append(result, convertMistralSystemMessage(msg))
 		case types.RoleUser:
-			result = append(result, convertMistralUserMessage(msg))
+			converted, err := convertMistralUserMessage(msg)
+			if err != nil {
+				return result, err
+			}
+			result = append(result, converted)
 		case types.RoleAssistant:
 			result = append(result, convertMistralAssistantMessage(msg, isLastMessage))
 		case types.RoleTool:
@@ -47,7 +63,7 @@ func ConvertToMistralChatMessages(messages []types.Message) []map[string]interfa
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // convertMistralSystemMessage converts a system message. A single text part
@@ -71,28 +87,85 @@ func convertMistralSystemMessage(msg types.Message) map[string]interface{} {
 
 // convertMistralUserMessage converts a user message. Content is always an
 // array of parts, matching TS (`content: content.map(...)`).
-func convertMistralUserMessage(msg types.Message) map[string]interface{} {
+func convertMistralUserMessage(msg types.Message) (map[string]interface{}, error) {
 	parts := make([]map[string]interface{}, 0, len(msg.Content))
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case types.TextContent:
 			parts = append(parts, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.ImageContent:
-			parts = append(parts, map[string]interface{}{
-				"type":      "image_url",
-				"image_url": mistralFileURL(p.URL, p.MimeType, p.Image),
-			})
-		case types.FileContent:
-			mediaType := firstNonEmptyMistral(p.MediaType, p.MimeType, p.FileData.MediaType)
-			url := mistralFileURL(firstNonEmptyMistral(p.URL, p.Reference), mediaType, p.Data)
-			if strings.HasPrefix(mediaType, "image/") {
-				parts = append(parts, map[string]interface{}{"type": "image_url", "image_url": url})
-			} else {
-				parts = append(parts, map[string]interface{}{"type": "document_url", "document_url": url})
+			fc, err := prompt.NormalizeImageContent(p)
+			if err != nil {
+				return nil, err
 			}
+			converted, err := convertMistralFilePart(fc)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, converted)
+		case types.FileContent:
+			converted, err := convertMistralFilePart(p)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, converted)
 		}
 	}
-	return map[string]interface{}{"role": "user", "content": parts}
+	return map[string]interface{}{"role": "user", "content": parts}, nil
+}
+
+// convertMistralFilePart mirrors the TS user file-part switch: images become
+// image_url, PDFs document_url; references, text parts and other media types
+// are unsupported.
+func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error) {
+	n, err := prompt.NormalizeFileContent(fc)
+	if err != nil {
+		return nil, err
+	}
+	switch n.FileData.Type {
+	case types.FileDataTypeReference:
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
+	case types.FileDataTypeText:
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
+	}
+	mediaType := n.MediaType
+	formatURL := func() string {
+		if n.FileData.Type == types.FileDataTypeURL {
+			return n.FileData.URL
+		}
+		return fmt.Sprintf("data:%s;base64,%s", mistralFullMediaType(mediaType, n.FileData.Data), base64.StdEncoding.EncodeToString(n.FileData.Data))
+	}
+	if mediaType == "image" || strings.HasPrefix(mediaType, "image/") {
+		return map[string]interface{}{"type": "image_url", "image_url": formatURL()}, nil
+	}
+	checked := mediaType
+	if n.FileData.Type == types.FileDataTypeData {
+		checked = mistralFullMediaType(mediaType, n.FileData.Data)
+	}
+	if checked != "application/pdf" {
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Only images and PDF file parts are supported"}
+	}
+	return map[string]interface{}{"type": "document_url", "document_url": formatURL()}, nil
+}
+
+// mistralFullMediaType resolves a partial media type ("image", "application",
+// "application/*") from the data's content, like TS resolveFullMediaType.
+func mistralFullMediaType(mediaType string, data []byte) string {
+	if strings.Contains(mediaType, "/") && !strings.HasSuffix(mediaType, "/*") {
+		return mediaType
+	}
+	detected := http.DetectContentType(data)
+	if i := strings.Index(detected, ";"); i >= 0 {
+		detected = detected[:i]
+	}
+	top := strings.TrimSuffix(mediaType, "/*")
+	if strings.HasPrefix(detected, top+"/") {
+		return detected
+	}
+	if top == "image" {
+		return "image/png"
+	}
+	return mediaType
 }
 
 // convertMistralAssistantMessage converts an assistant message. content is a
@@ -219,25 +292,6 @@ func mistralToolResultText(tr types.ToolResultContent) string {
 	}
 	if tr.Error != "" {
 		return tr.Error
-	}
-	return ""
-}
-
-// mistralFileURL returns the URL to send for a file/image part: the URL
-// as-is when present, otherwise a base64 data: URL built from raw bytes.
-func mistralFileURL(url, mediaType string, data []byte) string {
-	if url != "" {
-		return url
-	}
-	return fmt.Sprintf("data:%s;base64,%s", mediaType, base64.StdEncoding.EncodeToString(data))
-}
-
-// firstNonEmptyMistral returns the first non-empty string argument.
-func firstNonEmptyMistral(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
 	}
 	return ""
 }

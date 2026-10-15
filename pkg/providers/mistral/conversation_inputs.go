@@ -42,7 +42,10 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 			}
 			instructionParts = append(instructionParts, b.String())
 		case types.RoleUser:
-			converted := convertMistralUserMessage(msg)
+			converted, err := convertMistralUserMessage(msg)
+			if err != nil {
+				return nil, "", err
+			}
 			inputs = append(inputs, map[string]interface{}{
 				"type":    "message.input",
 				"role":    "user",
