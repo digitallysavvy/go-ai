@@ -246,12 +246,16 @@ func convertMessagePartToSemConv(part types.ContentPart) semConvPart {
 	case types.FileContent:
 		return convertFilePartToSemConv(p)
 	case types.ToolApprovalResponseContent:
-		return semConvPart{
+		out := semConvPart{
 			"type":        "tool_approval_response",
 			"approval_id": p.ApprovalID,
 			"approved":    p.Approved,
-			"reason":      p.Reason,
 		}
+		// TS `reason: part.reason` serializes away when undefined.
+		if p.Reason != "" {
+			out["reason"] = p.Reason
+		}
+		return out
 	case types.CustomContent:
 		return semConvPart{"type": "custom", "kind": p.Kind}
 	case types.ReasoningFileContent:
