@@ -768,6 +768,14 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				// TS flush() runs at the end of the stream whether or not a
+				// [DONE] marker arrived: close open blocks, finalize tool
+				// calls and enqueue the finish chunk.
+				s.done = true
+				s.flushQueue = s.buildFlushChunks()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}

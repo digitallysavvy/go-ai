@@ -370,3 +370,20 @@ data: [DONE]
 		t.Error("expected a server_error to be retryable")
 	}
 }
+
+// TS flush() runs when the stream ends, with or without a [DONE] marker: a
+// stream that ends after content still closes the text block and finishes.
+func TestMoonshotStream_FinalizesAtEOFWithoutDone(t *testing.T) {
+	sseData := "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"
+	stream := newMoonshotStream(io.NopCloser(strings.NewReader(sseData)), false)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := drainMoonshotStream(t, stream)
+	if len(moonshotChunksOfType(chunks, provider.ChunkTypeTextEnd)) != 1 {
+		t.Fatalf("expected a text-end chunk, got %#v", chunks)
+	}
+	finishes := moonshotChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonOther {
+		t.Fatalf("expected one finish chunk with reason other, got %#v", finishes)
+	}
+}
