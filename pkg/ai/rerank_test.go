@@ -719,3 +719,12 @@ func TestTimeNow(t *testing.T) {
 		t.Error("timeNow returned future time")
 	}
 }
+
+func TestRerankDocumentsTypeUsesFirstElement(t *testing.T) {
+	if got := rerankDocumentsType([]interface{}{"a", "b"}); got != "text" {
+		t.Fatalf("[]interface{} of strings = %q, want text", got)
+	}
+	if got := rerankDocumentsType([]interface{}{map[string]interface{}{"a": 1}}); got != "object" {
+		t.Fatalf("[]interface{} of objects = %q, want object", got)
+	}
+}
