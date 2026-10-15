@@ -313,6 +313,11 @@ func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
 	}
 }
 
+// SupportsProtocolVersionDiscovery reports that the stdio transport can carry
+// the `server/discover` probe, matching TS StdioMCPTransport
+// (supportsProtocolVersionDiscovery = true).
+func (t *StdioTransport) SupportsProtocolVersionDiscovery() bool { return true }
+
 // IsConnected returns true if the transport is connected
 func (t *StdioTransport) IsConnected() bool {
 	t.mu.Lock()

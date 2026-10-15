@@ -22,11 +22,11 @@ func (c *staticSSEClient) Do(*http.Request) (*http.Response, error) {
 }
 
 // TS send(): a failed HTTP response to a request whose body is a JSON-RPC
-// error is delivered as that request's response (null id -> request id).
+// error is delivered as that request's response (missing id -> request id).
 func TestHTTPTransportDeliversJSONRPCErrorFromFailedResponse(t *testing.T) {
 	transport := NewHTTPTransport(HTTPTransportConfig{
 		URL:       "http://localhost:9999/mcp",
-		SSEClient: &staticSSEClient{status: 400, contentType: "application/json", body: strings.NewReader(`{"jsonrpc":"2.0","id":null,"error":{"code":-32602,"message":"bad params"}}`)},
+		SSEClient: &staticSSEClient{status: 400, contentType: "application/json", body: strings.NewReader(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"bad params"}}`)},
 	})
 	transport.connected = true
 	msg, _ := CreateRequest(7, "tools/call", nil)

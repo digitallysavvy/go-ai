@@ -174,8 +174,10 @@ func checkResourceContents(contents map[string]json.RawMessage) error {
 	if err := requireStrings(contents, "uri"); err != nil {
 		return err
 	}
-	if !isJSONString(contents["text"]) && !isJSONString(contents["blob"]) {
-		return fmt.Errorf("contents must carry a text or blob string")
+	// TS union: text string, or blob that is valid base64 (z.base64()).
+	blob, hasBlob := rawString(contents, "blob")
+	if !isJSONString(contents["text"]) && (!hasBlob || !isBase64String(blob)) {
+		return fmt.Errorf("contents must carry a text or blob string (blob must be base64)")
 	}
 	return nil
 }
@@ -189,7 +191,17 @@ func checkPromptMessage(message map[string]json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	return requireStrings(content, "type")
+	if err := requireStrings(content, "type"); err != nil {
+		return err
+	}
+	// TS PromptMessageSchema.content is a union of the four known content
+	// types only (no unknown-type fallback, unlike tool results).
+	typ, _ := rawString(content, "type")
+	switch typ {
+	case "text", "image", "resource", "resource_link":
+		return validateToolContentBlock(content)
+	}
+	return fmt.Errorf("content type %q is not text, image, resource or resource_link", typ)
 }
 
 func checkCompleteResult(obj map[string]json.RawMessage) error {

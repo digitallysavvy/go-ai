@@ -252,7 +252,7 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 
 	if clientInformation == nil {
 		if options.HasAuthorizationCode {
-			return "", fmt.Errorf("existing OAuth client information is required when exchanging an authorization code")
+			return "", fmt.Errorf("Existing OAuth client information is required when exchanging an authorization code") //nolint:staticcheck // matches TS SDK error text
 		}
 		saver, ok := provider.(OAuthClientInformationSaver)
 		if !ok {
@@ -280,8 +280,8 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 				return "", err
 			}
 			if hasExpected {
-				if err := ValidateOAuthState(options.CallbackState, expected); err != nil {
-					return "", err
+				if ValidateOAuthState(options.CallbackState, expected) != nil {
+					return "", fmt.Errorf("OAuth state parameter mismatch - possible CSRF attack") //nolint:staticcheck // matches TS SDK error text
 				}
 			}
 		}
@@ -382,8 +382,7 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 			// and continue to a fresh authorization flow below. Otherwise
 			// (invalid_client/invalid_grant/unauthorized_client) escalate so
 			// Auth's retry-once logic can react.
-			var oauthErr *MCPClientOAuthError
-			if errors.As(refreshErr, &oauthErr) && oauthErr.Code != OAuthErrorCodeServerError {
+			if oauthRefreshErrorEscalates(refreshErr) {
 				return "", refreshErr
 			}
 		}
@@ -472,7 +471,7 @@ func SelectOAuthResourceURL(ctx context.Context, serverURL string, provider OAut
 		return nil, err
 	}
 	if !allowed {
-		return nil, fmt.Errorf("protected resource %s does not match expected %s (or origin)", resourceMetadata.Resource, defaultResource.String())
+		return nil, fmt.Errorf("Protected resource %s does not match expected %s (or origin)", resourceMetadata.Resource, defaultResource.String()) //nolint:staticcheck // matches TS SDK error text
 	}
 	return url.Parse(resourceMetadata.Resource)
 }
@@ -485,8 +484,10 @@ func SelectOAuthScope(challengeScope string, resourceMetadata *OAuthProtectedRes
 	if challengeScope != "" {
 		return challengeScope
 	}
-	if resourceMetadata != nil && len(resourceMetadata.ScopesSupported) > 0 {
-		return strings.Join(resourceMetadata.ScopesSupported, " ")
+	if resourceMetadata != nil {
+		if scopes := strings.Join(resourceMetadata.ScopesSupported, " "); scopes != "" {
+			return scopes
+		}
 	}
 	return clientMetadata.Scope
 }
@@ -597,10 +598,10 @@ func StartOAuthAuthorization(authorizationServerURL string, params StartOAuthAut
 			return "", "", err
 		}
 		if !containsOAuthString(params.Metadata.ResponseTypesSupported, responseType) {
-			return "", "", fmt.Errorf("incompatible auth server: does not support response type %s", responseType)
+			return "", "", fmt.Errorf("Incompatible auth server: does not support response type %s", responseType) //nolint:staticcheck // matches TS SDK error text
 		}
 		if len(params.Metadata.CodeChallengeMethodsSupported) == 0 || !containsOAuthString(params.Metadata.CodeChallengeMethodsSupported, codeChallengeMethod) {
-			return "", "", fmt.Errorf("incompatible auth server: does not support code challenge method %s", codeChallengeMethod)
+			return "", "", fmt.Errorf("Incompatible auth server: does not support code challenge method %s", codeChallengeMethod) //nolint:staticcheck // matches TS SDK error text
 		}
 	} else {
 		base, parseErr := url.Parse(authorizationServerURL)
@@ -615,28 +616,30 @@ func StartOAuthAuthorization(authorizationServerURL string, params StartOAuthAut
 		return "", "", err
 	}
 
-	query := authURL.Query()
-	query.Set("response_type", responseType)
-	query.Set("client_id", params.ClientInformation.ClientID)
-	query.Set("code_challenge", codeChallenge)
-	query.Set("code_challenge_method", codeChallengeMethod)
-	query.Set("redirect_uri", params.RedirectURL)
+	// Mirror URLSearchParams: keep the endpoint's existing parameters in
+	// order, set() replaces in place or appends, append() always appends.
+	query := parseOrderedQuery(authURL.RawQuery)
+	query.set("response_type", responseType)
+	query.set("client_id", params.ClientInformation.ClientID)
+	query.set("code_challenge", codeChallenge)
+	query.set("code_challenge_method", codeChallengeMethod)
+	query.set("redirect_uri", params.RedirectURL)
 	if params.State != "" {
-		query.Set("state", params.State)
+		query.set("state", params.State)
 	}
 	if params.Scope != "" {
-		query.Set("scope", params.Scope)
+		query.set("scope", params.Scope)
 	}
 	if strings.Contains(params.Scope, "offline_access") {
 		// The request includes the OIDC-only "offline_access" scope: set
 		// prompt=consent to ensure the user is prompted to grant offline
 		// access. https://openid.net/specs/openid-connect-core-1_0.html#OfflineAccess
-		query.Add("prompt", "consent")
+		query.add("prompt", "consent")
 	}
 	if params.Resource != nil {
-		query.Set("resource", resourceURLStripSlash(params.Resource))
+		query.set("resource", resourceURLStripSlash(params.Resource))
 	}
-	authURL.RawQuery = query.Encode()
+	authURL.RawQuery = query.encode()
 
 	return authURL.String(), codeVerifier, nil
 }
@@ -668,8 +671,8 @@ func ExchangeOAuthAuthorization(ctx context.Context, authorizationServerURL stri
 	if err := assertSafeOAuthEndpoint(tokenURL.String(), allowLoopback); err != nil {
 		return nil, err
 	}
-	if params.Metadata != nil && len(params.Metadata.GrantTypesSupported) > 0 && !containsOAuthString(params.Metadata.GrantTypesSupported, grantType) {
-		return nil, fmt.Errorf("incompatible auth server: does not support grant type %s", grantType)
+	if params.Metadata != nil && params.Metadata.GrantTypesSupported != nil && !containsOAuthString(params.Metadata.GrantTypesSupported, grantType) {
+		return nil, fmt.Errorf("Incompatible auth server: does not support grant type %s", grantType) //nolint:staticcheck // matches TS SDK error text
 	}
 
 	headers := http.Header{}
@@ -718,8 +721,8 @@ func RefreshOAuthAuthorization(ctx context.Context, authorizationServerURL strin
 		if err != nil {
 			return nil, err
 		}
-		if len(params.Metadata.GrantTypesSupported) > 0 && !containsOAuthString(params.Metadata.GrantTypesSupported, grantType) {
-			return nil, fmt.Errorf("incompatible auth server: does not support grant type %s", grantType)
+		if params.Metadata.GrantTypesSupported != nil && !containsOAuthString(params.Metadata.GrantTypesSupported, grantType) {
+			return nil, fmt.Errorf("Incompatible auth server: does not support grant type %s", grantType) //nolint:staticcheck // matches TS SDK error text
 		}
 	} else {
 		base, parseErr := url.Parse(authorizationServerURL)
@@ -771,7 +774,7 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	var err error
 	if metadata != nil {
 		if metadata.RegistrationEndpoint == "" {
-			return nil, fmt.Errorf("incompatible auth server: does not support dynamic client registration")
+			return nil, fmt.Errorf("Incompatible auth server: does not support dynamic client registration") //nolint:staticcheck // matches TS SDK error text
 		}
 		registrationURL, err = url.Parse(metadata.RegistrationEndpoint)
 		if err != nil {
@@ -813,6 +816,15 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	rawBody, err := readLimitedOAuthBody(resp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read dynamic client registration response: %w", err)
+	}
+	var regFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &regFields); err != nil || regFields == nil {
+		return nil, fmt.Errorf("failed to decode dynamic client registration response: expected an object")
+	}
+	// TS OAuthClientInformationFullSchema requires client_id (string) and
+	// redirect_uris (array).
+	if !isJSONString(regFields["client_id"]) || !isJSONArray(regFields["redirect_uris"]) {
+		return nil, fmt.Errorf("failed to decode dynamic client registration response: client_id and redirect_uris are required")
 	}
 	var full OAuthClientInformationFull
 	if err := json.Unmarshal(rawBody, &full); err != nil {
@@ -912,6 +924,16 @@ func decodeOAuthTokenResponse(resp *http.Response) (*OAuthTokens, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read OAuth token response: %w", err)
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &fields); err != nil || fields == nil {
+		return nil, fmt.Errorf("failed to decode OAuth token response: expected an object")
+	}
+	// TS OAuthTokensSchema requires access_token and token_type strings.
+	for _, key := range []string{"access_token", "token_type"} {
+		if !isJSONString(fields[key]) {
+			return nil, fmt.Errorf("failed to decode OAuth token response: %s must be a string", key)
+		}
+	}
 	var tokens OAuthTokens
 	if err := json.Unmarshal(rawBody, &tokens); err != nil {
 		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
@@ -993,4 +1015,102 @@ func saveOAuthAuthorizationServerInformation(ctx context.Context, provider OAuth
 		return true, nil
 	}
 	return false, nil
+}
+
+// orderedQuery is an order-preserving query parameter list with the
+// semantics of the WHATWG URLSearchParams used by the TS SDK.
+type orderedQuery struct{ pairs [][2]string }
+
+func parseOrderedQuery(raw string) *orderedQuery {
+	q := &orderedQuery{}
+	for _, part := range strings.Split(raw, "&") {
+		if part == "" {
+			continue
+		}
+		name, value, _ := strings.Cut(part, "=")
+		n, err1 := url.QueryUnescape(name)
+		v, err2 := url.QueryUnescape(value)
+		if err1 != nil || err2 != nil {
+			n, v = name, value
+		}
+		q.pairs = append(q.pairs, [2]string{n, v})
+	}
+	return q
+}
+
+// set replaces the first pair named name (dropping later ones) or appends.
+func (q *orderedQuery) set(name, value string) {
+	out := q.pairs[:0:0]
+	found := false
+	for _, p := range q.pairs {
+		if p[0] != name {
+			out = append(out, p)
+			continue
+		}
+		if !found {
+			out = append(out, [2]string{name, value})
+			found = true
+		}
+	}
+	if !found {
+		out = append(out, [2]string{name, value})
+	}
+	q.pairs = out
+}
+
+func (q *orderedQuery) add(name, value string) {
+	q.pairs = append(q.pairs, [2]string{name, value})
+}
+
+// encode serializes as application/x-www-form-urlencoded the way
+// URLSearchParams does: ASCII alphanumerics and *-._ stay literal, space is
+// "+", everything else is percent-encoded.
+func (q *orderedQuery) encode() string {
+	var b strings.Builder
+	for i, p := range q.pairs {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		writeFormEncoded(&b, p[0])
+		b.WriteByte('=')
+		writeFormEncoded(&b, p[1])
+	}
+	return b.String()
+}
+
+func writeFormEncoded(b *strings.Builder, s string) {
+	const hex = "0123456789ABCDEF"
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '*', c == '-', c == '.', c == '_':
+			b.WriteByte(c)
+		case c == ' ':
+			b.WriteByte('+')
+		default:
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&15])
+		}
+	}
+}
+
+// oauthRefreshErrorEscalates mirrors the TS refresh catch block:
+// `!(error instanceof MCPClientOAuthError) || error instanceof ServerError`
+// is swallowed. A wire error code that TS does not map in OAUTH_ERRORS
+// (invalid_request, access_denied, ...) is parsed as a ServerError there, so
+// only invalid_client / invalid_grant / unauthorized_client, the
+// authorization-server mismatch, and OAuth errors with no wire code (e.g. a
+// blocked endpoint) escalate.
+func oauthRefreshErrorEscalates(err error) bool {
+	var oauthErr *MCPClientOAuthError
+	if !errors.As(err, &oauthErr) {
+		return false
+	}
+	switch oauthErr.Code {
+	case OAuthErrorCodeInvalidClient, OAuthErrorCodeInvalidGrant, OAuthErrorCodeUnauthorizedClient,
+		OAuthErrorCodeAuthorizationServerMismatch, "":
+		return true
+	}
+	return false
 }

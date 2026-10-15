@@ -305,3 +305,30 @@ func TestGetMCPAppToolMetaNullResourceURIFallsBack(t *testing.T) {
 		t.Fatalf("uri = %q err=%v, want no resource and no error", uri, err)
 	}
 }
+
+// TS getMCPAppResourceFromReadResult: a string text wins even when empty;
+// the blob is only used when text is not a string.
+func TestGetMCPAppResourceEmptyTextWinsOverBlob(t *testing.T) {
+	var res ReadResourceResult
+	body := `{"contents":[{"uri":"ui://a","mimeType":"text/html;profile=mcp-app","text":"","blob":"PGI+"}]}`
+	if err := json.Unmarshal([]byte(body), &res); err != nil {
+		t.Fatal(err)
+	}
+	got, err := GetMCPAppResourceFromReadResult("ui://a", res)
+	if err != nil || got.HTML != "" {
+		t.Fatalf("got %+v, %v; want empty html", got, err)
+	}
+	body = `{"contents":[{"uri":"ui://a","mimeType":"text/html;profile=mcp-app","blob":"PGI-"}]}`
+	res = ReadResourceResult{}
+	if err := json.Unmarshal([]byte(body), &res); err != nil {
+		t.Fatal(err)
+	}
+	got, err = GetMCPAppResourceFromReadResult("ui://a", res)
+	if err != nil || got.HTML != "<b>" {
+		t.Fatalf("got %+v, %v; want blob decoded (url-safe, unpadded)", got, err)
+	}
+	out, _ := json.Marshal(res.Contents[0])
+	if string(out) != `{"uri":"ui://a","mimeType":"text/html;profile=mcp-app","blob":"PGI-"}` {
+		t.Fatalf("marshal %s", out)
+	}
+}

@@ -33,9 +33,10 @@ type ProtocolVersionTransport interface {
 
 // ProtocolVersionDiscoveryTransport is implemented by transports that support
 // probing the 2026-07-28 `server/discover` method before falling back to a
-// legacy `initialize` handshake (hash e6a9927). Only HTTPTransport
-// (streamable HTTP) reports true, matching TS StreamableHTTPClientTransport;
-// stdio and legacy SSE transports do not implement this interface.
+// legacy `initialize` handshake (hash e6a9927). HTTPTransport (streamable
+// HTTP) and StdioTransport report true, matching TS
+// StreamableHTTPClientTransport and StdioMCPTransport; the legacy SSE
+// transport does not implement this interface.
 type ProtocolVersionDiscoveryTransport interface {
 	SupportsProtocolVersionDiscovery() bool
 }

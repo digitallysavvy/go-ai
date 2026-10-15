@@ -35,8 +35,13 @@ func readResponseBody(r io.Reader) ([]byte, error) {
 }
 
 const (
-	defaultJSONMaxDepth  = 64
-	defaultJSONMaxFields = 4096
+	defaultJSONMaxDepth = 64
+	// defaultJSONMaxFields is a backstop only: TS parses MCP messages with no
+	// field limit, and a legitimate large result (a tools/list of a few
+	// hundred tools with schemas, or a structuredContent list of records)
+	// easily carries tens of thousands of object members. Memory is already
+	// bounded by mcpMaxResponseBodyBytes.
+	defaultJSONMaxFields = 1 << 22
 )
 
 func unmarshalSafeJSON(data []byte, target interface{}) error {

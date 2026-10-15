@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
@@ -646,6 +647,51 @@ type ResourceContent struct {
 	Text     string                 `json:"text,omitempty"`
 	Blob     string                 `json:"blob,omitempty"` // base64 encoded
 	Meta     map[string]interface{} `json:"_meta,omitempty"`
+
+	// textPresent / blobPresent record that the wire object carried the
+	// field as a string, so an empty "text" still wins over a blob the way
+	// the TS `typeof content.text === 'string'` check does.
+	textPresent bool
+	blobPresent bool
+}
+
+type resourceContentAlias ResourceContent
+
+// UnmarshalJSON decodes the content and records which of text/blob were
+// present as strings.
+func (r *ResourceContent) UnmarshalJSON(data []byte) error {
+	var alias resourceContentAlias
+	if err := json.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*r = ResourceContent(alias)
+	r.textPresent = isJSONString(raw["text"])
+	r.blobPresent = isJSONString(raw["blob"])
+	return nil
+}
+
+// MarshalJSON keeps an empty text/blob string that was present on the wire.
+func (r ResourceContent) MarshalJSON() ([]byte, error) {
+	out := struct {
+		URI      string                 `json:"uri"`
+		Name     string                 `json:"name,omitempty"`
+		Title    string                 `json:"title,omitempty"`
+		MimeType string                 `json:"mimeType,omitempty"`
+		Text     *string                `json:"text,omitempty"`
+		Blob     *string                `json:"blob,omitempty"`
+		Meta     map[string]interface{} `json:"_meta,omitempty"`
+	}{URI: r.URI, Name: r.Name, Title: r.Title, MimeType: r.MimeType, Meta: r.Meta}
+	if r.Text != "" || r.textPresent {
+		out.Text = &r.Text
+	}
+	if r.Blob != "" || r.blobPresent {
+		out.Blob = &r.Blob
+	}
+	return json.Marshal(out)
 }
 
 // MCPResourceTemplate represents a resource template exposed via MCP
@@ -929,7 +975,12 @@ func rawString(block map[string]json.RawMessage, key string) (string, bool) {
 	return s, true
 }
 
+// isBase64String mirrors zod's z.base64(): standard alphabet with padding.
+// Go's decoder silently skips CR/LF, which zod rejects.
 func isBase64String(s string) bool {
+	if strings.ContainsAny(s, "\r\n") {
+		return false
+	}
 	_, err := base64.StdEncoding.DecodeString(s)
 	return err == nil
 }

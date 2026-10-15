@@ -26,6 +26,12 @@ type discoveryMockTransport struct {
 	discoverDelay time.Duration
 
 	sentParams map[string]json.RawMessage // method -> last params
+
+	// versionAtSend records the transport protocol version in force when each
+	// method was sent; versionSets is every SetProtocolVersion call.
+	version       string
+	versionAtSend map[string]string
+	versionSets   []string
 }
 
 func newDiscoveryMockTransport() *discoveryMockTransport {
@@ -43,12 +49,19 @@ func (t *discoveryMockTransport) Close() error {
 	}
 	return nil
 }
-func (t *discoveryMockTransport) IsConnected() bool                      { return t.connected }
-func (t *discoveryMockTransport) SetProtocolVersion(_ string)            {}
+func (t *discoveryMockTransport) IsConnected() bool { return t.connected }
+func (t *discoveryMockTransport) SetProtocolVersion(v string) {
+	t.version = v
+	t.versionSets = append(t.versionSets, v)
+}
 func (t *discoveryMockTransport) SupportsProtocolVersionDiscovery() bool { return t.supportsDiscovery }
 
 func (t *discoveryMockTransport) Send(ctx context.Context, msg *MCPMessage) error {
 	t.sentParams[msg.Method] = msg.Params
+	if t.versionAtSend == nil {
+		t.versionAtSend = map[string]string{}
+	}
+	t.versionAtSend[msg.Method] = t.version
 
 	switch msg.Method {
 	case "server/discover":
@@ -432,5 +445,24 @@ func TestMCPClientCompleteSucceeds(t *testing.T) {
 	ref, ok := decoded["ref"].(map[string]interface{})
 	if !ok || ref["type"] != "ref/prompt" || ref["name"] != "greeting" {
 		t.Fatalf("ref = %#v", decoded["ref"])
+	}
+}
+
+// TS init() calls setTransportProtocolVersion(legacy) before the initialize
+// request when the server/discover probe fell through.
+func TestMCPClientLegacyFallbackResetsTransportProtocolVersion(t *testing.T) {
+	transport := newDiscoveryMockTransport()
+	transport.supportsDiscovery = true
+	transport.discoverError = &MCPError{Code: -32601, Message: "Method not found"}
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect error: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+	if got := transport.versionAtSend["server/discover"]; got != LatestProtocolVersion {
+		t.Fatalf("discover sent with %q", got)
+	}
+	if got := transport.versionAtSend["initialize"]; got != LatestLegacyProtocolVersion {
+		t.Fatalf("initialize sent with transport version %q, want %q", got, LatestLegacyProtocolVersion)
 	}
 }

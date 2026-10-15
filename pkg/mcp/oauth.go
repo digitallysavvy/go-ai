@@ -319,7 +319,7 @@ func BuildAuthorizationServerDiscoveryURLs(authorizationServerURL string) ([]OAu
 			{URL: rootIssuer + "/.well-known/openid-configuration", Type: "oidc", ExpectedIssuer: rootIssuer},
 		}, nil
 	}
-	pathname := strings.TrimSuffix(parsed.Path, "/")
+	pathname := strings.TrimSuffix(parsed.EscapedPath(), "/")
 	pathIssuer := rootIssuer + pathname
 	// Build candidates by string concatenation onto the origin (never by
 	// resolving the path as a URL reference): a path beginning with // would
@@ -455,8 +455,23 @@ func normalizeOAuthURL(raw string) string {
 	return oauthURLHref(parsed)
 }
 
+// origin mirrors the WHATWG URL.origin serialization the TS SDK relies on:
+// lower-case scheme and host, with a default port (80 for http, 443 for
+// https) dropped.
 func origin(u *url.URL) string {
-	return u.Scheme + "://" + u.Host
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	port := u.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host
 }
 
 func oauthURLHref(u *url.URL) string {
@@ -508,7 +523,9 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 	if !isAbsoluteOAuthURL(metadata.TokenEndpoint) {
 		return fmt.Errorf("OAuth authorization server metadata token_endpoint must be a valid URL")
 	}
-	if len(metadata.ResponseTypesSupported) == 0 {
+	// zod z.array(...) requires the key but accepts an empty array, so only
+	// an absent (nil) slice is invalid.
+	if metadata.ResponseTypesSupported == nil {
 		return fmt.Errorf("OAuth authorization server metadata missing required response_types_supported")
 	}
 	if metadata.RegistrationEndpoint != "" {
@@ -523,10 +540,10 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 		if !isAbsoluteOAuthURL(metadata.JWKSURI) {
 			return fmt.Errorf("OpenID provider metadata jwks_uri must be a valid URL")
 		}
-		if len(metadata.SubjectTypesSupported) == 0 {
+		if metadata.SubjectTypesSupported == nil {
 			return fmt.Errorf("OpenID provider metadata missing required subject_types_supported")
 		}
-		if len(metadata.IDTokenSigningAlgValues) == 0 {
+		if metadata.IDTokenSigningAlgValues == nil {
 			return fmt.Errorf("OpenID provider metadata missing required id_token_signing_alg_values_supported")
 		}
 	}

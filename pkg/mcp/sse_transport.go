@@ -492,13 +492,13 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 				return
 			}
 			endpoint = t.baseURL.ResolveReference(endpoint)
-			if endpoint.Scheme != t.baseURL.Scheme || endpoint.Host != t.baseURL.Host {
+			if origin(endpoint) != origin(t.baseURL) {
 				t.mu.Lock()
 				t.connected = false
 				t.endpoint = nil
 				t.mu.Unlock()
 				if !readySent {
-					ready <- NewMCPClientError(0, fmt.Sprintf("MCP SSE Transport Error: Endpoint origin does not match connection origin: %s://%s", endpoint.Scheme, endpoint.Host), nil)
+					ready <- NewMCPClientError(0, fmt.Sprintf("MCP SSE Transport Error: Endpoint origin does not match connection origin: %s", origin(endpoint)), nil)
 				}
 				return
 			}

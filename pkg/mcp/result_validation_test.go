@@ -69,3 +69,27 @@ func TestClientListToolsRejectsToolWithoutInputSchema(t *testing.T) {
 		t.Fatalf("err = %v, want Failed to parse server response", err)
 	}
 }
+
+func TestValidateMCPResultShapeR18(t *testing.T) {
+	bad := map[string]string{
+		"resources/read": `{"contents":[{"uri":"u","blob":"not base64!"}]}`,
+		"prompts/get":    `{"messages":[{"role":"user","content":{"type":"audio","data":"x"}}]}`,
+	}
+	for method, body := range bad {
+		if err := validateMCPResultShape(method, json.RawMessage(body)); err == nil {
+			t.Errorf("%s: expected error for %s", method, body)
+		}
+	}
+	good := map[string]string{
+		"resources/read": `{"contents":[{"uri":"u","blob":"aGk="}]}`,
+		"prompts/get":    `{"messages":[{"role":"user","content":{"type":"text","text":"hi"}}]}`,
+	}
+	for method, body := range good {
+		if err := validateMCPResultShape(method, json.RawMessage(body)); err != nil {
+			t.Errorf("%s: unexpected error %v", method, err)
+		}
+	}
+	if isBase64String("aGk=\n") {
+		t.Error("zod z.base64() rejects newlines")
+	}
+}

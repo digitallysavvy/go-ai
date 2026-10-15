@@ -199,7 +199,7 @@ func mcpHeaderSafeInteger(value interface{}) (int64, bool) {
 		if v != float64(int64(v)) {
 			return 0, false
 		}
-		const maxSafeInteger = 1 << 53
+		const maxSafeInteger = 1<<53 - 1 // Number.MAX_SAFE_INTEGER
 		if v > maxSafeInteger || v < -maxSafeInteger {
 			return 0, false
 		}

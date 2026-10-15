@@ -481,7 +481,7 @@ func TestWorkflowChatTransportEmptyReconnectStreamsAreBounded(t *testing.T) {
 			tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL, MaxConsecutiveErrors: tc.limit})
 			out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "chat-empty"})
 			_, err := collectChunks(out, errs, 3*time.Second)
-			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("failed to reconnect after %d consecutive errors", tc.want)) ||
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("Failed to reconnect after %d consecutive errors", tc.want)) ||
 				!strings.Contains(err.Error(), "Last error: Error: Reconnect stream ended without receiving chunks.") {
 				t.Fatalf("error = %v, want reconnect failure after %d consecutive errors", err, tc.want)
 			}
@@ -518,7 +518,7 @@ func TestWorkflowChatTransportEmptyReconnectAfterInterruptedPostIsBounded(t *tes
 	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL})
 	out, errs := tr.SendMessages(context.Background(), ai.ChatTransportSendMessagesRequest{ChatID: "chat-empty-post"})
 	_, err := collectChunks(out, errs, 3*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "failed to reconnect after 3 consecutive errors") {
+	if err == nil || !strings.Contains(err.Error(), "Failed to reconnect after 3 consecutive errors") {
 		t.Fatalf("error = %v, want reconnect failure after 3 consecutive errors", err)
 	}
 	mu.Lock()
@@ -569,5 +569,20 @@ func TestWorkflowChatTransportReconnectProgressResetsConsecutiveErrors(t *testin
 	}
 	if end.ChunkIndex != 2 {
 		t.Fatalf("OnChatEnd chunk index = %d, want 2", end.ChunkIndex)
+	}
+}
+
+func TestEncodeURIComponentMatchesJS(t *testing.T) {
+	cases := map[string]string{
+		"wrun_01H":  "wrun_01H",
+		"a:b@c+d/e": "a%3Ab%40c%2Bd%2Fe",
+		"a b&c=d,e": "a%20b%26c%3Dd%2Ce",
+		"it's (ok)": "it's%20(ok)",
+		"é":         "%C3%A9",
+	}
+	for in, want := range cases {
+		if got := encodeURIComponent(in); got != want {
+			t.Errorf("encodeURIComponent(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

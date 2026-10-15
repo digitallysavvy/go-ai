@@ -186,7 +186,23 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	if ferr != nil {
 		return "", ferr
 	}
-	input, _ := inputVal.(map[string]interface{})
+	input, isObject := inputVal.(map[string]interface{})
+	if !isObject && inputJSON != "" {
+		// TS passes the sandbox value through unchanged, so a non-object
+		// argument (tools.x("text"), tools.x([1]), tools.x(null)) fails input
+		// validation instead of being replaced by an empty object. A Go tool's
+		// Execute takes an object, so such a value is always an input error.
+		cause := fmt.Sprintf("expected an object, received %s", jsonKindName(inputVal))
+		if validator := toolInputValidator(tool); validator != nil {
+			if verr := validator.Validate(inputVal); verr != nil {
+				cause = verr.Error()
+			}
+		}
+		return "", NewToolError(
+			fmt.Sprintf("Invalid input for tool %q: %s", toolName, cause),
+			map[string]interface{}{"toolName": toolName, "input": inputVal, "cause": cause},
+		)
+	}
 	if input == nil {
 		input = map[string]interface{}{}
 	}
@@ -528,4 +544,21 @@ func isHintedParameters(p interface{}) bool {
 		return true
 	}
 	return false
+}
+
+func jsonKindName(v interface{}) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case []interface{}:
+		return "array"
+	case map[string]interface{}:
+		return "object"
+	default:
+		return "number"
+	}
 }
