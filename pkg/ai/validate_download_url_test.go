@@ -376,3 +376,16 @@ func TestValidateDownloadURL_BlocksTSReservedRanges(t *testing.T) {
 		}
 	}
 }
+
+// TS strips trailing dots before the hostname blocklist, so a fully
+// qualified "localhost." / "x.local." cannot bypass it (no DNS involved).
+func TestValidateDownloadURL_TrailingDotHostnamesBlocked(t *testing.T) {
+	orig := netLookupHost
+	netLookupHost = func(string) ([]string, error) { return []string{"8.8.8.8"}, nil }
+	defer func() { netLookupHost = orig }()
+	for _, u := range []string{"http://localhost./f", "http://printer.local./f", "http://a.localhost../f", "http://127.0.0.1./f"} {
+		if err := validateDownloadURL(u); err == nil {
+			t.Errorf("%s: expected error", u)
+		}
+	}
+}
