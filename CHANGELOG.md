@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-15
+
+Patch release: bug fixes backported from the v0.6.0 line, including two
+security fixes.
+
+### Security
+
+- Replicate: the video status poll no longer sends the API token to the
+  response-derived `urls.get` unless it is same-origin with the configured base
+  URL. fal: the video status poll sends the provider `Authorization` header
+  only to the same-origin queue URL.
+- Harness: ACP (and Fx) authentication files are rejected unless the path is
+  relative without traversal, and are restricted to the owner (`chmod 600`)
+  after writing. They were written world-readable.
+
+### Fixed
+
+- `GenerateObject` and `StreamObject` sent responseFormat type `json_schema` /
+  `json_object` instead of `json` (as the TS SDK does). Providers that key JSON
+  mode off `json` (Gemini, Cohere, Alibaba, Bedrock, Perplexity, Hugging Face,
+  xAI and OpenAI Responses, Open Responses) lost JSON mode or the schema. The
+  response schema is now the JSON Schema map. Azure and Ollama map `json` to
+  `json_schema` / `json_object` on the wire.
+- Tools whose `Parameters` is a `schema.Schema` (such as
+  `schema.NewSimpleJSONSchema(...)`) reached providers as `{}`. The schema is
+  now resolved to its JSON Schema map in `GenerateText`, `StreamText`, batch
+  and agents (new `toolutil.ResolveToolSchemas`).
+- Bedrock Anthropic (InvokeModel) streaming returned no content: events are
+  now dispatched on the payload `type`, the `[DONE]` sentinel is skipped, and
+  modeled exceptions carry their status code and retryability.
+- Streams were cut off by the default HTTP client's 60s whole-request timeout,
+  and so were slow non-streaming calls. The default client has no whole-request
+  timeout (bound a call with its context) and a 5 minute response header
+  timeout.
+- Retries: `GenerateText`, `StreamText`, agents and `GenerateObject` retried
+  only AI Gateway models. They now retry every provider (default 2 retries),
+  honour `ProviderError.Retryable` and retry connection failures. 408, 409,
+  429 and 5xx are retried; 400 and 401 are not. Set `MaxRetries` to 0 to
+  disable. `NewProviderError` now takes the status code, headers and message
+  from an HTTP error in the cause chain when none is given.
+- OpenAI chat streaming never returned usage. It now requests
+  `stream_options.include_usage` (as TS does for OpenAI, Azure, Baseten and
+  Bedrock Mantle), holds the finish chunk until usage arrives and returns it.
+  The OpenAI-compatible wrappers (Cerebras, DeepInfra, Vercel, Vertex MaaS)
+  do not send it, matching TS. A text delta carrying `finish_reason` no longer
+  drops the finish. New `openai.Config.OmitStreamUsage` controls this.
+- A call to an unknown tool no longer stops `GenerateText` / `StreamText`; it is
+  answered with a tool error and the loop continues.
+- Bedrock: SigV4 signed the decoded path, so model IDs containing `:` (for
+  example embedding and image models) were rejected. The path is signed as sent.
+- ACP: mapping and authentication types (`ModelMapping`, `InstructionMapping`,
+  `OutputSchemaMapping`, `PermissionModeMapping`, `Authentication`) were
+  serialized with Go field names, so they never took effect in the bridge, and
+  empty lists were encoded as `null`.
+- Anthropic: `Generate` put text before thinking in `Content`, so the next turn
+  was rejected with thinking enabled. Content keeps the order the model emitted.
+- Gemini: a `functionCall` without an id used the tool name as the id, so
+  parallel calls to one function collided. A generated id is used.
+- OpenAI-compatible chat: file parts carrying only `FileData` produced empty
+  image URLs.
+- Alibaba and Moonshot: non-streaming tool-call arguments sent as a JSON string
+  were dropped.
+- Cohere: embed was sent to `/v1/v1/embed` and rerank to `/v1/rerank`. Chat,
+  embed and rerank use the v2 API under the base URL (default
+  `https://api.cohere.com/v2`, was `https://api.cohere.ai/v1`). A custom
+  `BaseURL` without a version segment (a host or a proxy path) still gets `/v2`
+  appended, as chat did before; one ending in `/v1` or `/v2` is used as is.
+  Embed now sends `embedding_types: ["float"]`, which v2 requires.
+
 ## [0.5.2] - 2026-10-04
 
 ### Fixed
@@ -1199,7 +1268,8 @@ Apache 2.0 - See LICENSE for details
 
 ---
 
-[Unreleased]: https://github.com/digitallysavvy/go-ai/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/digitallysavvy/go-ai/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/digitallysavvy/go-ai/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/digitallysavvy/go-ai/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/digitallysavvy/go-ai/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/digitallysavvy/go-ai/compare/v0.4.0...v0.5.0

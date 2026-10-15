@@ -866,3 +866,29 @@ func TestConvertResponse_ServerToolCallAndResult(t *testing.T) {
 		t.Fatalf("text = %q", text)
 	}
 }
+
+// Parallel id-less calls to one function must not share an id (TS:
+// functionCall.id || generateId()).
+func TestConvertResponse_IdlessFunctionCallsGetUniqueIDs(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{FunctionCall: &FunctionCall{Name: "weather"}},
+				{FunctionCall: &FunctionCall{Name: "weather"}},
+			}},
+			FinishReason: "STOP",
+		}},
+	}
+	result := m.convertResponse(resp, nil)
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("tool calls = %d", len(result.ToolCalls))
+	}
+	a, b := result.ToolCalls[0].ID, result.ToolCalls[1].ID
+	if a == "" || b == "" || a == b || a == "weather" {
+		t.Fatalf("ids = %q, %q", a, b)
+	}
+}

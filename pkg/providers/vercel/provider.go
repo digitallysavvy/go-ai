@@ -32,6 +32,8 @@ func New(cfg Config) *Provider {
 		APIKey:        cfg.APIKey,
 		BaseURL:       baseURL,
 		UserAgentName: "vercel",
+		// OpenAI-compatible: no stream_options unless includeUsage is set.
+		OmitStreamUsage: true,
 	})
 
 	return &Provider{

@@ -141,11 +141,11 @@ func doGenerateWithRetry(ctx context.Context, model provider.LanguageModel, opts
 	var result *types.GenerateResult
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
-		InitialDelay: 10 * time.Millisecond,
-		MaxDelay:     50 * time.Millisecond,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
-		ShouldRetry:  retryutil.IsRetryable,
+		ShouldRetry:  isGatewayCallRetryable,
 	}, func(retryCtx context.Context) error {
 		var err error
 		result, err = model.DoGenerate(retryCtx, opts)
@@ -162,11 +162,11 @@ func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *
 	var stream provider.TextStream
 	err := retryutil.Do(ctx, retryutil.Config{
 		MaxRetries:   maxRetries,
-		InitialDelay: 10 * time.Millisecond,
-		MaxDelay:     50 * time.Millisecond,
+		InitialDelay: 2 * time.Second,
+		MaxDelay:     60 * time.Second,
 		Multiplier:   2,
 		Jitter:       false,
-		ShouldRetry:  retryutil.IsRetryable,
+		ShouldRetry:  isGatewayCallRetryable,
 	}, func(retryCtx context.Context) error {
 		var err error
 		stream, err = model.DoStream(retryCtx, opts)
@@ -287,8 +287,8 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 	switch opts.OutputMode {
 	case ObjectModeObject:
 		return &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      opts.Schema,
+			Type:        "json",
+			Schema:      objectResponseSchema(opts.Schema),
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		}, nil
@@ -315,8 +315,8 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 			wrapped[k] = v
 		}
 		return &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      enumSchemaWrapper{wrapped},
+			Type:        "json",
+			Schema:      wrapped,
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		}, nil
@@ -326,8 +326,8 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 			enumVals[i] = v
 		}
 		return &provider.ResponseFormat{
-			Type: "json_schema",
-			Schema: enumSchemaWrapper{map[string]interface{}{
+			Type: "json",
+			Schema: map[string]interface{}{
 				"$schema": "http://json-schema.org/draft-07/schema#",
 				"type":    "object",
 				"properties": map[string]interface{}{
@@ -338,10 +338,10 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 				},
 				"required":             []string{"result"},
 				"additionalProperties": false,
-			}},
+			},
 		}, nil
 	case ObjectModeNoSchema:
-		return &provider.ResponseFormat{Type: "json_object"}, nil
+		return &provider.ResponseFormat{Type: "json"}, nil
 	default:
 		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
 	}
@@ -928,8 +928,8 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      opts.Schema,
+			Type:        "json",
+			Schema:      objectResponseSchema(opts.Schema),
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		},
@@ -1086,8 +1086,8 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      enumSchemaWrapper{wrappedArraySchema},
+			Type:        "json",
+			Schema:      wrappedArraySchema,
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		},
@@ -1233,8 +1233,8 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type:   "json_schema",
-			Schema: enumSchemaWrapper{wrappedEnumSchema},
+			Type:   "json",
+			Schema: wrappedEnumSchema,
 		},
 		Telemetry: opts.ExperimentalTelemetry,
 	}
@@ -1373,7 +1373,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type: "json_object",
+			Type: "json",
 		},
 		Telemetry: opts.ExperimentalTelemetry,
 	}
@@ -2136,4 +2136,14 @@ func deepEqual(a, b interface{}) bool {
 	}
 
 	return reflect.DeepEqual(a, b)
+}
+
+// objectResponseSchema is the value of ResponseFormat.Schema for object
+// output: the JSON Schema map (TS passes the JSON schema, not a schema
+// object), so providers that read the schema as a map send it.
+func objectResponseSchema(s schema.Schema) interface{} {
+	if m := schemaToMap(s); m != nil {
+		return m
+	}
+	return s
 }

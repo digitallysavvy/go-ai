@@ -1,7 +1,10 @@
 package cohere
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -82,6 +85,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	reqBody := map[string]interface{}{
 		"texts": inputs,
 		"model": m.modelID,
+		// The v2 embed endpoint requires embedding_types.
+		"embedding_types": []string{"float"},
 	}
 
 	if m.options.InputType != "" {
@@ -99,15 +104,19 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	var response cohereEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
-		Path:    "/v1/embed",
+		Path:    "/embed",
 		Body:    reqBody,
 		Headers: optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
 	}
+	embeddings, err := response.floatEmbeddings()
+	if err != nil {
+		return nil, providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
+	}
 	return &types.EmbeddingsResult{
-		Embeddings: response.Embeddings,
+		Embeddings: embeddings,
 		Usage: types.EmbeddingUsage{
 			Tokens:      float64(response.Meta.BilledUnits.InputTokens),
 			InputTokens: response.Meta.BilledUnits.InputTokens,
@@ -126,10 +135,36 @@ func optsHeaders(opts *provider.EmbedModelOptions) map[string]string {
 }
 
 type cohereEmbedResponse struct {
-	Embeddings [][]float64 `json:"embeddings"`
+	// Embeddings is an object keyed by embedding type (v2), or a plain float
+	// array (legacy).
+	Embeddings json.RawMessage `json:"embeddings"`
 	Meta       struct {
 		BilledUnits struct {
 			InputTokens int `json:"input_tokens"`
 		} `json:"billed_units"`
 	} `json:"meta"`
+}
+
+// floatEmbeddings extracts the float embeddings from either response shape.
+func (r cohereEmbedResponse) floatEmbeddings() ([][]float64, error) {
+	raw := bytes.TrimSpace(r.Embeddings)
+	var out [][]float64
+	if len(raw) > 0 && raw[0] == '[' {
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)
+		}
+		return out, nil
+	}
+	var byType map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &byType); err != nil {
+		return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)
+	}
+	sel, ok := byType["float"]
+	if !ok {
+		return nil, fmt.Errorf("invalid cohere embeddings response: missing float embeddings")
+	}
+	if err := json.Unmarshal(sel, &out); err != nil {
+		return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)
+	}
+	return out, nil
 }

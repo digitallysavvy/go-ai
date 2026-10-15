@@ -211,8 +211,14 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, fmt.Errorf("replicate: invalid operation reference: %w", err)
 	}
 
-	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, m.prov.client.HTTPClient().Transport)
-	downloadOpts.Headers = m.mergeHeaders(opts.Headers)
+	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.baseURL(), m.prov.client.HTTPClient().Transport)
+	// op.GetURL comes from a response body: only same-origin URLs get the
+	// provider credentials (TS credentialedOrigin: baseURL).
+	downloadOpts.Headers = m.prov.credentialedHeaders(op.GetURL, opts.Headers)
+
+	if statusOptionsHook != nil {
+		statusOptionsHook(&downloadOpts)
+	}
 
 	var prediction replicatePredictionWire
 	result, err := fileutil.PollJSON(ctx, op.GetURL, downloadOpts, &prediction)
@@ -358,20 +364,6 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	return opts
 }
 
-// mergeHeaders combines the provider's default headers (Authorization,
-// Content-Type) with request-specific headers, matching TS's
-// combineHeaders(this.config.headers, headers) forwarded to the status GET.
-func (m *VideoModel) mergeHeaders(headers map[string]string) map[string]string {
-	out := map[string]string{}
-	for k, v := range m.prov.client.Headers() {
-		out[k] = v
-	}
-	for k, v := range headers {
-		out[k] = v
-	}
-	return out
-}
-
 func (m *VideoModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
@@ -435,3 +427,7 @@ type replicatePredictionWire struct {
 		PredictTime *float64 `json:"predict_time,omitempty"`
 	} `json:"metrics,omitempty"`
 }
+
+// statusOptionsHook lets tests observe the outgoing status request (swap the
+// transport) without loosening the SSRF guard in production. Nil in production.
+var statusOptionsHook func(*fileutil.DownloadOptions)

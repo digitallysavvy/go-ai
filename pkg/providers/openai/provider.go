@@ -130,6 +130,13 @@ type Config struct {
 	// RequestBody() reflects the same post-transform shape TS's
 	// `request: { body }` does.
 	TransformRequestBody func(body map[string]interface{}) map[string]interface{} `json:"-"`
+
+	// OmitStreamUsage stops the Chat Completions model from sending
+	// stream_options.include_usage on streaming requests. TS
+	// OpenAIChatLanguageModel always sends it, but the OpenAI-compatible
+	// wrappers (cerebras, deepinfra, vercel, vertex MaaS) only send it when
+	// includeUsage is set, which they do not, so they set this.
+	OmitStreamUsage bool `json:"-"`
 }
 
 // New creates a new OpenAI provider with the given configuration

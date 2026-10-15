@@ -372,8 +372,8 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
-			if len(tc.Function.Arguments) > 0 {
-				if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
+			if argText := toolArgumentsString(tc.Function.Arguments); argText != "" {
+				if err := json.Unmarshal([]byte(argText), &args); err != nil {
 					// If unmarshal fails, use empty args
 					args = make(map[string]interface{})
 				}
@@ -440,4 +440,18 @@ type alibabaToolCall struct {
 type alibabaToolCallFunction struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+// toolArgumentsString returns a tool call's arguments as JSON text. The wire
+// value is normally a JSON string holding JSON text (OpenAI style); some hosts
+// send the object itself, whose text is returned as is.
+func toolArgumentsString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
 }

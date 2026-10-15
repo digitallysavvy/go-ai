@@ -273,7 +273,7 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 			}
 			toolCallID := part.FunctionCall.ID
 			if toolCallID == "" {
-				toolCallID = part.FunctionCall.Name
+				toolCallID = m.generateID()
 			}
 			result.ToolCalls = append(result.ToolCalls, types.ToolCall{
 				ID:               toolCallID,

@@ -68,10 +68,13 @@ func TestDoGenerateSendsThinkingViaMiniMaxProviderOption(t *testing.T) {
 		t.Fatalf("thinking = %#v, want {type: adaptive}", capturedBody["thinking"])
 	}
 
-	// The thinking block surfaces as a reasoning content part (Go keeps text
-	// separate on result.Text rather than in a unified content array).
-	if len(result.Content) != 1 {
-		t.Fatalf("Content = %#v, want 1 reasoning part", result.Content)
+	// The thinking block surfaces as a reasoning content part, ahead of the
+	// text that follows it (TS keeps one ordered content array).
+	if len(result.Content) != 2 {
+		t.Fatalf("Content = %#v, want reasoning then text", result.Content)
+	}
+	if _, ok := result.Content[1].(types.TextContent); !ok {
+		t.Fatalf("Content[1] = %#v, want text", result.Content[1])
 	}
 	rc, ok := result.Content[0].(types.ReasoningContent)
 	if !ok || rc.Text != "Counting the letters..." || rc.Signature != "sig_123" {

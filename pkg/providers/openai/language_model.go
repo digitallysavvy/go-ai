@@ -155,6 +155,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 	if stream {
 		body["stream"] = true
+		// Ask for usage: without it a streamed chat completion carries none
+		// (TS OpenAIChatLanguageModel always sets include_usage).
+		if !m.provider.config.OmitStreamUsage {
+			body["stream_options"] = map[string]interface{}{"include_usage": true}
+		}
 	}
 
 	// Extract the "openai" provider options map once; every option below reads
@@ -816,6 +821,14 @@ type openAIStream struct {
 	providerName     string
 	responseHeaders  http.Header
 	requestBody      interface{}
+
+	// The terminal finish chunk is held back until the stream ends so a
+	// trailing usage-only chunk (stream_options.include_usage) can be merged
+	// into it, as TS does in flush().
+	finishRaw  string
+	finishSeen bool
+	finished   bool
+	usage      *openAIUsage
 }
 
 // newOpenAIStream creates a new OpenAI stream
@@ -868,14 +881,18 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// Get next SSE event
 		event, err := s.parser.Next()
 		if err != nil {
+			if err == io.EOF {
+				s.endStream()
+				continue
+			}
 			s.err = err
 			return nil, err
 		}
 
 		// Check for stream completion
 		if streaming.IsStreamDone(event) {
-			s.err = io.EOF
-			return nil, io.EOF
+			s.endStream()
+			continue
 		}
 		// Parse the event data as JSON.
 		// Tool call deltas carry an "index" field not present in non-streaming responses,
@@ -899,6 +916,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *openAIUsage    `json:"usage,omitempty"`
 			Error json.RawMessage `json:"error,omitempty"`
 		}
 
@@ -957,6 +975,12 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			s.metadataEmitted = true
 		}
 
+		// Usage may arrive on any chunk, typically a trailing choices-less one;
+		// the latest value wins (TS: if (value.usage != null) usage = ...).
+		if chunkData.Usage != nil {
+			s.usage = chunkData.Usage
+		}
+
 		if len(chunkData.Choices) > 0 {
 			choice := chunkData.Choices[0]
 
@@ -967,15 +991,14 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					s.pendingRaw = append(s.pendingRaw, rawChunk)
 				}
 				s.flushPendingMetadata()
-				textChunk := &provider.StreamChunk{
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 					Type: provider.ChunkTypeText,
 					Text: choice.Delta.Content,
+				})
+				if choice.FinishReason != nil && len(choice.Delta.ToolCalls) == 0 {
+					s.flushOpenAIToolCalls(*choice.FinishReason)
 				}
-				if len(s.flushQueue) > 0 {
-					s.flushQueue = append(s.flushQueue, textChunk)
-					continue
-				}
-				return textChunk, nil
+				continue
 			}
 
 			// Tool call delta — accumulate partial arguments by index.
@@ -1077,11 +1100,31 @@ func (s *openAIStream) flushOpenAIToolCalls(finishReason string) {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-		Type:            provider.ChunkTypeFinish,
-		FinishReason:    providerutils.MapOpenAIFinishReason(finishReason),
-		RawFinishReason: finishReason,
-	})
+	// The finish chunk itself waits for the end of the stream (endStream) so
+	// trailing usage can be merged into it.
+	s.finishSeen = true
+	s.finishRaw = finishReason
+}
+
+// endStream queues the terminal finish chunk, with usage when the provider
+// sent any, once the SSE stream has ended, then marks the stream complete.
+func (s *openAIStream) endStream() {
+	if !s.finished {
+		s.finished = true
+		if s.finishSeen {
+			finish := &provider.StreamChunk{
+				Type:            provider.ChunkTypeFinish,
+				FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
+				RawFinishReason: s.finishRaw,
+			}
+			if s.usage != nil {
+				u := convertOpenAIUsage(*s.usage)
+				finish.Usage = &u
+			}
+			s.flushQueue = append(s.flushQueue, finish)
+		}
+	}
+	s.err = io.EOF
 }
 
 // strictJSONSchema reads the strictJsonSchema provider option (default true).

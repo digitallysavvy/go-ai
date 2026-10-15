@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,14 +40,20 @@ func applyUserAgentSuffix(h http.Header) {
 	h.Set("User-Agent", merged["user-agent"])
 }
 
-// DefaultHTTPClient is a shared HTTP client with sensible defaults
+// DefaultHTTPClient is a shared HTTP client with sensible defaults.
+//
+// It has no whole-request timeout: TS fetch has none, so a slow
+// non-streaming call (a reasoning model, an image generation) or a long
+// stream must not be cut off at an arbitrary limit; callers bound a call with
+// its context. As with Node's fetch (undici headersTimeout), the server must
+// start responding within 5 minutes.
 var DefaultHTTPClient = &http.Client{
-	Timeout: 60 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
+		DisableCompression:    false,
 	},
 }
 
@@ -76,7 +83,7 @@ type Config struct {
 	// Headers are default headers to send with all requests
 	Headers map[string]string
 
-	// Timeout for requests (default: 60 seconds)
+	// Timeout for requests (default: none; bound a call with its context)
 	Timeout time.Duration
 
 	// HTTPClient is the underlying HTTP client to use
@@ -171,6 +178,22 @@ func (e *HTTPStatusError) Error() string {
 		return "HTTP <nil>"
 	}
 	return fmt.Sprintf("HTTP %d: %s", e.StatusCode, string(e.Body))
+}
+
+// HTTPStatusDetails implements providererrors.HTTPStatusDetails so
+// providererrors.NewProviderError can lift the status code, headers and body
+// out of the cause chain.
+func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
+	if e == nil {
+		return 0, nil, nil
+	}
+	headers := make(map[string]string, len(e.Headers))
+	for k, v := range e.Headers {
+		if len(v) > 0 {
+			headers[strings.ToLower(k)] = v[0]
+		}
+	}
+	return e.StatusCode, headers, e.Body
 }
 
 // snapshot returns a point-in-time copy of the mutable client state (base
@@ -315,6 +338,19 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 	return resp, nil
 }
 
+// streamClient returns the client used for streaming requests. The shared
+// DefaultHTTPClient carries a whole-request timeout that would abort a stream
+// still being read, so streams use a copy of it without that timeout. A
+// caller-supplied client (or an explicit Config.Timeout) is honoured as is.
+func (c *Client) streamClient() *http.Client {
+	if c.client == DefaultHTTPClient && DefaultHTTPClient.Timeout > 0 {
+		clone := *DefaultHTTPClient
+		clone.Timeout = 0
+		return &clone
+	}
+	return c.client
+}
+
 // DoStream performs an HTTP request that returns a streaming response
 func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, error) {
 	baseURL, defaultHeaders := c.snapshot()
@@ -375,8 +411,10 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 
-	// Perform request
-	httpResp, err := c.client.Do(httpReq)
+	// Perform request. http.Client.Timeout covers reading the response body,
+	// so the shared default client's 60s budget would cut off long-running
+	// streams (TS fetch has no overall timeout; callers cancel via ctx).
+	httpResp, err := c.streamClient().Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
 	}
@@ -474,5 +512,16 @@ func transportError(err error) error {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return err
 	}
-	return fmt.Errorf("Cannot connect to API: %w", err) //nolint:staticcheck // matches TS SDK's exact error text
+	return &connectError{err: err}
 }
+
+// connectError is a failure to reach the API (TS: an APICallError with
+// isRetryable=true built by handleFetchError). The cause stays wrapped for
+// errors.Is/As.
+type connectError struct{ err error }
+
+func (e *connectError) Error() string { return "Cannot connect to API: " + e.err.Error() }
+func (e *connectError) Unwrap() error { return e.err }
+
+// IsRetryable reports true: TS retries connection failures.
+func (e *connectError) IsRetryable() bool { return true }

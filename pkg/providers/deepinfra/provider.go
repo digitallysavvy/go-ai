@@ -59,6 +59,8 @@ func New(cfg Config) *Provider {
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:    true,
 		UserAgentName: "deepinfra",
+		// TS sends stream_options only when includeUsage is set (it is not).
+		OmitStreamUsage: true,
 	})
 
 	return &Provider{
