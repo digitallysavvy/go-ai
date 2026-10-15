@@ -203,7 +203,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 			Type:        types.ToolTypeFunction,
 			Name:        "json",
 			Description: "Respond with a JSON object.",
-			Parameters:  opts.ResponseFormat.Schema,
+			Parameters:  providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema),
 		}
 	}
 
@@ -282,7 +282,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	if topK != nil {
 		inferenceConfig["topK"] = *topK
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS: stopSequences != null (an empty list is still sent).
+	if opts.StopSequences != nil {
 		inferenceConfig["stopSequences"] = opts.StopSequences
 	}
 
@@ -453,7 +454,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	}
 
 	if useJSONInstructionForStructuredOutput {
-		filteredMessages = injectBedrockJSONInstruction(filteredMessages, opts.ResponseFormat.Schema)
+		filteredMessages = injectBedrockJSONInstruction(filteredMessages, providerutils.ResponseFormatJSONSchema(opts.ResponseFormat.Schema))
 	}
 
 	isMistral := isMistralModel(m.modelID)

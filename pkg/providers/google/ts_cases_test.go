@@ -113,6 +113,8 @@ func TestTSCasesInteractions(t *testing.T) {
 	}, map[string]string{
 		"polls doGenerate until terminal for model calls with background: true":                           multiResponse,
 		"returns the polled terminal response from doGenerate when POST returns in_progress":              multiResponse,
+		"opens GET /interactions/{id}?stream=true and pipes SSE events through when POST is non-terminal": multiResponse,
+		"reconnects to GET stream with last_event_id when the SSE connection drops":                       multiResponse,
 		"round-trips an assistant tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
 	})
 }

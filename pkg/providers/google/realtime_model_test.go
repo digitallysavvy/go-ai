@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -771,4 +772,100 @@ func TestGoogleRealtimeLifecycleCustomEvents(t *testing.T) {
 	t.Run("waitingForInput", func(t *testing.T) {
 		assertCustom(t, `{"serverContent":{"waitingForInput":true}}`, "waitingForInput")
 	})
+}
+
+// Ports the remaining doCreateClientSecret cases of TS
+// realtime/google-realtime-model.test.ts (the recorded TS calls have no HTTP
+// exchange: the tests inject a mock fetch).
+func TestGoogleRealtimeClientSecretTSCases(t *testing.T) {
+	var body map[string]interface{}
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte("Forbidden"))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"name": "projects/123/locations/us/accessTokens/abc"})
+	}))
+	defer srv.Close()
+	newModel := func(modelID string) *GoogleRealtimeModel {
+		return NewRealtimeModel(New(Config{APIKey: "test-key", BaseURL: srv.URL + "/v1beta"}), modelID)
+	}
+	instructions, voice := "Be helpful", "Puck"
+
+	// payload: setup model, system instruction and voice
+	if _, err := newModel("gemini-2.0-flash-live-001").DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{
+		SessionConfig: &provider.RealtimeSessionConfig{Instructions: &instructions, Voice: &voice},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setup, _ := body["bidiGenerateContentSetup"].(map[string]interface{})
+	if setup["model"] != "models/gemini-2.0-flash-live-001" {
+		t.Fatalf("setup model = %v", setup["model"])
+	}
+	if b, _ := json.Marshal(setup["systemInstruction"]); string(b) != `{"parts":[{"text":"Be helpful"}]}` {
+		t.Fatalf("systemInstruction = %s", b)
+	}
+	if b, _ := json.Marshal(setup["generationConfig"]); !strings.Contains(string(b), `"voiceName":"Puck"`) {
+		t.Fatalf("generationConfig = %s", b)
+	}
+
+	// newSessionExpireTime from expiresAfterSeconds; expireTime outlasts it
+	before := time.Now()
+	seconds := 120
+	if _, err := newModel("gemini-2.0-flash-live-001").DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{ExpiresAfterSeconds: &seconds}); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	newSession, _ := time.Parse(time.RFC3339Nano, body["newSessionExpireTime"].(string))
+	expire, _ := time.Parse(time.RFC3339Nano, body["expireTime"].(string))
+	if newSession.Before(before.Add(120*time.Second).Add(-time.Second)) || newSession.After(after.Add(120*time.Second).Add(time.Second)) {
+		t.Fatalf("newSessionExpireTime = %v", newSession)
+	}
+	if !expire.After(newSession) {
+		t.Fatalf("expireTime %v must outlast newSessionExpireTime %v", expire, newSession)
+	}
+
+	// output audio transcription is enabled as an empty object
+	if _, err := newModel("gemini-2.0-flash-live-001").DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{
+		SessionConfig: &provider.RealtimeSessionConfig{OutputAudioTranscription: &provider.RealtimeAudioTranscriptionConfig{}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setup, _ = body["bidiGenerateContentSetup"].(map[string]interface{})
+	if v, ok := setup["outputAudioTranscription"]; !ok || len(v.(map[string]interface{})) != 0 {
+		t.Fatalf("outputAudioTranscription = %v", setup["outputAudioTranscription"])
+	}
+}
+
+func TestGoogleRealtimeClientSecretErrorsAndURLs(t *testing.T) {
+	status := http.StatusForbidden
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("Forbidden"))
+	}))
+	defer srv.Close()
+	_, err := NewRealtimeModel(New(Config{APIKey: "test-key", BaseURL: srv.URL + "/v1beta"}), "gemini-2.0-flash-live-001").
+		DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	if err == nil || !strings.Contains(err.Error(), "403 Forbidden") {
+		t.Fatalf("err = %v, want 403 Forbidden", err)
+	}
+
+	t.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", "")
+	_, err = NewRealtimeModel(New(Config{BaseURL: srv.URL + "/v1beta"}), "gemini-2.0-flash-live-001").
+		DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
+	if err == nil || !strings.Contains(err.Error(), "API key is required") {
+		t.Fatalf("err = %v, want API key is required", err)
+	}
+
+	for base, want := range map[string]string{
+		"https://proxy.example.com/google/v1beta": "wss://proxy.example.com/google/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+		"http://localhost:8787/v1beta":            "ws://localhost:8787/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+	} {
+		if got := googleWebSocketURL(base); got != want {
+			t.Fatalf("googleWebSocketURL(%q) = %q, want %q", base, got, want)
+		}
+	}
 }

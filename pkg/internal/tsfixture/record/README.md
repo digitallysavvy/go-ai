@@ -45,6 +45,15 @@ TSWIRE_REPORT=1 go test -json ./pkg/providers/ -run TestTSWire   # log every dif
 TSWIRE_ERRORS=1 ...                                    # also compare error wording
 ```
 
+The Anthropic, Google, Vertex and Bedrock suites are registered in
+`pkg/providers/ts_wire_anthgoog_test.go`. They pass the `responseFormat` schema
+as raw JSON (`WireSuite.RawSchemas`) so schema key order is compared, replay
+Vertex Anthropic through its sub-provider, and send the fixed Google speech and
+Cloud TTS hosts to the replay server with a host-rewriting transport. The
+`anthropic-aws` recording has no HTTP exchanges (its tests inject a mock fetch)
+and is not kept; Bedrock `doStream` tests are skipped because the recording
+stores the binary event-stream frames as text (the case suites replay them).
+
 Packages whose Go provider needs package-private setup replay in-package:
 `fal` (fixed hosts), `azure` (URL layout selected by the resource name) and
 `openai` (typed provider tools, provider names).

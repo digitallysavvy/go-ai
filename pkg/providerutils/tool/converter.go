@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -43,6 +45,8 @@ func ToJSONSchema(tool types.Tool) map[string]interface{} {
 }
 
 func defaultObjectSchema(parameters interface{}) interface{} {
+	// A schema.Schema marshals as {}; send its JSON Schema.
+	parameters = providerutils.ResponseFormatJSONSchema(parameters)
 	if parameters == nil {
 		return map[string]interface{}{
 			"type":       "object",
@@ -96,10 +100,19 @@ func ToAnthropicFormat(tools []types.Tool) []map[string]interface{} {
 // sanitizer. It keeps the structural subset Anthropic accepts, sets object
 // schemas to additionalProperties=false, and moves unsupported validation
 // constraints into descriptions so model guidance is not lost.
+//
+// A schema.Schema (what ai.GenerateObject passes) is resolved to its JSON
+// Schema first. Raw JSON (json.RawMessage or []byte) keeps its key order on the
+// wire, like the JS object TS sanitizes, so `properties` stay in the order the
+// caller wrote them.
 func SanitizeAnthropicSchema(schema interface{}) interface{} {
 	switch v := schema.(type) {
 	case map[string]interface{}:
 		return sanitizeAnthropicSchemaMap(v)
+	case json.RawMessage:
+		return sanitizeAnthropicRawSchema(v)
+	case []byte:
+		return sanitizeAnthropicRawSchema(v)
 	case []interface{}:
 		out := make([]interface{}, len(v))
 		for i, item := range v {
@@ -107,8 +120,23 @@ func SanitizeAnthropicSchema(schema interface{}) interface{} {
 		}
 		return out
 	default:
+		if resolved, ok := providerutils.ResponseFormatJSONSchema(schema).(map[string]interface{}); ok {
+			return sanitizeAnthropicSchemaMap(resolved)
+		}
 		return schema
 	}
+}
+
+func sanitizeAnthropicRawSchema(raw []byte) interface{} {
+	hint, ok := jsonorder.Parse(raw)
+	if !ok {
+		return json.RawMessage(raw)
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return json.RawMessage(raw)
+	}
+	return jsonorder.Hinted{V: SanitizeAnthropicSchema(decoded), Hint: hint}
 }
 
 func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interface{} {

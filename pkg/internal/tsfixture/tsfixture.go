@@ -876,6 +876,7 @@ func BuildOptions(call map[string]interface{}) (*provider.GenerateOptions, strin
 				o.Seed = &n
 			}
 		case "stopSequences":
+			o.StopSequences = []string{} // an empty list is not the same as none
 			for _, s := range v.([]interface{}) {
 				o.StopSequences = append(o.StopSequences, s.(string))
 			}

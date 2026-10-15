@@ -73,3 +73,25 @@ func mustParseObject(t *testing.T, raw string) *Object {
 	}
 	return o
 }
+
+func TestHintedRestoresRawKeyOrder(t *testing.T) {
+	raw := []byte(`{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer","enum":[3,1]}},"required":["zeta"]}`)
+	hint, ok := Parse(raw)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	// A transform adds a key the hint does not know.
+	decoded.(map[string]interface{})["additionalProperties"] = false
+	got, err := json.Marshal(Hinted{V: decoded, Hint: hint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"type":"object","properties":{"zeta":{"type":"string"},"alpha":{"type":"integer","enum":[3,1]}},"required":["zeta"],"additionalProperties":false}`
+	if string(got) != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

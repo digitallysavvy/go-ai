@@ -412,7 +412,7 @@ if err != nil {
 fmt.Println(result.Text)
 ```
 
-Use `PreviousInteractionID` with `Store` for stateful follow-up calls. Agent models run as background interactions and are polled until a terminal status; `PollingTimeoutMs` controls that wait. Agent model IDs include `deep-research-pro-preview-12-2025`, `deep-research-preview-04-2026`, `deep-research-max-preview-04-2026`, and `antigravity-preview-05-2026`.
+Use `PreviousInteractionID` with `Store` for stateful follow-up calls. `DoGenerate` polls an agent call (or any call with `Background` set) until it reaches a terminal status; `PollingTimeoutMs` controls that wait. The SDK sends `background` only when `Background` is set: Deep Research agents need `Background: &background` with `background := true`, while managed agents reject it. `DoStream` streams directly unless `Background` is set. The `Environment` option (a string, or a map with `sources` and `network`) applies to agent calls only; on a model call it is dropped with a warning. Agent model IDs include `deep-research-pro-preview-12-2025`, `deep-research-preview-04-2026`, `deep-research-max-preview-04-2026`, and `antigravity-preview-05-2026`.
 
 ```go
 agentModel, err := googleProvider.InteractionsAgent(google.InteractionsAgentDeepResearchProPreview)
@@ -424,6 +424,7 @@ result, err := agentModel.DoGenerate(ctx, &provider.GenerateOptions{
     Prompt: types.Prompt{Text: "Research the main tradeoffs in retrieval augmented generation."},
     ProviderOptions: map[string]interface{}{
         "google": google.GoogleInteractionsProviderOptions{
+            Background:       &background, // background := true; Deep Research agents need it
             PollingTimeoutMs: 120000,
         },
     },

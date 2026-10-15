@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/anthropic"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 )
 
@@ -205,7 +206,7 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		// gates the unsupported-strict warning (TS #22300).
 		strictSet := tool.Strict != nil
 		strictTrue := strictSet && *tool.Strict
-		supportsStrictForTool := supportsStrictOnTools && (!strictTrue || isStrictToolSchemaCompatible(tool.Parameters))
+		supportsStrictForTool := supportsStrictOnTools && (!strictTrue || isStrictToolSchemaCompatible(providerutils.ResponseFormatJSONSchema(tool.Parameters)))
 
 		if !supportsStrictOnTools && strictTrue {
 			result.Warnings = append(result.Warnings, types.Warning{
@@ -222,13 +223,14 @@ func prepareBedrockTools(tools []types.Tool, toolChoice types.ToolChoice, hasToo
 		}
 
 		toolSpec := map[string]interface{}{"name": tool.Name}
-		if tool.Description != "" {
+		// TS: description is omitted when it trims to the empty string.
+		if strings.TrimSpace(tool.Description) != "" {
 			toolSpec["description"] = tool.Description
 		}
 		if strictSet && supportsStrictForTool {
 			toolSpec["strict"] = *tool.Strict
 		}
-		inputSchema := tool.Parameters
+		inputSchema := providerutils.ResponseFormatJSONSchema(tool.Parameters)
 		if inputSchema == nil {
 			inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 		}
@@ -331,7 +333,7 @@ var bedrockToolsetNames = map[string]string{
 // Returns nil for tools Bedrock does not recognize this way (the caller
 // emits an "unsupported" warning).
 func bedrockAnthropicProviderTool(t types.Tool) map[string]interface{} {
-	inputSchema := t.Parameters
+	inputSchema := providerutils.ResponseFormatJSONSchema(t.Parameters)
 	if inputSchema == nil {
 		inputSchema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 	}

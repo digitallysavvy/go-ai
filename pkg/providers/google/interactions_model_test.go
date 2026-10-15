@@ -266,8 +266,9 @@ func TestInteractionsAgentUsesCurrentDeepResearchAgentName(t *testing.T) {
 	if captured["agent"] != InteractionsAgentDeepResearchProPreview {
 		t.Fatalf("agent = %v, want %s", captured["agent"], InteractionsAgentDeepResearchProPreview)
 	}
-	if captured["background"] != true {
-		t.Fatalf("background = %v", captured["background"])
+	// TS sends background only when providerOptions.google.background is set.
+	if _, ok := captured["background"]; ok {
+		t.Fatalf("background = %v, want it omitted", captured["background"])
 	}
 }
 
@@ -858,7 +859,11 @@ func TestInteractionsAgentStreamReconnectsAfterIntermittentEOF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InteractionsAgent: %v", err)
 	}
-	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	background := true
+	stream, err := model.DoStream(context.Background(), &provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hello"},
+		ProviderOptions: map[string]interface{}{"google": GoogleInteractionsProviderOptions{Background: &background}},
+	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}

@@ -23,7 +23,7 @@ export default defineConfig({
     resolveId(id) { return resolveSrc(id); },
     transform(code, id) {
       if (!/\.test\.tsx?$/.test(id)) return null;
-      return code.replace(/\.(do(?:Generate|Stream|Embed|Rerank|Start|Status|Decide|GetBatchResults|StartBatch|GetBatchStatus|CancelBatch|CreateClientSecret|CreateWebRTCSession))\(/g, '.__cap_$1(');
+      return code.replace(/\.(do(?:Generate|Stream|Embed|Rerank|Start|Status|Decide|GetBatchResults|StartBatch|GetBatchStatus|CancelBatch|CreateClientSecret|CreateWebRTCSession)|parseServerEvent|serializeClientEvent)\(/g, '.__cap_$1(');
     },
   }],
   esbuild: { tsconfigRaw: '{"compilerOptions":{"target":"ES2022","useDefineForClassFields":true}}' },

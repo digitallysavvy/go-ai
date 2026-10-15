@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -69,6 +70,15 @@ type WireSuite struct {
 	SkipLanguage bool
 	// ProviderTool maps a TS provider tool for language-model calls.
 	ProviderTool func(id, name string, args map[string]interface{}) (types.Tool, bool)
+	// RawSchemas passes the responseFormat schema of language-model calls as
+	// raw JSON (keeping the TS key order) instead of a Go map.
+	RawSchemas bool
+	// SkipStream is a reason to skip tests that stream (doStream calls) when
+	// the recording cannot carry the response body (binary frames).
+	SkipStream string
+	// SkipModel returns a reason to skip a test that calls a model this suite
+	// does not replay (for example a model another suite covers).
+	SkipModel func(m WireModel) string
 }
 
 // wireClsPrefix remembers, per TS model class, the base-URL prefix of tests
@@ -154,6 +164,14 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		kind := WireKind(c)
 		if kind == "" {
 			skip(fmt.Sprintf("unsupported TS call %s on %s", c.Method, c.Model.Cls))
+		}
+		if s.SkipStream != "" && c.Method == "doStream" {
+			skip(s.SkipStream)
+		}
+		if s.SkipModel != nil {
+			if why := s.SkipModel(c.Model); why != "" {
+				skip(why)
+			}
 		}
 		if hasFn(c.Args) {
 			skip("the TS call passes a function (for example a webhook factory)")
@@ -366,13 +384,112 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 			delete(gr, "modelId")
 		}
 	}
-	wantN, _ := srv.NormalizeOrigins(want).(map[string]interface{})
-	gotN, _ := srv.NormalizeOrigins(g).(map[string]interface{})
+	if WireKind(c) == "language" {
+		// TS exposes the zod-parsed response body, Go the typed one.
+		for _, m := range []map[string]interface{}{want, g} {
+			if r, ok := m["response"].(map[string]interface{}); ok {
+				delete(r, "body")
+			}
+		}
+	}
+	wireAlignInvalidBase64(want, g)
+	wantN, _ := srv.NormalizeOrigins(wireNormalizeParts(want)).(map[string]interface{})
+	gotN, _ := srv.NormalizeOrigins(wireNormalizeParts(g)).(map[string]interface{})
 	if d := DiffValues(wantN, gotN); d != "" {
 		return []string{"result (- TS, + Go):\n" + d}
 	}
 	return nil
 }
+
+// wireNormalizeParts applies the conventions the case replay already uses to
+// language-model content: provider tools are named by id in Go (ToolNameAlias),
+// generated source ids differ, and an explicit isError false is unset.
+func wireNormalizeParts(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		o := make(map[string]interface{}, len(x))
+		for k, e := range x {
+			switch {
+			case k == "id" && x["type"] == "source":
+				continue
+			case k == "isError" && e == false:
+				continue
+			case k == "data" && x["type"] == "reasoning-file":
+				if ds, isStr := e.(string); isStr { // Go renders the bytes; TS wraps them as {type:"data"}
+					e = map[string]interface{}{"type": "data", "data": ds}
+				}
+			case k == "outputTokens" && e == float64(0):
+				continue // an absent count is zero (image usage)
+			case k == "thoughtSignature" && x["type"] == "tool-call":
+				continue // Go-only field; TS carries it in providerMetadata
+			case k == "toolCallId":
+				if id, _ := e.(string); generatedWireID.MatchString(id) {
+					e = "<generated>"
+				}
+			case k == "toolName":
+				if name, _ := e.(string); ToolNameAlias[name] != "" {
+					e = ToolNameAlias[name]
+				}
+			}
+			o[k] = wireNormalizeParts(e)
+		}
+		return o
+	case []interface{}:
+		o := make([]interface{}, 0, len(x))
+		for _, e := range x {
+			// the Go rendering of content leaves out empty text parts
+			if m, ok := e.(map[string]interface{}); ok && m["type"] == "text" && (m["text"] == nil || m["text"] == "") && len(m) <= 2 {
+				continue
+			}
+			o = append(o, wireNormalizeParts(e))
+		}
+		return o
+	}
+	return v
+}
+
+// wireAlignInvalidBase64 makes the Go value equal the TS value where the TS
+// test used a string that is not valid base64 as mock file data: TS passes
+// such a string through, Go decodes what it can.
+func wireAlignInvalidBase64(want, got interface{}) {
+	switch w := want.(type) {
+	case map[string]interface{}:
+		g, _ := got.(map[string]interface{})
+		for k, wv := range w {
+			if gv, ok := g[k]; ok {
+				if ws, isStr := wv.(string); isStr {
+					if gs, ok := gv.(string); ok && gs != ws {
+						if _, err := base64.StdEncoding.DecodeString(ws); err != nil && (k == "data" || k == "images") {
+							g[k] = ws
+						}
+					}
+					continue
+				}
+				wireAlignInvalidBase64(wv, gv)
+			}
+		}
+	case []interface{}:
+		g, _ := got.([]interface{})
+		for i, wv := range w {
+			if i >= len(g) {
+				break
+			}
+			if ws, isStr := wv.(string); isStr {
+				if gs, ok := g[i].(string); ok && gs != ws {
+					if _, err := base64.StdEncoding.DecodeString(ws); err != nil {
+						g[i] = ws
+					}
+				}
+				continue
+			}
+			wireAlignInvalidBase64(wv, g[i])
+		}
+	}
+}
+
+// generatedWireID matches ids the TS tests mock ("test-id", "id-1") and ids
+// Go generates (call_...).
+var generatedWireID = regexp.MustCompile(`^(test-id|id-\d+|call_[0-9a-f]{8,}|code-exec-\d+)$`)
 
 func wireErrSummary(e interface{}) string {
 	m, _ := e.(map[string]interface{})
@@ -832,6 +949,11 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 	ProviderToolHook = prev
 	if opts == nil {
 		return map[string]interface{}{"skip": "unsupported call options: " + why}, errWireSkip
+	}
+	if s.RawSchemas && opts.ResponseFormat != nil && opts.ResponseFormat.Schema != nil {
+		if raw := c.RawResponseFormatSchema(); raw != nil {
+			opts.ResponseFormat.Schema = raw
+		}
 	}
 	if c.Method == "doStream" {
 		st, err := m.DoStream(ctx, opts)

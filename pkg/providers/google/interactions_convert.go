@@ -782,25 +782,49 @@ func builtinResultToolName(block interactionsContentBlock) string {
 	return strings.TrimSuffix(block.Type, "_result")
 }
 
+// annotationsToSources maps the annotations of one text block to sources,
+// de-duplicated by URL or document filename/title (TS annotationsToSources).
 func annotationsToSources(annotations []interactionsAnnotation) []types.ContentPart {
 	out := make([]types.ContentPart, 0)
+	seen := map[string]bool{}
 	for i, ann := range annotations {
 		id := fmt.Sprintf("source-%d", i+1)
+		var src types.SourceContent
 		switch ann.Type {
 		case "url_citation":
-			if ann.URL != "" {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Title})
+			if ann.URL == "" {
+				continue
 			}
+			src = types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Title}
 		case "file_citation":
-			uri := firstNonEmpty(ann.DocumentURI, ann.Source, ann.FileName)
+			// TS: url ?? document_uri ?? file_name
+			uri := firstNonEmpty(ann.URL, ann.DocumentURI, ann.FileName)
+			if uri == "" {
+				continue
+			}
 			if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-				out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: uri, Title: ann.FileName})
+				src = types.SourceContent{SourceType: "url", ID: id, URL: uri, Title: ann.FileName}
 			} else {
-				out = append(out, types.SourceContent{SourceType: "document", ID: id, MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(ann.FileName, baseName(uri), uri), Filename: firstNonEmpty(ann.FileName, baseName(uri))})
+				filename := firstNonEmpty(ann.FileName, baseName(uri))
+				src = types.SourceContent{SourceType: "document", ID: id, MediaType: inferDocumentMediaType(uri), Title: firstNonEmpty(ann.FileName, filename, uri), Filename: filename}
 			}
 		case "place_citation":
-			out = append(out, types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Name})
+			if ann.URL == "" {
+				continue
+			}
+			src = types.SourceContent{SourceType: "url", ID: id, URL: ann.URL, Title: ann.Name}
+		default:
+			continue
 		}
+		key := "url:" + src.URL
+		if src.SourceType != "url" {
+			key = "doc:" + firstNonEmpty(src.Filename, src.Title)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, src)
 	}
 	return out
 }
@@ -844,9 +868,10 @@ func builtinToolResultSources(block interactionsContentBlock) []types.ContentPar
 				}
 			}
 		case "file_search_result":
-			uri, _ := entry["document_uri"].(string)
+			// TS: url ?? document_uri ?? file_name
+			uri, _ := entry["url"].(string)
 			if uri == "" {
-				uri, _ = entry["source"].(string)
+				uri, _ = entry["document_uri"].(string)
 			}
 			fileName, _ := entry["file_name"].(string)
 			title, _ := entry["title"].(string)

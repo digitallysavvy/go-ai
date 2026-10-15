@@ -249,7 +249,7 @@ func TestTSCasesPrepareTools(t *testing.T) {
 			"betas":        map[string]interface{}{"__set": betas},
 		}, nil, nil
 	}, map[string]string{
-		"should correctly prepare computer_20251124 tool": "enableZoom is a Go bool: unset is sent as enable_zoom false (same API default)",
+		"should correctly prepare computer_20251124 tool with enableZoom false": "enableZoom is a Go bool: explicit false is omitted like unset (same API default false)",
 	})
 }
 

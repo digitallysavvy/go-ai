@@ -162,3 +162,15 @@ func TestCurrentToolOptionMappers(t *testing.T) {
 		t.Fatalf("computer API map mismatch: %#v", cMap)
 	}
 }
+
+// TS leaves enable_zoom out unless enableZoom is set.
+func TestComputer20251124EnableZoomOmittedWhenUnset(t *testing.T) {
+	off := (&computer20251124Opts{Args: Computer20251124Args{DisplayWidthPx: 1, DisplayHeightPx: 2}}).ToAnthropicAPIMap()
+	if _, ok := off["enable_zoom"]; ok {
+		t.Fatalf("enable_zoom sent when unset: %v", off)
+	}
+	on := (&computer20251124Opts{Args: Computer20251124Args{DisplayWidthPx: 1, DisplayHeightPx: 2, EnableZoom: true}}).ToAnthropicAPIMap()
+	if on["enable_zoom"] != true {
+		t.Fatalf("enable_zoom = %v, want true", on["enable_zoom"])
+	}
+}

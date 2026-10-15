@@ -47,7 +47,7 @@ Use `Provider.Interactions(modelID)` for stateless or stateful Gemini Interactio
 | `google.InteractionsAgentDeepResearchPreview042026` | `deep-research-preview-04-2026` |
 | `google.InteractionsAgentDeepResearchMax042026` | `deep-research-max-preview-04-2026` |
 
-Google-specific options are passed under `ProviderOptions["google"]` with `google.GoogleInteractionsProviderOptions`. Supported options include `PreviousInteractionID`, `Store`, `ResponseModalities`, `ServiceTier`, `ThinkingLevel`, `ThinkingSummaries`, `ImageConfig`, `AgentConfig`, and `PollingTimeoutMs`.
+Google-specific options are passed under `ProviderOptions["google"]` with `google.GoogleInteractionsProviderOptions`. Supported options include `PreviousInteractionID`, `Store`, `ResponseModalities`, `ServiceTier`, `ThinkingLevel`, `ThinkingSummaries`, `ImageConfig`, `AgentConfig`, `Environment`, `Background`, and `PollingTimeoutMs`. `background` is sent only when `Background` is set (Deep Research agents need it; managed agents reject it).
 
 ```go
 store := false

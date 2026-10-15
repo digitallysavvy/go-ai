@@ -150,6 +150,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		citationDocuments:        extractCitationDocuments(opts.Prompt.Messages),
 	})
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	if result.ResponseMetadata == nil {
+		result.ResponseMetadata = &types.ResponseMetadata{ModelID: m.ModelID()}
+	}
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	result.RawRequest = req.body
 	result.Warnings = append(result.Warnings, req.warnings...)
 	return result, nil
@@ -1294,9 +1298,35 @@ func (u *anthropicUsage) UnmarshalJSON(data []byte) error {
 	*u = anthropicUsage(p)
 	var raw map[string]interface{}
 	if err := json.Unmarshal(data, &raw); err == nil {
+		stripUsageRawToSchema(raw)
 		u.Raw = raw
 	}
 	return nil
+}
+
+// stripUsageRawToSchema drops the keys TS's zod schema strips from the raw
+// usage: the usage object itself is loose, but each iteration and
+// output_tokens_details are plain z.object schemas.
+func stripUsageRawToSchema(raw map[string]interface{}) {
+	keep := func(m map[string]interface{}, keys ...string) map[string]interface{} {
+		out := make(map[string]interface{}, len(keys))
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	if iters, ok := raw["iterations"].([]interface{}); ok {
+		for i, it := range iters {
+			if m, ok := it.(map[string]interface{}); ok {
+				iters[i] = keep(m, "type", "model", "input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+			}
+		}
+	}
+	if d, ok := raw["output_tokens_details"].(map[string]interface{}); ok {
+		raw["output_tokens_details"] = keep(d, "thinking_tokens")
+	}
 }
 
 type anthropicOutputTokensDetails struct {

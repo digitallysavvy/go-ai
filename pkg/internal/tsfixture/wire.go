@@ -13,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -40,6 +41,8 @@ type WireModel struct {
 	Provider string                 `json:"provider"`
 	Cls      string                 `json:"cls"`
 	Config   map[string]interface{} `json:"config"`
+	// Inst numbers the object a stateful call (an event mapper) ran on.
+	Inst int `json:"inst,omitempty"`
 
 	// RequestURLs is set by the runner to the URLs of the HTTP requests the
 	// TS test made, for providers whose settings show only in the URLs.
@@ -54,6 +57,49 @@ type WireCall struct {
 	Result   interface{}   `json:"result"`
 	Error    interface{}   `json:"error"`
 	Streamed bool          `json:"streamed"`
+
+	// argsRaw is the call arguments as recorded, keeping the key order of
+	// the TS objects (Args holds Go maps, which sort keys).
+	argsRaw json.RawMessage
+}
+
+// UnmarshalJSON decodes the call and keeps the raw arguments text.
+func (c *WireCall) UnmarshalJSON(b []byte) error {
+	type plain WireCall
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var aux struct {
+		Args json.RawMessage `json:"args"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*c = WireCall(p)
+	c.argsRaw = aux.Args
+	return nil
+}
+
+// RawResponseFormatSchema returns the responseFormat schema of the first call
+// argument as recorded (TS key order), or nil.
+func (c WireCall) RawResponseFormatSchema() json.RawMessage {
+	if len(c.argsRaw) == 0 {
+		return nil
+	}
+	tree, ok := jsonorder.Parse(c.argsRaw)
+	if !ok {
+		return nil
+	}
+	args, _ := tree.([]interface{})
+	if len(args) == 0 {
+		return nil
+	}
+	rf, ok := jsonorder.Get(args[0], "responseFormat", "schema")
+	if !ok || rf == nil {
+		return nil
+	}
+	return json.RawMessage(jsonorder.Stringify(rf))
 }
 
 // Arg returns the first argument as an object (the call options).
@@ -84,6 +130,29 @@ type WireResponse struct {
 	Chunks  []string          `json:"chunks"`
 	BodyB64 string            `json:"bodyB64"`
 	Status  int               `json:"status"`
+
+	// rawBody is the body as recorded, with the JSON key order of the TS
+	// object (Body is a Go map, which sorts keys); json-value responses are
+	// served from it so the model sees the same text as in TS.
+	rawBody json.RawMessage
+}
+
+// UnmarshalJSON decodes the response and keeps the raw body text.
+func (r *WireResponse) UnmarshalJSON(b []byte) error {
+	type plain WireResponse
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var aux struct {
+		Body json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	*r = WireResponse(p)
+	r.rawBody = aux.Body
+	return nil
 }
 
 // Path is the URL path of the request.
@@ -301,7 +370,10 @@ func (s *WireServer) handle(w http.ResponseWriter, r *http.Request) {
 	switch resp.Type {
 	case "json-value":
 		setH(map[string]string{"Content-Type": "application/json"})
-		b, _ := json.Marshal(resp.Body)
+		b := []byte(resp.rawBody)
+		if len(b) == 0 {
+			b, _ = json.Marshal(resp.Body)
+		}
 		_, _ = io.WriteString(w, s.rewrite(string(b)))
 	case "stream-chunks":
 		setH(map[string]string{"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"})

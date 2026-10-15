@@ -147,7 +147,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		}
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	result.RawRequest = reqBody
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	if result.ResponseMetadata == nil {
+		result.ResponseMetadata = &types.ResponseMetadata{ModelID: m.modelID}
+	}
+	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
 }
 
@@ -329,20 +334,30 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 	var lastServerToolCallID string
 
 	for _, part := range candidate.Content.Parts {
-		// Thought inlineData → ReasoningFileContent.
-		if part.Thought && part.InlineData != nil {
-			result.Content = append(result.Content, types.ReasoningFileContent{
-				MediaType: part.InlineData.MimeType,
-				Data:      decodeInlineData(part.InlineData.Data),
-			})
-			continue
-		}
-		// Non-thought inlineData → GeneratedFileContent.
+		// inlineData parts carry their own thoughtSignature in
+		// providerMetadata.google (TS: hasThoughtSignature ? wrap(...)).
 		if part.InlineData != nil {
-			result.Content = append(result.Content, types.GeneratedFileContent{
-				MediaType: part.InlineData.MimeType,
-				Data:      decodeInlineData(part.InlineData.Data),
-			})
+			var fileMeta json.RawMessage
+			if part.ThoughtSignature != "" {
+				fileMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+					"thoughtSignature": part.ThoughtSignature,
+				}))
+			}
+			if part.Thought {
+				// Thought inlineData → ReasoningFileContent.
+				result.Content = append(result.Content, types.ReasoningFileContent{
+					MediaType:        part.InlineData.MimeType,
+					Data:             decodeInlineData(part.InlineData.Data),
+					ProviderMetadata: fileMeta,
+				})
+			} else {
+				// Non-thought inlineData → GeneratedFileContent.
+				result.Content = append(result.Content, types.GeneratedFileContent{
+					MediaType:        part.InlineData.MimeType,
+					Data:             decodeInlineData(part.InlineData.Data),
+					ProviderMetadata: fileMeta,
+				})
+			}
 			continue
 		}
 		// Thought text → ReasoningContent.
@@ -374,6 +389,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 				ID:               toolCallID,
 				ToolName:         tnm.toCustomToolName("code_execution"),
 				Arguments:        map[string]interface{}{"code": part.ExecutableCode.Code, "language": part.ExecutableCode.Language},
+				RawArguments:     executableCodeInput(part.ExecutableCode.Language, part.ExecutableCode.Code),
 				ProviderExecuted: true,
 			})
 			continue
@@ -417,11 +433,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		}
 		// Function calls.
 		if part.FunctionCall != nil && jsonResponseToolName != "" && part.FunctionCall.Name == jsonResponseToolName {
-			args := part.FunctionCall.Args
-			if args == nil {
-				args = map[string]interface{}{}
-			}
-			tc := types.TextContent{Text: marshalJSONCompact(args)}
+			tc := types.TextContent{Text: completeCallArgsJSON(part.FunctionCall)}
 			if part.ThoughtSignature != "" {
 				tc.ProviderMetadata, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{ //nolint:errcheck
 					"thoughtSignature": part.ThoughtSignature,
@@ -452,6 +464,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 				ID:               toolCallID,
 				ToolName:         part.FunctionCall.Name,
 				Arguments:        args,
+				RawArguments:     completeCallArgsJSON(part.FunctionCall),
 				ProviderMetadata: providerMetadata,
 				ThoughtSignature: part.ThoughtSignature,
 			})
@@ -534,7 +547,15 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 	}
 
 	// Finish reason.
-	hasToolCalls := len(result.ToolCalls) > 0
+	// Only client-executed tool calls count (TS: tool-call && !providerExecuted);
+	// a provider-executed code execution call still finishes with "stop".
+	hasToolCalls := false
+	for _, tc := range result.ToolCalls {
+		if !tc.ProviderExecuted {
+			hasToolCalls = true
+			break
+		}
+	}
 	switch {
 	case isPromptBlocked:
 		result.FinishReason = types.FinishReasonContentFilter
@@ -625,6 +646,12 @@ func rawOrNull(raw json.RawMessage) json.RawMessage {
 }
 
 // toolCallContentOf is the ordered-content form of a ToolCall.
+// executableCodeInput is JSON.stringify(part.executableCode): the parsed
+// object has its schema key order, language then code.
+func executableCodeInput(language, code string) string {
+	return `{"language":` + marshalJSONCompact(language) + `,"code":` + marshalJSONCompact(code) + `}`
+}
+
 func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	var meta json.RawMessage
 	if len(tc.ProviderMetadata) > 0 {
@@ -633,6 +660,7 @@ func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 	return types.ToolCallContent{
 		ToolCallID:       tc.ID,
 		ToolName:         tc.ToolName,
+		Input:            tc.RawArguments,
 		Arguments:        tc.Arguments,
 		ProviderExecuted: tc.ProviderExecuted,
 		ProviderMetadata: meta,
