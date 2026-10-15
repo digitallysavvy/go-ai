@@ -1080,14 +1080,17 @@ func mustMarshalProviderMetadata(v interface{}) json.RawMessage {
 }
 
 func mapBedrockFinishReason(stopReason string, isJSONResponseFromTool bool) types.FinishReason {
+	// TS map-amazon-bedrock-finish-reason.ts handles only these five values;
+	// the other members of BEDROCK_STOP_REASONS ('stop', 'length',
+	// 'content-filter', 'tool-calls') fall through to 'other'.
 	switch stopReason {
-	case "stop_sequence", "end_turn", "stop":
+	case "stop_sequence", "end_turn":
 		return types.FinishReasonStop
-	case "max_tokens", "length":
+	case "max_tokens":
 		return types.FinishReasonLength
-	case "content_filtered", "guardrail_intervened", "content-filter":
+	case "content_filtered", "guardrail_intervened":
 		return types.FinishReasonContentFilter
-	case "tool_use", "tool-calls":
+	case "tool_use":
 		if isJSONResponseFromTool {
 			return types.FinishReasonStop
 		}
