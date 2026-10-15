@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -55,6 +56,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 	}
 
+	if err := validateTranscriptionProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	body, contentType, err := m.buildMultipartBody(opts)
 	if err != nil {
@@ -109,7 +113,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	// Timestamped segments/words (abb9ebf: diarized segments carry an extra
 	// "speaker" field, surfaced separately via ProviderMetadata below).
-	if len(response.Segments) > 0 {
+	// TS: `segments ?? words ?? []` (an empty segments array wins over words).
+	if response.Segments != nil {
 		result.Segments = make([]types.TranscriptionTimestamp, len(response.Segments))
 		for i, seg := range response.Segments {
 			result.Segments[i] = types.TranscriptionTimestamp{
@@ -118,7 +123,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 				End:   seg.End,
 			}
 		}
-	} else if len(response.Words) > 0 {
+	} else if response.Words != nil {
 		result.Segments = make([]types.TranscriptionTimestamp, len(response.Words))
 		for i, w := range response.Words {
 			result.Segments[i] = types.TranscriptionTimestamp{
@@ -276,11 +281,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 		case string:
 			value = cs
 		case map[string]interface{}:
-			encoded, err := json.Marshal(chunkingStrategyWireFormat(cs))
-			if err != nil {
-				return nil, "", fmt.Errorf("failed to encode chunkingStrategy: %w", err)
-			}
-			value = string(encoded)
+			value = string(chunkingStrategyWireFormat(cs))
 		}
 		if value != "" {
 			if err := writer.WriteField("chunking_strategy", value); err != nil {
@@ -296,23 +297,28 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	return &buf, writer.FormDataContentType(), nil
 }
 
-// chunkingStrategyWireFormat maps camelCase providerOptions keys to the
-// snake_case wire format OpenAI expects for the server_vad object form.
-func chunkingStrategyWireFormat(cs map[string]interface{}) map[string]interface{} {
-	out := map[string]interface{}{"type": "server_vad"}
-	if t, ok := cs["type"]; ok {
-		out["type"] = t
+// chunkingStrategyWireFormat maps the camelCase providerOptions keys to the
+// snake_case server_vad object OpenAI expects, in TS key order
+// (type, threshold, prefix_padding_ms, silence_duration_ms) and skipping
+// null members like TS's `!= null` spreads.
+func chunkingStrategyWireFormat(cs map[string]interface{}) json.RawMessage {
+	var buf bytes.Buffer
+	buf.WriteString(`{"type":`)
+	typ, ok := cs["type"]
+	if !ok || typ == nil {
+		typ = "server_vad"
 	}
-	if v, ok := cs["threshold"]; ok {
-		out["threshold"] = v
+	tb, _ := json.Marshal(typ)
+	buf.Write(tb)
+	for _, f := range [][2]string{{"threshold", "threshold"}, {"prefixPaddingMs", "prefix_padding_ms"}, {"silenceDurationMs", "silence_duration_ms"}} {
+		if v, ok := cs[f[0]]; ok && v != nil {
+			vb, _ := json.Marshal(v)
+			buf.WriteString(`,"` + f[1] + `":`)
+			buf.Write(vb)
+		}
 	}
-	if v, ok := cs["prefixPaddingMs"]; ok {
-		out["prefix_padding_ms"] = v
-	}
-	if v, ok := cs["silenceDurationMs"]; ok {
-		out["silence_duration_ms"] = v
-	}
-	return out
+	buf.WriteByte('}')
+	return buf.Bytes()
 }
 
 func formatFloat(f float64) string {
@@ -443,10 +449,138 @@ type openaiTranscriptionResponse struct {
 		Start   float64 `json:"start"`
 		End     float64 `json:"end"`
 		Speaker string  `json:"speaker,omitempty"`
-	} `json:"segments,omitempty"`
+	} `json:"segments"`
 	Words []struct {
 		Word  string  `json:"word"`
 		Start float64 `json:"start"`
 		End   float64 `json:"end"`
-	} `json:"words,omitempty"`
+	} `json:"words"`
+}
+
+// validateTranscriptionProviderOptions mirrors TS parseProviderOptions with
+// openAITranscriptionModelOptions: a bad providerOptions.openai value throws
+// InvalidArgumentError("invalid openai provider options").
+func validateTranscriptionProviderOptions(providerOptions map[string]interface{}) error {
+	raw, ok := providerOptions["openai"]
+	if !ok || raw == nil {
+		return nil
+	}
+	fail := func(msg string) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid openai provider options",
+			Cause:   errors.New(msg),
+		}
+	}
+	opts, ok := raw.(map[string]interface{})
+	if !ok {
+		return fail("Invalid input: expected object")
+	}
+	isStringList := func(v interface{}) bool {
+		switch list := v.(type) {
+		case []string:
+			return true
+		case []interface{}:
+			for _, item := range list {
+				if _, ok := item.(string); !ok {
+					return false
+				}
+			}
+			return true
+		}
+		return false
+	}
+	for _, key := range []string{"language", "prompt"} {
+		if v, ok := opts[key]; ok && v != nil {
+			if _, isString := v.(string); !isString {
+				return fail("Invalid input: expected string at " + key)
+			}
+		}
+	}
+	if v, ok := opts["include"]; ok && v != nil && !isStringList(v) {
+		return fail("Invalid input: expected array at include")
+	}
+	if v, ok := opts["temperature"]; ok && v != nil {
+		f, isNum := speechSpeedOption(v)
+		if !isNum {
+			return fail("Invalid input: expected number at temperature")
+		}
+		if f < 0 || f > 1 {
+			return fail("Invalid input: expected number between 0 and 1 at temperature")
+		}
+	}
+	if v, ok := opts["timestampGranularities"]; ok && v != nil {
+		var items []string
+		switch list := v.(type) {
+		case []string:
+			items = list
+		case []interface{}:
+			for _, item := range list {
+				s, isString := item.(string)
+				if !isString {
+					return fail("Invalid option at timestampGranularities")
+				}
+				items = append(items, s)
+			}
+		default:
+			return fail("Invalid input: expected array at timestampGranularities")
+		}
+		for _, item := range items {
+			if item != "word" && item != "segment" {
+				return fail(`Invalid option: expected one of "word"|"segment" at timestampGranularities`)
+			}
+		}
+	}
+	if v, ok := opts["responseFormat"]; ok && v != nil {
+		s, _ := v.(string)
+		if s != "json" && s != "verbose_json" && s != "diarized_json" {
+			return fail(`Invalid option: expected one of "json"|"verbose_json"|"diarized_json" at responseFormat`)
+		}
+	}
+	if v, ok := opts["chunkingStrategy"]; ok && v != nil {
+		switch cs := v.(type) {
+		case string:
+			if cs != "auto" {
+				return fail(`Invalid input at chunkingStrategy`)
+			}
+		case map[string]interface{}:
+			if t, _ := cs["type"].(string); t != "server_vad" {
+				return fail(`Invalid input: expected "server_vad" at chunkingStrategy.type`)
+			}
+			if t, ok := cs["threshold"]; ok && t != nil {
+				f, isNum := speechSpeedOption(t)
+				if !isNum || f < 0 || f > 1 {
+					return fail("Invalid input: expected number between 0 and 1 at chunkingStrategy.threshold")
+				}
+			}
+			for _, k := range []string{"prefixPaddingMs", "silenceDurationMs"} {
+				if t, ok := cs[k]; ok && t != nil {
+					f, isNum := speechSpeedOption(t)
+					if !isNum || f < 0 || f != float64(int64(f)) {
+						return fail("Invalid input: expected non-negative integer at chunkingStrategy." + k)
+					}
+				}
+			}
+		default:
+			return fail(`Invalid input at chunkingStrategy`)
+		}
+	}
+	if v, ok := opts["streaming"]; ok && v != nil {
+		st, ok := v.(map[string]interface{})
+		if !ok {
+			return fail("Invalid input: expected object at streaming")
+		}
+		if d, ok := st["delay"]; ok && d != nil {
+			s, _ := d.(string)
+			switch s {
+			case "minimal", "low", "medium", "high", "xhigh":
+			default:
+				return fail(`Invalid option: expected one of "minimal"|"low"|"medium"|"high"|"xhigh" at streaming.delay`)
+			}
+		}
+		if i, ok := st["include"]; ok && i != nil && !isStringList(i) {
+			return fail("Invalid input: expected array at streaming.include")
+		}
+	}
+	return nil
 }

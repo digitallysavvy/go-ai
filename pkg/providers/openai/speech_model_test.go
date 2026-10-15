@@ -3,11 +3,13 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestSpeechModelBuildRequestBodyDefaultsAndOptions(t *testing.T) {
@@ -154,5 +156,28 @@ func TestSpeechModelDoGenerateSuccessAndError(t *testing.T) {
 	_, err = mErr.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hello"})
 	if err == nil || !strings.Contains(err.Error(), "provider error (400)") {
 		t.Fatalf("expected status error, got %v", err)
+	}
+}
+
+func TestSpeechProviderOptionsValidatedLikeTS(t *testing.T) {
+	for name, opts := range map[string]map[string]interface{}{
+		"speed too small":     {"speed": 0.1},
+		"speed too big":       {"speed": 5.0},
+		"speed not number":    {"speed": "fast"},
+		"instructions number": {"instructions": 3.0},
+	} {
+		_, _, err := (&SpeechModel{modelID: "tts-1"}).buildRequestBodyChecked(&provider.SpeechGenerateOptions{
+			Text: "hi", ProviderOptions: map[string]interface{}{"openai": opts},
+		})
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) || ia.Field != "providerOptions" || ia.Message != "invalid openai provider options" {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	body, _, err := (&SpeechModel{modelID: "tts-1"}).buildRequestBodyChecked(&provider.SpeechGenerateOptions{
+		Text: "hi", Instructions: "top", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"speed": nil, "instructions": ""}},
+	})
+	if err != nil || body["instructions"] != "" {
+		t.Fatalf("body=%v err=%v", body, err)
 	}
 }
