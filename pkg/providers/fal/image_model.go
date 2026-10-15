@@ -104,7 +104,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	reqBody := m.buildRequestBody(opts)
 
 	path := fmt.Sprintf("/%s", m.modelID)
-	resp, err := m.provider.client.Post(ctx, path, reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: path, Body: reqBody, Headers: opts.Headers})
 	if err != nil {
 		return nil, providererrors.NewProviderError("fal", 0, "", err.Error(), err)
 	}

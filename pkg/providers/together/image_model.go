@@ -49,7 +49,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	reqBody := m.buildRequestBody(opts)
 
-	resp, err := m.provider.client.Post(ctx, "/v1/images/generations", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/v1/images/generations", Body: reqBody, Headers: opts.Headers})
 	if err != nil {
 		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
 	}

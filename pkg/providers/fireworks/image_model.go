@@ -102,7 +102,7 @@ func (m *ImageModel) isAsyncModel() bool {
 func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	reqBody := m.buildRequestBody(opts)
 
-	resp, err := m.provider.client.Post(ctx, "/v1/images/generations", reqBody)
+	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/v1/images/generations", Body: reqBody, Headers: opts.Headers})
 	if err != nil {
 		return nil, providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
 	}
@@ -138,7 +138,7 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 	body := m.buildAsyncRequestBody(opts)
 
 	var submitResp AsyncSubmitResponse
-	if err := m.provider.client.PostJSON(ctx, "/v1/workflows/"+m.modelID, body, &submitResp); err != nil {
+	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID, Body: body, Headers: opts.Headers}, &submitResp); err != nil {
 		return "", fmt.Errorf("Fireworks async submit failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 

@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
 	"github.com/digitallysavvy/go-ai/pkg/providers/cohere"
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepseek"
+	"github.com/digitallysavvy/go-ai/pkg/providers/fal"
 	"github.com/digitallysavvy/go-ai/pkg/providers/fireworks"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gmicloud"
 	"github.com/digitallysavvy/go-ai/pkg/providers/groq"
@@ -20,6 +21,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/ollama"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
+	"github.com/digitallysavvy/go-ai/pkg/providers/replicate"
+	"github.com/digitallysavvy/go-ai/pkg/providers/stability"
 	"github.com/digitallysavvy/go-ai/pkg/providers/together"
 	"github.com/digitallysavvy/go-ai/pkg/providers/xai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
@@ -162,6 +165,52 @@ func TestGenerateResponseMetadataAndHeaders(t *testing.T) {
 			}
 			if c.model && (rm.ModelID != "model-x" || rm.Timestamp.Unix() != 1700000000) {
 				t.Errorf("model/timestamp = %q %v", rm.ModelID, rm.Timestamp)
+			}
+		})
+	}
+}
+
+func TestImageModelsForwardPerCallHeaders(t *testing.T) {
+	var mu sync.Mutex
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = r.Header.Get("X-Call-Header")
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer srv.Close()
+	mks := map[string]func() (provider.ImageModel, error){
+		"fal": func() (provider.ImageModel, error) {
+			return fal.New(fal.Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("m")
+		},
+		"together": func() (provider.ImageModel, error) {
+			return together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("m")
+		},
+		"fireworks": func() (provider.ImageModel, error) {
+			return fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("m")
+		},
+		"stability": func() (provider.ImageModel, error) {
+			return stability.New(stability.Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("m")
+		},
+		"replicate": func() (provider.ImageModel, error) {
+			return replicate.New(replicate.Config{APIKey: "k", BaseURL: srv.URL}).ImageModel("m")
+		},
+	}
+	for name, mk := range mks {
+		t.Run(name, func(t *testing.T) {
+			m, err := mk()
+			if err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			seen = ""
+			mu.Unlock()
+			_, _ = m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x", Headers: map[string]string{"X-Call-Header": "yes"}})
+			mu.Lock()
+			defer mu.Unlock()
+			if seen != "yes" {
+				t.Fatalf("call header not forwarded: %q", seen)
 			}
 		})
 	}

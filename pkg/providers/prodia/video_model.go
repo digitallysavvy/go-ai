@@ -126,7 +126,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			Path:    "/job",
 			Body:    body,
 			Query:   map[string]string{"price": "true"},
-			Headers: map[string]string{"Accept": "multipart/form-data; video/mp4"},
+			Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; video/mp4"}, opts.Headers),
 		})
 		if err != nil {
 			reqErr = fmt.Errorf("prodia API request failed: %w", err)

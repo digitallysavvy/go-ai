@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -45,7 +46,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	path := fmt.Sprintf("/v1/generation/%s/text-to-image", m.modelID)
 	var response stabilityImageResponse
-	err := m.provider.client.PostJSON(ctx, path, reqBody, &response)
+	err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: path, Body: reqBody, Headers: opts.Headers}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("stability", 0, "", err.Error(), err)
 	}

@@ -123,7 +123,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Path:    "/job",
 		Body:    reqBody,
 		Query:   m.buildQuery(),
-		Headers: map[string]string{"Accept": "multipart/form-data; image/png"},
+		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; image/png"}, opts.Headers),
 	})
 	if err != nil {
 		return nil, providererrors.NewProviderError("prodia", 0, "", err.Error(), err)
