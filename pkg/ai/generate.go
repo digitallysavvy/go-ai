@@ -1439,6 +1439,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.Usage = result.Usage.Add(genResult.Usage)
 
 		hasUserApproval := false
+		var rawStepToolResults []types.ToolResult
+		toolResultsBefore := len(result.ToolResults)
 
 		// Check if there are tool calls to execute
 		preRefinementCalls := genResult.ToolCalls
@@ -1502,12 +1504,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				return nil, fmt.Errorf("tool result validation failed at step %d: %w", stepNum, err)
 			}
 
-			stepResult.ToolResults = toolResults
-			stepResult.StaticToolResults = filterStaticToolResults(toolResults)
-			stepResult.DynamicToolResults = filterDynamicToolResults(toolResults)
+			// TS toolResults holds only tool-result content parts; approval
+			// requests, auto-denied calls and pending provider-executed
+			// markers stay out (the content parts carry them).
+			rawStepToolResults = toolResults
+			publicResults := types.ResultsForPublicView(toolResults)
+			stepResult.ToolResults = publicResults
+			stepResult.StaticToolResults = filterStaticToolResults(publicResults)
+			stepResult.DynamicToolResults = filterDynamicToolResults(publicResults)
 			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(toolResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
-			result.ToolResults = append(result.ToolResults, toolResults...)
+			result.ToolResults = append(result.ToolResults, publicResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
 			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
 			for _, tr := range toolResults {
@@ -1587,6 +1594,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 				result.Output = parsed
 			}
+		}
+
+		// Provider-executed results the model returned in this response are
+		// tool-result content parts, so TS toolResults has them (in content
+		// order, before the locally executed results).
+		if providerResults := providerToolResultsFromContent(generateResultContentParts(genResult), rawStepToolResults); len(providerResults) > 0 {
+			stepResult.ToolResults = append(providerResults, stepResult.ToolResults...)
+			stepResult.StaticToolResults = filterStaticToolResults(stepResult.ToolResults)
+			stepResult.DynamicToolResults = filterDynamicToolResults(stepResult.ToolResults)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], stepResult.ToolResults...)
+			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
+			result.DynamicToolResults = filterDynamicToolResults(result.ToolResults)
 		}
 
 		// Deferred provider tool tracking (mirrors TS SDK pendingDeferredToolCalls).
@@ -1767,7 +1786,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// Continue only after every local tool call has an output or was
 		// denied (TS: clientToolOutputs + denied === clientToolCalls). Calls
 		// left unexecuted because of an unsafe finish reason stop the loop.
-		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, stepResult.ToolResults) {
+		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, rawStepToolResults) {
 			break
 		}
 	}

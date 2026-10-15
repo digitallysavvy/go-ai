@@ -2,6 +2,8 @@ package ai
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -620,4 +622,91 @@ func normalizeGenerateResultText(result *types.GenerateResult) {
 		}
 	}
 	result.Text = text.String()
+}
+
+// providerToolResultsFromContent converts the tool-result and tool-error parts
+// a model response carries (results the provider executed) into ToolResults,
+// skipping calls that already have an executed result in executed. TS
+// `toolResults` holds these parts alongside the locally executed results.
+func providerToolResultsFromContent(content []types.ContentPart, executed []types.ToolResult) []types.ToolResult {
+	var out []types.ToolResult
+	seen := make(map[string]bool, len(executed))
+	for _, tr := range executed {
+		if !tr.ProviderExecuted || tr.Result != nil || tr.Error != nil {
+			seen[tr.ToolCallID] = true
+		}
+	}
+	for _, part := range content {
+		var tr types.ToolResult
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			tr = providerToolResultFromResult(p)
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			tr = providerToolResultFromResult(*p)
+		case types.ToolErrorContent:
+			tr = providerToolResultFromError(p)
+		case *types.ToolErrorContent:
+			if p == nil {
+				continue
+			}
+			tr = providerToolResultFromError(*p)
+		default:
+			continue
+		}
+		if seen[tr.ToolCallID] {
+			continue
+		}
+		seen[tr.ToolCallID] = true
+		out = append(out, tr)
+	}
+	return out
+}
+
+func providerToolResultFromResult(p types.ToolResultContent) types.ToolResult {
+	tr := types.ToolResult{
+		ToolCallID:       p.ToolCallID,
+		ToolName:         p.ToolName,
+		Title:            p.Title,
+		Input:            p.Input,
+		Result:           p.Result,
+		ProviderExecuted: true,
+		ProviderMetadata: decodeProviderMetadataMap(p.ProviderMetadata),
+		ToolMetadata:     p.ToolMetadata,
+		Dynamic:          p.Dynamic,
+		Preliminary:      p.Preliminary,
+	}
+	if p.Error != "" {
+		tr.Error = errors.New(p.Error)
+	}
+	if tr.Result == nil && p.Output != nil {
+		tr.Result = p.Output.Value
+		tr.ModelOutput = p.Output
+	}
+	return tr
+}
+
+func providerToolResultFromError(p types.ToolErrorContent) types.ToolResult {
+	var err error
+	switch e := p.Error.(type) {
+	case error:
+		err = e
+	case string:
+		err = errors.New(e)
+	default:
+		err = fmt.Errorf("%v", e)
+	}
+	return types.ToolResult{
+		ToolCallID:       p.ToolCallID,
+		ToolName:         p.ToolName,
+		Title:            p.Title,
+		Input:            p.Input,
+		Error:            err,
+		ProviderExecuted: true,
+		ProviderMetadata: decodeProviderMetadataMap(p.ProviderMetadata),
+		ToolMetadata:     p.ToolMetadata,
+		Dynamic:          p.Dynamic,
+	}
 }

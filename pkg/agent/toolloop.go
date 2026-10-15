@@ -776,12 +776,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 			stepToolResults = toolResults
 			stepResult.Performance.ToolExecutionMs = timings.snapshot()
-			stepResult.ToolResults = toolResults
-			stepResult.StaticToolResults = filterAgentStaticToolResults(toolResults)
-			stepResult.DynamicToolResults = filterAgentDynamicToolResults(toolResults)
+			// TS toolResults holds only tool-result content parts; approval
+			// bookkeeping entries stay in the content parts and response
+			// messages (built from the full list below).
+			publicResults := types.ResultsForPublicView(toolResults)
+			stepResult.ToolResults = publicResults
+			stepResult.StaticToolResults = filterAgentStaticToolResults(publicResults)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(publicResults)
 			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(toolResults, callConfig.ExperimentalToolApprovalSecret)...)
 			responseContent = stepResult.Content
-			result.ToolResults = append(result.ToolResults, toolResults...)
+			result.ToolResults = append(result.ToolResults, publicResults...)
 			if len(toolResults) == 0 {
 				shouldContinue = false
 			}

@@ -229,21 +229,16 @@ func TestDynamicToolResultIncludesInput(t *testing.T) {
 
 	args := map[string]interface{}{"query": "go generics"}
 
-	// First call returns a provider-executed tool call; second call finishes.
-	callCount := 0
+	// The provider executes the call and returns its result in the same
+	// response: a tool-result part without input.
 	model := &testutil.MockLanguageModel{
 		DoGenerateFunc: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
-			callCount++
-			if callCount == 1 {
-				return &types.GenerateResult{
-					ToolCalls: []types.ToolCall{
-						{ID: "tc1", ToolName: "web-search", Arguments: args},
-					},
-					FinishReason: types.FinishReasonToolCalls,
-				}, nil
-			}
 			return &types.GenerateResult{
-				Text:         "result",
+				Text:      "result",
+				ToolCalls: []types.ToolCall{{ID: "tc1", ToolName: "web-search", Arguments: args, ProviderExecuted: true}},
+				Content: []types.ContentPart{types.ToolResultContent{
+					ToolCallID: "tc1", ToolName: "web-search", Result: "found", ProviderExecuted: true,
+				}},
 				FinishReason: types.FinishReasonStop,
 			}, nil
 		},

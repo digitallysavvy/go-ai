@@ -2386,7 +2386,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		for callID := range streamedToolResults {
 			delete(pendingDeferredToolCalls, callID)
 		}
-		publicStepToolResults := mergeStreamedToolResults(stepToolResults, streamedToolResults)
+		publicStepToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults))
 
 		// Accumulate step tool calls and results into the overall result.
 		r.mu.Lock()

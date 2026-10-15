@@ -1727,6 +1727,7 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	done := make(chan struct{})
 	maxSteps := 1
 	var toolResults []types.ToolResult
+	var content []types.ContentPart
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:    model,
 		Tools:    []types.Tool{tool},
@@ -1736,6 +1737,7 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 		},
 		OnFinish: func(r *StreamTextResult) {
 			toolResults = r.ToolResults()
+			content = r.Content()
 			close(done)
 		},
 	})
@@ -1744,25 +1746,22 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	}
 	<-done
 
-	if len(toolResults) != 1 {
-		t.Fatalf("expected 1 denied tool result, got %d", len(toolResults))
+	// TS toolResults holds tool-result parts only. An auto-denied call is a
+	// tool-approval-request + tool-approval-response pair in the content (the
+	// response carries no synthesized reason: TS leaves it undefined and each
+	// provider converter applies its own default denial text, audit row
+	// 58a2ad7 / G6).
+	if len(toolResults) != 0 {
+		t.Fatalf("expected no tool results, got %#v", toolResults)
 	}
-	if toolResults[0].ApprovalStatus != types.ToolApprovalStatusDenied {
-		t.Fatalf("expected denied approval status, got %s", toolResults[0].ApprovalStatus)
+	var resp *types.ToolApprovalResponseContent
+	for _, part := range content {
+		if r, ok := part.(types.ToolApprovalResponseContent); ok {
+			resp = &r
+		}
 	}
-	// No reason was supplied, so Go must leave it unset here (matching TS,
-	// which leaves `reason` undefined) rather than synthesize a default;
-	// each provider converter applies its own default denial text when it
-	// serializes the tool result (audit row 58a2ad7 / G6).
-	if toolResults[0].ApprovalReason != nil {
-		t.Fatalf("expected no synthesized denial reason, got %#v", *toolResults[0].ApprovalReason)
-	}
-	output, ok := toolResults[0].Result.(types.ToolResultOutput)
-	if !ok {
-		t.Fatalf("expected ToolResultOutput, got %T", toolResults[0].Result)
-	}
-	if output.Type != types.ToolResultOutputExecutionDenied || output.Reason != "" {
-		t.Fatalf("unexpected denied output: %#v", output)
+	if resp == nil || resp.Approved || resp.Reason != "" {
+		t.Fatalf("expected a denied approval response without reason, got %#v", resp)
 	}
 }
 
