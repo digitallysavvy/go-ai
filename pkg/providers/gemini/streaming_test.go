@@ -851,3 +851,73 @@ func TestStream_InlineDataCarriesItsThoughtSignature(t *testing.T) {
 		t.Fatalf("file chunk = %#v", f)
 	}
 }
+
+// TS gives each executable-code tool call a generateId() id, so the id is not
+// the same in every request of a multi-step run.
+func TestStream_CodeExecutionToolCallIDComesFromGenerateID(t *testing.T) {
+	event := `{"candidates":[{"content":{"parts":[{"executableCode":{"language":"PYTHON","code":"x"}},{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}]},"finishReason":"STOP"}]}`
+	s := newStream(sseStream(event), Config{MetadataKey: "google", GenerateID: func() string { return "gen-1" }}, nil, nil, "")
+	defer s.Close() //nolint:errcheck
+	var ids []string
+	for _, c := range drainChunks(t, s) {
+		if c.Type == provider.ChunkTypeToolCall {
+			ids = append(ids, c.ToolCall.ID)
+		}
+		if c.Type == provider.ChunkTypeToolResult {
+			ids = append(ids, c.ToolResult.ToolCallID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != "gen-1" || ids[1] != "gen-1" {
+		t.Fatalf("ids = %v", ids)
+	}
+}
+
+// TS emits response-metadata on the first chunk that carries a responseId, even
+// when earlier chunks had none.
+func TestStream_ResponseIDArrivingInLaterChunkIsEmitted(t *testing.T) {
+	s := newTestStream(sseStream(
+		`{"candidates":[{"content":{"parts":[{"text":"a"}]}}]}`,
+		`{"responseId":"resp-9","candidates":[{"content":{"parts":[{"text":"b"}]},"finishReason":"STOP"}]}`,
+		`{"responseId":"resp-9","candidates":[]}`,
+	))
+	defer s.Close() //nolint:errcheck
+	var ids []string
+	for _, c := range drainChunks(t, s) {
+		if c.Type == provider.ChunkTypeResponseMetadata {
+			ids = append(ids, c.ResponseMetadata.ID)
+		}
+	}
+	if len(ids) != 2 || ids[0] != "" || ids[1] != "resp-9" {
+		t.Fatalf("response-metadata ids = %q", ids)
+	}
+}
+
+// TS reads serviceTier from the final usage metadata only: an earlier chunk's
+// tier is not carried over when the last usage object has none.
+func TestStream_ServiceTierComesFromFinalUsage(t *testing.T) {
+	tier := func(events ...string) string {
+		s := newTestStream(sseStream(events...))
+		defer s.Close() //nolint:errcheck
+		for _, c := range drainChunks(t, s) {
+			if c.Type == provider.ChunkTypeFinish {
+				var m map[string]map[string]interface{}
+				if err := json.Unmarshal(c.ProviderMetadata, &m); err != nil {
+					t.Fatal(err)
+				}
+				if v, ok := m["google"]["serviceTier"].(string); ok {
+					return v
+				}
+				return "<null>"
+			}
+		}
+		return "<no finish>"
+	}
+	first := `{"candidates":[{"content":{"parts":[{"text":"a"}]}}],"usageMetadata":{"promptTokenCount":1,"serviceTier":"priority"}}`
+	last := `{"candidates":[{"content":{"parts":[{"text":"b"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1}}`
+	if got := tier(first, last); got != "<null>" {
+		t.Fatalf("tier = %s, want null", got)
+	}
+	if got := tier(first); got != "priority" {
+		t.Fatalf("tier = %s", got)
+	}
+}

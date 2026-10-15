@@ -454,7 +454,7 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		}
 		// Code execution parts. TS parses these for both Google and Vertex.
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
-			toolCallID := fmt.Sprintf("code-exec-%d", len(result.ToolCalls)+1)
+			toolCallID := m.generateID()
 			lastCodeExecID = toolCallID
 			addToolCall(types.ToolCall{
 				ID:               toolCallID,
