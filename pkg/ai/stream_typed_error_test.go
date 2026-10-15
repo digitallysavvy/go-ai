@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -75,5 +76,52 @@ func TestExternalStream_ErrKeepsTypedErrorFromErrorChunk(t *testing.T) {
 	}
 	if err := result.Err(); err.Error() != "typed stream failure" {
 		t.Fatalf("message = %q", err.Error())
+	}
+}
+
+// The full stream carries only TS stream parts; the Go lifecycle markers stay
+// on OnChunk.
+func TestStreamText_FullStreamOmitsInternalMarkers(t *testing.T) {
+	t.Parallel()
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeStreamStart},
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "r1"}},
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: "stop"},
+			}), nil
+		},
+	}
+	var viaOnChunk []provider.ChunkType
+	var mu sync.Mutex
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "x",
+		OnChunk: func(c provider.StreamChunk) { mu.Lock(); viaOnChunk = append(viaOnChunk, c.Type); mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := result.Stream()
+	for {
+		c, err := s.Next()
+		if err != nil || c == nil {
+			break
+		}
+		if isInternalStreamMarker(c.Type) {
+			t.Fatalf("fullStream carried internal marker %q", c.Type)
+		}
+	}
+	_ = result.Err()
+	mu.Lock()
+	defer mu.Unlock()
+	var sawResponseMetadata bool
+	for _, ty := range viaOnChunk {
+		if ty == provider.ChunkTypeResponseMetadata {
+			sawResponseMetadata = true
+		}
+	}
+	if !sawResponseMetadata {
+		t.Fatalf("OnChunk lost the response-metadata marker: %v", viaOnChunk)
 	}
 }

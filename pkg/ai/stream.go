@@ -1352,7 +1352,14 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// never race with processStream's own reads of the raw per-step stream.
 	userOnChunk := opts.OnChunk
 	combinedOnChunk := func(c provider.StreamChunk) {
-		r.chunkBuf.push(c)
+		// The public full stream carries the TS TextStreamPart set. The
+		// internal lifecycle markers (provider stream-start, response-metadata,
+		// ai.stream.firstChunk, ai.stream.finish) are not TS stream parts
+		// (their data is on start-step, the step response and the callbacks);
+		// they stay available through OnChunk.
+		if !isInternalStreamMarker(c.Type) {
+			r.chunkBuf.push(c)
+		}
 		if userOnChunk != nil {
 			safeInvoke(func() { userOnChunk(c) })
 		}
@@ -4113,6 +4120,19 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
 
 	return r.text, nil
+}
+
+// isInternalStreamMarker reports chunk types that exist only for Go-side
+// bookkeeping and are not parts of the TS fullStream.
+func isInternalStreamMarker(t provider.ChunkType) bool {
+	switch t {
+	case provider.ChunkTypeStreamStart,
+		provider.ChunkTypeResponseMetadata,
+		provider.ChunkTypeFirstChunk,
+		provider.ChunkTypeStreamFinish:
+		return true
+	}
+	return false
 }
 
 func isFirstChunkContent(chunkType provider.ChunkType) bool {
