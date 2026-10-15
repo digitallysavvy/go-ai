@@ -347,11 +347,22 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		}
 		// Thought text → ReasoningContent.
 		if part.Thought {
+			var sigMeta json.RawMessage
+			if part.ThoughtSignature != "" {
+				// TS carries the signature in providerMetadata.google
+				// .thoughtSignature; Signature stays for existing callers.
+				sigMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+					"thoughtSignature": part.ThoughtSignature,
+				}))
+			}
 			if part.Text != "" {
 				result.Content = append(result.Content, types.ReasoningContent{
-					Text:      part.Text,
-					Signature: part.ThoughtSignature,
+					Text:             part.Text,
+					Signature:        part.ThoughtSignature,
+					ProviderMetadata: sigMeta,
 				})
+			} else if sigMeta != nil {
+				attachSignatureToLastContent(result.Content, sigMeta)
 			}
 			continue
 		}
@@ -384,6 +395,14 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 		// Regular text → TextContent (ThoughtSignature forwarded via ProviderMetadata).
 		if part.Text != "" && jsonResponseToolName != "" {
 			continue
+		}
+		if part.Text == "" && part.ThoughtSignature != "" && part.FunctionCall == nil {
+			// TS: an empty text part carrying a thoughtSignature attaches it
+			// to the previous content part.
+			meta, _ := json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+				"thoughtSignature": part.ThoughtSignature,
+			}))
+			attachSignatureToLastContent(result.Content, meta)
 		}
 		if part.Text != "" {
 			textParts = append(textParts, part.Text)
@@ -620,5 +639,21 @@ func toolCallContentOf(tc types.ToolCall) types.ToolCallContent {
 		ProviderMetadata: meta,
 		Dynamic:          tc.Dynamic,
 		ThoughtSignature: tc.ThoughtSignature,
+	}
+}
+
+// attachSignatureToLastContent sets providerMetadata on the last text or
+// reasoning part (TS: lastContent.providerMetadata = thoughtSignatureMetadata).
+func attachSignatureToLastContent(content []types.ContentPart, meta json.RawMessage) {
+	if len(content) == 0 {
+		return
+	}
+	switch c := content[len(content)-1].(type) {
+	case types.TextContent:
+		c.ProviderMetadata = meta
+		content[len(content)-1] = c
+	case types.ReasoningContent:
+		c.ProviderMetadata = meta
+		content[len(content)-1] = c
 	}
 }
