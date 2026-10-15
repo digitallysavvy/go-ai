@@ -35,7 +35,7 @@ func ParseProviderOptions(provider string, providerOptions map[string]interface{
 	}
 	obj, isObj := asOptionObject(raw)
 	if !isObj {
-		return nil, optionsError(provider, fmt.Errorf("Invalid input: expected object, received %s", describeOptionValue(raw)))
+		return nil, optionsError(provider, fmt.Errorf("invalid input: expected object, received %s", describeOptionValue(raw)))
 	}
 	keys := make([]string, 0, len(schema))
 	for k := range schema {
@@ -103,7 +103,7 @@ func describeOptionValue(v interface{}) string {
 }
 
 func typeIssue(path, expected string, v interface{}) error {
-	return fmt.Errorf("Invalid input: expected %s, received %s (at %s)", expected, describeOptionValue(v), path)
+	return fmt.Errorf("invalid input: expected %s, received %s (at %s)", expected, describeOptionValue(v), path)
 }
 
 // OptString is z.string().
@@ -164,7 +164,7 @@ func OptEnum(values ...string) OptionCheck {
 				}
 			}
 		}
-		return fmt.Errorf("Invalid option: expected one of %q (at %s)", values, path)
+		return fmt.Errorf("invalid option: expected one of %q (at %s)", values, path)
 	}
 }
 
@@ -226,7 +226,7 @@ func OptLiteral(want string) OptionCheck {
 		if v != nil && reflect.ValueOf(v).Kind() == reflect.String && reflect.ValueOf(v).String() == want {
 			return nil
 		}
-		return fmt.Errorf("Invalid input: expected %q (at %s)", want, path)
+		return fmt.Errorf("invalid input: expected %q (at %s)", want, path)
 	}
 }
 
@@ -237,7 +237,7 @@ func OptStringMax(n int) OptionCheck {
 			return err
 		}
 		if len(utf16.Encode([]rune(reflect.ValueOf(v).String()))) > n {
-			return fmt.Errorf("Too big: expected string to have <=%d characters (at %s)", n, path)
+			return fmt.Errorf("too big: expected string to have <=%d characters (at %s)", n, path)
 		}
 		return nil
 	}
@@ -247,7 +247,7 @@ func OptStringMax(n int) OptionCheck {
 func OptKeyMax(n int) func(string) error {
 	return func(key string) error {
 		if len(utf16.Encode([]rune(key))) > n {
-			return fmt.Errorf("Too big: expected string key to have <=%d characters", n)
+			return fmt.Errorf("too big: expected string key to have <=%d characters", n)
 		}
 		return nil
 	}
@@ -265,12 +265,12 @@ func OptKeyNumeric(key string) error {
 		if !math.IsNaN(f) && !math.IsInf(f, 0) && !strings.HasPrefix(lower, "inf") && !strings.HasPrefix(lower, "nan") {
 			return nil
 		}
-		return fmt.Errorf("Invalid input: expected number key, received %q", key)
+		return fmt.Errorf("invalid input: expected number key, received %q", key)
 	}
 	if _, err := strconv.ParseInt(trimmed, 0, 64); err == nil {
 		return nil
 	}
-	return fmt.Errorf("Invalid input: expected number key, received %q", key)
+	return fmt.Errorf("invalid input: expected number key, received %q", key)
 }
 
 // OptNullable is schema.nullable().optional(): null is accepted.
@@ -303,10 +303,10 @@ func OptInt(min, max *int) OptionCheck {
 			return typeIssue(path, "int", v)
 		}
 		if min != nil && n < float64(*min) {
-			return fmt.Errorf("Too small: expected number to be >=%d (at %s)", *min, path)
+			return fmt.Errorf("too small: expected number to be >=%d (at %s)", *min, path)
 		}
 		if max != nil && n > float64(*max) {
-			return fmt.Errorf("Too big: expected number to be <=%d (at %s)", *max, path)
+			return fmt.Errorf("too big: expected number to be <=%d (at %s)", *max, path)
 		}
 		return nil
 	}
@@ -334,7 +334,7 @@ func OptPositive(integer bool) OptionCheck {
 			n = float64(f.Uint())
 		}
 		if n <= 0 {
-			return fmt.Errorf("Too small: expected number to be >0 (at %s)", path)
+			return fmt.Errorf("too small: expected number to be >0 (at %s)", path)
 		}
 		return nil
 	}
@@ -349,10 +349,10 @@ func OptStringLen(min, max int) OptionCheck {
 		}
 		n := len(utf16.Encode([]rune(reflect.ValueOf(v).String())))
 		if n < min {
-			return fmt.Errorf("Too small: expected string to have >=%d characters (at %s)", min, path)
+			return fmt.Errorf("too small: expected string to have >=%d characters (at %s)", min, path)
 		}
 		if max >= 0 && n > max {
-			return fmt.Errorf("Too big: expected string to have <=%d characters (at %s)", max, path)
+			return fmt.Errorf("too big: expected string to have <=%d characters (at %s)", max, path)
 		}
 		return nil
 	}
@@ -403,7 +403,7 @@ func OptNumberLiterals(values ...float64) OptionCheck {
 				}
 			}
 		}
-		return fmt.Errorf("Invalid input: expected one of %v (at %s)", values, path)
+		return fmt.Errorf("invalid input: expected one of %v (at %s)", values, path)
 	}
 }
 
@@ -412,5 +412,5 @@ func OptTrue(path string, v interface{}) error {
 	if b, ok := v.(bool); ok && b {
 		return nil
 	}
-	return fmt.Errorf("Invalid input: expected true (at %s)", path)
+	return fmt.Errorf("invalid input: expected true (at %s)", path)
 }
