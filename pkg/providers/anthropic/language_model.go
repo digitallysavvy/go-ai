@@ -1882,11 +1882,19 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					// mid-stream provider errors do (see openai/language_model.go
 					// for the analogous outputStarted convention).
 					s.spliced = true
+					text := fmt.Sprintf(
+						"Received message_start for message %s while message %s is still open.",
+						jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID))
+					// TS carries an InvalidResponseDataError whose data is the
+					// offending event; callers match it with errors.As.
+					var eventData interface{}
+					if json.Unmarshal([]byte(event.Data), &eventData) != nil {
+						eventData = event.Data
+					}
 					return &provider.StreamChunk{
 						Type: provider.ChunkTypeError,
-						Text: fmt.Sprintf(
-							"Received message_start for message %s while message %s is still open.",
-							jsonQuote(msg.Message.ID), jsonQuote(s.activeMessageID)),
+						Text: text,
+						Err:  providererrors.NewInvalidResponseDataError(eventData, text),
 					}, nil
 				}
 				s.isMessageOpen = true
