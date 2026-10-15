@@ -368,3 +368,47 @@ func TestCompatChatProviderNamesKeyOptionsAndMetadata(t *testing.T) {
 		})
 	}
 }
+
+// TS togetherai / fireworks provider.completionModel: an
+// OpenAICompatibleCompletionLanguageModel against /v1/completions.
+func TestCompatCompletionModels(t *testing.T) {
+	for _, f := range compatFactories()[:2] { // together, fireworks
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			var path string
+			var body map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path = r.URL.Path
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c1","choices":[{"text":"done","finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+			}))
+			defer srv.Close()
+			var m provider.LanguageModel
+			var err error
+			switch f.name {
+			case "together":
+				m, err = together.New(together.Config{APIKey: "k", BaseURL: srv.URL}).CompletionModel("m")
+			default:
+				m, err = fireworks.New(fireworks.Config{APIKey: "k", BaseURL: srv.URL}).CompletionModel("m")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: compatPrompt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if path != "/v1/completions" {
+				t.Errorf("path = %s", path)
+			}
+			if res.Text != "done" || body["model"] != "m" {
+				t.Fatalf("text=%q body=%v path=%s", res.Text, body, path)
+			}
+			if len(res.ProviderMetadata) != 0 {
+				t.Errorf("TS compat completion reports no providerMetadata: %v", res.ProviderMetadata)
+			}
+		})
+	}
+}
