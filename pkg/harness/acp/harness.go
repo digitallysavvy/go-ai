@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
@@ -645,13 +646,48 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
+// writeAuthenticationFiles mirrors TS `writeACPAuthenticationFiles`: every path
+// must be relative without traversal, all files are written under homePath,
+// then restricted to the owner with `chmod 600` (they hold credentials).
 func writeAuthenticationFiles(ctx context.Context, sandbox providerutils.SandboxSession, homePath string, files []AuthenticationFile) error {
-	for _, f := range files {
+	targetPaths := make([]string, len(files))
+	for i, f := range files {
+		traversal := false
+		for _, segment := range strings.Split(f.Path, "/") {
+			if segment == ".." {
+				traversal = true
+			}
+		}
+		if f.Path == "" || posixpath.IsAbs(f.Path) || traversal {
+			quoted, _ := json.Marshal(f.Path)
+			return fmt.Errorf("ACP authentication file path must be relative without traversal: %s.", quoted) //nolint:staticcheck // matches TS SDK's exact error text
+		}
+		targetPaths[i] = posixpath.Join(homePath, f.Path)
+	}
+	for i, f := range files {
 		if err := sandbox.WriteTextFile(ctx, providerutils.SandboxWriteTextFileOptions{
-			Path: posixpath.Join(homePath, f.Path), Content: f.Content,
+			Path: targetPaths[i], Content: f.Content,
 		}); err != nil {
 			return err
 		}
+	}
+	if len(targetPaths) == 0 {
+		return nil
+	}
+	quoted := make([]string, len(targetPaths))
+	for i, p := range targetPaths {
+		quoted[i] = harnessutil.ShellQuote(p)
+	}
+	result, err := sandbox.Run(ctx, providerutils.SandboxProcessOptions{Command: "chmod 600 -- " + strings.Join(quoted, " ")})
+	if err != nil {
+		return err
+	}
+	if result.ExitCode != 0 {
+		suffix := ""
+		if result.Stderr != "" {
+			suffix = ": " + result.Stderr
+		}
+		return fmt.Errorf("Failed to secure ACP authentication files (exit %d)%s", result.ExitCode, suffix) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }
