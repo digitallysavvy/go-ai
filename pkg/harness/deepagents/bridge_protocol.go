@@ -1,6 +1,10 @@
 package deepagents
 
-import "github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+)
 
 // ThinkingConfig controls Anthropic extended thinking for the Deep Agents
 // model. Mirrors TS `DeepAgentsThinkingConfig`. Exactly one of the three
@@ -12,6 +16,26 @@ type ThinkingConfig struct {
 	Display string `json:"display,omitempty"`
 	// BudgetTokens applies to "enabled" only.
 	BudgetTokens int `json:"budget_tokens,omitempty"`
+}
+
+// MarshalJSON emits only the fields valid for Type, like the TS discriminated
+// union: "enabled" always carries budget_tokens (required by the bridge schema,
+// even when 0), "disabled" carries nothing else.
+func (c ThinkingConfig) MarshalJSON() ([]byte, error) {
+	m := map[string]any{"type": c.Type}
+	switch c.Type {
+	case ThinkingTypeDisabled:
+	case ThinkingTypeEnabled:
+		m["budget_tokens"] = c.BudgetTokens
+		if c.Display != "" {
+			m["display"] = c.Display
+		}
+	default:
+		if c.Display != "" {
+			m["display"] = c.Display
+		}
+	}
+	return json.Marshal(m)
 }
 
 // Thinking type discriminators.
