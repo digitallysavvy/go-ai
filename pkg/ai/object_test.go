@@ -543,8 +543,8 @@ func TestGenerateObject_ModelWithoutStructuredOutputIsStillCalled(t *testing.T) 
 		t.Fatalf("object = %#v", result.Object)
 	}
 	rf := model.GenerateCalls[0].ResponseFormat
-	if rf == nil || rf.Type != "json_schema" || rf.Schema == nil {
-		t.Fatalf("response format = %#v, want json_schema with schema", rf)
+	if rf == nil || rf.Type != "json" || rf.Schema == nil {
+		t.Fatalf("response format = %#v, want json with schema", rf)
 	}
 }
 

@@ -156,12 +156,13 @@ func responseFormatSchema(t *testing.T, rf *provider.ResponseFormat) map[string]
 	if rf == nil || rf.Schema == nil {
 		return nil
 	}
-	js, ok := rf.Schema.(interface{ JSONSchema() map[string]interface{} })
-	if !ok {
-		t.Fatalf("schema %T has no JSONSchema()", rf.Schema)
+	// TS sends the JSON schema itself; accept a map or a schema value.
+	var raw interface{} = rf.Schema
+	if js, ok := rf.Schema.(interface{ JSONSchema() map[string]interface{} }); ok {
+		raw = js.JSONSchema()
 	}
 	// normalize through JSON so []string and []interface{} compare equal
-	b, err := json.Marshal(js.JSONSchema())
+	b, err := json.Marshal(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

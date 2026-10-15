@@ -293,8 +293,8 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 	switch opts.OutputMode {
 	case ObjectModeObject:
 		return &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      opts.Schema,
+			Type:        "json",
+			Schema:      objectResponseSchema(opts.Schema),
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		}, nil
@@ -321,8 +321,8 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 			wrapped[k] = v
 		}
 		return &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      enumSchemaWrapper{wrapped},
+			Type:        "json",
+			Schema:      wrapped,
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		}, nil
@@ -332,8 +332,8 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 			enumVals[i] = v
 		}
 		return &provider.ResponseFormat{
-			Type: "json_schema",
-			Schema: enumSchemaWrapper{map[string]interface{}{
+			Type: "json",
+			Schema: map[string]interface{}{
 				"$schema": "http://json-schema.org/draft-07/schema#",
 				"type":    "object",
 				"properties": map[string]interface{}{
@@ -344,10 +344,10 @@ func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.Respon
 				},
 				"required":             []string{"result"},
 				"additionalProperties": false,
-			}},
+			},
 		}, nil
 	case ObjectModeNoSchema:
-		return &provider.ResponseFormat{Type: "json_object"}, nil
+		return &provider.ResponseFormat{Type: "json"}, nil
 	default:
 		return nil, fmt.Errorf("invalid output mode: %s", opts.OutputMode)
 	}
@@ -916,8 +916,8 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      opts.Schema,
+			Type:        "json",
+			Schema:      objectResponseSchema(opts.Schema),
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		},
@@ -1077,8 +1077,8 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type:        "json_schema",
-			Schema:      enumSchemaWrapper{wrappedArraySchema},
+			Type:        "json",
+			Schema:      wrappedArraySchema,
 			Name:        opts.SchemaName,
 			Description: opts.SchemaDescription,
 		},
@@ -1227,8 +1227,8 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type:   "json_schema",
-			Schema: enumSchemaWrapper{wrappedEnumSchema},
+			Type:   "json",
+			Schema: wrappedEnumSchema,
 		},
 		Telemetry: opts.ExperimentalTelemetry,
 	}
@@ -1370,7 +1370,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		Headers:          opts.Headers,
 		ProviderOptions:  opts.ProviderOptions,
 		ResponseFormat: &provider.ResponseFormat{
-			Type: "json_object",
+			Type: "json",
 		},
 		Telemetry: opts.ExperimentalTelemetry,
 	}
@@ -2180,4 +2180,18 @@ func hasTextContentPart(parts []types.ContentPart) bool {
 		}
 	}
 	return false
+}
+
+// objectResponseSchema is the value of ResponseFormat.Schema for object
+// output: the JSON Schema map (TS passes the JSON schema, not a schema
+// object). An *schema.OrderedSchema is kept so a provider that marshals it
+// writes the keys in their source order.
+func objectResponseSchema(s schema.Schema) interface{} {
+	if o, ok := s.(*schema.OrderedSchema); ok {
+		return o
+	}
+	if m := schemaToMap(s); m != nil {
+		return m
+	}
+	return s
 }
