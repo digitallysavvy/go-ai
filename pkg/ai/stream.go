@@ -351,10 +351,17 @@ type StreamTextOptions struct {
 	OnAbortEvent OnAbortCallback
 
 	// ExperimentalTransform is an ordered list of transform functions applied to
-	// each stream chunk after provider emission but before forwarding to OnChunk.
+	// the public stream parts (including tool results and approvals) before
+	// forwarding to OnChunk and the result streams.
 	// Each function receives a chunk and returns zero or more replacement chunks.
 	// Returning nil or an empty slice drops the chunk. Transforms are applied in
 	// order; each transform receives the output of the previous one.
+	//
+	// As in the TypeScript SDK, the recorded results (Text, Content, ToolCalls,
+	// ToolResults, Steps, response messages, finish reason, usage, provider
+	// metadata and the OnStepEnd/OnEnd events) are derived from the transformed
+	// stream, and a transform can end the call early with the function from
+	// StreamTransformStopFromContext (TS stopStream).
 	// Mirrors the TypeScript SDK's experimental_transform option.
 	ExperimentalTransform []StreamTransformFunc
 }
@@ -653,6 +660,12 @@ type StreamTextResult struct {
 	// contract of returning one shared stream for the lifetime of the
 	// result.
 	chunkBufReader *chunkBufferReader
+
+	// uiChunkBuf/uiChunkBufReader hold the unfiltered chunk sequence of an
+	// external stream result (stream-start included), which
+	// ToUIMessageStream uses as its step boundary. Nil for StreamText results.
+	uiChunkBuf       *chunkBuffer
+	uiChunkBufReader *chunkBufferReader
 
 	processingDone chan struct{}
 
@@ -1513,6 +1526,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// still passes through transforms N+1..len-1, matching TS pipeThrough
 	// chaining every TransformStream's output into the next stage (hand-off:
 	// "transform chaining", core-ai-part00/01 WG12/P1-1 follow-up).
+	// rec derives the recorded step content from the chunks that leave the
+	// transform chain (TS records from the transformed stream); transformStopped
+	// is set by the stopStream function transforms receive through ctx.
+	var rec *transformRecorder
+	if len(opts.ExperimentalTransform) > 0 {
+		rec = &transformRecorder{}
+	}
+	transformStopped := false
+	var preliminaryMu sync.Mutex
+	stopTransformStream := StreamTransformStopper(func() { transformStopped = true })
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
 	transformEmitterAt := func(startIdx int) StreamTransformEmitter {
 		return func(c provider.StreamChunk) {
@@ -1522,16 +1545,35 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	forwardThroughTransformChain = func(startIdx int, chunks []provider.StreamChunk) {
 		if startIdx >= len(opts.ExperimentalTransform) {
 			for _, c := range chunks {
+				if rec != nil {
+					rec.record(c)
+				}
 				if onChunk != nil {
 					onChunk(c)
 				}
 			}
 			return
 		}
+		if startIdx == 0 && transformStopped {
+			// TS gate: nothing enters the transform chain after stopStream.
+			return
+		}
 		transform := opts.ExperimentalTransform[startIdx]
-		emitCtx := WithStreamTransformEmitter(ctx, transformEmitterAt(startIdx+1))
+		emitCtx := WithStreamTransformStopper(WithStreamTransformEmitter(ctx, transformEmitterAt(startIdx+1)), stopTransformStream)
 		var out []provider.StreamChunk
 		for _, c := range chunks {
+			if startIdx == 0 {
+				// Transforms may edit the chunk they receive; hand them copies
+				// so the raw aggregation never aliases the edits.
+				if c.ToolCall != nil {
+					call := *c.ToolCall
+					c.ToolCall = &call
+				}
+				if c.ToolResult != nil {
+					result := *c.ToolResult
+					c.ToolResult = &result
+				}
+			}
 			out = append(out, transform(emitCtx, c)...)
 		}
 		forwardThroughTransformChain(startIdx+1, out)
@@ -1643,6 +1685,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// `warnings = chunk.warnings` assignment happening before the
 		// stepFirstChunk check runs for the next chunk.
 		stepFirstForwardedChunk := true
+		if rec != nil {
+			rec.resetStep()
+		}
 		// streamedToolResults tracks provider-inline tool results by tool call ID.
 		streamedToolResults := make(map[string]types.ToolResult)
 		// stepTextIDRemap/stepReasoningIDRemap: see usedTextIDs/usedReasoningIDs above.
@@ -1691,13 +1736,36 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// Outputs of resumed tool approvals: forward, but they belong
 				// to the initial response, not to this step's content.
 				r.resumeChunksRemaining--
-				if onChunk != nil {
-					onChunk(*chunk)
-				}
+				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 				continue
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
 			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, remapGenerateID)
+			// URL-backed generated files are downloaded before they are
+			// forwarded or recorded (TS stream-language-model-call
+			// resolveGeneratedFileData); a failed download ends the stream.
+			if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
+				resolved, resolveErr := resolveGeneratedFile(stepCtx, *chunk.GeneratedFileContent)
+				if resolveErr != nil {
+					r.err = resolveErr
+					if isAbortErr(ctx, resolveErr) {
+						fireAbort(resolveErr)
+					}
+					break
+				}
+				chunk.GeneratedFileContent = &resolved
+			}
+			if chunk.Type == provider.ChunkTypeReasoningFile && chunk.ReasoningFileContent != nil {
+				resolved, resolveErr := resolveReasoningFile(stepCtx, *chunk.ReasoningFileContent)
+				if resolveErr != nil {
+					r.err = resolveErr
+					if isAbortErr(ctx, resolveErr) {
+						fireAbort(resolveErr)
+					}
+					break
+				}
+				chunk.ReasoningFileContent = &resolved
+			}
 			// A tool-input-start for a dynamic tool carries dynamic: true (TS).
 			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil && !chunk.ToolCall.Dynamic {
 				if t := toolsByName[chunk.ToolCall.ToolName]; t != nil && t.Type == types.ToolTypeDynamic {
@@ -1894,20 +1962,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				refined := refinedCalls[0]
 				chunk.ToolCall = &refined
 				stepToolCalls = append(stepToolCalls, refined)
-				stepContent = append(stepContent, types.ToolCallContent{
-					ToolCallID:       refined.ID,
-					ToolName:         refined.ToolName,
-					Title:            refined.Title,
-					Input:            refined.RawArguments,
-					Arguments:        refined.Arguments,
-					ProviderExecuted: refined.ProviderExecuted,
-					ProviderMetadata: providerMetadataRaw(refined.ProviderMetadata),
-					ToolMetadata:     refined.ToolMetadata,
-					Dynamic:          refined.Dynamic,
-					Invalid:          refined.Invalid,
-					Error:            toolCallContentError(refined.Error),
-					ThoughtSignature: refined.ThoughtSignature,
-				})
+				stepContent = append(stepContent, toolCallContentOf(refined))
 			}
 
 			// Track provider-inline tool results for the deferred hasResult check.
@@ -2231,8 +2286,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				break
 			}
+			if transformStopped {
+				break
+			}
 		}
 		chunkDeadlineCancel()
+		if transformStopped && r.err == nil {
+			// A transform called stopStream: close the provider stream, run
+			// no tools, and record the step from what the transform emitted.
+			if s := r.currentStream(); s != nil {
+				_ = s.Close()
+			}
+			stepSawTerminal = true
+			stepToolCalls = nil
+			preRefinementCalls = nil
+		}
 		if r.err != nil {
 			// Close the provider stream (and its underlying HTTP response
 			// body) as soon as processStream itself gives up on it, instead
@@ -2284,7 +2352,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepContent = replaceToolCallContentParts(stepContent, stepToolCalls)
 		stepContent = replaceToolResultContentParts(stepContent, stepToolCalls)
 
-		if violation := checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepResponseModelID, stepContent); violation != nil {
+		var violation error
+		if !transformStopped {
+			violation = checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepResponseModelID, stepContent)
+		}
+		if violation != nil {
 			r.err = violation
 			cancelStep()
 			break
@@ -2316,6 +2388,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				experimentalSandbox: opts.ExperimentalSandbox,
 				toolExecutionMs:     toolExecutionMs,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
+				onPreliminary: func(result types.ToolResult) {
+					// Tools may run concurrently; the transform chain is not
+					// concurrency-safe.
+					preliminaryMu.Lock()
+					defer preliminaryMu.Unlock()
+					forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &result}})
+				},
 			}
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
@@ -2363,9 +2442,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		for i := range stepToolResults {
 			tr := &stepToolResults[i]
 			emitChunk := func(resultChunk provider.StreamChunk) {
-				if onChunk != nil {
-					onChunk(resultChunk)
-				}
+				forwardThroughTransformChain(0, []provider.StreamChunk{resultChunk})
 			}
 			switch tr.ApprovalStatus {
 			case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
@@ -2429,6 +2506,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		publicStepToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults))
 
+		aggToolCallsLen, aggToolResultsLen, aggUsageBefore := len(r.toolCalls), len(r.toolResults), r.usage
 		// Accumulate step tool calls and results into the overall result.
 		r.mu.Lock()
 		r.toolCalls = append(r.toolCalls, stepToolCalls...)
@@ -2524,6 +2602,75 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ProviderMetadata: r.providerMetadata,
 		}})
 
+		// With experimental transforms the recorded step comes from the
+		// transformed stream (TS eventProcessor after the transforms): content,
+		// text, reasoning, tool calls/results, sources, files, finish reason,
+		// usage, response and provider metadata all follow the transform's
+		// output. Continuation decisions below keep using the raw step.
+		recordedToolResults := stepToolResults
+		if rec != nil && rec.finishStep == nil && transformStopped {
+			// The transform stopped the stream without emitting a
+			// finish-step: no step is recorded (TS NoOutputGeneratedError
+			// when no step was recorded at all).
+			if len(allSteps) == 0 {
+				r.err = &NoOutputGeneratedError{Message: "No output generated. Check the stream for errors."}
+			}
+			cancelStep()
+			break
+		}
+		if rec != nil && rec.finishStep != nil {
+			fs := rec.finishStep
+			stepResult.Content = append([]types.ContentPart(nil), rec.content...)
+			stepText = textOfContent(stepResult.Content)
+			stepResult.Text = stepText
+			stepResult.Reasoning = reasoningPartsOf(stepResult.Content)
+			stepResult.ReasoningText = buildReasoningText(stepResult.Reasoning)
+			stepResult.ToolCalls = append([]types.ToolCall(nil), rec.toolCalls...)
+			stepResult.StaticToolCalls = filterStaticToolCalls(stepResult.ToolCalls)
+			stepResult.DynamicToolCalls = filterDynamicToolCalls(stepResult.ToolCalls)
+			recordedToolResults = append([]types.ToolResult(nil), rec.toolResults...)
+			publicStepToolResults = types.ResultsForPublicView(recordedToolResults)
+			stepResult.ToolResults = publicStepToolResults
+			stepResult.StaticToolResults = filterStaticToolResults(publicStepToolResults)
+			stepResult.DynamicToolResults = filterDynamicToolResults(publicStepToolResults)
+			stepResult.Sources = append([]types.SourceContent(nil), rec.sources...)
+			stepFiles = append([]types.GeneratedFileContent(nil), rec.files...)
+			stepResult.FinishReason = fs.FinishReason
+			stepResult.RawFinishReason = fs.RawFinishReason
+			if fs.Usage != nil {
+				stepResult.Usage = *fs.Usage
+			}
+			if fs.Performance != nil {
+				stepResult.Performance = types.StepPerformance(*fs.Performance)
+			}
+			if fs.Response != nil {
+				resp := *fs.Response
+				resp.Messages = nil
+				stepResult.Response = resp
+			}
+			stepResult.ProviderMetadata = nil
+			if len(fs.ProviderMetadata) > 0 {
+				var meta map[string]interface{}
+				if json.Unmarshal(fs.ProviderMetadata, &meta) == nil {
+					stepResult.ProviderMetadata = meta
+				}
+			}
+			stepUsage = stepResult.Usage
+			stepHeaders = stepResult.Response.Headers
+			performance = stepResult.Performance
+			r.mu.Lock()
+			r.toolCalls = append(r.toolCalls[:aggToolCallsLen:aggToolCallsLen], stepResult.ToolCalls...)
+			r.toolResults = append(r.toolResults[:aggToolResultsLen:aggToolResultsLen], publicStepToolResults...)
+			r.usage = aggUsageBefore.Add(stepResult.Usage)
+			r.sources = append(r.sources[:stepSourcesStart:stepSourcesStart], stepResult.Sources...)
+			r.files = append(r.files[:stepFilesStart:stepFilesStart], stepFiles...)
+			r.finishReason = stepResult.FinishReason
+			r.providerMetadata = fs.ProviderMetadata
+			r.mu.Unlock()
+			accumulatedTextParts = append(accumulatedTextParts[:stepTextPartsStart:stepTextPartsStart], stepText)
+			lastStepText = stepText
+			r.text = strings.Join(accumulatedTextParts, "")
+		}
 		allSteps = append(allSteps, stepResult)
 
 		// Fire step-finish telemetry — OTel implementation ends the child step span.
@@ -2556,7 +2703,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Usage:          stepTelUsage,
 				Text:           stepText,
 				Reasoning:      stepResult.ReasoningText,
-				ToolCalls:      stepToolCalls,
+				ToolCalls:      stepResult.ToolCalls,
 				ToolResults:    publicStepToolResults,
 				Files:          stepFiles,
 				Performance:    languageModelCallPerformance(performance),
@@ -2568,9 +2715,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		// Populate ResponseMessages on the step that just completed.
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(
-			stepToolCalls,
+			stepResult.ToolCalls,
 			stepResult.Content,
-			stepToolResults,
+			recordedToolResults,
 		)
 		currentMessages = append(currentMessages, stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
@@ -3003,6 +3150,24 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Usage:           &totalUsage,
 		}
 		forwardThroughTransformChain(0, []provider.StreamChunk{callFinishChunk})
+		if rec != nil {
+			// The call-level finish reason and total usage are recorded from
+			// the transformed finish part (TS: recordedFinishReason ?? 'other',
+			// recordedTotalUsage ?? null usage).
+			if rec.finish != nil {
+				r.finishReason = rec.finish.FinishReason
+				r.rawFinishReason = rec.finish.RawFinishReason
+				if rec.finish.Usage != nil {
+					r.usage = *rec.finish.Usage
+				} else {
+					r.usage = types.Usage{}
+				}
+			} else {
+				r.finishReason = types.FinishReasonOther
+				r.rawFinishReason = ""
+				r.usage = types.Usage{}
+			}
+		}
 	}
 
 	if r.err == nil {
@@ -3381,7 +3546,21 @@ func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextS
 //
 // Deprecated: use ToUIMessageStream with Stream.
 func (r *StreamTextResult) ToUIMessageStream(ctx context.Context, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
-	return ToUIMessageStream(ctx, r.Stream(), opts...)
+	return ToUIMessageStream(ctx, r.uiStream(), opts...)
+}
+
+// uiStream is the stream the UI converters read: the unfiltered sequence for
+// external results, the public stream otherwise.
+func (r *StreamTextResult) uiStream() provider.TextStream {
+	if r.uiChunkBuf == nil {
+		return r.Stream()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.uiChunkBufReader == nil {
+		r.uiChunkBufReader = r.uiChunkBuf.reader()
+	}
+	return r.uiChunkBufReader
 }
 
 // ToUIMessageStreamResponse creates an SSE response from the stream result.

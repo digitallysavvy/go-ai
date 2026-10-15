@@ -32,9 +32,10 @@ func TestRunPrompt_PreservesAdapterWarnings(t *testing.T) {
 	})
 	chunks := drainRunPrompt(t, out)
 
-	starts := chunksOfType(chunks, provider.ChunkTypeStreamStart)
-	if len(starts) != 1 || len(starts[0].Warnings) != 3 {
-		t.Fatalf("stream-start (Go's start-step seam) chunks = %+v, want one carrying 3 warnings", starts)
+	// The public full stream carries no stream-start marker; the warnings
+	// live on the step and the aggregate result below.
+	if starts := chunksOfType(chunks, provider.ChunkTypeStreamStart); len(starts) != 0 {
+		t.Fatalf("public stream exposes stream-start markers: %+v", starts)
 	}
 	steps := out.Result.Steps()
 	if len(steps) != 1 || len(steps[0].Warnings) != 3 {

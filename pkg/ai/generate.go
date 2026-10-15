@@ -1334,6 +1334,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 		genResult.ToolCalls = parsedToolCalls
 
+		// URL-backed generated files are downloaded once, before anything
+		// observes the content (TS convertLanguageModelContent).
+		if resolvedContent, resolveErr := resolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+			return nil, resolveErr
+		} else if len(resolvedContent) > 0 {
+			resolvedResult := *genResult
+			resolvedResult.Content = resolvedContent
+			genResult = &resolvedResult
+		}
+
 		responseID := ""
 		responseModelID := stepModel.ModelID()
 		if meta := responseMetadataFromGenerateResultWithID(stepModel, genResult, generateID); meta != nil {
@@ -1959,6 +1969,10 @@ type toolCallEventCallbacks struct {
 	// Set when the step finished with a finish reason that does not allow
 	// automatic tool execution (TS isToolExecutionAllowedFinishReason).
 	executionBlocked bool
+	// onPreliminary receives the intermediate outputs of streaming
+	// (generator-style) tools as preliminary tool results. Nil when the caller
+	// does not stream (TS generateText ignores preliminary results).
+	onPreliminary func(result types.ToolResult)
 }
 
 // isToolExecutionAllowedFinishReason reports whether client tools may be
@@ -2257,6 +2271,21 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ToolMetadata:        call.ToolMetadata,
 				Messages:            callbacks.messages,
 				ExperimentalSandbox: callbacks.experimentalSandbox,
+			}
+			if callbacks.onPreliminary != nil {
+				execOptions.OnPreliminaryResult = func(output interface{}) {
+					callbacks.onPreliminary(types.ToolResult{
+						ToolCallID:       call.ID,
+						ToolName:         call.ToolName,
+						Title:            call.Title,
+						Input:            call.Arguments,
+						Result:           output,
+						Preliminary:      true,
+						ProviderMetadata: providerMetadata,
+						ToolMetadata:     call.ToolMetadata,
+						Dynamic:          call.Dynamic,
+					})
+				}
 			}
 
 			// Apply per-tool timeout if configured.

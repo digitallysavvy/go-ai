@@ -2,6 +2,7 @@ package types
 
 import (
 	"context"
+	"iter"
 
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -297,6 +298,49 @@ type ToolExecutionOptions struct {
 	// TypeScript's CodeModeToolExecutionOptions.codeModeInterrupt
 	// (code-mode/src/types.ts).
 	CodeModeInterrupt interface{}
+
+	// OnPreliminaryResult, when non-nil, receives each intermediate output a
+	// streaming tool (see StreamingExecutor) yields, as it is produced. The
+	// pipeline streams them as preliminary tool-result parts
+	// (tool-output-available with preliminary: true in UI streams); only the
+	// final output is recorded in the content, steps and response messages.
+	// It is nil for GenerateText and for callers that do not stream, and
+	// tools must treat it as optional. Mirrors TS onPreliminaryToolResult.
+	OnPreliminaryResult func(output interface{})
+}
+
+// StreamingExecutor adapts a generator-style tool body to a ToolExecutor, the
+// Go form of a TS `async *execute()` tool. Every value the sequence yields is
+// reported through ToolExecutionOptions.OnPreliminaryResult (when set); the
+// last yielded value becomes the tool's final output (nil when nothing is
+// yielded, as in TS). A non-nil error yielded by the sequence, or a cancelled
+// ctx, ends the execution as a tool error.
+//
+//	tool.Execute = types.StreamingExecutor(func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) iter.Seq2[interface{}, error] {
+//		return func(yield func(interface{}, error) bool) {
+//			if !yield(map[string]interface{}{"status": "loading"}, nil) {
+//				return
+//			}
+//			yield(map[string]interface{}{"status": "success"}, nil)
+//		}
+//	})
+func StreamingExecutor(fn func(ctx context.Context, input map[string]interface{}, options ToolExecutionOptions) iter.Seq2[interface{}, error]) ToolExecutor {
+	return func(ctx context.Context, input map[string]interface{}, options ToolExecutionOptions) (interface{}, error) {
+		var last interface{}
+		for output, err := range fn(ctx, input, options) {
+			if err != nil {
+				return nil, err
+			}
+			last = output
+			if options.OnPreliminaryResult != nil {
+				options.OnPreliminaryResult(output)
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+		}
+		return last, nil
+	}
 }
 
 // ToModelOutputFunc converts a tool result to model-readable output
