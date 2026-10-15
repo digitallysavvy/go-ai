@@ -149,3 +149,22 @@ func TestDoStreamDecodesV4Parts(t *testing.T) {
 		t.Fatalf("finish = %+v", fin)
 	}
 }
+
+func TestGatewayStreamToolResultKeepsPreliminaryAndMetadata(t *testing.T) {
+	stream := &gatewayTextStream{
+		parser: streamingParser(strings.Join([]string{
+			`data: {"type":"tool-input-start","id":"c1","toolName":"w","providerMetadata":{"gateway":{"a":1}}}`, "",
+			`data: {"type":"tool-result","toolCallId":"c1","toolName":"w","result":{"t":1},"preliminary":true,"providerMetadata":{"gateway":{"b":2}}}`, "",
+			`data: [DONE]`, "",
+		}, "\n")),
+		body: io.NopCloser(strings.NewReader("")),
+	}
+	start, err := stream.Next()
+	if err != nil || len(start.ProviderMetadata) == 0 {
+		t.Fatalf("tool-input-start lost providerMetadata: %#v err=%v", start, err)
+	}
+	res, err := stream.Next()
+	if err != nil || res.ToolResult == nil || !res.ToolResult.Preliminary || !res.ToolResult.ProviderExecuted || res.ToolResult.ProviderMetadata == nil {
+		t.Fatalf("tool-result lost fields: %#v err=%v", res, err)
+	}
+}

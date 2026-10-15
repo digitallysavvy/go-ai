@@ -235,7 +235,18 @@ func (p v4Part) toolCall() types.ToolCall {
 func (p v4Part) toolResult() types.ToolResult {
 	var result interface{}
 	_ = json.Unmarshal(p.Result, &result)
-	tr := types.ToolResult{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: result, Dynamic: p.Dynamic}
+	tr := types.ToolResult{
+		ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: result, Dynamic: p.Dynamic,
+		Preliminary: p.Preliminary,
+		// A tool-result part of a language model stream is provider-executed.
+		ProviderExecuted: true,
+	}
+	if len(p.ProviderMetadata) > 0 {
+		var md map[string]interface{}
+		if json.Unmarshal(p.ProviderMetadata, &md) == nil {
+			tr.ProviderMetadata = md
+		}
+	}
 	if p.IsError {
 		if s, ok := result.(string); ok {
 			tr.Error = errors.New(s)

@@ -421,7 +421,7 @@ func (m *LanguageModel) convertResponse(response *perplexityAgentResponse, rawBo
 		FinishReason:     mapPerplexityFinishReason(response.Status, incompleteReason, hasFunctionCall),
 		RawFinishReason:  rawFinishReason,
 		Usage:            convertPerplexityUsage(response.Usage, perplexityRawUsageBytes(rawBody)),
-		RawResponse:      response,
+		RawResponse:      providerutils.RawJSONBody(rawBody),
 		ProviderMetadata: getPerplexityProviderMetadata(response.Usage),
 	}
 	if len(textParts) > 0 {

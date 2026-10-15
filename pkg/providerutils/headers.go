@@ -135,3 +135,18 @@ func RawJSONBody(b []byte) interface{} {
 	}
 	return v
 }
+
+// ToolArgumentsString returns a tool call's arguments as the JSON text the
+// model produced. The wire value is normally a JSON string holding JSON text
+// (OpenAI style); some hosts send the object itself, whose text is returned
+// as is.
+func ToolArgumentsString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
+}

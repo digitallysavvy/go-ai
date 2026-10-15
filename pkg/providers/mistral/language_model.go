@@ -143,6 +143,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.RawRequest = reqBody
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata

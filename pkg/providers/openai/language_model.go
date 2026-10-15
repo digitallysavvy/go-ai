@@ -138,6 +138,15 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		result.RawResponse = rawResponse
 	}
 	m.applyChatLogprobs(result, resp.Body)
+	if m.provider.config.OpenAICompatible {
+		m.applyCompatMetadataKey(result, opts.ProviderOptions)
+		// The compat usage schema is loose: extra wire fields are kept in raw.
+		if raw, ok := rawResponse.(map[string]interface{}); ok {
+			if u, ok := raw["usage"].(map[string]interface{}); ok {
+				result.Usage.Raw = u
+			}
+		}
+	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = &types.ResponseMetadata{
@@ -173,7 +182,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner.requestBody = reqBody
 	inner.compat = m.provider.config.OpenAICompatible
 	if inner.compat {
-		inner.metaKey = providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())
+		inner.metaKey = providerutils.ResolveOpenAICompatibleMetadataKey(m.compatName(), opts.ProviderOptions)
 	}
 	return streaming.NewWarningsStream(inner, warnings), nil
 }
@@ -777,7 +786,7 @@ func (m *LanguageModel) convertResponse(response openAIResponse) *types.Generate
 				if m.provider.config.OpenAICompatible && tc.ExtraContent != nil && tc.ExtraContent.Google != nil &&
 					tc.ExtraContent.Google.ThoughtSignature != nil && *tc.ExtraContent.Google.ThoughtSignature != "" {
 					sig := *tc.ExtraContent.Google.ThoughtSignature
-					key := providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())
+					key := m.compatName()
 					result.ToolCalls[i].ThoughtSignature = sig
 					result.ToolCalls[i].ProviderMetadata = map[string]interface{}{key: map[string]interface{}{"thoughtSignature": sig}}
 				}
@@ -845,7 +854,7 @@ func (m *LanguageModel) chatProviderMetadata(details *struct {
 }, logprobs json.RawMessage) map[string]interface{} {
 	key := "openai"
 	if m.provider.config.OpenAICompatible {
-		key = providerutils.ToOpenAICompatibleCamelCase(m.provider.Name())
+		key = m.compatName()
 	}
 	meta := map[string]interface{}{}
 	if details != nil {
@@ -1626,4 +1635,31 @@ func (m *LanguageModel) thoughtSignatureKey() string {
 	}
 	name, _, _ := strings.Cut(m.provider.Name(), ".")
 	return strings.TrimSpace(name)
+}
+
+// compatName is the provider name used for provider options and metadata on
+// OpenAI-compatible hosts (TS providerOptionsName: provider.split('.')[0]).
+func (m *LanguageModel) compatName() string {
+	name, _, _ := strings.Cut(m.provider.Name(), ".")
+	return strings.TrimSpace(name)
+}
+
+// applyCompatMetadataKey moves the camelCase namespace convertResponse uses
+// for compat metadata to the key TS resolves from the call's provider options.
+func (m *LanguageModel) applyCompatMetadataKey(result *types.GenerateResult, providerOptions map[string]interface{}) {
+	from := m.compatName()
+	to := providerutils.ResolveOpenAICompatibleMetadataKey(from, providerOptions)
+	if to == from {
+		return
+	}
+	move := func(md map[string]interface{}) {
+		if v, ok := md[from]; ok {
+			delete(md, from)
+			md[to] = v
+		}
+	}
+	move(result.ProviderMetadata)
+	for i := range result.ToolCalls {
+		move(result.ToolCalls[i].ProviderMetadata)
+	}
 }

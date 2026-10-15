@@ -264,3 +264,60 @@ func mediaTypeToExt(mimeType string) string {
 		return ""
 	}
 }
+
+// prodiaOutput is one "output" part of a multipart job response.
+type prodiaOutput struct {
+	mediaType string
+	data      []byte
+	isText    bool
+}
+
+// parseMultipartOutputs reads every "output" part like the TS language model:
+// text parts (text/* or a .txt filename) and image parts are kept in order,
+// anything else is ignored.
+func parseMultipartOutputs(contentType string, body []byte) (*prodiaJobResponse, []prodiaOutput, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse response Content-Type %q: %w", contentType, err)
+	}
+	boundary, ok := params["boundary"]
+	if !ok {
+		return nil, nil, fmt.Errorf("multipart response missing boundary in Content-Type %q", contentType)
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	var jobResp *prodiaJobResponse
+	var outputs []prodiaOutput
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read multipart part: %w", err)
+		}
+		data, err := io.ReadAll(part)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read multipart part data: %w", err)
+		}
+		partCT := part.Header.Get("Content-Type")
+		switch part.FormName() {
+		case "job":
+			var j prodiaJobResponse
+			if err := json.Unmarshal(data, &j); err != nil {
+				return nil, nil, fmt.Errorf("failed to parse job metadata: %w", err)
+			}
+			jobResp = &j
+		case "output":
+			switch {
+			case strings.HasPrefix(partCT, "text/") || strings.Contains(part.Header.Get("Content-Disposition"), ".txt"):
+				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: data, isText: true})
+			case strings.HasPrefix(partCT, "image/"):
+				outputs = append(outputs, prodiaOutput{mediaType: partCT, data: data})
+			}
+		}
+	}
+	if jobResp == nil {
+		return nil, nil, fmt.Errorf("multipart response missing 'job' part")
+	}
+	return jobResp, outputs, nil
+}

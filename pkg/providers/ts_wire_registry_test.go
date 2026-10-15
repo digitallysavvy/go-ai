@@ -12,6 +12,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/minimax"
 	"github.com/digitallysavvy/go-ai/pkg/providers/moonshot"
 	"github.com/digitallysavvy/go-ai/pkg/providers/openresponses"
+	"github.com/digitallysavvy/go-ai/pkg/providers/quiverai"
+	"github.com/digitallysavvy/go-ai/pkg/providers/typesafeai"
 	"github.com/digitallysavvy/go-ai/pkg/providers/zai"
 	"net/url"
 	"strings"
@@ -267,6 +269,14 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	})},
 	"heygen": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return heygen.New(heygen.Config{APIKey: k, BaseURL: b, Headers: h, PollIntervalMillis: 1, PollTimeoutMillis: 5000})
+	})},
+	"typesafe-ai": {Skip: map[string]string{
+		"restores authentication from the environment when no headers are serialized": "depends on process environment variables set by the TS test",
+	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+		return typesafeai.New(typesafeai.Config{APIKey: k, BaseURL: b, Headers: h})
+	})},
+	"quiverai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+		return quiverai.New(quiverai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"gateway": {
 		// TS gateway language tests answer with non-V4 JSON; only the request is compared.

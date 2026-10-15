@@ -79,6 +79,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result := m.convertResponse(response)
 	providerutils.ApplyWireUsageRaw(result, resp.Body)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	return result, nil
 }
 

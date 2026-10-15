@@ -158,7 +158,9 @@ func TestChatGenerateMetadataReasoningSourcesAndToolID(t *testing.T) {
 		t.Errorf("native sources=%d reasoning=%d", sources, reasoning)
 	}
 	compat := run(Config{OpenAICompatible: true, Name: "my-host"})
-	if _, ok := compat.ProviderMetadata["myHost"]; !ok {
+	// TS resolveProviderOptionsKey: the raw provider name unless the caller
+	// used the camelCase key in providerOptions.
+	if _, ok := compat.ProviderMetadata["my-host"]; !ok {
 		t.Errorf("compat metadata keys = %v", compat.ProviderMetadata)
 	}
 	sources, reasoning = 0, 0

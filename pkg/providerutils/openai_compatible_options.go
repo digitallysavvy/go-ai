@@ -178,3 +178,15 @@ func deprecatedProviderOptionKeyWarning(rawName, camelName string) types.Warning
 		Message: message,
 	}
 }
+
+// ResolveOpenAICompatibleMetadataKey mirrors TS resolveProviderOptionsKey:
+// the providerMetadata namespace is the camelCase provider name only when the
+// caller supplied provider options under that camelCase key, else the raw
+// provider name.
+func ResolveOpenAICompatibleMetadataKey(rawName string, providerOptions map[string]interface{}) string {
+	camel := ToOpenAICompatibleCamelCase(rawName)
+	if camel != rawName && providerOptions[camel] != nil {
+		return camel
+	}
+	return rawName
+}

@@ -150,6 +150,12 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		result.Warnings = append(warnings, result.Warnings...)
 	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = body
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(httpResp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
+	}
 	result.ResponseMetadata = providerutils.BuildResponseMetadata(resp.ID, resp.Model, resp.CreatedAt)
 	result.ResponseMetadata.Headers = result.ResponseHeaders
 	return result, nil
@@ -964,32 +970,37 @@ func convertXAIResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 	if u == nil {
 		return types.Usage{}
 	}
+	// TS convertXaiResponsesUsage: the breakdown is always reported, and a
+	// cached count above input_tokens means input_tokens excludes the cache.
+	var cached, reasoning int64
+	if u.InputTokensDetails != nil {
+		cached = int64(u.InputTokensDetails.CachedTokens)
+	}
+	if u.OutputTokensDetails != nil {
+		reasoning = int64(u.OutputTokensDetails.ReasoningTokens)
+	}
 	inputTokens := int64(u.InputTokens)
 	outputTokens := int64(u.OutputTokens)
+	noCache := inputTokens - cached
+	if cached > inputTokens {
+		noCache = inputTokens
+		inputTokens += cached
+	}
 	total := inputTokens + outputTokens
+	textOut := outputTokens - reasoning
 
 	result := types.Usage{
 		InputTokens:  &inputTokens,
 		OutputTokens: &outputTokens,
 		TotalTokens:  &total,
-	}
-
-	if u.InputTokensDetails != nil && u.InputTokensDetails.CachedTokens > 0 {
-		cached := int64(u.InputTokensDetails.CachedTokens)
-		noCached := inputTokens - cached
-		result.InputDetails = &types.InputTokenDetails{
+		InputDetails: &types.InputTokenDetails{
 			CacheReadTokens: &cached,
-			NoCacheTokens:   &noCached,
-		}
-	}
-
-	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ReasoningTokens > 0 {
-		reasoning := int64(u.OutputTokensDetails.ReasoningTokens)
-		textOut := outputTokens - reasoning
-		result.OutputDetails = &types.OutputTokenDetails{
+			NoCacheTokens:   &noCache,
+		},
+		OutputDetails: &types.OutputTokenDetails{
 			ReasoningTokens: &reasoning,
 			TextTokens:      &textOut,
-		}
+		},
 	}
 
 	// Row 41e7760: keep the full raw usage object (not just the hand-picked

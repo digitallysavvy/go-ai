@@ -82,6 +82,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result := m.convertResponse(response)
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	return result, nil
 }
 
@@ -388,13 +394,16 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
+			// The wire value is a JSON string holding the arguments' JSON text.
+			rawArgs := providerutils.ToolArgumentsString(tc.Function.Arguments)
 			var args map[string]interface{}
-			if len(tc.Function.Arguments) > 0 {
-				if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
+			if rawArgs != "" {
+				if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
 					// If unmarshal fails, use empty args
 					args = make(map[string]interface{})
 				}
-			} else {
+			}
+			if args == nil {
 				args = make(map[string]interface{})
 			}
 			id := tc.ID
@@ -405,9 +414,10 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 				id = streaming.GenerateID()
 			}
 			result.ToolCalls[i] = types.ToolCall{
-				ID:        id,
-				ToolName:  tc.Function.Name,
-				Arguments: args,
+				ID:           id,
+				ToolName:     tc.Function.Name,
+				Arguments:    args,
+				RawArguments: rawArgs,
 			}
 		}
 	}

@@ -92,6 +92,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
+	// TS result.request.body: the request as sent.
+	result.RawRequest = reqBody
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body)
+	}
 	responseMetadata := providerutils.BuildResponseMetadata(response.ID, response.Model, response.Created)
 	responseMetadata.Headers = result.ResponseHeaders
 	result.ResponseMetadata = responseMetadata
@@ -571,19 +577,16 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 	if usage.CompletionTokensDetails != nil && usage.CompletionTokensDetails.ReasoningTokens != nil {
 		reasoning = int64(*usage.CompletionTokensDetails.ReasoningTokens)
 	}
-	if cached > 0 || textTokens != nil || imageTokens != nil {
-		noCache := p - cached
-		result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
+	// TS convertDeepSeekUsage always reports the breakdown (zeros included).
+	noCache := p - cached
+	result.InputDetails = &types.InputTokenDetails{NoCacheTokens: &noCache, CacheReadTokens: &cached, CacheWriteTokens: nil, TextTokens: textTokens, ImageTokens: imageTokens}
+	// Clamp at 0: a provider-reported reasoning token count that exceeds
+	// completion_tokens must not produce a negative text token count.
+	text := c - reasoning
+	if text < 0 {
+		text = 0
 	}
-	if reasoning > 0 {
-		// Clamp at 0: a provider-reported reasoning token count that exceeds
-		// completion_tokens must not produce a negative text token count.
-		text := c - reasoning
-		if text < 0 {
-			text = 0
-		}
-		result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
-	}
+	result.OutputDetails = &types.OutputTokenDetails{TextTokens: &text, ReasoningTokens: &reasoning}
 
 	var rawMap map[string]interface{}
 	_ = json.Unmarshal(raw, &rawMap)

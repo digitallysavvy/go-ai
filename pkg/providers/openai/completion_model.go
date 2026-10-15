@@ -59,6 +59,9 @@ func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.Generat
 
 	result := m.convertCompletionResponse(response, warnings)
 	result.RawRequest = body
+	if len(resp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(resp.Body) // TS response.body is the raw JSON
+	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	result.ResponseMetadata = completionResponseMetadata(response.ID, response.Created, response.Model, result.ResponseHeaders)
 	return result, nil

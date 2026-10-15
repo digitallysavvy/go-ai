@@ -90,6 +90,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	result.Warnings = append(warnings, result.Warnings...)
 	// TS: response { id: generation_id, headers } (no timestamp/model id).
 	result.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Headers)
+	// TS response.body is the raw parsed JSON, not the schema-filtered value.
+	if len(httpResp.Body) > 0 {
+		result.RawResponse = providerutils.RawJSONBody(httpResp.Body)
+	}
 	result.ResponseMetadata = &types.ResponseMetadata{ID: response.GenerationID, Headers: result.ResponseHeaders}
 	return result, nil
 }

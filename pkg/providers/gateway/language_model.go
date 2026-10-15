@@ -421,8 +421,9 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 
 	case "tool-input-start":
 		return &provider.StreamChunk{
-			Type: provider.ChunkTypeToolInputStart,
-			ID:   chunk.part.ID,
+			Type:             provider.ChunkTypeToolInputStart,
+			ID:               chunk.part.ID,
+			ProviderMetadata: chunk.part.ProviderMetadata,
 			ToolCall: &types.ToolCall{
 				ID:               chunk.part.ID,
 				ToolName:         chunk.part.ToolName,
@@ -434,16 +435,18 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 
 	case "tool-input-delta":
 		return &provider.StreamChunk{
-			Type: provider.ChunkTypeToolInputDelta,
-			ID:   chunk.part.ID,
-			Text: chunk.part.Delta,
+			Type:             provider.ChunkTypeToolInputDelta,
+			ID:               chunk.part.ID,
+			Text:             chunk.part.Delta,
+			ProviderMetadata: chunk.part.ProviderMetadata,
 		}, nil, true
 
 	case "tool-input-end":
 		return &provider.StreamChunk{
-			Type:     provider.ChunkTypeToolInputEnd,
-			ID:       chunk.part.ID,
-			ToolCall: &types.ToolCall{ID: chunk.part.ID},
+			Type:             provider.ChunkTypeToolInputEnd,
+			ID:               chunk.part.ID,
+			ToolCall:         &types.ToolCall{ID: chunk.part.ID},
+			ProviderMetadata: chunk.part.ProviderMetadata,
 		}, nil, true
 
 	case "tool-call":
@@ -475,7 +478,6 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 
 	case "tool-result":
 		tr := chunk.part.toolResult()
-		tr.ProviderMetadata = nil
 		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &tr}, nil, true
 
 	case "tool-approval-request":

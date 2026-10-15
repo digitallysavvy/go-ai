@@ -115,23 +115,29 @@ func WirePrefix(m WireModel) string {
 
 func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 	t.Helper()
-	if why, ok := s.Skip[w.Test]; ok {
+	status, reason := "replayed", ""
+	defer func() { reportWire(pkg, w, status, reason) }()
+	skip := func(why string) {
+		status, reason = "skipped", why
 		t.Skip(why)
+	}
+	if why, ok := s.Skip[w.Test]; ok {
+		skip(why)
 	}
 	for k, why := range s.Skip {
 		switch {
 		case strings.HasSuffix(k, "*") && strings.HasPrefix(w.Test, strings.TrimSuffix(k, "*")):
-			t.Skip(why)
+			skip(why)
 		case strings.HasPrefix(k, "~") && strings.Contains(w.Test, k[1:]):
-			t.Skip(why)
+			skip(why)
 		}
 	}
 	if len(w.Calls) == 0 || len(w.HTTP) == 0 {
-		t.Skip("no replayable call or HTTP exchange in the TS test")
+		skip("no replayable call or HTTP exchange in the TS test")
 	}
 	for _, h := range w.HTTP {
 		if h.Response == nil || h.Response.Type == "controlled-stream" {
-			t.Skip("the TS test serves a response the recording cannot carry (controlled stream)")
+			skip("the TS test serves a response the recording cannot carry (controlled stream)")
 		}
 	}
 	wireVideoOps = map[string]json.RawMessage{}
@@ -144,10 +150,10 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 	for i, c := range w.Calls {
 		kind := WireKind(c)
 		if kind == "" {
-			t.Skipf("unsupported TS call %s on %s", c.Method, c.Model.Cls)
+			skip(fmt.Sprintf("unsupported TS call %s on %s", c.Method, c.Model.Cls))
 		}
 		if hasFn(c.Args) {
-			t.Skip("the TS call passes a function (for example a webhook factory)")
+			skip("the TS call passes a function (for example a webhook factory)")
 		}
 		for _, h := range w.HTTP {
 			c.Model.RequestURLs = append(c.Model.RequestURLs, h.URL)
@@ -164,7 +170,7 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			}
 			p, err = s.Provider(base, c.Model)
 			if err != nil || p == nil {
-				t.Skipf("provider not constructible: %v", err)
+				skip(fmt.Sprintf("provider not constructible: %v", err))
 			}
 			prov[key] = p
 		}
@@ -172,10 +178,10 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		got, err := RunWireCall(ctx, srv, s, p, kind, c)
 		cancel()
 		if err != nil && strings.Contains(err.Error(), "illegal base64 data") {
-			t.Skip("TS test data is not valid base64; TS passes the string through")
+			skip("TS test data is not valid base64; TS passes the string through")
 		}
 		if err == errWireSkip {
-			t.Skip(got["skip"])
+			skip(fmt.Sprint(got["skip"]))
 		}
 		if os.Getenv("TSWIRE_DEBUG") != "" {
 			b, _ := json.Marshal(got)
@@ -191,6 +197,7 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 	if len(diffs) == 0 {
 		return
 	}
+	status = "differs"
 	sort.Strings(diffs)
 	msg := strings.Join(diffs, "\n")
 	if os.Getenv("TSWIRE_REPORT") != "" {
@@ -210,6 +217,8 @@ func WireKind(c WireCall) string {
 		return "embed"
 	case c.Method == "doRerank":
 		return "rerank"
+	case c.Method == "doDecide":
+		return "decide"
 	case (c.Method == "doStart" || c.Method == "doStatus") && strings.Contains(cls, "Video"):
 		return "video"
 	case c.Method == "doGenerate" || c.Method == "doStream":
@@ -262,6 +271,16 @@ func RunWireCall(ctx context.Context, srv *WireServer, s WireSuite, p provider.P
 			return nil, err
 		}
 		return wireTranscription(ctx, m, arg)
+	case "decide":
+		dp, ok := p.(provider.DecisionModelProvider)
+		if !ok {
+			return map[string]interface{}{"skip": "provider has no DecisionModel"}, errWireSkip
+		}
+		dm, err := dp.DecisionModel(c.Model.ModelID)
+		if err != nil {
+			return nil, err
+		}
+		return wireDecide(ctx, dm, arg)
 	case "video":
 		m, ok := p.(interface {
 			VideoModel(string) (provider.VideoModelV3, error)
@@ -304,7 +323,7 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 	if err != nil {
 		return []string{"Go returned an error, TS did not: " + err.Error()}
 	}
-	if WireKind(c) == "language" && (!s.LanguageResults || c.Method == "doStream") {
+	if WireKind(c) == "language" && ((!s.LanguageResults && os.Getenv("TSWIRE_LMRESULTS") == "") || c.Method == "doStream") {
 		return nil
 	}
 	want, _ := c.Result.(map[string]interface{})
@@ -451,11 +470,8 @@ func WireWarnings(ws []types.Warning) interface{} {
 			}
 			m["message"] = msg
 		default:
-			d := w.Details
-			if d == "" {
-				d = w.Message
-			}
-			if d != "" {
+			// Message is a legacy Go field; the TS warning shape has details.
+			if d := w.Details; d != "" {
 				m["details"] = d
 			}
 		}
@@ -844,13 +860,26 @@ func wireLanguage(ctx context.Context, s WireSuite, m provider.LanguageModel, c 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"content":          GenerateContentToTS(res),
 		"usage":            UsageToTS(res.Usage),
 		"finishReason":     map[string]interface{}{"raw": nilIfEmpty(res.RawFinishReason), "unified": string(res.FinishReason)},
 		"warnings":         WireWarnings(res.Warnings),
 		"providerMetadata": res.ProviderMetadata,
-	}, nil
+	}
+	if res.RawRequest != nil {
+		out["request"] = map[string]interface{}{"body": res.RawRequest}
+	}
+	resp := map[string]interface{}{}
+	if r := res.ResponseMetadata; r != nil {
+		resp["id"], resp["modelId"] = r.ID, r.ModelID
+		resp["headers"] = wirePruneHeaders(r.Headers)
+	}
+	if res.RawResponse != nil {
+		resp["body"] = res.RawResponse
+	}
+	out["response"] = resp
+	return out, nil
 }
 
 func wireVideoFile(v interface{}) *provider.VideoModelV3File {
@@ -1025,4 +1054,77 @@ func hasFn(v interface{}) bool {
 		}
 	}
 	return false
+}
+
+func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]interface{}) (map[string]interface{}, error) {
+	opts := provider.DecisionCallOptions{
+		Headers:         strMap(arg["headers"]),
+		ProviderOptions: objMap(arg["providerOptions"]),
+		Questions:       map[string]provider.DecisionQuestion{},
+	}
+	switch st := arg["state"].(type) {
+	case []interface{}:
+		var parts []provider.DecisionStatePart
+		for _, pv := range st {
+			pm, _ := pv.(map[string]interface{})
+			switch pm["type"] {
+			case "text":
+				txt, _ := pm["text"].(string)
+				parts = append(parts, provider.DecisionTextPart(txt))
+			case "json":
+				parts = append(parts, provider.DecisionJSONPart(pm["value"]))
+			case "file":
+				fd, ok := fileDataFromTS(pm["data"])
+				if !ok {
+					return map[string]interface{}{"skip": "decision file part data"}, errWireSkip
+				}
+				mt, _ := pm["mediaType"].(string)
+				fd.MediaType = mt
+				fname, _ := pm["filename"].(string)
+				parts = append(parts, provider.DecisionFilePart(types.FileContent{FileData: fd, MediaType: mt, Filename: fname}))
+			}
+		}
+		opts.State = parts
+	default:
+		opts.State = st
+	}
+	if qs, ok := arg["questions"].(map[string]interface{}); ok {
+		for id, qv := range qs {
+			qm, _ := qv.(map[string]interface{})
+			q := provider.DecisionQuestion{Instructions: qm["instructions"], Criteria: qm["criteria"]}
+			q.Type, _ = qm["type"].(string)
+			opts.Questions[id] = q
+		}
+	}
+	res, err := m.DoDecide(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]interface{}{
+		"answers":          res.Answers,
+		"warnings":         WireWarnings(res.Warnings),
+		"providerMetadata": res.ProviderMetadata,
+		"rounding":         res.Rounding,
+		"usage":            res.Usage,
+	}
+	if r := res.Response; r != nil {
+		out["response"] = map[string]interface{}{"id": r.ID, "modelId": r.ModelID, "headers": wirePruneHeaders(r.Headers), "body": r.Body}
+	}
+	return out, nil
+}
+
+// reportWire appends one JSON line per recorded test to $TSWIRE_SUMMARY, for
+// the coverage table in the review reports.
+func reportWire(pkg string, w WireTest, status, reason string) {
+	path := os.Getenv("TSWIRE_SUMMARY")
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close() //nolint:errcheck
+	b, _ := json.Marshal(map[string]string{"pkg": pkg, "file": w.File, "test": w.Test, "status": status, "reason": reason})
+	_, _ = f.Write(append(b, '\n'))
 }
