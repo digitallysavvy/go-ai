@@ -449,6 +449,8 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		OnChunk:                        opts.OnChunk,
 		InitialStreamChunks:            opts.InitialStreamChunks,
 		ExperimentalTransform:          opts.ExperimentalTransform,
+		OnError:                        opts.OnError,
+		OnAbort:                        opts.OnAbort,
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
 		OnToolExecutionStart:           cbs.onToolCallStart,

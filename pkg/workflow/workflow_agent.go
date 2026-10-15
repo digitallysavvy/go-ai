@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -212,11 +213,22 @@ type WorkflowGenerateOptions struct {
 	ToolSet                     map[string]types.Tool
 	StopWhen                    []ai.StopCondition
 	Telemetry                   *ai.TelemetrySettings
+	ActiveTools                 []string
 	RuntimeContext              interface{}
 	ToolsContext                map[string]interface{}
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+
+	// ToolChoice overrides the agent's ToolChoice for this call (TS
+	// `toolChoice`).
+	ToolChoice types.ToolChoice
+	// Output overrides the agent's Output specification for this call (TS
+	// `output`).
+	Output interface{}
+	// PrepareStep is a per-call step hook that runs after the agent-level
+	// PrepareStep (TS per-call `prepareStep`).
+	PrepareStep PrepareStepHook
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
@@ -271,6 +283,16 @@ type WorkflowStreamOptions struct {
 	Include                     *ai.IncludeOptions
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
+
+	// ToolChoice overrides the agent's ToolChoice for this call (TS
+	// `toolChoice`).
+	ToolChoice types.ToolChoice
+	// Output overrides the agent's Output specification for this call (TS
+	// `output`).
+	Output interface{}
+	// PrepareStep is a per-call step hook that runs after the agent-level
+	// PrepareStep (TS per-call `prepareStep`).
+	PrepareStep PrepareStepHook
 	// RepairToolCall attempts to repair tool calls that fail to parse.
 	RepairToolCall ai.ToolCallRepairFunction
 	// ExperimentalRepairToolCall is a deprecated alias for RepairToolCall.
@@ -386,8 +408,16 @@ func orderedTools(tools []types.Tool, toolSet map[string]types.Tool) []types.Too
 	if len(toolSet) == 0 {
 		return tools
 	}
+	// Go maps have no insertion order; sort by key so the tool list sent to
+	// the model is deterministic across runs (stable prompts, cacheable).
+	names := make([]string, 0, len(toolSet))
+	for name := range toolSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 	out := make([]types.Tool, 0, len(toolSet))
-	for name, tool := range toolSet {
+	for _, name := range names {
+		tool := toolSet[name]
 		if tool.Name == "" {
 			tool.Name = name
 		}
@@ -958,10 +988,12 @@ type prepareCallContext struct {
 	timeout             *ai.TimeoutConfig
 	initialInstructions string
 	initialMessages     []types.Message
+	// prepareStep is the per-call PrepareStep hook (runs after w.PrepareStep).
+	prepareStep PrepareStepHook
 }
 
 func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-	if w.PrepareCall == nil && w.PrepareStep == nil && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
+	if w.PrepareCall == nil && w.PrepareStep == nil && pctx.prepareStep == nil && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
 		return nil
 	}
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
@@ -977,6 +1009,11 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext) func(ctx contex
 		}
 		if w.PrepareStep != nil {
 			if mutated, err := w.PrepareStep(ctx, opts); err == nil {
+				opts = mutated
+			}
+		}
+		if pctx.prepareStep != nil {
+			if mutated, err := pctx.prepareStep(ctx, opts); err == nil {
 				opts = mutated
 			}
 		}
@@ -1147,8 +1184,31 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if len(ovr.Messages) > 0 {
 		initialMessages = ovr.Messages
 	}
+	activeTools := govr.ActiveTools
+	if ovr.ActiveTools != nil {
+		activeTools = ovr.ActiveTools
+	}
+	prepareStep := govr.PrepareStep
+	if ovr.PrepareStep != nil {
+		prepareStep = ovr.PrepareStep
+	}
+	toolChoice := w.ToolChoice
+	if govr.ToolChoice.Type != "" {
+		toolChoice = govr.ToolChoice
+	}
+	if ovr.ToolChoice.Type != "" {
+		toolChoice = ovr.ToolChoice
+	}
+	output := w.Output
+	if govr.Output != nil {
+		output = govr.Output
+	}
+	if ovr.Output != nil {
+		output = ovr.Output
+	}
 	pctx := prepareCallContext{
-		activeTools:         ovr.ActiveTools,
+		prepareStep:         prepareStep,
+		activeTools:         activeTools,
 		stopWhen:            stopWhen,
 		download:            download,
 		maxRetries:          maxRetries,
@@ -1163,9 +1223,9 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		Temperature: w.Temperature, MaxTokens: w.MaxTokens, TopP: w.TopP, TopK: w.TopK, FrequencyPenalty: w.FrequencyPenalty,
 		PresencePenalty: w.PresencePenalty, StopSequences: w.StopSequences, Seed: w.Seed, Headers: version.WithUserAgentSuffix(w.Headers, "ai-sdk-agent/workflow"), Reasoning: w.Reasoning,
 		SendReasoning: w.SendReasoning, ProviderOptions: w.ProviderOptions, RuntimeContext: runtimeContext, ToolsContext: toolsContext,
-		ToolChoice:                     w.ToolChoice,
+		ToolChoice:                     toolChoice,
 		ToolCallConcurrency:            toolCallConcurrency,
-		Output:                         w.Output,
+		Output:                         output,
 		Telemetry:                      telemetry,
 		Include:                        include,
 		ExperimentalSandbox:            sandbox,
@@ -1302,7 +1362,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			system = normalized
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil {
@@ -1441,10 +1501,14 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: w.Output, Telemetry: telemetrySettings},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,
+		// Mid-stream error chunks and aborts reach OnError/OnAbort too (TS
+		// fires them from the stream pipeline, not only before it starts).
+		OnError: mergeError(w.OnError, opts.OnError),
+		OnAbort: onAbort,
 	}
 	stream, err := a.Stream(ctx, call)
 	if err != nil {

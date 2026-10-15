@@ -189,6 +189,14 @@ type AgentStreamOptions struct {
 	// stream chunks before they reach OnChunk and the returned
 	// StreamTextResult, forwarded to ai.StreamTextOptions.ExperimentalTransform.
 	ExperimentalTransform []ai.StreamTransformFunc
+
+	// OnError is called for error chunks received while streaming, forwarded
+	// to ai.StreamTextOptions.OnError.
+	OnError func(ctx context.Context, err error)
+
+	// OnAbort is called when streaming is aborted by context cancellation,
+	// forwarded to ai.StreamTextOptions.OnAbort.
+	OnAbort func(ctx context.Context, steps []types.StepResult)
 }
 
 // AgentAction represents an action the agent has decided to take
