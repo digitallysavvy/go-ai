@@ -291,7 +291,7 @@ func ResolveSandboxHomeDir(ctx context.Context, sandbox providerutils.SandboxSes
 	if err != nil {
 		return "", err
 	}
-	homeDir := strings.TrimSpace(result.Stdout)
+	homeDir := providerutils.JSTrim(result.Stdout)
 	if result.ExitCode != 0 || homeDir == "" || !posixpath.IsAbs(homeDir) {
 		return "", fmt.Errorf("Unable to resolve sandbox HOME directory: %s", orString(result.Stderr, result.Stdout)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
@@ -312,7 +312,7 @@ func ResolveSandboxDefaultWorkingDirectory(ctx context.Context, sandbox provider
 	if result.ExitCode != 0 {
 		return "", fmt.Errorf("Failed to resolve sandbox default working directory (exit %d): %s", result.ExitCode, orString(result.Stderr, result.Stdout)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	cwd := strings.TrimSpace(result.Stdout)
+	cwd := providerutils.JSTrim(result.Stdout)
 	if !posixpath.IsAbs(cwd) {
 		quoted, _ := json.Marshal(cwd)
 		return "", fmt.Errorf("Failed to resolve sandbox default working directory: expected an absolute path, got %s.", quoted) //nolint:staticcheck // matches TS SDK's exact error text

@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const copilotKeyringService = "copilot-cli"
@@ -161,7 +162,7 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 	if err != nil || !isNonEmpty(token) {
 		return nil, nil
 	}
-	return &Subscription{Token: strings.TrimSpace(token), Host: host}, nil
+	return &Subscription{Token: providerutils.JSTrim(token), Host: host}, nil
 }
 
 // FindGitHubCliExecutable searches env's PATH for a `gh` executable. Mirrors
@@ -343,7 +344,7 @@ func normalizeGitHubHost(host string) string {
 }
 
 func isNonEmpty(s string) bool {
-	return strings.TrimSpace(s) != ""
+	return providerutils.JSTrim(s) != ""
 }
 
 // envHas mirrors TS `env.X != null`: a variable that is set to the empty

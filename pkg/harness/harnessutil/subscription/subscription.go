@@ -17,6 +17,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ExecFileFunc runs a program with arguments (no shell) and returns stdout.
@@ -76,7 +78,7 @@ func ReadMacOSKeychainPassword(ctx context.Context, service, account string) str
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(out)
+	return providerutils.JSTrim(out)
 }
 
 // SecretServiceAttribute is one `secret-tool lookup` attribute/value pair.

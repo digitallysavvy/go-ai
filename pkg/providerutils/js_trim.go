@@ -18,3 +18,8 @@ func isJSWhiteSpace(r rune) bool {
 func JSTrim(s string) string {
 	return strings.TrimFunc(s, isJSWhiteSpace)
 }
+
+// JSTrimStart is JavaScript's String.prototype.trimStart.
+func JSTrimStart(s string) string {
+	return strings.TrimLeftFunc(s, isJSWhiteSpace)
+}

@@ -209,7 +209,7 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 // Mirrors TS `doCompact`.
 func (s *session) DoCompact(ctx context.Context, customInstructions string) error {
 	text := "/compact"
-	if trimmed := strings.TrimSpace(customInstructions); trimmed != "" {
+	if trimmed := providerutils.JSTrim(customInstructions); trimmed != "" {
 		text = "/compact " + trimmed
 	}
 	return s.opts.channel.Send(bridge.UserMessageCommand{Text: text})
