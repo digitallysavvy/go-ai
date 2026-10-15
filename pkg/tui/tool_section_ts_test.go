@@ -80,3 +80,36 @@ func TestSectionTitleBorderUsesUTF16Length(t *testing.T) {
 		t.Fatalf("border cells = %d in %q", got, top)
 	}
 }
+
+// A ChatTransport UI chunk stream shows a denied approval as a plain tool
+// section with the "denied" status (TS approval-responded) and no change to
+// the status line; only tool-output-denied renders the denied output, with the
+// reason of the earlier response.
+func TestTransportDeniedApprovalRendersLikeTS(t *testing.T) {
+	model := newRenderModel(displayModes{tools: TerminalPartDisplayFull}, "r:")
+	meta := map[string]toolCallMeta{}
+	approvals := map[string]string{}
+	apply := func(chunk map[string]interface{}) *provider.StreamChunk {
+		pc, ok := uiMessageChunkToProviderChunk(chunk, meta, approvals)
+		if !ok {
+			t.Fatalf("chunk %v not converted", chunk)
+		}
+		model.apply(*pc)
+		return pc
+	}
+	apply(map[string]interface{}{"type": "tool-input-available", "toolCallId": "c1", "toolName": "t", "input": map[string]interface{}{}})
+	apply(map[string]interface{}{"type": "tool-approval-request", "toolCallId": "c1", "approvalId": "a1"})
+	pc := apply(map[string]interface{}{"type": "tool-approval-response", "approvalId": "a1", "approved": false, "reason": "too risky"})
+	if pc.Type != provider.ChunkTypeToolApprovalResponse {
+		t.Fatalf("denied response converted to %v", pc.Type)
+	}
+	s := model.sections()
+	if s[0].kind != sectionTool || s[0].rightTitle != "denied" {
+		t.Fatalf("after denied response: %#v", s[0])
+	}
+	apply(map[string]interface{}{"type": "tool-output-denied", "toolCallId": "c1"})
+	s = model.sections()
+	if s[0].kind != sectionError || !strings.HasPrefix(s[0].title, "Tool Denied") || !strings.HasSuffix(s[0].content, "Reason: too risky") {
+		t.Fatalf("after output denied: %#v", s[0])
+	}
+}
