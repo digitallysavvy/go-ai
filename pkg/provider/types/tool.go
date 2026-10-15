@@ -42,6 +42,14 @@ type Tool struct {
 	// Parameters schema for the tool input
 	Parameters interface{} `json:"parameters"`
 
+	// ParameterKeyOrder optionally carries the key order of Parameters when
+	// Parameters is a plain map (a Go map has no order). Tools built from a
+	// remote schema, such as MCP tools, set it so the schema reaches the model
+	// in the order the server sent it, as in the TypeScript SDK. The value is
+	// opaque: leave it nil when building tools by hand, and copy it along with
+	// Parameters when you copy a tool.
+	ParameterKeyOrder interface{} `json:"-"`
+
 	// OutputSchema is the schema for provider-executed tool output. It mirrors
 	// TypeScript provider tool outputSchema and is not sent as part of function
 	// tool definitions.

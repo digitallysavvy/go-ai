@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -22,7 +23,7 @@ func hintedTool(t *testing.T) types.Tool {
 	if err := json.Unmarshal([]byte(orderedToolSchema), &m); err != nil {
 		t.Fatal(err)
 	}
-	return types.Tool{Name: "t", Parameters: jsonorder.Hinted{V: m, Hint: hint}}
+	return types.Tool{Name: "t", Parameters: m, ParameterKeyOrder: hint}
 }
 
 // A tool schema keeps its key order across the durable boundary (serialize,
@@ -44,7 +45,11 @@ func TestSerializableToolKeepsSchemaKeyOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolved := ResolveSerializableTools(back)
-	got, err := json.Marshal(resolved[0].Parameters)
+	// v0.5.2 callers type-assert the resolved Parameters as a map.
+	if _, ok := resolved[0].Parameters.(map[string]interface{}); !ok {
+		t.Fatalf("resolved Parameters is %T, want map[string]interface{}", resolved[0].Parameters)
+	}
+	got, err := json.Marshal(toolutil.ResolveToolSchemas(resolved)[0].Parameters)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -73,3 +73,21 @@ func OrderedParameters(p interface{}) (*OrderedSchema, bool) {
 	}
 	return s, true
 }
+
+// OrderedToolParameters returns the schema of a tool whose Parameters is a map
+// and whose ParameterKeyOrder carries the schema's source key order, as an
+// *OrderedSchema that marshals in that order. ok is false when order is nil or
+// not a key order, or parameters is not a schema map.
+func OrderedToolParameters(parameters, order interface{}) (*OrderedSchema, bool) {
+	if order == nil {
+		return nil, false
+	}
+	m, ok := parameters.(map[string]interface{})
+	if !ok || m == nil {
+		return nil, false
+	}
+	if _, isObj := order.(*jsonorder.Object); !isObj {
+		return nil, false
+	}
+	return OrderedParameters(jsonorder.Hinted{V: m, Hint: order})
+}
