@@ -579,10 +579,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		case <-ctx.Done():
 			abortMu.Lock()
 			abortRequested = true
-			abortErr = ctx.Err()
+			abortErr = context.Cause(ctx)
 			abortMu.Unlock()
 			if err := s.p.channel.Send(bridge.AbortCommand{}); err != nil {
-				settle(ctx.Err())
+				settle(context.Cause(ctx))
 			}
 		case <-c.done:
 		}
@@ -737,8 +737,8 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		}
 	}
 
-	if err := ctx.Err(); err != nil {
-		return nil, err
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
 	}
 	blocks, err := convertPromptToTextBlocks(prompt, s.p.harnessID)
 	if err != nil {

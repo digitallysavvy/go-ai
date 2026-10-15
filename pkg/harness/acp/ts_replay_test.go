@@ -8,10 +8,12 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -55,8 +57,8 @@ func (p plainSandbox) GetPortEndpoint(ctx context.Context, o harness.PortEndpoin
 func (p plainSandbox) GetPortURL(ctx context.Context, o harness.PortEndpointOptions) (string, error) {
 	return p.f.GetPortURL(ctx, o)
 }
-func (p plainSandbox) Stop(ctx context.Context) error          { return p.f.Stop(ctx) }
-func (p plainSandbox) Destroy(ctx context.Context) error       { return p.f.Destroy(ctx) }
+func (p plainSandbox) Stop(ctx context.Context) error           { return p.f.Stop(ctx) }
+func (p plainSandbox) Destroy(ctx context.Context) error        { return p.f.Destroy(ctx) }
 func (p plainSandbox) Restricted() providerutils.SandboxSession { return p }
 
 var _ harness.NetworkSandboxSession = plainSandbox{}
@@ -544,5 +546,220 @@ func TestTSReplay_LifecycleIdentityMismatchRejected(t *testing.T) {
 	// Structurally broken state data is rejected up front.
 	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(`{"bridge":{"port":1}}`)); err == nil {
 		t.Fatal("state without implementationIdentity must be rejected")
+	}
+}
+
+// finishingServer answers every `start` with a finish and records the start frames.
+func finishingServer(t *testing.T) (*bridgetest.Server, func() []map[string]any) {
+	t.Helper()
+	var mu sync.Mutex
+	var starts []map[string]any
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok", OnStart: func(turn *bridgetest.Turn, start map[string]any) {
+		mu.Lock()
+		starts = append(starts, start)
+		mu.Unlock()
+		turn.Emit(finishFrame())
+	}})
+	t.Cleanup(srv.Close)
+	return srv, func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]map[string]any(nil), starts...)
+	}
+}
+
+func runTurn(t *testing.T, sess harness.Session, opts harness.PromptTurnOptions) {
+	t.Helper()
+	opts.Emit = func(harness.StreamPart) {}
+	c, err := sess.DoPromptTurn(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("DoPromptTurn: %v", err)
+	}
+	<-c.Done()
+	if c.Err() != nil {
+		t.Fatalf("turn error: %v", c.Err())
+	}
+}
+
+func promptTexts(start map[string]any) []string {
+	var out []string
+	for _, b := range start["prompt"].([]any) {
+		out = append(out, b.(map[string]any)["text"].(string))
+	}
+	return out
+}
+
+// TS 'materializes skills in the native directory without adding them to prompt guidance'.
+func TestTSReplay_SkillsMaterializedNatively(t *testing.T) {
+	srv, starts := finishingServer(t)
+	sandbox := newFakeSandbox(srv)
+	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	skills := []harness.Skill{{Name: "release-notes", Description: "Prepare concise release notes.", Content: "Full private skill instructions.",
+		Files: []harness.SkillFile{{Path: "references/style.md", Content: "Use active voice."}}}}
+	runTurn(t, sess, harness.PromptTurnOptions{
+		TurnSettings: harness.TurnSettings{Skills: skills, Instructions: "Use the supplied project context."},
+		Prompt:       harness.Prompt{Message: &types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Draft"}, types.TextContent{Text: "the notes."}}}},
+	})
+	if got := sandbox.files["/home/vercel-sandbox/.agents/skills/release-notes/SKILL.md"]; !strings.Contains(got, "Full private skill instructions.") {
+		t.Fatalf("skill file missing: %v", sandbox.files)
+	}
+	if sandbox.files["/home/vercel-sandbox/.agents/skills/release-notes/references/style.md"] != "Use active voice." {
+		t.Fatalf("reference file missing")
+	}
+	first := starts()[0]
+	texts := promptTexts(first)
+	if len(texts) != 3 || !strings.Contains(texts[0], "<session-guidance>") || !strings.Contains(texts[0], "Use the supplied project context.") || texts[1] != "Draft" || texts[2] != "the notes." {
+		t.Fatalf("first prompt = %q", texts)
+	}
+	if b, _ := json.Marshal(first["prompt"]); strings.Contains(string(b), "release-notes") || strings.Contains(string(b), "Full private skill instructions.") || strings.Contains(string(b), "Use active voice.") {
+		t.Fatalf("skills leaked into the prompt: %s", b)
+	}
+	runTurn(t, sess, harness.PromptTurnOptions{
+		TurnSettings: harness.TurnSettings{Skills: skills, Instructions: "Use the revised project context."}, Prompt: harness.TextPrompt("Revise them."),
+	})
+	second := promptTexts(starts()[1])
+	if len(second) != 2 || !strings.Contains(second[0], "Use the revised project context.") || second[1] != "Revise them." {
+		t.Fatalf("second prompt = %q", second)
+	}
+	state, err := sess.DoStop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]any
+	_ = json.Unmarshal(state.Data, &data)
+	if data["initialGuidanceApplied"] != true || data["skillsDirectory"] != "/home/vercel-sandbox/.agents/skills" {
+		t.Fatalf("lifecycle data = %v", data)
+	}
+	if _, ok := data["skillsFingerprint"]; ok {
+		t.Error("skillsFingerprint must not be persisted")
+	}
+}
+
+// TS 'uses native instructions initially and prompt guidance when they change'
+// and 'materializes instructions into the filesystem and never prepends prompt guidance'.
+func TestTSReplay_InstructionMappings(t *testing.T) {
+	t.Run("session-meta", func(t *testing.T) {
+		srv, starts := finishingServer(t)
+		sandbox := newFakeSandbox(srv)
+		h, _ := CreateACP(testSettings(func(s *Settings) {
+			s.MintBridgeToken = func(string) string { return "tok" }
+			s.SkillsDirectory = ".claude/skills"
+			s.InstructionMapping = &InstructionMapping{Type: InstructionMappingSessionMeta, Path: []string{"systemPrompt", "append"}}
+		}))
+		sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+		skills := []harness.Skill{{Name: "release-notes", Description: "Prepare concise release notes.", Content: "Use active voice."}}
+		runTurn(t, sess, harness.PromptTurnOptions{TurnSettings: harness.TurnSettings{Skills: skills, Instructions: "Answer every question in German."}, Prompt: harness.TextPrompt("Draft release notes.")})
+		first := starts()[0]
+		if first["instructions"] != "Answer every question in German." || !reflect.DeepEqual(promptTexts(first), []string{"Draft release notes."}) {
+			t.Fatalf("first start = %v", first)
+		}
+		if got := sandbox.files["/home/vercel-sandbox/.claude/skills/release-notes/SKILL.md"]; got != "---\nname: release-notes\ndescription: Prepare concise release notes.\n---\n\nUse active voice." {
+			t.Fatalf("SKILL.md = %q", got)
+		}
+		runTurn(t, sess, harness.PromptTurnOptions{TurnSettings: harness.TurnSettings{Skills: skills, Instructions: "Answer every question in French."}, Prompt: harness.TextPrompt("Revise them.")})
+		second := starts()[1]
+		texts := promptTexts(second)
+		if second["instructions"] != "Answer every question in French." || len(texts) != 2 || !strings.Contains(texts[0], "Answer every question in French.") || texts[1] != "Revise them." {
+			t.Fatalf("second start = %v", second)
+		}
+	})
+	t.Run("filesystem", func(t *testing.T) {
+		srv, starts := finishingServer(t)
+		sandbox := newFakeSandbox(srv)
+		h, _ := CreateACP(testSettings(func(s *Settings) {
+			s.MintBridgeToken = func(string) string { return "tok" }
+			s.InstructionMapping = &InstructionMapping{Type: InstructionMappingFilesystem, FilePath: ".cursor/rules/AGENTS.md"}
+		}))
+		sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+		runTurn(t, sess, harness.PromptTurnOptions{TurnSettings: harness.TurnSettings{Instructions: "Always run tests."}, Prompt: harness.TextPrompt("Draft release notes.")})
+		if got := sandbox.files["/home/vercel-sandbox/.cursor/rules/AGENTS.md"]; got != "Always run tests.\n" {
+			t.Fatalf("AGENTS.md = %q", got)
+		}
+		runTurn(t, sess, harness.PromptTurnOptions{TurnSettings: harness.TurnSettings{Instructions: "Answer every question in French."}, Prompt: harness.TextPrompt("Revise them.")})
+		if got := sandbox.files["/home/vercel-sandbox/.cursor/rules/AGENTS.md"]; got != "Answer every question in French.\n" {
+			t.Fatalf("AGENTS.md = %q", got)
+		}
+		for i, want := range []string{"Draft release notes.", "Revise them."} {
+			if !reflect.DeepEqual(promptTexts(starts()[i]), []string{want}) {
+				t.Fatalf("start %d prompt = %q", i, promptTexts(starts()[i]))
+			}
+		}
+	})
+}
+
+// TS 'replaces changed skills before starting the next turn'.
+func TestTSReplay_ChangedSkillsReplaced(t *testing.T) {
+	srv, _ := finishingServer(t)
+	sandbox := newFakeSandbox(srv)
+	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/workspace/user-project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	runTurn(t, sess, harness.PromptTurnOptions{TurnSettings: harness.TurnSettings{Skills: []harness.Skill{{Name: "review-workflow", Description: "Review changes.", Content: "Review the implementation."}}}, Prompt: harness.TextPrompt("Review this change.")})
+	runTurn(t, sess, harness.PromptTurnOptions{TurnSettings: harness.TurnSettings{Skills: []harness.Skill{{Name: "release-workflow", Description: "Prepare releases.", Content: "Draft the release notes."}}}, Prompt: harness.TextPrompt("Prepare the release.")})
+	found := false
+	for _, r := range sandbox.runs {
+		if r == "rm -rf -- '/home/vercel-sandbox/.agents/skills/review-workflow'" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("runs = %q", sandbox.runs)
+	}
+	if _, ok := sandbox.files["/home/vercel-sandbox/.agents/skills/release-workflow/SKILL.md"]; !ok {
+		t.Fatalf("new skill not written: %v", sandbox.files)
+	}
+}
+
+// TS 'rejects structured output when the ACP profile has no schema mapping' and
+// 'passes structured output configuration to a mapped ACP profile'.
+func TestTSReplay_StructuredOutputMapping(t *testing.T) {
+	srv, starts := finishingServer(t)
+	sandbox := newFakeSandbox(srv)
+	rf := &harness.ResponseFormat{Type: harness.ResponseFormatJSON, Schema: map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}, "required": []any{"answer"}}}
+	h, _ := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return "tok" } }))
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	_, err = sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("Answer."), ResponseFormat: rf, Emit: func(harness.StreamPart) {}})
+	var unsupported *harness.CapabilityUnsupportedError
+	if !errors.As(err, &unsupported) || len(starts()) != 0 {
+		t.Fatalf("err = %v, starts = %d", err, len(starts()))
+	}
+
+	srv2, starts2 := finishingServer(t)
+	h2, _ := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.OutputSchemaMapping = &OutputSchemaMapping{Path: []string{"outputSchema"}}
+	}))
+	sess2, err := h2.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: newFakeSandbox(srv2), SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess2.DoDestroy(context.Background()) })
+	runTurn(t, sess2, harness.PromptTurnOptions{Prompt: harness.TextPrompt("Answer."), ResponseFormat: rf})
+	start := starts2()[0]
+	if !reflect.DeepEqual(start["outputSchemaMapping"], map[string]any{"type": "session-prompt-meta", "path": []any{"outputSchema"}}) {
+		t.Fatalf("outputSchemaMapping = %v", start["outputSchemaMapping"])
+	}
+	if rfm, _ := start["responseFormat"].(map[string]any); rfm["type"] != "json" {
+		t.Fatalf("responseFormat = %v", start["responseFormat"])
 	}
 }

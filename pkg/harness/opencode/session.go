@@ -329,7 +329,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 			s.mu.Lock()
 			s.abortedTurnDrain = turnDrain
 			s.mu.Unlock()
-			err := ctx.Err()
+			err := context.Cause(ctx)
 			if c.submitter != nil {
 				c.submitter.Close(err)
 			}

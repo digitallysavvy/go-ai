@@ -447,7 +447,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		select {
 		case <-ctx.Done():
 			_ = s.opts.channel.Send(bridge.AbortCommand{})
-			pc.settleError(ctx.Err())
+			pc.settleError(context.Cause(ctx))
 		case <-pc.done:
 		}
 	}()

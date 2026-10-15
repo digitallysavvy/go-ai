@@ -213,19 +213,19 @@ func nonNilBlocks(v []TextContentBlock) []TextContentBlock {
 	if v == nil {
 		return []TextContentBlock{}
 	}
-	return append([]TextContentBlock(nil), v...)
+	return append(make([]TextContentBlock, 0, len(v)), v...)
 }
 
 func nonNilToolSpecs(v []harness.ToolSpec) []harness.ToolSpec {
 	if v == nil {
 		return []harness.ToolSpec{}
 	}
-	return append([]harness.ToolSpec(nil), v...)
+	return append(make([]harness.ToolSpec, 0, len(v)), v...)
 }
 
 func nonNilBuiltinTools(v []BuiltinToolMapping) []BuiltinToolMapping {
 	if v == nil {
 		return []BuiltinToolMapping{}
 	}
-	return append([]BuiltinToolMapping(nil), v...)
+	return append(make([]BuiltinToolMapping, 0, len(v)), v...)
 }

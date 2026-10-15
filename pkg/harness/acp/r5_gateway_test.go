@@ -91,7 +91,9 @@ func TestDoStart_GatewayProfileResolvedWithBrokering(t *testing.T) {
 // the credential through the callback).
 func TestDoStart_GatewayProfileResolvedWithForwarding(t *testing.T) {
 	env := startGateway(t, gatewaySettings(func(s *Settings) {
-		s.CredentialForwarding = func(_ context.Context, opts harness.CredentialForwardingOptions) (string, error) { return opts.Credential, nil }
+		s.CredentialForwarding = func(_ context.Context, opts harness.CredentialForwardingOptions) (string, error) {
+			return opts.Credential, nil
+		}
 	}))
 	if env["PROVIDER_API_KEY"] != "gw-secret" || env["PROVIDER_BASE_URL"] != "https://gw.example/v1" {
 		t.Fatalf("provider env = %v", env)
