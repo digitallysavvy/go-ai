@@ -1097,6 +1097,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		contentBlocks:        map[int]*bedrockStreamContentBlock{},
 		finishReason:         types.FinishReasonOther,
 		requestBody:          args.Body,
+		includeRawChunks:     opts.IncludeRawChunks,
 	}
 	if dateHeader := resp.Header.Get("date"); dateHeader != "" {
 		if ts, err := time.Parse(time.RFC1123, dateHeader); err == nil {
