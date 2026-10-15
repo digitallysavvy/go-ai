@@ -956,7 +956,7 @@ func validateToolContentBlock(block map[string]json.RawMessage) error {
 		}
 		_, hasText := rawString(resource, "text")
 		blob, hasBlob := rawString(resource, "blob")
-		if !hasText && !(hasBlob && isBase64String(blob)) {
+		if !hasText && (!hasBlob || !isBase64String(blob)) {
 			return errors.New("resource needs text or base64 blob")
 		}
 	}

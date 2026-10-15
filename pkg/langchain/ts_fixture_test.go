@@ -210,7 +210,7 @@ func TestTSUtilsCases(t *testing.T) {
 			}
 			for i, call := range c.Calls {
 				var chunks []interface{}
-				var raw interface{} = call.Event
+				raw := call.Event
 				if c.Model {
 					chunks = jsonNormalize(t, processModelChunk(st, raw))
 				} else {
