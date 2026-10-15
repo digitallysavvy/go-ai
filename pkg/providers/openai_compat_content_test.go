@@ -204,8 +204,8 @@ func TestCompatChatRequestSettings(t *testing.T) {
 	temp, fp, seed, topK := 0.5, 0.1, 7, 3
 	level := types.ReasoningLow
 	for _, f := range compatFactories() {
-		if f.name == "zai" || f.name == "ollama" {
-			continue // not TS openai-compatible wrappers
+		if f.name == "zai" {
+			continue // drops penalties and seed with warnings, see zai tests
 		}
 		f := f
 		t.Run(f.name, func(t *testing.T) {
@@ -284,9 +284,6 @@ func TestCompatChatStreamIncludesUsage(t *testing.T) {
 // warning instead of being sent as a function tool.
 func TestCompatChatDropsProviderDefinedTools(t *testing.T) {
 	for _, f := range compatFactories() {
-		if f.name == "zai" || f.name == "ollama" {
-			continue
-		}
 		f := f
 		t.Run(f.name, func(t *testing.T) {
 			var body map[string]interface{}
@@ -408,6 +405,62 @@ func TestCompatCompletionModels(t *testing.T) {
 			}
 			if len(res.ProviderMetadata) != 0 {
 				t.Errorf("TS compat completion reports no providerMetadata: %v", res.ProviderMetadata)
+			}
+		})
+	}
+}
+
+// zai and ollama: the streaming request carries the same provider-tool drop,
+// and json response_format maps to a Chat Completions type (ollama sent the
+// invalid "json"), with the warnings delivered at stream start.
+func TestZaiOllamaStreamRequestAndWarnings(t *testing.T) {
+	for _, f := range compatFactories() {
+		if f.name != "zai" && f.name != "ollama" {
+			continue
+		}
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			var body map[string]interface{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(b, &body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer srv.Close()
+			topK := 3
+			s, err := f.mk(srv.URL).DoStream(context.Background(), &provider.GenerateOptions{
+				Prompt: compatPrompt, TopK: &topK,
+				ResponseFormat: &provider.ResponseFormat{Type: "json"},
+				Tools: []types.Tool{
+					{Name: "search", Type: "provider", ProviderID: "acme.search"},
+					{Name: "lookup", Description: "d", Parameters: map[string]interface{}{"type": "object"}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var feats []string
+			for {
+				c, err := s.Next()
+				if err != nil {
+					break
+				}
+				if c.Type == provider.ChunkTypeStreamStart {
+					for _, w := range c.Warnings {
+						feats = append(feats, w.Feature)
+					}
+				}
+			}
+			if tools, _ := body["tools"].([]interface{}); len(tools) != 1 {
+				t.Errorf("tools = %v", body["tools"])
+			}
+			if rf, _ := body["response_format"].(map[string]interface{}); rf["type"] != "json_object" {
+				t.Errorf("response_format = %v", body["response_format"])
+			}
+			joined := strings.Join(feats, "|")
+			if !strings.Contains(joined, "topK") || !strings.Contains(joined, "provider-defined tool acme.search") {
+				t.Errorf("stream-start warnings = %v", feats)
 			}
 		})
 	}

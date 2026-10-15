@@ -60,7 +60,7 @@ func TestOllamaLanguageModelBuildConvertAndUsage(t *testing.T) {
 	temp := float64(0.2)
 	maxTokens := 12
 	topP := float64(0.9)
-	body := m.buildRequestBody(&provider.GenerateOptions{
+	body, _ := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}},
 			System:   "sys",

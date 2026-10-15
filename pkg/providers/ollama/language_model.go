@@ -65,7 +65,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "ollama"); err != nil {
 		return nil, err
 	}
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, warnings := m.buildRequestBody(opts, false)
 	var response ollamaResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
@@ -81,6 +81,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, err
 	}
 	providerutils.ApplyWireUsageRaw(result, resp.Body)
+	result.Warnings = append(warnings, result.Warnings...)
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	// TS result.request.body: the request as sent.
 	result.RawRequest = reqBody
@@ -96,7 +97,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "ollama"); err != nil {
 		return nil, err
 	}
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, warnings := m.buildRequestBody(opts, true)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/v1/chat/completions",
@@ -110,10 +111,10 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.SetRequestBody(reqBody)
 	stream.IncludeRawChunks = opts.IncludeRawChunks
 	stream.ResponseHeaders = providerutils.ExtractHeaders(httpResp.Header)
-	return stream, nil
+	return streaming.NewWarningsStream(stream, warnings), nil
 }
 
-func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model":  m.modelID,
 		"stream": stream,
@@ -143,18 +144,36 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
 	}
+	// TS prepareTools (openai-compatible): a provider-defined tool is dropped
+	// with an `unsupported` warning instead of being sent as a function tool.
+	var warnings []types.Warning
 	if len(opts.Tools) > 0 {
-		body["tools"] = tool.ToOpenAIFormat(opts.Tools)
+		functionTools, dropped := tool.DropProviderDefinedTools(opts.Tools, nil)
+		warnings = append(warnings, dropped...)
+		body["tools"] = tool.ToOpenAIFormat(functionTools)
 		if opts.ToolChoice.Type != "" {
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
-	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
-		}
+	// Penalties and seed are sent, topK warns, unknown providerOptions.ollama
+	// keys are spread into the body (TS openai-compatible getArgs).
+	warnings = append(warnings, providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, opts.TopK, "ollama", opts.ProviderOptions)...)
+	// "json" is not a Chat Completions response_format type: json becomes
+	// json_object, or json_schema when a schema is given.
+	compatibleOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("ollama", opts.ProviderOptions)
+	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs: true,
+		StrictJSONSchema:  providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
+	})
+	if responseFormat != nil {
+		body["response_format"] = responseFormat
 	}
-	return body
+	warnings = append(warnings, formatWarnings...)
+	if opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		body["reasoning_effort"] = string(*opts.Reasoning)
+	}
+	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	return body, warnings
 }
 
 func (m *LanguageModel) convertResponse(response ollamaResponse) *types.GenerateResult {
