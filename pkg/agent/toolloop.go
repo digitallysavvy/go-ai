@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -711,6 +712,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		stepCtx := stepTel.stepCtx
 
 		// Execute one step with custom data
+		stepStarted := time.Now()
 		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(stepCtx, callConfig, stepTel)
 		customData = newCustomData
 		if err != nil {
@@ -757,7 +759,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			// callConfig.Messages (this step's messages, including its own
 			// AppendToolCallerMessages announcement), not currentMessages,
 			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
-			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage))
+			timings := &toolTimings{}
+			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
 				stepTel.fail(err)
 				// Call OnChainError callback
@@ -772,6 +775,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			}
 
 			stepToolResults = toolResults
+			stepResult.Performance.ToolExecutionMs = timings.snapshot()
 			stepResult.ToolResults = toolResults
 			stepResult.StaticToolResults = filterAgentStaticToolResults(toolResults)
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(toolResults)
@@ -799,6 +803,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				shouldContinue = false
 			}
 		}
+		// TS stepTimeMs spans the model call and the tool execution.
+		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
 		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
 		stepResult.ResponseMessages = responseMessages
 		stepResult.Response.Messages = responseMessages
@@ -1531,6 +1537,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 
 	stepTel.modelCallEnd(stepModel, genResult, modelCallStarted)
+	performance := ai.NonStreamingStepPerformance(time.Since(modelCallStarted).Milliseconds(), genResult.Usage)
 	rawFinishReason := genResult.RawFinishReason
 
 	// Create step result
@@ -1568,6 +1575,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		},
 		ToolsContext:   callConfig.ToolsContext,
 		RuntimeContext: callConfig.RuntimeContext,
+		Performance:    performance,
 	}
 
 	// Determine if we should continue
@@ -1579,7 +1587,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 // executeTools executes a list of tool calls with optional approval
 // Updated in v6.0.57 to handle provider-executed (deferrable) tools
 // Updated in v6.1 (CB-T23) to fire structured OnToolCallStart/Finish events
-func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks, usage types.Usage) ([]types.ToolResult, error) {
+func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.ToolCall, tools []types.Tool, messages []types.Message, stepNum int, runtimeContext interface{}, toolsContext map[string]interface{}, experimentalSandbox interface{}, toolApproval types.ToolApprovalConfig, cbs agentCallbacks, usage types.Usage, timings *toolTimings) ([]types.ToolResult, error) {
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
 	}
@@ -1808,6 +1816,7 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 					return tool.Execute(execCtx, args, execOptions)
 				})
 			durationMs := time.Now().UnixMilli() - startMs
+			timings.record(call.ID, durationMs)
 			telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
 				Settings:    tsettings,
 				CallID:      tcallID,
@@ -2634,4 +2643,37 @@ func agentAbortEvent(onAbort func(ctx context.Context, steps []types.StepResult)
 		return nil
 	}
 	return func(ctx context.Context, e ai.GenerateTextAbortEvent) { onAbort(ctx, e.Steps) }
+}
+
+// toolTimings collects per-tool-call execution times of one step (TS
+// performance.toolExecutionMs, keyed by tool call id). Tool calls may run
+// concurrently. A nil *toolTimings records nothing.
+type toolTimings struct {
+	mu sync.Mutex
+	ms map[string]int64
+}
+
+func (t *toolTimings) record(toolCallID string, ms int64) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ms == nil {
+		t.ms = map[string]int64{}
+	}
+	t.ms[toolCallID] = ms
+}
+
+func (t *toolTimings) snapshot() map[string]int64 {
+	out := map[string]int64{}
+	if t == nil {
+		return out
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k, v := range t.ms {
+		out[k] = v
+	}
+	return out
 }
