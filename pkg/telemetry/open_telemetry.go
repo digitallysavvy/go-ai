@@ -927,12 +927,15 @@ func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEve
 		entry.span.End()
 		return
 	}
-	entry.span.SetAttributes(attribute.Int("ai.reranking.results.count", len(e.Ranking)))
-	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Ranking) > 0 {
-		entry.span.SetAttributes(
-			attribute.String("ai.ranking.type", e.DocumentsType),
-			attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)),
-		)
+	// TS onRerankEnd: ai.ranking.type is a plain value, ai.ranking an output;
+	// there is no results-count attribute.
+	if i.opts.Reranking {
+		if e.DocumentsType != "" {
+			entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
+		}
+		if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Ranking) > 0 {
+			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
+		}
 	}
 	entry.span.End()
 }
