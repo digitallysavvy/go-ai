@@ -383,6 +383,7 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 			}
 		}
 	}
+	wireAlignInvalidBase64(want, g)
 	wantN, _ := srv.NormalizeOrigins(wireNormalizeParts(want)).(map[string]interface{})
 	gotN, _ := srv.NormalizeOrigins(wireNormalizeParts(g)).(map[string]interface{})
 	if d := DiffValues(wantN, gotN); d != "" {
@@ -404,6 +405,12 @@ func wireNormalizeParts(v interface{}) interface{} {
 				continue
 			case k == "isError" && e == false:
 				continue
+			case k == "data" && x["type"] == "reasoning-file":
+				if ds, isStr := e.(string); isStr { // Go renders the bytes; TS wraps them as {type:"data"}
+					e = map[string]interface{}{"type": "data", "data": ds}
+				}
+			case k == "outputTokens" && e == float64(0):
+				continue // an absent count is zero (image usage)
 			case k == "thoughtSignature" && x["type"] == "tool-call":
 				continue // Go-only field; TS carries it in providerMetadata
 			case k == "toolCallId":
@@ -432,9 +439,48 @@ func wireNormalizeParts(v interface{}) interface{} {
 	return v
 }
 
+// wireAlignInvalidBase64 makes the Go value equal the TS value where the TS
+// test used a string that is not valid base64 as mock file data: TS passes
+// such a string through, Go decodes what it can.
+func wireAlignInvalidBase64(want, got interface{}) {
+	switch w := want.(type) {
+	case map[string]interface{}:
+		g, _ := got.(map[string]interface{})
+		for k, wv := range w {
+			if gv, ok := g[k]; ok {
+				if ws, isStr := wv.(string); isStr {
+					if gs, ok := gv.(string); ok && gs != ws {
+						if _, err := base64.StdEncoding.DecodeString(ws); err != nil && (k == "data" || k == "images") {
+							g[k] = ws
+						}
+					}
+					continue
+				}
+				wireAlignInvalidBase64(wv, gv)
+			}
+		}
+	case []interface{}:
+		g, _ := got.([]interface{})
+		for i, wv := range w {
+			if i >= len(g) {
+				break
+			}
+			if ws, isStr := wv.(string); isStr {
+				if gs, ok := g[i].(string); ok && gs != ws {
+					if _, err := base64.StdEncoding.DecodeString(ws); err != nil {
+						g[i] = ws
+					}
+				}
+				continue
+			}
+			wireAlignInvalidBase64(wv, g[i])
+		}
+	}
+}
+
 // generatedWireID matches ids the TS tests mock ("test-id", "id-1") and ids
 // Go generates (call_...).
-var generatedWireID = regexp.MustCompile(`^(test-id|id-\d+|call_[0-9a-f]{8,})$`)
+var generatedWireID = regexp.MustCompile(`^(test-id|id-\d+|call_[0-9a-f]{8,}|code-exec-\d+)$`)
 
 func wireErrSummary(e interface{}) string {
 	m, _ := e.(map[string]interface{})

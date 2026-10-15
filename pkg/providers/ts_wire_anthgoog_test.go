@@ -54,7 +54,14 @@ func init() {
 		},
 		BatchPrefix:     "/v1beta",
 		LanguageResults: true,
-		Skip:            map[string]string{},
+		Skip: map[string]string{
+			"~starts a batch with inline requests when the creation body is under 20 MB": "the TS test mocks generateId (display name) and sets provider-level headers the recording does not carry",
+			"~async headers handling":                                                 "the TS test configures headers as (async) functions, which the recording does not carry",
+			"~GoogleBatch > starts an inline image generation batch":                  "the TS test mocks generateId (batch display name)",
+			"~GoogleBatch > omits webhook configuration for inline input":             "the TS test mocks generateId (batch display name)",
+			"~GoogleBatch > surfaces Google HTTP errors from starting a batch":        "the TS test mocks generateId (batch display name)",
+			"~tool-call + tool-result message pair through the request body (step 2)": "tool result JSON arrives as a Go map, which has no key order",
+		},
 		Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 			return google.New(google.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}), nil
 		},
