@@ -70,10 +70,10 @@ func TestTSCasesRealtimeSerializeClientEvent(t *testing.T) {
 // serializeClientEvent call of realtime/google-realtime-event-mapper.test.ts
 // in order, on the same mapper instance the TS test used, so the id counters
 // and transcription accumulation that depend on earlier events are covered
-// (testdata/tscases/realtime_stateful.jsonl.gz, recorded by
+// (testdata/tscases/realtime_stateful.json.gz, recorded by
 // pkg/internal/tsfixture/record).
 func TestTSCasesRealtimeStateful(t *testing.T) {
-	tests := tsfixture.LoadWire(t, "testdata/tscases/realtime_stateful.jsonl.gz")
+	tests := tsfixture.LoadWire(t, "testdata/tscases/realtime_stateful.json.gz")
 	if len(tests) == 0 {
 		t.Fatal("no recorded tests")
 	}

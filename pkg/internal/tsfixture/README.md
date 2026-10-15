@@ -69,7 +69,7 @@ case with that name.
 
 ## Stateful replays
 
-`google/testdata/tscases/realtime_stateful.jsonl.gz` holds every
+`google/testdata/tscases/realtime_stateful.json.gz` holds every
 `parseServerEvent` / `serializeClientEvent` call the TS realtime event mapper
 tests make, in order, with the number of the mapper instance (`inst`) each ran
 on. `TestTSCasesRealtimeStateful` feeds them to one Go mapper per instance, so
@@ -77,7 +77,7 @@ id counters and transcription accumulation that depend on earlier events are
 checked. The recorder (`record/setup.mjs`) captures these two methods like the
 `do*` calls; record them with
 `REC_OUT=<dir> npx vitest run --config ../../rec/vitest.config.mjs src/realtime/google-realtime-event-mapper.test.ts`
-in the `google` package, then gzip the `.jsonl` file with `gzip -9n`.
+in the `google` package, then gzip the `.jsonl` file with `gzip -9n` and name it `*.json.gz` (`TestCaseFilesAreCompressed` checks the name).
 
 ## Large payloads
 
