@@ -1334,6 +1334,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 		genResult.ToolCalls = parsedToolCalls
 
+		// URL-backed generated files are downloaded once, before anything
+		// observes the content (TS convertLanguageModelContent).
+		if resolvedContent, resolveErr := resolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+			return nil, resolveErr
+		} else if len(resolvedContent) > 0 {
+			resolvedResult := *genResult
+			resolvedResult.Content = resolvedContent
+			genResult = &resolvedResult
+		}
+
 		responseID := ""
 		responseModelID := stepModel.ModelID()
 		if meta := responseMetadataFromGenerateResultWithID(stepModel, genResult, generateID); meta != nil {

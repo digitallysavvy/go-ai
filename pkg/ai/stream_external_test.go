@@ -514,3 +514,40 @@ func TestNewStreamTextResultFromParts_OutputIgnoredWhenUnset(t *testing.T) {
 		t.Fatalf("PartialOutput() = %#v, want nil", result.PartialOutput())
 	}
 }
+
+// The public full stream of an external result carries the TS part set only
+// (no stream-start / response-metadata markers), as StreamText's does, while
+// ToUIMessageStream still sees the stream-start step boundaries.
+func TestNewStreamTextResultFromParts_FullStreamOmitsInternalMarkers(t *testing.T) {
+	t.Parallel()
+
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "one"},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeText, Text: "two"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{Provider: "harness", ModelID: "m"})
+	s := result.Stream()
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if isInternalStreamMarker(c.Type) {
+			t.Fatalf("public stream exposes internal marker %q", c.Type)
+		}
+	}
+	uiChunks, _ := result.ToUIMessageStream(context.Background())
+	starts := 0
+	for c := range uiChunks {
+		if c["type"] == "start-step" {
+			starts++
+		}
+	}
+	if starts != 2 {
+		t.Fatalf("UI start-step count = %d, want 2", starts)
+	}
+}

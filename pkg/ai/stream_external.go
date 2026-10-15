@@ -110,6 +110,7 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 		result.outputSpec = op
 	}
 	result.chunkBuf = newChunkBuffer()
+	result.uiChunkBuf = newChunkBuffer()
 	result.processingDone = make(chan struct{})
 
 	go result.consumeExternalParts(ctx, src, opts)
@@ -259,6 +260,9 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		if r.chunkBuf != nil {
 			r.chunkBuf.close(r.err)
 		}
+		if r.uiChunkBuf != nil {
+			r.uiChunkBuf.close(r.err)
+		}
 	}()
 
 	onEnd := opts.OnEnd
@@ -371,7 +375,11 @@ consumeLoop:
 			r.status = StreamStatusStreaming
 		}
 		r.mu.Unlock()
-		if r.chunkBuf != nil {
+		if r.uiChunkBuf != nil {
+			r.uiChunkBuf.push(*chunk)
+		}
+		// The public full stream carries the TS part set only (as StreamText).
+		if r.chunkBuf != nil && !isInternalStreamMarker(chunk.Type) {
 			r.chunkBuf.push(*chunk)
 		}
 

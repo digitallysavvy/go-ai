@@ -661,6 +661,12 @@ type StreamTextResult struct {
 	// result.
 	chunkBufReader *chunkBufferReader
 
+	// uiChunkBuf/uiChunkBufReader hold the unfiltered chunk sequence of an
+	// external stream result (stream-start included), which
+	// ToUIMessageStream uses as its step boundary. Nil for StreamText results.
+	uiChunkBuf       *chunkBuffer
+	uiChunkBufReader *chunkBufferReader
+
 	processingDone chan struct{}
 
 	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
@@ -1735,6 +1741,31 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			remapDuplicateBlockID(chunk, usedTextIDs, stepTextIDRemap, provider.ChunkTypeTextStart, provider.ChunkTypeText, provider.ChunkTypeTextEnd, remapGenerateID)
 			remapDuplicateBlockID(chunk, usedReasoningIDs, stepReasoningIDRemap, provider.ChunkTypeReasoningStart, provider.ChunkTypeReasoning, provider.ChunkTypeReasoningEnd, remapGenerateID)
+			// URL-backed generated files are downloaded before they are
+			// forwarded or recorded (TS stream-language-model-call
+			// resolveGeneratedFileData); a failed download ends the stream.
+			if chunk.Type == provider.ChunkTypeFile && chunk.GeneratedFileContent != nil {
+				resolved, resolveErr := resolveGeneratedFile(stepCtx, *chunk.GeneratedFileContent)
+				if resolveErr != nil {
+					r.err = resolveErr
+					if isAbortErr(ctx, resolveErr) {
+						fireAbort(resolveErr)
+					}
+					break
+				}
+				chunk.GeneratedFileContent = &resolved
+			}
+			if chunk.Type == provider.ChunkTypeReasoningFile && chunk.ReasoningFileContent != nil {
+				resolved, resolveErr := resolveReasoningFile(stepCtx, *chunk.ReasoningFileContent)
+				if resolveErr != nil {
+					r.err = resolveErr
+					if isAbortErr(ctx, resolveErr) {
+						fireAbort(resolveErr)
+					}
+					break
+				}
+				chunk.ReasoningFileContent = &resolved
+			}
 			// A tool-input-start for a dynamic tool carries dynamic: true (TS).
 			if chunk.Type == provider.ChunkTypeToolInputStart && chunk.ToolCall != nil && !chunk.ToolCall.Dynamic {
 				if t := toolsByName[chunk.ToolCall.ToolName]; t != nil && t.Type == types.ToolTypeDynamic {
@@ -3515,7 +3546,21 @@ func (r *StreamTextResult) ToTextStreamResponse(ctx context.Context, init *TextS
 //
 // Deprecated: use ToUIMessageStream with Stream.
 func (r *StreamTextResult) ToUIMessageStream(ctx context.Context, opts ...UIMessageStreamResultOptions) (<-chan UIMessageChunk, <-chan error) {
-	return ToUIMessageStream(ctx, r.Stream(), opts...)
+	return ToUIMessageStream(ctx, r.uiStream(), opts...)
+}
+
+// uiStream is the stream the UI converters read: the unfiltered sequence for
+// external results, the public stream otherwise.
+func (r *StreamTextResult) uiStream() provider.TextStream {
+	if r.uiChunkBuf == nil {
+		return r.Stream()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.uiChunkBufReader == nil {
+		r.uiChunkBufReader = r.uiChunkBuf.reader()
+	}
+	return r.uiChunkBufReader
 }
 
 // ToUIMessageStreamResponse creates an SSE response from the stream result.

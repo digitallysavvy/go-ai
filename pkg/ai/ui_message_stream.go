@@ -505,7 +505,7 @@ func CreateUIMessageStream(ctx context.Context, result *StreamTextResult, opts .
 		close(errCh)
 		return out, errCh
 	}
-	return ToUIMessageStream(ctx, result.Stream(), opts...)
+	return ToUIMessageStream(ctx, result.uiStream(), opts...)
 }
 
 // ToUIMessageStream converts a provider text stream into UI message chunks.
