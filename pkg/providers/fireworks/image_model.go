@@ -96,9 +96,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	return m.doGenerateSync(ctx, opts)
 }
 
-// isAsyncModel returns true for flux-kontext-* models that require async polling.
+// isAsyncModel returns true for the models TS maps to urlFormat
+// 'workflows_async' (flux-kontext-pro and flux-kontext-max only); any other id,
+// including other flux-kontext variants, uses the synchronous workflow path.
 func (m *ImageModel) isAsyncModel() bool {
-	return strings.Contains(m.modelID, "flux-kontext")
+	return m.modelID == "accounts/fireworks/models/flux-kontext-pro" ||
+		m.modelID == "accounts/fireworks/models/flux-kontext-max"
 }
 
 // fireworksSyncBackend mirrors TS modelToBackendConfig for the non-workflow

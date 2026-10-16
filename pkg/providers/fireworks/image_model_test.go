@@ -100,7 +100,7 @@ func TestIsAsyncModel(t *testing.T) {
 		modelID string
 		want    bool
 	}{
-		{"accounts/fireworks/models/flux-kontext-dev", true},
+		{"accounts/fireworks/models/flux-kontext-dev", false},
 		{"accounts/fireworks/models/flux-kontext-pro", true},
 		{"accounts/fireworks/models/flux-kontext-max", true},
 		{"accounts/fireworks/models/flux-1-dev-fp8", false},
