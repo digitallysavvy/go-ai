@@ -603,31 +603,32 @@ func convertPromptImage(img *VideoPromptImage) (*provider.VideoModelV3File, erro
 	return nil, nil
 }
 
+// splitVideoDataURL mirrors TS splitDataUrl: the header is everything before
+// the first comma, the media type is header.split(';')[0].split(':')[1] (so an
+// empty type stays "" and is not replaced by detection), and the content is
+// the second comma-separated part only.
+func splitVideoDataURL(value string) (mediaType, content string) {
+	header, rest, _ := strings.Cut(value, ",")
+	mediaType = strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
+	content, _, _ = strings.Cut(rest, ",")
+	return mediaType, content
+}
+
 func decodeVideoPromptImageDataString(value string) ([]byte, string, error) {
 	mediaType := ""
 	content := value
 	isDataURL := false
 	if strings.HasPrefix(value, "data:") {
 		isDataURL = true
-		header, body, ok := strings.Cut(value, ",")
-		if ok {
-			content = body
-			if strings.HasPrefix(header, "data:") {
-				mediaType = strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
-			}
-		}
+		mediaType, content = splitVideoDataURL(value)
 	}
 
 	data, err := types.DecodeFileDataString(content)
 	if err != nil {
 		return nil, "", err
 	}
-	if mediaType == "" {
-		if isDataURL {
-			mediaType = "image/png"
-		} else {
-			mediaType = detectVideoPromptImageMediaType(data)
-		}
+	if mediaType == "" && !isDataURL {
+		mediaType = detectVideoPromptImageMediaType(data)
 	}
 	return data, mediaType, nil
 }
@@ -773,12 +774,10 @@ func decodeVideoReferenceDataString(value string, explicitMediaType string) ([]b
 	isDataURL := false
 	if strings.HasPrefix(value, "data:") {
 		isDataURL = true
-		header, body, ok := strings.Cut(value, ",")
-		if ok {
-			content = body
-			if mediaType == "" && strings.HasPrefix(header, "data:") {
-				mediaType = strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
-			}
+		var urlType string
+		urlType, content = splitVideoDataURL(value)
+		if mediaType == "" {
+			mediaType = urlType
 		}
 	}
 
@@ -786,12 +785,8 @@ func decodeVideoReferenceDataString(value string, explicitMediaType string) ([]b
 	if err != nil {
 		return nil, "", err
 	}
-	if mediaType == "" {
-		if isDataURL {
-			mediaType = "image/png"
-		} else {
-			mediaType = detectAnyFileMediaType(data)
-		}
+	if mediaType == "" && !isDataURL {
+		mediaType = detectAnyFileMediaType(data)
 	}
 	return data, mediaType, nil
 }

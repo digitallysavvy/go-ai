@@ -1364,51 +1364,52 @@ func (c *anthropicConverter) convertAssistantBlock(block anthropicBlock, isLastB
 				}
 
 			case types.CustomContent:
-				// Go extension: forward anthropic-keyed custom blocks verbatim,
-				// reading from ProviderOptions (caller-constructed) or falling
-				// back to ProviderMetadata (round-tripped from a previous
-				// response), mirroring convertReasoning's same fallback.
-				if p.Kind == "anthropic.message_start" {
-					// Message-start accounting is informational output
-					// (TS #21979); never replay it to Anthropic.
+				// TS replays only anthropic.fallback custom parts. The
+				// informational kinds the SDK itself emits (message_start
+				// accounting, container_upload) are never sent back.
+				if p.Kind == "anthropic.message_start" || p.Kind == "anthropic.container_upload" {
 					break
 				}
+				// The metadata is read from ProviderOptions (caller-constructed)
+				// or, for a part round-tripped from a previous response,
+				// ProviderMetadata.
 				opts := p.ProviderOptions
 				if opts == nil {
 					opts = rawMetadataMap(p.ProviderMetadata)
 				}
 				anthropicOpts, ok := opts["anthropic"].(map[string]interface{})
-				if !ok {
-					break
-				}
-				if p.Kind == "anthropic.fallback" {
-					// Fallback blocks require from.model and to.model to
-					// round-trip; anything else is dropped with a warning
-					// rather than sent malformed (TS commit a587f554f7,
-					// #21736).
-					from, _ := anthropicOpts["from"].(map[string]interface{})
-					to, _ := anthropicOpts["to"].(map[string]interface{})
-					fromModel, _ := from["model"].(string)
-					toModel, _ := to["model"].(string)
-					if fromModel == "" || toModel == "" {
-						c.warn("anthropic fallback metadata must include from.model and to.model")
+				if p.Kind != "anthropic.fallback" {
+					if !ok {
 						break
 					}
-					// Replayed fallback blocks need the beta even when no
-					// fallback chain is configured (TS #22007).
-					c.addBeta(AnthropicBetaServerSideFallback)
-					content = append(content, map[string]interface{}{
-						"type": "fallback",
-						"from": map[string]interface{}{"model": fromModel},
-						"to":   map[string]interface{}{"model": toModel},
-					})
+					// Go extension (kept from v0.5.2): forward other
+					// anthropic-keyed custom blocks verbatim.
+					forwarded := make(map[string]interface{}, len(anthropicOpts))
+					for key, value := range anthropicOpts {
+						forwarded[key] = value
+					}
+					content = append(content, forwarded)
 					break
 				}
-				forwarded := make(map[string]interface{}, len(anthropicOpts))
-				for key, value := range anthropicOpts {
-					forwarded[key] = value
+				// TS anthropicFallbackContentSchema: type "fallback" plus
+				// from.model and to.model strings; anything else is dropped
+				// with a warning rather than sent malformed.
+				from, _ := anthropicOpts["from"].(map[string]interface{})
+				to, _ := anthropicOpts["to"].(map[string]interface{})
+				fromModel, fromOK := from["model"].(string)
+				toModel, toOK := to["model"].(string)
+				if anthropicOpts["type"] != "fallback" || !fromOK || !toOK {
+					c.warn("anthropic fallback metadata must include from.model and to.model")
+					break
 				}
-				content = append(content, forwarded)
+				// Replayed fallback blocks need the beta even when no
+				// fallback chain is configured (TS #22007).
+				c.addBeta(AnthropicBetaServerSideFallback)
+				content = append(content, map[string]interface{}{
+					"type": "fallback",
+					"from": map[string]interface{}{"model": fromModel},
+					"to":   map[string]interface{}{"model": toModel},
+				})
 			}
 			// file and reasoning-file parts are not sent back to Anthropic.
 		}

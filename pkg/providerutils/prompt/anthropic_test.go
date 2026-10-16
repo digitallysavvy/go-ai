@@ -845,7 +845,7 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			name: "preserve fallback boundaries between reasoning blocks",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ReasoningContent{Text: "Primary model thinking", ProviderOptions: anthropicOpt("signature", "primary-signature")},
-				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("type", "fallback", "from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
 				types.ReasoningContent{Text: "Fallback model thinking", ProviderOptions: anthropicOpt("signature", "fallback-signature")},
 			}}},
 			wantMessages: `[{"role":"assistant","content":[
@@ -867,10 +867,24 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 		{
 			name: "warn and omit fallback boundaries with invalid metadata",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
-				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"})},
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("type", "fallback", "from", map[string]interface{}{"model": "claude-opus-5-5"})},
 			}}},
 			wantMessages: `[]`,
 			wantWarnings: []string{"anthropic fallback metadata must include from.model and to.model"},
+		},
+		{
+			name: "fallback metadata without type fallback and non-fallback custom kinds",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "a"}, "to", map[string]interface{}{"model": "b"})},
+				types.CustomContent{Kind: "anthropic.container_upload", ProviderOptions: anthropicOpt("type", "container_upload", "file_id", "f1")},
+				types.CustomContent{Kind: "anthropic.fallback"},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
+			wantWarnings: []string{
+				"anthropic fallback metadata must include from.model and to.model",
+				"anthropic fallback metadata must include from.model and to.model",
+			},
 		},
 		{
 			name: "mcp tool use parts",

@@ -1171,6 +1171,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			defer stepCancel()
 		}
 
+		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
+			Messages: messagesForModel(stepMessages),
+			System:   appendSandboxDescription(stepSystem, stepSandbox),
+		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
+		if normErr != nil {
+			return nil, normErr
+		}
+		if err := validateStepToolResults(stepPrompt.Messages, opts.Tools); err != nil {
+			return nil, err
+		}
+		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
+
 		// Emit OnStepStartEvent.
 		Notify(ctx, OnStepStartEvent{
 			CallID:              callID,
@@ -1205,18 +1217,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				responseFormat = rf
 			}
 		}
-
-		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
-			Messages: messagesForModel(stepMessages),
-			System:   appendSandboxDescription(stepSystem, stepSandbox),
-		}, allowSystem, effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(stepModel))
-		if normErr != nil {
-			return nil, normErr
-		}
-		if err := validateStepToolResults(stepPrompt.Messages, opts.Tools); err != nil {
-			return nil, err
-		}
-		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 		// Build generate options
 		genOpts := &provider.GenerateOptions{

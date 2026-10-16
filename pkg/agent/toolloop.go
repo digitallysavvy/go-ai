@@ -878,15 +878,37 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 		// CB-T23: Emit OnStepFinishEvent (after tool execution so ToolResults is populated)
 		ai.Notify(ctx, ai.OnStepFinishEvent{
-			StepNumber:          stepResult.StepNumber,
-			ModelProvider:       a.config.Model.Provider(),
-			ModelID:             a.config.Model.ModelID(),
-			Text:                stepResult.Text,
-			ToolCalls:           stepResult.ToolCalls,
-			ToolResults:         stepToolResults,
-			FinishReason:        stepResult.FinishReason,
-			Usage:               stepResult.Usage,
-			Warnings:            stepResult.Warnings,
+			CallID:             stepTel.callID(),
+			StepNumber:         stepResult.StepNumber,
+			Model:              stepResult.Model,
+			ModelProvider:      stepResult.Model.Provider,
+			ModelID:            stepResult.Model.ModelID,
+			Text:               stepResult.Text,
+			Reasoning:          stepResult.Reasoning,
+			ReasoningText:      stepResult.ReasoningText,
+			ToolCalls:          stepResult.ToolCalls,
+			StaticToolCalls:    stepResult.StaticToolCalls,
+			DynamicToolCalls:   stepResult.DynamicToolCalls,
+			ToolResults:        stepToolResults,
+			StaticToolResults:  stepResult.StaticToolResults,
+			DynamicToolResults: stepResult.DynamicToolResults,
+			FinishReason:       stepResult.FinishReason,
+			RawFinishReason:    stepResult.RawFinishReason,
+			Usage:              stepResult.Usage,
+			Warnings:           stepResult.Warnings,
+			Sources:            stepResult.Sources,
+			Files:              stepResult.Files,
+			ProviderMetadata:   stepResult.ProviderMetadata,
+			ResponseHeaders:    stepResult.Response.Headers,
+			Request:            ai.GenerateStepRequest{Body: stepResult.Request.Body},
+			Response: ai.GenerateStepResponse{
+				ID:        stepResult.Response.ID,
+				Timestamp: stepResult.Response.Timestamp,
+				ModelID:   stepResult.Response.ModelID,
+				Headers:   stepResult.Response.Headers,
+				Messages:  stepResult.ResponseMessages,
+				Body:      stepResult.Response.Body,
+			},
 			ExperimentalContext: a.config.ExperimentalContext,
 			RuntimeContext:      callConfig.RuntimeContext,
 			ToolsContext:        callConfig.ToolsContext,
@@ -1585,6 +1607,24 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// Call the model with step context, retrying transient Gateway failures
 	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5).
 	modelCallCtx := stepCtx
+	ai.Notify(stepCtx, ai.LanguageModelCallStartEvent{
+		CallID:              stepTel.callID(),
+		Provider:            stepModel.Provider(),
+		ModelID:             stepModel.ModelID(),
+		Instructions:        callConfig.System,
+		InstructionMessages: callConfig.InstructionMessages,
+		Messages:            callConfig.Messages,
+		Tools:               genOpts.Tools,
+		MaxOutputTokens:     genOpts.MaxTokens,
+		Temperature:         genOpts.Temperature,
+		TopP:                genOpts.TopP,
+		TopK:                genOpts.TopK,
+		PresencePenalty:     genOpts.PresencePenalty,
+		FrequencyPenalty:    genOpts.FrequencyPenalty,
+		StopSequences:       genOpts.StopSequences,
+		Seed:                genOpts.Seed,
+		Reasoning:           genOpts.Reasoning,
+	}, callConfig.OnLanguageModelCallStart)
 	if mc := stepTel.modelCallStart(callConfig, stepModel, prompt, callConfig.Tools); mc != nil {
 		// Run the provider call inside the model-call span so provider HTTP
 		// spans nest under it, while the step ctx stays unchanged.
@@ -1604,12 +1644,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 
-	stepTel.modelCallEnd(stepModel, genResult, modelCallStarted)
-	// An enforced tool choice (required, or a named tool) must produce a tool
-	// call, as in GenerateText (TS ToolChoiceViolationError).
-	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
-		return nil, false, callConfig.CustomData, callConfig.Tools, violation
-	}
+	modelCallMs := time.Since(modelCallStarted).Milliseconds()
 	performance := ai.NonStreamingStepPerformance(time.Since(modelCallStarted).Milliseconds(), genResult.Usage)
 	rawFinishReason := genResult.RawFinishReason
 
@@ -1623,6 +1658,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
+	modelCallContent := contentFromGenerateResult(genResult, toolCalls)
 	// Sources, files and reasoning come from the content parts, as in
 	// GenerateText (TS DefaultStepResult getters).
 	var stepSources []types.SourceContent
@@ -1662,6 +1698,26 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		if meta.Headers != nil {
 			stepResponse.Headers = meta.Headers
 		}
+	}
+	// The language-model-call end event follows the parsed response and
+	// precedes client-side tool execution (TS onLanguageModelCallEnd): its
+	// model id is the response model and its content includes the answer text.
+	ai.Notify(stepCtx, ai.LanguageModelCallEndEvent{
+		CallID:           stepTel.callID(),
+		Provider:         stepModel.Provider(),
+		ModelID:          stepResponse.ModelID,
+		FinishReason:     genResult.FinishReason,
+		Usage:            genResult.Usage,
+		Content:          modelCallContent,
+		ResponseID:       stepResponse.ID,
+		ProviderMetadata: genResult.ProviderMetadata,
+		Performance:      ai.NonStreamingModelCallPerformance(modelCallMs, genResult.Usage),
+	}, callConfig.OnLanguageModelCallEnd)
+	stepTel.modelCallEnd(stepModel, genResult, modelCallContent, stepResponse, modelCallMs)
+	// An enforced tool choice (required, or a named tool) must produce a tool
+	// call, as in GenerateText (TS ToolChoiceViolationError).
+	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, violation
 	}
 	stepResult := &types.StepResult{
 		StepNumber:       callConfig.StepNumber,

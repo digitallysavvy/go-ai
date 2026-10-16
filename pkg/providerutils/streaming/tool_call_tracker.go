@@ -42,6 +42,10 @@ type ToolCallDelta struct {
 	// would start a new call (it never creates a tracked call) and never
 	// treats it as an error, even when no other call exists.
 	NameBlank bool
+	// Type is the wire delta's tool call type ("" when absent or null). It
+	// is only inspected when the tracker has a TypeValidation mode set.
+	Type string
+
 	// NameAbsent reports that the wire delta had no function name at all
 	// (missing or null). TS throws "Expected 'function.name' to be a string."
 	// when such a delta would start a new call, regardless of sibling calls.
@@ -82,6 +86,42 @@ func (n WireName) MarshalJSON() ([]byte, error) {
 
 // String returns the decoded name ("" when absent).
 func (n WireName) String() string { return n.Value }
+
+// TypeValidation mirrors the TS StreamingToolCallTracker typeValidation
+// option: how the `type` field of a delta that starts a new tool call is
+// checked.
+type TypeValidation int
+
+const (
+	// TypeValidationNone does not check the type (TS 'none', the default).
+	TypeValidationNone TypeValidation = iota
+	// TypeValidationIfPresent rejects a type that is present and not
+	// "function" (TS 'if-present').
+	TypeValidationIfPresent
+	// TypeValidationRequired rejects any type other than "function" (TS
+	// 'required').
+	TypeValidationRequired
+)
+
+// SetTypeValidation sets how the type of a new tool call's first delta is
+// validated. A violation yields an error chunk (TS throws
+// InvalidResponseDataError "Expected 'function' type.") and creates no call.
+func (t *StreamingToolCallTracker) SetTypeValidation(mode TypeValidation) {
+	if t != nil {
+		t.typeValidation = mode
+	}
+}
+
+// TrackWireWithType is TrackWire for callers that also have the delta's
+// tool call type.
+func (t *StreamingToolCallTracker) TrackWireWithType(index *int, id string, name WireName, typ string, delta string) []ToolCallChunk {
+	d := ToolCallDelta{Index: index, ID: id, Name: name.Value, ArgumentsDelta: delta, Type: typ}
+	if nonBlank(name.Value) == "" {
+		d.NameBlank = name.Present
+		d.NameAbsent = !name.Present
+	}
+	return t.TrackDelta(d)
+}
 
 // TrackWire is Track for callers that decoded the function name as a
 // WireName: a present-but-blank name and an absent name behave as in TS.
@@ -158,6 +198,7 @@ type StreamingToolCallTracker struct {
 	usedToolCallIDs         map[string]struct{}
 	nextGeneratedIDSuffixes map[string]int
 	generateIDFunc          func() string
+	typeValidation          TypeValidation
 }
 
 // NewStreamingToolCallTracker creates a tracker with the default ID generator.
@@ -222,6 +263,15 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 		// ignored outright -- never an error, even if nothing else succeeds.
 		if name == "" && delta.NameBlank {
 			return nil
+		}
+		if (t.typeValidation == TypeValidationRequired && delta.Type != "function") ||
+			(t.typeValidation == TypeValidationIfPresent && delta.Type != "" && delta.Type != "function") {
+			const message = "Expected 'function' type."
+			return []ToolCallChunk{{
+				Type: provider.ChunkTypeError,
+				Text: message,
+				Err:  providererrors.NewInvalidResponseDataError(delta, message),
+			}}
 		}
 		call = t.processNewToolCall(delta, wireID, index, name)
 		call.strictAbsent = name == "" && delta.NameAbsent

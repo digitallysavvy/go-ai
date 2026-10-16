@@ -1278,7 +1278,7 @@ func newOpenAIStreamWithMetadata(reader io.ReadCloser, emitRaw bool, providerNam
 	return &openAIStream{
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
-		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
+		toolCallTracker:  newOpenAIToolCallTracker(),
 		includeRawChunks: emitRaw,
 		providerName:     providerName,
 		responseHeaders:  headers,
@@ -1527,7 +1527,13 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				emit(&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 			}
 			for _, tc := range choice.Delta.ToolCalls {
-				for _, chunk := range s.toolCallTracker.TrackWire(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+				// TS openai chat rejects a present non-function type;
+				// openai-compatible does not validate it.
+				toolCallType := ""
+				if !s.compat && tc.Type != nil {
+					toolCallType = *tc.Type
+				}
+				for _, chunk := range s.toolCallTracker.TrackWireWithType(tc.Index, tc.ID, tc.Function.Name, toolCallType, tc.Function.Arguments) {
 					c := chunk
 					emit(&c)
 				}
@@ -1826,4 +1832,12 @@ func (m *LanguageModel) responseKind() providerutils.ChatResponseKind {
 		return providerutils.ResponseKindOpenAICompatible
 	}
 	return providerutils.ResponseKindOpenAI
+}
+
+// newOpenAIToolCallTracker rejects a present tool call type that is not
+// "function" (TS openai chat typeValidation: 'if-present').
+func newOpenAIToolCallTracker() *streaming.StreamingToolCallTracker {
+	t := streaming.NewStreamingToolCallTracker()
+	t.SetTypeValidation(streaming.TypeValidationIfPresent)
+	return t
 }

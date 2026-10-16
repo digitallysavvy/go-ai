@@ -134,7 +134,10 @@ type genAICallState struct {
 	// baseSupp holds the root span's supplemental runtime-context/header
 	// attributes (TS baseSupplementalAttributes) for the step, embeddings
 	// and reranking child spans.
-	baseSupp  []attribute.KeyValue
+	baseSupp []attribute.KeyValue
+	// tracer is the tracer that created the root span (TS uses this.tracer
+	// for every span of the integration).
+	tracer    trace.Tracer
 	stepSpan  trace.Span
 	toolSpans map[string]trace.Span
 	// embedSpans/rerankSpan mirror LegacyOpenTelemetry's own fields in
@@ -193,6 +196,39 @@ func genAIRootSpanFor(callID string, ctx context.Context) trace.Span {
 	return trace.SpanFromContext(ctx)
 }
 
+// genAIChildTracer returns the tracer that created callID's root span, so
+// child spans use the same (possibly caller-supplied) tracer as TS's
+// this.tracer; it falls back to the parent span's provider.
+func genAIChildTracer(callID string, parent trace.Span) trace.Tracer {
+	if st := genAIState(callID); st != nil {
+		st.mu.Lock()
+		t := st.tracer
+		st.mu.Unlock()
+		if t != nil {
+			return t
+		}
+	}
+	return parent.TracerProvider().Tracer("go-ai")
+}
+
+func isAudioOperation(operationType string) bool {
+	return operationType == "ai.generateSpeech" || operationType == "ai.transcribe" || operationType == "ai.streamTranscribe"
+}
+
+// genAIRootSpanKind mirrors the SpanKind TS gives each root span: INTERNAL for
+// generate/stream text and object operations, CLIENT for audio, embed, rerank
+// and decide operations.
+func genAIRootSpanKind(operationType string) trace.SpanKind {
+	switch operationType {
+	case "ai.generateObject", "ai.streamObject":
+		return trace.SpanKindInternal
+	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe",
+		"ai.embed", "ai.embedMany", "ai.rerank":
+		return trace.SpanKindClient
+	}
+	return trace.SpanKindInternal
+}
+
 // msToSeconds converts a millisecond duration to seconds, matching TS's
 // msToSeconds helper used for gen_ai.client.operation.* attributes.
 func msToSeconds(ms int64) float64 { return float64(ms) / 1000 }
@@ -215,7 +251,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	ctx, span := tracer.Start(ctx, spanName)
+	ctx, span := tracer.Start(ctx, spanName, trace.WithSpanKind(genAIRootSpanKind(e.OperationType)))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,
 		OperationType:  e.OperationType,
@@ -228,7 +264,10 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	if e.Settings != nil && e.Settings.FunctionID != "" {
+	// TS sets gen_ai.agent.name on the generate, object and audio roots only;
+	// the embed and rerank roots carry no function id.
+	if e.Settings != nil && e.Settings.FunctionID != "" &&
+		(genAIRootSpanKind(e.OperationType) == trace.SpanKindInternal || isAudioOperation(e.OperationType)) {
 		span.SetAttributes(attribute.String("gen_ai.agent.name", e.Settings.FunctionID))
 	}
 	// TS onGenerateStart / onObjectOperationStart also put the call-level
@@ -323,6 +362,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st.mu.Lock()
 		st.rootSpan = span
 		st.baseSupp = baseSupp
+		st.tracer = tracer
 		st.mu.Unlock()
 	}
 	return ctx
@@ -384,7 +424,7 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	if !rootSpan.IsRecording() {
 		return ctx
 	}
-	tracer := rootSpan.TracerProvider().Tracer("go-ai")
+	tracer := genAIChildTracer(e.CallID, rootSpan)
 	// Explicitly rebase ctx onto our own root span before creating the step
 	// span, so it nests correctly under this integration's root even if
 	// ctx's ambient "current span" belongs to another registered integration.
@@ -393,7 +433,7 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	// count of steps completed BEFORE this one, so the first step is "step
 	// 1". Go's StepNumber is 0-indexed (stepIndex), so add 1 (H3 follow-up 5).
 	spanName := "step " + itoa(e.StepNumber+1)
-	ctx, stepSpan := tracer.Start(ctx, spanName)
+	ctx, stepSpan := tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindInternal))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeStep,
 		OperationType:  e.OperationType,
@@ -445,12 +485,12 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	if parent == nil || !parent.IsRecording() {
 		return ctx
 	}
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := genAIChildTracer(e.CallID, parent)
 	spanName := "chat"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	ctx, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
+	ctx, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeLanguageModel,
 		OperationType: "ai.generateText",
@@ -687,7 +727,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	entry.span.SetAttributes(attrs...)
 
 	inferenceCtx := trace.ContextWithSpan(ctx, entry.span)
-	tracer := entry.span.TracerProvider().Tracer("go-ai")
+	tracer := genAIChildTracer(e.CallID, entry.span)
 	finalOutputs := finalToolResultsByCallID(content)
 	recorded := make(map[string]bool)
 	for _, c := range content {
@@ -696,7 +736,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			continue
 		}
 		recorded[tc.ToolCallID] = true
-		_, toolSpan := tracer.Start(inferenceCtx, "execute_tool "+tc.ToolName)
+		_, toolSpan := tracer.Start(inferenceCtx, "execute_tool "+tc.ToolName, trace.WithSpanKind(trace.SpanKindInternal))
 		toolSpan.SetAttributes(
 			attribute.String("gen_ai.operation.name", "execute_tool"),
 			attribute.String("gen_ai.tool.name", tc.ToolName),
@@ -787,12 +827,12 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 		return
 	}
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := genAIChildTracer(e.CallID, parent)
 	spanName := "embeddings"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
+	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeEmbedding,
 		OperationType: e.OperationID,
@@ -888,12 +928,12 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		return
 	}
 	callID := modelCallID(e.CallID, e.OperationID)
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := genAIChildTracer(e.CallID, parent)
 	spanName := "rerank"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
+	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeReranking,
 		OperationType: e.OperationID,
@@ -994,8 +1034,8 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	if !span.IsRecording() {
 		return ctx
 	}
-	tracer := span.TracerProvider().Tracer("go-ai")
-	ctx, child := tracer.Start(trace.ContextWithSpan(ctx, span), "execute_tool "+e.ToolName)
+	tracer := genAIChildTracer(e.CallID, span)
+	ctx, child := tracer.Start(trace.ContextWithSpan(ctx, span), "execute_tool "+e.ToolName, trace.WithSpanKind(trace.SpanKindInternal))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType: SpanTypeTool,
 		CallID:   e.ToolCallID,
@@ -1050,8 +1090,7 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 	}
 	span.SetAttributes(setFiniteFloat64(nil, "gen_ai.execute_tool.duration", msToSeconds(e.DurationMs))...)
 	if e.Error != nil {
-		span.RecordError(e.Error)
-		span.SetStatus(codes.Error, e.Error.Error())
+		RecordErrorOnSpan(span, e.Error)
 	} else if e.Settings == nil || e.Settings.RecordOutputs {
 		// TS: gen_ai.tool.call.result is an output (recordOutputs gate).
 		if b, err := json.Marshal(e.Result); err == nil {
@@ -1317,7 +1356,10 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 		}
 	}
 	if recordOutputs {
-		if e.Text != "" {
+		// TS: transcript = 'segments' in event ? event.text : undefined, so a
+		// transcription always records its (possibly empty) text and speech
+		// never does.
+		if !isSpeech {
 			span.SetAttributes(attribute.String("ai.response.text", e.Text))
 			// A plain map, not semConvOutputMessage: TS's inline JSON for
 			// this attribute has no finish_reason key (unlike the shared
@@ -1447,6 +1489,12 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 // also registered.
 func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	if e.CallID != "" {
+		// TS onAbort also ends an in-flight decision model-call span.
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {
+			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
+				entry.span.End()
+			}
+		}
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				entry.span.End()

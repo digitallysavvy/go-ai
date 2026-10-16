@@ -205,3 +205,12 @@ func TestSanitizeAnthropicSchemaSkipsNullKeywords(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeAnthropicSchemaEmptyDescriptionStillGetsConstraintText(t *testing.T) {
+	got := SanitizeAnthropicSchema(map[string]interface{}{
+		"type": "string", "description": "", "minLength": 3,
+	}).(map[string]interface{})
+	if got["description"] != "\nmin length: 3." {
+		t.Fatalf("description = %q", got["description"])
+	}
+}

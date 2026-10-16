@@ -33,3 +33,25 @@ func TestTranscribeDownloadedMediaTypeWins(t *testing.T) {
 		t.Fatalf("media type = %q, want audio/L16", got)
 	}
 }
+
+// TS passes empty audio through to the model (default media type audio/wav).
+func TestTranscribeAllowsEmptyAudio(t *testing.T) {
+	var called bool
+	var got string
+	model := &testutil.MockTranscriptionModel{
+		DoTranscribeFunc: func(_ context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+			called = true
+			got = opts.MimeType
+			return &types.TranscriptionResult{Text: "", Response: &types.ResponseMetadata{ModelID: "m"}}, nil
+		},
+	}
+	if _, err := Transcribe(context.Background(), TranscribeOptions{Model: model, Audio: []byte{}}); err != nil {
+		t.Fatal(err)
+	}
+	if !called || got != "audio/wav" {
+		t.Fatalf("called=%v mediaType=%q", called, got)
+	}
+	if _, err := Transcribe(context.Background(), TranscribeOptions{Model: model}); err == nil {
+		t.Fatal("expected error when no audio source is given")
+	}
+}

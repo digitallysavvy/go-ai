@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -128,16 +127,32 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types
 	if settings != nil && settings.RecordInputs {
 		sys = a.config.System
 	}
+	maxRetries := 2
+	if a.config.MaxRetries != nil {
+		maxRetries = *a.config.MaxRetries
+	}
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:         lt.callID,
-		OperationType:  "ai.generateText",
-		ModelProvider:  a.config.Model.Provider(),
-		ModelID:        a.config.Model.ModelID(),
-		Settings:       settings,
-		System:         sys,
-		Messages:       messages,
-		RuntimeContext: telemetryRuntimeContextFor(settings, a.runtimeContext()),
-		ToolsContext:   telemetryToolsContextFor(settings, a.config.ToolsContext),
+		CallID:        lt.callID,
+		OperationType: "ai.generateText",
+		ModelProvider: a.config.Model.Provider(),
+		ModelID:       a.config.Model.ModelID(),
+		Settings:      settings,
+		System:        sys,
+		Messages:      messages,
+		Headers:       a.config.Headers,
+		// Call-level request settings and the retry count, as GenerateText
+		// reports them on its start event (TS onGenerateStart).
+		MaxOutputTokens:  a.config.MaxTokens,
+		Temperature:      a.config.Temperature,
+		TopP:             a.config.TopP,
+		TopK:             a.config.TopK,
+		PresencePenalty:  a.config.PresencePenalty,
+		FrequencyPenalty: a.config.FrequencyPenalty,
+		StopSequences:    a.config.StopSequences,
+		Seed:             a.config.Seed,
+		MaxRetries:       &maxRetries,
+		RuntimeContext:   telemetryRuntimeContextFor(settings, a.runtimeContext()),
+		ToolsContext:     telemetryToolsContextFor(settings, a.config.ToolsContext),
 	})
 	return ctx, lt
 }
@@ -285,24 +300,32 @@ func (s *loopStepTelemetry) modelCallStart(c PrepareCallConfig, model interface 
 func (s *loopStepTelemetry) modelCallEnd(model interface {
 	Provider() string
 	ModelID() string
-}, res *types.GenerateResult, started time.Time) {
+}, res *types.GenerateResult, content []types.ContentPart, response types.StepResponse, elapsedMs int64) {
 	if s == nil {
 		return
 	}
-	elapsed := time.Since(started).Milliseconds()
-	perf := ai.NonStreamingModelCallPerformance(elapsed, res.Usage)
 	telemetry.FireOnLanguageModelCallEnd(s.stepCtx, telemetry.LanguageModelCallEndEvent{
-		Settings:         s.lt.settings,
-		CallID:           s.lt.callID,
-		ModelProvider:    model.Provider(),
-		ModelID:          model.ModelID(),
+		Settings:      s.lt.settings,
+		CallID:        s.lt.callID,
+		ModelProvider: model.Provider(),
+		// The response model (TS event.modelId), not the request model.
+		ModelID:          response.ModelID,
 		FinishReason:     string(res.FinishReason),
 		Usage:            telemetryUsage(res.Usage),
-		Content:          res.Content,
+		Content:          content,
+		ResponseID:       response.ID,
 		ProviderMetadata: res.ProviderMetadata,
-		Performance:      perf,
+		Performance:      ai.NonStreamingModelCallPerformance(elapsedMs, res.Usage),
 	})
 	s.errCtx = s.stepCtx
+}
+
+// callID is the telemetry call id the step's events are dispatched under.
+func (s *loopStepTelemetry) callID() string {
+	if s == nil || s.lt == nil {
+		return ""
+	}
+	return s.lt.callID
 }
 
 func telemetryToolContextFor(s *ai.TelemetrySettings, toolName string, v interface{}) map[string]interface{} {

@@ -566,7 +566,7 @@ func newGroqStream(reader io.ReadCloser, includeRawChunks ...bool) *groqStream {
 	return &groqStream{
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
-		toolCallTracker:  streaming.NewStreamingToolCallTracker(),
+		toolCallTracker:  newGroqToolCallTracker(),
 		includeRawChunks: emitRaw,
 	}
 }
@@ -717,7 +717,7 @@ func (s *groqStream) Next() (*provider.StreamChunk, error) {
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
 				for _, tc := range choice.Delta.ToolCalls {
-					for _, chunk := range s.toolCallTracker.TrackWire(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					for _, chunk := range s.toolCallTracker.TrackWireWithType(tc.Index, tc.ID, tc.Function.Name, tc.Type, tc.Function.Arguments) {
 						c := chunk
 						s.flushQueue = append(s.flushQueue, &c)
 					}
@@ -789,4 +789,12 @@ func (s *groqStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// newGroqToolCallTracker requires every new streamed tool call to be of type
+// "function" (TS groq typeValidation: 'required').
+func newGroqToolCallTracker() *streaming.StreamingToolCallTracker {
+	t := streaming.NewStreamingToolCallTracker()
+	t.SetTypeValidation(streaming.TypeValidationRequired)
+	return t
 }

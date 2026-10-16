@@ -151,7 +151,8 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 			}
 		}
 	}
-	if len(audio) == 0 {
+	// TS does not reject empty audio; only a missing source is an error.
+	if audio == nil && opts.Audio == nil && opts.AudioBase64 == "" && opts.AudioURL == "" {
 		return nil, fmt.Errorf("audio is required")
 	}
 	mediaType := opts.MimeType
