@@ -271,6 +271,10 @@ The hook and callback function types mirror the `ToolLoopAgent` ones.
 | `Timeout` | `*ai.TimeoutConfig` |  |
 | `InitialInstructions` | `string` | InitialInstructions and InitialMessages are the original (unmutated) instructions/messages the call was invoked with, matching TS prepareCall's initial-inputs parity (b666f57). They are read-only: a hook should mutate System/Messages to change what is sent, not these. |
 | `InitialMessages` | `[]types.Message` |  |
+| `InstructionMessages` | `[]types.Message` | InstructionMessages are the instructions when they were given as system messages (TS `instructions: SystemModelMessage \| SystemModelMessage[]`), keeping each message's ProviderOptions. A hook may return a different list to replace them. When the hook changes System and leaves InstructionMessages alone, System wins, as TS `instructions` does. |
+| `InitialInstructionMessages` | `[]types.Message` | InitialInstructionMessages are the original instructions given as system messages; read-only like InitialInstructions. |
+| `ToolCallConcurrency` | `*int` | ToolCallConcurrency and Telemetry mirror TS prepareCall's `toolCallConcurrency` and `telemetry`. The hook sees the call's current value (nil when none is set) and may return another; nil leaves the call's value. As in TS, a per-call ToolCallConcurrency wins over a PrepareCall override. PrepareStep does not apply either. |
+| `Telemetry` | `*ai.TelemetrySettings` |  |
 
 {/* /gen:fields */}
 
