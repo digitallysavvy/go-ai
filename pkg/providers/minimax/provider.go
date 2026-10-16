@@ -16,6 +16,7 @@ package minimax
 import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -74,7 +75,8 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 
-	videoBaseURL := cfg.VideoBaseURL
+	// TS withoutTrailingSlash: exactly one trailing slash is removed.
+	videoBaseURL := strings.TrimSuffix(cfg.VideoBaseURL, "/")
 	if videoBaseURL == "" {
 		videoBaseURL = DefaultVideoBaseURL
 	}
