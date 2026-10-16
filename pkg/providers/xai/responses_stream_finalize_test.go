@@ -83,3 +83,29 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"messa
 		t.Fatalf("chunks = %+v %+v", chunks[1], chunks[2])
 	}
 }
+
+// TS emits reasoning-start before the first reasoning-delta when the stream
+// has reasoning_text.delta events without a summary_part.added.
+func TestXAIResponsesStreamReasoningTextStartsBeforeDelta(t *testing.T) {
+	chunks := drainXAIResponses(t, `data: {"type":"response.reasoning_text.delta","item_id":"r1","output_index":0,"content_index":0,"delta":"hm"}
+
+data: {"type":"response.completed","response":{"object":"response","output":[],"status":"completed","usage":{"input_tokens":2,"output_tokens":3}}}
+
+`)
+	got := strings.Join(xaiChunkTypes(chunks), ",")
+	if got != "reasoning-start,reasoning,finish" {
+		t.Fatalf("chunks = %s", got)
+	}
+}
+
+// TS maps response.completed by status alone; incomplete_details only drives
+// response.incomplete.
+func TestXAIResponsesStreamCompletedIgnoresIncompleteDetails(t *testing.T) {
+	chunks := drainXAIResponses(t, `data: {"type":"response.completed","response":{"object":"response","output":[],"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":2,"output_tokens":3}}}
+
+`)
+	fin := chunks[len(chunks)-1]
+	if fin.FinishReason != types.FinishReasonOther || fin.RawFinishReason != "incomplete" {
+		t.Fatalf("finish = %v raw %q, want other/incomplete", fin.FinishReason, fin.RawFinishReason)
+	}
+}

@@ -1345,19 +1345,15 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				// First delta without a prior summary_part.added — emit start now.
 				s.activeReasoning[e.ItemID] = struct{}{}
 				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+					Type:             provider.ChunkTypeReasoningStart,
+					ID:               blockID,
+					ProviderMetadata: meta,
+				}, &provider.StreamChunk{
 					Type:             provider.ChunkTypeReasoning,
 					ID:               blockID,
 					Reasoning:        e.Delta,
 					ProviderMetadata: meta,
 				})
-				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-					Type:             provider.ChunkTypeReasoningStart,
-					ID:               blockID,
-					ProviderMetadata: meta,
-				})
-				if ok {
-					return chunk, nil
-				}
 				continue
 			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1460,7 +1456,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				if s.hasFunctionCall {
 					s.finishReason = types.FinishReasonToolCalls
 				} else {
-					s.finishReason = mapXAIResponsesFinishReason(e.Response.Status, e.Response.IncompleteDetails)
+					s.finishReason = mapXAIResponsesFinishReason(e.Response.Status, nil)
 				}
 				s.rawFinishReason = e.Response.Status
 			}
