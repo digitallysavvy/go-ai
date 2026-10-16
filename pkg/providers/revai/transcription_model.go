@@ -299,7 +299,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 				hasStartedSegment = true
 			}
 			if el.EndTS != nil && hasStartedSegment {
-				if trimmed := strings.TrimSpace(currentSegmentText); trimmed != "" {
+				if trimmed := providerutils.JSTrim(currentSegmentText); trimmed != "" {
 					segments = append(segments, types.TranscriptionTimestamp{
 						Text:  trimmed,
 						Start: segmentStart,
@@ -312,7 +312,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 		}
 
 		if hasStartedSegment {
-			if trimmed := strings.TrimSpace(currentSegmentText); trimmed != "" {
+			if trimmed := providerutils.JSTrim(currentSegmentText); trimmed != "" {
 				end := segmentStart + 1
 				if durationInSeconds > segmentStart {
 					end = durationInSeconds

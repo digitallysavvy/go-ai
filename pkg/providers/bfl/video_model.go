@@ -484,7 +484,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, "/"+m.modelID, body, opts.Headers))
 	if err != nil {
-		return nil, providererrors.NewProviderError("bfl", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bflStatusError(resp.StatusCode, resp.Headers, resp.Body)
@@ -548,7 +548,7 @@ func ensurePollingURLHasID(pollingURL, requestID string) (string, error) {
 // TrustRoutingTransport strips them again if any hop then leaves that origin
 // (TS getFromApi({validateUrl:true, trustedOrigin}) plus the
 // isTrustedUrl(...) ? headers : undefined guard on the initial request).
-func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, headers map[string]string, target interface{}) (map[string][]string, error) {
+func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, headers map[string]string) ([]byte, map[string][]string, error) {
 	baseURL := m.provider.baseURL()
 	isTrusted := func(raw string) bool { return bflTrustedURL(raw, baseURL) }
 
@@ -557,17 +557,17 @@ func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, header
 	opts.URLValidator = fileutil.TrustedURLValidator(isTrusted)
 	opts.Transport = fileutil.TrustRoutingTransport(isTrusted, nil, downloadTransport())
 	if err := opts.URLValidator(pollURL); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if isTrusted(pollURL) {
 		opts.Headers = headers
 	}
 
-	result, err := fileutil.PollJSON(ctx, pollURL, opts, target)
+	result, err := fileutil.PollJSON(ctx, pollURL, opts, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return result.Headers, nil
+	return result.Data, result.Headers, nil
 }
 
 // DoStatus checks the status of an asynchronous FLUX 3 video generation
@@ -586,10 +586,17 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	headers := mergeStringMaps(m.provider.config.Headers, opts.Headers)
 
-	var pollResp bflVideoPollResponse
-	respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers, &pollResp)
+	pollBody, respHeaders, err := m.fetchStatusJSON(ctx, pollURL, headers)
 	if err != nil {
 		return nil, m.handleVideoPollError(err)
+	}
+	// TS createJsonResponseHandler(bflVideoPollSchema).
+	if err := validateBFLVideoPollBody(pollBody); err != nil {
+		return nil, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, http.Header(respHeaders), pollBody, err)
+	}
+	var pollResp bflVideoPollResponse
+	if err := json.Unmarshal(pollBody, &pollResp); err != nil {
+		return nil, fmt.Errorf("failed to decode poll response: %w", err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
@@ -598,15 +605,13 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		Headers:   flattenHeaderSlice(respHeaders),
 	}
 
-	status := pollResp.Status
-	if status == "" {
-		status = pollResp.State
-	}
-	if pollResp.Status == "" && pollResp.State == "" {
-		// TS bflVideoPollSchema refine: Missing status in Black Forest Labs poll response.
-		body, _ := json.Marshal(pollResp)
-		return nil, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, nil, body,
-			&providerutils.ChunkSchemaError{Code: "custom", Message: "Missing status in Black Forest Labs poll response"})
+	// bflVideoPollSchema transform: status ?? state (an empty status is a
+	// present status). The schema check above guarantees one of them is set.
+	var status string
+	if pollResp.Status != nil {
+		status = *pollResp.Status
+	} else if pollResp.State != nil {
+		status = *pollResp.State
 	}
 	cost := pollResp.Cost
 	if cost == nil {
@@ -698,7 +703,8 @@ func (m *VideoModel) handleVideoPollError(err error) error {
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return bflStatusError(dlErr.StatusCode, dlErr.Headers, dlErr.Body)
 	}
-	return fmt.Errorf("failed to check status: %w", err)
+	// TS getFromApi lets a transport failure propagate unchanged.
+	return err
 }
 
 // DoGenerate generates a video synchronously by starting the operation and
@@ -790,8 +796,8 @@ type bflVideoSubmitResponse struct {
 
 // bflVideoPollResponse is the JSON body returned by the polling URL.
 type bflVideoPollResponse struct {
-	Status  string          `json:"status"`
-	State   string          `json:"state"`
+	Status  *string         `json:"status"`
+	State   *string         `json:"state"`
 	Details json.RawMessage `json:"details"`
 	Result  json.RawMessage `json:"result"`
 	// Cost is `SettledCostResultResponse.cost` -- the price actually

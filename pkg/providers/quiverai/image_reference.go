@@ -3,7 +3,6 @@ package quiverai
 import (
 	"encoding/base64"
 	"fmt"
-	"net/url"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -30,40 +29,16 @@ var supportedReferenceMediaTypes = map[string]bool{
 
 // validateQuiverAIImageURL validates that url is a parseable HTTP/HTTPS URL,
 // mirroring the TS SDK's validateQuiverAIImageUrl: the argument is always
-// "url" and the result is the WHATWG href (lower-case scheme and host, default
-// port dropped, empty path "/"), like `new URL(url).toString()`.
+// "url" and the result is the WHATWG href, like `new URL(url).toString()`.
 func validateQuiverAIImageURL(rawURL, _ string) (string, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	href, scheme, ok := whatwgParseURL(rawURL)
+	if !ok {
 		return "", invalidQuiverArgument("url", "QuiverAI image URLs must be valid HTTP or HTTPS URLs.")
 	}
-	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return "", invalidQuiverArgument("url", "QuiverAI image URLs must use HTTP or HTTPS.")
 	}
-	return whatwgHref(parsed), nil
-}
-
-// whatwgHref serializes u like WHATWG URL.href for http(s) URLs.
-func whatwgHref(u *url.URL) string {
-	c := *u
-	c.Scheme = strings.ToLower(c.Scheme)
-	host := strings.ToLower(c.Hostname())
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	port := c.Port()
-	if (c.Scheme == "http" && port == "80") || (c.Scheme == "https" && port == "443") {
-		port = ""
-	}
-	if port != "" {
-		host += ":" + port
-	}
-	c.Host = host
-	if c.Path == "" && c.RawPath == "" {
-		c.Path = "/"
-	}
-	return c.String()
+	return href, nil
 }
 
 // validateQuiverAIReferenceBase64 validates a base64-encoded reference image,
@@ -123,7 +98,7 @@ func validateQuiverAIReferenceBytes(data []byte, argument string) error {
 
 // svgHeadPattern mirrors the TS SDK's isSvg head regex:
 // /^(?:(?:<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[\s\S]*?>)\s*)*<svg(?:\s|>)/i
-var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!DOCTYPE.*?>)\s*)*<svg(?:\s|>)`)
+var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!DOCTYPE.*?>)` + jsSpace + `*)*<svg(?:` + jsSpace + `|>)`)
 
 // svgTailPattern and svgSelfClosingPattern mirror
 // prepare-quiverai-image-reference.ts's isSvg suffix checks:
@@ -132,9 +107,13 @@ var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!D
 // svgStrictHeadPattern is the reference-image variant (at most one xml
 // declaration, comment and doctype, in that order):
 // /^(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--[\s\S]*?-->\s*)?(?:<!DOCTYPE[\s\S]*?>\s*)?<svg[\s>]/i
-var svgStrictHeadPattern = regexp.MustCompile(`(?is)^(?:<\?xml.*?\?>\s*)?(?:<!--.*?-->\s*)?(?:<!DOCTYPE.*?>\s*)?<svg[\s>]`)
-var svgTailPattern = regexp.MustCompile(`(?is)</svg>\s*$`)
-var svgSelfClosingPattern = regexp.MustCompile(`(?is)<svg(?:\s[^>]*)?/>\s*$`)
+var svgStrictHeadPattern = regexp.MustCompile(`(?is)^(?:<\?xml.*?\?>` + jsSpace + `*)?(?:<!--.*?-->` + jsSpace + `*)?(?:<!DOCTYPE.*?>` + jsSpace + `*)?<svg(?:` + jsSpace + `|>)`)
+var svgTailPattern = regexp.MustCompile(`(?is)</svg>` + jsSpace + `*$`)
+var svgSelfClosingPattern = regexp.MustCompile(`(?is)<svg(?:` + jsSpace + `[^>]*)?/>` + jsSpace + `*$`)
+
+// jsSpace is the JavaScript regular expression `\s` class (WhiteSpace and
+// LineTerminator), wider than Go's ASCII-only `\s`.
+const jsSpace = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
 
 const maxSVGHeadSniffBytes = 4096
 
@@ -147,7 +126,8 @@ func isSVGHead(data []byte) bool {
 	if len(head) > maxSVGHeadSniffBytes {
 		head = head[:maxSVGHeadSniffBytes]
 	}
-	text := strings.TrimLeft(string(head), " \t\n\r\f\v")
+	// TextDecoder drops a leading UTF-8 BOM; trimStart then strips JS whitespace.
+	text := providerutils.JSTrimStart(strings.TrimPrefix(string(head), "\uFEFF"))
 	return svgHeadPattern.MatchString(text)
 }
 
@@ -160,7 +140,7 @@ func isSVGBytes(data []byte) bool {
 	if !utf8.Valid(data) {
 		return false
 	}
-	text := strings.TrimSpace(strings.TrimPrefix(string(data), string(rune(0xFEFF))))
+	text := providerutils.JSTrim(strings.TrimPrefix(string(data), "\uFEFF"))
 	if !svgStrictHeadPattern.MatchString(text) {
 		return false
 	}
@@ -535,11 +515,11 @@ func toQuiverAIEditSource(file provider.ImageFile) (map[string]interface{}, erro
 func toQuiverAIAnimationSource(file provider.ImageFile) (map[string]interface{}, error) {
 	if file.Type == "url" || (file.URL != "" && len(file.Data) == 0) {
 		// TS parses the URL only to validate it and sends the original string.
-		parsed, err := url.Parse(file.URL)
-		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		_, scheme, ok := whatwgParseURL(file.URL)
+		if !ok {
 			return nil, invalidQuiverArgument("files", "QuiverAI animate requires a valid HTTP or HTTPS SVG URL.")
 		}
-		if scheme := strings.ToLower(parsed.Scheme); scheme != "http" && scheme != "https" {
+		if scheme != "http" && scheme != "https" {
 			return nil, invalidQuiverArgument("files", "QuiverAI animate requires an HTTP or HTTPS SVG URL.")
 		}
 		return map[string]interface{}{"url": file.URL}, nil

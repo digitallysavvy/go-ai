@@ -137,7 +137,7 @@ func TestProdiaAPIHelpers_PostMultipartAndMediaTypeExt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildMultipartJobRequest() error = %v", err)
 	}
-	respBody, headers, err := postMultipartToProdia(context.Background(), srv.URL, "k", buf, ct, "multipart/form-data")
+	respBody, headers, err := postMultipartToProdia(context.Background(), New(Config{APIKey: "k", BaseURL: srv.URL}).client, buf, ct, "multipart/form-data", nil)
 	if err != nil {
 		t.Fatalf("postMultipartToProdia() error = %v", err)
 	}

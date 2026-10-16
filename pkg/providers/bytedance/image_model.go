@@ -108,6 +108,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		})
 	}
 
+	// TS: the response timestamp is taken before the options are parsed and
+	// the request is sent.
+	currentDate := time.Now()
+
 	byteDanceOptions, err := extractImageProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -150,7 +154,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Base64Images: images,
 		Usage:        mapImageUsage(imgResp.Usage),
 		Response: &types.ResponseMetadata{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(httpResp.Headers),
 		},

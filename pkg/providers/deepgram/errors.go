@@ -37,13 +37,13 @@ func handleError(providerName string, err error) error {
 		} else {
 			payload = deepgramErrorPayload{}
 		}
-		providerErr := providererrors.NewProviderError(providerName, statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
+		providerErr := providererrors.NewProviderErrorFromResponse(providerName, 0, code, message, err)
 		if payload.RequestID != "" {
 			providerErr.Data = map[string]interface{}{"requestId": payload.RequestID}
 		}
 		return providerErr
 	}
-	return providererrors.NewProviderError(providerName, 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }

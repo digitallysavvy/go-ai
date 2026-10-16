@@ -226,3 +226,33 @@ func validateBFLPollBody(body []byte) error {
 	}
 	return nil
 }
+
+// bflVideoPollNode is bflVideoPollSchema (black-forest-labs-video-model.ts):
+// status and state are plain optional strings (unknown values are allowed),
+// details and result are unknown, cost is nullish.
+var bflVideoPollNode = zodlite.Object(
+	zodlite.F("status", zodlite.Optional(zodlite.String)),
+	zodlite.F("state", zodlite.Optional(zodlite.String)),
+	zodlite.F("details", zodlite.Unknown),
+	zodlite.F("result", zodlite.Unknown),
+	zodlite.F("cost", zodlite.Nullish(zodlite.Number)),
+)
+
+// validateBFLVideoPollBody checks a video poll response like
+// bflVideoPollSchema, including its "Missing status" refinement.
+func validateBFLVideoPollBody(body []byte) error {
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return err
+	}
+	if bad := bflVideoPollNode(value, true, nil); bad != nil {
+		return bad
+	}
+	obj, _ := value.(map[string]interface{})
+	if _, ok := obj["status"]; !ok {
+		if _, ok := obj["state"]; !ok {
+			return &providerutils.ChunkSchemaError{Code: "custom", Message: "Missing status in Black Forest Labs poll response"}
+		}
+	}
+	return nil
+}

@@ -63,7 +63,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Create prediction
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/predictions", Body: reqBody, Headers: opts.Headers})
 	if err != nil {
-		return nil, providererrors.NewProviderError("replicate", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

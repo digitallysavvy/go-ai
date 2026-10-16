@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -111,15 +112,6 @@ func newTopazAPIError(statusCode int, body []byte, headers http.Header) error {
 	if data.ErrorCode != nil {
 		errorCode = *data.ErrorCode
 	}
-	err := providererrors.NewProviderError("topaz", statusCode, errorCode, message, nil)
-	err.ResponseBody = string(body)
-	if headers != nil {
-		err.ResponseHeaders = map[string]string{}
-		for k, vals := range headers {
-			if len(vals) > 0 {
-				err.ResponseHeaders[k] = vals[0]
-			}
-		}
-	}
-	return err
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderErrorFromResponse("topaz", 0, errorCode, message, cause)
 }

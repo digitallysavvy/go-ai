@@ -7,17 +7,28 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // hfErrorPayload mirrors TS huggingfaceErrorDataSchema:
 // { error: { message: string, type?: string, code?: string } }.
 type hfErrorPayload struct {
 	Error *struct {
-		Message *string `json:"message"`
-		Type    *string `json:"type"`
-		Code    *string `json:"code"`
+		Message *string         `json:"message"`
+		Type    json.RawMessage `json:"type"`
+		Code    json.RawMessage `json:"code"`
 	} `json:"error"`
+}
+
+// optionalString reports whether raw is absent or a JSON string: zod
+// `z.string().optional()` rejects an explicit null.
+func optionalString(raw json.RawMessage) (value string, ok bool) {
+	if len(raw) == 0 {
+		return "", true
+	}
+	if string(raw) == "null" || json.Unmarshal(raw, &value) != nil {
+		return "", false
+	}
+	return value, true
 }
 
 // parseHuggingFaceError converts a non-2xx HTTP response into a
@@ -36,19 +47,13 @@ func parseHuggingFaceError(err error) error {
 	var payload hfErrorPayload
 	if unmarshalErr := json.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil &&
 		payload.Error != nil && payload.Error.Message != nil {
-		message = *payload.Error.Message
-		if payload.Error.Code != nil {
-			code = *payload.Error.Code
+		_, typeOK := optionalString(payload.Error.Type)
+		errorCode, codeOK := optionalString(payload.Error.Code)
+		if typeOK && codeOK {
+			message = *payload.Error.Message
+			code = errorCode
 		}
 	}
 
-	return &providererrors.ProviderError{
-		Provider:        "huggingface",
-		StatusCode:      statusErr.StatusCode,
-		ErrorCode:       code,
-		Message:         message,
-		ResponseHeaders: providerutils.ExtractHeaders(statusErr.Headers),
-		ResponseBody:    string(statusErr.Body),
-		Cause:           err,
-	}
+	return providererrors.NewProviderErrorFromResponse("huggingface", 0, code, message, err)
 }

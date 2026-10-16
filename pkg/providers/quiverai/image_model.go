@@ -528,7 +528,7 @@ func (m *ImageModel) handleError(err error) error {
 		if apiErr, ok := parseQuiverAIErrorBody(statusErr.Body); ok {
 			code, message = apiErr.Code, apiErr.Message
 		}
-		perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, code, message, err)
+		perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, code, message, err)
 		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 		return perr
 	}

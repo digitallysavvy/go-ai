@@ -187,7 +187,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		if converted := parseHuggingFaceError(err); converted != nil {
 			return nil, converted
 		}
-		return nil, providererrors.NewProviderError("huggingface", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	responseHeaders := providerutils.ExtractHeaders(httpResp.Headers)
@@ -380,7 +380,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		if converted := parseHuggingFaceError(err); converted != nil {
 			return nil, converted
 		}
-		return nil, providererrors.NewProviderError("huggingface", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	s := newHFStream(httpResp.Body, warnings, m.provider.responsesProviderName())

@@ -3,6 +3,7 @@ package alibaba
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -519,6 +520,7 @@ func containsString(list []string, s string) bool {
 // video-synthesis endpoint and returns an opaque operation reference
 // (TS AlibabaVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	currentDate := time.Now() // TS: taken before the request is built and sent
 	// TS buildRequest runs parseProviderOptions first; invalid options throw.
 	if err := validateVideoProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
@@ -567,7 +569,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  req.Warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHTTPHeaders(httpResp.Headers),
 		},
@@ -581,6 +583,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // response), matching TS's `getFromApi({ validateUrl: false })` for this
 // call, so no additional SSRF validation is required.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now() // TS: taken before the status request
 	var operation alibabaOperation
 	if err := json.Unmarshal(opts.Operation, &operation); err != nil {
 		return nil, fmt.Errorf("alibaba: invalid operation reference: %w", err)
@@ -598,7 +601,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenHTTPHeaders(httpResp.Headers),
 	}
@@ -752,15 +755,17 @@ func (m *VideoModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
-	var httpErr *internalhttp.HTTPStatusError
-	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
-		httpErr = statusErr
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
 	}
-	if httpErr == nil {
-		return providererrors.NewVideoGenerationError("alibaba", m.modelID, err.Error(), err)
+	var httpErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		// TS postJsonToApi / getFromApi let a transport failure (abort,
+		// "Cannot connect to API") propagate unchanged.
+		return err
 	}
 	message, code := alibabaNativeErrorMessage(httpErr.StatusCode, httpErr.Body)
-	return providererrors.NewProviderError("alibaba", httpErr.StatusCode, code, message, err)
+	return providererrors.NewProviderErrorFromResponse("alibaba", 0, code, message, err)
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {

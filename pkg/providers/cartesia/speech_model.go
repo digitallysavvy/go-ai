@@ -60,9 +60,12 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 	}
 	parts := strings.Split(strings.ToLower(outputFormat), "_")
 	formatName := parts[0]
+	// TS destructures `[formatName, sampleRateText, ...extraParts]`: a
+	// trailing underscore ("mp3_") gives an empty, but present, sample rate.
 	var sampleRateText string
+	hasSampleRate := len(parts) > 1
 	var extraParts []string
-	if len(parts) > 1 {
+	if hasSampleRate {
 		sampleRateText = parts[1]
 		extraParts = parts[2:]
 	}
@@ -79,7 +82,7 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 			Feature: "outputFormat",
 			Details: fmt.Sprintf("Unknown output format %q. Falling back to mp3. Use providerOptions.cartesia to configure container, encoding, and sampleRate directly.", outputFormat),
 		})
-	} else if sampleRateText != "" {
+	} else if hasSampleRate {
 		parsedRate, err := strconv.Atoi(sampleRateText)
 		if len(extraParts) == 0 && err == nil && cartesiaSampleRates[parsedRate] {
 			resolved.SampleRate = parsedRate

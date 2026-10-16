@@ -215,25 +215,41 @@ func (m *ImageModel) handleError(err error) error {
 	if errors.As(err, &statusErr) {
 		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 	}
-	return providererrors.NewProviderError("replicate", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // replicateErrorMessage mirrors TS replicateFailedResponseHandler: the
 // message is `detail ?? error ?? 'Unknown Replicate error'` of a JSON object
 // error body; a body that is not that shape falls back to the status text.
 func replicateErrorMessage(status int, body []byte) string {
+	// z.string().optional(): absent is fine, null or a non-string is off-schema.
 	var parsed struct {
-		Detail *string `json:"detail"`
-		Error  *string `json:"error"`
+		Detail json.RawMessage `json:"detail"`
+		Error  json.RawMessage `json:"error"`
+	}
+	optional := func(raw json.RawMessage) (value string, present, ok bool) {
+		if len(raw) == 0 {
+			return "", false, true
+		}
+		if string(raw) == "null" || json.Unmarshal(raw, &value) != nil {
+			return "", false, false
+		}
+		return value, true, true
 	}
 	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
-		switch {
-		case parsed.Detail != nil:
-			return *parsed.Detail
-		case parsed.Error != nil:
-			return *parsed.Error
+		detail, hasDetail, detailOK := optional(parsed.Detail)
+		errorField, hasError, errorOK := optional(parsed.Error)
+		if detailOK && errorOK {
+			switch {
+			case hasDetail:
+				return detail
+			case hasError:
+				return errorField
+			}
+			return "Unknown Replicate error"
 		}
-		return "Unknown Replicate error"
 	}
 	return http.StatusText(status)
 }
@@ -401,7 +417,9 @@ func (m *ImageModel) handlePollError(err error) error {
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
-	return fmt.Errorf("failed to check status: %w", err)
+	// TS getFromApi lets any other failure (an abort, "Cannot connect to
+	// API", a URL rejected by validateUrl) propagate unchanged.
+	return err
 }
 
 // completedImagePrediction mirrors TS getCompletedPrediction.

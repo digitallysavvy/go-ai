@@ -84,6 +84,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		return nil, err
 	}
 	provOpts := extractVideoProviderOptions(opts)
+	currentDate := time.Now() // TS: taken before the request is built and sent
 
 	jobConfig := map[string]interface{}{}
 	if opts.PromptSet || opts.Prompt != "" {
@@ -99,12 +100,6 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	body := map[string]interface{}{
 		"type":   m.modelID,
 		"config": jobConfig,
-	}
-
-	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	apiKey, err := m.prov.effectiveAPIKey()
-	if err != nil {
-		return nil, err
 	}
 
 	var (
@@ -125,7 +120,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			return nil, fmt.Errorf("prodia: failed to build multipart request: %w", err)
 		}
 
-		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, reqURL, apiKey, buf, contentType, "multipart/form-data; video/mp4", m.prov.config.Headers, opts.Headers)
+		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, m.prov.client, buf, contentType, "multipart/form-data; video/mp4", opts.Headers)
 	} else {
 		// txt2vid: JSON request.
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{
@@ -196,7 +191,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			},
 		},
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   headerMap,
 		},
@@ -205,15 +200,8 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 
 func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *providererrors.ProviderError {
 	message := prodiaErrorMessage(statusCode, body)
-	err := providererrors.NewProviderError("prodia", statusCode, "", message, nil)
-	err.ResponseBody = string(body)
-	err.ResponseHeaders = map[string]string{}
-	for k, vals := range headers {
-		if len(vals) > 0 {
-			err.ResponseHeaders[k] = vals[0]
-		}
-	}
-	return err
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderErrorFromResponse("prodia", 0, "", message, cause)
 }
 
 // prodiaErrorMessage mirrors TS prodiaFailedResponseHandler: the body must

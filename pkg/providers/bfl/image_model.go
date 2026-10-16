@@ -109,7 +109,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	endpoint := m.getEndpoint()
 	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, endpoint, reqBody, opts.Headers))
 	if err != nil {
-		return nil, providererrors.NewProviderError("bfl", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

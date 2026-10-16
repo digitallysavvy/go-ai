@@ -160,11 +160,13 @@ func (m *EmbeddingModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := alibabaNativeErrorMessage(statusErr.StatusCode, statusErr.Body)
-		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		return providerErr
+		return providererrors.NewProviderErrorFromResponse(m.Provider(), 0, code, message, err)
 	}
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
+	// TS postJsonToApi lets a transport failure propagate unchanged.
+	return err
 }
 
 func extractAlibabaEmbeddingOptions(opts *provider.EmbedModelOptions) (AlibabaEmbeddingModelOptions, error) {

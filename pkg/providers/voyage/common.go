@@ -22,7 +22,9 @@ func handleError(err error) error {
 	if errors.As(err, &statusErr) {
 		return providererrors.NewProviderErrorFromResponse("voyage", 0, "", voyageErrorMessage(statusErr.StatusCode, statusErr.Body), err)
 	}
-	return providererrors.NewProviderError("voyage", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // voyageErrorMessage mirrors TS voyageFailedResponseHandler: {"detail":string}

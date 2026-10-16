@@ -251,12 +251,11 @@ func handleTranscriptionError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := providerutils.NestedErrorMessage(statusErr.StatusCode, statusErr.Body)
-		providerErr := providererrors.NewProviderError("elevenlabs", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		return providererrors.NewProviderErrorFromResponse("elevenlabs", 0, code, message, err)
 	}
-	return providererrors.NewProviderError("elevenlabs", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // schemaWord keeps only the keys of the TS response schema's word object

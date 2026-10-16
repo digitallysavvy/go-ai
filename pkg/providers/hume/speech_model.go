@@ -126,7 +126,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	if humeOpts != nil && humeOpts.Context != nil {
 		if humeOpts.Context.HasGenerationID() {
 			body["context"] = map[string]interface{}{"generation_id": humeOpts.Context.GenerationID}
-		} else if len(humeOpts.Context.Utterances) > 0 {
+		} else if humeOpts.Context.Utterances != nil {
 			utterances := make([]map[string]interface{}, 0, len(humeOpts.Context.Utterances))
 			for _, u := range humeOpts.Context.Utterances {
 				entry := map[string]interface{}{"text": u.Text}
