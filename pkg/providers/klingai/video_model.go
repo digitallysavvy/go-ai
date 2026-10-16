@@ -336,13 +336,17 @@ func (m *VideoModel) handlePollError(err error) error {
 // body when the envelope cannot be parsed or carries no message.
 func parseKlingAIErrorBody(statusCode int, body []byte) error {
 	var envelope struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
+		Code    *float64 `json:"code"`
+		Message *string  `json:"message"`
 	}
-	if jsonErr := json.Unmarshal(body, &envelope); jsonErr == nil && envelope.Message != "" {
-		return NewError(envelope.Code, envelope.Message, "")
+	if jsonErr := json.Unmarshal(body, &envelope); jsonErr == nil && envelope.Code != nil && envelope.Message != nil {
+		e := NewError(int(*envelope.Code), *envelope.Message, "")
+		e.httpStatus, e.httpBody = statusCode, body
+		return e
 	}
-	return NewVideoGenerationError(fmt.Sprintf("API returned status %d: %s", statusCode, string(body)))
+	// TS createJsonErrorResponseHandler: a body that does not match the
+	// error schema gives the HTTP status text as the message.
+	return &Error{Code: statusCode, Message: http.StatusText(statusCode), httpStatus: statusCode, httpBody: body}
 }
 
 // detectMode detects the video generation mode from the model ID suffix

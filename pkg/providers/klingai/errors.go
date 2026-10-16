@@ -14,6 +14,18 @@ type Error struct {
 	ErrorCode string // semantic error code (e.g. ErrCodeKlingVideoMissingOptions)
 	Message   string
 	Details   string
+
+	// httpStatus and httpBody carry the non-2xx HTTP response this error was
+	// built from, so retry classification follows the TS APICallError rule
+	// (only 408, 409, 429 and 5xx are retryable) instead of retrying every
+	// error. Zero for errors that are not an HTTP response.
+	httpStatus int
+	httpBody   []byte
+}
+
+// HTTPStatusDetails implements providererrors.HTTPStatusDetails.
+func (e *Error) HTTPStatusDetails() (int, map[string]string, []byte) {
+	return e.httpStatus, nil, e.httpBody
 }
 
 // Error implements the error interface
