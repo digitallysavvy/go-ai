@@ -708,9 +708,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	sessionArgs.turnInFlight = respawnStrategy != nil && (respawnStrategy.mode == acpRecoveryDiskReplay || respawnStrategy.mode == acpRecoveryLossyRerun)
 	if respawnStrategy != nil && (respawnStrategy.mode == acpRecoveryDiskReplay || respawnStrategy.mode == acpRecoveryLossyRerun) {
 		sessionArgs.recoveryStatus = &recoveryInfo{Mode: string(respawnStrategy.mode), Reason: respawnStrategy.reason}
-	} else if resumeData.Recovery != nil {
-		sessionArgs.recoveryStatus = &recoveryInfo{Mode: resumeData.Recovery.Mode, Reason: resumeData.Recovery.Reason}
 	}
+	// TS leaves recoveryStatus undefined here (cold-restore or fresh): a stale
+	// persisted `recovery` marker is not carried into the next snapshot.
 	if coldRestoration != "" {
 		sessionArgs.restoration = &restorationInfo{Method: coldRestoration}
 	} else if resumeData.Restoration != nil {
