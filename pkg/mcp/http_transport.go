@@ -503,7 +503,7 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 			}
 			if resp, doErr := client.Do(req); doErr == nil && resp != nil {
 				if resp.Body != nil {
-					_, _ = io.Copy(io.Discard, resp.Body)
+					drainBody(resp.Body)
 					resp.Body.Close() //nolint:errcheck
 				}
 			}
@@ -722,7 +722,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// client's pool -- JS's GC reclaims an unread body implicitly, Go's
 		// http.Client does not.
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		if !t.isModernProtocol() {
@@ -740,7 +740,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// notification's response body is never inspected. Go must still
 		// drain and close it to return the connection to the pool.
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		return nil
@@ -796,7 +796,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		t.sseMu.Unlock()
 		if closing {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 			return nil
 		}
@@ -1193,7 +1193,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// this is silent (no error reported, no reconnection scheduled).
 	if resp.StatusCode == http.StatusMethodNotAllowed {
 		if resp.Body != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		connCancel()

@@ -350,7 +350,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		message := fmt.Sprintf("MCP SSE Transport Error: POSTing to endpoint (HTTP %d): %s", resp.StatusCode, string(body))
 		return t.sendFailed(ctx, NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, endpoint.String(), string(body))))
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	drainBody(resp.Body)
 	return nil
 }
 

@@ -50,3 +50,49 @@ func TestCallTimeoutAbortsSlowJSONReply(t *testing.T) {
 }
 
 func mustJSON(v interface{}) []byte { b, _ := json.Marshal(v); return b }
+
+// TS never reads the body of an accepted POST, so a server that keeps the
+// response open cannot hold Send once the cap is read.
+func TestSendDoesNotWaitForEndlessAcceptedBody(t *testing.T) {
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusAccepted)
+		chunk := make([]byte, 64<<10)
+		fl := w.(http.Flusher)
+		for {
+			select {
+			case <-done:
+				return
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			fl.Flush()
+		}
+	}))
+	defer srv.Close()
+	defer close(done)
+	tr := NewHTTPTransport(HTTPTransportConfig{URL: srv.URL})
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close() //nolint:errcheck
+	msg, err := CreateNotification("notifications/initialized", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- tr.Send(context.Background(), msg) }()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send is stuck reading an endless response body")
+	}
+}
