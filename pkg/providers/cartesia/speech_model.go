@@ -2,6 +2,7 @@ package cartesia
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -219,8 +220,10 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		body["language"] = opts.Language
 	}
 	// Provider-specific options override the corresponding generic options.
-	if cartesiaOpts != nil && cartesiaOpts.Language != "" {
-		body["language"] = cartesiaOpts.Language
+	// TS `cartesiaOptions.language != null`: an empty string that is present
+	// still overrides.
+	if lang, ok := speechLanguageOption(opts.ProviderOptions, cartesiaOpts); ok {
+		body["language"] = lang
 	}
 
 	resolvedSpeed := opts.Speed
@@ -248,4 +251,26 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	}
 
 	return body, warnings
+}
+
+// speechLanguageOption reports providerOptions.cartesia.language and whether
+// it is present and a string (the typed options struct cannot tell "" from
+// unset, so a map-shaped option is consulted directly).
+func speechLanguageOption(providerOptions map[string]interface{}, parsed *SpeechModelOptions) (string, bool) {
+	if parsed != nil && parsed.Language != "" {
+		return parsed.Language, true
+	}
+	raw, ok := providerOptions["cartesia"]
+	if !ok || raw == nil {
+		return "", false
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		b, err := json.Marshal(raw)
+		if err != nil || json.Unmarshal(b, &m) != nil {
+			return "", false
+		}
+	}
+	lang, ok := m["language"].(string)
+	return lang, ok
 }
