@@ -40,3 +40,16 @@ func TestR33_EmptyStringFallbacks(t *testing.T) {
 		t.Errorf("error = %q", status.Error)
 	}
 }
+
+// apiKey?.trim() is JS trim: a BOM-only key is empty, a NEL key is a key.
+func TestR33_APIKeyTrimIsJSTrim(t *testing.T) {
+	t.Setenv("KLINGAI_API_KEY", "")
+	t.Setenv("KLINGAI_ACCESS_KEY", "")
+	t.Setenv("KLINGAI_SECRET_KEY", "")
+	if tok, err := resolveKlingAIAuthToken("\u0085", "", ""); err != nil || tok != "\u0085" {
+		t.Errorf("NEL key: %q, %v", tok, err)
+	}
+	if _, err := resolveKlingAIAuthToken("\ufeff ", "", ""); err == nil {
+		t.Error("BOM-only key accepted")
+	}
+}

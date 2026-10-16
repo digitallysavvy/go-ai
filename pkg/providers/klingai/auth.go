@@ -30,7 +30,7 @@ import (
 //
 // See https://kling.ai/document-api/guides/get-started/quick-start.
 func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error) {
-	if explicit := strings.TrimSpace(apiKey); explicit != "" {
+	if explicit := providerutils.JSTrim(apiKey); explicit != "" {
 		return explicit, nil
 	}
 
@@ -38,7 +38,7 @@ func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error
 		return generateJWTToken(accessKey, secretKey)
 	}
 
-	if envAPIKey := strings.TrimSpace(os.Getenv("KLINGAI_API_KEY")); envAPIKey != "" {
+	if envAPIKey := providerutils.JSTrim(os.Getenv("KLINGAI_API_KEY")); envAPIKey != "" {
 		return envAPIKey, nil
 	}
 
@@ -58,10 +58,10 @@ func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error
 // trimmedSettingPresent reports whether settingValue (trimmed) is non-empty,
 // or, when it is empty, whether the named environment variable (trimmed) is.
 func trimmedSettingPresent(settingValue, envVar string) bool {
-	if strings.TrimSpace(settingValue) != "" {
+	if providerutils.JSTrim(settingValue) != "" {
 		return true
 	}
-	return strings.TrimSpace(os.Getenv(envVar)) != ""
+	return providerutils.JSTrim(os.Getenv(envVar)) != ""
 }
 
 // generateJWTToken generates a JWT token for KlingAI API authentication from

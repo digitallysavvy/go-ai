@@ -440,7 +440,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 func addVideoUnsupportedWarnings(opts *provider.VideoModelV3CallOptions, warnings *[]types.Warning) {
 	// generateVideo requires a prompt, so an empty one is the expected way
 	// to call an enhancement model and does not warrant a warning.
-	if opts.PromptSet && strings.TrimSpace(opts.Prompt) != "" {
+	if opts.PromptSet && providerutils.JSTrim(opts.Prompt) != "" {
 		*warnings = append(*warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "prompt",
