@@ -63,3 +63,24 @@ func TestValidateLifecycleStateDataDeepChecksStartConfigMembers(t *testing.T) {
 		t.Errorf("coldSession must ignore omitted keys: %v", err)
 	}
 }
+
+// The conflicting key named by the error follows configuration order (a JS Set
+// iterates in insertion order), never Go's map order.
+func TestValidateImplementationConflictNamesFirstCredentialKey(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		impl := simpleTestImplementation()
+		impl.ForwardEnv = []string{"ZED", "ALPHA", "MID"}
+		impl.CredentialEnv = []string{"MID", "ZED", "ALPHA"}
+		err := validateImplementation(impl)
+		want := `ACP runtime environment key "MID" cannot be configured in both forwardEnv and credentialEnv.`
+		if err == nil || err.Error() != want {
+			t.Fatalf("iteration %d: err = %v, want %s", i, err, want)
+		}
+	}
+}
+
+func TestJSONStringKeepsLiteralBackslashU2028(t *testing.T) {
+	if got := jsonString("a\\u2028b "); got != "\"a\\\\u2028b \"" {
+		t.Fatalf("got %q", got)
+	}
+}

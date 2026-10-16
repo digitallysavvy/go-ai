@@ -78,12 +78,19 @@ func validateImplementation(impl implementation) error {
 	}
 	forwarded := toSet(impl.ForwardEnv)
 	credential := toSet(impl.CredentialEnv)
-	for k := range credential {
+	// JS iterates the credential Set in configuration order; the conflict named
+	// by the error must not depend on Go's map order.
+	for _, k := range impl.CredentialEnv {
 		if forwarded[k] {
 			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and credentialEnv.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
+	envKeys := make([]string, 0, len(impl.Env))
 	for k := range impl.Env {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	for _, k := range envKeys {
 		if forwarded[k] {
 			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and env.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
@@ -407,30 +414,10 @@ func writeSortedJSON(out *strings.Builder, value any) {
 }
 
 // jsonString is JSON.stringify for a string: no HTML escaping and U+2028 /
-// U+2029 left literal (Go's encoder always escapes them).
+// U+2029 left literal (jsstr handles both).
 func jsonString(s string) string {
 	encoded, _ := encodeNoEscape(s)
-	if !strings.Contains(encoded, `\u202`) {
-		return encoded
-	}
-	var b strings.Builder
-	for i := 0; i < len(encoded); i++ {
-		if encoded[i] == '\\' && i+1 < len(encoded) {
-			if rest := encoded[i+1:]; strings.HasPrefix(rest, "u2028") {
-				b.WriteString("\u2028")
-				i += 5
-				continue
-			} else if strings.HasPrefix(rest, "u2029") {
-				b.WriteString("\u2029")
-				i += 5
-				continue
-			}
-			b.WriteByte(encoded[i])
-			i++
-		}
-		b.WriteByte(encoded[i])
-	}
-	return b.String()
+	return encoded
 }
 
 // encodeNoEscape is json.Marshal without HTML escaping (`<`, `>`, `&` stay
