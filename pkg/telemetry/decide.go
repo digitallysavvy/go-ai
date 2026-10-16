@@ -160,9 +160,9 @@ func FireOnDecideStart(ctx context.Context, e DecideStartEvent) context.Context 
 	result := ctx
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(decideStartHandler); ok {
-			result = handler.OnDecideStart(ctx, e)
+			callIntegration(func() { result = handler.OnDecideStart(ctx, e) })
 		} else if handler, ok := integration.(evaluateStartHandler); ok {
-			result = handler.OnEvaluateStart(ctx, e)
+			callIntegration(func() { result = handler.OnEvaluateStart(ctx, e) })
 		}
 	}
 	return result
@@ -176,9 +176,9 @@ func FireOnDecideEnd(ctx context.Context, e DecideEndEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnDecideEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(decideEndHandler); ok {
-			handler.OnDecideEnd(ctx, e)
+			callIntegration(func() { handler.OnDecideEnd(ctx, e) })
 		} else if handler, ok := integration.(evaluateEndHandler); ok {
-			handler.OnEvaluateEnd(ctx, e)
+			callIntegration(func() { handler.OnEvaluateEnd(ctx, e) })
 		}
 	}
 }
@@ -192,9 +192,9 @@ func FireOnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartE
 	PublishDiagnostic(ctx, DiagnosticEventOnDecisionModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(decisionModelCallStartHandler); ok {
-			handler.OnDecisionModelCallStart(ctx, e)
+			callIntegration(func() { handler.OnDecisionModelCallStart(ctx, e) })
 		} else if handler, ok := integration.(evaluationModelCallStartHandler); ok {
-			handler.OnEvaluationModelCallStart(ctx, e)
+			callIntegration(func() { handler.OnEvaluationModelCallStart(ctx, e) })
 		}
 	}
 }
@@ -208,9 +208,9 @@ func FireOnDecisionModelCallEnd(ctx context.Context, e DecisionModelCallEndEvent
 	PublishDiagnostic(ctx, DiagnosticEventOnDecisionModelCallEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(decisionModelCallEndHandler); ok {
-			handler.OnDecisionModelCallEnd(ctx, e)
+			callIntegration(func() { handler.OnDecisionModelCallEnd(ctx, e) })
 		} else if handler, ok := integration.(evaluationModelCallEndHandler); ok {
-			handler.OnEvaluationModelCallEnd(ctx, e)
+			callIntegration(func() { handler.OnEvaluationModelCallEnd(ctx, e) })
 		}
 	}
 }

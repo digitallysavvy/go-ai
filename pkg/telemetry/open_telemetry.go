@@ -701,7 +701,10 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
-	if recordOutputs && len(content) > 0 {
+	// TS records gen_ai.output.messages for every call, an empty response
+	// included ([{role, parts: [], finish_reason}]); only an event that carries
+	// no content at all (nil) skips it.
+	if recordOutputs && e.Content != nil {
 		if b, err := json.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
