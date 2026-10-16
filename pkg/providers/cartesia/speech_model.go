@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -83,9 +83,10 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 			Details: fmt.Sprintf("Unknown output format %q. Falling back to mp3. Use providerOptions.cartesia to configure container, encoding, and sampleRate directly.", outputFormat),
 		})
 	} else if hasSampleRate {
-		parsedRate, err := strconv.Atoi(sampleRateText)
-		if len(extraParts) == 0 && err == nil && cartesiaSampleRates[parsedRate] {
-			resolved.SampleRate = parsedRate
+		// TS Number(sampleRateText) + Number.isInteger + the rate list.
+		parsedRate, ok := providerutils.JSNumber(sampleRateText)
+		if len(extraParts) == 0 && ok && parsedRate == math.Trunc(parsedRate) && cartesiaSampleRates[int(parsedRate)] {
+			resolved.SampleRate = int(parsedRate)
 		} else {
 			*warnings = append(*warnings, types.Warning{
 				Type:    "unsupported",

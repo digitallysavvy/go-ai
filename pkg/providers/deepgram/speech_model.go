@@ -302,52 +302,6 @@ func jsParseInt(s string) (float64, error) {
 	return strconv.ParseFloat(s[:end], 64)
 }
 
-// jsNumber is JS Number(s) for a string: ok is false when the result is NaN.
-func jsNumber(s string) (float64, bool) {
-	s = providerutils.JSTrim(s)
-	if s == "" {
-		return 0, true
-	}
-	if len(s) > 2 && s[0] == '0' {
-		base := 0
-		switch s[1] {
-		case 'x', 'X':
-			base = 16
-		case 'o', 'O':
-			base = 8
-		case 'b', 'B':
-			base = 2
-		}
-		if base != 0 {
-			if strings.ContainsAny(s[2:], "_+-") {
-				return 0, false
-			}
-			u, err := strconv.ParseUint(s[2:], base, 64)
-			if err != nil {
-				return 0, false
-			}
-			return float64(u), true
-		}
-	}
-	switch s {
-	case "Infinity", "+Infinity":
-		return math.Inf(1), true
-	case "-Infinity":
-		return math.Inf(-1), true
-	}
-	// Reject Go-only float syntax (underscores, hex floats, inf/nan words).
-	for _, c := range s {
-		if (c < '0' || c > '9') && c != '.' && c != 'e' && c != 'E' && c != '+' && c != '-' {
-			return 0, false
-		}
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil && !errors.Is(err, strconv.ErrRange) {
-		return 0, false
-	}
-	return f, true
-}
-
 // jsNumString is JS String(number): plain digits below 1e21, "1e+21" above.
 func jsNumString(f float64) string {
 	if math.Abs(f) >= 1e21 {
@@ -493,7 +447,7 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 		bitRateStr := fmt.Sprint(opts.BitRate)
 		// TS Number(bitRate): a non-numeric string is NaN, so every range
 		// comparison is false (opus/aac accept it) and mp3's list check fails.
-		bitRateNum, numOK := jsNumber(bitRateStr)
+		bitRateNum, numOK := providerutils.JSNumber(bitRateStr)
 		if !numOK {
 			bitRateNum = math.NaN()
 		}
@@ -592,7 +546,7 @@ func headerNumber(headers http.Header, name string) interface{} {
 	if len(vals) == 0 {
 		return nil
 	}
-	f, ok := jsNumber(vals[0])
+	f, ok := providerutils.JSNumber(vals[0])
 	if !ok || math.IsNaN(f) {
 		return nil
 	}
