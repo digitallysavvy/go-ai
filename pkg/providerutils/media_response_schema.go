@@ -123,6 +123,8 @@ const (
 	// SchemaGatewayBatchItem is one /batch/results NDJSON line
 	// (gatewayBatchItemResultLineSchema: type text, id, status; extra keys pass).
 	SchemaGatewayBatchItem MediaResponseSchema = "gateway-batch-item"
+	// SchemaGatewayDecision is gatewayDecisionResponseSchema.
+	SchemaGatewayDecision MediaResponseSchema = "gateway-decision"
 	// SchemaMistralSpeech and SchemaXAISpeechTimestamps are the JSON speech
 	// bodies (mistralSpeechResponseSchema, xaiSpeechTimestampsResponseSchema).
 	SchemaMistralSpeech       MediaResponseSchema = "mistral-speech"
@@ -465,6 +467,18 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		SchemaGatewayBatchState:  zObj(gatewayBatchStatus...),
 		SchemaGatewayVideoStart:  zObj(fl("operation", zAny), fl("warnings", gatewayVideoWarnings), fl("providerMetadata", gatewayVideoMeta)),
 		SchemaGatewayVideoStatus: gatewayVideoStatus,
+		SchemaGatewayDecision: zObj(
+			fl("answers", zRec(zDiscType(map[string]zNode{
+				"choice":  zodlite.Typed("choice", fl("choice", zStr), fl("probabilities", zOptional(zRec(zNum)))),
+				"score":   zodlite.Typed("score", fl("score", zNum), fl("probabilities", zOptional(zRec(zNum)))),
+				"boolean": zodlite.Typed("boolean", fl("probability", zNum)),
+				"refusal": zodlite.Typed("refusal"),
+			}))),
+			fl("model", zOptional(zStr)),
+			fl("rounding", zOptional(zObj(fl("probabilityDecimals", zOptional(zNum)), fl("scoreDecimals", zOptional(zNum))))),
+			fl("usage", zOptional(zObj(fl("inputTokens", zOptional(zNum)), fl("outputTokens", zOptional(zNum))))),
+			fl("warnings", zOptional(zArr(gatewayWarning))),
+			fl("providerMetadata", zOptional(zRec(zRec(zAny))))),
 		SchemaGatewayBatchItem: zObj(fl("type", zodlite.Literal("text")), fl("id", zStr),
 			fl("status", zodlite.Enum("cancelled", "expired", "failed", "succeeded"))),
 		SchemaMistralSpeech: zObj(fl("audio_data", zStr)),
