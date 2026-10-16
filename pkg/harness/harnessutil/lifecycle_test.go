@@ -31,3 +31,15 @@ func TestValidateLifecycleStateObject(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateLifecycleStateObjectRejectsNullCredentialEnvValue(t *testing.T) {
+	var dst struct {
+		Env map[string]string `json:"sandboxCredentialEnvironment,omitempty"`
+	}
+	if err := ValidateLifecycleStateObject(json.RawMessage(`{"sandboxCredentialEnvironment":{"A":"x"}}`), &dst); err != nil {
+		t.Fatalf("string values must pass: %v", err)
+	}
+	if err := ValidateLifecycleStateObject(json.RawMessage(`{"sandboxCredentialEnvironment":{"A":null}}`), &dst); err == nil {
+		t.Fatal("null record value must be rejected like z.record(z.string(), z.string())")
+	}
+}

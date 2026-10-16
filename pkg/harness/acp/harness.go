@@ -143,6 +143,9 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 			return fmt.Errorf("ACP lifecycle state data: %s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
 		}
 	}
+	if err := harnessutil.RejectNullRecordValues(probe, "sandboxCredentialEnvironment"); err != nil {
+		return fmt.Errorf("ACP lifecycle state data: %w.", err) //nolint:staticcheck // mirrors the TS zod record
+	}
 	var v resumeStateData
 	if err := json.Unmarshal(data, &v); err != nil {
 		return fmt.Errorf("ACP lifecycle state data is invalid: %w", err)

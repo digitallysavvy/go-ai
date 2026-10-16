@@ -1327,3 +1327,13 @@ func TestDoStartACPCredentialBrokeringErrFailsStart(t *testing.T) {
 		t.Fatalf("DoStart error = %v, want the brokering error", err)
 	}
 }
+
+func TestValidateLifecycleStateDataRejectsNullCredentialEnvValue(t *testing.T) {
+	h := &acpHarness{}
+	if err := h.ValidateLifecycleStateData(json.RawMessage(`{"implementationIdentity":"x","sandboxCredentialEnvironment":{"A":"v"}}`)); err != nil {
+		t.Fatalf("string values must pass: %v", err)
+	}
+	if err := h.ValidateLifecycleStateData(json.RawMessage(`{"implementationIdentity":"x","sandboxCredentialEnvironment":{"A":null}}`)); err == nil {
+		t.Fatal("null record value must be rejected")
+	}
+}
