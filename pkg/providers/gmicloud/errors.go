@@ -58,7 +58,7 @@ func parseGmicloudProviderError(err error) error {
 		}
 	}
 
-	return providererrors.NewProviderError("gmicloud", statusErr.StatusCode, code, message, err)
+	return providererrors.NewProviderErrorFromResponse("gmicloud", 0, code, message, err)
 }
 
 // gmicloudCodeMatchesSchema reports whether raw is absent, null, a string or

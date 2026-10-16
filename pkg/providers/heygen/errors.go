@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -37,15 +38,6 @@ func newHeyGenAPIError(statusCode int, body []byte, headers http.Header) error {
 	} else {
 		message = http.StatusText(statusCode)
 	}
-	err := providererrors.NewProviderError("heygen", statusCode, code, message, nil)
-	err.ResponseBody = string(body)
-	if headers != nil {
-		err.ResponseHeaders = map[string]string{}
-		for k, vals := range headers {
-			if len(vals) > 0 {
-				err.ResponseHeaders[k] = vals[0]
-			}
-		}
-	}
-	return err
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
+	return providererrors.NewProviderErrorFromResponse("heygen", 0, code, message, cause)
 }

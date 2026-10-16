@@ -3,7 +3,6 @@ package gmicloud
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	stdhttp "net/http"
 
@@ -261,12 +260,9 @@ func (m *LanguageModel) handleError(err error) error {
 	if parsed := parseGmicloudProviderError(err); parsed != nil {
 		return parsed
 	}
-	statusCode := 0
-	var statusErr *internalhttp.HTTPStatusError
-	if errors.As(err, &statusErr) {
-		statusCode = statusErr.StatusCode
-	}
-	return providererrors.NewProviderError("gmicloud", statusCode, "", err.Error(), err)
+	// Not an HTTP response: TS postJsonToApi lets a transport failure
+	// propagate unchanged.
+	return err
 }
 
 func convertGmicloudUsage(usage gmicloudUsage) types.Usage {
