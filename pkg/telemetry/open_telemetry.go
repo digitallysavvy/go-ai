@@ -916,21 +916,32 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 		entry.span.End()
 		return
 	}
-	// TS records usage.tokens; a NaN (provider reported nothing) is dropped.
-	// Go providers that fill only the TS-shaped Tokens field still count.
-	// A reported 0 is indistinguishable from the zero value, so it stays
-	// unrecorded (open item).
-	tokens := e.Usage.Tokens
-	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
-		tokens = float64(e.Usage.InputTokens)
-	}
-	if tokens > 0 {
-		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", int64(tokens)))
+	if tokens, ok := embeddingUsageTokens(e.Usage); ok {
+		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", tokens))
 	}
 	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
 		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
 	entry.span.End()
+}
+
+// embeddingUsageTokens is TS usage.tokens for an embedding call: the
+// TS-shaped Tokens field when the provider reported one, else the Go
+// InputTokens/TotalTokens counters. A NaN (provider reported nothing) is
+// dropped; a reported 0 is indistinguishable from the zero value and is
+// dropped too (open item).
+func embeddingUsageTokens(u types.EmbeddingUsage) (int64, bool) {
+	tokens := u.Tokens
+	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
+		tokens = float64(u.InputTokens)
+		if tokens <= 0 {
+			tokens = float64(u.TotalTokens)
+		}
+	}
+	if tokens <= 0 {
+		return 0, false
+	}
+	return int64(tokens), true
 }
 
 // OnRerankStart creates the reranking request span.

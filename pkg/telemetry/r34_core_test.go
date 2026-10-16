@@ -68,3 +68,36 @@ func TestDecideSpanAttributesAreNotHTMLEscaped(t *testing.T) {
 		t.Fatalf("ai.decision.state = %v ok=%v", v, ok)
 	}
 }
+
+func TestLegacyOpenTelemetryEmbedUsageTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		usage  types.EmbeddingUsage
+		want   float64
+		wantOK bool
+	}{
+		{"tokens", types.EmbeddingUsage{Tokens: 7}, 7, true},
+		{"input only", types.EmbeddingUsage{InputTokens: 3}, 3, true},
+		{"nan", types.EmbeddingUsage{Tokens: math.NaN()}, 0, false},
+		{"absent", types.EmbeddingUsage{}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+			integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+			settings := &Settings{IsEnabled: Bool(true)}
+			rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.embed", CallID: "c", Settings: settings})
+			integration.OnEmbedStart(rootCtx, EmbeddingModelCallStartEvent{Settings: settings, CallID: "c", EmbedCallID: "e1", OperationID: "ai.embed.doEmbed"})
+			integration.OnEmbedEnd(rootCtx, EmbeddingModelCallEndEvent{Settings: settings, CallID: "c", EmbedCallID: "e1", OperationID: "ai.embed.doEmbed", Usage: tc.usage})
+			span := findSpan(rec, "ai.embed.doEmbed")
+			if span == nil {
+				t.Fatal("no span")
+			}
+			v, ok := attrValue(span, "ai.usage.tokens")
+			if ok != tc.wantOK || (ok && v.(float64) != tc.want) {
+				t.Fatalf("got %v ok=%v, want %v ok=%v", v, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}

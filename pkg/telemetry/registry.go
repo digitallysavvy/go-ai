@@ -1664,7 +1664,9 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	// never gated by recordOutputs; sanitizeAttributeValue drops it when
 	// usage.tokens is NaN (provider returned no usage), which
 	// setFiniteFloat64 mirrors.
-	entry.span.SetAttributes(setFiniteFloat64(nil, "ai.usage.tokens", e.Usage.Tokens)...)
+	if tokens, ok := embeddingUsageTokens(e.Usage); ok {
+		entry.span.SetAttributes(attribute.Float64("ai.usage.tokens", float64(tokens)))
+	}
 	entry.span.End()
 }
 
