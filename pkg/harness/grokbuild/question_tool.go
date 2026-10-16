@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 type grokBuildQuestionOption struct {
@@ -234,7 +235,7 @@ func positionalIDIndex(id, prefix string) (int, bool) {
 }
 
 func jsNumber(s string) (float64, bool) {
-	s = strings.Trim(s, " \t\n\r\v\f\u00a0\ufeff\u2028\u2029")
+	s = providerutils.JSTrim(s)
 	if s == "" {
 		return 0, true
 	}

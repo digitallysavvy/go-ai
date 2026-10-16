@@ -1337,3 +1337,71 @@ func TestValidateLifecycleStateDataRejectsNullCredentialEnvValue(t *testing.T) {
 		t.Fatal("null record value must be rejected")
 	}
 }
+
+// TS passes `recoveryStatus: undefined` for a cold-restored session, so a
+// `recovery` marker persisted in the old lifecycle state must not leak into the
+// restored session's next snapshot.
+func TestDoStartColdRestoreDropsStaleRecoveryStatus(t *testing.T) {
+	const token = "cold-token"
+	var mu sync.Mutex
+	var calls int
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			turn.Emit(map[string]any{"type": "bridge-thread", "threadId": "acp-session-cold"})
+		} else {
+			turn.Emit(map[string]any{"type": "raw", "rawValue": map[string]any{"type": "acp-session-restored", "method": "resume"}})
+		}
+		turn.Emit(map[string]any{
+			"type": "finish", "finishReason": map[string]any{"unified": "stop", "raw": "stop"},
+			"totalUsage": map[string]any{"inputTokens": map[string]any{}, "outputTokens": map[string]any{}},
+		})
+	})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateACP(testSettings(func(s *Settings) { s.MintBridgeToken = func(string) string { return token } }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	sess, err := h.DoStart(ctx, harness.StartOptions{SessionID: "cold-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, err := sess.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("hi"), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial turn did not finish")
+	}
+	resumeState, err := sess.DoStop(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(resumeState.Data, &generic); err != nil {
+		t.Fatal(err)
+	}
+	generic["recovery"] = map[string]any{"mode": "lossy-rerun", "reason": "stale"}
+	resumeState.Data, _ = json.Marshal(generic)
+
+	sess2, err := h.DoStart(ctx, harness.StartOptions{
+		SessionID: "cold-session", SessionWorkDir: "/vercel/sandbox/w", SandboxSession: sandbox, ResumeFrom: resumeState,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sess2.DoDestroy(ctx) }()
+	s2 := sess2.(*session)
+	s2.mu.Lock()
+	recovery := s2.recoveryStatus
+	s2.mu.Unlock()
+	if recovery != nil {
+		t.Fatalf("recoveryStatus = %+v, want nil after a cold restore", recovery)
+	}
+}

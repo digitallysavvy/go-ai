@@ -23,11 +23,11 @@ func ResolveSubscriptionEnvironment(ctx context.Context, auth AuthenticationMode
 	if !harnessutil.ShouldResolveNativeSubscription(auth.Mode, env, envHas(env, "CURSOR_API_KEY")) {
 		return env, nil
 	}
-	token, err := ReadSubscription(ctx, ReadSubscriptionOptions{Env: env})
+	token, found, err := readSubscription(ctx, ReadSubscriptionOptions{Env: env})
 	if err != nil {
 		return nil, err
 	}
-	if token == "" {
+	if !found {
 		return env, nil
 	}
 	out := make(map[string]string, len(env)+1)
@@ -51,18 +51,27 @@ type ReadSubscriptionOptions struct {
 // if the token is a JWT that is expiring soon (Cursor does not expose a
 // refresh flow). Mirrors TS `readCursorSubscription`.
 func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (string, error) {
+	token, _, err := readSubscription(ctx, opts)
+	return token, err
+}
+
+// readSubscription is ReadSubscription plus whether a credential was found.
+// Like TS (`fileCredential ?? keychain`), a credential file whose accessToken
+// is the empty string is a found credential: the keychain is not consulted
+// and the (empty) token is returned.
+func readSubscription(ctx context.Context, opts ReadSubscriptionOptions) (string, bool, error) {
 	env := opts.Env
 	if env == nil {
 		env = map[string]string{}
 	}
 	if env["AGENT_CLI_CREDENTIAL_STORE"] == "memory" {
-		return "", nil
+		return "", false, nil
 	}
 	homeDirectory := opts.HomeDirectory
 	if homeDirectory == "" {
 		h, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
 		homeDirectory = h
 	}
@@ -71,22 +80,23 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (string
 		goos = runtime.GOOS
 	}
 	authPath := ResolveAuthPath(env, homeDirectory, goos)
-	accessToken := ""
+	accessToken, found := "", false
 	if text, err := os.ReadFile(authPath); err == nil {
-		accessToken = parseAccessToken(text)
+		accessToken, found = parseAccessToken(text)
 	}
-	if accessToken == "" && harnessutil.IsMacOS(goos) && env["AGENT_CLI_CREDENTIAL_STORE"] != "file" {
+	if !found && harnessutil.IsMacOS(goos) && env["AGENT_CLI_CREDENTIAL_STORE"] != "file" {
 		accessToken = subscription.ReadMacOSKeychainPassword(ctx, "cursor-access-token", "cursor-user")
+		found = accessToken != ""
 	}
-	if accessToken == "" {
-		return "", nil
+	if !found {
+		return "", false, nil
 	}
 	if expiresAt, ok := subscription.GetJWTExpiresAt(accessToken); ok {
 		if harnessutil.IsAccessTokenExpiringSoon(expiresAt, time.Now().UnixMilli(), 0) {
-			return "", errors.New("Cursor subscription access token is expiring soon. Run Cursor login again.") //nolint:staticcheck // matches TS SDK's exact error text
+			return "", false, errors.New("Cursor subscription access token is expiring soon. Run Cursor login again.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
-	return accessToken, nil
+	return accessToken, true, nil
 }
 
 // ResolveAuthPath returns the platform-native path to Cursor's `auth.json`.
@@ -109,13 +119,13 @@ func ResolveAuthPath(env map[string]string, homeDirectory, goos string) string {
 	return filepath.Join(homeDirectory, ".cursor", "auth.json")
 }
 
-func parseAccessToken(text []byte) string {
+func parseAccessToken(text []byte) (string, bool) {
 	var parsed map[string]any
 	if err := json.Unmarshal(text, &parsed); err != nil {
-		return ""
+		return "", false
 	}
-	token, _ := parsed["accessToken"].(string)
-	return token
+	token, ok := parsed["accessToken"].(string)
+	return token, ok
 }
 
 // envHas mirrors TS `env.X != null`: a variable that is set to the empty

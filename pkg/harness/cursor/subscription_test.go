@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 )
 
 // Mirrors "does not inspect subscriptions for Gateway auth".
@@ -85,5 +86,30 @@ func TestResolveAuthPath(t *testing.T) {
 	got := ResolveAuthPath(map[string]string{"APPDATA": `C:\Users\me\AppData\Roaming`}, `C:\Users\me`, "windows")
 	if !strings.Contains(got, "Cursor/auth.json") && !strings.Contains(got, `Cursor\auth.json`) {
 		t.Errorf("windows path = %q", got)
+	}
+}
+
+// TS `fileCredential ?? keychain`: an empty accessToken in auth.json is a
+// found credential, so the macOS keychain is not consulted.
+func TestReadSubscription_EmptyFileTokenSkipsKeychain(t *testing.T) {
+	homeDirectory := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(homeDirectory, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDirectory, ".cursor", "auth.json"), []byte(`{"accessToken":""}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig := subscription.ExecFile
+	t.Cleanup(func() { subscription.ExecFile = orig })
+	subscription.ExecFile = func(context.Context, string, []string, []string) (string, error) {
+		t.Error("keychain must not be read when auth.json carries an accessToken")
+		return "keychain-token", nil
+	}
+	token, found, err := readSubscription(context.Background(), ReadSubscriptionOptions{HomeDirectory: homeDirectory, GOOS: "darwin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token != "" || !found {
+		t.Errorf("token=%q found=%v", token, found)
 	}
 }

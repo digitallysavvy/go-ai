@@ -176,7 +176,10 @@ func (c *promptControl) SubmitToolResult(_ context.Context, r harness.ToolResult
 			lossyRerun := c.s.lossyRerun
 			c.s.mu.Unlock()
 			if !lossyRerun && hasPrevious {
-				output := c.s.p.askUserQuestions.ToNativeResponse(previousNativeRequest, *toolResult)
+				output, err := c.toNativeResponse(previousNativeRequest, *toolResult)
+				if err != nil {
+					return err
+				}
 				return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: output, IsError: r.IsError, ToolResult: toolResult})
 			}
 			c.s.mu.Lock()
@@ -189,10 +192,26 @@ func (c *promptControl) SubmitToolResult(_ context.Context, r harness.ToolResult
 			c.s.mu.Unlock()
 			return nil
 		}
-		output := c.s.p.askUserQuestions.ToNativeResponse(rawJSONToAny(active.NativeRequest), *toolResult)
+		output, err := c.toNativeResponse(rawJSONToAny(active.NativeRequest), *toolResult)
+		if err != nil {
+			return err
+		}
 		return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: output, IsError: r.IsError, ToolResult: toolResult})
 	}
 	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError, ToolResult: r.ToolResult})
+}
+
+// toNativeResponse runs the adapter's ToNativeResponse, which signals a
+// malformed result by panicking (TS throws). From SubmitToolResult that TS
+// throw is a rejected promise the host observes, so it is returned as an
+// error instead of unwinding the host's goroutine.
+func (c *promptControl) toNativeResponse(nativeRequest any, toolResult types.ToolResultContent) (output any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return c.s.p.askUserQuestions.ToNativeResponse(nativeRequest, toolResult), nil
 }
 
 func (c *promptControl) Done() <-chan struct{} { return c.done }

@@ -176,7 +176,8 @@ func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos stri
 	names := []string{"gh"}
 	if harnessutil.IsWindows(goos) {
 		separator = ";"
-		names = windowsGitHubCliExecutableNames(env["PATHEXT"])
+		pathExt, pathExtSet := env["PATHEXT"]
+		names = windowsGitHubCliExecutableNames(pathExt, pathExtSet)
 	}
 	for _, directory := range strings.Split(path, separator) {
 		directory = strings.Trim(directory, `"`)
@@ -185,6 +186,9 @@ func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos stri
 		}
 		for _, name := range names {
 			candidate := filepath.Join(directory, name)
+			if abs, err := filepath.Abs(candidate); err == nil {
+				candidate = abs // TS resolve(directory, name)
+			}
 			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 				if harnessutil.IsWindows(goos) || info.Mode().Perm()&0o111 != 0 {
 					return candidate, nil
@@ -195,13 +199,16 @@ func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos stri
 	return "", nil
 }
 
-func windowsGitHubCliExecutableNames(pathExt string) []string {
-	if pathExt == "" {
+// windowsGitHubCliExecutableNames mirrors TS `pathExt ?? default`: only an
+// absent PATHEXT falls back to the default list; entries that are blank
+// after trimming are dropped.
+func windowsGitHubCliExecutableNames(pathExt string, pathExtSet bool) []string {
+	if !pathExtSet {
 		pathExt = ".COM;.EXE;.BAT;.CMD"
 	}
 	names := []string{"gh"}
 	for _, ext := range strings.Split(pathExt, ";") {
-		if ext != "" {
+		if isNonEmpty(ext) {
 			names = append(names, "gh"+ext)
 		}
 	}

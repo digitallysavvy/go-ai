@@ -306,3 +306,17 @@ func TestTSReplay_IdentityDigestsMatchTS(t *testing.T) {
 		})
 	}
 }
+
+// TS sortValue orders object keys with String.prototype.localeCompare (ICU
+// root collation), not by bytes, and JSON.stringify leaves U+2028 literal.
+// Expected output produced by running the TS algorithm in Node.
+func TestTSReplay_StableStringifyUsesLocaleKeyOrder(t *testing.T) {
+	got := stableStringify(map[string]any{
+		"AB": 1, "A_B": 2, "a": 3, "B": 4,
+		"_m": map[string]any{"z": " <>&\\u2028", "Y": []any{map[string]any{"b": 1, "a": nil}}},
+	})
+	want := "{\"_m\":{\"Y\":[{\"a\":null,\"b\":1}],\"z\":\" <>&\\\\u2028\"},\"a\":3,\"A_B\":2,\"AB\":1,\"B\":4}"
+	if got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

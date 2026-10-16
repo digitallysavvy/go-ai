@@ -311,3 +311,39 @@ func TestNormalizeGitHubHost(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// TS `pathExt ?? default`: an explicitly empty PATHEXT yields only "gh".
+func TestFindGitHubCliExecutable_WindowsEmptyPathExt(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh.EXE"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FindGitHubCliExecutable(context.Background(), map[string]string{"PATH": dir, "PATHEXT": ""}, "win32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want none", got)
+	}
+	got, _ = FindGitHubCliExecutable(context.Background(), map[string]string{"PATH": dir}, "win32")
+	if got != filepath.Join(dir, "gh.EXE") {
+		t.Errorf("default PATHEXT: got %q", got)
+	}
+}
+
+// TS resolve(directory, name): a relative PATH entry yields an absolute path.
+func TestFindGitHubCliExecutable_RelativePathEntryResolved(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh"), nil, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	got, err := FindGitHubCliExecutable(context.Background(), map[string]string{"PATH": "."}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.Abs("gh")
+	if got != want || !filepath.IsAbs(got) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

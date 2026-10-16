@@ -1275,3 +1275,46 @@ func TestLifecycleStateNestedNullsRejectedLikeZod(t *testing.T) {
 		}
 	}
 }
+
+// TS toNativeResponse throws on a malformed client result, which surfaces as
+// a rejected submitToolResult; Go must return that as an error, not panic.
+func TestTSReplay_SubmitToolResultToNativeResponsePanicIsReturnedAsError(t *testing.T) {
+	started := make(chan *bridgetest.Turn, 1)
+	toolResults := make(chan map[string]any, 4)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+		OnStart:      func(turn *bridgetest.Turn, _ map[string]any) { started <- turn },
+		OnToolResult: func(f map[string]any) { toolResults <- f }})
+	t.Cleanup(srv.Close)
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.HarnessID = "test-acp"
+		s.AskUserQuestions = &AskUserQuestionsSettings{
+			RequestMethod: "test/ask",
+			FromNativeRequest: func(any, *ToolCall) *harness.ToolCallPart {
+				return &harness.ToolCallPart{ToolCallID: "question-1", ToolName: "askUserQuestions", Input: `{}`}
+			},
+			ToNativeResponse: func(any, types.ToolResultContent) any { panic("requires a JSON tool result") },
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: newFakeSandbox(srv), SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("Ask."), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := <-started
+	turn.Emit(map[string]any{"type": "acp-question-request", "requestId": "request-1", "nativeRequest": map[string]any{}})
+	<-toolResults // handled reply: the question is now active
+	result := types.ToolResultContent{ToolCallID: "question-1", ToolName: "askUserQuestions",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "nope"}}
+	err = control.SubmitToolResult(context.Background(), harness.ToolResultSubmission{ToolCallID: "question-1", Output: "nope", ToolResult: &result})
+	if err == nil || !strings.Contains(err.Error(), "requires a JSON tool result") {
+		t.Fatalf("err = %v, want the adapter's error", err)
+	}
+}
