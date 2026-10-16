@@ -9,7 +9,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -30,6 +29,9 @@ func (m *RerankingModel) ModelID() string              { return m.modelID }
 func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("rerank options cannot be nil")
+	}
+	if err := validateRerankProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
 	}
 	docs, warnings := toVoyageDocuments(opts.Documents)
 	reqBody := map[string]interface{}{
@@ -63,7 +65,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("voyage", 0, "", err.Error(), err)
+		return nil, handleError(err)
 	}
 
 	ranking := make([]types.RerankItem, 0, len(response.Data))
