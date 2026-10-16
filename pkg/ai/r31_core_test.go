@@ -47,3 +47,25 @@ func TestReasoningPartsOfKeepsEmptyParts(t *testing.T) {
 		t.Fatalf("got %d parts", len(got))
 	}
 }
+
+func TestMergeStreamedToolResultsKeepsArrivalOrder(t *testing.T) {
+	t.Parallel()
+	streamed := map[string]types.ToolResult{}
+	var order []string
+	ids := []string{"c9", "a1", "m5", "b2", "z0", "k7", "d4", "q3"}
+	for _, id := range ids {
+		order = recordStreamedToolResult(streamed, order, types.ToolResult{ToolCallID: id})
+	}
+	order = recordStreamedToolResult(streamed, order, types.ToolResult{ToolCallID: "a1"})
+	for run := 0; run < 20; run++ {
+		got := mergeStreamedToolResults(nil, streamed, order)
+		if len(got) != len(ids) {
+			t.Fatalf("got %d results", len(got))
+		}
+		for i, id := range ids {
+			if got[i].ToolCallID != id {
+				t.Fatalf("run %d position %d = %s want %s", run, i, got[i].ToolCallID, id)
+			}
+		}
+	}
+}
