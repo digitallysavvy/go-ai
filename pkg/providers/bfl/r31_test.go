@@ -2,9 +2,11 @@ package bfl
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TS: url.searchParams.has('id') keeps an `id=` pair (even empty) and set()
@@ -30,5 +32,29 @@ func TestImageTooManyInputImagesMessageMatchesTS(t *testing.T) {
 	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", Files: files})
 	if err == nil || err.Error() != "Black Forest Labs supports up to 10 input images." {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS throws InvalidArgumentError (argument "duration") for 3+ untimed
+// keyframes without a duration; the v0.5.2 ValidationError stays reachable.
+func TestVideoUntimedKeyframesNeedDurationIsInvalidArgumentError(t *testing.T) {
+	m := NewVideoModel(New(Config{APIKey: "k"}), "flux-3-video")
+	_, _, err := m.buildVideoArgs(&provider.VideoModelV3CallOptions{
+		Prompt: "p",
+		ProviderOptions: map[string]interface{}{
+			"blackForestLabs": map[string]interface{}{"keyframes": []interface{}{"a", "b", "c"}},
+		},
+	})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Field != "duration" {
+		t.Fatalf("err = %T %v, want InvalidArgumentError for duration", err, err)
+	}
+	var ve *providererrors.ValidationError
+	if !errors.As(err, &ve) {
+		t.Errorf("v0.5.2 ValidationError no longer reachable")
+	}
+	want := "Invalid argument for parameter duration: FLUX 3 video requires an explicit duration when 3 or more keyframes are sent without a timestamp."
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
 }

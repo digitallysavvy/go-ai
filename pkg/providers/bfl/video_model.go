@@ -426,7 +426,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		}
 	}
 	if duration == nil && untimedKeyframeCount >= untimedKeyframesNeedingDuration {
-		return nil, nil, providererrors.NewValidationError("duration",
+		return nil, nil, invalidArgument("duration",
 			fmt.Sprintf("FLUX 3 video requires an explicit duration when %d or more keyframes are sent without a timestamp.", untimedKeyframesNeedingDuration), nil)
 	}
 
