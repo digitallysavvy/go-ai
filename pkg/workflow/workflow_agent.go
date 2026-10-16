@@ -1592,6 +1592,17 @@ func (w *WorkflowAgent) effectiveToolApprovalSecret(ovr WorkflowStreamOptions, g
 	return w.ExperimentalToolApprovalSecret
 }
 
+// validateCallInstructions rejects an instructions value of an unsupported
+// type instead of silently running without it.
+func validateCallInstructions(values ...interface{}) error {
+	for _, v := range values {
+		if _, err := normalizeInstructions(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validatePromptMessages(prompt string, messages []types.Message) error {
 	if prompt != "" && len(messages) > 0 {
 		return fmt.Errorf("workflow: use either prompt or messages, not both")
@@ -1606,7 +1617,10 @@ func validatePromptMessages(prompt string, messages []types.Message) error {
 func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent.AgentGenerateOptions) (*WorkflowResult, error) {
 	legacy := WorkflowGenerateOptions{Prompt: prompt}
 	if opts != nil {
-		legacy.Prompt = opts.Prompt
+		// The positional prompt stays unless the options carry their own.
+		if opts.Prompt != "" {
+			legacy.Prompt = opts.Prompt
+		}
 		legacy.Messages = opts.Messages
 		legacy.System = opts.System
 		legacy.AllowSystemInMessages = opts.AllowSystemInMessages
@@ -1637,6 +1651,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry
@@ -1794,7 +1811,10 @@ func workflowModelInfo(model provider.LanguageModel) (string, string) {
 func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.AgentStreamOptions) (*WorkflowStreamResult, error) {
 	legacy := WorkflowStreamOptions{Prompt: prompt}
 	if opts != nil {
-		legacy.Prompt = opts.Prompt
+		// The positional prompt stays unless the options carry their own.
+		if opts.Prompt != "" {
+			legacy.Prompt = opts.Prompt
+		}
 		legacy.Messages = opts.Messages
 		legacy.System = opts.System
 		legacy.AllowSystemInMessages = opts.AllowSystemInMessages
@@ -1827,6 +1847,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry

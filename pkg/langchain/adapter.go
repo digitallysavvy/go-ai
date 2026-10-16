@@ -1731,7 +1731,12 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 		if !ok {
 			continue
 		}
-		rawRequests, ok := asSlice(firstPresent(value, "actionRequests", "action_requests"))
+		// TS: `interruptValue.actionRequests || interruptValue.action_requests`.
+		requests := value["actionRequests"]
+		if !jsTruthy(requests) {
+			requests = value["action_requests"]
+		}
+		rawRequests, ok := asSlice(requests)
 		if !ok {
 			continue
 		}
@@ -1740,7 +1745,11 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 			if !ok {
 				continue
 			}
-			input := firstPresent(req, "args", "arguments")
+			// TS: `actionRequest.args || actionRequest.arguments`.
+			input := req["args"]
+			if !jsTruthy(input) {
+				input = req["arguments"]
+			}
 			out = append(out, actionRequest{
 				id:    stringValue(req["id"]),
 				name:  stringValue(req["name"]),
@@ -2163,7 +2172,10 @@ func parseBase64DataURL(dataURL string) (mime string, data string, ok bool) {
 	data = rest[idx+len(marker):]
 	// The TS pattern is /^data:([^;]+);base64,(.+)$/: the media type cannot
 	// contain another parameter.
-	if mime == "" || data == "" || strings.Contains(mime, ";") {
+	// `.` does not match a line terminator, and the pattern is anchored at
+	// both ends without the m flag, so a payload with a line break is not a
+	// base64 data URL (TS keeps it as a plain url).
+	if mime == "" || data == "" || strings.Contains(mime, ";") || strings.ContainsAny(data, "\n\r\u2028\u2029") {
 		return "", "", false
 	}
 	return mime, data, true
@@ -2303,6 +2315,29 @@ func asSlice(v interface{}) ([]interface{}, bool) {
 		return out, true
 	}
 	return nil, false
+}
+
+// jsTruthy reports JavaScript truthiness of a decoded JSON value.
+func jsTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case string:
+		return x != ""
+	case float64:
+		return x != 0
+	case int:
+		return x != 0
+	case int64:
+		return x != 0
+	case json.Number:
+		f, err := x.Float64()
+		return err != nil || f != 0
+	default:
+		return true
+	}
 }
 
 func firstPresent(m map[string]interface{}, keys ...string) interface{} {
