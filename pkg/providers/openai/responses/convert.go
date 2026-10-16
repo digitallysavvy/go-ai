@@ -810,6 +810,14 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 }
 
 func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts ConvertOptions) (interface{}, bool, error) {
+	// Validated payloads (shell, computer, tool_search, ...) are read from the
+	// parsed input; recover it from the wire text when only that was set.
+	if tc.Arguments == nil && strings.TrimSpace(tc.RawArguments) != "" {
+		var parsed map[string]interface{}
+		if json.Unmarshal([]byte(tc.RawArguments), &parsed) == nil {
+			tc.Arguments = parsed
+		}
+	}
 	// Row 6be0f51: a tool call expanded from an internal "parallel" wrapper
 	// replays as the ORIGINAL wrapper's single function_call (only once, and
 	// only when the server doesn't already remember it via conversation
@@ -837,16 +845,23 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		if opts.Store && itemID != "" {
 			return map[string]interface{}{"type": "item_reference", "id": itemID}, true, nil
 		}
+		if err := validateToolPayload(toolSearchInputNode, tc.Arguments); err != nil {
+			return nil, true, err
+		}
 		arguments := tc.Arguments
-		rawArguments, _ := jsonstr.Marshal(arguments)
 		var callID *string
 		execution := "server"
-		if rawCallID, ok := arguments["call_id"].(string); ok && rawCallID != "" {
+		// TS: `parsedInput.call_id != null ? 'client' : 'server'` -- an empty
+		// string call_id is still a client call.
+		if rawCallID, ok := arguments["call_id"].(string); ok {
 			callID = &rawCallID
 			execution = "client"
 		}
+		// TS: `arguments: parsedInput.arguments` (omitted when absent).
+		var rawArguments json.RawMessage
 		if nested, ok := arguments["arguments"]; ok {
-			rawArguments, _ = jsonstr.Marshal(nested)
+			encoded, _ := jsonstr.Marshal(nested)
+			rawArguments = encoded
 		}
 		// TS: `id: id ?? part.toolCallId` -- unlike local_shell_call/
 		// shell_call/apply_patch_call/computer_call (which use a bare `id!`
@@ -875,6 +890,9 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		id := itemID
 		if id == "" {
 			id = tc.ID
+		}
+		if err := validateToolPayload(programInputNode, tc.Arguments); err != nil {
+			return nil, true, err
 		}
 		code, _ := tc.Arguments["code"].(string)
 		fingerprint, _ := tc.Arguments["fingerprint"].(string)
@@ -1177,12 +1195,14 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 			}, nil
 		}
 		if part.Output != nil && part.Output.Type == types.ToolResultOutputJSON {
-			if item := convertToolSearchOutput(part, "server"); item != nil {
-				if output, ok := item.(ToolSearchOutputItem); ok {
-					output.ID = itemID
-					output.CallID = nil
-					return output, nil
-				}
+			item, err := convertToolSearchOutput(part, "server")
+			if err != nil {
+				return nil, err
+			}
+			if output, ok := item.(ToolSearchOutputItem); ok {
+				output.ID = itemID
+				output.CallID = nil
+				return output, nil
 			}
 		}
 		return nil, nil
@@ -1202,15 +1222,16 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 				Result string `json:"result"`
 				Status string `json:"status"`
 			}
-			if decodeToolOutputJSON(part.Output.Value, &parsed) {
-				return ProgramOutputItem{
-					Type:   "program_output",
-					ID:     itemID,
-					CallID: part.ToolCallID,
-					Result: parsed.Result,
-					Status: parsed.Status,
-				}, nil
+			if err := decodeStrict(programOutputNode, part.Output.Value, &parsed); err != nil {
+				return nil, err
 			}
+			return ProgramOutputItem{
+				Type:   "program_output",
+				ID:     itemID,
+				CallID: part.ToolCallID,
+				Result: parsed.Result,
+				Status: parsed.Status,
+			}, nil
 		}
 		return nil, nil
 	}
@@ -1785,7 +1806,7 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 		return nil, nil
 	}
 	if part.ToolName == opts.toolSearchName() {
-		return convertToolSearchOutput(part, "client"), nil
+		return convertToolSearchOutput(part, "client")
 	}
 	toolName := opts.providerToolName(part.ToolName)
 	switch toolName {
@@ -1814,12 +1835,12 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 	}
 }
 
-func convertToolSearchOutput(part types.ToolResultContent, execution string) interface{} {
+func convertToolSearchOutput(part types.ToolResultContent, execution string) (interface{}, error) {
 	var parsed struct {
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
-		return nil
+	if err := decodeStrict(toolSearchOutputNode, part.Output.Value, &parsed); err != nil {
+		return nil, err
 	}
 	var callID *string
 	if execution == "client" {
@@ -1835,7 +1856,7 @@ func convertToolSearchOutput(part types.ToolResultContent, execution string) int
 		CallID:    callID,
 		Status:    "completed",
 		Tools:     parsed.Tools,
-	}
+	}, nil
 }
 
 func convertLocalShellOutput(part types.ToolResultContent) (interface{}, error) {

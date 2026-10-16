@@ -85,3 +85,33 @@ func TestStrictComputerInputStripsUnknownKeysR33(t *testing.T) {
 		t.Fatalf("action = %v", a)
 	}
 }
+
+// tool_search and programmatic_tool_calling payloads are validated like the
+// shell/computer ones; an empty-string call_id is still a client search and an
+// absent `arguments` key is omitted.
+func TestStrictToolSearchAndProgramPayloadsR33(t *testing.T) {
+	opts := ConvertOptions{}
+	call := func(tool string, args map[string]interface{}) ([]interface{}, error) {
+		input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
+			Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: tool, Arguments: args}}}},
+		}, "system", opts)
+		return input, err
+	}
+	if _, err := call("openai.programmatic_tool_calling", map[string]interface{}{"code": "x"}); !isTypeValidation(err) {
+		t.Errorf("program missing fingerprint: err = %v", err)
+	}
+	if _, err := call("openai.tool_search", map[string]interface{}{"call_id": 5}); !isTypeValidation(err) {
+		t.Errorf("tool_search numeric call_id: err = %v", err)
+	}
+	input, err := call("openai.tool_search", map[string]interface{}{"call_id": ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := input[0].(ToolSearchCallItem)
+	if item.Execution != "client" || item.CallID == nil || *item.CallID != "" || item.Arguments != nil {
+		t.Errorf("item = %#v, want client search with empty call_id and no arguments", item)
+	}
+	if err := convertResult("openai.tool_search", map[string]interface{}{}); !isTypeValidation(err) {
+		t.Errorf("tool_search output without tools: err = %v", err)
+	}
+}

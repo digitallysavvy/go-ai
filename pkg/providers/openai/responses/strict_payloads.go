@@ -52,6 +52,25 @@ var shellOutputNode = zodlite.Object(
 	))),
 )
 
+var toolSearchInputNode = zodlite.Object(
+	zodlite.F("arguments", zodlite.Unknown),
+	zodlite.F("call_id", zodlite.Nullish(zodlite.String)),
+)
+
+var toolSearchOutputNode = zodlite.Object(
+	zodlite.F("tools", zodlite.Array(zodlite.RecordOf(zodlite.Unknown))),
+)
+
+var programInputNode = zodlite.Object(
+	zodlite.F("code", zodlite.String),
+	zodlite.F("fingerprint", zodlite.String),
+)
+
+var programOutputNode = zodlite.Object(
+	zodlite.F("result", zodlite.String),
+	zodlite.F("status", zodlite.Enum("completed", "incomplete")),
+)
+
 var applyPatchInputNode = zodlite.Object(
 	zodlite.F("callId", zodlite.String),
 	zodlite.F("operation", zodlite.Disc(map[string]zodlite.Node{
