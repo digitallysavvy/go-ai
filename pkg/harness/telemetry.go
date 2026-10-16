@@ -100,11 +100,11 @@ func telemetryUsageFromTypesUsage(u types.Usage) telemetry.TelemetryUsage {
 // ToolsContext), so the simpler map-only form is sufficient here.
 func filterIncludedContext(contextValue interface{}, include map[string]bool) map[string]interface{} {
 	if len(include) == 0 || contextValue == nil {
-		return nil
+		return map[string]interface{}{}
 	}
 	source, ok := contextValue.(map[string]interface{})
 	if !ok || len(source) == 0 {
-		return nil
+		return map[string]interface{}{}
 	}
 	out := make(map[string]interface{})
 	for key, enabled := range include {
@@ -120,14 +120,14 @@ func filterIncludedContext(contextValue interface{}, include map[string]bool) ma
 
 func telemetryRuntimeContext(settings *telemetry.Options, contextValue interface{}) map[string]interface{} {
 	if settings == nil {
-		return nil
+		return map[string]interface{}{}
 	}
 	return filterIncludedContext(contextValue, settings.IncludeRuntimeContext)
 }
 
 func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]interface{}) map[string]interface{} {
 	if settings == nil || len(settings.IncludeToolsContext) == 0 || len(toolsContext) == 0 {
-		return nil
+		return map[string]interface{}{}
 	}
 	out := make(map[string]interface{}, len(toolsContext))
 	for toolName, ctxValue := range toolsContext {
@@ -140,7 +140,7 @@ func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]
 
 func telemetryToolContext(settings *telemetry.Options, toolName string, toolContext interface{}) map[string]interface{} {
 	if settings == nil {
-		return nil
+		return map[string]interface{}{}
 	}
 	return filterIncludedContext(toolContext, settings.IncludeToolsContext[toolName])
 }
