@@ -15,7 +15,7 @@ type hfUsage struct {
 
 // hfIncompleteDetails mirrors the response's incomplete_details object.
 type hfIncompleteDetails struct {
-	Reason string `json:"reason"`
+	Reason *string `json:"reason"` // pointer: TS `reason ?? 'stop'` keeps ""
 }
 
 // hfResponseError mirrors the top-level response.error object.
