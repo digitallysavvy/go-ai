@@ -79,3 +79,23 @@ func TestStripCaseLabelsAndCallsBeforeArrowsMatchNode(t *testing.T) {
 		}
 	}
 }
+
+// A `:` or a call directly inside `<...>` is no type argument list: these are
+// comparisons. `keyof (A | B)`, `new () => T` and `import('x')` still are.
+// Expected strings are Node 24.20 output.
+func TestStripComparisonsWithColonOrCallBetweenAngles(t *testing.T) {
+	for _, c := range [][2]string{
+		{"const r = cb ? q < len : { c: c } > (x);", "const r = cb ? q < len : { c: c } > (x);"},
+		{"foo([x, c] < c(b) > `${b}`);", "foo([x, c] < c(b) > `${b}`);"},
+		{"const r = a < f(b) > (c);", "const r = a < f(b) > (c);"},
+		{"const r = x ? a < b : c > (d);", "const r = x ? a < b : c > (d);"},
+		{"const r = f<keyof (A | B)>(x);", "const r = f               (x);"},
+		{"const r = f<new () => T>(x);", "const r = f             (x);"},
+		{"const r = f<typeof import('x')>(x);", "const r = f                    (x);"},
+	} {
+		got, err := stripTypeScriptAnnotations(c[0])
+		if err != nil || got != c[1] {
+			t.Errorf("%q\n got  %q (%v)\n want %q", c[0], got, err, c[1])
+		}
+	}
+}

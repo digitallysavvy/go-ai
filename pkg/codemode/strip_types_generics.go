@@ -356,6 +356,7 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 			j++
 			continue
 		}
+		before := prev
 		prev = &tokens[j]
 		switch t.text {
 		case "<":
@@ -393,6 +394,11 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 				return j, true
 			}
 		case "(", "[", "{":
+			// A call (`c(b)`) is no type: only a keyword operator (`keyof (A |
+			// B)`, `new () => T`, `import('x')`) takes a parenthesis.
+			if depth == 1 && t.text == "(" && before != nil && before.kind == "ident" && before.text != "import" && !typeOperandStarts(*before) {
+				return i, false
+			}
 			depth++
 			contentSeen = true
 			j++
@@ -406,9 +412,9 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 			if depth == 1 && angleDisallowedAtDepth0[t.text] {
 				return i, false
 			}
-			// A `?` directly inside the list is a conditional type's, which
-			// needs its `extends`; `a < b ? c : d > (e)` compares.
-			if depth == 1 && t.text == "?" && !sawExtends {
+			// A `?` or `:` directly inside the list is a conditional type's,
+			// which needs its `extends`; `a < b ? c : d > (e)` compares.
+			if depth == 1 && (t.text == "?" || t.text == ":") && !sawExtends {
 				return i, false
 			}
 			contentSeen = true
