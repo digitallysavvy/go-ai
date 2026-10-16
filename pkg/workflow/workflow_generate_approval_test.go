@@ -139,3 +139,22 @@ func (m *ctxAwareModel) DoGenerate(ctx context.Context, o *provider.GenerateOpti
 	}
 	return m.wfMockModel.DoGenerate(ctx, o)
 }
+
+// TS stream() awaits convertToLanguageModelPrompt, so a history with an
+// unresolved tool call rejects stream() itself with MissingToolResultsError.
+func TestWorkflowStreamRejectsMissingToolResults(t *testing.T) {
+	m := &wfMockModel{}
+	a, _ := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: []types.Tool{approvalTool()}})
+	_, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "c1", ToolName: "t1", Arguments: map[string]interface{}{}},
+			types.ToolApprovalRequestContent{ApprovalID: "a1", ToolCallID: "c1"},
+		}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "again"}}},
+	}})
+	var me *types.MissingToolResultsError
+	if !errors.As(err, &me) || m.calls != 0 {
+		t.Fatalf("err=%v calls=%d", err, m.calls)
+	}
+}

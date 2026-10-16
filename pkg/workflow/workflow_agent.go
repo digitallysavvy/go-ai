@@ -1873,6 +1873,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}
+	// TS stream() awaits convertToLanguageModelPrompt before returning, so a
+	// history with unresolved tool calls rejects stream() itself.
+	if err := validateWorkflowToolResults(opts.Messages, effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{})); err != nil {
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		return nil, err
+	}
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
