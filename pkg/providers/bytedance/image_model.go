@@ -230,19 +230,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, byteD
 // parseAPIError parses a ByteDance image API error response (TS
 // byteDanceFailedResponseHandler).
 func (m *ImageModel) parseAPIError(body []byte, statusCode int) error {
-	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil {
-		msg := ""
-		if errResp.Error != nil {
-			msg = errResp.Error.Message
-		} else if errResp.Message != "" {
-			msg = errResp.Message
-		}
-		if msg != "" {
-			return NewError(statusCode, msg, "")
-		}
-	}
-	return NewError(statusCode, fmt.Sprintf("API returned status %d", statusCode), string(body))
+	return newHTTPError(statusCode, body)
 }
 
 // encodeImageFile encodes a provider.ImageFile to the string form ByteDance

@@ -575,19 +575,7 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 
 // parseAPIError parses a ByteDance API error response
 func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
-	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil {
-		msg := ""
-		if errResp.Error != nil {
-			msg = errResp.Error.Message
-		} else if errResp.Message != "" {
-			msg = errResp.Message
-		}
-		if msg != "" {
-			return NewError(statusCode, msg, "")
-		}
-	}
-	return NewError(statusCode, fmt.Sprintf("API returned status %d", statusCode), string(body))
+	return newHTTPError(statusCode, body)
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
