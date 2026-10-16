@@ -338,8 +338,13 @@ var zAnthropicResponse = zObject(
 // does not match anthropicResponseSchema is an APICallError "Invalid JSON
 // response" caused by the TypeValidationError (TS createJsonResponseHandler).
 func anthropicResponseValidator(providerName string) func(int, http.Header, []byte) error {
+	return anthropicSchemaValidator(providerName, zAnthropicResponse)
+}
+
+// anthropicSchemaValidator is anthropicResponseValidator for any schema.
+func anthropicSchemaValidator(providerName string, schema zodlite.Node) func(int, http.Header, []byte) error {
 	return func(statusCode int, headers http.Header, body []byte) error {
-		message := zodlite.ValidationMessage(zAnthropicResponse, string(body))
+		message := zodlite.ValidationMessage(schema, string(body))
 		if message == "" {
 			return nil
 		}
@@ -353,3 +358,24 @@ func anthropicResponseValidator(providerName string) func(int, http.Header, []by
 		}
 	}
 }
+
+// zSkillResponse ports anthropicSkillResponseSchema and zSkillVersionResponse
+// anthropicSkillVersionResponseSchema (skills/anthropic-skills-api.ts).
+var (
+	zSkillResponse = zObject(
+		f("id", zString),
+		f("display_title", zNullish(zString)),
+		f("name", zNullish(zString)),
+		f("description", zNullish(zString)),
+		f("latest_version", zNullish(zString)),
+		f("source", zString),
+		f("created_at", zString),
+		f("updated_at", zString),
+	)
+	zSkillVersionResponse = zObject(
+		f("type", zString),
+		f("skill_id", zString),
+		f("name", zNullish(zString)),
+		f("description", zNullish(zString)),
+	)
+)
