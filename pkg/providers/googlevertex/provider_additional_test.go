@@ -79,8 +79,13 @@ func TestVertexProviderEnvironmentFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if p.config.APIKey != envKey || p.config.Project != envProject || p.config.Location != envLocation {
+	// The API key is read when the provider is created; project and location
+	// are read lazily (TS loadSetting inside loadBaseURL).
+	if p.config.APIKey != envKey || p.config.Project != "" || p.config.Location != "" {
 		t.Fatalf("config = %#v", p.config)
+	}
+	if p.Project() != envProject || p.Location() != envLocation {
+		t.Fatalf("Project/Location = %q/%q", p.Project(), p.Location())
 	}
 }
 
@@ -251,8 +256,14 @@ func TestVertexCustomBaseURLNeedsNoProjectOrLocation(t *testing.T) {
 	if _, err := p.TranscriptionModel("chirp_2"); err == nil || !strings.Contains(err.Error(), "project setting is missing") {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
-	if _, err := New(Config{AccessToken: "token"}); err == nil || !strings.Contains(err.Error(), "project setting is missing") {
-		t.Fatalf("New without baseURL error = %v", err)
+	// Without a baseURL the settings are needed, but only when a model is
+	// created (TS loads location first, then project).
+	p2, err := New(Config{AccessToken: "token"})
+	if err != nil {
+		t.Fatalf("New without baseURL: %v", err)
+	}
+	if _, err := p2.LanguageModel("gemini-2.5-flash"); err == nil || !strings.Contains(err.Error(), "location setting is missing") {
+		t.Fatalf("LanguageModel without baseURL error = %v", err)
 	}
 }
 
@@ -323,7 +334,7 @@ func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddingModel() error = %v", err)
 	}
-	if em.Provider() != "google-vertex" {
+	if em.Provider() != "google.vertex.embedding" {
 		t.Fatalf("EmbeddingModel provider = %q, want google-vertex", em.Provider())
 	}
 	if _, err := p.EmbeddingModel(""); err == nil {
@@ -361,7 +372,7 @@ func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VideoModel() error = %v", err)
 	}
-	if video.Provider() != "google-vertex" || video.ModelID() != "veo-3.0-generate-preview" {
+	if video.Provider() != "google.vertex.video" || video.ModelID() != "veo-3.0-generate-preview" {
 		t.Fatalf("VideoModel metadata = %s/%s", video.Provider(), video.ModelID())
 	}
 }

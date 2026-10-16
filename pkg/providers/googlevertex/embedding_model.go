@@ -34,7 +34,7 @@ func NewEmbeddingModel(p *Provider, modelID string) *EmbeddingModel {
 func (m *EmbeddingModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *EmbeddingModel) Provider() string { return "google-vertex" }
+func (m *EmbeddingModel) Provider() string { return "google.vertex.embedding" }
 
 // ModelID returns the model ID.
 func (m *EmbeddingModel) ModelID() string { return m.modelID }
@@ -158,7 +158,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	path := fmt.Sprintf("/models/%s:predict", m.modelID)
 
 	var response vertexEmbeddingResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.provider.mainClient().DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: vertexValidator(m.Provider(), zVertexTextEmbedding),
 		Method:           http.MethodPost,
 		Path:             path,
@@ -231,7 +231,7 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 	path := fmt.Sprintf("/models/%s:embedContent", m.modelID)
 
 	var response vertexEmbedContentResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.provider.mainClient().DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: vertexValidator(m.Provider(), zVertexEmbedContent),
 		Method:           http.MethodPost,
 		Path:             path,

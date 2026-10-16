@@ -3,11 +3,14 @@ package googlevertex
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +22,7 @@ func TestImageModel_SpecificationVersion(t *testing.T) {
 
 func TestImageModel_Provider(t *testing.T) {
 	model := NewImageModel(nil, "gemini-2.5-flash-image")
-	assert.Equal(t, "google-vertex", model.Provider())
+	assert.Equal(t, "google.vertex.image", model.Provider())
 }
 
 func TestImageModel_ModelID(t *testing.T) {
@@ -457,38 +460,66 @@ func TestGetIntValue(t *testing.T) {
 	}
 }
 
-func TestProvider_New_ValidationErrors(t *testing.T) {
+// TS createGoogleVertex does not load project/location up front: loadBaseURL
+// (called from createConfig for every model) reports the missing setting.
+func TestProvider_MissingProjectLocation_ErrorsAtModelCreation(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
+	t.Setenv("GOOGLE_VERTEX_API_KEY", "")
 	tests := []struct {
 		name        string
 		config      Config
 		expectError string
 	}{
-		{
-			name: "Missing project",
-			config: Config{
-				Location:    "us-central1",
-				AccessToken: "token",
-			},
-			expectError: "Google Vertex project setting is missing",
-		},
-		{
-			name: "Missing location",
-			config: Config{
-				Project:     "my-project",
-				AccessToken: "token",
-			},
-			expectError: "Google Vertex location setting is missing",
-		},
+		// TS loadBaseURL loads the location first, then the project.
+		{"Missing both reports location first", Config{AccessToken: "token"}, "Google Vertex location setting is missing"},
+		{"Missing project", Config{Location: "us-central1", AccessToken: "token"}, "Google Vertex project setting is missing"},
+		{"Missing location", Config{Project: "my-project", AccessToken: "token"}, "Google Vertex location setting is missing"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prov, err := New(tt.config)
-			assert.Error(t, err)
-			assert.Nil(t, prov)
+			require.NoError(t, err)
+			require.NotNil(t, prov)
+			_, err = prov.LanguageModel("gemini-2.5-flash")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectError)
+			_, err = prov.EmbeddingModel("text-embedding-005")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectError)
+			_, err = prov.ImageModel("gemini-2.5-flash-image")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.expectError)
+			_, err = prov.VideoModel("veo-3.0-generate-preview")
+			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.expectError)
 		})
 	}
+}
+
+// The environment variables are read when a model is created, not when the
+// provider is (TS loadSetting inside loadBaseURL).
+func TestProvider_ProjectLocationEnvReadLazily(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
+	t.Setenv("GOOGLE_VERTEX_API_KEY", "")
+	var gotURL string
+	prov, err := New(Config{AccessToken: "token", HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotURL = r.URL.String()
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"candidates":[]}`)), Request: r}, nil
+	})}})
+	require.NoError(t, err)
+
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "env-project")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "europe-west4")
+
+	assert.Equal(t, "env-project", prov.Project())
+	assert.Equal(t, "europe-west4", prov.Location())
+	m, err := prov.LanguageModel("gemini-2.5-flash")
+	require.NoError(t, err)
+	_, _ = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	assert.Equal(t, "https://europe-west4-aiplatform.googleapis.com/v1beta1/projects/env-project/locations/europe-west4/publishers/google/models/gemini-2.5-flash:generateContent", gotURL)
 }
 
 func TestProvider_New_Success(t *testing.T) {

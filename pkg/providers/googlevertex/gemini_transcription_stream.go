@@ -127,7 +127,7 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		wsHeaders[k] = v
 	}
 
-	location := m.provider.config.Location
+	location := m.provider.location()
 	if location == "" {
 		location = "global"
 	}
@@ -140,7 +140,7 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	// form (mirrors the TS comment in
 	// gemini-transcription/google-vertex-gemini-transcription-model.ts).
 	setup := map[string]interface{}{
-		"model":                   vertexModelResourcePath(m.provider.config.Project, location, m.modelID),
+		"model":                   vertexModelResourcePath(m.provider.project(), location, m.modelID),
 		"inputAudioTranscription": audioConfig,
 	}
 

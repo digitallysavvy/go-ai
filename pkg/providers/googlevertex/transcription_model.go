@@ -49,7 +49,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if vertexOpts.hasRegion {
 		regionArg = "region"
 	} else {
-		region = m.provider.config.Location
+		region = m.provider.location()
 	}
 	if region == "" && !vertexOpts.hasRegion {
 		region = "global"
@@ -103,7 +103,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vertexSpeechRecognizeURL(m.provider.config.Project, region), bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, vertexSpeechRecognizeURL(m.provider.project(), region), bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		req.Header.Set(k, v)
 	}
 
-	resp, err := m.provider.client.HTTPClient().Do(req)
+	resp, err := m.provider.mainClient().HTTPClient().Do(req)
 	if err != nil {
 		return nil, err
 	}

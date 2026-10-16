@@ -38,7 +38,7 @@ func NewVideoModel(prov *Provider, modelID string) *VideoModel {
 func (m *VideoModel) SpecificationVersion() string { return "v4" }
 
 // Provider returns the provider name.
-func (m *VideoModel) Provider() string { return "google-vertex" }
+func (m *VideoModel) Provider() string { return "google.vertex.video" }
 
 // ModelID returns the model ID.
 func (m *VideoModel) ModelID() string { return m.modelID }
@@ -339,7 +339,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	var operation vertexVideoOperationWire
-	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.prov.mainClient().DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: vertexValidator(m.Provider(), zVertexOperation),
 		Method:           http.MethodPost,
 		Path:             fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
@@ -381,7 +381,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	var operation vertexVideoOperationWire
-	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
+	httpResp, err := m.prov.mainClient().DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: vertexValidator(m.Provider(), zVertexOperation),
 		Method:           http.MethodPost,
 		Path:             fmt.Sprintf("/models/%s:fetchPredictOperation", m.modelID),

@@ -70,7 +70,8 @@ var registryConfigOverrides = map[string]map[string]interface{}{
 	// google-vertex's LanguageModel/EmbeddingModel/ImageModel: New() errors
 	// without project+location+an access token unless an Express Mode API
 	// key is set instead.
-	"google-vertex": {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
+	"google-vertex":      {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
+	"google.vertex.chat": {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	// google.vertex.transcription, google.vertex.speech and
 	// google.vertex.interactions all unconditionally reject an Express Mode
 	// API key for at least one of the model types they can route to (see
@@ -78,6 +79,8 @@ var registryConfigOverrides = map[string]map[string]interface{}{
 	// Provider.SpeechModel, in pkg/providers/googlevertex/provider.go), so
 	// only the project+location+accessToken form of auth works for every
 	// googlevertex-tagged key; use it everywhere for consistency.
+	"google.vertex.embedding":     {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
+	"google.vertex.image":         {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	"google.vertex.transcription": {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	"google.vertex.speech":        {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
 	"google.vertex.interactions":  {"project": "test-project", "location": "us-central1", "accessToken": "test-token"},
@@ -123,25 +126,26 @@ var registryAliasKeys = map[string]string{
 	// Pre-TS-parity provider ids: models serialized before Provider() followed
 	// TS config.provider (for example groq.chat) carry the bare name. The bare
 	// key stays registered so those payloads restore under the TS id.
-	"groq":       "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"cerebras":   "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"fireworks":  "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"together":   "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"alibaba":    "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"deepinfra":  "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"moonshot":   "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"deepseek":   "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"gmicloud":   "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"zai":        "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"cohere":     "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"mistral":    "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"bfl":        "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"fal":        "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"deepgram":   "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"assemblyai": "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"gladia":     "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"elevenlabs": "pre-TS-parity serialization key, restores under the TS config.provider id",
-	"bfl.video":  "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"google-vertex": "pre-TS-parity serialization key, restores under the TS config.provider id (google.vertex.chat/embedding/image)",
+	"groq":          "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"cerebras":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"fireworks":     "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"together":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"alibaba":       "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepinfra":     "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"moonshot":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepseek":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"gmicloud":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"zai":           "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"cohere":        "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"mistral":       "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"bfl":           "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"fal":           "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"deepgram":      "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"assemblyai":    "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"gladia":        "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"elevenlabs":    "pre-TS-parity serialization key, restores under the TS config.provider id",
+	"bfl.video":     "pre-TS-parity serialization key, restores under the TS config.provider id",
 	// Payloads serialized before the evaluate -> decide rename carry the
 	// old TypeSafe provider tag; they restore as typesafe.decision.
 	"typesafe.evaluation": "pre-rename serialization key, restores as typesafe.decision",

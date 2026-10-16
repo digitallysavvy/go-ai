@@ -37,7 +37,7 @@ func TestVertexEmbeddingModel_MetadataAndCapabilities(t *testing.T) {
 	if got := m.SpecificationVersion(); got != "v4" {
 		t.Fatalf("SpecificationVersion() = %q, want v4", got)
 	}
-	if got := m.Provider(); got != "google-vertex" {
+	if got := m.Provider(); got != "google.vertex.embedding" {
 		t.Fatalf("Provider() = %q, want google-vertex", got)
 	}
 	if got := m.ModelID(); got != "text-embedding-005" {

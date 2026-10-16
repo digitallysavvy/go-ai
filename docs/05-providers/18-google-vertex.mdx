@@ -377,9 +377,12 @@ generic `googlevertex.NewMaaS` wrapper below — either works for Grok, but
 ## Provider-Specific Options
 
 Pass Vertex AI-specific options through `ProviderOptions` under the
-`"googleVertex"` key (the model's `Provider()` method itself still returns
-`"google-vertex"`, which is only the model identity/error-wrapping name —
-not the options map key).
+`"googleVertex"` key (the model's `Provider()` method returns the TS provider ids
+`"google.vertex.chat"`, `"google.vertex.embedding"`, `"google.vertex.image"` and
+`"google.vertex.video"`, which are only the model identity/error-wrapping
+names — not the options map key). The project and location environment
+variables are read when a model is created, not when the provider is, so a
+missing value is reported by the model factory.
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
@@ -404,8 +407,8 @@ to `vertex`, then `google`), matching the TypeScript SDK's own
 `providerOptions.googleVertex` convention. The legacy `"vertex"` key is
 still accepted, and a plain `"google"` key works as the last fallback so
 options shared between the AI Studio and Vertex providers don't need
-duplicating. Note that the hyphenated `"google-vertex"` string is only the
-model's `Provider()` identity/error-wrapping name — it was never a
+duplicating. Note that the `"google.vertex.*"` strings are only the
+model's `Provider()` identity/error-wrapping names — it was never a
 `ProviderOptions` key.
 
 | Provider | `ProviderOptions` key(s), in lookup order |
