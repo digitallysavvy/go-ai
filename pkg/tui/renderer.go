@@ -349,9 +349,8 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 				r.mu.Lock()
 				r.status = "Interrupted"
 				r.paintLocked("", false, true, contextSize)
-				if !options.ContinueSession {
-					r.stopLocked()
-				}
+				// TS stops the session on an interrupt whatever continueSession is.
+				r.stopLocked()
 				r.mu.Unlock()
 				return nil, errInterrupted
 			default:
@@ -363,9 +362,8 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 				r.mu.Lock()
 				r.status = "Interrupted"
 				r.paintLocked("", false, true, contextSize)
-				if !options.ContinueSession {
-					r.stopLocked()
-				}
+				// TS stops the session on an interrupt whatever continueSession is.
+				r.stopLocked()
 				r.mu.Unlock()
 				return nil, errInterrupted
 			}
@@ -419,9 +417,8 @@ func (r *TerminalRenderer) RenderStream(ctx context.Context, result AgentTUIStre
 			r.mu.Lock()
 			r.status = "Interrupted"
 			r.paintLocked("", false, true, contextSize)
-			if !options.ContinueSession {
-				r.stopLocked()
-			}
+			// TS stops the session on an interrupt whatever continueSession is.
+			r.stopLocked()
 			r.mu.Unlock()
 			return nil, errInterrupted
 		}
