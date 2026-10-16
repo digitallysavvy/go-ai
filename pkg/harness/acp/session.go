@@ -608,12 +608,6 @@ func deserializeBridgeError(err any, harnessID string) error {
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
-	s.mu.Lock()
-	replayOnly := s.replayOnly
-	s.mu.Unlock()
-	if replayOnly {
-		return nil, fmt.Errorf("%s recovered this turn through disk replay only and has no restored ACP process for a subsequent prompt.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
-	}
 	return s.doTurn(ctx, opts.Skills, opts.Instructions, opts.ResponseFormat, opts.Prompt, opts.Model, opts.Tools, opts.Emit, false)
 }
 
@@ -689,8 +683,10 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		}
 		if turnStartConfig.Model != "" {
 			msg.Model = turnStartConfig.Model
-			mm := *turnStartConfig.ModelMapping
-			msg.ModelMapping = &mm
+			if turnStartConfig.ModelMapping != nil {
+				mm := *turnStartConfig.ModelMapping
+				msg.ModelMapping = &mm
+			}
 		}
 		if s.p.instructionMapping != nil {
 			msg.InstructionMapping = s.p.instructionMapping
@@ -738,6 +734,14 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		if s.p.outputSchemaMapping == nil {
 			return nil, unsupported(s.p.harnessID, fmt.Sprintf("%s does not support structured output through ACP.", s.p.harnessID))
 		}
+	}
+
+	// TS checks replayOnly after skills, instructions and the response format.
+	s.mu.Lock()
+	replayOnly := s.replayOnly
+	s.mu.Unlock()
+	if replayOnly {
+		return nil, fmt.Errorf("%s recovered this turn through disk replay only and has no restored ACP process for a subsequent prompt.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
 	}
 
 	if ctx.Err() != nil {
