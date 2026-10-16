@@ -24,7 +24,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 
 	var raw struct {
-		Message *string         `json:"message"`
+		Message json.RawMessage `json:"message"`
 		Detail  json.RawMessage `json:"detail"`
 		Status  *string         `json:"status"`
 		State   *string         `json:"state"`
@@ -41,6 +41,13 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 		taskStatus = *raw.State
 	}
 
+	// message is z.string().optional(): null or a non-string is off-schema.
+	var messageText string
+	if len(raw.Message) > 0 {
+		if string(raw.Message) == "null" || json.Unmarshal(raw.Message, &messageText) != nil {
+			return providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(statusCode), cause)
+		}
+	}
 	var message string
 	haveMessage := false
 	detailPresent := len(raw.Detail) > 0 && string(bytes.TrimSpace(raw.Detail)) != "null"
@@ -56,8 +63,8 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 			}
 		}
 		haveMessage = true
-	case raw.Message != nil:
-		message, haveMessage = *raw.Message, true
+	case len(raw.Message) > 0:
+		message, haveMessage = messageText, true
 	}
 	if !haveMessage {
 		if raw.Status != nil || raw.State != nil {

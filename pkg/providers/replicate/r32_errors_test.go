@@ -44,3 +44,19 @@ func TestPollTransportFailureIsNotWrapped(t *testing.T) {
 		t.Errorf("video handlePollError wrapped: %v", got)
 	}
 }
+
+// z.string().optional() rejects null, so the body is off-schema and the
+// message is the status text.
+func TestReplicateErrorMessageNullFieldIsOffSchema(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"detail":null,"error":"x"}`: "Bad Request",
+		`{"detail":"d","error":null}`: "Bad Request",
+		`{"detail":5}`:                "Bad Request",
+		`{"error":"x"}`:               "x",
+		`{}`:                          "Unknown Replicate error",
+	} {
+		if got := replicateErrorMessage(400, []byte(body)); got != want {
+			t.Errorf("%s: got %q, want %q", body, got, want)
+		}
+	}
+}

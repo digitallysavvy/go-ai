@@ -224,18 +224,32 @@ func (m *ImageModel) handleError(err error) error {
 // message is `detail ?? error ?? 'Unknown Replicate error'` of a JSON object
 // error body; a body that is not that shape falls back to the status text.
 func replicateErrorMessage(status int, body []byte) string {
+	// z.string().optional(): absent is fine, null or a non-string is off-schema.
 	var parsed struct {
-		Detail *string `json:"detail"`
-		Error  *string `json:"error"`
+		Detail json.RawMessage `json:"detail"`
+		Error  json.RawMessage `json:"error"`
+	}
+	optional := func(raw json.RawMessage) (value string, present, ok bool) {
+		if len(raw) == 0 {
+			return "", false, true
+		}
+		if string(raw) == "null" || json.Unmarshal(raw, &value) != nil {
+			return "", false, false
+		}
+		return value, true, true
 	}
 	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
-		switch {
-		case parsed.Detail != nil:
-			return *parsed.Detail
-		case parsed.Error != nil:
-			return *parsed.Error
+		detail, hasDetail, detailOK := optional(parsed.Detail)
+		errorField, hasError, errorOK := optional(parsed.Error)
+		if detailOK && errorOK {
+			switch {
+			case hasDetail:
+				return detail
+			case hasError:
+				return errorField
+			}
+			return "Unknown Replicate error"
 		}
-		return "Unknown Replicate error"
 	}
 	return http.StatusText(status)
 }

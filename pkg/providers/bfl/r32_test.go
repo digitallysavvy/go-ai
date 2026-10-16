@@ -65,3 +65,17 @@ func TestImageSubmitTransportFailureIsNotWrapped(t *testing.T) {
 		t.Fatalf("err = %#v", err)
 	}
 }
+
+// bflErrorSchema.message is z.string().optional(): null is off-schema, so the
+// message is the status text even when detail is present.
+func TestErrorBodyWithNullMessageIsOffSchema(t *testing.T) {
+	err := bflStatusError(400, nil, []byte(`{"message":null,"detail":"d"}`))
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) || perr.Message != "Bad Request" {
+		t.Fatalf("got %#v", perr)
+	}
+	err = bflStatusError(400, nil, []byte(`{"message":"m"}`))
+	if !errors.As(err, &perr) || perr.Message != "m" {
+		t.Fatalf("got %#v", perr)
+	}
+}
