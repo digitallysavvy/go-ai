@@ -409,6 +409,12 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 			}
 			j++
 		default:
+			// Neither the JSDoc-style postfix `!` (`a<b!>(c)`) nor `?.`
+			// (`x < items?.n > (n)`) is type syntax at any depth: Node reads
+			// the whole as a comparison chain (stripping the `!`).
+			if t.text == "!" || t.text == "?." {
+				return i, false
+			}
 			if depth == 1 && angleDisallowedAtDepth0[t.text] {
 				return i, false
 			}
