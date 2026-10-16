@@ -37,3 +37,16 @@ func TestTranscriptionFilePartWithoutMediaTypeIsOctetStream(t *testing.T) {
 		t.Fatalf("body = %q", body.String())
 	}
 }
+
+func TestBaseURLTrailingSlashIsStripped(t *testing.T) {
+	var path string
+	p, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) { path = r.URL.Path; _, _ = w.Write([]byte{1}) })
+	p2 := New(Config{APIKey: "k", BaseURL: srv.URL + "/"})
+	_ = p
+	if _, err := mustSpeechModel(t, p2, "s2-pro").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/v1/tts" {
+		t.Fatalf("path = %q", path)
+	}
+}

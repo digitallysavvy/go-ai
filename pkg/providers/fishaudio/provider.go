@@ -34,6 +34,8 @@ type Provider struct {
 
 // New creates a new Fish Audio provider instance.
 func New(config Config) *Provider {
+	// TS options.baseURL?.replace(/\/$/, ''): a trailing "/" must not double up with request paths.
+	config.BaseURL = providerutils.WithoutTrailingSlash(config.BaseURL)
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.fish.audio"
 	}
