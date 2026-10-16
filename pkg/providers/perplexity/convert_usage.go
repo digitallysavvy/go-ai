@@ -22,7 +22,9 @@ func convertPerplexityUsage(usage *perplexityUsage, rawUsage []byte) types.Usage
 
 	inputTokens := usage.InputTokens
 	outputTokens := usage.OutputTokens
-	totalTokens := usage.TotalTokens
+	// TS core derives totalTokens as input total + output total; the wire
+	// total_tokens is optional and never used.
+	totalTokens := inputTokens + outputTokens
 
 	var cacheReadTokens int64
 	var cacheWriteTokens int64
