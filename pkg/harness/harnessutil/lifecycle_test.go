@@ -22,7 +22,8 @@ func TestValidateLifecycleStateObject(t *testing.T) {
 	}
 	invalid := []string{`[]`, `"x"`, `{"threadId":5}`,
 		`{"bridge":{"port":1,"token":"x"}}`, `{"bridge":{"port":"1","token":"x","lastSeenEventId":0}}`,
-		`{"bridge":[]}`, `{"bridge":{"token":"x","lastSeenEventId":0}}`}
+		`{"bridge":[]}`, `{"bridge":null}`, `{"threadId":null}`,
+		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0,"sandboxId":null}}`, `{"bridge":{"token":"x","lastSeenEventId":0}}`}
 	for _, v := range invalid {
 		if err := ValidateLifecycleStateObject(json.RawMessage(v), &state{}); err == nil {
 			t.Errorf("%q: expected an error", v)

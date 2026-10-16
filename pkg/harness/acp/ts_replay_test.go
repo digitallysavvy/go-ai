@@ -549,6 +549,12 @@ func TestTSReplay_LifecycleIdentityMismatchRejected(t *testing.T) {
 	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(`{"bridge":{"port":1}}`)); err == nil {
 		t.Fatal("state without implementationIdentity must be rejected")
 	}
+	// zod .optional() rejects explicit nulls.
+	for _, bad := range []string{`{"implementationIdentity":"x","bridge":null}`, `{"implementationIdentity":"x","acpSessionId":null}`} {
+		if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(bad)); err == nil {
+			t.Fatalf("%s must be rejected", bad)
+		}
+	}
 }
 
 // finishingServer answers every `start` with a finish and records the start frames.

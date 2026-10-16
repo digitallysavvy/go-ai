@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -134,6 +135,12 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 	var identity string
 	if raw, ok := probe["implementationIdentity"]; !ok || json.Unmarshal(raw, &identity) != nil {
 		return fmt.Errorf("ACP lifecycle state data: implementationIdentity must be a string.") //nolint:staticcheck // mirrors the TS zod string requirement
+	}
+	// zod `.optional()` rejects an explicit null.
+	for _, key := range []string{"authenticationProfile", "sandboxCredentialEnvironment", "acpSessionId", "bridge"} {
+		if raw, ok := probe[key]; ok && string(bytes.TrimSpace(raw)) == "null" {
+			return fmt.Errorf("ACP lifecycle state data: %s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
+		}
 	}
 	var v resumeStateData
 	if err := json.Unmarshal(data, &v); err != nil {
