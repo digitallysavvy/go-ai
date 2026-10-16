@@ -84,7 +84,7 @@ func createTurnStartConfig(in createTurnStartConfigInput) TurnStartConfig {
 	if in.OutputSchemaMapping != nil {
 		fingerprintPayload["outputSchemaMapping"] = in.OutputSchemaMapping
 	}
-	sum := sha256.Sum256([]byte(stableStringify(fingerprintPayload)))
+	sum := sha256.Sum256([]byte(stableStringifyCodeUnit(fingerprintPayload)))
 
 	cfg := TurnStartConfig{
 		Version: 1, ConfigurationFingerprint: hex.EncodeToString(sum[:]),

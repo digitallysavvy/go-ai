@@ -94,7 +94,7 @@ func createAuthenticationProfileIdentity(authentication *Authentication, compat 
 	if compat != nil {
 		payload["providerAuthentication"] = compat
 	}
-	sum := sha256.Sum256([]byte(stableStringify(payload)))
+	sum := sha256.Sum256([]byte(stableStringifyCodeUnit(payload)))
 	id := authenticationProfileIdentity{Digest: hex.EncodeToString(sum[:]), ProviderKind: providerKind}
 	if authentication != nil {
 		id.ACPMethodID = authentication.MethodID
