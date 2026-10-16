@@ -193,7 +193,7 @@ func TestInteractionsPreviousInteractionCompactsAssistantAndToolResult(t *testin
 	}
 }
 
-func TestInteractionsAgentPollingTimeoutCancelsInteraction(t *testing.T) {
+func TestInteractionsAgentPollingTimeoutDoesNotCancelInteraction(t *testing.T) {
 	t.Parallel()
 
 	cancelCalled := make(chan struct{}, 1)
@@ -224,10 +224,15 @@ func TestInteractionsAgentPollingTimeoutCancelsInteraction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
+	if want := "google.interactions: timed out polling interaction v1_agent after 5ms."; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+	// TS pollGoogleInteractionUntilTerminal only cancels on abort errors; a
+	// timeout leaves the run going so it can be retrieved by id.
 	select {
 	case <-cancelCalled:
-	case <-time.After(time.Second):
-		t.Fatal("expected cancel endpoint to be called")
+		t.Fatal("timeout must not cancel the interaction")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
