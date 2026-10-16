@@ -102,7 +102,7 @@ func consumeTypeExprScan(tokens []tsToken, i int, stopAtBrace, allowSplit bool) 
 			switch t.text {
 			case "(", "[":
 				if depth == 0 && t.text == "(" && (operandStart || genericCandidate) {
-					fnCandidate = true
+					fnCandidate = isFunctionTypeParams(tokens, i)
 				}
 				depth++
 			case ")", "]":
@@ -683,6 +683,51 @@ func followsConditionalQuestion(out []tsToken) bool {
 			continue
 		}
 		return out[i].kind == "punct" && out[i].text == "?"
+	}
+	return false
+}
+
+// isFunctionTypeParams reports whether the "(" at tokens[open], where a type
+// operand begins, can start the parameter list of a function type: `()`, a
+// rest parameter, or a first parameter (a name or a destructuring pattern)
+// followed by `:`, `,`, `?`, `=` or the closing `)`. Anything else, such as
+// `(A | B)`, `(() => void)` or `(new () => A)`, is a parenthesized type, and
+// a following `=>` then belongs to an arrow function (`(a): (() => void) =>
+// a`), not to the type.
+func isFunctionTypeParams(tokens []tsToken, open int) bool {
+	j := nextSignificant(tokens, open+1)
+	if j < 0 {
+		return false
+	}
+	t := tokens[j]
+	if t.kind == "punct" {
+		switch t.text {
+		case ")", "...":
+			return true
+		case "{", "[":
+			if m := matchParen(tokens, j); m >= 0 {
+				j = m
+			} else {
+				return false
+			}
+		default:
+			return false
+		}
+	} else if t.kind != "ident" {
+		return false
+	} else if t.text == "new" || t.text == "typeof" || t.text == "keyof" || t.text == "readonly" || t.text == "unique" || t.text == "infer" || t.text == "asserts" {
+		if n := nextSignificant(tokens, j+1); n >= 0 && tokens[n].kind == "punct" && (tokens[n].text == ":" || tokens[n].text == "," || tokens[n].text == ")" || tokens[n].text == "?" || tokens[n].text == "=") {
+			return true
+		}
+		return false
+	}
+	n := nextSignificant(tokens, j+1)
+	if n < 0 || tokens[n].kind != "punct" {
+		return false
+	}
+	switch tokens[n].text {
+	case ":", ",", "?", "=", ")":
+		return true
 	}
 	return false
 }
