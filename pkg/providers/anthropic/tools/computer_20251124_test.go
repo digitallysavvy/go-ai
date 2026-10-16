@@ -16,9 +16,9 @@ func TestComputer20251124_Basic(t *testing.T) {
 
 	assert.Equal(t, "anthropic.computer_20251124", tool.Name)
 	assert.NotEmpty(t, tool.Description)
-	assert.True(t, tool.ProviderExecuted)
+	assert.False(t, tool.ProviderExecuted)
 	assert.NotNil(t, tool.Parameters)
-	assert.NotNil(t, tool.Execute)
+	assert.Nil(t, tool.Execute)
 }
 
 func TestComputer20251124_WithZoom(t *testing.T) {

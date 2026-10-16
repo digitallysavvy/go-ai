@@ -134,15 +134,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/messages/batches",
-		Body:    map[string]interface{}{"requests": preparedRequests},
-		Headers: headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodPost,
+		Path:             "/messages/batches",
+		Body:             map[string]interface{}{"requests": preparedRequests},
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 
 	return &provider.BatchV4StartResult{
@@ -168,15 +166,13 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/messages/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodPost,
+		Path:             "/messages/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 	return &provider.BatchV4CancelResult{}, nil
 }
@@ -193,22 +189,17 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 
 	var response anthropicBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/messages/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchList),
+		Method:           stdhttp.MethodGet,
+		Path:             "/messages/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
 
 	batches := make([]provider.BatchV4ListItem, 0, len(response.Data))
 	for _, item := range response.Data {
-		// Mirrors TS's anthropicBatchListResponseSchema, which validates every
-		// entry in "data" against the same required-field envelope as a single
-		// batch response; one malformed entry fails the whole list call.
-		if err := item.validate(); err != nil {
-			return nil, err
-		}
 		batches = append(batches, provider.BatchV4ListItem{BatchV4Status: item.toStatus(), BatchID: item.ID})
 	}
 
@@ -303,14 +294,12 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*anthropicBatchResponseWire, error) {
 	var response anthropicBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/messages/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: anthropicSchemaValidator(b.provider.Name(), zBatchResponse),
+		Method:           stdhttp.MethodGet,
+		Path:             "/messages/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
-	}
-	if err := response.validate(); err != nil {
-		return nil, err
 	}
 	return &response, nil
 }
@@ -494,30 +483,6 @@ type anthropicBatchResponseWire struct {
 	CancelInitiatedAt *string                         `json:"cancel_initiated_at"`
 	EndedAt           *string                         `json:"ended_at"`
 	ResultsURL        *string                         `json:"results_url"`
-}
-
-// validate rejects a batch-object response missing fields the TS zod schema
-// (anthropicBatchResponseZodSchema) requires: id, type === "message_batch",
-// processing_status, created_at, and expires_at (request_counts is a nested
-// object whose own zero value -- all-zero counts -- is a legitimate state
-// for a just-created batch, so it cannot be distinguished from "missing" the
-// way the scalar string fields can and is left unchecked). Mirrors TS's
-// createJsonResponseHandler throwing when safeParseJSON/schema validation
-// fails on the decoded envelope.
-func (r anthropicBatchResponseWire) validate() error {
-	switch {
-	case r.ID == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"id\".")
-	case r.Type != "message_batch":
-		return providererrors.NewInvalidResponseDataError(r, fmt.Sprintf("Anthropic batch response has unexpected \"type\" %q, want \"message_batch\".", r.Type))
-	case r.ProcessingStatus == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"processing_status\".")
-	case r.CreatedAt == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"created_at\".")
-	case r.ExpiresAt == "":
-		return providererrors.NewInvalidResponseDataError(r, "Anthropic batch response is missing required field \"expires_at\".")
-	}
-	return nil
 }
 
 func (r anthropicBatchResponseWire) toStatus() provider.BatchV4Status {

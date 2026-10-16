@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -74,32 +73,16 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	generateContent := func(body map[string]interface{}) (Response, *internalhttp.Response, error) {
 		var response Response
-		var raw json.RawMessage
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			Method:  http.MethodPost,
 			Path:    m.cfg.GeneratePath(m.modelID),
 			Body:    body,
 			Headers: headers,
-		}, &raw)
-		if err != nil {
-			return response, resp, err
-		}
-		// TS createJsonResponseHandler(responseSchema): a body that does not
-		// match the schema is an APICallError "Invalid JSON response".
-		if message := chunkValidationMessage(string(raw)); message != "" {
-			return response, resp, &providererrors.ProviderError{
-				Provider:        m.cfg.ProviderName,
-				StatusCode:      resp.StatusCode,
-				Message:         "Invalid JSON response",
-				Cause:           providererrors.NewValidationErrorWithContext(compactJSONString(string(raw)), validationIssueText(message), nil, &providererrors.ValidationContext{}),
-				ResponseHeaders: providerutils.ExtractHeaders(resp.Headers),
-				ResponseBody:    string(resp.Body),
-			}
-		}
-		err = json.Unmarshal(raw, &response)
-		if err != nil {
-			err = fmt.Errorf("failed to decode JSON response: %w", err)
-		}
+			// TS createJsonResponseHandler(responseSchema): a body that is not
+			// JSON or does not match the schema is an APICallError
+			// "Invalid JSON response".
+			ValidateResponse: providerutils.NodeResponseValidator(m.cfg.ProviderName, zChunk),
+		}, &response)
 		return response, resp, err
 	}
 

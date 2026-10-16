@@ -96,20 +96,23 @@ func TestConverseResponseSchemaIsValidatedLikeTS(t *testing.T) {
 	}
 	for name, body := range bad {
 		t.Run(name, func(t *testing.T) {
-			var v interface{}
-			if err := json.Unmarshal([]byte(body), &v); err != nil {
-				t.Fatal(err)
+			err := bedrockValidator(zbConverse)(200, http.Header{"X-Amzn-Requestid": {"r"}}, []byte(body))
+			var perr *providererrors.ProviderError
+			if !errors.As(err, &perr) || perr.Message != "Invalid JSON response" {
+				t.Fatalf("%s: err = %v, want Invalid JSON response", name, err)
 			}
-			if validateConverseResponse(v) == nil {
-				t.Fatalf("%s: want a validation error", name)
+			if perr.StatusCode != 200 || perr.ResponseBody != body || len(perr.ResponseHeaders) == 0 ||
+				!providererrors.IsValidationError(perr.Cause) {
+				t.Fatalf("%s: status=%d headers=%v cause=%#v", name, perr.StatusCode, perr.ResponseHeaders, perr.Cause)
 			}
 		})
 	}
 	good := `{` + msg + `,"metrics":{"latencyMs":3},"stopReason":"whatever","serviceTier":{"type":"x"},"trace":5,` + usage + `,"extra":1}`
-	var v interface{}
-	_ = json.Unmarshal([]byte(good), &v)
-	if verr := validateConverseResponse(v); verr != nil {
-		t.Fatalf("valid response rejected: %v", verr)
+	if err := bedrockValidator(zbConverse)(200, http.Header{}, []byte(good)); err != nil {
+		t.Fatalf("valid response rejected: %v", err)
+	}
+	if err := bedrockValidator(zbConverse)(200, http.Header{}, []byte(`not json`)); err == nil {
+		t.Fatal("non-JSON body must be Invalid JSON response")
 	}
 }
 

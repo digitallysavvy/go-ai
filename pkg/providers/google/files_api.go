@@ -159,11 +159,18 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 			return nil, f.provider.handleFilesError(pollResp.StatusCode, pollResp.Header, b)
 		}
 		var polled googleFileResource
-		if err := json.NewDecoder(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes)).Decode(&polled); err != nil {
-			_ = pollResp.Body.Close()
+		pollBody, err := io.ReadAll(io.LimitReader(pollResp.Body, googleFilesMaxResponseBytes))
+		_ = pollResp.Body.Close()
+		if err != nil {
 			return nil, err
 		}
-		_ = pollResp.Body.Close()
+		// TS createJsonResponseHandler(googleFileResponseSchema).
+		if err := googleValidator(zGoogleFile)(pollResp.StatusCode, pollResp.Header, pollBody); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(pollBody, &polled); err != nil {
+			return nil, err
+		}
 		file = polled
 	}
 	if file.State == "FAILED" {

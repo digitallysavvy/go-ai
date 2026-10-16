@@ -61,6 +61,11 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, anthropicHTTPError(f.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
 
+	// TS createJsonResponseHandler(anthropicUploadFileResponseSchema).
+	if err := anthropicSchemaValidator(f.provider.Name(), zFileUpload)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
+
 	var out struct {
 		ID           string `json:"id"`
 		Filename     string `json:"filename"`

@@ -79,6 +79,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/chat/completions",
 		Body:    reqBody,
 		Headers: opts.Headers,
+		// TS createJsonResponseHandler(openai-compatible chat response schema).
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
 	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -279,6 +281,9 @@ func (m *LanguageModel) convertResponse(response vertexXaiResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError("googleVertex.xai", 0, "", err.Error(), err)
 }
 

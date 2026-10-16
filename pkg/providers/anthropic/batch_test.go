@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Ported from packages/anthropic/src/anthropic-batch.test.ts.
@@ -354,8 +355,8 @@ func TestBatch_ListRejectsMalformedItemFailsWholeCall(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
 	b := p.ExperimentalBatch().(provider.BatchV4Lister)
 	result, err := b.DoListBatches(t.Context(), provider.BatchV4ListOptions{})
-	if err == nil || !providererrors.IsInvalidResponseDataError(err) {
-		t.Fatalf("err = %v, want InvalidResponseDataError", err)
+	if !providerutils.IsInvalidJSONResponse(err) {
+		t.Fatalf("err = %v, want Invalid JSON response", err)
 	}
 	if result != nil {
 		t.Fatalf("result = %+v, want nil on validation failure", result)
@@ -590,8 +591,8 @@ func TestBatch_BatchEnvelopeMissingRequiredFieldFails(t *testing.T) {
 			_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
 				Requests: []provider.BatchV4Request{textBatchRequest("1", "claude-sonnet-4-5", "hi")},
 			})
-			if err == nil || !providererrors.IsInvalidResponseDataError(err) {
-				t.Fatalf("err = %v, want InvalidResponseDataError", err)
+			if !providerutils.IsInvalidJSONResponse(err) {
+				t.Fatalf("err = %v, want Invalid JSON response", err)
 			}
 		})
 	}

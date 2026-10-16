@@ -138,6 +138,10 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		return nil, cloudTTSError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
+	// TS createJsonResponseHandler(googleVertexCloudTTSResponseSchema).
+	if err := vertexValidator(m.Provider(), zVertexCloudTTS)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var parsed struct {
 		AudioContent string `json:"audioContent"`
 	}

@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -144,14 +143,10 @@ func (o *computer20251124Opts) ToAnthropicAPIMap() map[string]interface{} {
 
 func Computer20251124(args Computer20251124Args) types.Tool {
 	return types.Tool{
-		Name:        "anthropic.computer_20251124",
-		Description: buildComputerDescription(args),
-		Parameters:  buildComputer20251124Schema(args.EnableZoom),
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("computer tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
-		},
-		ProviderExecuted: true,
-		ProviderOptions:  &computer20251124Opts{Args: args},
+		Name:            "anthropic.computer_20251124",
+		Description:     buildComputerDescription(args),
+		Parameters:      buildComputer20251124Schema(args.EnableZoom),
+		ProviderOptions: &computer20251124Opts{Args: args},
 	}
 }
 

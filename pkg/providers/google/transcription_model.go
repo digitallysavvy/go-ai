@@ -253,10 +253,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var response transcriptionResponse
 	resp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/interactions",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractionsTranscription),
+		Method:           http.MethodPost,
+		Path:             "/interactions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -318,6 +319,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 // missing key stays a LoadAPIKeyError and HTTP failures keep status, headers
 // and body for retry decisions.
 func (m *TranscriptionModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
 	var loadKeyErr *providererrors.LoadAPIKeyError
 	if errors.As(err, &loadKeyErr) {
 		return err

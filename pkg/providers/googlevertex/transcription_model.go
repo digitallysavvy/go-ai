@@ -125,6 +125,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, gemini.GoogleHTTPError(m.Provider(), resp.StatusCode, resp.Header, respBody, nil)
 	}
 
+	// TS createJsonResponseHandler(googleVertexTranscriptionResponseSchema).
+	if err := vertexValidator(m.Provider(), zVertexTranscription)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	var parsed vertexTranscriptionResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode vertex transcription response: %w", err)

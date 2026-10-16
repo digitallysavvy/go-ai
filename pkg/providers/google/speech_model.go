@@ -106,10 +106,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 
 	var response googleSpeechResponse
 	httpResp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    m.cfg.GeneratePath(m.modelID),
-		Body:    requestBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleSpeech),
+		Method:           http.MethodPost,
+		Path:             m.cfg.GeneratePath(m.modelID),
+		Body:             requestBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -182,6 +183,9 @@ func parseGoogleSpeechRawBody(body []byte) (interface{}, error) {
 }
 
 func (m *SpeechModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
 	var loadKeyErr *providererrors.LoadAPIKeyError
 	if errors.As(err, &loadKeyErr) {
 		return err // TS throws LoadAPIKeyError unwrapped
