@@ -597,7 +597,7 @@ func normalizeDomain(value string) string {
 		if strings.Contains(u.Host, ":") && strings.HasPrefix(u.Host, "[") {
 			host = "[" + host + "]"
 		}
-		if port := u.Port(); port != "" && !(port == "443" && u.Scheme == "https") && !(port == "80" && u.Scheme == "http") {
+		if port := u.Port(); port != "" && (port != "443" || u.Scheme != "https") && (port != "80" || u.Scheme != "http") {
 			host += ":" + port
 		}
 		return host
