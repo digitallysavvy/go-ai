@@ -172,6 +172,11 @@ func (d *turnDriver) fail(err error) {
 func (d *turnDriver) abort(err error) {
 	reason := ""
 	if ctxErr := d.ctx.Err(); ctxErr != nil {
+		// TS reports getErrorMessage(abortSignal.reason): the caller's own
+		// cancellation cause when one was given.
+		if cause := context.Cause(d.ctx); cause != nil {
+			ctxErr = cause
+		}
 		reason = ctxErr.Error()
 	} else if err != nil {
 		reason = err.Error()

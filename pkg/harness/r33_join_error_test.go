@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -60,5 +61,28 @@ func TestPauseForHostInputDoesNotCloseOpenStep(t *testing.T) {
 	}
 	if !d.stepOpen {
 		t.Fatal("step state was reset")
+	}
+}
+
+// TS aborts carry getErrorMessage(abortSignal.reason): a caller's cancel cause.
+func TestRunPrompt_AbortReasonIsCancelCause(t *testing.T) {
+	keepAlive := make(chan struct{})
+	t.Cleanup(func() { close(keepAlive) })
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(func(string, interface{})) []StreamPart {
+			return []StreamPart{&StreamStartPart{}}
+		},
+		promptDone: func() <-chan struct{} { return keepAlive },
+	})
+	ctx, cancel := context.WithCancelCause(context.Background())
+	out := runPrompt(ctx, runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+	})
+	cancel(errors.New("user pressed stop"))
+	<-out.Done
+	err := out.Result.Err()
+	if err == nil || !strings.Contains(err.Error(), "user pressed stop") {
+		t.Fatalf("Err() = %v, want the cancel cause", err)
 	}
 }
