@@ -268,7 +268,7 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map
 		aspectRatio = ""
 	}
 	if opts.Mask != nil {
-		return nil, nil, fmt.Errorf("%w: FLUX 3 image masks", providererrors.ErrUnsupportedFeature)
+		return nil, nil, &providererrors.UnsupportedFunctionalityError{Functionality: "FLUX 3 image masks"}
 	}
 	if opts.Seed != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})

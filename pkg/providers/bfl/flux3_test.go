@@ -225,7 +225,7 @@ func TestFlux3_RejectsBeforeSubmission(t *testing.T) {
 	fs := newFlux3Server(t)
 	mask := provider.ImageFile{Type: "url", URL: "https://example.com/mask.png"}
 	_, err := fs.generate(t, &provider.ImageGenerateOptions{Mask: &mask})
-	if err == nil || !strings.Contains(err.Error(), "FLUX 3 image masks") || !errors.Is(err, providererrors.ErrUnsupportedFeature) || len(fs.submits) != 0 {
+	if err == nil || !strings.Contains(err.Error(), "FLUX 3 image masks") || !providererrors.IsUnsupportedFunctionalityError(err) || err.Error() != "'FLUX 3 image masks' functionality not supported." || len(fs.submits) != 0 {
 		t.Fatalf("mask: err=%v submits=%d", err, len(fs.submits))
 	}
 

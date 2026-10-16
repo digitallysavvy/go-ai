@@ -196,13 +196,12 @@ func TestTranscriptionModel_DoStream_RejectsNonStreamingModel(t *testing.T) {
 		Audio:            newChanAudioStream(),
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: rate(16000)},
 	})
-	if !errorsIsUnsupported(err) {
-		t.Fatalf("err = %v, want ErrUnsupportedFeature", err)
+	if !providererrors.IsUnsupportedFunctionalityError(err) || !errors.Is(err, providererrors.ErrUnsupportedFeature) {
+		t.Fatalf("err = %v, want UnsupportedFunctionalityError", err)
 	}
-}
-
-func errorsIsUnsupported(err error) bool {
-	return err != nil && (err == providererrors.ErrUnsupportedFeature || strings.Contains(err.Error(), "unsupported"))
+	if want := "'streaming transcription with ink-whisper' functionality not supported."; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
 }
 
 // TestTranscriptionModel_DoStream_RejectsNonEnglishLanguage mirrors part of
