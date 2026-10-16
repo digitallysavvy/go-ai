@@ -449,11 +449,21 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		rerankedDocs[i] = documentsSlice[item.Index]
 	}
 
+	// TS fills a response the model left blank: `timestamp ?? new Date()` and
+	// `modelId ?? model.modelId`.
+	response := modelResult.Response
+	if response.Timestamp.IsZero() {
+		response.Timestamp = timeNow()
+	}
+	if response.ModelID == "" {
+		response.ModelID = opts.Model.ModelID()
+	}
+
 	result := &RerankResult{
 		OriginalDocuments: opts.Documents,
 		Ranking:           ranking,
 		RerankedDocuments: rerankedDocs,
-		Response:          modelResult.Response,
+		Response:          response,
 		Warnings:          warningsOrEmpty(modelResult.Warnings),
 		ProviderMetadata:  modelResult.ProviderMetadata,
 	}
