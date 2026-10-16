@@ -69,6 +69,12 @@ func resolveGroqTranscriptionOptions(providerOptions map[string]interface{}) gro
 	case int:
 		f := float64(v)
 		opts.Temperature = &f
+	case int64:
+		f := float64(v)
+		opts.Temperature = &f
+	case float32:
+		f := float64(v)
+		opts.Temperature = &f
 	}
 	if arr, ok := raw["timestampGranularities"].([]interface{}); ok {
 		for _, item := range arr {
