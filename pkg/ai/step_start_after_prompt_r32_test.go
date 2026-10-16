@@ -67,9 +67,11 @@ func TestStreamTextStepEndEventCarriesResponseMetadata(t *testing.T) {
 		},
 	}
 	var got OnStepFinishEvent
+	var end OnFinishEvent
 	res, err := StreamText(context.Background(), StreamTextOptions{
 		Model: model, Prompt: "x",
 		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { got = e },
+		OnEndEvent:     func(_ context.Context, e OnFinishEvent) { end = e },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,5 +81,8 @@ func TestStreamTextStepEndEventCarriesResponseMetadata(t *testing.T) {
 	}
 	if got.Response.ID != "resp-9" || got.Response.ModelID != "served" {
 		t.Fatalf("step-end response = %+v", got.Response)
+	}
+	if end.Response.ID != "resp-9" || end.Response.ModelID != "served" {
+		t.Fatalf("end response = %+v", end.Response)
 	}
 }
