@@ -138,7 +138,7 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 		return fmt.Errorf("ACP lifecycle state data: implementationIdentity must be a string.") //nolint:staticcheck // mirrors the TS zod string requirement
 	}
 	// zod `.optional()` rejects an explicit null.
-	for _, key := range []string{"authenticationProfile", "sandboxCredentialEnvironment", "acpSessionId", "bridge"} {
+	for _, key := range []string{"authenticationProfile", "sandboxCredentialEnvironment", "acpSessionId", "bridge", "coldSession", "turnStartConfig", "recovery", "restoration", "initialGuidanceApplied", "instructionsFingerprint", "skillsDirectory"} {
 		if raw, ok := probe[key]; ok && string(bytes.TrimSpace(raw)) == "null" {
 			return fmt.Errorf("ACP lifecycle state data: %s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
 		}
@@ -189,6 +189,13 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 			if json.Unmarshal(raw, &value) != nil || !slices.Contains(e.allowed, value) {
 				return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s must be one of %s.", e.key, strings.Join(e.allowed, ", ")) //nolint:staticcheck // mirrors the TS zod enum
 			}
+		}
+	}
+	if rawRecovery, ok := probe["recovery"]; ok {
+		var recovery map[string]json.RawMessage
+		_ = json.Unmarshal(rawRecovery, &recovery)
+		if _, ok := recovery["reason"]; !ok {
+			return fmt.Errorf("ACP lifecycle state data: recovery.reason is required.") //nolint:staticcheck // mirrors the TS zod requirement
 		}
 	}
 	if r := v.Recovery; r != nil && r.Mode != "disk-replay" && r.Mode != "lossy-rerun" {
