@@ -133,7 +133,7 @@ func validatePermissionModeMapping(raw json.RawMessage, key string) error {
 			if r, present := t["configId"]; !present || !isRawString(r) {
 				return invalid
 			}
-			if r, present := t["value"]; !present || !(isRawString(r) || isRawBool(r)) {
+			if r, present := t["value"]; !present || (!isRawString(r) && !isRawBool(r)) {
 				return invalid
 			}
 		default:
