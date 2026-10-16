@@ -44,3 +44,9 @@ func IsNoSuchModelError(err error) bool {
 func NewNoSuchModelError(modelID, modelType string) *NoSuchModelError {
 	return &NoSuchModelError{ModelID: modelID, ModelType: modelType}
 }
+
+// Is lets errors.Is(err, ErrModelNotFound) keep matching a NoSuchModelError,
+// so callers written against the sentinel continue to work.
+func (e *NoSuchModelError) Is(target error) bool {
+	return target == ErrModelNotFound
+}

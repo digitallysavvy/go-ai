@@ -184,21 +184,21 @@ func (p *BedrockAnthropicProvider) ImageModel(modelID string) (provider.ImageMod
 
 // SpeechModel returns a speech model (not supported).
 func (p *BedrockAnthropicProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support speech models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a transcription model (not supported).
 func (p *BedrockAnthropicProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model (not supported).
 func (p *BedrockAnthropicProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("bedrock-anthropic provider does not support reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 func noSuchModelError(modelID, modelType string) error {
-	return fmt.Errorf("%w: bedrock-anthropic %s %q", providererrors.ErrModelNotFound, modelType, modelID)
+	return providererrors.NewNoSuchModelError(modelID, modelType)
 }
 
 // --- authentication ---------------------------------------------------------

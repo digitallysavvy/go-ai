@@ -196,17 +196,17 @@ func (p *BedrockMantleProvider) ImageModel(modelID string) (provider.ImageModel,
 
 // SpeechModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support speech models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel is not supported by Bedrock Mantle.
 func (p *BedrockMantleProvider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("bedrock-mantle provider does not support reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // BedrockMantle is the default provider instance.
@@ -222,7 +222,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func noSuchModelError(modelID, modelType string) error {
-	return fmt.Errorf("%w: bedrock-mantle %s %q", providererrors.ErrModelNotFound, modelType, modelID)
+	return providererrors.NewNoSuchModelError(modelID, modelType)
 }
 
 func copyHeaders(headers map[string]string) map[string]string {

@@ -117,7 +117,16 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
 	}
 	if createResp.TaskID == "" {
-		return nil, NewVideoGenerationError(fmt.Sprintf("No task_id returned from the MiniMax API. Response: %s", string(submitResp.Body)))
+		// TS prints JSON.stringify of the zod-parsed response, which keeps
+		// only task_id (null/"" kept, absent omitted).
+		parsed := "{}"
+		var raw map[string]json.RawMessage
+		if json.Unmarshal(submitResp.Body, &raw) == nil {
+			if v, ok := raw["task_id"]; ok {
+				parsed = `{"task_id":` + string(v) + `}`
+			}
+		}
+		return nil, NewVideoGenerationError(fmt.Sprintf("No task_id returned from the MiniMax API. Response: %s", parsed))
 	}
 
 	if resolvedInputs.ReferenceVideoIndices == nil {
@@ -226,11 +235,18 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 			meta["resolution"] = *task.Resolution
 		}
 		if task.Usage != nil {
-			meta["usage"] = map[string]interface{}{
-				"totalSeconds":  task.Usage.TotalSeconds,
-				"inputSeconds":  task.Usage.InputSeconds,
-				"outputSeconds": task.Usage.OutputSeconds,
+			// TS leaves undefined members out of the object.
+			usage := map[string]interface{}{}
+			if task.Usage.TotalSeconds != nil {
+				usage["totalSeconds"] = *task.Usage.TotalSeconds
 			}
+			if task.Usage.InputSeconds != nil {
+				usage["inputSeconds"] = *task.Usage.InputSeconds
+			}
+			if task.Usage.OutputSeconds != nil {
+				usage["outputSeconds"] = *task.Usage.OutputSeconds
+			}
+			meta["usage"] = usage
 		}
 
 		return &provider.VideoModelV3OperationStatusResult{
@@ -679,7 +695,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 					warnings = append(warnings, types.Warning{
 						Type:    "unsupported",
 						Feature: "referenceAudioUrls",
-						Details: fmt.Sprintf("%s accepts at most %d reference audios. Extra audios were ignored.", m.modelID, minimaxMaxReferenceAudios),
+						Details: fmt.Sprintf("MiniMax-H3 accepts at most %d reference audios. Extra audios were ignored.", minimaxMaxReferenceAudios),
 					})
 				}
 			}
@@ -732,7 +748,11 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	duration := minimaxDefaultDuration
 	if opts.Duration != nil {
 		raw := *opts.Duration
-		rounded := math.Round(raw)
+		// JS Math.round rounds half toward +Infinity.
+		rounded := math.Floor(raw + 0.5)
+		if math.IsNaN(raw) || math.IsInf(raw, 0) {
+			rounded = raw
+		}
 		if rounded != raw {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -740,21 +760,24 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %v was rounded to %v.", m.modelID, raw, rounded),
 			})
 		}
-		d := int(rounded)
-		if d > minimaxMaxDuration {
+		var d int
+		switch {
+		case rounded > minimaxMaxDuration:
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
 				Details: fmt.Sprintf("%s supports at most %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minimaxMaxDuration, raw, minimaxMaxDuration),
 			})
 			d = minimaxMaxDuration
-		} else if d < minDurationSeconds {
+		case rounded < float64(minDurationSeconds):
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: "duration",
 				Details: fmt.Sprintf("%s requires at least %d seconds. The requested duration of %v was clamped to %d.", m.modelID, minDurationSeconds, raw, minDurationSeconds),
 			})
 			d = minDurationSeconds
+		default:
+			d = int(rounded)
 		}
 		duration = d
 	}
