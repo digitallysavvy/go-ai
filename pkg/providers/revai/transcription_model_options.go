@@ -75,15 +75,26 @@ type TranslationTarget struct {
 	Language string `json:"language"`
 }
 
-// extractOptions decodes providerOptions["revai"] into
-// TranscriptionModelOptions, accepting either a native struct/pointer value
-// or a generic map[string]interface{} by round-tripping through JSON. It
-// returns nil only when the "revai" key itself is absent — matching the
-// TypeScript SDK's parseProviderOptions, which skips zod validation (and so
-// applies none of the schema's `.default(...)` values) when
-// providerOptions.revai is entirely unset, but always applies those
-// defaults once the key is present, even as `{}`.
-func extractOptions(providerOptions map[string]interface{}) *TranscriptionModelOptions {
+// revaiConfigKeys are the schema keys forwarded to the job config (TS
+// formDataConfig); unknown keys are stripped as zod strips them.
+var revaiConfigKeys = []string{
+	"metadata", "notification_config", "delete_after_seconds", "verbatim", "rush",
+	"test_mode", "segments_to_transcribe", "speaker_names", "skip_diarization",
+	"skip_postprocessing", "skip_punctuation", "remove_disfluencies",
+	"remove_atmospherics", "filter_profanity", "speaker_channels_count",
+	"speakers_count", "diarization_type", "custom_vocabulary_id",
+	"custom_vocabularies", "strict_custom_vocabulary", "summarization_config",
+	"translation_config", "language", "forced_alignment",
+}
+
+// extractOptions returns the job-config fields for providerOptions["revai"],
+// mirroring TS parseProviderOptions + the formDataConfig `?? undefined`
+// filtering. It returns nil only when the "revai" key itself is absent (TS
+// skips zod validation, and so every `.default(...)`, then). Values are taken
+// per field from the raw option map, so a fractional number or a null in one
+// field never drops the others; the schema `.default(...)` values apply to
+// absent (not null) fields, and null fields are omitted.
+func extractOptions(providerOptions map[string]interface{}) map[string]interface{} {
 	if providerOptions == nil {
 		return nil
 	}
@@ -92,64 +103,67 @@ func extractOptions(providerOptions map[string]interface{}) *TranscriptionModelO
 		return nil
 	}
 
-	var opts TranscriptionModelOptions
+	var fields map[string]interface{}
 	switch v := raw.(type) {
-	case TranscriptionModelOptions:
-		opts = v
 	case *TranscriptionModelOptions:
 		if v == nil {
 			return nil
 		}
-		opts = *v
-	default:
-		b, err := json.Marshal(raw)
-		if err != nil {
-			return nil
-		}
-		if err := json.Unmarshal(b, &opts); err != nil {
-			return nil
+		raw = *v
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return nil
+	}
+
+	out := map[string]interface{}{}
+	for _, k := range revaiConfigKeys {
+		if v, present := fields[k]; present && v != nil {
+			out[k] = v
 		}
 	}
-	applyRevaiDefaults(&opts)
-	return &opts
+	applyRevaiDefaults(fields, out)
+	return out
 }
 
 // applyRevaiDefaults fills in the TypeScript SDK's zod `.default(...)`
-// values for fields left unset, mirroring
-// revaiTranscriptionModelOptionsSchema. Fields declared `.optional()`
-// without a `.default()` (verbatim, custom_vocabularies,
-// strict_custom_vocabulary) are left untouched.
-func applyRevaiDefaults(o *TranscriptionModelOptions) {
-	boolDefault := func(p **bool, def bool) {
-		if *p == nil {
-			v := def
-			*p = &v
+// values for fields that are absent (an explicit null stays null and is then
+// omitted), mirroring revaiTranscriptionModelOptionsSchema. Fields declared
+// `.optional()` without a `.default()` are left untouched.
+func applyRevaiDefaults(in, out map[string]interface{}) {
+	def := func(m map[string]interface{}, src map[string]interface{}, k string, v interface{}) {
+		if _, present := src[k]; !present {
+			m[k] = v
 		}
 	}
-	boolDefault(&o.Rush, false)
-	boolDefault(&o.TestMode, false)
-	boolDefault(&o.SkipDiarization, false)
-	boolDefault(&o.SkipPostprocessing, false)
-	boolDefault(&o.SkipPunctuation, false)
-	boolDefault(&o.RemoveDisfluencies, false)
-	boolDefault(&o.RemoveAtmospherics, false)
-	boolDefault(&o.FilterProfanity, false)
-	boolDefault(&o.ForcedAlignment, false)
-	if o.DiarizationType == "" {
-		o.DiarizationType = "standard"
+	for _, k := range []string{"rush", "test_mode", "skip_diarization", "skip_postprocessing",
+		"skip_punctuation", "remove_disfluencies", "remove_atmospherics", "filter_profanity", "forced_alignment"} {
+		def(out, in, k, false)
 	}
-	if o.Language == "" {
-		o.Language = "en"
-	}
-	if o.SummarizationConfig != nil {
-		if o.SummarizationConfig.Model == "" {
-			o.SummarizationConfig.Model = "standard"
+	def(out, in, "diarization_type", "standard")
+	def(out, in, "language", "en")
+	if sc, ok := out["summarization_config"].(map[string]interface{}); ok {
+		cp := map[string]interface{}{}
+		for k, v := range sc {
+			if v != nil {
+				cp[k] = v
+			}
 		}
-		if o.SummarizationConfig.Type == "" {
-			o.SummarizationConfig.Type = "paragraph"
-		}
+		def(cp, sc, "model", "standard")
+		def(cp, sc, "type", "paragraph")
+		out["summarization_config"] = cp
 	}
-	if o.TranslationConfig != nil && o.TranslationConfig.Model == "" {
-		o.TranslationConfig.Model = "standard"
+	if tc, ok := out["translation_config"].(map[string]interface{}); ok {
+		cp := map[string]interface{}{}
+		for k, v := range tc {
+			if v != nil {
+				cp[k] = v
+			}
+		}
+		def(cp, tc, "model", "standard")
+		out["translation_config"] = cp
 	}
 }
