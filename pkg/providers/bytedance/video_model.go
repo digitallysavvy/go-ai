@@ -90,7 +90,9 @@ func bytedanceResolveStartImage(opts *provider.VideoModelV3CallOptions) *provide
 }
 
 func bytedanceIsVideoFile(f *provider.VideoModelV3File) bool {
-	return f.MediaType != "" && strings.HasPrefix(f.MediaType, "video/")
+	// TS getTopLevelMediaType(mediaType) === 'video': the part before the first "/".
+	top, _, _ := strings.Cut(f.MediaType, "/")
+	return f.MediaType != "" && top == "video"
 }
 
 // bytedanceResolveReferenceContent builds the reference image_url/video_url
@@ -308,7 +310,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	switch statusResp.Status {
 	case "succeeded":
 		videoURL := ""
-		lastFrameURL := ""
+		var lastFrameURL *string
 		if statusResp.Content != nil {
 			videoURL = statusResp.Content.VideoURL
 			lastFrameURL = statusResp.Content.LastFrameURL
@@ -328,8 +330,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			"taskId": operation.TaskID,
 			"usage":  usage,
 		}
-		if lastFrameURL != "" {
-			meta["lastFrameUrl"] = lastFrameURL
+		if lastFrameURL != nil {
+			meta["lastFrameUrl"] = *lastFrameURL
 		}
 
 		return &provider.VideoModelV3OperationStatusResult{
@@ -343,15 +345,17 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	// ModelArk documents "cancelled"; "canceled" is handled defensively.
 	case "failed", "expired", "cancelled", "canceled":
-		details := ""
+		var details string
+		haveDetails := false
 		if statusResp.Error != nil {
-			if statusResp.Error.Message != "" {
-				details = statusResp.Error.Message
-			} else if statusResp.Error.Code != "" {
-				details = statusResp.Error.Code
+			switch {
+			case statusResp.Error.Message != nil:
+				details, haveDetails = *statusResp.Error.Message, true
+			case statusResp.Error.Code != nil:
+				details, haveDetails = *statusResp.Error.Code, true
 			}
 		}
-		if details == "" {
+		if !haveDetails {
 			// TS JSON.stringify(statusResponse): the zod-parsed body, so the
 			// schema's keys in schema order and no unknown wire keys.
 			details = zodjson.Stringify(result.Data, bytedanceStatusSpec)
@@ -459,9 +463,9 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 
 	content := []map[string]interface{}{}
 
-	// Go cannot distinguish an omitted optional string from an explicit empty
-	// string. Map the zero value to TS's omitted prompt behavior.
-	if opts.Prompt != "" {
+	// TS `prompt != null`: an explicit empty prompt is sent (PromptSet), an
+	// omitted one is not.
+	if opts.PromptSet || opts.Prompt != "" {
 		content = append(content, map[string]interface{}{
 			"type": "text",
 			"text": opts.Prompt,
@@ -716,8 +720,9 @@ type taskStatusResponse struct {
 
 // taskContentField holds the video URL in the status response
 type taskContentField struct {
-	VideoURL     string `json:"video_url"`
-	LastFrameURL string `json:"last_frame_url"`
+	VideoURL string `json:"video_url"`
+	// LastFrameURL is a pointer: TS keeps `last_frame_url != null` even when "".
+	LastFrameURL *string `json:"last_frame_url"`
 }
 
 // taskUsageField holds token usage info
@@ -728,6 +733,8 @@ type taskUsageField struct {
 
 // errorDetail holds the error message and code
 type errorDetail struct {
-	Message string `json:"message"`
-	Code    string `json:"code"`
+	// Pointers: TS `error?.message ?? error?.code ?? JSON.stringify(...)` only
+	// skips null/absent, so an empty string is a real diagnostic.
+	Message *string `json:"message"`
+	Code    *string `json:"code"`
 }
