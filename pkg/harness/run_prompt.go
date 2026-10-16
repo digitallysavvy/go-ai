@@ -2,7 +2,6 @@ package harness
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1416,7 +1416,7 @@ func parseJSONObject(input string) (map[string]interface{}, error) {
 		return map[string]interface{}{}, nil
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(input), &m); err != nil {
+	if err := securejson.Unmarshal([]byte(input), &m); err != nil {
 		return nil, err
 	}
 	return m, nil

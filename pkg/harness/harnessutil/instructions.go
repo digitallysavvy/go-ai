@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -189,7 +190,7 @@ func readInstructionsMetadata(ctx context.Context, sandbox providerutils.Sandbox
 	}
 	invalid := fmt.Errorf("Invalid AI SDK harness instructions metadata: %s", metadataPath) //nolint:staticcheck // matches TS SDK's exact error text
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
+	if err := securejson.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
 		return nil, invalid
 	}
 	isString := func(key string) bool {
@@ -197,7 +198,7 @@ func readInstructionsMetadata(ctx context.Context, sandbox providerutils.Sandbox
 		return json.Unmarshal(raw[key], &s) == nil && raw[key] != nil && string(raw[key]) != "null"
 	}
 	var m instructionsMetadata
-	if err := json.Unmarshal([]byte(*content), &m); err != nil || m.Version != instructionsMetadataVersion ||
+	if err := securejson.Unmarshal([]byte(*content), &m); err != nil || m.Version != instructionsMetadataVersion ||
 		raw["originalContent"] == nil || (string(raw["originalContent"]) != "null" && !isString("originalContent")) ||
 		!isString("instructions") || !isString("appliedContent") {
 		return nil, invalid

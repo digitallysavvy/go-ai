@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -238,7 +239,7 @@ func readBridgeMetaReady(ctx context.Context, sandbox providerutils.SandboxSessi
 		return 0
 	}
 	var meta bridgeMeta
-	if json.Unmarshal([]byte(*raw), &meta) != nil {
+	if securejson.Unmarshal([]byte(*raw), &meta) != nil {
 		return 0
 	}
 	if meta.Type == nil || *meta.Type != bridgeType {

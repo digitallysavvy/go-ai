@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +14,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -220,7 +221,7 @@ func readCodexAuthStore(ctx context.Context, codexHome, authPath, mode string) *
 			return nil
 		}
 		return &codexAuthStore{value: value, write: func(updated map[string]any) error {
-			data, err := json.Marshal(updated)
+			data, err := jsstr.Marshal(updated)
 			if err != nil {
 				return err
 			}
@@ -241,7 +242,7 @@ func readCodexAuthStore(ctx context.Context, codexHome, authPath, mode string) *
 
 func parseCodexAuthFile(text string) map[string]any {
 	var value map[string]any
-	if err := json.Unmarshal([]byte(text), &value); err != nil || value == nil {
+	if err := securejson.Unmarshal([]byte(text), &value); err != nil || value == nil {
 		return nil
 	}
 	return value
@@ -286,7 +287,7 @@ func readStoreModeFromConfig(codexHome string) string {
 // writeCodexAuthFile atomically rewrites the auth file (temp file in the
 // same directory at mode 0600, then rename) after a token refresh.
 func writeCodexAuthFile(path string, value map[string]any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := jsstr.MarshalIndent(value)
 	if err != nil {
 		return err
 	}

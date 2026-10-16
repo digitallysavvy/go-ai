@@ -55,3 +55,14 @@ func TestJSONStringMatchesJSONStringify(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestClassifyDiskLogRejectsForbiddenPrototypeKey(t *testing.T) {
+	ok := `{"type":"finish"}`
+	bad := `{"type":"finish","__proto__":{}}`
+	if got := ClassifyDiskLog(&ok); got != DiskLogReplay {
+		t.Fatalf("control = %s", got)
+	}
+	if got := ClassifyDiskLog(&bad); got != DiskLogRerun {
+		t.Fatalf("got %s, want rerun", got)
+	}
+}

@@ -1,9 +1,9 @@
 package harnessutil
 
 import (
-	"encoding/json"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -38,7 +38,7 @@ func ClassifyDiskLog(raw *string) string {
 	var probe struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal([]byte(last), &probe); err != nil {
+	if err := securejson.Unmarshal([]byte(last), &probe); err != nil {
 		return DiskLogRerun
 	}
 	if probe.Type == "finish" {

@@ -30,3 +30,21 @@ func TestCreateBridgeErrorHandlerKeepsWireKeyOrder(t *testing.T) {
 		t.Fatalf("got %q", out)
 	}
 }
+
+// safeParseJSON rejects a __proto__ key: the frame carries no seq and fails
+// validation; a hello with the key is not a hello; a ready line with it is not
+// ready.
+func TestBridgeFramesRejectForbiddenPrototypeKey(t *testing.T) {
+	if _, seq, err := DecodeOutbound([]byte(`{"type":"bridge-thread","threadId":"t","seq":3,"__proto__":{}}`)); err == nil || seq != nil {
+		t.Fatalf("outbound: seq=%v err=%v", seq, err)
+	}
+	if _, ok := parseHello([]byte(`{"type":"bridge-hello","__proto__":{}}`)); ok {
+		t.Fatal("hello with __proto__ must be ignored")
+	}
+	if _, ok := parseHello([]byte(`{"type":"bridge-hello"}`)); !ok {
+		t.Fatal("control hello must parse")
+	}
+	if _, err := DecodeReady([]byte(`{"type":"bridge-ready","port":1,"__proto__":{}}`)); err == nil {
+		t.Fatal("ready with __proto__ must be rejected")
+	}
+}

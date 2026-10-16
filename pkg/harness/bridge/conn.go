@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
-
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
+	"golang.org/x/net/websocket"
 )
 
 // Conn is one established host<->bridge socket. Receive blocks until a
@@ -225,7 +225,7 @@ func parseHello(msg []byte) (*Hello, bool) {
 	var probe struct {
 		Type any `json:"type"`
 	}
-	if json.Unmarshal(msg, &probe) != nil || probe.Type != TypeHello {
+	if securejson.Check(msg) != nil || json.Unmarshal(msg, &probe) != nil || probe.Type != TypeHello {
 		return nil, false
 	}
 	var hello Hello

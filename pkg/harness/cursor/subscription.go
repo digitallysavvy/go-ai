@@ -2,7 +2,6 @@ package cursor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
 // ResolveSubscriptionEnvironment resolves CURSOR_API_KEY from Cursor's native
@@ -121,7 +121,7 @@ func ResolveAuthPath(env map[string]string, homeDirectory, goos string) string {
 
 func parseAccessToken(text []byte) (string, bool) {
 	var parsed map[string]any
-	if err := json.Unmarshal(text, &parsed); err != nil {
+	if err := securejson.Unmarshal(text, &parsed); err != nil {
 		return "", false
 	}
 	token, ok := parsed["accessToken"].(string)

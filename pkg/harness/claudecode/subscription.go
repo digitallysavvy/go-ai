@@ -2,7 +2,6 @@ package claudecode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +10,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
 // OAuth endpoint constants for the Claude Code native subscription (a `claude
@@ -54,7 +55,7 @@ func claudeOAuth(value map[string]any) (map[string]any, bool) {
 
 func parseClaudeCredentialFile(text string) map[string]any {
 	var value map[string]any
-	if err := json.Unmarshal([]byte(text), &value); err != nil || value == nil {
+	if err := securejson.Unmarshal([]byte(text), &value); err != nil || value == nil {
 		return nil
 	}
 	return value
@@ -93,7 +94,7 @@ func readClaudeCredentialStore(ctx context.Context, home, configDir, credentialP
 		return nil
 	}
 	return &claudeCredentialStore{value: value, write: func(updated map[string]any) error {
-		data, err := json.Marshal(updated)
+		data, err := jsstr.Marshal(updated)
 		if err != nil {
 			return err
 		}
@@ -175,7 +176,7 @@ func resolveClaudeCodeSubscription(ctx context.Context) (map[string]string, bool
 // file in the same directory at mode 0600, then rename) after a token
 // refresh. Mirrors TS `writeClaudeCredentialFile`.
 func writeClaudeCredentialFile(path string, value map[string]any) error {
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := jsstr.MarshalIndent(value)
 	if err != nil {
 		return err
 	}
