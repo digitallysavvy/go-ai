@@ -3,6 +3,7 @@ package moonshot
 import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -31,6 +32,8 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	// TS withoutTrailingSlash(baseURL).
+	baseURL = strings.TrimRight(baseURL, "/")
 
 	// TS loadApiKey: the key defaults to MOONSHOT_API_KEY and is loaded per
 	// request.

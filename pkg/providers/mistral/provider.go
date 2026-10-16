@@ -2,6 +2,7 @@ package mistral
 
 import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -35,6 +36,8 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = "https://api.mistral.ai"
 	}
+	// TS withoutTrailingSlash(baseURL).
+	baseURL = strings.TrimRight(baseURL, "/")
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
