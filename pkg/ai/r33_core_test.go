@@ -1,6 +1,8 @@
 package ai
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -237,5 +239,17 @@ func TestStreamTextPromptInputCheckPrecedesSystemMessageCheck(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "prompt and messages cannot be defined at the same time") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS writes SSE data with JSON.stringify: <, > and & stay literal.
+func TestUIMessageSSEChunkIsNotHTMLEscaped(t *testing.T) {
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	if err := writeUIMessageSSEChunk(bw, func() error { return bw.Flush() }, UIMessageChunk{"type": "text-delta", "delta": "a<b>&c"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); !strings.Contains(got, `"delta":"a<b>&c"`) {
+		t.Fatalf("SSE data = %q", got)
 	}
 }
