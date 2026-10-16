@@ -1114,28 +1114,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
 	}
 
-	// Emit OnStepStartEvent for the first stream step.
-	Notify(stepCtx, OnStepStartEvent{
-		CallID:              callID,
-		StepNumber:          0,
-		Provider:            stepModel.Provider(),
-		ModelProvider:       stepModel.Provider(),
-		ModelID:             stepModel.ModelID(),
-		Instructions:        stepSystem,
-		InstructionMessages: stepInstructionMessages,
-		System:              stepSystem,
-		Messages:            stepMessages,
-		Tools:               stepTools,
-		ToolChoice:          stepToolChoice,
-		ActiveTools:         stepActiveTools,
-		ToolOrder:           stepToolOrder,
-		ProviderOptions:     stepProviderOptions,
-		PreviousSteps:       nil, // first (and only) step
-		ExperimentalContext: runtimeContext,
-		RuntimeContext:      runtimeContext,
-		ToolsContext:        toolsContext,
-	}, opts.OnStepStart)
-
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
 	responseFormat := opts.ResponseFormat
 	var outputSpec outputProcessor
@@ -1173,6 +1151,28 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		return
 	}
 	stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
+
+	// TS converts the step prompt before it fires onStepStart.
+	Notify(stepCtx, OnStepStartEvent{
+		CallID:              callID,
+		StepNumber:          0,
+		Provider:            stepModel.Provider(),
+		ModelProvider:       stepModel.Provider(),
+		ModelID:             stepModel.ModelID(),
+		Instructions:        stepSystem,
+		InstructionMessages: stepInstructionMessages,
+		System:              stepSystem,
+		Messages:            stepMessages,
+		Tools:               stepTools,
+		ToolChoice:          stepToolChoice,
+		ActiveTools:         stepActiveTools,
+		ToolOrder:           stepToolOrder,
+		ProviderOptions:     stepProviderOptions,
+		PreviousSteps:       nil, // first (and only) step
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
+	}, opts.OnStepStart)
 
 	// Build generate options
 	genOpts := &provider.GenerateOptions{
@@ -3117,6 +3117,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if r.timeout != nil && r.timeout.HasPerStep() {
 			nextStepCtx, nextStepCancel = r.timeout.CreateTimeoutContext(ctx, "step")
 		}
+		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
+			Messages: messagesForModel(nextMessages),
+			System:   appendSandboxDescription(nextSystem, nextSandbox),
+		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
+		if normErr != nil {
+			nextStepCancel()
+			r.err = fmt.Errorf("prompt normalization failed for step %d: %w", stepNum+1, normErr)
+			break
+		}
+		if toolResultsErr := validateStepToolResults(nextPrompt.Messages, opts.Tools); toolResultsErr != nil {
+			nextStepCancel()
+			r.err = toolResultsErr
+			break
+		}
+		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)
 		Notify(nextStepCtx, OnStepStartEvent{
 			CallID:              r.cbCallID,
 			StepNumber:          stepNum,
@@ -3138,21 +3153,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
 		}, opts.OnStepStart)
-		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
-			Messages: messagesForModel(nextMessages),
-			System:   appendSandboxDescription(nextSystem, nextSandbox),
-		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
-		if normErr != nil {
-			nextStepCancel()
-			r.err = fmt.Errorf("prompt normalization failed for step %d: %w", stepNum+1, normErr)
-			break
-		}
-		if toolResultsErr := validateStepToolResults(nextPrompt.Messages, opts.Tools); toolResultsErr != nil {
-			nextStepCancel()
-			r.err = toolResultsErr
-			break
-		}
-		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)
 		nextGenOpts := &provider.GenerateOptions{
 			Prompt:                nextPrompt,
 			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
