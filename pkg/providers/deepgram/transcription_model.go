@@ -70,6 +70,7 @@ func extractTranscriptionOptions(providerOptions map[string]interface{}) *Transc
 func (m *TranscriptionModel) buildQueryParams(opts *provider.TranscriptionOptions) map[string]string {
 	query := map[string]string{"model": m.modelID}
 	dgOpts := extractTranscriptionOptions(opts.ProviderOptions)
+	rawOpts, _ := opts.ProviderOptions["deepgram"].(map[string]interface{})
 
 	// Shared Language/Timestamps options (Go's provider-agnostic surface).
 	if opts.Language != "" {
@@ -82,27 +83,20 @@ func (m *TranscriptionModel) buildQueryParams(opts *provider.TranscriptionOption
 
 	if dgOpts != nil {
 		setQueryBool(query, "detect_entities", dgOpts.DetectEntities)
-		if dgOpts.Language != "" {
-			query["language"] = dgOpts.Language
-		}
+		// TS `value !== undefined` keeps an empty string ("language=").
+		setQueryString(query, rawOpts, "language", "language", dgOpts.Language)
 		setQueryBool(query, "detect_language", dgOpts.DetectLanguage)
 		setQueryBool(query, "diarize", dgOpts.Diarize)
 		setQueryBool(query, "filler_words", dgOpts.FillerWords)
 		setQueryBool(query, "intents", dgOpts.Intents)
-		if dgOpts.Keyterm != "" {
-			query["keyterm"] = dgOpts.Keyterm
-		}
+		setQueryString(query, rawOpts, "keyterm", "keyterm", dgOpts.Keyterm)
 		setQueryBool(query, "paragraphs", dgOpts.Paragraphs)
 		setQueryBool(query, "punctuate", dgOpts.Punctuate)
 		if dgOpts.Redact != nil {
 			query["redact"] = deepgramQueryStringValue(dgOpts.Redact)
 		}
-		if dgOpts.Replace != "" {
-			query["replace"] = dgOpts.Replace
-		}
-		if dgOpts.Search != "" {
-			query["search"] = dgOpts.Search
-		}
+		setQueryString(query, rawOpts, "replace", "replace", dgOpts.Replace)
+		setQueryString(query, rawOpts, "search", "search", dgOpts.Search)
 		setQueryBool(query, "sentiment", dgOpts.Sentiment)
 		setQueryBool(query, "smart_format", dgOpts.SmartFormat)
 		if dgOpts.Summarize != nil {
@@ -111,11 +105,21 @@ func (m *TranscriptionModel) buildQueryParams(opts *provider.TranscriptionOption
 		setQueryBool(query, "topics", dgOpts.Topics)
 		setQueryBool(query, "utterances", dgOpts.Utterances)
 		if dgOpts.UttSplit != nil {
-			query["utt_split"] = strconv.FormatFloat(*dgOpts.UttSplit, 'f', -1, 64)
+			query["utt_split"] = providerutils.JSNumberString(*dgOpts.UttSplit)
 		}
 	}
 
 	return query
+}
+
+// setQueryString sets query[key] to the string option when it is present in
+// the raw provider options, including "" (TS keeps any non-undefined value).
+func setQueryString(query map[string]string, raw map[string]interface{}, key, option, typed string) {
+	if v, ok := raw[option].(string); ok {
+		query[key] = v
+	} else if typed != "" {
+		query[key] = typed // typed options struct (no raw map): "" is indistinguishable from unset
+	}
 }
 
 func setQueryBool(query map[string]string, key string, value *bool) {

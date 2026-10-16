@@ -294,7 +294,7 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 				RawArguments:     string(inputJSON),
 				ProviderExecuted: true,
 			})
-			if len(item.Tools) > 0 {
+			if item.Tools != nil { // JS `if (part.tools)`: an empty array is truthy
 				content = append(content, types.ToolResultContent{
 					ToolCallID: item.ID,
 					ToolName:   "list_tools",
@@ -328,9 +328,11 @@ func (m *LanguageModel) convertResponse(resp hfResponse) *types.GenerateResult {
 
 	reason := "stop"
 	rawFinishReason := ""
-	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
-		reason = resp.IncompleteDetails.Reason
-		rawFinishReason = resp.IncompleteDetails.Reason
+	// TS `incomplete_details?.reason ?? 'stop'`: only a missing reason falls
+	// back; an empty string maps to "other".
+	if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != nil {
+		reason = *resp.IncompleteDetails.Reason
+		rawFinishReason = reason
 	}
 
 	return &types.GenerateResult{

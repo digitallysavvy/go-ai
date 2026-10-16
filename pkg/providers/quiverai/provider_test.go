@@ -334,8 +334,9 @@ func TestImageModelAnimateRequestAndResponse(t *testing.T) {
 	if images[0]["loopPeriodMs"] != 1200 {
 		t.Fatalf("loopPeriodMs = %v, want 1200", images[0]["loopPeriodMs"])
 	}
-	if _, hasOpening := images[0]["openingAnimationMs"]; hasOpening {
-		t.Fatalf("openingAnimationMs should be omitted when null, got %v", images[0]["openingAnimationMs"])
+	// TS spreads `opening_animation_ms !== undefined`, so an explicit null is kept.
+	if v, hasOpening := images[0]["openingAnimationMs"]; !hasOpening || v != nil {
+		t.Fatalf("openingAnimationMs should be null when the response sends null, got %v (present %v)", v, hasOpening)
 	}
 }
 

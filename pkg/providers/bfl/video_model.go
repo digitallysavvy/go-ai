@@ -1,7 +1,6 @@
 package bfl
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -137,7 +137,7 @@ func getDraftEnhanceArgs(opts *provider.VideoModelV3CallOptions, bflOpts *VideoM
 		feature string
 		isSet   bool
 	}{
-		{"prompt", strings.TrimSpace(opts.Prompt) != ""},
+		{"prompt", providerutils.JSTrim(opts.Prompt) != ""},
 		{"aspectRatio", opts.AspectRatio != "" || bflOpts.AspectRatio != nil},
 		{"resolution", opts.Resolution != "" || bflOpts.Resolution != nil},
 		{"duration", opts.Duration != nil},
@@ -396,7 +396,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		origDuration := *opts.Duration
 		d := origDuration
 		if d != math.Trunc(d) {
-			rounded := math.Round(d)
+			rounded := math.Floor(d + 0.5) // JS Math.round: halves round toward +Infinity
 			warnings = append(warnings, types.Warning{
 				Type: "unsupported", Feature: "duration",
 				Details: fmt.Sprintf("FLUX 3 video requires a whole number of seconds. The requested duration of %v was rounded to %v.", d, rounded),
@@ -642,8 +642,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if result.Duration != nil {
 			video["duration"] = *result.Duration
 		}
-		if result.DraftCache != "" {
-			video["draftCache"] = result.DraftCache
+		if result.DraftCache != nil { // TS `draft_cache != null`: "" is kept
+			video["draftCache"] = *result.DraftCache
 		}
 		if cost != nil {
 			video["cost"] = *cost
@@ -688,10 +688,10 @@ func describePollDetails(raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
 	}
-	// TS JSON.stringify(details): compact, whatever whitespace the response had.
-	var compact bytes.Buffer
-	if json.Compact(&compact, raw) == nil {
-		return compact.String()
+	// TS JSON.stringify(details): numbers go through a double, strings are
+	// re-escaped and duplicate keys collapse.
+	if tree, ok := jsonorder.Parse(raw); ok {
+		return jsonorder.Stringify(tree)
 	}
 	return string(raw)
 }
@@ -813,5 +813,5 @@ type bflVideoResultData struct {
 	StartTime  *float64 `json:"start_time"`
 	EndTime    *float64 `json:"end_time"`
 	Duration   *float64 `json:"duration"`
-	DraftCache string   `json:"draft_cache"`
+	DraftCache *string  `json:"draft_cache"`
 }

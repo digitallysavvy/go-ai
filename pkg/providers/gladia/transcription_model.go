@@ -194,6 +194,26 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	return body
 }
 
+// keepEmptyStringOptions restores free-form string options set to "": TS
+// `x ?? undefined` only drops null/absent, so contextPrompt, language and
+// translationConfig.model are sent even when empty.
+func keepEmptyStringOptions(body map[string]interface{}, providerOptions map[string]interface{}) {
+	raw, _ := providerOptions["gladia"].(map[string]interface{})
+	if v, ok := raw["contextPrompt"].(string); ok {
+		body["context_prompt"] = v
+	}
+	if v, ok := raw["language"].(string); ok {
+		body["language"] = v
+	}
+	if cfg, ok := raw["translationConfig"].(map[string]interface{}); ok {
+		if v, ok := cfg["model"].(string); ok {
+			if out, ok := body["translation_config"].(map[string]interface{}); ok {
+				out["model"] = v
+			}
+		}
+	}
+}
+
 func setOptional[T any](body map[string]interface{}, key string, value *T) {
 	if value != nil {
 		body[key] = *value
@@ -237,6 +257,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, err
 	}
 	body := buildRequestBody(extractOptions(opts.ProviderOptions))
+	keepEmptyStringOptions(body, opts.ProviderOptions)
 	body["audio_url"] = uploadResult.AudioURL
 
 	var initResult struct {
@@ -308,7 +329,7 @@ func gladiaAudioExtension(mimeType string) string {
 func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("gladia"))
+	pollOpts.Headers = m.pollHeaders(resultURL, trustedOrigin, headers)
 
 	start := time.Now()
 	for {
@@ -352,6 +373,16 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+// pollHeaders is TS getFromApi({ credentialedOrigin }): caller and provider
+// headers (the API key) are withheld unless the response-supplied URL is
+// same-origin with the configured API; the user agent is still sent.
+func (m *TranscriptionModel) pollHeaders(resultURL, trustedOrigin string, headers map[string]string) map[string]string {
+	if !fileutil.IsSameOrigin(resultURL, trustedOrigin) {
+		return version.WithUserAgentSuffix(nil, version.ProviderUserAgent("gladia"))
+	}
+	return version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("gladia"))
 }
 
 // flattenHeaders joins multi-value HTTP headers into single strings, matching

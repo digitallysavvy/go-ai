@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -165,7 +167,8 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	if len(videoData) == 0 {
 		return nil, fmt.Errorf("prodia: multipart response missing output video")
 	}
-	if videoMIME == "" {
+	// TS keeps the video/mp4 default unless the part's Content-Type is video/*.
+	if !strings.HasPrefix(videoMIME, "video/") {
 		videoMIME = "video/mp4"
 	}
 
@@ -238,9 +241,9 @@ func prodiaErrorMessage(statusCode int, body []byte) string {
 		if json.Unmarshal(raw, &detail) == nil {
 			return detail
 		}
-		var compact bytes.Buffer
-		if json.Compact(&compact, raw) == nil {
-			return compact.String()
+		// JSON.stringify(detail): numbers via a double, strings re-escaped.
+		if tree, ok := jsonorder.Parse(raw); ok {
+			return jsonorder.Stringify(tree)
 		}
 	}
 	if hasError {

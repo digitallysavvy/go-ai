@@ -3,13 +3,17 @@ package stability
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"net/http"
 	"time"
 
+	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for Stability AI
@@ -53,7 +57,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	var response stabilityImageResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{Method: "POST", Path: path, Body: reqBody, Headers: opts.Headers}, &response)
 	if err != nil {
-		return nil, err
+		return nil, handleError(err)
 	}
 
 	result, err := m.convertResponse(response)
@@ -150,4 +154,23 @@ type stabilityImageResponse struct {
 		FinishReason string `json:"finishReason"`
 		Seed         int    `json:"seed"`
 	} `json:"artifacts"`
+}
+
+// handleError turns an HTTP error response into a ProviderError (status,
+// headers and body kept, retryability from the status) with the message of
+// Stability's {"id","name","message"} error body, or the HTTP status text. A
+// transport failure propagates unchanged like TS postJsonToApi.
+func handleError(err error) error {
+	var statusErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &statusErr) {
+		return err
+	}
+	message := http.StatusText(statusErr.StatusCode)
+	var body struct {
+		Message *string `json:"message"`
+	}
+	if json.Unmarshal(statusErr.Body, &body) == nil && body.Message != nil {
+		message = *body.Message
+	}
+	return providererrors.NewProviderErrorFromResponse("stability", 0, "", message, err)
 }

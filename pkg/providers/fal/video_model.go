@@ -297,6 +297,17 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		mediaType = "video/mp4"
 	}
 
+	// TS builds the metadata from the zod-parsed response: `seed !== undefined`
+	// keeps an explicit null, `timings` is an object stripped to its declared
+	// keys, and an absent content_type is undefined (nil), not "".
+	var rawTop map[string]json.RawMessage
+	_ = json.Unmarshal(result.Data, &rawTop)
+	isNull := func(raw json.RawMessage) bool { return strings.TrimSpace(string(raw)) == "null" }
+
+	var contentType interface{}
+	if statusResp.Video.ContentType != "" {
+		contentType = statusResp.Video.ContentType
+	}
 	falMeta := map[string]interface{}{
 		"videos": []map[string]interface{}{
 			{
@@ -305,18 +316,36 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 				"height":      statusResp.Video.Height,
 				"duration":    statusResp.Video.Duration,
 				"fps":         statusResp.Video.FPS,
-				"contentType": statusResp.Video.ContentType,
+				"contentType": contentType,
 			},
 		},
 	}
-	if statusResp.Seed != nil {
-		falMeta["seed"] = *statusResp.Seed
+	if raw, ok := rawTop["seed"]; ok {
+		if isNull(raw) || statusResp.Seed == nil {
+			falMeta["seed"] = nil
+		} else {
+			falMeta["seed"] = *statusResp.Seed
+		}
 	}
-	if statusResp.Timings != nil {
-		falMeta["timings"] = statusResp.Timings
+	if raw, ok := rawTop["timings"]; ok && !isNull(raw) {
+		timings := map[string]interface{}{}
+		var rawTimings map[string]json.RawMessage
+		_ = json.Unmarshal(raw, &rawTimings)
+		if inf, ok := rawTimings["inference"]; ok {
+			if isNull(inf) || statusResp.Timings == nil || statusResp.Timings.Inference == nil {
+				timings["inference"] = nil
+			} else {
+				timings["inference"] = *statusResp.Timings.Inference
+			}
+		}
+		falMeta["timings"] = timings
 	}
-	if statusResp.HasNSFWConcepts != nil {
-		falMeta["has_nsfw_concepts"] = statusResp.HasNSFWConcepts
+	if raw, ok := rawTop["has_nsfw_concepts"]; ok {
+		if isNull(raw) {
+			falMeta["has_nsfw_concepts"] = nil
+		} else {
+			falMeta["has_nsfw_concepts"] = statusResp.HasNSFWConcepts
+		}
 	}
 	if statusResp.Prompt != "" {
 		falMeta["prompt"] = statusResp.Prompt

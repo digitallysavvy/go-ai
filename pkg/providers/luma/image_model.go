@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -128,7 +129,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, m.parseErrorResponse(resp.Body, resp.StatusCode)
+		return nil, m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 	}
 
 	// TS createJsonResponseHandler(lumaGenerationResponseSchema).
@@ -215,7 +216,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			return "", err // TS getFromApi lets a transport failure propagate unchanged
 		}
 		if resp.StatusCode >= 400 {
-			return "", m.parseErrorResponse(resp.Body, resp.StatusCode)
+			return "", m.parseErrorResponseWithHeaders(resp.Body, resp.StatusCode, resp.Headers)
 		}
 
 		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
@@ -336,6 +337,8 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 		}
 		// TS validates in insertion order, so the first oversized identity
 		// is the one reported.
+		// Object.entries(identities) lists integer-like ids first, ascending.
+		order = jsonorder.JSKeyOrder(order)
 		for _, id := range order {
 			imgs := identities[id]
 			if len(imgs) > 4 {
@@ -365,6 +368,12 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 // parseErrorResponse converts a Luma error envelope
 // ({detail: [{msg, ...}]}) into a provider error.
 func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
+	return m.parseErrorResponseWithHeaders(body, statusCode, nil)
+}
+
+// parseErrorResponseWithHeaders is parseErrorResponse keeping the failed
+// response's headers on the error (TS APICallError.responseHeaders).
+func (m *ImageModel) parseErrorResponseWithHeaders(body []byte, statusCode int, headers stdhttp.Header) error {
 	// TS createJsonErrorResponseHandler: a body that does not match the error
 	// schema (or is empty) gives the HTTP status text as the message.
 	msg := stdhttp.StatusText(statusCode)
@@ -375,7 +384,7 @@ func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
 		// the handler also turns into the status text.
 		msg = *errResp.Detail[0].Msg
 	}
-	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Body: body}
+	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 	return providererrors.NewProviderErrorFromResponse("luma", 0, "", msg, cause)
 }
 

@@ -255,8 +255,8 @@ func (s *hfStream) handleEvent(data string) (*provider.StreamChunk, error) {
 		if event.Response != nil {
 			s.responseID = event.Response.ID
 			reason := "stop"
-			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != "" {
-				reason = event.Response.IncompleteDetails.Reason
+			if event.Response.IncompleteDetails != nil && event.Response.IncompleteDetails.Reason != nil {
+				reason = *event.Response.IncompleteDetails.Reason
 				s.rawFinishReason = reason
 			} else {
 				s.rawFinishReason = ""

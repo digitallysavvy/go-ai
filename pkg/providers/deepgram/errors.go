@@ -13,9 +13,9 @@ import (
 // deepgramErrorPayload documents Deepgram's error envelope:
 // {"err_code","err_msg","request_id"}.
 type deepgramErrorPayload struct {
-	ErrCode   *string `json:"err_code"`
-	ErrMsg    *string `json:"err_msg"`
-	RequestID string  `json:"request_id,omitempty"`
+	ErrCode   *string         `json:"err_code"`
+	ErrMsg    *string         `json:"err_msg"`
+	RequestID json.RawMessage `json:"request_id,omitempty"`
 }
 
 // handleError converts an HTTP error into a ProviderError, parsing
@@ -31,19 +31,32 @@ func handleError(providerName string, err error) error {
 		// strings; anything else gives the HTTP status text.
 		message := http.StatusText(statusErr.StatusCode)
 		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.ErrCode != nil && payload.ErrMsg != nil {
+		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.ErrCode != nil && payload.ErrMsg != nil && requestIDValid(payload.RequestID) {
 			message = *payload.ErrMsg
 			code = *payload.ErrCode
 		} else {
 			payload = deepgramErrorPayload{}
 		}
 		providerErr := providererrors.NewProviderErrorFromResponse(providerName, 0, code, message, err)
-		if payload.RequestID != "" {
-			providerErr.Data = map[string]interface{}{"requestId": payload.RequestID}
+		var requestID string
+		if payload.RequestID != nil {
+			_ = json.Unmarshal(payload.RequestID, &requestID)
+		}
+		if requestID != "" {
+			providerErr.Data = map[string]interface{}{"requestId": requestID}
 		}
 		return providerErr
 	}
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
 	return err
+}
+
+// requestIDValid is z.string().optional(): absent or a string, never null.
+func requestIDValid(raw json.RawMessage) bool {
+	if raw == nil {
+		return true
+	}
+	var s string
+	return json.Unmarshal(raw, &s) == nil && string(raw) != "null"
 }

@@ -20,7 +20,7 @@ type topazErrorData struct {
 	Message   *string         `json:"message"`
 	Error     *string         `json:"error"`
 	ErrorCode *string         `json:"errorCode"`
-	Errors    []topazIssue    `json:"errors"`
+	Errors    []*topazIssue   `json:"errors"`
 }
 
 type topazIssue struct {
@@ -39,12 +39,32 @@ func parseTopazErrorData(body []byte) (data topazErrorData, ok bool) {
 	// detail: string | array of loose objects with a nullish string msg.
 	if len(data.Detail) > 0 && string(bytes.TrimSpace(data.Detail)) != "null" {
 		var asString string
-		var asIssues []topazIssue
-		if json.Unmarshal(data.Detail, &asString) != nil && json.Unmarshal(data.Detail, &asIssues) != nil {
+		var asIssues []*topazIssue
+		if json.Unmarshal(data.Detail, &asString) != nil && !validTopazIssues(data.Detail, &asIssues) {
+			return topazErrorData{}, false
+		}
+	}
+	// errors: array of loose objects (a null entry is not an object).
+	for _, issue := range data.Errors {
+		if issue == nil {
 			return topazErrorData{}, false
 		}
 	}
 	return data, true
+}
+
+// validTopazIssues reports whether raw is an array of objects (z.object
+// rejects null and non-objects), filling issues.
+func validTopazIssues(raw json.RawMessage, issues *[]*topazIssue) bool {
+	if json.Unmarshal(raw, issues) != nil {
+		return false
+	}
+	for _, issue := range *issues {
+		if issue == nil {
+			return false
+		}
+	}
+	return true
 }
 
 // topazErrorToMessage renders a Topaz error response body into a
@@ -59,7 +79,7 @@ func topazErrorToMessage(data topazErrorData) string {
 	// The video API lists field validation failures separately.
 	var issues []string
 	for _, issue := range data.Errors {
-		if issue.Msg != nil {
+		if issue != nil && issue.Msg != nil {
 			issues = append(issues, *issue.Msg)
 		}
 	}
@@ -77,11 +97,11 @@ func topazBaseErrorMessage(data topazErrorData) string {
 			return asString
 		}
 
-		var asIssues []topazIssue
+		var asIssues []*topazIssue
 		if err := json.Unmarshal(data.Detail, &asIssues); err == nil {
 			var messages []string
 			for _, issue := range asIssues {
-				if issue.Msg != nil {
+				if issue != nil && issue.Msg != nil {
 					messages = append(messages, *issue.Msg)
 				}
 			}

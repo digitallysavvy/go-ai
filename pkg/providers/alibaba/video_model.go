@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -132,15 +133,21 @@ var alibabaSupportedRatios = map[string]bool{
 }
 
 func deriveAlibabaRatioFromResolution(resolution string) (string, bool) {
-	parts := strings.SplitN(resolution, "x", 2)
-	if len(parts) != 2 {
+	// TS: resolution.split('x').map(Number) and Number.isInteger checks; only
+	// the first two parts are used.
+	parts := strings.Split(resolution, "x")
+	if len(parts) < 2 {
 		return "", false
 	}
-	width, err1 := strconv.Atoi(parts[0])
-	height, err2 := strconv.Atoi(parts[1])
-	if err1 != nil || err2 != nil || width <= 0 || height <= 0 {
-		return "", false
+	var dims [2]int
+	for i := 0; i < 2; i++ {
+		f, err := strconv.ParseFloat(providerutils.JSTrim(parts[i]), 64)
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) || f != math.Trunc(f) || f <= 0 || f > 1<<53 {
+			return "", false
+		}
+		dims[i] = int(f)
 	}
+	width, height := dims[0], dims[1]
 	a, b := width, height
 	for b != 0 {
 		a, b = b, a%b
@@ -613,14 +620,14 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	switch taskStatus {
 	case "SUCCEEDED":
-		return m.buildCompletedResult(&statusResp, responseInfo)
+		return m.buildCompletedResult(&statusResp, httpResp.Body, responseInfo)
 
 	case "FAILED", "CANCELED":
 		message := ""
 		if statusResp.Output != nil {
 			message = statusResp.Output.Message
 		}
-		errMsg := strings.TrimSpace(fmt.Sprintf("Video generation %s. Task ID: %s. %s", strings.ToLower(taskStatus), operation.TaskID, message))
+		errMsg := providerutils.JSTrim(fmt.Sprintf("Video generation %s. Task ID: %s. %s", strings.ToLower(taskStatus), operation.TaskID, message))
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
 			Error:    errMsg,
@@ -635,7 +642,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 }
 
-func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
+func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse, rawBody []byte, responseInfo provider.VideoModelV3ResponseInfo) (*provider.VideoModelV3OperationStatusResult, error) {
 	var taskID, videoURL, actualPrompt string
 	if statusResp.Output != nil {
 		taskID = statusResp.Output.TaskID
@@ -656,27 +663,27 @@ func (m *VideoModel) buildCompletedResult(statusResp *alibabaVideoStatusResponse
 		alibabaMeta["actualPrompt"] = actualPrompt
 	}
 	if statusResp.Usage != nil {
+		// TS reads the zod-parsed usage: duration/outputVideoDuration/
+		// resolution/size are always spread, so a null stays null (an absent
+		// key is dropped); the wan3 fields only appear when non-null.
+		var rawUsage map[string]interface{}
+		if rawBody != nil {
+			var top struct {
+				Usage map[string]interface{} `json:"usage"`
+			}
+			_ = json.Unmarshal(rawBody, &top)
+			rawUsage = top.Usage
+		}
 		usage := map[string]interface{}{}
-		if statusResp.Usage.Duration != nil {
-			usage["duration"] = *statusResp.Usage.Duration
+		for wire, key := range map[string]string{"duration": "duration", "output_video_duration": "outputVideoDuration", "SR": "resolution", "size": "size"} {
+			if v, ok := rawUsage[wire]; ok {
+				usage[key] = v
+			}
 		}
-		if statusResp.Usage.OutputVideoDuration != nil {
-			usage["outputVideoDuration"] = *statusResp.Usage.OutputVideoDuration
-		}
-		if statusResp.Usage.SR != nil {
-			usage["resolution"] = *statusResp.Usage.SR
-		}
-		if statusResp.Usage.Size != "" {
-			usage["size"] = statusResp.Usage.Size
-		}
-		if statusResp.Usage.InputVideoDuration != nil {
-			usage["inputVideoDuration"] = *statusResp.Usage.InputVideoDuration
-		}
-		if statusResp.Usage.FPS != nil {
-			usage["fps"] = *statusResp.Usage.FPS
-		}
-		if statusResp.Usage.Ratio != "" {
-			usage["ratio"] = statusResp.Usage.Ratio
+		for wire, key := range map[string]string{"input_video_duration": "inputVideoDuration", "fps": "fps", "ratio": "ratio"} {
+			if v, ok := rawUsage[wire]; ok && v != nil {
+				usage[key] = v
+			}
 		}
 		alibabaMeta["usage"] = usage
 	}

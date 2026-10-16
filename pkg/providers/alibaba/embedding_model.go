@@ -111,7 +111,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return nil, err
 	}
 
-	sort.Slice(response.Output.Embeddings, func(i, j int) bool {
+	sort.SliceStable(response.Output.Embeddings, func(i, j int) bool {
 		return response.Output.Embeddings[i].TextIndex < response.Output.Embeddings[j].TextIndex
 	})
 
@@ -214,6 +214,9 @@ func parseAlibabaEmbeddingOptionMap(raw map[string]interface{}) (AlibabaEmbeddin
 		if !ok {
 			return out, fmt.Errorf("invalid alibaba textType: expected string")
 		}
+		if textType == "" {
+			return out, fmt.Errorf("invalid alibaba textType \"\": expected \"query\" or \"document\"")
+		}
 		out.TextType = textType
 	}
 	if v, ok := raw["dimension"]; ok {
@@ -235,6 +238,9 @@ func parseAlibabaEmbeddingOptionMap(raw map[string]interface{}) (AlibabaEmbeddin
 		outputType, ok := v.(string)
 		if !ok {
 			return out, fmt.Errorf("invalid alibaba outputType: expected string")
+		}
+		if outputType == "" {
+			return out, fmt.Errorf("invalid alibaba outputType \"\": expected \"dense\", \"sparse\", or \"dense&sparse\"")
 		}
 		out.OutputType = outputType
 	}

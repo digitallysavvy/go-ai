@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -57,9 +58,10 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 		if json.Unmarshal(raw.Detail, &s) == nil {
 			message = s
 		} else {
-			var compact bytes.Buffer
-			if json.Compact(&compact, raw.Detail) == nil {
-				message = compact.String()
+			// JSON.stringify(detail): numbers go through a double, strings
+			// are re-escaped, duplicate keys collapse.
+			if tree, ok := jsonorder.Parse(raw.Detail); ok {
+				message = jsonorder.Stringify(tree)
 			}
 		}
 		haveMessage = true
