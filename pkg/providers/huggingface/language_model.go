@@ -3,7 +3,6 @@ package huggingface
 import (
 	"context"
 	"encoding/json"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"net/http"
 	"strings"
 	"time"
@@ -54,31 +53,19 @@ func (m *LanguageModel) SupportedURLs() map[string][]string {
 	return map[string][]string{"image/*": {`^https?://.*$`}}
 }
 
-// hfProviderOptions mirrors TS HuggingFaceLanguageModelResponsesOptions.
-type hfProviderOptions struct {
-	Metadata         map[string]string `json:"metadata,omitempty"`
-	Instructions     string            `json:"instructions,omitempty"`
-	StrictJSONSchema *bool             `json:"strictJsonSchema,omitempty"`
-	ReasoningEffort  string            `json:"reasoningEffort,omitempty"`
+// hfOptionsSchema is huggingfaceLanguageModelResponsesOptions: every member
+// is optional (a null value is rejected like zod's .optional()).
+var hfOptionsSchema = providerutils.OptionSchema{
+	"metadata":         providerutils.OptRecord(nil, providerutils.OptString),
+	"instructions":     providerutils.OptString,
+	"strictJsonSchema": providerutils.OptBool,
+	"reasoningEffort":  providerutils.OptString,
 }
 
-func extractHFProviderOptions(raw map[string]interface{}) *hfProviderOptions {
-	if raw == nil {
-		return nil
-	}
-	value, ok := raw[hfProviderOptionsKey]
-	if !ok {
-		return nil
-	}
-	data, err := jsonstr.Marshal(value)
-	if err != nil {
-		return nil
-	}
-	var opts hfProviderOptions
-	if err := json.Unmarshal(data, &opts); err != nil {
-		return nil
-	}
-	return &opts
+// parseHFProviderOptions is parseProviderOptions({provider: 'huggingface'}):
+// nil when absent, an InvalidArgumentError when a member is mistyped.
+func parseHFProviderOptions(raw map[string]interface{}) (map[string]interface{}, error) {
+	return providerutils.ParseProviderOptions(hfProviderOptionsKey, raw, hfOptionsSchema)
 }
 
 // getArgs mirrors TS getArgs: it builds the request body shared by
@@ -108,7 +95,10 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	}
 	warnings = append(warnings, messageWarnings...)
 
-	hfOpts := extractHFProviderOptions(opts.ProviderOptions)
+	hfOpts, err := parseHFProviderOptions(opts.ProviderOptions)
+	if err != nil {
+		return nil, warnings, err
+	}
 
 	hfTools, toolsPresent, mappedToolChoice, toolWarnings := prepareResponsesTools(opts.Tools, opts.ToolChoice)
 	warnings = append(warnings, toolWarnings...)
@@ -129,10 +119,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 
 	// Hugging Face Responses API uses text.format for structured output.
 	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" && opts.ResponseFormat.Schema != nil {
-		strict := false
-		if hfOpts != nil && hfOpts.StrictJSONSchema != nil {
-			strict = *hfOpts.StrictJSONSchema
-		}
+		strict, _ := hfOpts["strictJsonSchema"].(bool)
 		name := opts.ResponseFormat.Name
 		if name == "" {
 			name = "response"
@@ -149,11 +136,13 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 		body["text"] = map[string]interface{}{"format": format}
 	}
 
-	if hfOpts != nil && len(hfOpts.Metadata) > 0 {
-		body["metadata"] = hfOpts.Metadata
+	// TS sends metadata and instructions whenever they are set, even when
+	// empty.
+	if v, ok := hfOpts["metadata"]; ok {
+		body["metadata"] = v
 	}
-	if hfOpts != nil && hfOpts.Instructions != "" {
-		body["instructions"] = hfOpts.Instructions
+	if v, ok := hfOpts["instructions"]; ok {
+		body["instructions"] = v
 	}
 
 	if toolsPresent {
@@ -163,8 +152,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 		body["tool_choice"] = mappedToolChoice
 	}
 
-	if hfOpts != nil && hfOpts.ReasoningEffort != "" {
-		body["reasoning"] = map[string]interface{}{"effort": hfOpts.ReasoningEffort}
+	if v, ok := hfOpts["reasoningEffort"]; ok {
+		body["reasoning"] = map[string]interface{}{"effort": v}
 	}
 
 	return body, warnings, nil

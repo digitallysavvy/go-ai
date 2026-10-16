@@ -186,6 +186,13 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 	provOpts := extractOpenResponsesProviderOptions(opts.ProviderOptions, m.provider.config.Name)
+	// TS parseProviderOptions(openResponsesLanguageModelOptions): a mistyped
+	// reasoningEffort / reasoningSummary is an InvalidArgumentError.
+	if provOpts.Raw != nil {
+		if _, err := providerutils.ParseProviderOptions(m.provider.config.Name, map[string]interface{}{m.provider.config.Name: provOpts.Raw}, openResponsesOptionsSchema); err != nil {
+			return nil, nil, err
+		}
+	}
 	if openResponsesTruthyString(provOpts.Raw["conversation"]) && openResponsesTruthyString(provOpts.Raw["previousResponseId"]) {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
@@ -354,19 +361,6 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 	resolvedReasoningSummary := provOpts.ReasoningSummary
-	if provOpts.ReasoningSummarySet && resolvedReasoningSummary != "" {
-		switch resolvedReasoningSummary {
-		case "concise", "detailed", "auto":
-			// valid
-		default:
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningSummary",
-				Details: fmt.Sprintf("reasoningSummary %q is not a supported value (concise, detailed, auto)", resolvedReasoningSummary),
-			})
-			resolvedReasoningSummary = ""
-		}
-	}
 	if provOpts.ReasoningEffort != "" {
 		reasoningEffort = provOpts.ReasoningEffort
 	}
@@ -441,18 +435,20 @@ func extractOpenResponsesProviderOptions(providerOptions map[string]interface{},
 			continue
 		}
 		var opts OpenResponsesProviderOptions
-		if err := json.Unmarshal(data, &opts); err == nil {
-			if values, ok := raw.(map[string]interface{}); ok {
-				opts.Raw = values
-				if summary, ok := values["reasoningSummary"]; ok {
-					opts.ReasoningSummarySet = true
-					if text, ok := summary.(string); ok {
-						opts.ReasoningSummary = text
-					}
+		// A member of the wrong type fails the struct decode; the raw map is
+		// kept regardless so buildRequestBody can report it (TS
+		// parseProviderOptions throws).
+		_ = json.Unmarshal(data, &opts)
+		if values, ok := raw.(map[string]interface{}); ok {
+			opts.Raw = values
+			if summary, ok := values["reasoningSummary"]; ok {
+				opts.ReasoningSummarySet = true
+				if text, ok := summary.(string); ok {
+					opts.ReasoningSummary = text
 				}
 			}
-			return opts
 		}
+		return opts
 	}
 	return OpenResponsesProviderOptions{}
 }
@@ -1787,4 +1783,11 @@ func wireNumberPresent(raw map[string]interface{}, object, key string) bool {
 	}
 	_, ok = m[key].(float64)
 	return ok
+}
+
+// openResponsesOptionsSchema is openResponsesLanguageModelOptions: both
+// members are nullish (a null summary suppresses it); other keys pass.
+var openResponsesOptionsSchema = providerutils.OptionSchema{
+	"reasoningEffort":  providerutils.OptNullable(providerutils.OptString),
+	"reasoningSummary": providerutils.OptNullable(providerutils.OptEnum("concise", "detailed", "auto")),
 }
