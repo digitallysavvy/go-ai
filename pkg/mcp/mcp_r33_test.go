@@ -57,3 +57,16 @@ func TestAuthCodeExchangeInvalidClientDoesNotAskDynamicRegistration(t *testing.T
 		t.Fatalf("provider asked %d times about dynamic registration, want 0", provider.asked)
 	}
 }
+
+// TS prints a missing mimeType as "undefined" and lets atob throw on a
+// malformed blob.
+func TestMCPAppResourceErrorTextsMatchTS(t *testing.T) {
+	_, err := GetMCPAppResourceFromReadResult("ui://a", ReadResourceResult{Contents: []ResourceContent{{URI: "ui://a", Text: "x"}}})
+	if err == nil || err.Error() != "Unsupported MCP App resource MIME type: undefined" {
+		t.Fatalf("missing mimeType: %v", err)
+	}
+	_, err = GetMCPAppResourceFromReadResult("ui://a", ReadResourceResult{Contents: []ResourceContent{{URI: "ui://a", MimeType: MCPAppMimeType, Blob: "***"}}})
+	if err == nil || err.Error() != "The string to be decoded is not correctly encoded." {
+		t.Fatalf("bad blob: %v", err)
+	}
+}
