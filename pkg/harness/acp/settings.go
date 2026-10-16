@@ -31,13 +31,11 @@ type Source struct {
 	// npm-locked
 	PackageJSON  string
 	PnpmLockYAML string
-	// PnpmWorkspaceYAML is optional. TS additionally rejects an explicitly
-	// empty string distinctly from "not provided" (`pnpmWorkspaceYaml?.length
-	// === 0` throws); Go cannot represent that distinction on a plain string
-	// field without an API-breaking change to *string, and an explicit ""
-	// already behaves identically to omission here, so that extra check is
-	// not ported.
-	PnpmWorkspaceYAML string
+	// PnpmWorkspaceYAML is optional. An empty string means "not provided"
+	// unless PnpmWorkspaceYAMLSet is true, in which case an empty value is
+	// rejected like TS (`pnpmWorkspaceYaml?.length === 0` throws).
+	PnpmWorkspaceYAMLSet bool
+	PnpmWorkspaceYAML    string
 
 	// install-command
 	Command string

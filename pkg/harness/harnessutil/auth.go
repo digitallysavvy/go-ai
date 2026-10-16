@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -96,14 +97,22 @@ func NormalizeHeaders(headers map[string]string) (map[string]string, error) {
 		return nil, nil
 	}
 	normalized := make(map[string]string, len(headers))
-	for name, value := range headers {
+	// Go map iteration is random; TS reports the first forbidden header in
+	// key (insertion) order. Go has no insertion order, so use sorted order
+	// for a deterministic result.
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
+	for _, name := range names {
 		lower := strings.ToLower(name)
 		for _, managed := range ManagedHeaderNames {
 			if lower == managed {
 				return nil, fmt.Errorf("HarnessAgent: `headers` must not include the managed header `%s`.", lower) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 		}
-		normalized[lower] = value
+		normalized[lower] = headers[name]
 	}
 	return normalized, nil
 }

@@ -45,6 +45,26 @@ type PolicyRuleMatcher struct {
 	Regex      string `json:"regex,omitempty"`
 }
 
+// MarshalJSON emits exactly one of exact/startsWith/regex, like the TS union
+// type. An empty Exact is kept on the wire ({"exact":""}) when neither
+// StartsWith nor Regex is set, instead of being dropped by omitempty.
+func (m PolicyRuleMatcher) MarshalJSON() ([]byte, error) {
+	switch {
+	case m.Regex != "" && m.Exact == "" && m.StartsWith == "":
+		return json.Marshal(struct {
+			Regex string `json:"regex"`
+		}{m.Regex})
+	case m.StartsWith != "" && m.Exact == "" && m.Regex == "":
+		return json.Marshal(struct {
+			StartsWith string `json:"startsWith"`
+		}{m.StartsWith})
+	case m.Exact == "" && m.StartsWith == "" && m.Regex == "":
+		return []byte(`{"exact":""}`), nil
+	}
+	type plain PolicyRuleMatcher
+	return json.Marshal(plain(m))
+}
+
 // PolicyKeyValueMatcher matches a header or query parameter.
 type PolicyKeyValueMatcher struct {
 	Key   *PolicyRuleMatcher `json:"key,omitempty"`

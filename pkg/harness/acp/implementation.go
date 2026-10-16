@@ -48,6 +48,9 @@ func validateImplementation(impl implementation) error {
 		if impl.Source.PnpmLockYAML == "" {
 			return fmt.Errorf("ACP source.pnpmLockYaml must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
+		if impl.Source.PnpmWorkspaceYAMLSet && impl.Source.PnpmWorkspaceYAML == "" {
+			return fmt.Errorf("ACP source.pnpmWorkspaceYaml must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
+		}
 	case SourceNPMSimple:
 		if !packageNameRegexp.MatchString(impl.Source.PackageName) {
 			return fmt.Errorf("ACP npm package name is invalid: %q.", impl.Source.PackageName) //nolint:staticcheck // matches TS SDK's exact error text
