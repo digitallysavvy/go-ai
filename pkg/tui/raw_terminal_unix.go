@@ -23,13 +23,7 @@ func enableRawTerminalMode(input io.Reader) func() {
 		return nil
 	}
 
-	raw := *original
-	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
-	raw.Oflag &^= unix.OPOST
-	raw.Cflag |= unix.CS8
-	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.IEXTEN | unix.ISIG
-	raw.Cc[unix.VMIN] = 1
-	raw.Cc[unix.VTIME] = 0
+	raw := rawTermios(original)
 	if err := setTerminalAttributes(fd, &raw); err != nil {
 		return nil
 	}
@@ -37,6 +31,22 @@ func enableRawTerminalMode(input io.Reader) func() {
 	return func() {
 		_ = setTerminalAttributes(fd, original)
 	}
+}
+
+// rawTermios mirrors libuv's UV_TTY_MODE_RAW (what Node's setRawMode(true)
+// applies): output post-processing stays enabled with ONLCR, so the "\n"
+// separators of a full-frame repaint still return the carriage. Clearing
+// OPOST would make every line of the first frame start where the previous
+// one ended.
+func rawTermios(original *unix.Termios) unix.Termios {
+	raw := *original
+	raw.Iflag &^= unix.BRKINT | unix.ICRNL | unix.INPCK | unix.ISTRIP | unix.IXON
+	raw.Oflag |= unix.OPOST | unix.ONLCR
+	raw.Cflag |= unix.CS8
+	raw.Lflag &^= unix.ECHO | unix.ICANON | unix.IEXTEN | unix.ISIG
+	raw.Cc[unix.VMIN] = 1
+	raw.Cc[unix.VTIME] = 0
+	return raw
 }
 
 func isTerminalInput(input io.Reader) bool {
