@@ -1,7 +1,9 @@
 package responses
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -65,5 +67,21 @@ func TestXAIToolResultUnknownTypeSendsEmptyString(t *testing.T) {
 	}
 	if out := input[0].(map[string]interface{})["output"]; out != "" {
 		t.Fatalf("output = %#v, want empty string", out)
+	}
+}
+
+// TS tool_search_output always carries `tools`, even when the search loaded
+// nothing; the API rejects the item without it.
+func TestToolSearchOutputEmptyToolsStillSent(t *testing.T) {
+	out := convertToolSearchOutput(types.ToolResultContent{
+		ToolCallID: "c1", ToolName: "openai.tool_search",
+		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"tools": []interface{}{}}},
+	}, "client")
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"tools":[]`) {
+		t.Fatalf("item = %s, want tools:[]", b)
 	}
 }

@@ -1781,6 +1781,10 @@ func convertToolSearchOutput(part types.ToolResultContent, execution string) int
 	if execution == "client" {
 		callID = &part.ToolCallID
 	}
+	// TS always sends `tools` (an empty array when nothing was loaded).
+	if parsed.Tools == nil {
+		parsed.Tools = []json.RawMessage{}
+	}
 	return ToolSearchOutputItem{
 		Type:      "tool_search_output",
 		Execution: execution,

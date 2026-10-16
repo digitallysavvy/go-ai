@@ -276,7 +276,7 @@ type ToolSearchOutputItem struct {
 	CallID *string `json:"call_id"`
 
 	// Tools is the list of matched tool definitions returned by the search.
-	Tools []json.RawMessage `json:"tools,omitempty"`
+	Tools []json.RawMessage `json:"tools"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
