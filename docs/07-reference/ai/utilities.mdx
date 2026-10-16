@@ -80,6 +80,7 @@ Builds a `*StreamTextResult` from a stream you already have, instead of calling 
 | `CallID` | `string` | CallID correlates this result with the caller's own callback/telemetry events. A new one is generated when empty. |
 | `Provider` | `string` | Provider and ModelID label steps and the response metadata when a chunk does not carry its own provider.ResponseMetadata. |
 | `ModelID` | `string` |  |
+| `TerminalFinishClosesTurn` | `bool` | TerminalFinishClosesTurn marks src as a harness turn: a content-less terminal ChunkTypeFinish only closes the turn (summed usage overridden, finish reason set) and never records a step of its own, even when no step was recorded before it (TS HarnessStreamTextResult.finish leaves steps empty). Without it a lone empty ChunkTypeFinish is recorded as the only step. |
 | `OnChunk` | `func(chunk provider.StreamChunk)` | OnChunk is invoked for every chunk as it is consumed from src, mirroring StreamTextOptions.OnChunk. |
 | `OnFinish` | `func(result *StreamTextResult)` | OnFinish/OnEnd are invoked once, after src is fully consumed (whether it ended in success or with an error), mirroring StreamTextOptions' callbacks of the same name. OnEnd takes precedence when both are set. |
 | `OnEnd` | `func(result *StreamTextResult)` |  |
