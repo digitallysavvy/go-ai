@@ -201,8 +201,10 @@ func credentialBrokering(env, sandboxEnv, headers map[string]string, suppliedAut
 	if credential == "" || sandboxCredential == "" {
 		return nil, nil
 	}
-	baseURL := env["AI_GATEWAY_BASE_URL"]
-	if baseURL == "" {
+	// TS `env.AI_GATEWAY_BASE_URL ?? DEFAULT`: only an absent key falls back;
+	// an empty string is kept (and then fails URL parsing like `new URL("")`).
+	baseURL, ok := env["AI_GATEWAY_BASE_URL"]
+	if !ok {
 		baseURL = defaultAIGatewayBaseURL
 	}
 	transformHeaders := map[string]string{}

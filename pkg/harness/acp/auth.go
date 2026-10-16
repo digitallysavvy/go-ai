@@ -164,8 +164,9 @@ func resolveProviderAuthenticationCompatibility(auth harness.Authentication, pro
 	if mode == harness.AuthModeAuto && credentialSource == "" {
 		return &providerAuthenticationCompatibility{Type: "direct", Mode: mode}
 	}
-	baseURL := resolvedEnv["AI_GATEWAY_BASE_URL"]
-	if baseURL == "" {
+	// TS `resolvedEnv.AI_GATEWAY_BASE_URL ?? DEFAULT`: only absence defaults.
+	baseURL, ok := resolvedEnv["AI_GATEWAY_BASE_URL"]
+	if !ok {
 		baseURL = defaultAIGatewayBaseURL
 	}
 	return &providerAuthenticationCompatibility{
