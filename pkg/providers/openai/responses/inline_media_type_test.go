@@ -1,7 +1,9 @@
 package responses
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -46,5 +48,22 @@ func TestXAIResponsesInlineBareImageMediaTypeIsSniffed(t *testing.T) {
 	part := input[0].(UserMessage).Content.([]interface{})[0].(UserImageURLPart)
 	if part.ImageURL != "data:image/png;base64,iVBORw0KGgoAAAAA" {
 		t.Fatalf("image_url = %s", part.ImageURL)
+	}
+}
+
+func TestXAIToolResultImageBareMediaTypeIsSniffed(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{
+		types.ToolResultContent{ToolCallID: "c1", ToolName: "t", Output: &types.ToolResultOutput{
+			Type:    types.ToolResultOutputContent,
+			Content: []types.ToolResultContentBlock{types.FileContentBlock{MediaType: "image", Data: testPNG}},
+		}},
+	}}}}
+	input, _, err := ConvertPromptToXAIInput(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(input)
+	if !strings.Contains(string(raw), "data:image/png;base64,") {
+		t.Fatalf("input = %s, want sniffed image/png", raw)
 	}
 }
