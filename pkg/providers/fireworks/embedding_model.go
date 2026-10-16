@@ -166,7 +166,8 @@ func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.Emb
 		reqBody["dimensions"] = d
 	}
 	// providerOptions.<provider>.user (TS openaiCompatibleEmbeddingModelOptions.user).
-	if u, ok := resolved["user"].(string); ok && u != "" {
+	// An empty string is kept (JSON.stringify keeps user: '').
+	if u, ok := resolved["user"].(string); ok {
 		reqBody["user"] = u
 	}
 	return warnings

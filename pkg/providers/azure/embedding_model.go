@@ -180,7 +180,7 @@ func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.Emb
 		reqBody["dimensions"] = d
 	}
 	// providerOptions.openai.user (TS openaiEmbeddingModelOptions.user).
-	if u, ok := providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "user").(string); ok && u != "" {
+	if u, ok := providerutils.EmbedProviderOption(opts.ProviderOptions, "openai", "user").(string); ok {
 		reqBody["user"] = u
 	}
 }

@@ -234,7 +234,8 @@ func (m *EmbeddingModel) applyDimensions(reqBody map[string]interface{}, opts *p
 	if d, ok := providerutils.ResolveEmbeddingDimensions(dimensionsOption, opts.Dimensions); ok {
 		reqBody["dimensions"] = d
 	}
-	if u, ok := userOption.(string); ok && u != "" {
+	// An empty string is kept (JSON.stringify keeps user: '').
+	if u, ok := userOption.(string); ok {
 		reqBody["user"] = u
 	}
 	return warnings
