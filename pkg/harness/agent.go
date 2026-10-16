@@ -561,8 +561,11 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// it (TS 4d1bf28: `HarnessAgentSettings.instructions: string |
 	// SystemModelMessage`).
 	var instructionsRaw = a.settings.Instructions
+	// A continuation runs with the agent's own settings (TS
+	// `_prepareContinueTurnInput` / `continueGenerate` read `this.settings`
+	// only), so the per-call overrides below apply to fresh prompts alone.
 	toolsContext := a.settings.ToolsContext
-	if opts.ToolsContext != nil {
+	if opts.ToolsContext != nil && mode != "continue" {
 		toolsContext = opts.ToolsContext
 	}
 	// RuntimeContext mirrors TS `this.settings.runtimeContext ?? {}`
@@ -570,7 +573,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 	// agent-level default, overridden by a per-call value when the caller
 	// supplies one.
 	runtimeContext := a.settings.RuntimeContext
-	if opts.RuntimeContext != nil {
+	if opts.RuntimeContext != nil && mode != "continue" {
 		runtimeContext = opts.RuntimeContext
 	}
 	skills := a.settings.Skills
@@ -583,7 +586,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 			return nil, err
 		}
 	}
-	if opts.Instructions != nil {
+	if opts.Instructions != nil && mode != "continue" {
 		instructionsRaw = *opts.Instructions
 	}
 
@@ -726,7 +729,7 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 		BuiltinToolFiltering: active.builtinToolFiltering,
 		SandboxSession:       session.sandboxSession, SessionWorkDir: session.sessionWorkDir,
 		ResponseFormat: responseFormat, Output: a.settings.Output, Telemetry: a.settings.Telemetry,
-		Callbacks: a.settings.Callbacks, StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval, ToolApprovalReasons: a.settings.ToolApprovalReasons,
+		Callbacks: a.turnCallbacks(opts, mode), StopConditions: a.stopConditions, ToolApproval: a.settings.ToolApproval, ToolApprovalReasons: a.settings.ToolApprovalReasons,
 		PendingToolApprovals: pendingApprovals, PendingToolResults: pendingResults,
 		ToolApprovalContinuations: toolApprovalContinuations, ToolResultContinuations: toolResultContinuations,
 		OnPendingToolApproval: session.recordPendingApproval,
@@ -765,6 +768,58 @@ func (a *Agent) startTurn(ctx context.Context, session *AgentSession, opts agent
 
 	session.setActivePromptDone(turnID, out.Done)
 	return out.Result, nil
+}
+
+// turnCallbacks merges the agent's lifecycle callbacks with the call's own
+// (both run, settings first), for a fresh prompt. A continuation uses the
+// settings alone, and the language-model-call callbacks are settings-only.
+// Mirrors TS `_resolveLifecycleCallbacks`, whose merged pairs are
+// `onStart`/`experimental_onStart`, `onStepStart`/`experimental_onStepStart`,
+// `onToolExecutionStart`/`experimental_onToolCallStart`,
+// `onToolExecutionEnd`/`experimental_onToolCallFinish`, `onStepEnd`/
+// `onStepFinish` and `onEnd`/`onFinish`.
+func (a *Agent) turnCallbacks(opts agent.AgentGenerateOptions, mode string) Callbacks {
+	c := a.settings.Callbacks
+	if mode == "continue" {
+		return c
+	}
+	c.OnStart = mergeCallbacks(c.OnStart, opts.OnStart)
+	c.OnStepStart = mergeCallbacks(c.OnStepStart, opts.OnStepStart)
+	c.OnToolExecutionStart = mergeCallbacks(c.OnToolExecutionStart, firstCallback(opts.OnToolExecutionStart, opts.OnToolCallStart))
+	c.OnToolExecutionEnd = mergeCallbacks(c.OnToolExecutionEnd, firstCallback(opts.OnToolExecutionEnd, opts.OnToolCallFinish))
+	c.OnStepEnd = mergeCallbacks(c.OnStepEnd, firstCallback(opts.OnStepEnd, opts.OnStepFinish))
+	c.OnEnd = mergeCallbacks(c.OnEnd, firstCallback(opts.OnEnd, opts.OnFinish))
+	return c
+}
+
+// firstCallback is TS `a ?? b`.
+func firstCallback[E any](a, b func(context.Context, E)) func(context.Context, E) {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// mergeCallbacks runs every non-nil callback in order; a panic in one does not
+// stop the others (TS `mergeCallbacks` awaits them with `Promise.allSettled`).
+func mergeCallbacks[E any](callbacks ...func(context.Context, E)) func(context.Context, E) {
+	var live []func(context.Context, E)
+	for _, cb := range callbacks {
+		if cb != nil {
+			live = append(live, safeCallback(cb))
+		}
+	}
+	switch len(live) {
+	case 0:
+		return nil
+	case 1:
+		return live[0]
+	}
+	return func(ctx context.Context, e E) {
+		for _, cb := range live {
+			cb(ctx, e)
+		}
+	}
 }
 
 // resolvePromptTurnInput reduces the call's input to the single user message
@@ -858,16 +913,15 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 		Steps:              steps,
 		FinalStep:          finalStep,
 		FinishReason:       r.FinishReason(),
-		// Usage is deliberately the final step's usage, not the total
-		// (unlike pkg/ai's own GenerateTextResult, where Usage is already
-		// the cross-step total and TotalUsage is just its deprecated
-		// alias): TotalUsage below carries the real aggregate/bridge-
-		// overridden total, and callers such as Agent.ExecuteWithMessages
-		// read TotalUsage, not Usage, for that total. r.Usage() (not the
-		// also-deprecated r.TotalUsage(), its pure alias) is used as the
-		// source value here.
-		Usage:            finalStep.Usage,
+		// TS HarnessGenerateTextResult: `usage` is the stream result's usage,
+		// the total across all steps (the bridge's own total when it reports
+		// one), and `totalUsage` is its deprecated alias.
+		Usage:            r.Usage(),
 		TotalUsage:       r.Usage(), //nolint:staticcheck
+		RawFinishReason:  finalStep.RawFinishReason,
+		Request:          finalStep.Request,
+		Response:         finalStep.Response,
+		ProviderMetadata: finalStep.ProviderMetadata, //nolint:staticcheck
 		Warnings:         r.Warnings(),
 		Sources:          r.Sources(),
 		Files:            r.Files(),

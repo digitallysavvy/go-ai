@@ -216,3 +216,86 @@ func TestRunPrompt_UnsupportedToModelOutputIsToolError(t *testing.T) {
 		t.Fatalf("error output = %+v", mock.toolResults[0].Output)
 	}
 }
+
+// TS `_resolveLifecycleCallbacks`: a fresh prompt runs the agent's callback and
+// the call's own (including the deprecated `onFinish`-style aliases).
+func TestAgent_PerCallCallbacksAreMergedWithSettings(t *testing.T) {
+	var mu sync.Mutex
+	var order []string
+	note := func(s string) {
+		mu.Lock()
+		order = append(order, s)
+		mu.Unlock()
+	}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			stop := FinishReason{Unified: FinishReasonStop}
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextStartPart{ID: "t"}, &TextDeltaPart{ID: "t", Delta: "x"}, &TextEndPart{ID: "t"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{
+		OnStart:   func(context.Context, ai.OnStartEvent) { note("settings.start") },
+		OnStepEnd: func(context.Context, ai.OnStepFinishEvent) { note("settings.stepEnd") },
+		OnEnd:     func(context.Context, ai.OnFinishEvent) { note("settings.end") },
+	}, nil)
+	res, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{
+			Prompt: "go", HarnessSession: session,
+			OnStart:      func(context.Context, ai.OnStartEvent) { note("call.start") },
+			OnStepFinish: func(context.Context, ai.OnStepFinishEvent) { note("call.stepFinish") },
+			OnFinish:     func(context.Context, ai.OnFinishEvent) { note("call.finish") },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.Err(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	joined := strings.Join(order, ",")
+	for _, want := range []string{"settings.start,call.start", "settings.stepEnd,call.stepFinish"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("callbacks = %s, missing %q", joined, want)
+		}
+	}
+}
+
+// TS HarnessGenerateTextResult: `usage` is the total across steps (the
+// bridge's own total when reported), not the final step's usage.
+func TestAgent_GenerateResultUsageIsTheTotal(t *testing.T) {
+	toolCalls := FinishReason{Unified: FinishReasonToolCalls}
+	stop := FinishReason{Unified: FinishReasonStop}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextStartPart{ID: "a"}, &TextDeltaPart{ID: "a", Delta: "one"}, &TextEndPart{ID: "a"},
+				&FinishStepPart{FinishReason: toolCalls, Usage: stringUsage(1, 1)},
+				&TextStartPart{ID: "b"}, &TextDeltaPart{ID: "b", Delta: "two"}, &TextEndPart{ID: "b"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(2, 3)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(3, 4)},
+			}
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{}, nil)
+	result, err := a.Generate(context.Background(), agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Usage.TotalTokens == nil || *result.Usage.TotalTokens != 7 {
+		t.Fatalf("Usage.TotalTokens = %v, want the turn total 7", result.Usage.TotalTokens)
+	}
+	if result.FinalStep.Usage.TotalTokens == nil || *result.FinalStep.Usage.TotalTokens != 5 {
+		t.Fatalf("final step usage = %v", result.FinalStep.Usage.TotalTokens)
+	}
+	if result.RawFinishReason != result.FinalStep.RawFinishReason || result.Response.ID != result.FinalStep.Response.ID {
+		t.Fatalf("result does not mirror the final step: %+v", result)
+	}
+}
