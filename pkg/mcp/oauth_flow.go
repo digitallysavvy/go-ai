@@ -38,6 +38,10 @@ type AuthOptions struct {
 	// CallbackIssuer is the `iss` parameter from the authorization response,
 	// validated against the pinned issuer when present (hash 1f29230).
 	CallbackIssuer string
+	// HasCallbackIssuer marks the `iss` parameter as present even when its
+	// value is empty (`?iss=`). TS validates `callbackIssuer != null`, so an
+	// empty value is rejected unless it equals the expected issuer.
+	HasCallbackIssuer bool
 
 	// Scope is an explicit scope override, typically extracted from a 401
 	// challenge via ExtractWWWAuthenticateParams (hash 1011e33).
@@ -304,7 +308,7 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 		if expectedIssuer == "" {
 			expectedIssuer = authorizationServerURL
 		}
-		if options.CallbackIssuer != "" && options.CallbackIssuer != expectedIssuer {
+		if (options.HasCallbackIssuer || options.CallbackIssuer != "") && options.CallbackIssuer != expectedIssuer {
 			return "", &MCPClientOAuthError{Message: fmt.Sprintf("OAuth authorization response issuer %s does not match expected issuer %s", options.CallbackIssuer, expectedIssuer)}
 		}
 		if err := AssertOAuthAuthorizationServerInformationMatches(*storedASInfo, currentASInfo); err != nil {
