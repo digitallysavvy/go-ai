@@ -59,7 +59,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "gmicloud"); err != nil {
 		return nil, err
 	}
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "gmicloud"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBody(opts, false)
@@ -95,7 +95,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "gmicloud"); err != nil {
 		return nil, err
 	}
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "gmicloud"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "gmicloud"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBody(opts, true)
@@ -131,7 +131,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// AllowVideo: true -- gmicloud wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "gmicloud", ThoughtSignatureKey: "gmicloud", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "gmicloud", ThoughtSignatureKey: "gmicloud", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {

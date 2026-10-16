@@ -130,7 +130,33 @@ type ToOpenAIMessagesOptions struct {
 	// ToOpenAIMessagesWithError; ToOpenAIMessages cannot return it and falls
 	// back to the legacy shape.
 	Provider string
+
+	// FileParts selects the user file-part conversion rules (see
+	// FilePartMode). Rejected files are reported by ToOpenAIMessagesWithError
+	// as *errors.UnsupportedFunctionalityError; ToOpenAIMessages cannot return
+	// the error and falls back to the legacy file part.
+	FileParts FilePartMode
 }
+
+// FilePartMode selects which TS converter's user file-part rules
+// ToOpenAIMessages follows. The zero value keeps the lenient legacy shapes.
+type FilePartMode int
+
+const (
+	// FilePartsLegacy emits a generic {"type":"file"} part for any file the
+	// strict modes would reject (cohere, alibaba and other direct callers).
+	FilePartsLegacy FilePartMode = iota
+	// FilePartsOpenAIChat follows convert-to-openai-chat-messages.ts: images,
+	// wav/mp3 audio and PDF data; everything else is an
+	// UnsupportedFunctionalityError.
+	FilePartsOpenAIChat
+	// FilePartsOpenAICompatible follows
+	// convert-to-openai-compatible-chat-messages.ts: images, video, wav/mp3
+	// audio, PDF data and text/* files (sent as text parts).
+	FilePartsOpenAICompatible
+	// FilePartsGroq follows convert-to-groq-chat-messages.ts: images only.
+	FilePartsGroq
+)
 
 // providerRefResolver resolves provider file references during conversion
 // and records the first resolution error.
@@ -176,12 +202,9 @@ func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessage
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	var refs *providerRefResolver
-	if opt.Provider != "" {
-		refs = &providerRefResolver{provider: opt.Provider}
-	}
+	refs := &providerRefResolver{provider: opt.Provider}
 	result := toOpenAIMessages(messages, opt, refs)
-	if refs != nil && refs.err != nil {
+	if refs.err != nil {
 		return result, refs.err
 	}
 	return result, nil
@@ -194,6 +217,15 @@ func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessage
 // it before building the body.
 func ValidateProviderFileReferences(messages []types.Message, providerName string) error {
 	_, err := ToOpenAIMessagesWithError(messages, ToOpenAIMessagesOptions{Provider: providerName})
+	return err
+}
+
+// ValidateOpenAIFileParts reports the *errors.UnsupportedFunctionalityError (or
+// NoSuchProviderReferenceError) the TS converter for mode raises for a user
+// file part. Providers whose request builders cannot return an error call it
+// before building the body.
+func ValidateOpenAIFileParts(messages []types.Message, mode FilePartMode, providerName string) error {
+	_, err := ToOpenAIMessagesWithError(messages, ToOpenAIMessagesOptions{Provider: providerName, FileParts: mode})
 	return err
 }
 
@@ -457,7 +489,20 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					}
 					contentParts = append(contentParts, imagePart)
 				case types.FileContent:
-					filePart := openAIFileContentPartResolving(p, opt.AllowVideo, refs)
+					var filePart map[string]interface{}
+					if opt.FileParts != FilePartsLegacy {
+						strict, err := openAIStrictFilePart(p, opt.FileParts, refs)
+						if err != nil {
+							if refs.err == nil {
+								refs.err = err
+							}
+						} else if strict != nil {
+							filePart = strict
+						}
+					}
+					if filePart == nil {
+						filePart = openAIFileContentPartResolving(p, opt.AllowVideo, refs)
+					}
 					if opt.SpreadCompatMetadata {
 						withDefaultPDFFilename(filePart, "document.pdf")
 					} else {
@@ -832,7 +877,7 @@ func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, ref
 	// A provider-reference file resolves to the provider's own file ID for
 	// any media type (TS #22466), keeping the part-level
 	// providerOptions.openaiCompatible metadata.
-	if refs != nil && file.FileData.Type == types.FileDataTypeReference {
+	if refs != nil && refs.provider != "" && file.FileData.Type == types.FileDataTypeReference {
 		id, err := providerutils.ResolveProviderReference(file.FileData.Reference, refs.provider)
 		if err == nil {
 			part := map[string]interface{}{

@@ -68,7 +68,7 @@ const vertexXaiProviderKey = "googleVertex"
 
 // DoGenerate performs non-streaming text generation.
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, vertexXaiProviderKey); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, vertexXaiProviderKey); err != nil {
 		return nil, err
 	}
 	warnings := m.checkUnsupportedOptions(opts)
@@ -103,7 +103,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation.
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, vertexXaiProviderKey); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, vertexXaiProviderKey); err != nil {
 		return nil, err
 	}
 	warnings := m.checkUnsupportedOptions(opts)
@@ -150,9 +150,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true})
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true})
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible})
 	}
 	if opts.Prompt.System != "" {
 		messages, _ := body["messages"].([]map[string]interface{})
