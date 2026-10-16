@@ -1191,3 +1191,54 @@ type closeTrackingBody struct {
 }
 
 func (c *closeTrackingBody) Close() error { c.closed = true; return nil }
+
+// Following results_url on the provider's own origin sends the provider's
+// default headers, including the user-agent suffix (TS getBatchHeaders).
+func TestBatch_ResultsDownloadSendsProviderHeaders(t *testing.T) {
+	var gotUA, gotVersion, gotKey string
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	mux.HandleFunc("/messages/batches/b1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"b1","type":"message_batch","processing_status":"ended","request_counts":{"processing":0,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z","results_url":"` + srv.URL + `/results"}`))
+	})
+	mux.HandleFunc("/results", func(w http.ResponseWriter, r *http.Request) {
+		gotUA, gotVersion, gotKey = r.Header.Get("User-Agent"), r.Header.Get("anthropic-version"), r.Header.Get("x-api-key")
+	})
+
+	b := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Close()
+	if !strings.Contains(gotUA, "ai-sdk-anthropic/") || gotVersion == "" || gotKey != "k" {
+		t.Fatalf("user-agent=%q version=%q key=%q", gotUA, gotVersion, gotKey)
+	}
+}
+
+// Batch requests take betas only from providerOptions.anthropic.anthropicBeta
+// on startBatch (TS passes userSuppliedBetas: new Set(explicitBatchBetas));
+// an anthropic-beta header on a request's own options is not used.
+func TestBatch_RequestHeaderBetasAreNotCollected(t *testing.T) {
+	var capturedBeta string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBeta = r.Header.Get("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"b","type":"message_batch","processing_status":"in_progress","request_counts":{"processing":1,"succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"2024-01-01T00:00:00Z","expires_at":"2024-01-02T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	req := textBatchRequest("r1", ClaudeSonnet4_5, "Hello")
+	req.Text.Options.Headers = map[string]string{"anthropic-beta": "request-level-beta"}
+	_, err := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests:        []provider.BatchV4Request{req},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"anthropicBeta": []interface{}{"explicit-beta"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capturedBeta != "explicit-beta" {
+		t.Fatalf("anthropic-beta = %q, want only explicit-beta", capturedBeta)
+	}
+}
