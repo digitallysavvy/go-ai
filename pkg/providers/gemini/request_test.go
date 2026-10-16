@@ -217,3 +217,19 @@ func TestBuildRequest_VertexOmitsFunctionCallIDs(t *testing.T) {
 		t.Errorf("google contents missing id: %s", jsonString(t, body["contents"]))
 	}
 }
+
+// TS sends stopSequences as given: an explicitly empty array is on the wire.
+func TestBuildRequest_EmptyStopSequencesSent(t *testing.T) {
+	m := makeTestModel("gemini-2.5-flash")
+	body, _ := buildReq(t, m, &provider.GenerateOptions{StopSequences: []string{}}, false)
+	gc := body["generationConfig"].(map[string]interface{})
+	if jsonString(t, gc["stopSequences"]) != "[]" {
+		t.Errorf("stopSequences = %s, want []", jsonString(t, gc["stopSequences"]))
+	}
+	body, _ = buildReq(t, m, &provider.GenerateOptions{}, false)
+	if gc, ok := body["generationConfig"].(map[string]interface{}); ok {
+		if _, has := gc["stopSequences"]; has {
+			t.Error("nil StopSequences must be omitted")
+		}
+	}
+}

@@ -315,7 +315,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	if topP != nil {
 		body["top_p"] = *topP
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil {
 		body["stop_sequences"] = opts.StopSequences
 	}
 
