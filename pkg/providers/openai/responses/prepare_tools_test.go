@@ -2,6 +2,7 @@ package responses
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -1108,5 +1109,17 @@ func TestPrepareTools_ToolSearchExplicitServerExecutionAndMCPRefinement(t *testi
 		if _, err := PrepareToolsWithError([]types.Tool{openaitool.MCP(cfg)}); err != nil {
 			t.Errorf("valid mcp config rejected: %v", err)
 		}
+	}
+}
+
+func TestPrepareTools_WebSearchEmptyDomainListsAreSent(t *testing.T) {
+	tool := openaitool.WebSearch(openaitool.WebSearchConfig{Filters: &openaitool.WebSearchFilters{AllowedDomains: []string{}}})
+	defs, err := PrepareToolsWithError([]types.Tool{tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(defs[0])
+	if !strings.Contains(string(b), `"allowed_domains":[]`) {
+		t.Fatalf("wire = %s, want allowed_domains: [] (TS keeps an empty array)", b)
 	}
 }

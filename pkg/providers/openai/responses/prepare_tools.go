@@ -264,12 +264,14 @@ func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 	def := WebSearchToolDef{Type: "web_search"}
 	cfg, _ := t.ProviderOptions.(openaitool.WebSearchConfig)
-	if cfg.Filters != nil && (len(cfg.Filters.AllowedDomains) > 0 || len(cfg.Filters.BlockedDomains) > 0) {
+	// TS: `filters != null ? {allowed_domains, blocked_domains} : undefined`,
+	// so a present filters object is sent (undefined members dropped).
+	if cfg.Filters != nil {
 		filters := map[string]interface{}{}
-		if len(cfg.Filters.AllowedDomains) > 0 {
+		if cfg.Filters.AllowedDomains != nil {
 			filters["allowed_domains"] = cfg.Filters.AllowedDomains
 		}
-		if len(cfg.Filters.BlockedDomains) > 0 {
+		if cfg.Filters.BlockedDomains != nil {
 			filters["blocked_domains"] = cfg.Filters.BlockedDomains
 		}
 		def.Filters = filters
