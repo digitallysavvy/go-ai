@@ -18,6 +18,11 @@ func TestEnsurePollingURLHasID(t *testing.T) {
 		"https://api.bfl.ai/v1/get_result?id=":      "https://api.bfl.ai/v1/get_result?id=",
 		"https://api.bfl.ai/v1/get_result?id=x#f":   "https://api.bfl.ai/v1/get_result?id=x#f",
 		"https://api.bfl.ai/v1/get_result?a=1#frag": "https://api.bfl.ai/v1/get_result?a=1&id=req+1#frag",
+		// URLSearchParams.set re-serializes the whole query (Node 24 output).
+		"https://h/p?q=a%20b&flag":          "https://h/p?q=a+b&flag=&id=req+1",
+		"https://h/p?x=%zz&y=%C3%A9&&k=a+b": "https://h/p?x=%25zz&y=%C3%A9&k=a+b&id=req+1",
+		"https://h/p?a=*~!()&id2=1":         "https://h/p?a=*%7E%21%28%29&id2=1&id=req+1",
+		"https://h/p?q=a%20b&id=1":          "https://h/p?q=a%20b&id=1",
 	} {
 		got, err := ensurePollingURLHasID(in, "req 1")
 		if err != nil || got != want {
