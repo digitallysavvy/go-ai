@@ -3,6 +3,7 @@ package fishaudio
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -23,5 +24,16 @@ func TestSpeechRequestBodyKeyOrder(t *testing.T) {
 	want := `{"text":"a<b","format":"mp3","reference_id":"v","prosody":{"speed":1.5,"volume":2},"temperature":0.5}`
 	if res.Request.Body != want {
 		t.Fatalf("request.body = %s\nwant %s", res.Request.Body, want)
+	}
+}
+
+func TestTranscriptionFilePartWithoutMediaTypeIsOctetStream(t *testing.T) {
+	m := &TranscriptionModel{modelID: ModelTranscribe1}
+	body, contentType, err := m.buildMultipartBody(&provider.TranscriptionOptions{Audio: []byte("a")})
+	if err != nil || contentType == "" {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(body.String(), "Content-Type: application/octet-stream") {
+		t.Fatalf("body = %q", body.String())
 	}
 }
