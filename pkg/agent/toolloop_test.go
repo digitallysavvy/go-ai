@@ -3528,3 +3528,38 @@ func TestExecuteStep_ToolResultWithoutCallIsRejected(t *testing.T) {
 		t.Fatalf("err = %v, want Tool call ghost not found.", err)
 	}
 }
+
+// TS convertLanguageModelContent downloads URL-backed generated files and the
+// step logs its model warnings; the legacy loop does both.
+func TestExecuteStep_DownloadsGeneratedFileURLsAndLogsWarnings(t *testing.T) {
+	logged := captureWarnings(t)
+	orig := ai.DefaultDownload
+	t.Cleanup(func() { ai.DefaultDownload = orig })
+	ai.DefaultDownload = func(_ context.Context, reqs []ai.DownloadRequest) ([]*ai.DownloadResult, error) {
+		out := make([]*ai.DownloadResult, len(reqs))
+		for i := range reqs {
+			out[i] = &ai.DownloadResult{Data: []byte("PNGDATA")}
+		}
+		return out, nil
+	}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "x",
+		FinishReason: types.FinishReasonStop,
+		Warnings:     []types.Warning{{Type: "other", Message: "careful"}},
+		Content: []types.ContentPart{types.GeneratedFileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/a.png"},
+		}},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: model, MaxSteps: 1})
+	res, err := agent.Execute(context.Background(), "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || len(res.Steps[0].Files) != 1 || string(res.Steps[0].Files[0].Data) != "PNGDATA" {
+		t.Fatalf("files = %#v", res.Steps)
+	}
+	if got := logged(); len(got) != 1 || len(got[0].Warnings) != 1 || got[0].Warnings[0].Message != "careful" {
+		t.Fatalf("logged warnings = %#v", got)
+	}
+}

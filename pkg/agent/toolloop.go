@@ -1708,6 +1708,15 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
+	// URL-backed generated files are downloaded once, before anything observes
+	// the content (TS convertLanguageModelContent).
+	if resolvedContent, resolveErr := ai.ResolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, resolveErr
+	} else if len(resolvedContent) > 0 {
+		resolvedResult := *genResult
+		resolvedResult.Content = resolvedContent
+		genResult = &resolvedResult
+	}
 	// A tool-result part must answer a tool call of the same response (TS
 	// convertLanguageModelContent: "Tool call <id> not found.").
 	if err := ai.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
@@ -1774,6 +1783,8 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, violation
 	}
+	// TS logs each step's model warnings just before the step is recorded.
+	ai.LogWarnings(ai.LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
 	stepResult := &types.StepResult{
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},

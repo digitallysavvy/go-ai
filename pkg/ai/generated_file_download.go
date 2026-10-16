@@ -133,3 +133,11 @@ func resolveContentFiles(ctx context.Context, content []types.ContentPart) ([]ty
 	}
 	return out, nil
 }
+
+// ResolveContentFiles downloads every URL-backed file and reasoning-file part
+// of a model response (TS convertLanguageModelContent resolveGeneratedFileData)
+// for callers outside this package, such as the legacy agent loop. The input
+// slice is not modified; files that carry data are returned unchanged.
+func ResolveContentFiles(ctx context.Context, content []types.ContentPart) ([]types.ContentPart, error) {
+	return resolveContentFiles(ctx, content)
+}
