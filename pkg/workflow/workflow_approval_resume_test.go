@@ -54,13 +54,9 @@ func TestWorkflowResumeRejectsForgedSignedApproval(t *testing.T) {
 		wantExec  int
 		wantError string
 	}{
-		// TS only reports "missing signature" for a null/undefined
-		// signature, which it can distinguish from an explicit empty
-		// string; Go's plain string field cannot represent that
-		// distinction, so an empty signature falls through to
-		// verification and fails as "invalid signature" like TS reports
-		// for an explicit empty string (see pkg/ai/validate_tool_approvals.go).
-		{name: "missing", signature: "", wantError: "invalid signature"},
+		// An empty signature is Go's representation of an absent one (TS
+		// signature == null): reported as "missing signature".
+		{name: "missing", signature: "", wantError: "missing signature"},
 		{name: "forged", signature: "Zm9yZ2Vk", wantError: "invalid signature"},
 		{name: "valid", signature: validSig, wantExec: 1},
 	} {
