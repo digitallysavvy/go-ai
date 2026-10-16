@@ -281,7 +281,7 @@ func TestProdiaVideoModelProviderErrorMatchesTypeScriptMessagePrecedence(t *test
 	if providerErr.StatusCode != http.StatusBadRequest || providerErr.Message != "Prompt cannot be empty" {
 		t.Fatalf("provider error = %#v", providerErr)
 	}
-	if providerErr.ResponseHeaders["X-Request-Id"] != "req-error" {
+	if providerErr.ResponseHeaders["x-request-id"] != "req-error" {
 		t.Fatalf("response headers = %#v", providerErr.ResponseHeaders)
 	}
 	if providerErr.ResponseBody != `{"message":"Invalid prompt","detail":"Prompt cannot be empty"}` {
