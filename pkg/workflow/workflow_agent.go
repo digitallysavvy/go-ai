@@ -622,7 +622,11 @@ func workflowToolByName(tools []types.Tool, name string) *types.Tool {
 	return nil
 }
 
-func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types.ToolCall, messages []types.Message, toolsContext map[string]interface{}) bool {
+// workflowToolDeclaresApproval is the TS `!tool.needsApproval` guard on resume:
+// only whether the tool declares an approval setting matters, a function
+// setting is truthy without being called (the policy itself is re-evaluated by
+// ValidateApprovedToolApprovals).
+func workflowToolDeclaresApproval(tool *types.Tool) bool {
 	if tool == nil {
 		return false
 	}
@@ -638,14 +642,8 @@ func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types
 	case string:
 		status := types.ToolApprovalStatus(v)
 		return status == types.ToolApprovalStatusUserApproval || status == types.ToolApprovalStatusApproved || status == types.ToolApprovalStatusDenied
-	case types.ToolNeedsApprovalFunc:
-		var toolContext interface{}
-		if toolsContext != nil {
-			toolContext = toolsContext[call.ToolName]
-		}
-		return v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{ToolCallID: call.ID, Messages: messages, Context: toolContext})
-	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		return v(ctx, call.Arguments)
+	case types.ToolNeedsApprovalFunc, types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
+		return true
 	default:
 		return false
 	}
@@ -731,7 +729,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		if tool == nil || tool.Execute == nil {
 			return approvedOutcome{}
 		}
-		if !workflowToolNeedsApproval(ctx, tool, call, messages, opts.toolsContext) {
+		if !workflowToolDeclaresApproval(tool) {
 			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool %q does not require approval", call.ToolName))}
 		}
 

@@ -201,3 +201,36 @@ func TestWorkflowResumeRejectsUnknownApprovalID(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TS guards resume with `!tool.needsApproval` (truthiness): a function setting
+// counts as declaring approval without being called, so an approved call whose
+// function now answers false still runs.
+func TestWorkflowResumeFunctionNeedsApprovalIsTruthy(t *testing.T) {
+	model := &wfMockModel{}
+	executions := 0
+	agent, err := NewWorkflowAgent(WorkflowAgent{
+		Model: model,
+		Tools: []types.Tool{{
+			Name: "getWeather",
+			NeedsApproval: types.ToolNeedsApprovalFunc(func(context.Context, map[string]interface{}, types.ToolNeedsApprovalOptions) bool {
+				return false
+			}),
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				executions++
+				return "sunny", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := agent.StreamWithOptions(context.Background(), WorkflowStreamOptions{Messages: workflowApprovalMessages("")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.Steps()
+	tr := lastToolResultInPrompt(t, model, "weather-1")
+	if executions != 1 || (tr.Output != nil && tr.Output.Type == types.ToolResultOutputErrorText) {
+		t.Fatalf("executions=%d output=%+v, want the approved call to run", executions, tr.Output)
+	}
+}
