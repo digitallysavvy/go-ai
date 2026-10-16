@@ -976,3 +976,20 @@ func TestBedrockImageNumericOptionsAcceptJSONNumber(t *testing.T) {
 		t.Fatalf("options = %+v", opts)
 	}
 }
+
+// validateImageProviderOptions must accept the same numeric types the request
+// builder reads: json.Number (UseNumber-decoded options) and small ints.
+func TestBedrockImageValidationAcceptsJSONNumberAndRejectsInf(t *testing.T) {
+	ok := map[string]interface{}{
+		"amazonBedrock": map[string]interface{}{"cfgScale": json.Number("7.5"), "similarityStrength": uint8(1)},
+	}
+	if err := validateImageProviderOptions(ok); err != nil {
+		t.Fatalf("validateImageProviderOptions: %v", err)
+	}
+	bad := map[string]interface{}{
+		"amazonBedrock": map[string]interface{}{"cfgScale": math.Inf(1)},
+	}
+	if err := validateImageProviderOptions(bad); err == nil {
+		t.Fatal("expected +Inf cfgScale to be rejected like zod z.number()")
+	}
+}

@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 
@@ -143,10 +144,16 @@ func checkStringArray(key string, v interface{}) error {
 
 func isNumber(v interface{}) bool {
 	switch x := v.(type) {
-	case int, int32, int64, uint, uint32, uint64, float32:
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return true
+	case float32:
+		return !math.IsNaN(float64(x)) && !math.IsInf(float64(x), 0)
 	case float64:
-		return !math.IsNaN(x)
+		// zod v4 z.number() rejects NaN and the infinities.
+		return !math.IsNaN(x) && !math.IsInf(x, 0)
+	case json.Number:
+		f, err := x.Float64()
+		return err == nil && !math.IsInf(f, 0)
 	}
 	return false
 }
