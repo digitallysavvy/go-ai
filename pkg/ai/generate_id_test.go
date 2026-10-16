@@ -2,6 +2,7 @@ package ai
 
 import (
 	"testing"
+	"unicode/utf8"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -95,5 +96,16 @@ func TestGenerateID_UniqueIDs(t *testing.T) {
 	}
 	if len(id1) != 16 {
 		t.Errorf("expected default length 16, got %d", len(id1))
+	}
+}
+
+func TestCreateIDGenerator_NonASCIIAlphabet(t *testing.T) {
+	gen, err := CreateIDGenerator(CreateIDGeneratorOptions{Alphabet: "äö", Size: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := gen()
+	if !utf8.ValidString(id) || utf8.RuneCountInString(id) != 20 {
+		t.Fatalf("id %q: valid=%v runes=%d", id, utf8.ValidString(id), utf8.RuneCountInString(id))
 	}
 }
