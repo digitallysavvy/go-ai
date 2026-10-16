@@ -217,8 +217,10 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 	if header == "" {
 		return WWWAuthenticateParams{}
 	}
-	parts := strings.SplitN(header, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+	// TS: `const [type, scheme] = header.split(' ')`; the second
+	// space-separated token must be non-empty ("Bearer  x" has an empty one).
+	parts := strings.Split(header, " ")
+	if len(parts) < 2 || parts[1] == "" || !strings.EqualFold(parts[0], "bearer") {
 		return WWWAuthenticateParams{}
 	}
 

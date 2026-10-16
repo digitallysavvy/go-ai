@@ -26,3 +26,20 @@ func TestDiscoverOAuthProtectedResourceMetadataRetriesRootAfterTransportFailure(
 		t.Fatalf("requests = %d, want 4", got)
 	}
 }
+
+// TS `const [type, scheme] = header.split(' ')` with `!scheme` rejects a
+// challenge whose second space-separated token is empty.
+func TestExtractWWWAuthenticateParamsRequiresSecondToken(t *testing.T) {
+	for header, wantScope := range map[string]string{
+		`Bearer  scope="a"`:          "",
+		`Bearer scope="a"`:           "a",
+		`Bearer `:                    "",
+		`Bearer`:                     "",
+		`bearer realm="x" scope="b"`: "b",
+	} {
+		resp := &http.Response{Header: http.Header{"Www-Authenticate": []string{header}}}
+		if got := ExtractWWWAuthenticateParams(resp).Scope; got != wantScope {
+			t.Errorf("%q: scope = %q, want %q", header, got, wantScope)
+		}
+	}
+}
