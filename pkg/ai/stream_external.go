@@ -85,10 +85,15 @@ type ExternalStreamOptions struct {
 //   - provider.ChunkTypeFinishStep closes a step that is not the last one:
 //     the step is appended to Steps(), and consumption continues (expecting
 //     another ChunkTypeStreamStart).
-//   - provider.ChunkTypeFinish closes the final step the same way when it
-//     carries new content of its own (no preceding ChunkTypeFinishStep for
-//     that content), and marks the whole result done. But when it arrives
-//     with no new content at all — i.e. every step was already closed by its
+//   - provider.ChunkTypeFinish with text, reasoning, tool or approval content
+//     no ChunkTypeFinishStep closed fails the result with TS's "received
+//     terminal finish with unclosed step content" error (an error part
+//     replaces the finish part, the step is not recorded). Source and file
+//     parts do not count, as TS does not record them as step content.
+//   - provider.ChunkTypeDiscardStep drops the step in progress, like TS
+//     discardCurrentStepContent.
+//   - A lone ChunkTypeFinish before any step marks the whole result done, and
+//     when it arrives with no new content at all — i.e. every step was already closed by its
 //     own ChunkTypeFinishStep — it is treated as a pure turn-closing
 //     boundary: no extra empty step is appended, and its Usage (when set)
 //     OVERRIDES the locally-summed total instead of being added to it. This
@@ -138,19 +143,28 @@ func NewStreamTextResultFromParts(ctx context.Context, src provider.TextStream, 
 	return result
 }
 
-// isEmpty reports whether no content has been accumulated for this step
-// since it was last reset. Used to distinguish a terminal ChunkTypeFinish
-// that closes a step's own content (the general case) from one that is a
-// pure turn-closing boundary carrying no new content of its own (the harness
-// case: every step was already closed by its own ChunkTypeFinishStep, and
-// the terminal ChunkTypeFinish exists only to carry the turn's totalUsage and
-// mark the stream done). See consumeExternalParts's ChunkTypeFinish handling
-// below.
-func (s *externalStepAccum) isEmpty() bool {
-	return s.text == "" && len(s.content) == 0 &&
-		len(s.files) == 0 && len(s.sources) == 0 && len(s.toolCalls) == 0 &&
-		len(s.toolResults) == 0 && len(s.warnings) == 0
+// hasUnclosedContent mirrors TS HarnessStreamTextResult's
+// `currentStepContent.length > 0`: the step holds text, reasoning, tool or
+// approval content. Source, file, reasoning-file and custom parts are not
+// recorded as step content by TS (appendToCurrentStepContent ignores them), so
+// they never make a step "unclosed".
+func (s *externalStepAccum) hasUnclosedContent() bool {
+	if len(s.toolCalls) > 0 || len(s.toolResults) > 0 {
+		return true
+	}
+	for _, part := range s.content {
+		switch part.(type) {
+		case types.SourceContent, types.GeneratedFileContent, types.ReasoningFileContent, types.CustomContent:
+			continue
+		}
+		return true
+	}
+	return false
 }
+
+// errExternalUnclosedFinish is the error TS fails a turn with when a terminal
+// finish arrives while a step still holds content no finish-step closed.
+const errExternalUnclosedFinish = "HarnessAgent: received terminal finish with unclosed step content. Harness adapters must emit `finish-step` before `finish`."
 
 // startText begins a new text block for id, always as its own content part.
 func (s *externalStepAccum) startText(id string, md json.RawMessage) {
@@ -414,6 +428,33 @@ consumeLoop:
 			break
 		}
 
+		// TS discardCurrentStepContent: drop the step in progress (content,
+		// warnings, started flag) without recording it.
+		if chunk.Type == provider.ChunkTypeDiscardStep {
+			step = &externalStepAccum{}
+			stepStarted = false
+			continue
+		}
+
+		// TS fails (instead of flushing) a terminal finish that arrives
+		// while a step still holds unclosed content: the finish part is not
+		// forwarded, an error part is.
+		if chunk.Type == provider.ChunkTypeFinish && step.hasUnclosedContent() {
+			failure := fmt.Errorf("%s", errExternalUnclosedFinish)
+			errChunk := provider.StreamChunk{Type: provider.ChunkTypeError, Text: failure.Error(), Err: failure}
+			if opts.OnChunk != nil {
+				opts.OnChunk(errChunk)
+			}
+			if r.uiChunkBuf != nil {
+				r.uiChunkBuf.push(errChunk)
+			}
+			if r.chunkBuf != nil {
+				r.chunkBuf.push(errChunk)
+			}
+			r.err = failure
+			break consumeLoop
+		}
+
 		if opts.OnChunk != nil {
 			opts.OnChunk(*chunk)
 		}
@@ -514,7 +555,12 @@ consumeLoop:
 			// TS HarnessStreamTextResult.appendToCurrentStepContent records
 			// every tool-result part, preliminary ones included (unlike core
 			// streamText, which keeps preliminary results stream-only).
-			if chunk.ToolResult != nil {
+			//
+			// A result that arrives while no step is open is a continuation
+			// outcome (a client or host tool result supplied between model
+			// calls, TS enqueueContinuation): it reaches the stream but never
+			// creates or alters a step.
+			if chunk.ToolResult != nil && stepStarted {
 				step.toolResults = append(step.toolResults, *chunk.ToolResult)
 				step.content = append(step.content, toolResultContentFromToolResult(*chunk.ToolResult))
 			}
@@ -592,7 +638,7 @@ consumeLoop:
 			// before the terminal ChunkTypeFinish (run_prompt.go rejects a
 			// terminal `finish` with unclosed step content), so stepNumber is
 			// always >= 1 by the time the real turn-closing boundary arrives.
-			if chunk.Type == provider.ChunkTypeFinish && step.isEmpty() && stepNumber > 0 {
+			if chunk.Type == provider.ChunkTypeFinish && !step.hasUnclosedContent() && stepNumber > 0 {
 				r.mu.Lock()
 				if chunk.Usage != nil {
 					r.usage = *chunk.Usage
@@ -752,8 +798,8 @@ func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, ste
 		provider.ChunkTypeError, provider.ChunkTypeAbort, provider.ChunkTypeRaw:
 		return false
 	case provider.ChunkTypeFinish:
-		return !step.isEmpty() || stepNumber == 0
-	case provider.ChunkTypeToolApprovalResponse:
+		return step.hasUnclosedContent() || stepNumber == 0
+	case provider.ChunkTypeToolApprovalResponse, provider.ChunkTypeToolResult:
 		// A continuation response arrives between model calls and must not
 		// open a step (TS enqueueContinuation); an automatic one follows its
 		// request, which already opened the step.

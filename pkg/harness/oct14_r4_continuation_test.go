@@ -27,7 +27,12 @@ func clientToolMock() (*mockHarnessResult, map[string]types.Tool) {
 			return []StreamPart{&StreamStartPart{}, &ToolCallPart{ToolCallID: "call_1", ToolName: "askUser", Input: "{}"}}
 		},
 		continueScript: func(func(string, interface{})) []StreamPart {
-			return append([]StreamPart{&ToolResultPart{ToolCallID: "call_1", ToolName: "askUser", Result: "blue"}}, finishScript("blue.")...)
+			// The finish-step after the replayed result closes the resumed step
+			// and is swallowed by the driver; the follow-up step comes after it.
+			return append([]StreamPart{
+				&ToolResultPart{ToolCallID: "call_1", ToolName: "askUser", Result: "blue"},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}},
+			}, finishScript("blue.")...)
 		},
 	})
 	return mock, map[string]types.Tool{"askUser": clientTool}

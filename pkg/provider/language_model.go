@@ -495,6 +495,14 @@ const (
 	// ChunkTypeStreamFinish is a synthetic stream lifecycle marker emitted when
 	// the stream has been fully consumed.
 	ChunkTypeStreamFinish ChunkType = "ai.stream.finish"
+
+	// ChunkTypeDiscardStep is a synthetic marker consumed by
+	// ai.NewStreamTextResultFromParts: the content recorded for the step in
+	// progress is dropped from the result (the chunks already forwarded stay
+	// on the stream). It mirrors HarnessStreamTextResult
+	// .discardCurrentStepContent, used when a suspended turn closes its
+	// already-recorded step. It is never part of the public full stream.
+	ChunkTypeDiscardStep ChunkType = "ai.stream.discardStep"
 )
 
 // EmbedModelOptions contains options forwarded to the embedding provider on each call.

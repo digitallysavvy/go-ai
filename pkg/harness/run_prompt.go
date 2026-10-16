@@ -1027,6 +1027,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 					d.closingResumedStep = false
 					d.flushBufferedResultChunks()
 					d.resetStepAccum()
+					d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeDiscardStep})
 				} else {
 					d.ensureStepOpen()
 					d.completeStep(ignored.FinishReason, ignored.Usage, ignored.HarnessMetadata)
@@ -1041,6 +1042,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			}
 			d.flushBufferedResultChunks()
 			d.resetStepAccum()
+			d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeDiscardStep})
 			continue
 		}
 
