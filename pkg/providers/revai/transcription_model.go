@@ -246,10 +246,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	config := map[string]interface{}{"transcriber": m.modelID}
-	if revaiOpts != nil {
-		for k, v := range revaiOpts {
-			config[k] = v
-		}
+	for k, v := range revaiOpts {
+		config[k] = v
 	}
 	configBytes, err := json.Marshal(config)
 	if err != nil {
