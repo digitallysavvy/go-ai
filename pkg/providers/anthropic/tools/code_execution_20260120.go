@@ -31,6 +31,7 @@ const (
 // Result type discriminator values.
 const (
 	CodeExecutionResultTypeProgrammatic     = "code_execution_result"
+	CodeExecutionResultTypeEncrypted        = "encrypted_code_execution_result"
 	CodeExecutionResultTypeBash             = "bash_code_execution_result"
 	CodeExecutionResultTypeBashError        = "bash_code_execution_tool_result_error"
 	CodeExecutionResultTypeTextEditorError  = "text_editor_code_execution_tool_result_error"
@@ -165,6 +166,22 @@ type ProgrammaticExecutionResult struct {
 func (r *ProgrammaticExecutionResult) codeExecutionResult()  {}
 func (r *ProgrammaticExecutionResult) GetResultType() string { return r.Type }
 
+// EncryptedProgrammaticExecutionResult is returned instead of
+// ProgrammaticExecutionResult when the API encrypts stdout (TS
+// encrypted_code_execution_result).
+//
+// type: "encrypted_code_execution_result"
+type EncryptedProgrammaticExecutionResult struct {
+	Type            string                    `json:"type"` // "encrypted_code_execution_result"
+	EncryptedStdout string                    `json:"encrypted_stdout"`
+	Stderr          string                    `json:"stderr"`
+	ReturnCode      int                       `json:"return_code"`
+	Content         []CodeExecutionOutputItem `json:"content,omitempty"`
+}
+
+func (r *EncryptedProgrammaticExecutionResult) codeExecutionResult()  {}
+func (r *EncryptedProgrammaticExecutionResult) GetResultType() string { return r.Type }
+
 // BashExecutionResult is returned after a bash command execution.
 // Content is always serialized (even if empty) because the Anthropic API schema
 // requires the field — it is not optional in the output schema.
@@ -265,6 +282,13 @@ func UnmarshalCodeExecutionResult(data []byte) (CodeExecutionResult, error) {
 		var v ProgrammaticExecutionResult
 		if err := json.Unmarshal(data, &v); err != nil {
 			return nil, fmt.Errorf("code execution result: unmarshal code_execution_result: %w", err)
+		}
+		return &v, nil
+
+	case CodeExecutionResultTypeEncrypted:
+		var v EncryptedProgrammaticExecutionResult
+		if err := json.Unmarshal(data, &v); err != nil {
+			return nil, fmt.Errorf("code execution result: unmarshal encrypted_code_execution_result: %w", err)
 		}
 		return &v, nil
 
