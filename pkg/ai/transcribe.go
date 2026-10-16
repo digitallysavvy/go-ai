@@ -97,11 +97,28 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	callID := newCallID()
+	// TS fires the start event (without audio size/media type) and then the
+	// error event when the audio cannot be prepared (download or decode
+	// failure), before rethrowing.
+	failPreparation := func(err error) (*TranscribeResult, error) {
+		prepCtx := telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+			CallID:        callID,
+			OperationType: "ai.transcribe",
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			Settings:      opts.ExperimentalTelemetry,
+			Headers:       opts.Headers,
+		})
+		telemetry.FireOnError(prepCtx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
+		return nil, err
+	}
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
 		decoded, err := decodeTranscriptionAudioBase64(opts.AudioBase64)
 		if err != nil {
-			return nil, err
+			return failPreparation(err)
 		}
 		audio = decoded
 	}
@@ -112,7 +129,7 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		}
 		data, err := download(ctx, opts.AudioURL)
 		if err != nil {
-			return nil, err
+			return failPreparation(err)
 		}
 		audio = data
 	}
@@ -123,8 +140,6 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 	if mediaType == "" {
 		mediaType = detectTranscriptionMediaType(audio)
 	}
-	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
-	callID := newCallID()
 	audioByteLength := int64(len(audio))
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:          callID,

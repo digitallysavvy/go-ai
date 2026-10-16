@@ -344,3 +344,22 @@ func TestGenerateText_PerToolApprovalValidatesContextBeforeCallback(t *testing.T
 		t.Fatalf("expected validation error tool result, got %+v", result.ToolResults)
 	}
 }
+
+// TS resolveToolApproval treats a null/undefined per-tool entry as not
+// configured and falls through to the tool's own needsApproval setting.
+func TestResolveToolApprovalNilPerToolEntryFallsThroughToTool(t *testing.T) {
+	call := types.ToolCall{ID: "c1", ToolName: "danger", Arguments: map[string]interface{}{}}
+	tools := []types.Tool{{Name: "danger", NeedsApproval: true}}
+	for name, cfg := range map[string]interface{}{
+		"map[string]interface{}":             map[string]interface{}{"danger": nil},
+		"map[string]types.ToolApprovalValue": map[string]types.ToolApprovalValue{"danger": nil},
+	} {
+		got, err := resolveToolApproval(context.Background(), call, tools, nil, nil, nil, cfg)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.Status != types.ToolApprovalStatusUserApproval {
+			t.Errorf("%s: status = %q, want user-approval from the tool's own setting", name, got.Status)
+		}
+	}
+}

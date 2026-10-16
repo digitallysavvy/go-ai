@@ -1054,3 +1054,32 @@ func TestLegacyOpenTelemetrySpanStatusErrorOnErrorFinishReason(t *testing.T) {
 		})
 	}
 }
+
+// TestLegacyOpenTelemetryOnStartDropsEmptyStopSequences ports TS's
+// sanitizeAttributeValue: an empty array has no primitive type, so
+// ai.settings.stopSequences is dropped rather than recorded as [].
+func TestLegacyOpenTelemetryOnStartDropsEmptyStopSequences(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy-empty-stop")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText",
+		ModelProvider: "p",
+		ModelID:       "m",
+		Settings:      settings,
+		StopSequences: []string{},
+	})
+	trace.SpanFromContext(ctx).End()
+
+	span := findSpan(rec, "ai.generateText")
+	if span == nil {
+		t.Fatal("expected ai.generateText span")
+	}
+	if v, ok := attrValue(span, "ai.settings.stopSequences"); ok {
+		t.Errorf("ai.settings.stopSequences = %v, want it dropped for an empty slice", v)
+	}
+}

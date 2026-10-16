@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // Error types for the AI SDK
@@ -290,9 +292,10 @@ type InvalidArgumentError struct {
 
 func (e *InvalidArgumentError) Error() string {
 	if e.Field == "" {
-		return "invalid argument: " + e.Message
+		return "Invalid argument: " + e.Message
 	}
-	return fmt.Sprintf("invalid argument for %s: %s", e.Field, e.Message)
+	// TS InvalidArgumentError: `Invalid argument for parameter ${parameter}: ${message}`.
+	return fmt.Sprintf("Invalid argument for parameter %s: %s", e.Field, e.Message)
 }
 
 func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
@@ -406,7 +409,7 @@ func (e *ValidationError) Error() string {
 		// Format the full error message
 		msg := contextPrefix
 		if e.Value != nil {
-			msg += fmt.Sprintf("\nValue: %+v.", e.Value)
+			msg += "\nValue: " + validationValueText(e.Value) + "."
 		}
 		if e.Message != "" {
 			msg += fmt.Sprintf("\nError message: %s", e.Message)
@@ -421,6 +424,19 @@ func (e *ValidationError) Error() string {
 		return fmt.Sprintf("validation error on field '%s': %s", e.Field, e.Message)
 	}
 	return fmt.Sprintf("validation error: %s", e.Message)
+}
+
+// validationValueText renders the failing value like TS's JSON.stringify(value)
+// in TypeValidationError's message. A string is used as-is because callers pass
+// the already-compacted JSON text of the value there.
+func validationValueText(value interface{}) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	if b, err := jsonstr.Marshal(value); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%+v", value)
 }
 
 // Unwrap returns the underlying cause

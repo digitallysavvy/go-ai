@@ -815,3 +815,23 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+// TS TypeValidationError prints `Value: ${JSON.stringify(value)}.`; a Go map or
+// slice must render as JSON, not as fmt's map[...] form.
+func TestValidationErrorValueIsJSON(t *testing.T) {
+	t.Parallel()
+
+	err := NewValidationErrorWithContext(map[string]interface{}{"a": 1, "b": []int{2}}, "bad", nil, &ValidationContext{})
+	want := "Type validation failed:\nValue: {\"a\":1,\"b\":[2]}.\nError message: bad"
+	if got := err.Error(); got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestInvalidArgumentErrorText(t *testing.T) {
+	t.Parallel()
+
+	if got, want := (&InvalidArgumentError{Field: "maxRetries", Message: "maxRetries must be >= 0"}).Error(), "Invalid argument for parameter maxRetries: maxRetries must be >= 0"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}

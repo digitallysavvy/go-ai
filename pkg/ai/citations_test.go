@@ -121,3 +121,36 @@ func TestUIMessageCallbackStateAppliesTextEndCitations(t *testing.T) {
 		t.Fatalf("message = %#v", msg)
 	}
 }
+
+// TS stream-text.ts applies a text-end part's providerMetadata to the recorded
+// text part (`activeText.providerMetadata = part.providerMetadata ??
+// activeText.providerMetadata`). The OpenAI Responses provider carries the
+// message phase and annotations there.
+func TestStreamTextAppliesTextEndProviderMetadata(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeTextStart, ID: "t1", ProviderMetadata: json.RawMessage(`{"openai":{"itemId":"msg_1"}}`)},
+				{Type: provider.ChunkTypeText, ID: "t1", Text: "hello"},
+				{Type: provider.ChunkTypeTextEnd, ID: "t1", ProviderMetadata: json.RawMessage(`{"openai":{"itemId":"msg_1","phase":"final_answer"}}`)},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	result, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	var meta string
+	for _, part := range result.Content() {
+		if tc, ok := part.(types.TextContent); ok {
+			meta = string(tc.ProviderMetadata)
+		}
+	}
+	if meta != `{"openai":{"itemId":"msg_1","phase":"final_answer"}}` {
+		t.Fatalf("text part providerMetadata = %s", meta)
+	}
+}

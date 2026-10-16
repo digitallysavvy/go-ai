@@ -600,16 +600,22 @@ func toolResultContentFromToolResult(result types.ToolResult) types.ContentPart 
 	return part
 }
 
-// setTrailingTextCitations attaches a text-end chunk's citations to the most
-// recent TextContent part in parts (TS stream-text.ts: `if (part.citations !=
+// setTrailingTextEnd applies a text-end chunk to the most recent TextContent
+// part in parts (TS stream-text.ts: `activeText.providerMetadata =
+// part.providerMetadata ?? activeText.providerMetadata; if (part.citations !=
 // null) activeText.citations = part.citations`).
-func setTrailingTextCitations(parts []types.ContentPart, citations []types.Citation) []types.ContentPart {
-	if len(citations) == 0 {
+func setTrailingTextEnd(parts []types.ContentPart, metadata json.RawMessage, citations []types.Citation) []types.ContentPart {
+	if len(citations) == 0 && len(metadata) == 0 {
 		return parts
 	}
 	for i := len(parts) - 1; i >= 0; i-- {
 		if text, ok := parts[i].(types.TextContent); ok {
-			text.Citations = citations
+			if len(metadata) > 0 {
+				text.ProviderMetadata = metadata
+			}
+			if len(citations) > 0 {
+				text.Citations = citations
+			}
 			parts[i] = text
 			return parts
 		}
@@ -768,18 +774,21 @@ func (b *blockContent) textDelta(parts []types.ContentPart, id, text string, met
 	return appendTextPart(parts, text, metadata)
 }
 
-func (b *blockContent) closeText(parts []types.ContentPart, id string, citations []types.Citation) []types.ContentPart {
+func (b *blockContent) closeText(parts []types.ContentPart, id string, metadata json.RawMessage, citations []types.Citation) []types.ContentPart {
 	if i, ok := b.text[id]; ok && id != "" {
 		delete(b.text, id)
-		if len(citations) > 0 {
-			if tc, ok := parts[i].(types.TextContent); ok {
-				tc.Citations = citations
-				parts[i] = tc
+		if tc, ok := parts[i].(types.TextContent); ok {
+			if len(metadata) > 0 {
+				tc.ProviderMetadata = metadata
 			}
+			if len(citations) > 0 {
+				tc.Citations = citations
+			}
+			parts[i] = tc
 		}
 		return parts
 	}
-	return setTrailingTextCitations(parts, citations)
+	return setTrailingTextEnd(parts, metadata, citations)
 }
 
 func (b *blockContent) openReasoning(parts []types.ContentPart, id string, metadata json.RawMessage) []types.ContentPart {

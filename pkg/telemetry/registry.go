@@ -1026,7 +1026,7 @@ func legacySettingsAttrs(s legacySettings) []attribute.KeyValue {
 			attrs = append(attrs, kv)
 		}
 	}
-	if s.StopSequences != nil {
+	if len(s.StopSequences) > 0 {
 		attrs = append(attrs, attribute.StringSlice("ai.settings.stopSequences", s.StopSequences))
 	}
 	if s.Seed != nil {
@@ -1453,7 +1453,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 			}
 		}
 		if opType == "ai.generateText" || opType == "ai.streamText" {
-			if settings.StopSequences != nil {
+			if len(settings.StopSequences) > 0 {
 				stepSpan.SetAttributes(attribute.StringSlice("gen_ai.request.stop_sequences", settings.StopSequences))
 			}
 		}

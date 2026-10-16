@@ -171,14 +171,21 @@ func (s *externalStepAccum) addText(id, text string, md json.RawMessage) {
 	s.content[i] = tc
 }
 
-func (s *externalStepAccum) endText(id string, md json.RawMessage) {
+func (s *externalStepAccum) endText(id string, md json.RawMessage, citations []types.Citation) {
 	i, ok := s.textIdx[id]
 	if !ok {
 		return
 	}
-	if len(md) > 0 {
+	if len(md) > 0 || len(citations) > 0 {
 		tc := s.content[i].(types.TextContent)
-		tc.ProviderMetadata = md
+		if len(md) > 0 {
+			tc.ProviderMetadata = md
+		}
+		// TS HarnessStreamTextResult text-end: `if (part.citations != null)
+		// content.citations = part.citations`.
+		if len(citations) > 0 {
+			tc.Citations = citations
+		}
 		s.content[i] = tc
 	}
 	delete(s.textIdx, id)
@@ -423,7 +430,7 @@ consumeLoop:
 			step.startText(chunk.ID, chunk.ProviderMetadata)
 
 		case provider.ChunkTypeTextEnd:
-			step.endText(chunk.ID, chunk.ProviderMetadata)
+			step.endText(chunk.ID, chunk.ProviderMetadata, chunk.Citations)
 
 		case provider.ChunkTypeReasoningStart:
 			step.startReasoning(chunk.ID, chunk.ProviderMetadata)
@@ -511,6 +518,16 @@ consumeLoop:
 		case provider.ChunkTypeToolApprovalRequest:
 			if chunk.ToolApprovalRequest != nil {
 				step.content = append(step.content, *chunk.ToolApprovalRequest)
+			}
+
+		case provider.ChunkTypeToolApprovalResponse:
+			// TS records an automatic approval response (enqueue) in the
+			// step content, but a continuation response that arrives between
+			// model calls (enqueueContinuation) never creates or alters a
+			// step. A response only reaches here with the step started when
+			// it follows that step's own tool call/approval request.
+			if chunk.ToolApprovalResponse != nil && stepStarted {
+				step.content = append(step.content, *chunk.ToolApprovalResponse)
 			}
 
 		case provider.ChunkTypeResponseMetadata:
@@ -710,6 +727,11 @@ func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, ste
 		return false
 	case provider.ChunkTypeFinish:
 		return !step.isEmpty() || stepNumber == 0
+	case provider.ChunkTypeToolApprovalResponse:
+		// A continuation response arrives between model calls and must not
+		// open a step (TS enqueueContinuation); an automatic one follows its
+		// request, which already opened the step.
+		return false
 	}
 	return true
 }

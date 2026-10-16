@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"go.opentelemetry.io/otel/codes"
@@ -200,4 +201,39 @@ func audioTelemetrySpanAttrs(s sdktrace.ReadOnlySpan) map[string]interface{} {
 		out[string(kv.Key)] = kv.Value.AsInterface()
 	}
 	return out
+}
+
+// TS transcribe fires the start event (no audio size/media type) and then the
+// error event when the audio download fails, before rethrowing.
+func TestTranscribe_Telemetry_DownloadFailureFiresStartAndError(t *testing.T) {
+	t.Parallel()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	downloadErr := errors.New("download boom")
+	_, err := Transcribe(context.Background(), TranscribeOptions{
+		Model:    &testutil.MockTranscriptionModel{ModelName: "whisper-1"},
+		AudioURL: "https://example.com/a.wav",
+		Download: func(context.Context, string) ([]byte, error) { return nil, downloadErr },
+		Telemetry: &TelemetrySettings{
+			IsEnabled:     telemetry.Bool(true),
+			RecordInputs:  true,
+			RecordOutputs: true,
+			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})},
+		},
+	})
+	if !errors.Is(err, downloadErr) {
+		t.Fatalf("err = %v, want download error", err)
+	}
+	span := findSpanByName(rec.Ended(), "ai.transcribe")
+	if span == nil {
+		t.Fatal("expected an ai.transcribe span for the failed preparation")
+	}
+	if span.Status().Code != codes.Error {
+		t.Errorf("span status = %v, want Error", span.Status().Code)
+	}
+	if _, ok := audioTelemetrySpanAttrs(span)["ai.request.audio.size"]; ok {
+		t.Error("ai.request.audio.size must be absent when the audio was never prepared")
+	}
 }
