@@ -35,3 +35,14 @@ func TestJSNumberString(t *testing.T) {
 		t.Error("non-finite")
 	}
 }
+
+// JS Number("0x...") is not limited to 64 bits: it rounds the exact value.
+func TestJSNumberHexBeyondUint64(t *testing.T) {
+	got, ok := JSNumber("0xFFFFFFFFFFFFFFFFF")
+	if !ok || got != 295147905179352825856 {
+		t.Fatalf("JSNumber = %v, %v, want 2.9514790517935283e+20", got, ok)
+	}
+	if got, ok := JSNumber("0b" + string(make([]byte, 0)) + "1111111111111111111111111111111111111111111111111111111111111111111"); !ok || got != math.Pow(2, 67) {
+		t.Fatalf("binary beyond 64 bits = %v, %v", got, ok)
+	}
+}

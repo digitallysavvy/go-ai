@@ -3,6 +3,7 @@ package providerutils
 import (
 	"errors"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -30,11 +31,14 @@ func JSNumber(s string) (float64, bool) {
 			if strings.ContainsAny(s[2:], "_+-") {
 				return 0, false
 			}
-			u, err := strconv.ParseUint(s[2:], base, 64)
-			if err != nil {
+			// big.Int has no 64-bit limit; JS rounds the exact value to the
+			// nearest float64.
+			n, ok := new(big.Int).SetString(s[2:], base)
+			if !ok || n.Sign() < 0 {
 				return 0, false
 			}
-			return float64(u), true
+			f, _ := new(big.Float).SetInt(n).Float64()
+			return f, true
 		}
 	}
 	switch s {
