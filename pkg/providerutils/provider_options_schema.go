@@ -548,7 +548,6 @@ func ValidateMapProviderOptions(provider string, providerOptions map[string]inte
 	return err
 }
 
-
 // NormalizeOptionsJSON returns options read through their JSON form, so
 // nested Go-typed values ([]string, []map[string]string, ints, typed structs)
 // have the same shape (`[]interface{}`, `map[string]interface{}`, float64) the
