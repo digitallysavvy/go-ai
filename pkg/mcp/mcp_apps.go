@@ -42,6 +42,21 @@ type MCPAppResource struct {
 	Meta     map[string]interface{} `json:"meta,omitempty"`
 }
 
+// MarshalJSON keeps an empty-but-present meta object (`"meta":{}`), as
+// JSON.stringify does for the TS resource; only a nil Meta is omitted.
+func (r MCPAppResource) MarshalJSON() ([]byte, error) {
+	if r.Meta != nil && len(r.Meta) == 0 {
+		return json.Marshal(struct {
+			URI      string                 `json:"uri"`
+			MimeType string                 `json:"mimeType"`
+			HTML     string                 `json:"html"`
+			Meta     map[string]interface{} `json:"meta"`
+		}{r.URI, r.MimeType, r.HTML, r.Meta})
+	}
+	type plain MCPAppResource
+	return json.Marshal(plain(r))
+}
+
 // MCPAppClientCapabilities returns the client capabilities advertised by hosts
 // that support MCP Apps.
 func MCPAppClientCapabilities() ClientCapabilities {
@@ -151,7 +166,7 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 			continue
 		}
 		if content.MimeType != MCPAppMimeType {
-			return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource MIME type: %s", content.MimeType)
+			return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource MIME type: %s", content.MimeType)
 		}
 		// TS: a string text wins (even ""), else a string blob is decoded.
 		var html string
@@ -161,11 +176,11 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 		case content.Blob != "" || content.blobPresent:
 			decoded, err := decodeBase64Lenient(content.Blob)
 			if err != nil {
-				return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource content format: %s", uri)
+				return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource content format: %s", uri)
 			}
 			html = string(decoded)
 		default:
-			return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource content format: %s", uri)
+			return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource content format: %s", uri)
 		}
 		var meta map[string]interface{}
 		if uiMeta := mapFromInterface(content.Meta["ui"]); uiMeta != nil {
@@ -184,7 +199,7 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 // ReadMCPAppResource reads and normalizes a ui:// MCP App resource.
 func ReadMCPAppResource(ctx context.Context, client *MCPClient, uri string) (MCPAppResource, error) {
 	if !strings.HasPrefix(uri, "ui://") {
-		return MCPAppResource{}, fmt.Errorf("unsupported MCP App resource URI: %s", uri)
+		return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource URI: %s", uri)
 	}
 	result, err := client.ReadResource(ctx, uri)
 	if err != nil {

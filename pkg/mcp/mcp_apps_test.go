@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"reflect"
@@ -330,5 +331,24 @@ func TestGetMCPAppResourceEmptyTextWinsOverBlob(t *testing.T) {
 	out, _ := json.Marshal(res.Contents[0])
 	if string(out) != `{"uri":"ui://a","mimeType":"text/html;profile=mcp-app","blob":"PGI-"}` {
 		t.Fatalf("marshal %s", out)
+	}
+}
+
+func TestMCPAppResourceErrorTextAndEmptyMeta(t *testing.T) {
+	_, err := GetMCPAppResourceFromReadResult("ui://a", ReadResourceResult{Contents: []ResourceContent{{URI: "ui://a", MimeType: "text/plain", Text: "x"}}})
+	if err == nil || err.Error() != "Unsupported MCP App resource MIME type: text/plain" {
+		t.Fatalf("err = %v", err)
+	}
+	_, err = ReadMCPAppResource(context.Background(), nil, "http://x")
+	if err == nil || err.Error() != "Unsupported MCP App resource URI: http://x" {
+		t.Fatalf("err = %v", err)
+	}
+	b, _ := json.Marshal(MCPAppResource{URI: "u", MimeType: "m", HTML: "h", Meta: map[string]interface{}{}})
+	if string(b) != `{"uri":"u","mimeType":"m","html":"h","meta":{}}` {
+		t.Fatalf("json = %s", b)
+	}
+	b, _ = json.Marshal(MCPAppResource{URI: "u", MimeType: "m", HTML: "h"})
+	if string(b) != `{"uri":"u","mimeType":"m","html":"h"}` {
+		t.Fatalf("json = %s", b)
 	}
 }

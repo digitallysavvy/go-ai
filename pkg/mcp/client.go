@@ -1017,7 +1017,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		// Parse result
 		if result != nil && response.Result != nil {
 			if err := unmarshalSafeJSON(response.Result, result); err != nil {
-				return fmt.Errorf("failed to unmarshal result: %w", err)
+				return &MCPClientError{Message: "Failed to parse server response", Cause: err}
 			}
 		}
 
