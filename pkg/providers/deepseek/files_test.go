@@ -2,7 +2,6 @@ package deepseek
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -11,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func TestDeepSeekFilesUploadFile(t *testing.T) {
@@ -151,9 +150,9 @@ func TestDeepSeekFilesUploadFileRejectsInvalidResponseFields(t *testing.T) {
 				Data:      types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}},
 				MediaType: "image/png",
 			})
-			var respErr *providererrors.InvalidResponseDataError
-			if !errors.As(err, &respErr) {
-				t.Fatalf("error = %v, want InvalidResponseDataError", err)
+			// TS createJsonResponseHandler(deepSeekFilesResponseSchema).
+			if !providerutils.IsInvalidJSONResponse(err) {
+				t.Fatalf("error = %v, want Invalid JSON response", err)
 			}
 		})
 	}

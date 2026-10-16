@@ -134,6 +134,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaXAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out xaiFileResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -189,6 +192,9 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaXAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out xaiFileResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -260,6 +266,9 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, newXAIProviderError(f.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator(f.Provider(), providerutils.SchemaFileDelete)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out struct {
 		ID      string `json:"id"`
 		Deleted bool   `json:"deleted"`

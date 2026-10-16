@@ -149,6 +149,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -192,6 +195,9 @@ func (f *FilesAPI) GetFileMetadata(ctx context.Context, opts provider.FileMetada
 		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -263,6 +269,9 @@ func (f *FilesAPI) DeleteFile(ctx context.Context, opts provider.DeleteFileOptio
 		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("openai", providerutils.SchemaFileDelete)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out struct {
 		ID      string `json:"id"`
 		Object  string `json:"object"`

@@ -193,6 +193,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if uploadResp.StatusCode >= 400 {
 		return nil, newXAIProviderError(b.Provider(), uploadResp.StatusCode, uploadResp.Body)
 	}
+	if err := providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIFile)(uploadResp.StatusCode, uploadResp.Headers, uploadResp.Body); err != nil {
+		return nil, err
+	}
 	var uploadedFile xaiFileResponse
 	if err := json.Unmarshal(uploadResp.Body, &uploadedFile); err != nil {
 		return nil, err
@@ -200,10 +203,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var createResp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/batches",
-		Body:    map[string]interface{}{"name": xaiBatchName, "input_file_id": uploadedFile.ID},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodPost,
+		Path:             "/batches",
+		Body:             map[string]interface{}{"name": xaiBatchName, "input_file_id": uploadedFile.ID},
+		Headers:          headers,
 	}, &createResp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -271,10 +275,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var resp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + ":cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodPost,
+		Path:             "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + ":cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -294,10 +299,11 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 
 	var page xaiBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatchList),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &page); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -336,9 +342,10 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*xaiBatchResponseWire, error) {
 	var resp xaiBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaXAIBatch),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -521,10 +528,11 @@ func (s *xaiBatchResultsStream) fetchPage() error {
 
 	var page xaiBatchResultsPageWire
 	if err := s.batch.provider.client.DoJSON(s.ctx, internalhttp.Request{
-		Method:  stdhttp.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(s.batchID) + "/results",
-		Query:   query,
-		Headers: s.headers,
+		ValidateResponse: providerutils.MediaResponseValidator(s.batch.Provider(), providerutils.SchemaXAIBatchResults),
+		Method:           stdhttp.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(s.batchID) + "/results",
+		Query:            query,
+		Headers:          s.headers,
 	}, &page); err != nil {
 		return s.batch.handleError(err)
 	}

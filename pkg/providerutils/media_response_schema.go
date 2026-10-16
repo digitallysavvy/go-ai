@@ -97,6 +97,19 @@ const (
 	SchemaXAIVideoStatus    MediaResponseSchema = "xai-video-status"
 	SchemaHeyGenVideoCreate MediaResponseSchema = "heygen-video-create"
 	SchemaHeyGenVideoStatus MediaResponseSchema = "heygen-video-status"
+	// Files, skills and batch APIs.
+	SchemaOpenAIFile        MediaResponseSchema = "openai-file"
+	SchemaFileDelete        MediaResponseSchema = "file-delete"
+	SchemaOpenAISkill       MediaResponseSchema = "openai-skill"
+	SchemaOpenAIBatch       MediaResponseSchema = "openai-batch"
+	SchemaOpenAIBatchList   MediaResponseSchema = "openai-batch-list"
+	SchemaXAIFile           MediaResponseSchema = "xai-file"
+	SchemaXAIBatch          MediaResponseSchema = "xai-batch"
+	SchemaXAIBatchList      MediaResponseSchema = "xai-batch-list"
+	SchemaXAIBatchResults   MediaResponseSchema = "xai-batch-results"
+	SchemaDeepSeekFile      MediaResponseSchema = "deepseek-file"
+	SchemaGatewayBatchStart MediaResponseSchema = "gateway-batch-start"
+	SchemaGatewayBatchState MediaResponseSchema = "gateway-batch-status"
 	// SchemaFalSpeech is falSpeechResponseSchema.
 	SchemaFalSpeech  MediaResponseSchema = "fal-speech"
 	SchemaFalJob     MediaResponseSchema = "fal-job"
@@ -160,6 +173,21 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 	})
 	assemblyStatus := zodlite.Enum("queued", "processing", "completed", "error")
 	assemblyWord := zObj(fl("start", zNum), fl("end", zNum), fl("text", zStr), fl("confidence", nNum), fl("speaker", nStr), fl("channel", nStr))
+	openAIBatch := zObj(fl("id", zStr), fl("status", zStr), fl("output_file_id", nStr), fl("error_file_id", nStr),
+		fl("created_at", nNum), fl("expires_at", nNum),
+		fl("request_counts", zNullish(zObj(fl("total", nNum), fl("completed", nNum), fl("failed", nNum)))),
+		fl("errors", zNullish(zObj(fl("data", zNullish(zArr(zObj(fl("code", nStr), fl("message", nStr)))))))))
+	xaiBatch := zObj(fl("batch_id", zStr), fl("name", nStr), fl("create_time", nStr), fl("expire_time", nStr), fl("cancel_time", nStr),
+		fl("cancel_by_xai_message", nStr),
+		fl("state", zNullish(zObj(fl("num_requests", nNum), fl("num_pending", nNum), fl("num_success", nNum),
+			fl("num_error", nNum), fl("num_cancelled", nNum)))))
+	gatewayBatchStatus := []zFld{
+		fl("status", zodlite.Enum("completed", "failed", "pending")), fl("rawStatus", nStr),
+		fl("requestCounts", zNullish(zObj(fl("total", nNum), fl("pending", nNum), fl("completed", nNum), fl("failed", nNum)))),
+		fl("error", zNullish(zObj(fl("message", zStr), fl("type", nStr), fl("code", nStr), fl("statusCode", nNum)))),
+		fl("createdAt", nStr), fl("expiresAt", nStr),
+		fl("providerMetadata", zNullish(zRec(zRec(zAny)))),
+	}
 	word := zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum))
 	b64Data := zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))))
 	return map[MediaResponseSchema]zNode{
@@ -330,8 +358,29 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		SchemaHeyGenVideoStatus: zObj(fl("data", zObj(fl("status", zStr), fl("video_url", nStr), fl("duration", nNum),
 			fl("width", nNum), fl("height", nNum), fl("aspect_ratio", nStr), fl("seed", nNum),
 			fl("timings", zNullish(zObj(fl("inference", nNum)))), fl("failure_code", nStr), fl("failure_message", nStr)))),
-		SchemaFalSpeech: zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
-		SchemaFalJob:    zObj(fl("request_id", nStr)),
+		SchemaOpenAIFile: zObj(fl("id", zStr), fl("object", nStr), fl("bytes", nNum), fl("created_at", nNum), fl("filename", nStr),
+			fl("purpose", nStr), fl("status", nStr), fl("expires_at", nNum)),
+		SchemaXAIFile: zObj(fl("id", zStr), fl("object", nStr), fl("bytes", nNum), fl("created_at", nNum), fl("expires_at", nNum),
+			fl("filename", nStr), fl("purpose", nStr), fl("status", nStr)),
+		SchemaFileDelete: zObj(fl("id", zStr), fl("object", nStr), fl("deleted", zodlite.Boolean)),
+		SchemaOpenAISkill: zObj(fl("id", zStr), fl("name", nStr), fl("description", nStr), fl("default_version", nStr),
+			fl("latest_version", nStr), fl("created_at", zNum), fl("updated_at", nNum)),
+		SchemaOpenAIBatch:     openAIBatch,
+		SchemaOpenAIBatchList: zObj(fl("data", zArr(openAIBatch)), fl("has_more", zodlite.Boolean), fl("last_id", nStr)),
+		SchemaXAIBatch:        xaiBatch,
+		SchemaXAIBatchList:    zObj(fl("batches", zArr(xaiBatch)), fl("pagination_token", nStr)),
+		SchemaXAIBatchResults: zObj(fl("results", zArr(zObj(fl("batch_request_id", zStr),
+			fl("batch_result", zNullish(zObj(fl("response", zNullish(zObj(fl("chat_get_completion", zAny), fl("image_generation", zAny)))),
+				fl("error", zNullish(zObj(fl("code", zNullish(zUnionOf(zStr, zNum))), fl("message", nStr))))))),
+			fl("error_message", nStr)))), fl("pagination_token", nStr)),
+		SchemaDeepSeekFile: zObj(fl("id", zStr), fl("object", zNullish(zodlite.Literal("file"))), fl("bytes", zNullish(zIntNonneg)),
+			fl("created_at", zNullish(zIntNonneg)), fl("filename", nStr), fl("purpose", zNullish(zodlite.Literal("user_data"))),
+			fl("expires_at", zNullish(zIntNonneg))),
+		SchemaGatewayBatchStart: zObj(append(append([]zFld{}, gatewayBatchStatus...), fl("batchId", zStr),
+			fl("warnings", zNullish(zArr(zObj(fl("requestId", nStr), fl("warning", zAny))))))...),
+		SchemaGatewayBatchState: zObj(gatewayBatchStatus...),
+		SchemaFalSpeech:         zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
+		SchemaFalJob:            zObj(fl("request_id", nStr)),
 		SchemaFalTranscr: zObj(fl("text", zStr),
 			fl("chunks", zNullish(zArr(zObj(fl("text", zStr), fl("timestamp", zNullish(zArr(zNum))))))),
 			fl("inferred_languages", zNullish(zArr(zStr)))),
