@@ -119,3 +119,25 @@ func TestGatewayTranscriptionModelDoTranscribeWireFormat(t *testing.T) {
 		t.Fatalf("result.ProviderUsage[inputTokens] = %v, want %v", result.ProviderUsage["inputTokens"], want)
 	}
 }
+
+// TS decodes the audio string with atob semantics: unpadded and base64url
+// payloads are accepted.
+func TestGatewaySpeechModelAcceptsUnpaddedURLSafeBase64(t *testing.T) {
+	raw := []byte{0xfb, 0xff, 0xfe, 0x01}
+	enc := base64.RawURLEncoding.EncodeToString(raw)
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"audio": enc})
+	}))
+	defer closeServer()
+	p, err := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewSpeechModel(p, "openai/tts").DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "x"})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if string(res.Audio) != string(raw) {
+		t.Fatalf("audio = %v, want %v", res.Audio, raw)
+	}
+}

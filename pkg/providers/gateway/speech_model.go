@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -70,7 +69,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleErrorWithContext(ctx, err)
 	}
 
-	audio, err := base64.StdEncoding.DecodeString(response.Audio)
+	// TS hands the base64 string to atob-based decoding, which accepts
+	// unpadded and base64url input.
+	audio, err := types.DecodeFileDataString(response.Audio)
 	if err != nil {
 		return nil, err
 	}
