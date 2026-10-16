@@ -144,6 +144,8 @@ func TestValidateFormat(t *testing.T) {
 		{name: "ipv4 invalid", schema: fmtSchema("ipv4"), value: "::1", wantErr: true, errSubstr: "format"},
 		{name: "ipv6 valid", schema: fmtSchema("ipv6"), value: "2001:db8::1"},
 		{name: "ipv6 invalid", schema: fmtSchema("ipv6"), value: "192.168.1.1", wantErr: true, errSubstr: "format"},
+		{name: "ipv6 v4-mapped valid", schema: fmtSchema("ipv6"), value: "::ffff:1.2.3.4"},
+		{name: "ipv4 v4-mapped invalid", schema: fmtSchema("ipv4"), value: "::ffff:1.2.3.4", wantErr: true, errSubstr: "format"},
 		{name: "unrecognized format is a non-validating annotation", schema: fmtSchema("made-up-format"), value: "anything"},
 	})
 }

@@ -87,13 +87,13 @@ func telemetryRuntimeContextFor(s *ai.TelemetrySettings, rc interface{}) map[str
 
 func telemetryToolsContextFor(s *ai.TelemetrySettings, tc map[string]interface{}) map[string]interface{} {
 	out := map[string]interface{}{}
-	if s == nil {
+	if s == nil || len(s.IncludeToolsContext) == 0 {
 		return out
 	}
 	for name, v := range tc {
-		if f := telemetryContextMap(s.IncludeToolsContext[name], v); len(f) > 0 {
-			out[name] = f
-		}
+		// TS filterToolsContext keeps one entry per tool, empty when nothing
+		// is included for it.
+		out[name] = telemetryContextMap(s.IncludeToolsContext[name], v)
 	}
 	return out
 }
