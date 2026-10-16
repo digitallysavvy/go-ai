@@ -208,7 +208,7 @@ func (c *promptControl) SubmitToolResult(_ context.Context, r harness.ToolResult
 func (c *promptControl) toNativeResponse(nativeRequest any, toolResult types.ToolResultContent) (output any, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("%v", r)
+			err = harness.ErrorFromValue(r)
 		}
 	}()
 	return c.s.p.askUserQuestions.ToNativeResponse(nativeRequest, toolResult), nil
@@ -288,7 +288,7 @@ func (s *session) takeBufferedQuestionResult(toolCallID string, nativeRequest an
 func classifyToolCallCandidate(askUserQuestions *AskUserQuestionsSettings, isMcpToolCall func(ToolCall) bool, toolCall ToolCall) (suppress, dynamic bool, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("%v", r)
+			err = harness.ErrorFromValue(r)
 		}
 	}()
 	if askUserQuestions != nil && askUserQuestions.IsNativeToolCall != nil {
@@ -410,7 +410,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		err := func() (err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					err = fmt.Errorf("%v", r)
+					err = harness.ErrorFromValue(r)
 				}
 			}()
 			if s.p.askUserQuestions == nil {
@@ -466,7 +466,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		}()
 		if err != nil {
 			closeForwardedBlock()
-			forward(&harness.ErrorPart{Error: err.Error()})
+			forward(&harness.ErrorPart{Error: err})
 			_ = s.p.channel.Send(bridge.AbortCommand{})
 			settle(err)
 		}
@@ -500,7 +500,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		c.mu.Unlock()
 		if hasErr {
 			closeForwardedBlock()
-			forward(&harness.ErrorPart{Error: classErr.Error()})
+			forward(&harness.ErrorPart{Error: classErr})
 			_ = s.p.channel.Send(bridge.AbortCommand{})
 			settle(classErr)
 			return

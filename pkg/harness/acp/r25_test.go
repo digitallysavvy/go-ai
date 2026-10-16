@@ -2,7 +2,9 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,5 +115,61 @@ func TestWrapPortErrorMessageMatchesTS(t *testing.T) {
 	want := "The h ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or configure the harness `port`."
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// TS forwards the thrown Error object itself in the `error` part and rejects
+// the turn with it, so a typed error from isMcpToolCall survives both.
+func TestToolCallClassificationErrorKeepsTypeInForwardedErrorPart(t *testing.T) {
+	const token = "cls-token"
+	sentinel := errors.New("classifier failed")
+	srv := newServer(t, token, func(turn *bridgetest.Turn, _ map[string]any) {
+		turn.Emit(map[string]any{
+			"type": "acp-tool-call-candidate", "requestId": "req-1",
+			"toolCall": map[string]any{"toolCallId": "tc-1", "title": "Run"},
+		})
+		turn.Emit(map[string]any{"type": "tool-call", "toolCallId": "tc-1", "toolName": "run", "input": "{}"})
+	})
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return token }
+		s.IsMcpToolCall = func(ToolCall) bool { panic(sentinel) }
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s", SessionWorkDir: "/w", SandboxSession: newFakeSandbox(srv),
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	defer func() { _ = sess.DoDestroy(context.Background()) }()
+	var mu sync.Mutex
+	var forwarded error
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
+		Prompt: harness.TextPrompt("hi"),
+		Emit: func(p harness.StreamPart) {
+			if ep, ok := p.(*harness.ErrorPart); ok {
+				mu.Lock()
+				forwarded, _ = ep.Error.(error)
+				mu.Unlock()
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-control.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("turn did not settle")
+	}
+	if !errors.Is(control.Err(), sentinel) {
+		t.Fatalf("control.Err() = %v, want the sentinel", control.Err())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !errors.Is(forwarded, sentinel) {
+		t.Fatalf("forwarded error part = %v, want the sentinel error value", forwarded)
 	}
 }
