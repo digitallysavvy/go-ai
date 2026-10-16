@@ -25,3 +25,25 @@ func TestSpeechRequestBodyKeyOrder(t *testing.T) {
 		t.Fatalf("request.body = %s\nwant %s", res.Request.Body, want)
 	}
 }
+
+// TS `timestampGranularities != null` is true for an empty array.
+func TestStreamEmptyTimestampGranularitiesStillWarns(t *testing.T) {
+	server := newCartesiaRealtimeTestServer(t)
+	defer server.close()
+	model := newCartesiaRealtimeTestModel(server.ts.URL)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm"},
+		ProviderOptions: map[string]interface{}{
+			"cartesia": map[string]interface{}{"timestampGranularities": []interface{}{}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	first, err := result.Stream.Next()
+	if err != nil || len(first.Warnings) != 1 || first.Warnings[0].Feature != "providerOptions.cartesia.timestampGranularities" {
+		t.Fatalf("first = %+v, err = %v", first, err)
+	}
+}
