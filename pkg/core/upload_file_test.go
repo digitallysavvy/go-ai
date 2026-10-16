@@ -122,3 +122,13 @@ func TestResolveFilesAPIAndTypeDetectionHelpers(t *testing.T) {
 		t.Fatal("isLikelyText(binary) = true, want false")
 	}
 }
+
+func TestUploadFile_HTMLIsTextPlain(t *testing.T) {
+	api := &mockFilesAPI{res: &types.UploadFileResult{}}
+	if _, err := UploadFile(context.Background(), api, UploadFileOptions{Data: []byte("<!DOCTYPE html><html></html>")}); err != nil {
+		t.Fatal(err)
+	}
+	if api.last.MediaType != "text/plain" {
+		t.Fatalf("MediaType = %q", api.last.MediaType)
+	}
+}

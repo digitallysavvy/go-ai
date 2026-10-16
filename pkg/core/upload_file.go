@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"strings"
+	"io"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -20,7 +20,17 @@ type UploadFileOptions struct {
 	ProviderOptions map[string]interface{}
 }
 
-func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (*types.UploadFileResult, error) {
+func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (result *types.UploadFileResult, err error) {
+	// A failed upload releases a stream the caller handed over (TS uploadFile).
+	if fd, ok := opts.Data.(types.FileData); ok && fd.Type == types.FileDataTypeStream {
+		defer func() {
+			if err != nil {
+				if c, ok := fd.Stream.(io.Closer); ok {
+					_ = c.Close()
+				}
+			}
+		}()
+	}
 	filesAPI, err := resolveFilesAPI(api)
 	if err != nil {
 		return nil, err
@@ -68,11 +78,8 @@ func uploadDataBytes(data types.FileData) ([]byte, error) {
 }
 
 func detectUploadMediaType(data []byte) string {
-	detected := http.DetectContentType(data)
-	if strings.HasPrefix(detected, "text/plain") {
-		return "text/plain"
-	}
-	if detected != "" && detected != "application/octet-stream" {
+	// TS detectMediaType: magic-number signatures only.
+	if detected, ok := fileutil.DetectMediaTypeSignature(data, ""); ok && detected != "" {
 		return detected
 	}
 	if isLikelyText(data) {
