@@ -115,15 +115,21 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if err := s.prepareTurn(ctx, opts.Skills, opts.ResponseFormat); err != nil {
 		return nil, err
 	}
+	// An unsupported prompt is rejected before the turn is wired, so the
+	// failure leaves no listeners or abort watcher behind (an already-aborted
+	// call never builds the start message, like TS).
+	var text string
+	if ctx.Err() == nil {
+		var err error
+		if text, err = extractUserText(opts.Prompt); err != nil {
+			return nil, err
+		}
+	}
 	control := s.wireTurn(ctx, opts.Emit)
 	if ctx.Err() != nil {
 		return control, nil
 	}
 
-	text, err := extractUserText(opts.Prompt)
-	if err != nil {
-		return nil, err
-	}
 	frame := s.buildStartFrame(text, opts.TurnSettings, opts.ResponseFormat)
 	s.mu.Lock()
 	frame.Continue, frame.ResumeSessionID = s.resumeFields()
@@ -132,6 +138,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	s.rerunContinue = false
 	s.mu.Unlock()
 	if err := s.opts.channel.Send(frame); err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	return control, nil
@@ -161,6 +168,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		s.pendingResumeFlag = false
 		s.mu.Unlock()
 		if err := s.opts.channel.Send(frame); err != nil {
+			control.settleError(err)
 			return nil, err
 		}
 	}

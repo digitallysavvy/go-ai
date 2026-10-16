@@ -136,7 +136,7 @@ var _ harness.CheckpointPinner = (*promptControl)(nil)
 // wireTurn subscribes to one live turn's events, forwarding every
 // harness.StreamPart to emit until `finish`/`error` settle the turn or the
 // channel closes. Mirrors TS `wireTurn`.
-func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFunc) harness.PromptControl {
+func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFunc) *promptControl {
 	c := &promptControl{channel: channel, done: make(chan struct{})}
 	c.checkpoint = bridge.NewCheckpointRecorder(channel)
 
@@ -232,6 +232,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		RecursionLimit: s.p.recursionLimit, MCPServers: s.p.mcpServers, Headers: s.p.headers,
 	}
 	if err := s.p.channel.Send(msg); err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	return control, nil

@@ -186,6 +186,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	s.rerunContinue = false
 	s.mu.Unlock()
 	if err := s.opts.channel.Send(frame); err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	return control, nil
@@ -209,6 +210,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 	if rerun {
 		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat, restartThread, false)
 		if err := s.opts.channel.Send(frame); err != nil {
+			control.settleError(err)
 			return nil, err
 		}
 	}

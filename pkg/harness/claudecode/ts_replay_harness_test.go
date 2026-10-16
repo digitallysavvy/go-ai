@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 	"github.com/digitallysavvy/go-ai/pkg/harness/claudecode"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -739,5 +740,40 @@ func TestTSReplay_AttachedContinuationDeliversReplayInOrder(t *testing.T) {
 	defer mu.Unlock()
 	if !reflect.DeepEqual(types, []string{"text-start", "text-delta", "text-end", "finish"}) {
 		t.Fatalf("replayed parts = %v", types)
+	}
+}
+
+// TS sets ANTHROPIC_CUSTOM_HEADERS whenever `startOpts.headers != null`, even
+// when the object is empty.
+func TestTSReplay_EmptyHeadersStillSetCustomHeaders(t *testing.T) {
+	srv, ch := newReplayServer()
+	t.Cleanup(srv.Close)
+	h := replayHarness(t, claudecode.Settings{Auth: harness.AuthEnvironment(map[string]string{"ANTHROPIC_API_KEY": "k"})})
+	_, start := replayPrompt(t, h, newRecSandbox(srv), harness.StartOptions{Headers: map[string]string{}}, harness.PromptTurnOptions{}, ch)
+	env, _ := start["env"].(map[string]any)
+	if v, ok := env["ANTHROPIC_CUSTOM_HEADERS"]; !ok || v != "" {
+		t.Fatalf("ANTHROPIC_CUSTOM_HEADERS = %v (present=%v), want an empty string", v, ok)
+	}
+}
+
+// An unsupported prompt part is rejected before any start frame is sent.
+func TestTSReplay_UnsupportedPromptPartSendsNoStart(t *testing.T) {
+	srv, ch := newReplayServer()
+	t.Cleanup(srv.Close)
+	h := replayHarness(t, claudecode.Settings{})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s1", SandboxSession: newRecSandbox(srv), SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	msg := types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.ImageContent{URL: "https://x/y.png"}}}
+	_, err = sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.Prompt{Message: &msg}, Emit: func(harness.StreamPart) {}})
+	if !harness.IsCapabilityUnsupportedError(err) {
+		t.Fatalf("err = %v, want capability-unsupported", err)
+	}
+	select {
+	case <-ch:
+		t.Fatal("a start frame was sent")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

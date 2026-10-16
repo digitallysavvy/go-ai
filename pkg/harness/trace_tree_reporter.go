@@ -171,6 +171,8 @@ func (r *TraceTreeReporter) OnEnd(_ context.Context, e telemetry.TelemetryFinish
 	sb.WriteString("\n")
 	renderTraceNode(&sb, t.root, 0)
 	r.mu.Unlock()
+	// Never let rendering break the turn (TS wraps the write in try/catch).
+	defer func() { _ = recover() }()
 	r.write(sb.String())
 }
 
