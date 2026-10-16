@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"unicode/utf16"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -419,7 +420,7 @@ func hasOnlyKey(m map[string]interface{}, key string) bool {
 func validateDirectCondition(m map[string]interface{}) error {
 	if q, hasQuestion := m["question"]; hasQuestion {
 		question, ok := q.(string)
-		if !ok || len(question) < 1 || len(question) > DecisionFallbackMaxQuestionLength {
+		if !ok || len(question) < 1 || len(utf16.Encode([]rune(question))) > DecisionFallbackMaxQuestionLength {
 			return fmt.Errorf("condition question must be between 1 and %d characters", DecisionFallbackMaxQuestionLength)
 		}
 	}
