@@ -3,7 +3,6 @@ package fal
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -243,36 +242,46 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // falFailedResponseHandler's message rules (validation detail list, else
 // message).
 func (m *ImageModel) statusError(status int, headers http.Header, body []byte) error {
-	err := internalhttp.StatusProviderError("fal", status, headers, body)
+	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
+	return providererrors.NewProviderError("fal", 0, "", falImageErrorMessage(status, body), cause)
+}
+
+// falImageErrorMessage mirrors the image model's TS falFailedResponseHandler:
+// the body must match falErrorSchema, a union of the validation shape
+// {detail:[{loc:string[],msg:string,type:string}]} (message: the entries as
+// "loc.joined: msg" lines) and {message:string}; any other body gives the
+// HTTP status text.
+func falImageErrorMessage(status int, body []byte) string {
 	var parsed struct {
-		Detail  json.RawMessage `json:"detail"`
-		Message *string         `json:"message"`
+		Detail  *[]json.RawMessage `json:"detail"`
+		Message *string            `json:"message"`
 	}
 	if json.Unmarshal(body, &parsed) != nil {
-		return err
+		return http.StatusText(status)
 	}
-	var pe *providererrors.ProviderError
-	if !errors.As(err, &pe) {
-		return err
-	}
-	var details []struct {
-		Loc []interface{} `json:"loc"`
-		Msg string        `json:"msg"`
-	}
-	if len(parsed.Detail) > 0 && json.Unmarshal(parsed.Detail, &details) == nil && details != nil {
-		lines := make([]string, 0, len(details))
-		for _, d := range details {
-			loc := make([]string, 0, len(d.Loc))
-			for _, l := range d.Loc {
-				loc = append(loc, fmt.Sprint(l))
+	if parsed.Detail != nil {
+		lines := make([]string, 0, len(*parsed.Detail))
+		valid := true
+		for _, raw := range *parsed.Detail {
+			var d struct {
+				Loc  *[]string `json:"loc"`
+				Msg  *string   `json:"msg"`
+				Type *string   `json:"type"`
 			}
-			lines = append(lines, strings.Join(loc, ".")+": "+d.Msg)
+			if json.Unmarshal(raw, &d) != nil || d.Loc == nil || d.Msg == nil || d.Type == nil {
+				valid = false
+				break
+			}
+			lines = append(lines, strings.Join(*d.Loc, ".")+": "+*d.Msg)
 		}
-		pe.Message = strings.Join(lines, "\n")
-	} else if parsed.Message != nil {
-		pe.Message = *parsed.Message
+		if valid {
+			return strings.Join(lines, "\n")
+		}
 	}
-	return pe
+	if parsed.Message != nil {
+		return *parsed.Message
+	}
+	return http.StatusText(status)
 }
 
 // buildRequest builds the request body and warnings (TS getArgs).
