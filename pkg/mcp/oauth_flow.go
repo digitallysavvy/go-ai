@@ -836,8 +836,9 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	if err := checkOAuthOptionalFields(regFields, oauthRegistrationFieldRules); err != nil {
 		return nil, fmt.Errorf("failed to decode dynamic client registration response: %w", err)
 	}
+	integerizeOAuthNumbers(regFields, "client_id_issued_at", "client_secret_expires_at")
 	var full OAuthClientInformationFull
-	if err := json.Unmarshal(rawBody, &full); err != nil {
+	if err := decodeOAuthFields(regFields, &full); err != nil {
 		return nil, fmt.Errorf("failed to decode dynamic client registration response: %w", err)
 	}
 	// TS schemas use SafeUrlSchema for these fields.
@@ -958,8 +959,9 @@ func decodeOAuthTokenResponse(resp *http.Response) (*OAuthTokens, error) {
 	if err := checkOAuthOptionalFields(fields, oauthTokenFieldRules); err != nil {
 		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
+	integerizeOAuthNumbers(fields, "expires_in")
 	var tokens OAuthTokens
-	if err := json.Unmarshal(rawBody, &tokens); err != nil {
+	if err := decodeOAuthFields(fields, &tokens); err != nil {
 		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
 	// TS OAuthTokensSchema validates issuer/authorization_server/

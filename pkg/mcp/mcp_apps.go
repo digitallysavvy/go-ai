@@ -136,6 +136,8 @@ func IsMCPAppTool(tool MCPTool) (bool, error) {
 // SplitMCPAppTools splits tool definitions into model-visible and app-visible
 // lists while preserving pagination metadata.
 func SplitMCPAppTools(definitions ListToolsResult) (modelVisible ListToolsResult, appVisible ListToolsResult, err error) {
+	// TS always returns a tools array; keep an empty one empty (not null).
+	modelVisible.Tools, appVisible.Tools = []MCPTool{}, []MCPTool{}
 	modelVisible.NextCursor = definitions.NextCursor
 	appVisible.NextCursor = definitions.NextCursor
 	for _, tool := range definitions.Tools {

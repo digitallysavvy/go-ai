@@ -336,7 +336,9 @@ func failStream(ctx context.Context, out chan<- ai.UIMessageChunk, errs chan<- e
 	}
 	if callbacks != nil {
 		var err error
-		if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		// TS isAbortError matches name === 'AbortError' only: a deadline is a
+		// TimeoutError there and goes to onError.
+		if errors.Is(cause, context.Canceled) {
 			if callbacks.OnAbort != nil {
 				err = callbacks.OnAbort()
 			}
@@ -409,8 +411,10 @@ func finalizeCallbacks(errs chan<- error, callbacks *StreamCallbacks, textChunks
 	errs <- terminalErr
 }
 
+// isContextAbort reports a cancellation (TS AbortError). A deadline is a
+// TimeoutError in TS, which toUIMessageStream reports through onError.
 func isContextAbort(err error) bool {
-	return err == context.Canceled || err == context.DeadlineExceeded
+	return err == context.Canceled
 }
 
 // LangChainMessage is a JSON-compatible representation of a LangChain message.
@@ -1122,14 +1126,16 @@ func reasoningFromValuesMessage(message map[string]interface{}) string {
 }
 
 func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk {
-	root, ok := asMap(event.Data)
-	if !ok {
-		return nil
-	}
 	eventNS := namespaceKey(event.Namespace)
 	var chunks []ai.UIMessageChunk
 
+	// TS finalizes the open message parts before it looks at the data, so a
+	// values event whose data is null or not an object still closes them.
 	chunks = append(chunks, finalizeSeenPartsForValues(state)...)
+	root, ok := asMap(event.Data)
+	if !ok {
+		return chunks
+	}
 
 	messages := messageMaps(root)
 	if len(messages) > 0 {
@@ -1983,6 +1989,10 @@ func parseArgs(raw interface{}) interface{} {
 		if err := json.Unmarshal([]byte(v), &decoded); err == nil {
 			return decoded
 		}
+		return map[string]interface{}{}
+	case map[string]interface{}:
+		// TS JSON.parse(object) coerces it to "[object Object]", fails and
+		// falls back to {}.
 		return map[string]interface{}{}
 	default:
 		return v

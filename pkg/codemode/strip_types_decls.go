@@ -119,12 +119,51 @@ func declareVarEnd(tokens []tsToken, i int) int {
 		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
 			i = consumeTypeExpr(tokens, c+1, false)
 		}
+		// `declare const a = 1`: the initializer goes with the declaration.
+		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == "=" {
+			i = declareInitializerEnd(tokens, c+1)
+		}
 		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == "," {
 			i = c + 1
 			continue
 		}
 		return consumeOptionalSemicolon(tokens, i)
 	}
+}
+
+// declareInitializerEnd returns the index where the initializer expression
+// that starts at tokens[i] ends: at the first top-level `,` or `;`, at a
+// closing bracket of the enclosing scope, or at a line break that ends the
+// statement (ASI). Trailing whitespace and comments are not part of it.
+func declareInitializerEnd(tokens []tsToken, i int) int {
+	depth := 0
+	end := i
+	for j := i; j < len(tokens); j++ {
+		t := tokens[j]
+		switch t.kind {
+		case "space", "comment":
+			if t.kind == "space" && depth == 0 && strings.ContainsAny(t.text, "\n\r\u2028\u2029") && end > i && asiBreaksBefore(tokens, j) {
+				return end
+			}
+			continue
+		case "punct":
+			switch t.text {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				if depth == 0 {
+					return end
+				}
+				depth--
+			case ",", ";":
+				if depth == 0 {
+					return end
+				}
+			}
+		}
+		end = j + 1
+	}
+	return end
 }
 
 // declareFunctionEnd returns the end of an ambient `declare function f<T>(a:

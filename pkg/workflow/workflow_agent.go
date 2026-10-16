@@ -121,6 +121,24 @@ type LanguageModelCallOptions struct {
 	// hook should mutate System/Messages to change what is sent, not these.
 	InitialInstructions string
 	InitialMessages     []types.Message
+
+	// InstructionMessages are the instructions when they were given as system
+	// messages (TS `instructions: SystemModelMessage | SystemModelMessage[]`),
+	// keeping each message's ProviderOptions. A hook may return a different
+	// list to replace them. When the hook changes System and leaves
+	// InstructionMessages alone, System wins, as TS `instructions` does.
+	InstructionMessages []types.Message
+	// InitialInstructionMessages are the original instructions given as
+	// system messages; read-only like InitialInstructions.
+	InitialInstructionMessages []types.Message
+
+	// ToolCallConcurrency and Telemetry mirror TS prepareCall's
+	// `toolCallConcurrency` and `telemetry`. The hook sees the call's current
+	// value (nil when none is set) and may return another; nil leaves the
+	// call's value. As in TS, a per-call ToolCallConcurrency wins over a
+	// PrepareCall override. PrepareStep does not apply either.
+	ToolCallConcurrency *int
+	Telemetry           *ai.TelemetrySettings
 }
 
 // WorkflowAgent is a serializable-friendly wrapper around the SDK tool loop.
@@ -1119,6 +1137,53 @@ type prepareCallContext struct {
 	initialMessages     []types.Message
 	// prepareStep is the per-call PrepareStep hook (runs after w.PrepareStep).
 	prepareStep PrepareStepHook
+
+	// instructionMessages/initialInstructionMessages carry instructions given
+	// as system messages so PrepareCall/PrepareStep keep their ProviderOptions.
+	instructionMessages []types.Message
+	// toolCallConcurrency is the call's own limit (nil when unbounded);
+	// callConcurrencySet records that a per-call option set it, which TS lets
+	// win over a PrepareCall override.
+	toolCallConcurrency *int
+	callConcurrencySet  bool
+
+	// baseHeaders are the call's headers before the WorkflowAgent
+	// user-agent suffix: the hook sees and returns these, and the suffix is
+	// added after it (TS appends it to the merged settings).
+	baseHeaders map[string]string
+	// reapplyCall puts the per-call generation settings back over a
+	// PrepareCall result: TS merges `{...prepared, ...options}`, so a
+	// setting given on the call wins over prepareCall's.
+	reapplyCall func(*LanguageModelCallOptions)
+}
+
+// resolveInstructionChange decides which instructions a hook left behind. The
+// hook got (inSystem, inMessages); out is what it returned. A changed message
+// list wins; otherwise a changed System replaces the messages; otherwise
+// nothing changed.
+func resolveInstructionChange(inSystem string, inMessages []types.Message, outSystem string, outMessages []types.Message) (system string, messages []types.Message, changed bool) {
+	switch {
+	case !reflect.DeepEqual(inMessages, outMessages):
+		if len(outMessages) > 0 {
+			return outSystem, outMessages, true
+		}
+		return outSystem, nil, true
+	case outSystem != inSystem:
+		return outSystem, nil, true
+	}
+	return inSystem, inMessages, false
+}
+
+// instructionMessagesFrom returns the system messages of an Instructions value
+// given as a message or message list, nil for any other type.
+func instructionMessagesFrom(instructions interface{}) []types.Message {
+	switch v := instructions.(type) {
+	case types.Message:
+		return []types.Message{v}
+	case []types.Message:
+		return v
+	}
+	return nil
 }
 
 // hookFailedModel stands in for the real model on a step whose PrepareCall or
@@ -1157,6 +1222,7 @@ func (st *prepareCallState) overlay(opts LanguageModelCallOptions) LanguageModel
 	opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions = p.Headers, p.Reasoning, p.SendReasoning, p.ProviderOptions
 	opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox = p.RuntimeContext, p.ToolsContext, p.ExperimentalSandbox
 	opts.StopWhen, opts.ActiveTools, opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout = p.StopWhen, p.ActiveTools, p.ExperimentalDownload, p.MaxRetries, p.Timeout
+	opts.InstructionMessages, opts.ToolCallConcurrency, opts.Telemetry = p.InstructionMessages, p.ToolCallConcurrency, p.Telemetry
 	if len(opts.Messages) >= st.baseMessages {
 		history := opts.Messages[st.baseMessages:]
 		opts.Messages = append(append([]types.Message(nil), p.Messages...), history...)
@@ -1189,13 +1255,16 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		opts := LanguageModelCallOptions{
 			StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
 			Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
-			Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
+			Headers: pctx.baseHeaders, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
 			RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
 			PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData,
 			StopWhen: pctx.stopWhen, ActiveTools: pctx.activeTools, ExperimentalDownload: pctx.download,
 			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
 			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
+			InstructionMessages: c.InstructionMessages, InitialInstructionMessages: pctx.instructionMessages,
+			ToolCallConcurrency: pctx.toolCallConcurrency, Telemetry: c.Telemetry,
 		}
+		inSystem, inInstructionMessages := c.System, c.InstructionMessages
 		// A hook error fails the run (TS prepareStep/prepareCall rejections
 		// propagate): PrepareCallConfig cannot carry an error, so the step's
 		// model is swapped for one that returns it.
@@ -1224,7 +1293,17 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 					return failStep(err)
 				}
 				opts = mutated
-				kept := mutated
+				if pctx.reapplyCall != nil {
+					pctx.reapplyCall(&opts)
+				}
+				if !pctx.callConcurrencySet {
+					if _, err := resolveToolCallConcurrency(opts.ToolCallConcurrency); err != nil {
+						st.mu.Unlock()
+						return failStep(err)
+					}
+				}
+				opts.System, opts.InstructionMessages, _ = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
+				kept := opts
 				st.prepared = &kept
 			}
 		} else if st.prepared != nil {
@@ -1242,9 +1321,16 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			c.Model = opts.Model
 		}
 		c.System, c.AllowSystemInMessages, c.Messages, c.Tools, c.ToolChoice, c.CallOptions = opts.System, opts.AllowSystemInMessages, opts.Messages, opts.Tools, opts.ToolChoice, opts.CallOptions
+		c.System, c.InstructionMessages, _ = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
+		if opts.ToolCallConcurrency != nil && !pctx.callConcurrencySet {
+			c.ToolCallConcurrency = opts.ToolCallConcurrency
+		}
+		if opts.Telemetry != nil {
+			c.Telemetry = opts.Telemetry
+		}
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
-		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
+		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = version.WithUserAgentSuffix(opts.Headers, "ai-sdk-agent/workflow"), opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
 		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
 		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = withFinishReasonStop(opts.StopWhen), opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
 		if w.FilterActiveTools != nil {
@@ -1286,7 +1372,9 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			StopWhen: pctx.stopWhen, ActiveTools: activeTools, ExperimentalDownload: pctx.download,
 			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
 			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
+			InstructionMessages: o.InstructionMessages, InitialInstructionMessages: pctx.instructionMessages,
 		}
+		inSystem, inInstructionMessages := o.System, o.InstructionMessages
 		mutated, err := hook(ctx, opts)
 		if err != nil {
 			base := o.Model
@@ -1299,9 +1387,14 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		if mutated.Model != nil {
 			o.Model = mutated.Model
 		}
-		o.System = mutated.System
-		sys := mutated.System
-		o.Instructions = &sys
+		// Only touch the instructions when the hook changed them: core drops
+		// the step's system-message instructions (and their ProviderOptions)
+		// as soon as System/Instructions is set.
+		if system, messages, changed := resolveInstructionChange(inSystem, inInstructionMessages, mutated.System, mutated.InstructionMessages); changed {
+			o.System = system
+			o.Instructions = &system
+			o.InstructionMessages = messages
+		}
 		o.Messages = mutated.Messages
 		o.Tools = mutated.Tools
 		o.ToolChoice = mutated.ToolChoice
@@ -1330,26 +1423,31 @@ func sameStrings(a, b []string) bool {
 
 func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions, streaming bool) *agent.ToolLoopAgent {
 	system := w.System
+	var instructionMessages []types.Message
+	// useInstructions applies an Instructions value over the current one; a
+	// string System replaces any system-message instructions.
+	useInstructions := func(v interface{}) {
+		if normalized, err := normalizeInstructions(v); err == nil && normalized != "" {
+			system = normalized
+			instructionMessages = instructionMessagesFrom(v)
+		}
+	}
+	useSystem := func(v string) {
+		if v != "" {
+			system = v
+			instructionMessages = nil
+		}
+	}
 	if w.Instructions != nil {
-		if normalized, err := normalizeInstructions(w.Instructions); err == nil && normalized != "" {
-			system = normalized
-		}
+		useInstructions(w.Instructions)
 	}
-	if govr.System != "" {
-		system = govr.System
-	}
+	useSystem(govr.System)
 	if govr.Instructions != nil {
-		if normalized, err := normalizeInstructions(govr.Instructions); err == nil && normalized != "" {
-			system = normalized
-		}
+		useInstructions(govr.Instructions)
 	}
-	if ovr.System != "" {
-		system = ovr.System
-	}
+	useSystem(ovr.System)
 	if ovr.Instructions != nil {
-		if normalized, err := normalizeInstructions(ovr.Instructions); err == nil && normalized != "" {
-			system = normalized
-		}
+		useInstructions(ovr.Instructions)
 	}
 	stopWhen := w.StopWhen
 	if streaming && w.stopWhenDefaulted {
@@ -1425,12 +1523,16 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	// step loop's tool execution as well as approved-call resume. Already
 	// validated by resolveToolCallConcurrency before the agent is built.
 	toolCallConcurrency := w.ToolCallConcurrency
+	callConcurrencySet := false
 	if govr.ToolCallConcurrency != nil {
 		toolCallConcurrency = govr.ToolCallConcurrency
+		callConcurrencySet = true
 	}
 	if ovr.ToolCallConcurrency != nil {
 		toolCallConcurrency = ovr.ToolCallConcurrency
+		callConcurrencySet = true
 	}
+	hookToolCallConcurrency := toolCallConcurrency
 	if toolCallConcurrency == nil {
 		// TS WorkflowAgent runs a step's tool calls concurrently when no
 		// limit is set. The AgentResult generate loop only does so when a
@@ -1529,13 +1631,58 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		timeout:             timeout,
 		initialInstructions: system,
 		initialMessages:     initialMessages,
+		instructionMessages: instructionMessages,
+		toolCallConcurrency: hookToolCallConcurrency,
+		callConcurrencySet:  callConcurrencySet,
+		baseHeaders:         callMap(ovr.Headers, govr.Headers, w.Headers),
+		reapplyCall: func(o *LanguageModelCallOptions) {
+			if v := callSetting(ovr.Temperature, govr.Temperature); v != nil {
+				o.Temperature = v
+			}
+			if v := callSetting(ovr.MaxTokens, govr.MaxTokens); v != nil {
+				o.MaxTokens = v
+			}
+			if v := callSetting(ovr.TopP, govr.TopP); v != nil {
+				o.TopP = v
+			}
+			if v := callSetting(ovr.TopK, govr.TopK); v != nil {
+				o.TopK = v
+			}
+			if v := callSetting(ovr.FrequencyPenalty, govr.FrequencyPenalty); v != nil {
+				o.FrequencyPenalty = v
+			}
+			if v := callSetting(ovr.PresencePenalty, govr.PresencePenalty); v != nil {
+				o.PresencePenalty = v
+			}
+			if v := callSlice(ovr.StopSequences, govr.StopSequences); v != nil {
+				o.StopSequences = v
+			}
+			if v := callSetting(ovr.Seed, govr.Seed); v != nil {
+				o.Seed = v
+			}
+			if v := callSetting(ovr.MaxRetries, govr.MaxRetries); v != nil {
+				o.MaxRetries = v
+			}
+			if v := callSetting(ovr.Timeout, govr.Timeout); v != nil {
+				o.Timeout = v
+			}
+			if v := callSetting(ovr.Reasoning, govr.Reasoning); v != nil {
+				o.Reasoning = v
+			}
+			if v := callMap(ovr.Headers, govr.Headers); v != nil {
+				o.Headers = v
+			}
+			if v := callMap(ovr.ProviderOptions, govr.ProviderOptions); v != nil {
+				o.ProviderOptions = v
+			}
+		},
 	}
 	var stepAdapter func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions
 	if streaming {
 		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages)
 	}
 	return agent.NewToolLoopAgent(agent.AgentConfig{
-		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: withFinishReasonStop(stopWhen),
+		ID: w.ID, Model: w.Model, System: system, InstructionMessages: instructionMessages, Prompt: w.Prompt, Tools: tools, StopWhen: withFinishReasonStop(stopWhen),
 		AllowSystemInMessages: allowSystemInMessages,
 		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx, !streaming), PrepareStep: stepAdapter,
 		Temperature: callSetting(ovr.Temperature, govr.Temperature, w.Temperature), MaxTokens: callSetting(ovr.MaxTokens, govr.MaxTokens, w.MaxTokens),
@@ -1739,12 +1886,16 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	}
 	a := w.makeAgent(WorkflowStreamOptions{}, opts, false)
 	system := opts.System
+	var instructionMessages []types.Message
 	if opts.Instructions != nil {
 		if normalized, err := normalizeInstructions(opts.Instructions); err == nil {
 			system = normalized
+			if normalized != "" {
+				instructionMessages = instructionMessagesFrom(opts.Instructions)
+			}
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
@@ -1921,13 +2072,17 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	a := w.makeAgent(opts, WorkflowGenerateOptions{}, true)
 	system := opts.System
+	var instructionMessages []types.Message
 	if opts.Instructions != nil {
 		if normalized, err := normalizeInstructions(opts.Instructions); err == nil {
 			system = normalized
+			if normalized != "" {
+				instructionMessages = instructionMessagesFrom(opts.Instructions)
+			}
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,

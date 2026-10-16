@@ -356,8 +356,10 @@ func TestWorkflowStructuredOutputGenerateAndToolSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate error: %v", err)
 	}
-	if model.opts[0].Prompt.System != "system message" {
-		t.Fatalf("unexpected system instructions: %q", model.opts[0].Prompt.System)
+	// Instructions given as system messages reach the model as system
+	// messages (their providerOptions survive), not as a flattened string.
+	if sys := systemMessagesOf(model.opts[0]); len(sys) != 1 || sys[0].Content[0].(types.TextContent).Text != "system message" {
+		t.Fatalf("unexpected system instructions: %+v", model.opts[0].Prompt)
 	}
 	if len(model.opts[0].Tools) != 1 || model.opts[0].Tools[0].Name != "lookup" {
 		t.Fatalf("tool set was not converted: %+v", model.opts[0].Tools)

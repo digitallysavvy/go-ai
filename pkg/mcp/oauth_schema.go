@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 )
 
 type oauthFieldKind int
@@ -77,6 +79,7 @@ var (
 		{"dpop_bound_access_tokens_required", oauthFieldBool},
 	}
 	oauthASCommonFieldRules = []oauthFieldRule{
+		{"response_types_supported", oauthFieldStringArray},
 		{"registration_endpoint", oauthFieldSafeURL},
 		{"authorization_response_iss_parameter_supported", oauthFieldBool},
 		{"client_id_metadata_document_supported", oauthFieldBool},
@@ -89,6 +92,8 @@ var (
 		{"token_endpoint_auth_signing_alg_values_supported", oauthFieldStringArray},
 	}
 	oauthASOIDCFieldRules = []oauthFieldRule{
+		{"subject_types_supported", oauthFieldStringArray},
+		{"id_token_signing_alg_values_supported", oauthFieldStringArray},
 		{"userinfo_endpoint", oauthFieldSafeURL},
 		{"claims_supported", oauthFieldStringArray},
 	}
@@ -146,9 +151,47 @@ func oauthFieldMatches(raw json.RawMessage, kind oauthFieldKind) bool {
 		var v float64
 		return json.Unmarshal(raw, &v) == nil && len(raw) > 0 && raw[0] != 'n'
 	case oauthFieldApplicationType:
-		return string(raw) == `"native"` || string(raw) == `"web"`
+		var v string
+		return isJSONString(raw) && json.Unmarshal(raw, &v) == nil && (v == "native" || v == "web")
 	case oauthFieldBool:
 		return string(raw) == "true" || string(raw) == "false"
 	}
 	return false
+}
+
+// integerizeOAuthNumbers rewrites the named fields, when they hold a JSON
+// number with a fraction or exponent (3600.0, 3599.5, 3.6e3), as an integer so
+// they decode into the integer fields of the Go structs. TS z.number() accepts
+// any finite number, so such a response is valid there.
+func integerizeOAuthNumbers(fields map[string]json.RawMessage, keys ...string) {
+	for _, key := range keys {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		raw = bytes.TrimSpace(raw)
+		if !bytes.ContainsAny(raw, ".eE") {
+			continue
+		}
+		var f float64
+		if json.Unmarshal(raw, &f) != nil {
+			continue
+		}
+		switch {
+		case f >= math.MaxInt64:
+			f = math.MaxInt64
+		case f <= math.MinInt64:
+			f = math.MinInt64
+		}
+		fields[key] = json.RawMessage(strconv.FormatInt(int64(f), 10))
+	}
+}
+
+// decodeOAuthFields unmarshals the (possibly integerized) fields into v.
+func decodeOAuthFields(fields map[string]json.RawMessage, v interface{}) error {
+	data, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
 }

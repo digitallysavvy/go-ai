@@ -39,9 +39,11 @@ type OAuthClientMetadata struct {
 	TosURI                  string   `json:"tos_uri,omitempty"`
 	PolicyURI               string   `json:"policy_uri,omitempty"`
 	JWKSURI                 string   `json:"jwks_uri,omitempty"`
-	SoftwareID              string   `json:"software_id,omitempty"`
-	SoftwareVersion         string   `json:"software_version,omitempty"`
-	SoftwareStatement       string   `json:"software_statement,omitempty"`
+	// JWKS is the client's inline JSON Web Key Set (TS `jwks: z.any()`).
+	JWKS              interface{} `json:"jwks,omitempty"`
+	SoftwareID        string      `json:"software_id,omitempty"`
+	SoftwareVersion   string      `json:"software_version,omitempty"`
+	SoftwareStatement string      `json:"software_statement,omitempty"`
 }
 
 // OAuthClientInformation is the client credential half of a registered OAuth

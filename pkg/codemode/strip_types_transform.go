@@ -178,7 +178,10 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				// use in reverse -- since a `<` that follows something
 				// ending an expression is an ordinary less-than comparison,
 				// never generics.
-				if !endsExpression(*out) {
+				// A `}` may close a block statement, after which an arrow
+				// function can start; `{} < T > (x) => y` is not valid
+				// JavaScript either way, so a generic arrow reading wins.
+				if last := lastSignificant(*out); !endsExpression(*out) || (last != nil && last.kind == "punct" && last.text == "}") {
 					if open, ok := tryGenericArrowTypeParams(tokens, i); ok {
 						var err error
 						i, err = stripParamList(tokens, open, out, false)
@@ -630,6 +633,52 @@ var methodNameExcluded = map[string]bool{
 	"import": true, "export": true, "default": true, "var": true, "let": true, "const": true,
 }
 
+// startsObjectMember reports whether the method name that ends at out[k]
+// (with any `async`, `get`, `set`, `*` modifiers before it) is the first thing
+// of an object-literal member, right after the `{` or `,` before it. In
+// `c ? x(c) : y(y)! satisfies { k: T }` the `x(c)` follows a `?`, so the `:`
+// after it belongs to the conditional, not to a method return type.
+func startsObjectMember(out []tsToken, k int) bool {
+	prevSignificant := func(from int) int {
+		for from >= 0 && (out[from].kind == "space" || out[from].kind == "comment") {
+			from--
+		}
+		return from
+	}
+	if out[k].kind == "punct" && out[k].text == "]" {
+		// A computed name: back up to its opening bracket.
+		depth := 0
+		for ; k >= 0; k-- {
+			if out[k].kind != "punct" {
+				continue
+			}
+			switch out[k].text {
+			case "]":
+				depth++
+			case "[":
+				depth--
+			}
+			if depth == 0 {
+				break
+			}
+		}
+		if k < 0 {
+			return false
+		}
+	}
+	p := prevSignificant(k - 1)
+	for p >= 0 {
+		switch {
+		case out[p].kind == "punct" && out[p].text == "*":
+		case out[p].kind == "ident" && (out[p].text == "async" || out[p].text == "get" || out[p].text == "set"):
+		default:
+			return out[p].kind == "punct" && (out[p].text == "{" || out[p].text == ",")
+		}
+		p = prevSignificant(p - 1)
+	}
+	return false
+}
+
 // isMethodParamList reports whether the parenthesized span closing at
 // tokens[closeIdx] is the parameter list of a method in an object literal:
 // a name (not a statement keyword) before the `(` and the body's `{` after
@@ -662,6 +711,9 @@ func isMethodParamList(tokens []tsToken, closeIdx int, out []tsToken) bool {
 			return false
 		}
 	default:
+		return false
+	}
+	if !startsObjectMember(out, k) {
 		return false
 	}
 	next := nextSignificant(tokens, closeIdx+1)
