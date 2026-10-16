@@ -3,8 +3,8 @@ package revai
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -14,9 +14,9 @@ import (
 
 // revaiErrorPayload documents Rev.ai's error envelope: {"error":{"message","code"}}.
 type revaiErrorPayload struct {
-	Error struct {
-		Message string `json:"message"`
-		Code    int    `json:"code"`
+	Error *struct {
+		Message *string  `json:"message"`
+		Code    *float64 `json:"code"`
 	} `json:"error"`
 }
 
@@ -28,13 +28,7 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload revaiErrorPayload
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
+		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
 		providerErr := providererrors.NewProviderError("revai", statusErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
 		providerErr.ResponseBody = string(statusErr.Body)
@@ -43,13 +37,7 @@ func handleError(err error) error {
 
 	var downloadErr *providererrors.DownloadError
 	if errors.As(err, &downloadErr) {
-		var payload revaiErrorPayload
-		message := string(downloadErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(downloadErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
+		message, code := errorMessageAndCode(downloadErr.StatusCode, downloadErr.Body)
 		if message == "" {
 			message = downloadErr.Error()
 		}
@@ -74,4 +62,17 @@ func flattenHeaders(h map[string][]string) map[string]string {
 		out[http.CanonicalHeaderKey(k)] = strings.Join(vs, ", ")
 	}
 	return out
+}
+
+// errorMessageAndCode mirrors the TS revaiFailedResponseHandler: a body matching
+// {"error":{"message":string,"code":number}} gives that message (even an
+// empty one) and the code; anything else (empty, not JSON, a missing or
+// wrongly typed field) gives the HTTP status text.
+func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
+	var payload revaiErrorPayload
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+		payload.Error.Message != nil && payload.Error.Code != nil {
+		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
+	}
+	return http.StatusText(statusCode), ""
 }
