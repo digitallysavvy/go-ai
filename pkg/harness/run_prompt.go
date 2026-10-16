@@ -500,6 +500,12 @@ type turnDriver struct {
 	// step's own telemetry span lifetime. Guarded by execMu like every
 	// other field a host tool execution touches.
 	startedToolExecutions map[string]bool
+	// endedToolExecutions makes publishToolExecutionEnd idempotent per tool
+	// call (TS `execution.endNotification ??= ...`): an automatic denial
+	// publishes its end right after the denial is submitted, and the
+	// runtime's later echo of that result must not publish it again. Guarded
+	// by execMu.
+	endedToolExecutions map[string]bool
 
 	// telToolCtx stores, per ToolCallID, the ctx returned by telemetry's
 	// toolExecutionStart event (see ensureToolExecutionStarted), so the
@@ -631,6 +637,7 @@ func (d *turnDriver) run() {
 	d.toolExecMs = map[string]int64{}
 	d.hostOutcomes = map[string]hostToolOutcome{}
 	d.startedToolExecutions = map[string]bool{}
+	d.endedToolExecutions = map[string]bool{}
 	d.telToolCtx = map[string]context.Context{}
 	d.stripToolInput = NewToolInputWorkDirStripper(d.in.SessionWorkDir)
 	d.modelID = d.in.Model
@@ -1657,6 +1664,11 @@ func hostOutcomeResult(call types.ToolCall, o hostToolOutcome) types.ToolResult 
 func (d *turnDriver) publishToolExecutionEnd(toolCallID, toolName string, call types.ToolCall, toolResult types.ToolResult) {
 	// Host tool goroutines write toolExecMs under execMu.
 	d.execMu.Lock()
+	if d.endedToolExecutions[toolCallID] {
+		d.execMu.Unlock()
+		return
+	}
+	d.endedToolExecutions[toolCallID] = true
 	execMs := d.toolExecMs[toolCallID]
 	d.execMu.Unlock()
 
@@ -2105,10 +2117,14 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			ApprovalID: approvalID, ToolCallID: raw.ToolCallID, ToolCall: call, Approved: false, Reason: decision.Reason,
 		}})
 		output := executionDeniedOutput(decision.Reason)
+		// TS publishes the execution start before submitting the denial and
+		// the end right after it, without waiting for the runtime's echo.
+		d.ensureToolExecutionStarted(d.telStepCtx, call)
 		d.markAwaitingEcho(raw.ToolCallID)
 		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
 			return false, err
 		}
+		d.publishToolExecutionEnd(raw.ToolCallID, raw.ToolName, call, hostOutcomeResult(call, hostToolOutcome{output: output}))
 		return false, nil
 
 	case CustomToolApprovalRequest:

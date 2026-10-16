@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -86,5 +87,46 @@ func TestRunPrompt_FinishOnlyTurnStillFiresOnStart(t *testing.T) {
 	drainRunPrompt(t, out)
 	if starts != 1 || ends != 0 {
 		t.Fatalf("OnStart=%d OnEnd=%d, want 1 and 0", starts, ends)
+	}
+}
+
+// TS publishes an automatically denied host tool's execution start before it
+// submits the denial and its end right after, without waiting for the runtime
+// to echo the result (which may never come); a later echo does not publish
+// the end again.
+func TestRunPrompt_AutomaticDenialPublishesToolExecutionWithoutEcho(t *testing.T) {
+	for _, echo := range []bool{false, true} {
+		mock := newScriptedHarness(
+			func(emit func(StreamPart)) {
+				emit(&StreamStartPart{})
+				emit(&ToolCallPart{ToolCallID: "c1", ToolName: "weather", Input: `{"city":"SF"}`})
+				emit(hostInputBoundary(1))
+			},
+			func(sub ToolResultSubmission, emit func(StreamPart)) {
+				if echo {
+					emit(&ToolResultPart{ToolCallID: sub.ToolCallID, ToolName: "weather", Result: sub.Output})
+				}
+				emit(&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)})
+				emit(&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)})
+			},
+		)
+		var mu sync.Mutex
+		var starts, ends int
+		tools := map[string]types.Tool{"weather": weatherTool()}
+		out := runPrompt(context.Background(), runPromptInput{
+			Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+			Tools: tools, ActiveTools: tools,
+			ToolApproval: ToolApprovalConfiguration{"weather": ai.ToolApprovalStatusDenied},
+			Callbacks: Callbacks{
+				OnToolExecutionStart: func(context.Context, ai.OnToolCallStartEvent) { mu.Lock(); starts++; mu.Unlock() },
+				OnToolExecutionEnd:   func(context.Context, ai.OnToolCallFinishEvent) { mu.Lock(); ends++; mu.Unlock() },
+			},
+		})
+		drainRunPrompt(t, out)
+		mu.Lock()
+		if starts != 1 || ends != 1 {
+			t.Fatalf("echo=%v: OnToolExecutionStart=%d OnToolExecutionEnd=%d, want 1 and 1", echo, starts, ends)
+		}
+		mu.Unlock()
 	}
 }
