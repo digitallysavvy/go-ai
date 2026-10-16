@@ -218,6 +218,27 @@ func stripOneParam(tokens []tsToken, i int, out *[]tsToken, isConstructor bool) 
 	}
 	i = j
 
+	// Parameter decorators (`@Inject() x: T`) are runtime syntax Node keeps;
+	// only the types after them are erased.
+	for tokens[i].kind == "punct" && tokens[i].text == "@" {
+		end := decoratorEnd(tokens, i)
+		if end <= i+1 {
+			break
+		}
+		for k := i; k < end; k++ {
+			*out = append(*out, tokens[k])
+		}
+		i = end
+		if j := nextSignificant(tokens, i); j >= 0 {
+			for k := i; k < j; k++ {
+				*out = append(*out, tokens[k])
+			}
+			i = j
+		} else {
+			return i, nil
+		}
+	}
+
 	// Rest parameter marker.
 	if tokens[i].kind == "punct" && tokens[i].text == "..." {
 		*out = append(*out, tokens[i])
@@ -339,4 +360,33 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 	}
 	*out = (*out)[:memberStart]
 	return end, nil
+}
+
+// decoratorEnd returns the index just past the decorator that starts at the
+// `@` token at i: `@a.b.c`, `@a.b(args)` or `@(expr)`. It returns i+1 when no
+// decorator expression follows.
+func decoratorEnd(tokens []tsToken, i int) int {
+	j := i + 1
+	if j >= len(tokens) {
+		return j
+	}
+	if tokens[j].kind == "punct" && tokens[j].text == "(" {
+		if c := matchParen(tokens, j); c >= 0 {
+			return c + 1
+		}
+		return i + 1
+	}
+	if tokens[j].kind != "ident" {
+		return i + 1
+	}
+	j++
+	for j+1 < len(tokens) && tokens[j].kind == "punct" && tokens[j].text == "." && tokens[j+1].kind == "ident" {
+		j += 2
+	}
+	if j < len(tokens) && tokens[j].kind == "punct" && tokens[j].text == "(" {
+		if c := matchParen(tokens, j); c >= 0 {
+			j = c + 1
+		}
+	}
+	return j
 }

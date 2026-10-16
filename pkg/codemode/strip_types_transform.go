@@ -156,7 +156,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 					// `a!<T>(x)`: the type arguments after a non-null assertion
 					// go with it.
 					if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "<" {
-						if end, ok := consumeCallGenerics(tokens, p); ok {
+						if end, ok := consumeCallGenerics(tokens, p); ok && !followedByOptionalChain(tokens, end) {
 							for k := i; k < p; k++ {
 								*out = append(*out, tokens[k])
 							}
@@ -201,7 +201,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 						// `f(a)<T>(b)`, `a[0]<T>(b)`: type arguments of a call
 						// on a call/index result.
 						if end, ok := consumeCallGenerics(tokens, i); ok {
-							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || tokens[n].kind == "string") {
+							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || (tokens[n].text == "?." && !keepsTypeArgsBeforeOptionalCall(*out)) || tokens[n].kind == "string") {
 								i = end
 								continue
 							}
@@ -374,6 +374,11 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 			end, ok := consumeCallGenerics(tokens, p)
 			if !ok && afterNew {
 				end, ok = consumeAngleTypeArgsBalanced(tokens, p)
+			}
+			if ok {
+				if n := nextSignificant(tokens, end); n >= 0 && tokens[n].text == "?." && keepsTypeArgsBeforeOptionalCall(*out) {
+					ok = false
+				}
 			}
 			if ok {
 				for k := i; k < p; k++ {
@@ -791,4 +796,102 @@ func typeSpanUnterminated(span []tsToken) bool {
 		}
 	}
 	return depth > 0
+}
+
+// keepsTypeArgsBeforeOptionalCall reports whether Node 24 leaves the `<T>` of
+// `base<T>?.x` in place: swc does not read type arguments there when base is a
+// call result (`f()<T>?.()`, `new A()<T>?.()`) or a member chain that goes
+// through `?.` (`a?.b<T>?.()`); it does for `a<T>?.()`, `a.b<T>?.()`,
+// `a[0]<T>?.()` and `(a)<T>?.()`.
+func keepsTypeArgsBeforeOptionalCall(out []tsToken) bool {
+	var sig []tsToken
+	for _, t := range out {
+		if t.kind != "space" && t.kind != "comment" {
+			sig = append(sig, t)
+		}
+	}
+	n := len(sig)
+	if n == 0 {
+		return false
+	}
+	last := sig[n-1]
+	switch {
+	case last.kind == "punct" && last.text == ")":
+		open := -1
+		depth := 0
+		for k := n - 1; k >= 0; k-- {
+			if sig[k].kind != "punct" {
+				continue
+			}
+			switch sig[k].text {
+			case ")", "]", "}":
+				depth++
+			case "(", "[", "{":
+				depth--
+			}
+			if depth == 0 {
+				open = k
+				break
+			}
+		}
+		if open <= 0 {
+			return false
+		}
+		before := sig[open-1]
+		if before.kind == "ident" {
+			return !isRegexPrecedingKeyword(before.text)
+		}
+		return before.kind == "punct" && (before.text == ")" || before.text == "]")
+	case last.kind == "ident":
+		k := n - 1
+		for k >= 1 {
+			p := sig[k-1]
+			if p.kind != "punct" {
+				return false
+			}
+			if p.text == "?." {
+				return true
+			}
+			if p.text != "." || k < 2 {
+				return false
+			}
+			e := k - 2
+			if sig[e].kind == "punct" && sig[e].text == "]" {
+				depth := 0
+				m := e
+				for ; m >= 0; m-- {
+					if sig[m].kind != "punct" {
+						continue
+					}
+					if sig[m].text == "]" {
+						depth++
+					} else if sig[m].text == "[" {
+						depth--
+						if depth == 0 {
+							break
+						}
+					}
+				}
+				if m < 1 {
+					return false
+				}
+				if sig[m-1].kind == "punct" && sig[m-1].text == "?." {
+					return true
+				}
+				e = m - 1
+			}
+			if sig[e].kind != "ident" {
+				return false
+			}
+			k = e
+		}
+	}
+	return false
+}
+
+// followedByOptionalChain reports whether the next significant token at or
+// after i is `?.`. Node keeps `<T>` in `a!<T>?.(x)`.
+func followedByOptionalChain(tokens []tsToken, i int) bool {
+	n := nextSignificant(tokens, i)
+	return n >= 0 && tokens[n].kind == "punct" && tokens[n].text == "?."
 }

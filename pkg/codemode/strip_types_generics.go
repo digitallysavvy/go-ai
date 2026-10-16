@@ -460,7 +460,7 @@ func canFollowTypeArgsInExpression(tokens []tsToken, end int) bool {
 		return lineBreak || strings.HasPrefix(t.text, "`")
 	}
 	switch t.text {
-	case "<", ">", "+", "-", ">>", ">>>", ">=", ">>=", ">>>=", "?.":
+	case "<", ">", "+", "-", ">>", ">>>", ">=", ">>=", ">>>=":
 		return false
 	}
 	if lineBreak {
