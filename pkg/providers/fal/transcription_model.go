@@ -320,6 +320,9 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 }
 
 func (m *TranscriptionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))

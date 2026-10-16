@@ -2,6 +2,7 @@ package together
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"log"
 	"os"
 	"strings"
@@ -69,6 +70,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("togetherai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, getAPIKey(cfg.APIKey), "TOGETHER_API_KEY", "TogetherAI", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -98,13 +103,15 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		baseURL = "https://api.together.xyz"
 	}
 	return openai.New(openai.Config{
-		APIKey:           getAPIKey(p.config.APIKey),
-		BaseURL:          strings.TrimRight(baseURL, "/") + "/v1",
-		Headers:          p.config.Headers,
-		Name:             "togetherai",
-		OpenAICompatible: true,
-		IncludeUsage:     true,
-		UserAgentName:    "togetherai",
+		APIKey:            getAPIKey(p.config.APIKey),
+		APIKeyEnvVar:      "TOGETHER_API_KEY",
+		APIKeyDescription: "TogetherAI",
+		BaseURL:           strings.TrimRight(baseURL, "/") + "/v1",
+		Headers:           p.config.Headers,
+		Name:              "togetherai",
+		OpenAICompatible:  true,
+		IncludeUsage:      true,
+		UserAgentName:     "togetherai",
 	}).CompletionModel(modelID)
 }
 

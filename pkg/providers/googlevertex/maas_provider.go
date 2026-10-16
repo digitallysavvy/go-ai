@@ -236,6 +236,7 @@ func (p *MaaSProvider) init() error {
 
 	p.provider = openai.New(openai.Config{
 		Name:             "vertex.maas",
+		NoAPIKey:         true,
 		BaseURL:          baseURL,
 		HTTPClient:       httpClient,
 		ChatProviderName: "vertex.maas",

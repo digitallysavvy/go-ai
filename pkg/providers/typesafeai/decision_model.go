@@ -254,6 +254,9 @@ func toFloatMap(v interface{}) (map[string]float64, bool) {
 // priority order: message ?? (error string or error.message) ??
 // (detail string or JSON.stringify(detail)) ?? error_type ?? fallback.
 func (m *DecisionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var httpErr *internalhttp.HTTPStatusError
 	if !errors.As(err, &httpErr) {
 		return err

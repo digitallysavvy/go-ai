@@ -369,6 +369,9 @@ func completionResponseMetadata(id string, created *int64, model string, headers
 }
 
 func (m *CompletionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 

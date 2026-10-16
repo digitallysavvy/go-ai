@@ -234,6 +234,9 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError("together", 0, "", err.Error(), err)
 }
 

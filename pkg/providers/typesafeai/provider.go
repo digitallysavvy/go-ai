@@ -6,6 +6,7 @@ package typesafeai
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
 	"os"
 	"strings"
@@ -77,12 +78,9 @@ func (p *Provider) Name() string { return "typesafe" }
 // unset) plus any configured custom headers. Resolved per call, mirroring
 // TypeScript's lazy `loadApiKey` inside the provider's headers() closure.
 func (p *Provider) resolveHeaders() (map[string]string, error) {
-	apiKey := p.config.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("TYPESAFE_AI_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("TypeSafe AI API key is missing. Pass it using the 'APIKey' config, or set the TYPESAFE_AI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
+	apiKey, err := providerutils.LoadAPIKey(p.config.APIKey, "TYPESAFE_AI_API_KEY", "TypeSafe")
+	if err != nil {
+		return nil, err
 	}
 
 	headers := map[string]string{"Authorization": "Bearer " + apiKey}

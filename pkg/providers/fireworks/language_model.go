@@ -325,6 +325,9 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if parsed := parseFireworksProviderError(err); parsed != nil {
 		return parsed
 	}

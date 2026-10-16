@@ -437,6 +437,9 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if parsed := parseGroqProviderError(err); parsed != nil {
 		return parsed
 	}

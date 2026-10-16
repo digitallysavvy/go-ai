@@ -1074,6 +1074,9 @@ func convertOpenResponsesUsage(usage *Usage) types.Usage {
 // `failedResponseHandler` provider setting); returning nil falls back to the
 // default generic wrapping.
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if m.provider.config.FailedResponseHandler != nil {
 		if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
 			if mapped := m.provider.config.FailedResponseHandler(statusErr); mapped != nil {

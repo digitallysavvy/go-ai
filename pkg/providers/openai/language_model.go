@@ -1037,6 +1037,9 @@ func convertCompatUsage(usage openAIUsage) types.Usage {
 
 // handleError converts various errors to provider errors
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	// Try to parse as OpenAI error response
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }

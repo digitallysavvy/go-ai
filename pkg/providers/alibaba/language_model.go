@@ -464,6 +464,9 @@ func (m *LanguageModel) convertResponse(resp alibabaResponse) *types.GenerateRes
 
 // handleError converts errors to SDK error types
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError("alibaba", 0, "", err.Error(), err)
 }
 

@@ -2,6 +2,7 @@ package bytedance
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -46,9 +47,6 @@ func New(cfg Config) (*Provider, error) {
 	if apiKey == "" {
 		apiKey = os.Getenv("ARK_API_KEY")
 	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("ByteDance API key is required (set BYTEDANCE_API_KEY, ARK_API_KEY, or provide Config.APIKey)")
-	}
 
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
@@ -59,8 +57,10 @@ func New(cfg Config) (*Provider, error) {
 	cfg.BaseURL = baseURL
 
 	headers := map[string]string{
-		"Authorization": "Bearer " + apiKey,
-		"Content-Type":  "application/json",
+		"Content-Type": "application/json",
+	}
+	if apiKey != "" {
+		headers["Authorization"] = "Bearer " + apiKey
 	}
 	for k, v := range cfg.Headers {
 		headers[k] = v
@@ -69,6 +69,15 @@ func New(cfg Config) (*Provider, error) {
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: headers,
+		// TS loadApiKey runs per request (ARK_API_KEY): a missing key is a
+		// LoadAPIKeyError, not a constructor error.
+		HeadersFunc: func() (map[string]string, error) {
+			key := apiKey
+			if key == "" {
+				key = providerutils.APIKeyOrEnv("", "BYTEDANCE_API_KEY")
+			}
+			return providerutils.RequestAuthHeader(cfg.Headers, key, "ARK_API_KEY", "ByteDance ModelArk", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

@@ -308,6 +308,9 @@ func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[s
 }
 
 func (b *Batch) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	lm := &LanguageModel{provider: b.provider}
 	return lm.handleError(err)
 }

@@ -361,6 +361,9 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 }
 
 func (m *VideoModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)

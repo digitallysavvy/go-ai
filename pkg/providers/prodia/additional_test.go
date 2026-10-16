@@ -25,8 +25,8 @@ func TestProdiaProvider_ResolvedDefaultsAndUnsupported(t *testing.T) {
 	if p.effectiveBaseURL() != "https://inference.prodia.com/v2" {
 		t.Fatalf("effectiveBaseURL() mismatch: %q", p.effectiveBaseURL())
 	}
-	if p.effectiveAPIKey() != "env-token" {
-		t.Fatalf("effectiveAPIKey() = %q", p.effectiveAPIKey())
+	if key, err := p.effectiveAPIKey(); err != nil || key != "env-token" {
+		t.Fatalf("effectiveAPIKey() = %q, %v", key, err)
 	}
 
 	if _, err := p.EmbeddingModel("x"); err == nil {

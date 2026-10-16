@@ -470,6 +470,9 @@ func extractImageProviderOptions(opts map[string]interface{}) (*XAIImageProvider
 
 // handleError converts provider errors
 func (m *ImageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if provErr, ok := err.(*providererrors.ProviderError); ok {
 		return provErr
 	}

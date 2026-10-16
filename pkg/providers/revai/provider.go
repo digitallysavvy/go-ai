@@ -7,6 +7,7 @@ package revai
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -47,6 +48,10 @@ func New(config Config) *Provider {
 		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + config.APIKey,
 		}, config.Headers), version.ProviderUserAgent("revai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "REVAI_API_KEY", "Rev.ai", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

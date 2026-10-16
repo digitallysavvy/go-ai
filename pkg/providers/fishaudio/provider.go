@@ -5,6 +5,7 @@ package fishaudio
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -45,6 +46,10 @@ func New(config Config) *Provider {
 		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"Authorization": "Bearer " + config.APIKey,
 		}, config.Headers), version.ProviderUserAgent("fish-audio")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "FISH_AUDIO_API_KEY", "Fish Audio", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

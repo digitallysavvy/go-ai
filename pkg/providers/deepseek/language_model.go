@@ -535,6 +535,9 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError("deepseek", 0, "", err.Error(), err)
 }
 

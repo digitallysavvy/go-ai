@@ -45,11 +45,13 @@ func New(cfg Config) *Provider {
 
 	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
-		APIKey:     cfg.APIKey,
-		Name:       "cerebras",
-		BaseURL:    baseURL,
-		Headers:    cfg.Headers,
-		HTTPClient: withCerebrasTransform(cfg.HTTPClient),
+		APIKey:            cfg.APIKey,
+		APIKeyEnvVar:      "CEREBRAS_API_KEY",
+		APIKeyDescription: "Cerebras API key",
+		Name:              "cerebras",
+		BaseURL:           baseURL,
+		Headers:           cfg.Headers,
+		HTTPClient:        withCerebrasTransform(cfg.HTTPClient),
 		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:                true,

@@ -533,6 +533,9 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
 }
 

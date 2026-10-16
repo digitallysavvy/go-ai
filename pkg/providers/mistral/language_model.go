@@ -392,6 +392,9 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 }
 

@@ -20,6 +20,9 @@ type deepgramErrorPayload struct {
 // handleError converts an HTTP error into a ProviderError, parsing
 // Deepgram's `{"err_code","err_msg","request_id"}` error shape when present.
 func handleError(providerName string, err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		var payload deepgramErrorPayload

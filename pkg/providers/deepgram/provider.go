@@ -2,6 +2,7 @@ package deepgram
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -44,6 +45,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Token " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("deepgram")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "DEEPGRAM_API_KEY", "Deepgram", "Authorization", "Token ")
+		},
 	})
 
 	return &Provider{

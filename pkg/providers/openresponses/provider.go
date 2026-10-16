@@ -38,6 +38,11 @@ type Config struct {
 	// Headers are custom HTTP headers to include in requests
 	Headers map[string]string
 
+	// HeadersFunc, when set, resolves headers for every request (a lazily
+	// loaded API key, TS `headers: () => ...`); an error fails the request
+	// before it is sent. Used by wrappers such as QuiverAI.
+	HeadersFunc func() (map[string]string, error) `json:"-"`
+
 	// Name is the provider name for identification (default: "open-responses")
 	Name string
 
@@ -138,8 +143,9 @@ func New(cfg Config) *Provider {
 
 	// Create HTTP client
 	client := http.NewClient(http.Config{
-		BaseURL: cfg.BaseURL,
-		Headers: headers,
+		BaseURL:     cfg.BaseURL,
+		Headers:     headers,
+		HeadersFunc: cfg.HeadersFunc,
 	})
 
 	registry, err := NewExtensionRegistry(cfg.Extensions)

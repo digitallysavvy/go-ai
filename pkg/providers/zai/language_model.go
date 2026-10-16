@@ -326,6 +326,9 @@ func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateRes
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if parsed := parseZaiProviderError(err); parsed != nil {
 		return parsed
 	}

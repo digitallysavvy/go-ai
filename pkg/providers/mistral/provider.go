@@ -42,6 +42,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("mistral")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "MISTRAL_API_KEY", "Mistral", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

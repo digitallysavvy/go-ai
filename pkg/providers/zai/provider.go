@@ -4,6 +4,7 @@ package zai
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -54,6 +55,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("zai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "ZAI_API_KEY", "Z.AI API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

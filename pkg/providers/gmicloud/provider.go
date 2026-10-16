@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	stdhttp "net/http"
 	"os"
@@ -63,6 +64,10 @@ func New(cfg Config) *Provider {
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("gmicloud")),
 		HTTPClient: withGmicloudIncludeUsage(cfg.HTTPClient),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "GMI_CLOUD_APIKEY", "GMI Cloud API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

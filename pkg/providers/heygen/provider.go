@@ -1,8 +1,7 @@
 package heygen
 
 import (
-	"fmt"
-	"os"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -71,12 +70,9 @@ func (p *Provider) Name() string { return "heygen" }
 // Config.APIKey or HEYGEN_API_KEY, resolved per call) plus configured custom
 // headers and the SDK user-agent suffix, then the per-request headers.
 func (p *Provider) resolveHeaders(requestHeaders map[string]string) (map[string]string, error) {
-	apiKey := p.config.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("HEYGEN_API_KEY")
-	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("HeyGen API key is missing. Pass it using the 'APIKey' config, or set the HEYGEN_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
+	apiKey, err := providerutils.LoadAPIKey(p.config.APIKey, "HEYGEN_API_KEY", "HeyGen")
+	if err != nil {
+		return nil, err
 	}
 	headers := internalhttp.MergeHeaders(map[string]string{"x-api-key": apiKey}, p.config.Headers)
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("heygen"))

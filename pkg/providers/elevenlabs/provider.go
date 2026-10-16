@@ -2,6 +2,7 @@ package elevenlabs
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -44,6 +45,10 @@ func New(cfg Config) *Provider {
 			"xi-api-key":   cfg.APIKey,
 			"Content-Type": "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("elevenlabs")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ELEVENLABS_API_KEY", "ElevenLabs", "xi-api-key", "")
+		},
 	})
 
 	return &Provider{

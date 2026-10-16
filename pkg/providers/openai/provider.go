@@ -33,6 +33,24 @@ type Config struct {
 	// APIKey is the OpenAI API key
 	APIKey string
 
+	// APIKeyEnvVar is the environment variable read per request when APIKey is
+	// empty (TS loadApiKey environmentVariableName). Defaults to
+	// OPENAI_API_KEY. Wrapper providers set their own variable so that an
+	// OpenAI key is never forwarded to another service.
+	APIKeyEnvVar string
+
+	// APIKeyDescription names the provider in the LoadAPIKeyError message
+	// (TS loadApiKey description). Defaults to "OpenAI".
+	APIKeyDescription string
+
+	// NoAPIKey marks a wrapper that authenticates through its own Headers or
+	// HTTP transport (Azure, Vertex MaaS): no API key is loaded or required.
+	NoAPIKey bool
+
+	// HeadersFunc, when set on a NoAPIKey wrapper, resolves its credential
+	// headers for every request (Azure api-key). An error fails the request.
+	HeadersFunc func() (map[string]string, error) `json:"-"`
+
 	// Name overrides the provider name returned by Provider.Name().
 	// Defaults to "openai".
 	Name string
@@ -194,9 +212,17 @@ func New(cfg Config) *Provider {
 	baseURL = strings.TrimRight(baseURL, "/")
 	cfg.BaseURL = baseURL
 
+	authManaged := cfg.NoAPIKey || cfg.Name == "azure"
+	apiKeyEnv, apiKeyDescription := cfg.APIKeyEnvVar, cfg.APIKeyDescription
+	if apiKeyEnv == "" {
+		apiKeyEnv = "OPENAI_API_KEY"
+		if apiKeyDescription == "" {
+			apiKeyDescription = "OpenAI"
+		}
+	}
 	apiKey := cfg.APIKey
-	if apiKey == "" && cfg.Name != "azure" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" && !authManaged {
+		apiKey = os.Getenv(apiKeyEnv)
 	}
 	cfg.APIKey = apiKey
 
@@ -225,11 +251,21 @@ func New(cfg Config) *Provider {
 	}
 	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, uaSuffix)
 
-	client := http.NewClient(http.Config{
+	clientCfg := http.Config{
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
-	})
+	}
+	if authManaged {
+		clientCfg.HeadersFunc = cfg.HeadersFunc
+	} else {
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		userHeaders, userKey := cfg.Headers, cfg.APIKey
+		clientCfg.HeadersFunc = func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(userHeaders, userKey, apiKeyEnv, apiKeyDescription, "Authorization", "Bearer ")
+		}
+	}
+	client := http.NewClient(clientCfg)
 
 	return &Provider{
 		config: cfg,

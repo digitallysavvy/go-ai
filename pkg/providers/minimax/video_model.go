@@ -90,10 +90,14 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		body["callback_url"] = opts.WebhookURL
 	}
 
+	submitHeaders, err := m.prov.resolveVideoHeaders(opts.Headers)
+	if err != nil {
+		return nil, err
+	}
 	submitResp, err := m.prov.videoClient.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Path:    "/v2/video_generation",
-		Headers: m.prov.resolveVideoHeaders(opts.Headers),
+		Headers: submitHeaders,
 		Body:    body,
 	})
 	if err != nil {
@@ -159,7 +163,11 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.videoBaseURL, nil)
-	downloadOpts.Headers = m.prov.resolveVideoHeaders(opts.Headers)
+	statusHeaders, err := m.prov.resolveVideoHeaders(opts.Headers)
+	if err != nil {
+		return nil, nil, err
+	}
+	downloadOpts.Headers = statusHeaders
 
 	statusURL := strings.TrimRight(m.prov.videoBaseURL, "/") + "/v2/query/video_generation/" + providerutils.EncodePathSegment(op.TaskID)
 

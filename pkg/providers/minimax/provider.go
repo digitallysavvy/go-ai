@@ -15,7 +15,7 @@ package minimax
 
 import (
 	"fmt"
-	"os"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -79,15 +79,15 @@ func New(cfg Config) *Provider {
 		videoBaseURL = DefaultVideoBaseURL
 	}
 
-	// resolveAPIKey() below re-reads MINIMAX_API_KEY per call, so the
-	// Anthropic sub-provider (which resolves its own API key once, here, at
-	// construction time) is the one exception: that eager resolution is the
-	// existing pkg/providers/anthropic convention, unchanged by this package.
+	// MINIMAX_API_KEY is read per request (TS loadApiKey) by the Anthropic
+	// sub-provider through APIKeyEnvVar and by resolveVideoHeaders.
 	anthropicProvider := anthropic.New(anthropic.Config{
-		APIKey:  resolveAPIKey(cfg.APIKey),
-		Name:    "minimax",
-		BaseURL: baseURL,
-		Headers: cfg.Headers,
+		APIKey:            cfg.APIKey,
+		APIKeyEnvVar:      "MINIMAX_API_KEY",
+		APIKeyDescription: "MiniMax API key",
+		Name:              "minimax",
+		BaseURL:           baseURL,
+		Headers:           cfg.Headers,
 		// TS sets supportedUrls: () => ({}) for MiniMax: unlike direct
 		// Anthropic, it never accepts https image/PDF URLs directly and
 		// always converts to base64.
@@ -111,24 +111,21 @@ func New(cfg Config) *Provider {
 	}
 }
 
-// resolveAPIKey returns explicitKey, trimmed, or falls back to the
-// MINIMAX_API_KEY environment variable.
-func resolveAPIKey(explicitKey string) string {
-	if explicitKey != "" {
-		return explicitKey
-	}
-	return os.Getenv("MINIMAX_API_KEY")
-}
-
 // resolveVideoHeaders builds the headers for a MiniMax video API request,
 // resolving the API key fresh on every call (TS `getVideoHeaders`, a closure
 // re-invoked per request via `resolve(this.config.headers)` — not resolved
 // once and cached) and layering per-request headers over the provider's
 // configured ones (TS `combineHeaders(await resolve(this.config.headers),
 // options.headers)`: request headers win).
-func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) map[string]string {
-	headers := map[string]string{
-		"Authorization": "Bearer " + resolveAPIKey(p.config.APIKey),
+func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) (map[string]string, error) {
+	// TS loadApiKey: a missing key is a LoadAPIKeyError.
+	authHeaders, err := providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "MINIMAX_API_KEY", "MiniMax API key", "Authorization", "Bearer ")
+	if err != nil {
+		return nil, err
+	}
+	headers := authHeaders
+	if headers == nil {
+		headers = map[string]string{}
 	}
 	for k, v := range p.config.Headers {
 		headers[k] = v
@@ -136,7 +133,7 @@ func (p *Provider) resolveVideoHeaders(requestHeaders map[string]string) map[str
 	for k, v := range requestHeaders {
 		headers[k] = v
 	}
-	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("minimax"))
+	return version.WithUserAgentSuffix(headers, version.ProviderUserAgent("minimax")), nil
 }
 
 // CreateMiniMax creates a new MiniMax provider.

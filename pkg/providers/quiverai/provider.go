@@ -2,6 +2,7 @@ package quiverai
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -61,6 +62,10 @@ func New(cfg Config) *Provider {
 		client: internalhttp.NewClient(internalhttp.Config{
 			BaseURL: baseURL,
 			Headers: headers,
+			// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+			HeadersFunc: func() (map[string]string, error) {
+				return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "QUIVERAI_API_KEY", "QuiverAI", "Authorization", "Bearer ")
+			},
 		}),
 	}
 }
@@ -83,9 +88,12 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	apiKey, baseURL := resolveQuiverAIConfig(p.config)
 	structuredOutputsDisabled := false
 	orProvider := openresponses.New(openresponses.Config{
-		BaseURL:                  baseURL + "/responses",
-		APIKey:                   apiKey,
-		Headers:                  p.config.Headers,
+		BaseURL: baseURL + "/responses",
+		APIKey:  apiKey,
+		Headers: p.config.Headers,
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(p.config.Headers, p.config.APIKey, "QUIVERAI_API_KEY", "QuiverAI", "Authorization", "Bearer ")
+		},
 		Name:                     "quiverai",
 		StrictResponseInput:      true,
 		CustomToolID:             customToolID,

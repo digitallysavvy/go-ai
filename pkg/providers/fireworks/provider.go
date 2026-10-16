@@ -52,6 +52,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("fireworks")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "FIREWORKS_API_KEY", "Fireworks API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{
@@ -81,13 +85,15 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		baseURL = "https://api.fireworks.ai/inference"
 	}
 	return openai.New(openai.Config{
-		APIKey:           p.config.APIKey,
-		BaseURL:          strings.TrimRight(baseURL, "/") + "/v1",
-		Headers:          p.config.Headers,
-		Name:             "fireworks",
-		OpenAICompatible: true,
-		IncludeUsage:     true,
-		UserAgentName:    "fireworks",
+		APIKey:            p.config.APIKey,
+		APIKeyEnvVar:      "FIREWORKS_API_KEY",
+		APIKeyDescription: "Fireworks API key",
+		BaseURL:           strings.TrimRight(baseURL, "/") + "/v1",
+		Headers:           p.config.Headers,
+		Name:              "fireworks",
+		OpenAICompatible:  true,
+		IncludeUsage:      true,
+		UserAgentName:     "fireworks",
 	}).CompletionModel(modelID)
 }
 

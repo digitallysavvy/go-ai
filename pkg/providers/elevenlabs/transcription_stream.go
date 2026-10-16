@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	"net/url"
 	"strconv"
@@ -308,9 +309,13 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// tagged getHeaders() used for regular HTTP requests, which carries the
 	// `ai-sdk-elevenlabs/VERSION` tag. Match that here instead of building a
 	// fresh, untagged header set.
+	authHeaders, err := providerutils.RequestAuthHeader(m.provider.config.Headers, m.provider.config.APIKey, "ELEVENLABS_API_KEY", "ElevenLabs", "xi-api-key", "")
+	if err != nil {
+		return nil, err
+	}
 	headers := version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 		"xi-api-key": m.provider.config.APIKey,
-	}, m.provider.config.Headers), version.ProviderUserAgent("elevenlabs"))
+	}, authHeaders, m.provider.config.Headers), version.ProviderUserAgent("elevenlabs"))
 	// Per-call headers win over the provider headers (header names compare
 	// case-insensitively; the provider set is already lower-cased).
 	for k, v := range opts.Headers {

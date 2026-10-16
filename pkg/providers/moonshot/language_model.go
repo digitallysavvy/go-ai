@@ -607,6 +607,9 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 // handleError converts errors to SDK error types, preserving the Moonshot
 // {error:{message,type,code}} envelope's code when present.
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if parsed := parseMoonshotProviderError(err); parsed != err {
 		return parsed
 	}

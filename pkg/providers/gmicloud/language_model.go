@@ -245,6 +245,9 @@ func (m *LanguageModel) convertResponse(response gmicloudResponse) *types.Genera
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if parsed := parseGmicloudProviderError(err); parsed != nil {
 		return parsed
 	}

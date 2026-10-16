@@ -2,6 +2,7 @@ package voyage
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"net/http"
 	"os"
 
@@ -42,6 +43,10 @@ func New(cfg Config) *Provider {
 			BaseURL:    baseURL,
 			Headers:    version.WithUserAgentSuffix(internalhttp.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("voyage")),
 			HTTPClient: cfg.HTTPClient,
+			// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+			HeadersFunc: func() (map[string]string, error) {
+				return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "VOYAGE_API_KEY", "Voyage", "Authorization", "Bearer ")
+			},
 		}),
 	}
 }

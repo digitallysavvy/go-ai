@@ -396,6 +396,9 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 // gladia-transcription-model.ts uses the same gladiaFailedResponseHandler for
 // both the upload/init requests and the result_url polling GET).
 func handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := parseGladiaErrorBody(statusErr.Body)
