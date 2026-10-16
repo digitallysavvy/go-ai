@@ -929,6 +929,14 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				// meanwhile and discards the unfinished step.
 				return false, false, nil
 			}
+			if !finished && d.ctx.Err() != nil {
+				// The caller's ctx is already cancelled: emits racing the
+				// cancellation may have been dropped (send selects on
+				// ctx.Done), so an empty/short stream is the abort, not a
+				// normal end. Settle it as one deterministically.
+				_ = d.joinOutstandingExecutions()
+				return false, false, d.ctx.Err()
+			}
 			if !finished {
 				// The adapter ended the turn (closed its stream) without
 				// ever emitting `finish`. TS reports onTurnFailed and then
