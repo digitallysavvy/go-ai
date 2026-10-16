@@ -37,6 +37,8 @@ type Config struct {
 
 // New creates a new Replicate provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	baseURL := cfg.BaseURL
 	// TS validateBaseURL(options.baseURL): a whitespace-only base URL is an
 	// InvalidArgumentError. TS throws from the constructor; New keeps

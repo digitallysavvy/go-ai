@@ -3,6 +3,7 @@ package klingai
 import (
 	"fmt"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -50,6 +51,8 @@ type Config struct {
 // via GenerateAuthToken, but New fails fast when no credential source is
 // configured or available in the environment at all.
 func New(cfg Config) (*Provider, error) {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if _, err := resolveKlingAIAuthToken(cfg.APIKey, cfg.AccessKey, cfg.SecretKey); err != nil {
 		return nil, err
 	}
