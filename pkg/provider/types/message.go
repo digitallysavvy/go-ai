@@ -428,7 +428,7 @@ func (t ToolCallContent) MarshalJSON() ([]byte, error) {
 		ToolCallID       string                 `json:"toolCallId"`
 		ToolName         string                 `json:"toolName"`
 		Title            string                 `json:"title,omitempty"`
-		Input            interface{}            `json:"input,omitempty"`
+		Input            interface{}            `json:"input"`
 		ProviderExecuted bool                   `json:"providerExecuted,omitempty"`
 		ProviderOptions  map[string]interface{} `json:"providerOptions,omitempty"`
 		ProviderMetadata json.RawMessage        `json:"providerMetadata,omitempty"`
@@ -460,7 +460,8 @@ func toolCallContentInput(t ToolCallContent) interface{} {
 		return t.Arguments
 	}
 	if t.Input == "" {
-		return nil
+		// TS always carries an input; a call without arguments has {}.
+		return map[string]interface{}{}
 	}
 	var parsed interface{}
 	if err := json.Unmarshal([]byte(t.Input), &parsed); err == nil {

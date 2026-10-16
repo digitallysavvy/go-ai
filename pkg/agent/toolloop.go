@@ -1281,6 +1281,9 @@ func (c AgentConfig) withGenerateOptions(opts AgentGenerateOptions) AgentConfig 
 	if opts.Include != nil {
 		c.Include = opts.Include
 	}
+	if opts.Timeout != nil {
+		c.Timeout = opts.Timeout
+	}
 	if opts.Internal != nil {
 		// Internal is per-call only and flows through PrepareCall.
 		c.Internal = opts.Internal

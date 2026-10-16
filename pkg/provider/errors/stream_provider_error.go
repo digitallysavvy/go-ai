@@ -143,9 +143,12 @@ func NormalizeStreamProviderError(err error, providerName string, data interface
 	var explicitRetryable *bool
 
 	if outer, ok := asRecord(data); ok {
+		// TS: asRecord(asRecord(outer.response)?.error) ?? asRecord(outer.error) ?? outer
 		details := outer
 		if nested, ok := asRecord(outer["response"]); ok {
 			if errObj, ok := asRecord(nested["error"]); ok {
+				details = errObj
+			} else if errObj, ok := asRecord(outer["error"]); ok {
 				details = errObj
 			}
 		} else if errObj, ok := asRecord(outer["error"]); ok {

@@ -120,6 +120,10 @@ type AgentGenerateOptions struct {
 	ToolApproval            types.ToolApprovalConfig
 	Internal                *ai.InternalOptions
 
+	// Timeout overrides AgentConfig.Timeout for this call (TS
+	// `timeout ?? preparedCall.timeout` in ToolLoopAgent.generate/stream).
+	Timeout *ai.TimeoutConfig
+
 	ExperimentalSandbox         interface{}
 	ExperimentalRefineToolInput map[string]ai.ToolInputRefiner
 	ExperimentalDownload        ai.DownloadFunction

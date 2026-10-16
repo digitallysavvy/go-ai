@@ -150,9 +150,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stream_options"] = map[string]interface{}{"include_usage": true}
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey})
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey})
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{Provider: vertexXaiProviderKey, ReasoningKey: "reasoning_content", SpreadCompatMetadata: true})
 	}
 	if opts.Prompt.System != "" {
 		messages, _ := body["messages"].([]map[string]interface{})
