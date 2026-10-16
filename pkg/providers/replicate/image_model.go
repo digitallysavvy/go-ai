@@ -328,7 +328,7 @@ func (m *ImageModel) buildRequest(opts *provider.ImageGenerateOptions) (map[stri
 				if v != nil {
 					switch n := v.(type) {
 					case float64:
-						prefer = fmt.Sprintf("wait=%v", n)
+						prefer = "wait=" + providerutils.JSNumberString(n)
 					case int:
 						prefer = fmt.Sprintf("wait=%d", n)
 					case int64:
@@ -507,16 +507,16 @@ type replicateImagePrediction struct {
 	ID     string      `json:"id"`
 	Status string      `json:"status"`
 	Output interface{} `json:"output"`
-	Error  string      `json:"error"`
+	Error  *string     `json:"error"` // pointer: TS `error ?? 'Unknown error'` keeps ""
 	URLs   struct {
 		Get string `json:"get"`
 	} `json:"urls"`
 }
 
 // replicateErrorOrUnknown mirrors TS's `prediction.error ?? 'Unknown error'`.
-func replicateErrorOrUnknown(errMsg string) string {
-	if errMsg == "" {
+func replicateErrorOrUnknown(errMsg *string) string {
+	if errMsg == nil {
 		return "Unknown error"
 	}
-	return errMsg
+	return *errMsg
 }

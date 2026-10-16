@@ -104,6 +104,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[string]interface{} {
 	// Build prompt from messages
 	var promptText string
+	if opts.Prompt.System != "" {
+		promptText += fmt.Sprintf("System: %s\n", opts.Prompt.System)
+	}
 	if opts.Prompt.IsMessages() {
 		for _, msg := range opts.Prompt.Messages {
 			content := ""
@@ -124,7 +127,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions) map[str
 		}
 		promptText += "Assistant: "
 	} else if opts.Prompt.IsSimple() {
-		promptText = opts.Prompt.Text
+		promptText += opts.Prompt.Text
 	}
 
 	input := map[string]interface{}{
@@ -177,7 +180,7 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 		if prediction.Status == "failed" || prediction.Status == "canceled" {
 			return replicatePrediction{}, providererrors.NewInvalidResponseDataError(
 				prediction,
-				fmt.Sprintf("Replicate generation %s: %s", prediction.Status, replicateErrorOrUnknown(prediction.Error)),
+				fmt.Sprintf("Replicate generation %s: %s", prediction.Status, replicateErrorOrUnknown(optionalString(prediction.Error))),
 			)
 		}
 
@@ -192,6 +195,14 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 	}
 
 	return replicatePrediction{}, fmt.Errorf("prediction timed out after %d attempts", maxAttempts)
+}
+
+// optionalString is nil for "" (this Go-only model has no nullish distinction).
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func (m *LanguageModel) convertResponse(prediction replicatePrediction) *types.GenerateResult {
