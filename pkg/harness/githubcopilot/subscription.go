@@ -317,30 +317,68 @@ func plaintextToken(config map[string]any, accountKey string) string {
 	return ""
 }
 
-func normalizeGitHubOrigin(host string) string {
+// parseGitHubURL mirrors `new URL(host.includes('://') ? host : "https://"+host)`
+// closely enough for host normalization: it returns the lowercased hostname
+// (IPv6 keeps its brackets, like WHATWG `hostname`), the port with the scheme's
+// default dropped, and the scheme.
+func parseGitHubURL(host string) (scheme, hostname, port string, ok bool) {
 	full := host
 	if !strings.Contains(host, "://") {
 		full = "https://" + host
 	}
 	u, err := url.Parse(full)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
+		return "", "", "", false
 	}
-	return u.Scheme + "://" + u.Host
+	hostname = strings.ToLower(u.Hostname())
+	if strings.HasPrefix(u.Host, "[") {
+		hostname = "[" + hostname + "]"
+	}
+	port = u.Port()
+	switch u.Scheme {
+	case "http", "ws":
+		if port == "80" {
+			port = ""
+		}
+	case "https", "wss":
+		if port == "443" {
+			port = ""
+		}
+	case "ftp":
+		if port == "21" {
+			port = ""
+		}
+	}
+	return strings.ToLower(u.Scheme), hostname, port, true
 }
 
-// normalizeGitHubHost returns host's hostname (no scheme, no port unless
-// present in the input). Mirrors TS `normalizeGitHubHost`.
-func normalizeGitHubHost(host string) string {
-	full := host
-	if !strings.Contains(host, "://") {
-		full = "https://" + host
+// normalizeGitHubOrigin mirrors TS `normalizeGitHubOrigin` (`URL.origin`):
+// lowercase host, default port dropped, and the literal "null" for
+// non-special schemes.
+func normalizeGitHubOrigin(host string) string {
+	scheme, hostname, port, ok := parseGitHubURL(host)
+	if !ok {
+		return ""
 	}
-	u, err := url.Parse(full)
-	if err != nil {
+	switch scheme {
+	case "http", "https", "ws", "wss", "ftp":
+	default:
+		return "null"
+	}
+	if port != "" {
+		hostname += ":" + port
+	}
+	return scheme + "://" + hostname
+}
+
+// normalizeGitHubHost returns host's hostname (no scheme, no port). Mirrors TS
+// `normalizeGitHubHost` (`URL.hostname`).
+func normalizeGitHubHost(host string) string {
+	_, hostname, _, ok := parseGitHubURL(host)
+	if !ok {
 		return host
 	}
-	return u.Hostname()
+	return hostname
 }
 
 func isNonEmpty(s string) bool {
