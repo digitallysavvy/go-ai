@@ -1207,10 +1207,18 @@ func (m *LanguageModel) handleError(err error) error {
 		jsonPart := msg[idx+2:]
 		var body anthropicErrorBody
 		if jsonErr := json.Unmarshal([]byte(jsonPart), &body); jsonErr == nil && body.Error.Type != "" {
-			return providererrors.NewProviderError("anthropic", 0, body.Error.Type, body.Error.Message, err)
+			return providererrors.NewProviderError(m.errorProviderName(), 0, body.Error.Type, body.Error.Message, err)
 		}
 	}
-	return providererrors.NewProviderError("anthropic", 0, "", msg, err)
+	return providererrors.NewProviderError(m.errorProviderName(), 0, "", msg, err)
+}
+
+// errorProviderName is the provider name attributed to non-HTTP failures.
+func (m *LanguageModel) errorProviderName() string {
+	if m.provider == nil {
+		return "anthropic"
+	}
+	return m.provider.Name()
 }
 
 // anthropicMaxOutputTokens returns the maximum output tokens for a model.

@@ -509,3 +509,18 @@ func TestStreamMessageStartIterationsAreIgnored(t *testing.T) {
 		return
 	}
 }
+
+// A transport failure is attributed to the configured provider name, not a
+// hard-coded "anthropic" (anthropic-aws, bedrock and vertex wrap this model).
+func TestHandleErrorUsesConfiguredProviderName(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: url, Name: "anthropic-aws.messages"})
+	model := NewLanguageModel(p, "claude-sonnet-4-5-20250929", nil)
+	_, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Provider != "anthropic-aws.messages" {
+		t.Fatalf("err = %#v", err)
+	}
+}
