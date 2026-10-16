@@ -23,10 +23,10 @@ func (o *webSearch20250305Opts) ToAnthropicAPIMap() map[string]interface{} {
 	if o.Config.MaxUses != nil {
 		m["max_uses"] = *o.Config.MaxUses
 	}
-	if len(o.Config.AllowedDomains) > 0 {
+	if o.Config.AllowedDomains != nil {
 		m["allowed_domains"] = o.Config.AllowedDomains
 	}
-	if len(o.Config.BlockedDomains) > 0 {
+	if o.Config.BlockedDomains != nil {
 		m["blocked_domains"] = o.Config.BlockedDomains
 	}
 	if o.Config.UserLocation != nil {

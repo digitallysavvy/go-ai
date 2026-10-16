@@ -163,6 +163,12 @@ func prepareTools(o prepareToolsOptions) preparedTools {
 		}
 		// Self-serializing provider tools.
 		if mapper, ok := t.ProviderOptions.(anthropicAPIMapper); ok && t.ProviderOptions != nil {
+			if v, ok := t.ProviderOptions.(interface{ Validate() error }); ok {
+				if err := v.Validate(); err != nil {
+					out.err = &providererrors.TypeValidationError{Field: "args", Message: err.Error(), Cause: err}
+					return out
+				}
+			}
 			wire = append(wire, mapper.ToAnthropicAPIMap())
 			if b, ok := providerToolBetas[t.Name]; ok {
 				addBeta(b)
