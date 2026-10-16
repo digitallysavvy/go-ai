@@ -125,7 +125,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Body:    body,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("bytedance: image generation request failed: %w", err)
+		// TS postJsonToApi lets the transport failure propagate unchanged.
+		return nil, err
 	}
 	if httpResp.StatusCode >= 400 {
 		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode)
