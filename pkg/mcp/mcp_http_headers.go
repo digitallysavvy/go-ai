@@ -100,13 +100,17 @@ func GetMCPToolHeaderBindings(inputSchema interface{}) (bindings []MCPToolHeader
 			bindings = append(bindings, MCPToolHeaderBinding{HeaderName: headerName, Path: append([]string(nil), path...), ValueType: valueType})
 		}
 
-		for key, child := range node {
+		// Sorted keys: Go's decoded schema has no declaration order, but the
+		// first violation reported must not change from call to call.
+		for _, key := range sortedSchemaKeys(node) {
+			child := node[key]
 			if key == "x-mcp-header" {
 				continue
 			}
 			if key == "properties" {
 				if properties, ok := child.(map[string]interface{}); ok {
-					for propertyName, propertySchema := range properties {
+					for _, propertyName := range sortedSchemaKeys(properties) {
+						propertySchema := properties[propertyName]
 						if visitErr := visit(propertySchema, append(append([]string(nil), path...), propertyName), staticallyReachable); visitErr != nil {
 							return visitErr
 						}
@@ -213,4 +217,13 @@ func mcpHeaderSafeInteger(value interface{}) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func sortedSchemaKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
