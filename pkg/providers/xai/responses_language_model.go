@@ -535,9 +535,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Type        string `json:"type"`
 					Text        string `json:"text"`
 					Annotations []struct {
-						Type  string `json:"type"`
-						URL   string `json:"url,omitempty"`
-						Title string `json:"title,omitempty"`
+						Type  string  `json:"type"`
+						URL   string  `json:"url,omitempty"`
+						Title *string `json:"title,omitempty"`
 					} `json:"annotations,omitempty"`
 				} `json:"content"`
 			}
@@ -553,15 +553,11 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				}
 				for _, ann := range part.Annotations {
 					if ann.Type == "url_citation" && ann.URL != "" {
-						title := ann.Title
-						if title == "" {
-							title = ann.URL
-						}
 						result.Content = append(result.Content, types.SourceContent{
 							SourceType: "url",
 							ID:         streaming.GenerateID(),
 							URL:        ann.URL,
-							Title:      title,
+							Title:      xaiCitationTitle(ann.Title, ann.URL),
 						})
 					}
 				}
@@ -1385,9 +1381,9 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		case "response.output_text.done":
 			var e struct {
 				Annotations []struct {
-					Type  string `json:"type"`
-					URL   string `json:"url,omitempty"`
-					Title string `json:"title,omitempty"`
+					Type  string  `json:"type"`
+					URL   string  `json:"url,omitempty"`
+					Title *string `json:"title,omitempty"`
 				} `json:"annotations,omitempty"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
@@ -1395,10 +1391,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			for _, ann := range e.Annotations {
 				if ann.Type == "url_citation" && ann.URL != "" {
-					title := ann.Title
-					if title == "" {
-						title = ann.URL
-					}
+					title := xaiCitationTitle(ann.Title, ann.URL)
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 						Type: provider.ChunkTypeSource,
 						SourceContent: &types.SourceContent{
@@ -1416,19 +1409,16 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		case "response.output_text.annotation.added":
 			var e struct {
 				Annotation struct {
-					Type  string `json:"type"`
-					URL   string `json:"url,omitempty"`
-					Title string `json:"title,omitempty"`
+					Type  string  `json:"type"`
+					URL   string  `json:"url,omitempty"`
+					Title *string `json:"title,omitempty"`
 				} `json:"annotation"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			if e.Annotation.Type == "url_citation" && e.Annotation.URL != "" {
-				title := e.Annotation.Title
-				if title == "" {
-					title = e.Annotation.URL
-				}
+				title := xaiCitationTitle(e.Annotation.Title, e.Annotation.URL)
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeSource,
 					SourceContent: &types.SourceContent{
@@ -1586,6 +1576,15 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 	}
 }
 
+// xaiCitationTitle is TS `annotation.title ?? annotation.url`: only a missing
+// or null title falls back to the URL, an empty title stays empty.
+func xaiCitationTitle(title *string, url string) string {
+	if title == nil {
+		return url
+	}
+	return *title
+}
+
 // startTextBlock enqueues text-start the first time a text block id is seen.
 func (s *xaiResponsesStream) startTextBlock(blockID string) {
 	if s.textSeen[blockID] {
@@ -1605,9 +1604,9 @@ func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 		Content []struct {
 			Text        string `json:"text"`
 			Annotations []struct {
-				Type  string `json:"type"`
-				URL   string `json:"url"`
-				Title string `json:"title"`
+				Type  string  `json:"type"`
+				URL   string  `json:"url"`
+				Title *string `json:"title"`
 			} `json:"annotations"`
 		} `json:"content"`
 	}
@@ -1624,10 +1623,7 @@ func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 			if ann.Type != "url_citation" || ann.URL == "" {
 				continue
 			}
-			title := ann.Title
-			if title == "" {
-				title = ann.URL
-			}
+			title := xaiCitationTitle(ann.Title, ann.URL)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:          provider.ChunkTypeSource,
 				SourceContent: &types.SourceContent{SourceType: "url", ID: streaming.GenerateID(), URL: ann.URL, Title: title},
