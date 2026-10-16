@@ -270,3 +270,26 @@ type gatewayTimeoutTestError struct{}
 func (gatewayTimeoutTestError) Error() string   { return "request timeout" }
 func (gatewayTimeoutTestError) Timeout() bool   { return true }
 func (gatewayTimeoutTestError) Temporary() bool { return false }
+
+func TestGatewayImageModelOmitsEmptyPromptForImageOnlyEdit(t *testing.T) {
+	var seenBody map[string]interface{}
+	serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"images":["aW1n"]}`))
+	}))
+	defer closeServer()
+	p, err := New(Config{APIKey: "k", BaseURL: serverURL + "/v4/ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewImageModel(p, "openai/gpt-image-1").DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Files: []provider.ImageFile{{Type: "url", URL: "https://example.com/a.png"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := seenBody["prompt"]; ok {
+		t.Fatalf("image-only edit must omit prompt: %#v", seenBody)
+	}
+}

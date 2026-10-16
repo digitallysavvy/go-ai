@@ -1185,3 +1185,21 @@ func TestBatch_DoGetBatchResults_MixedBase64AndMissingURL(t *testing.T) {
 		t.Fatalf("err = %v, want InvalidArgumentError batchResult (the b64 image must not be treated as missing)", err)
 	}
 }
+
+// TS convertXaiBatchStatus treats any non-null cancel_time or
+// cancel_by_xai_message as cancelled, even an empty string.
+func TestConvertXAIBatchStatusEmptyCancelMarkersCountAsCancelled(t *testing.T) {
+	empty := ""
+	st := convertXAIBatchStatus(xaiBatchResponseWire{BatchID: "b1", CancelTime: &empty})
+	if st.Status != provider.BatchStatusFailed || st.Error == nil || st.Error.Code != "batch_cancelled" {
+		t.Fatalf("status = %#v", st)
+	}
+	st = convertXAIBatchStatus(xaiBatchResponseWire{BatchID: "b1", CancelByXAIMessage: &empty})
+	if st.Status != provider.BatchStatusFailed || st.Error == nil || st.Error.Message != "" {
+		t.Fatalf("status = %#v err=%#v", st, st.Error)
+	}
+	st = convertXAIBatchStatus(xaiBatchResponseWire{BatchID: "b1"})
+	if st.Status == provider.BatchStatusFailed {
+		t.Fatalf("absent markers must not cancel: %#v", st)
+	}
+}

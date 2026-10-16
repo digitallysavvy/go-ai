@@ -54,7 +54,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		opts = &provider.ImageGenerateOptions{}
 	}
 
-	body["prompt"] = opts.Prompt
+	// TS sends `prompt` unconditionally, but an image-only edit has an
+	// undefined prompt that JSON.stringify drops. Go cannot tell "" from
+	// unset, so an empty prompt accompanied by input files is treated as unset.
+	if opts.Prompt != "" || len(opts.Files) == 0 {
+		body["prompt"] = opts.Prompt
+	}
 
 	if opts.N != nil {
 		body["n"] = *opts.N

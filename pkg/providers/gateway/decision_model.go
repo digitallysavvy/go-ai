@@ -74,10 +74,11 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 
 	var response gatewayDecisionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/decision-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayDecision),
+		Method:           http.MethodPost,
+		Path:             "/decision-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(ctx, err)

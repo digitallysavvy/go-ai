@@ -164,9 +164,9 @@ func mistralTranscriptionProviderMetadata(response mistralTranscriptionResponse)
 		if response.Usage.RequestCount != nil {
 			usage["requestCount"] = *response.Usage.RequestCount
 		}
-		if len(usage) > 0 {
-			metadata["usage"] = usage
-		}
+		// TS assigns usage even when no field is present, so an empty usage
+		// object still produces providerMetadata.mistral.usage.
+		metadata["usage"] = usage
 	}
 
 	var providerSegments []map[string]interface{}

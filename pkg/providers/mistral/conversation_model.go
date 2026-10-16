@@ -528,7 +528,7 @@ func (s *conversationStream) handle(data string) {
 		Content        json.RawMessage        `json:"content"`
 		Model          *string                `json:"model"`
 		ToolCallID     string                 `json:"tool_call_id"`
-		Name           string                 `json:"name"`
+		Name           streaming.WireName     `json:"name"`
 		Arguments      string                 `json:"arguments"`
 		OutputIndex    *int                   `json:"output_index"`
 		Function       *string                `json:"function"`
@@ -603,17 +603,17 @@ func (s *conversationStream) handle(data string) {
 	case "function.call.delta":
 		s.closeContent()
 		s.hasFunctionCalls = true
-		for _, c := range s.tracker.Track(ev.OutputIndex, ev.ToolCallID, ev.Name, ev.Arguments) {
+		for _, c := range s.tracker.TrackWire(ev.OutputIndex, ev.ToolCallID, ev.Name, ev.Arguments) {
 			cc := c
 			s.queue = append(s.queue, &cc)
 		}
 	case "tool.execution.started", "tool.execution.delta":
 		s.closeContent()
 		if ex, ok := s.executions[ev.ID]; !ok {
-			s.executions[ev.ID] = &conversationExecution{ID: ev.ID, Name: ev.Name, Arguments: ev.Arguments, Function: ev.Function}
+			s.executions[ev.ID] = &conversationExecution{ID: ev.ID, Name: ev.Name.Value, Arguments: ev.Arguments, Function: ev.Function}
 			s.queue = append(s.queue, &provider.StreamChunk{
 				Type:     provider.ChunkTypeToolInputStart,
-				ToolCall: &types.ToolCall{ID: ev.ID, ToolName: s.converter.names.customName(ev.Name), ProviderExecuted: true},
+				ToolCall: &types.ToolCall{ID: ev.ID, ToolName: s.converter.names.customName(ev.Name.Value), ProviderExecuted: true},
 			})
 		} else {
 			ex.Arguments += ev.Arguments

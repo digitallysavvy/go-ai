@@ -538,3 +538,34 @@ func TestGatewayDecisionModel_DoDecide_RejectsURLFileData(t *testing.T) {
 		t.Fatalf("a request was sent: %v", body)
 	}
 }
+
+// TS createJsonResponseHandler(gatewayDecisionResponseSchema) rejects a
+// malformed answer instead of passing it through.
+func TestGatewayDecisionModel_DoDecide_ValidatesResponse(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown answer type": `{"answers":{"q":{"type":"mystery"}}}`,
+		"boolean no prob":     `{"answers":{"q":{"type":"boolean"}}}`,
+		"answers missing":     `{"model":"m"}`,
+		"bad warning":         `{"answers":{},"warnings":[{"type":"nope"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			model, _ := p.DecisionModel("m")
+			_, err = model.DoDecide(context.Background(), provider.DecisionCallOptions{
+				State:     "s",
+				Questions: map[string]provider.DecisionQuestion{"q": {Type: "boolean", Instructions: "i"}},
+			})
+			if err == nil {
+				t.Fatal("want validation error")
+			}
+		})
+	}
+}

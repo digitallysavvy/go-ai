@@ -42,6 +42,11 @@ func (m *SpeechModel) ModelID() string { return m.modelID }
 // DoGenerate performs non-streaming speech synthesis.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
 	currentDate := time.Now()
+	// TS parseProviderOptions(mistralSpeechModelOptions): refAudio is a
+	// non-empty string.
+	if _, err := providerutils.ParseProviderOptions("mistral", opts.ProviderOptions, mistralSpeechOptionsSchema); err != nil {
+		return nil, err
+	}
 	reqBody, warnings := m.buildRequestBody(opts)
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
@@ -88,6 +93,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Body:      providerutils.RawJSONBody(resp.Body),
 		},
 	}, nil
+}
+
+// mistralSpeechOptionsSchema is mistralSpeechModelOptions.
+var mistralSpeechOptionsSchema = providerutils.OptionSchema{
+	"refAudio": providerutils.OptStringLen(1, -1),
 }
 
 // redactedSpeechRequestBody returns a shallow copy of body with ref_audio

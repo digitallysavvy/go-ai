@@ -764,3 +764,19 @@ func TestConversationUnknownEventTypeCarriesValidationError(t *testing.T) {
 	}
 	t.Fatalf("no error chunk in %v", chunkTypes(chunks))
 }
+
+// TS processDelta ignores a present-but-blank function name on a new call; it
+// is neither an error nor a tool call.
+func TestConversationStreamBlankFunctionCallNameIsIgnored(t *testing.T) {
+	_, p := newConvRecorder(t, "text/event-stream", sse(
+		`{"type":"function.call.delta","tool_call_id":"function-1","name":"","arguments":"{}","output_index":0}`,
+		`{"type":"conversation.response.done","usage":`+convUsage+`}`,
+	))
+	chunks := streamWith(t, p, &provider.GenerateOptions{Prompt: whoWon(), Tools: []types.Tool{searchTool("search")}})
+	if c := findChunk(chunks, provider.ChunkTypeError); c != nil {
+		t.Fatalf("unexpected error chunk %#v", c)
+	}
+	if c := findChunk(chunks, provider.ChunkTypeToolCall); c != nil {
+		t.Fatalf("unexpected tool call %#v", c)
+	}
+}

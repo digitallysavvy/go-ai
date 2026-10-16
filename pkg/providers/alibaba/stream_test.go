@@ -477,3 +477,50 @@ data: [DONE]
 
 	assert.Equal(t, provider.ChunkTypeFinish, chunks[5].Type)
 }
+
+// TS processDelta throws for a new call without function.name even when a
+// named sibling exists, and ignores a present-but-blank name.
+func TestAlibabaStream_ToolCallNameBlankVersusAbsent(t *testing.T) {
+	run := func(sse string) []*provider.StreamChunk {
+		stream := newAlibabaStream(io.NopCloser(strings.NewReader(sse)))
+		defer stream.Close() //nolint:errcheck
+		var out []*provider.StreamChunk
+		for {
+			c, err := stream.Next()
+			if err == io.EOF {
+				break
+			}
+			require.NoError(t, err)
+			out = append(out, c)
+		}
+		return out
+	}
+	count := func(cs []*provider.StreamChunk, ty provider.ChunkType) (n int) {
+		for _, c := range cs {
+			if c.Type == ty {
+				n++
+			}
+		}
+		return
+	}
+	blank := run(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":" ","arguments":"{}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`)
+	require.Equal(t, 0, count(blank, provider.ChunkTypeError), "%#v", blank)
+	require.Equal(t, 0, count(blank, provider.ChunkTypeToolCall))
+
+	absent := run(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"ok","arguments":"{}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"c2","type":"function","function":{"arguments":"{}"}}]},"finish_reason":""}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`)
+	require.Equal(t, 1, count(absent, provider.ChunkTypeError), "%#v", absent)
+}

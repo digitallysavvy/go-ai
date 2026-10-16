@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ConvertToOpenResponsesInput converts AI SDK messages to Open Responses
@@ -140,7 +141,19 @@ func convertUserContent(content []types.ContentPart, warnings *[]types.Warning, 
 			if err != nil {
 				return nil, err
 			}
+			if file.MediaType == "" {
+				file.MediaType = file.MimeType
+			}
 			mediaType := file.MediaType
+			// TS resolveFullMediaType: a top-level-only or wildcard type on
+			// inline bytes is sniffed (or rejected), never sent as is.
+			if len(file.Data) > 0 && file.URL == "" && file.Reference == "" {
+				resolved, err := resolveInlineMediaType(mediaType, file.Data)
+				if err != nil {
+					return nil, err
+				}
+				file.MediaType, mediaType = resolved, resolved
+			}
 			if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 				imageURL := convertFileToImageURL(file, warnings)
 				if imageURL != "" {
@@ -244,6 +257,15 @@ func normalizeFileContentData(file types.FileContent) (types.FileContent, error)
 		file.MediaType = file.FileData.MediaType
 	}
 	return file, nil
+}
+
+// resolveInlineMediaType is TS resolveFullMediaType for inline bytes. An empty
+// media type keeps the legacy application/octet-stream default.
+func resolveInlineMediaType(mediaType string, data []byte) (string, error) {
+	if mediaType == "" {
+		return "", nil
+	}
+	return prompt.ResolveFullMediaType(mediaType, data, true)
 }
 
 func mediaTypeOrDefault(mediaType string) string {
@@ -974,6 +996,13 @@ func convertToolFileContentBlock(block types.FileContentBlock, warnings *[]types
 	file, err := normalizeFileContentBlockData(block, providerName)
 	if err != nil {
 		return nil, false, err
+	}
+	if len(file.Data) > 0 && file.URL == "" && file.Reference == "" {
+		resolved, err := resolveInlineMediaType(file.MediaType, file.Data)
+		if err != nil {
+			return nil, false, err
+		}
+		file.MediaType = resolved
 	}
 	mediaType := mediaTypeOrDefault(file.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {

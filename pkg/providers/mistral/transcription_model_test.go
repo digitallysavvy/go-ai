@@ -233,3 +233,19 @@ func TestMistralTranscriptionTypedOptionsAreForwardedAndValidated(t *testing.T) 
 		}
 	}
 }
+
+// TS builds mistralMetadata.usage whenever response.usage != null, even when
+// it carries no known field.
+func TestTranscriptionEmptyUsageStillProducesUsageMetadata(t *testing.T) {
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		return mistralJSONResponse(`{"model":"m","text":"hi","usage":{}}`), nil
+	})
+	result, err := NewTranscriptionModel(p, "m").DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := result.ProviderMetadata["mistral"].(map[string]interface{})
+	if usage, ok := meta["usage"].(map[string]interface{}); !ok || len(usage) != 0 {
+		t.Fatalf("metadata = %#v", result.ProviderMetadata)
+	}
+}

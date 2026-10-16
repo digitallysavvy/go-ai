@@ -113,3 +113,25 @@ func TestMistralSpeechModelUnsupportedOptionsWarn(t *testing.T) {
 		}
 	}
 }
+
+// TS mistralSpeechModelOptions: refAudio is z.string().min(1).
+func TestMistralSpeechModelRejectsInvalidRefAudio(t *testing.T) {
+	called := false
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		called = true
+		return mistralJSONResponse(`{"audio_data":""}`), nil
+	})
+	m := NewSpeechModel(p, "voxtral-mini-tts-latest")
+	for _, bad := range []interface{}{"", 5} {
+		_, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+			Text:            "hi",
+			ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{"refAudio": bad}},
+		})
+		if err == nil {
+			t.Fatalf("refAudio %#v: want error", bad)
+		}
+	}
+	if called {
+		t.Fatal("request must not be sent")
+	}
+}

@@ -17,6 +17,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // DecisionModelID is an OpenAI Decisions API model ID. Any string is accepted.
@@ -378,7 +379,13 @@ func decisionToText(input interface{}) string {
 	if s, ok := input.(string); ok {
 		return s
 	}
-	b, err := json.Marshal(input)
+	return decisionJSONText(input)
+}
+
+// decisionJSONText is JSON.stringify: no HTML escaping, and a string value
+// keeps its quotes.
+func decisionJSONText(input interface{}) string {
+	b, err := jsonstr.Marshal(input)
 	if err != nil {
 		return fmt.Sprint(input)
 	}
@@ -392,7 +399,7 @@ func decisionInputContent(parts []provider.DecisionStatePart) ([]interface{}, er
 		case "text":
 			content = append(content, map[string]interface{}{"type": "input_text", "text": part.Text})
 		case "json":
-			content = append(content, map[string]interface{}{"type": "input_text", "text": decisionToText(part.Value)})
+			content = append(content, map[string]interface{}{"type": "input_text", "text": decisionJSONText(part.Value)})
 		case "file":
 			image, err := decisionImageContent(part)
 			if err != nil {
