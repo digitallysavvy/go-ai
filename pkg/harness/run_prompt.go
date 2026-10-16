@@ -2107,6 +2107,12 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	if decision.Type == CustomToolApprovalDeny && decision.Reason == "" {
 		decision.Reason = d.in.ToolApprovalReasons[raw.ToolName]
 	}
+	// TS `pendingApprovalsByToolCallId.get(...) ?? (request ? {...} : undefined)`:
+	// a tool call that still has an unanswered pending approval goes through the
+	// approval flow even when the current decision would allow it.
+	if decision.Type == CustomToolApprovalAllow && d.pendingApprovalsByToolCallID[raw.ToolCallID] != nil {
+		decision.Type = CustomToolApprovalRequest
+	}
 	switch decision.Type {
 	case CustomToolApprovalDeny:
 		approvalID := generateApprovalID()

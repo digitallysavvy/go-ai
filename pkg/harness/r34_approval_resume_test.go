@@ -130,3 +130,42 @@ func TestRunPrompt_AutomaticDenialPublishesToolExecutionWithoutEcho(t *testing.T
 		mu.Unlock()
 	}
 }
+
+// A tool call that still has an unanswered pending approval is re-requested
+// (and the turn pauses) even if the current approval configuration would
+// allow it, like TS `pendingApprovalsByToolCallId.get(...) ?? ...`.
+func TestRunPrompt_PendingApprovalWinsOverAllowDecision(t *testing.T) {
+	executed := false
+	weather := weatherTool()
+	weather.Execute = func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		executed = true
+		return "x", nil
+	}
+	mock := newMockHarness(mockHarnessOptions{
+		continueScript: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "weather", Input: `{"city":"SF"}`},
+				hostInputBoundary(1),
+			}
+		},
+	})
+	tools := map[string]types.Tool{"weather": weather}
+	var requested []PendingToolApproval
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Mode: "continue", SandboxSession: testSandbox(),
+		Tools: tools, ActiveTools: tools,
+		PendingToolApprovals:  []PendingToolApproval{{ApprovalID: "a1", ToolCallID: "c1", ToolName: "weather", Input: `{"city":"SF"}`, Kind: PendingToolApprovalCustom}},
+		OnPendingToolApproval: func(a PendingToolApproval) { requested = append(requested, a) },
+	})
+	chunks := drainRunPrompt(t, out)
+	if executed {
+		t.Fatal("tool executed although an approval is still pending")
+	}
+	if len(requested) != 1 || requested[0].ApprovalID != "a1" {
+		t.Fatalf("pending approvals re-requested = %+v", requested)
+	}
+	if n := len(chunksOfType(chunks, provider.ChunkTypeToolApprovalRequest)); n != 1 {
+		t.Fatalf("approval-request chunks = %d, want 1", n)
+	}
+}
