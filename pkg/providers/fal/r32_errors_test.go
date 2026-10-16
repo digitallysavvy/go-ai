@@ -30,7 +30,7 @@ func TestHandleErrorsKeepTransportFailuresAndResponseData(t *testing.T) {
 			t.Errorf("%s: transport failure was wrapped: %v", name, got)
 		}
 		var perr *providererrors.ProviderError
-		if !errors.As(handle(httpErr()), &perr) || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["x-request-id"] != "r1" || perr.Message != "m" {
+		if !errors.As(handle(httpErr()), &perr) || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["X-Request-Id"] != "r1" || perr.Message != "m" {
 			t.Errorf("%s: got %#v", name, perr)
 		}
 	}

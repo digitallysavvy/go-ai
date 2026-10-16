@@ -20,7 +20,7 @@ func TestHandleErrorKeepsTransportFailuresAndResponseData(t *testing.T) {
 	body := `{"status":400,"message":"m"}`
 	got := handleError(&internalhttp.HTTPStatusError{StatusCode: 400, Headers: http.Header{"X-Request-Id": {"r1"}}, Body: []byte(body)})
 	var perr *providererrors.ProviderError
-	if !errors.As(got, &perr) || perr.StatusCode != 400 || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["x-request-id"] != "r1" {
+	if !errors.As(got, &perr) || perr.StatusCode != 400 || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["X-Request-Id"] != "r1" {
 		t.Fatalf("got %#v", perr)
 	}
 }

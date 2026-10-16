@@ -210,6 +210,15 @@ func (e *HTTPStatusError) HTTPStatusDetails() (int, map[string]string, []byte) {
 	return e.StatusCode, headers, e.Body
 }
 
+// HTTPResponseHeader returns the raw response header, so error helpers can
+// keep Go canonical key casing and every value of a repeated header.
+func (e *HTTPStatusError) HTTPResponseHeader() http.Header {
+	if e == nil {
+		return nil
+	}
+	return e.Headers
+}
+
 // snapshot returns a point-in-time copy of the mutable client state (base
 // URL and default headers) under the read lock, so callers never range over
 // or concatenate the live fields while SetHeader/SetBaseURL may be running

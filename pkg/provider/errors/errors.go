@@ -201,6 +201,12 @@ func newProviderError(provider string, statusCode int, errorCode, message string
 	}
 	e.StatusCode = code
 	e.ResponseHeaders = headers
+	if !replaceEmpty {
+		// NewProviderErrorFromResponse replaces provider code that built
+		// ResponseHeaders with Go canonical keys and comma-joined values in
+		// v0.5.2; keep that shape (accepted deviation from TS lower-case keys).
+		e.ResponseHeaders = canonicalResponseHeaders(cause, headers)
+	}
 	e.ResponseBody = string(body)
 	if len(body) > 0 {
 		var data interface{}
@@ -219,6 +225,30 @@ func newProviderError(provider string, statusCode int, errorCode, message string
 		}
 	}
 	return e
+}
+
+// canonicalResponseHeaders returns the response headers with Go canonical keys
+// and repeated values joined by ", " (the v0.5.2 ResponseHeaders shape). It
+// uses the raw header when the cause keeps one, else canonicalizes headers.
+func canonicalResponseHeaders(cause error, headers map[string]string) map[string]string {
+	var raw interface{ HTTPResponseHeader() http.Header }
+	if errors.As(cause, &raw) {
+		if h := raw.HTTPResponseHeader(); len(h) > 0 {
+			out := make(map[string]string, len(h))
+			for k, vs := range h {
+				out[http.CanonicalHeaderKey(k)] = strings.Join(vs, ", ")
+			}
+			return out
+		}
+	}
+	if len(headers) == 0 {
+		return headers
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		out[http.CanonicalHeaderKey(k)] = v
+	}
+	return out
 }
 
 // ExtractAPIErrorMessage pulls a human-readable message out of a JSON error

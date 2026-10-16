@@ -44,7 +44,7 @@ func TestVideoResponseTimestampIsTakenBeforeTheRequest(t *testing.T) {
 // The failed-response body, parsed data and headers are kept on the error.
 func TestProviderErrorKeepsResponseBodyAndData(t *testing.T) {
 	err := newProdiaProviderError(400, []byte(`{"message":"m"}`), http.Header{"X-Request-Id": {"r"}})
-	if err.ResponseBody != `{"message":"m"}` || err.Data == nil || err.ResponseHeaders["x-request-id"] != "r" || err.Message != "m" {
+	if err.ResponseBody != `{"message":"m"}` || err.Data == nil || err.ResponseHeaders["X-Request-Id"] != "r" || err.Message != "m" {
 		t.Fatalf("err = %#v", err)
 	}
 }

@@ -13,7 +13,7 @@ func TestAPIErrorKeepsResponseBodyAndData(t *testing.T) {
 	body := `{"message":"m","errorCode":"E"}`
 	err := newTopazAPIError(400, []byte(body), http.Header{"X-Request-Id": {"r1"}})
 	var perr *providererrors.ProviderError
-	if !errors.As(err, &perr) || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["x-request-id"] != "r1" || perr.ErrorCode != "E" {
+	if !errors.As(err, &perr) || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["X-Request-Id"] != "r1" || perr.ErrorCode != "E" {
 		t.Fatalf("got %#v", perr)
 	}
 }

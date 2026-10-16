@@ -27,7 +27,7 @@ func TestParseHuggingFaceErrorNullTypeAndCodeAreOffSchema(t *testing.T) {
 	}
 	err := parseHuggingFaceError(&internalhttp.HTTPStatusError{StatusCode: 400, Headers: http.Header{"X-Request-Id": {"r"}}, Body: []byte(`{"error":{"message":"bad"}}`)})
 	var perr *providererrors.ProviderError
-	if !errors.As(err, &perr) || perr.Message != "bad" || perr.Data == nil || perr.ResponseHeaders["x-request-id"] != "r" {
+	if !errors.As(err, &perr) || perr.Message != "bad" || perr.Data == nil || perr.ResponseHeaders["X-Request-Id"] != "r" {
 		t.Fatalf("got %#v", perr)
 	}
 }

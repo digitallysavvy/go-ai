@@ -23,7 +23,7 @@ func TestFailedResponsesKeepBodyDataAndHeaders(t *testing.T) {
 		"responses": quiverAIFailedResponseHandler(httpErr()),
 	} {
 		var perr *providererrors.ProviderError
-		if !errors.As(got, &perr) || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["x-request-id"] != "r1" ||
+		if !errors.As(got, &perr) || perr.ResponseBody != body || perr.Data == nil || perr.ResponseHeaders["X-Request-Id"] != "r1" ||
 			perr.Message != "m" || perr.IsRetryable() {
 			t.Errorf("%s: got %#v", name, perr)
 		}
