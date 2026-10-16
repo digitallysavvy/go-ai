@@ -724,8 +724,9 @@ func TestDoCompact_SendsCompactOperation(t *testing.T) {
 	if prompt, ok := capturedStart["prompt"]; ok && prompt != "" {
 		t.Fatalf("start.prompt = %v, want empty for a compaction", prompt)
 	}
-	if _, ok := capturedStart["tools"]; ok {
-		t.Fatalf("start.tools = %v, want none for a compaction", capturedStart["tools"])
+	// TS doCompact sends `tools: []`.
+	if tools, ok := capturedStart["tools"].([]any); !ok || len(tools) != 0 {
+		t.Fatalf("start.tools = %v, want [] for a compaction", capturedStart["tools"])
 	}
 }
 
