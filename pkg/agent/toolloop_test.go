@@ -3601,3 +3601,36 @@ func TestRunLoop_ContinuesAfterToolCallsWithStopFinishReason(t *testing.T) {
 		})
 	}
 }
+
+// TS generateText notifies tools (onInputStart then onInputAvailable) before
+// they run; the legacy loop does too.
+func TestExecuteStep_InvokesToolInputCallbacks(t *testing.T) {
+	var order []string
+	model := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{"a": 1.0}}}},
+		{Text: "done", FinishReason: types.FinishReasonStop},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+			OnInputStart: func(_ context.Context, o types.OnInputStartOptions) error {
+				order = append(order, "start:"+o.ToolCallID)
+				return nil
+			},
+			OnInputAvailable: func(_ context.Context, o types.OnInputAvailableOptions) error {
+				order = append(order, "available:"+o.ToolCallID)
+				return nil
+			},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				order = append(order, "execute")
+				return "ok", nil
+			}}},
+		MaxSteps: 3,
+	})
+	if _, err := agent.Execute(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(order, ","); got != "start:c1,available:c1,execute" {
+		t.Fatalf("order = %s", got)
+	}
+}

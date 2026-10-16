@@ -1783,6 +1783,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, violation
 	}
+	// Notify the tools that their calls are available (TS order: OnInputStart
+	// then OnInputAvailable, valid calls only), before any tool runs.
+	if err := ai.InvokeToolInputCallbacks(stepCtx, toolCalls, callConfig.Tools, callConfig.Messages, callConfig.ToolsContext); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
 	// TS logs each step's model warnings just before the step is recorded.
 	ai.LogWarnings(ai.LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
 	stepResult := &types.StepResult{
