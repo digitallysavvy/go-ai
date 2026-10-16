@@ -361,6 +361,8 @@ func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 		RuntimeContext: in.RuntimeContext,
 		ToolsContext:   in.ToolsContext,
 		OnStep:         steps.deliver,
+
+		TerminalFinishClosesTurn: true,
 	})
 
 	done := make(chan struct{})

@@ -28,6 +28,14 @@ type ExternalStreamOptions struct {
 	Provider string
 	ModelID  string
 
+	// TerminalFinishClosesTurn marks src as a harness turn: a content-less
+	// terminal ChunkTypeFinish only closes the turn (summed usage overridden,
+	// finish reason set) and never records a step of its own, even when no
+	// step was recorded before it (TS HarnessStreamTextResult.finish leaves
+	// steps empty). Without it a lone empty ChunkTypeFinish is recorded as
+	// the only step.
+	TerminalFinishClosesTurn bool
+
 	// OnChunk is invoked for every chunk as it is consumed from src, mirroring
 	// StreamTextOptions.OnChunk.
 	OnChunk func(chunk provider.StreamChunk)
@@ -638,7 +646,7 @@ consumeLoop:
 			// before the terminal ChunkTypeFinish (run_prompt.go rejects a
 			// terminal `finish` with unclosed step content), so stepNumber is
 			// always >= 1 by the time the real turn-closing boundary arrives.
-			if chunk.Type == provider.ChunkTypeFinish && !step.hasUnclosedContent() && stepNumber > 0 {
+			if chunk.Type == provider.ChunkTypeFinish && !step.hasUnclosedContent() && (stepNumber > 0 || opts.TerminalFinishClosesTurn) {
 				r.mu.Lock()
 				if chunk.Usage != nil {
 					r.usage = *chunk.Usage
