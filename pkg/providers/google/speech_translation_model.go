@@ -86,11 +86,6 @@ type speechTranslationModelOptions struct {
 	EchoTargetLanguage *bool
 }
 
-func parseSpeechTranslationModelOptions(providerOptions map[string]interface{}) speechTranslationModelOptions {
-	out, _ := parseSpeechTranslationModelOptionsChecked(providerOptions)
-	return out
-}
-
 // parseSpeechTranslationModelOptionsChecked mirrors TS parseProviderOptions
 // with googleSpeechTranslationModelOptions: a present value of the wrong type
 // fails with an InvalidArgumentError.

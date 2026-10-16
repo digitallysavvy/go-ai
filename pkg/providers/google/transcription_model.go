@@ -67,11 +67,6 @@ type transcriptionModelOptions struct {
 	Mode             string // "SMART" | "VERBATIM"
 }
 
-func parseTranscriptionModelOptions(providerOptions map[string]interface{}) transcriptionModelOptions {
-	out, _ := parseTranscriptionModelOptionsChecked(providerOptions)
-	return out
-}
-
 // parseTranscriptionModelOptionsChecked mirrors TS parseProviderOptions with
 // googleTranscriptionModelOptions: a present value of the wrong type (or a
 // mode outside SMART/VERBATIM) fails with an InvalidArgumentError. Empty

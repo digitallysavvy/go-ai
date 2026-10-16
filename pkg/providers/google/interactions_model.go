@@ -1092,13 +1092,6 @@ func stringValue(v interface{}) string {
 	return s
 }
 
-func emptyMapToNil(v map[string]interface{}) map[string]interface{} {
-	if len(v) == 0 {
-		return nil
-	}
-	return v
-}
-
 func pruneMap(in map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(in))
 	for k, v := range in {

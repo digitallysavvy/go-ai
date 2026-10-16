@@ -140,11 +140,6 @@ type vertexTranscriptionProviderOptions struct {
 	hasRegion                  bool
 }
 
-func vertexTranscriptionOptions(providerOptions map[string]interface{}) vertexTranscriptionProviderOptions {
-	out, _ := vertexTranscriptionOptionsChecked(providerOptions)
-	return out
-}
-
 // vertexTranscriptionOptionsChecked is the zod-validating form of
 // googleVertexTranscriptionProviderOptionsSchema: a present value of the wrong
 // type fails with an InvalidArgumentError. Empty languageCodes stay non-nil

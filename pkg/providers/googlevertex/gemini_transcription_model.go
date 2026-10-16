@@ -70,14 +70,6 @@ type vertexGeminiTranscriptionOptions struct {
 	Mode             string // "SMART" | "VERBATIM"
 }
 
-// parseVertexGeminiTranscriptionOptions checks providerOptions under
-// "googleVertex", then "vertex", then "google" -- matches TS's
-// GoogleVertexGeminiTranscriptionModel.parseOptions loop order.
-func parseVertexGeminiTranscriptionOptions(providerOptions map[string]interface{}) vertexGeminiTranscriptionOptions {
-	out, _ := parseVertexGeminiTranscriptionOptionsChecked(providerOptions)
-	return out
-}
-
 // parseVertexGeminiTranscriptionOptionsChecked is the zod-validating form: a
 // present value of the wrong type (or a mode outside SMART/VERBATIM) fails
 // with an InvalidArgumentError. Empty arrays stay non-nil because TS forwards
