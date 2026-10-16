@@ -845,7 +845,7 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			name: "preserve fallback boundaries between reasoning blocks",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.ReasoningContent{Text: "Primary model thinking", ProviderOptions: anthropicOpt("signature", "primary-signature")},
-				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("type", "fallback", "from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
 				types.ReasoningContent{Text: "Fallback model thinking", ProviderOptions: anthropicOpt("signature", "fallback-signature")},
 			}}},
 			wantMessages: `[{"role":"assistant","content":[
@@ -860,6 +860,25 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			name: "ignore message-start accounting parts when replaying assistant content",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
 				types.CustomContent{Kind: "anthropic.message_start", ProviderOptions: anthropicOpt("id", "msg_usage", "model", "claude-haiku-4-5", "usage", map[string]interface{}{"input_tokens": 13, "output_tokens": 1})},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
+		},
+		// TS anthropicFallbackContentSchema requires type: 'fallback'.
+		{
+			name: "warn and omit fallback boundaries without the fallback type",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+			}}},
+			wantMessages: `[]`,
+			wantWarnings: []string{"anthropic fallback metadata must include from.model and to.model"},
+		},
+		// TS only replays anthropic.fallback custom parts: other kinds, such as
+		// the container_upload a code execution response returns, are dropped.
+		{
+			name: "drop non-fallback custom parts when replaying assistant content",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.container_upload", ProviderOptions: anthropicOpt("fileId", "file_1")},
 				types.TextContent{Text: "Hi!"},
 			}}},
 			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,

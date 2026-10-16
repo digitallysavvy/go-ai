@@ -30,23 +30,11 @@ func TestToAnthropicMessagesCustomContentWithOptions(t *testing.T) {
 		},
 	}
 
+	// TS convertToAnthropicPrompt only replays anthropic.fallback custom
+	// parts; any other kind is dropped, so the message has no content.
 	result := ToAnthropicMessages(msgs)
-	if len(result) != 1 {
-		t.Fatalf("len(result) = %d, want 1", len(result))
-	}
-
-	content, ok := result[0]["content"].([]map[string]interface{})
-	if !ok {
-		t.Fatalf("content should be []map[string]interface{}, got %T", result[0]["content"])
-	}
-	if len(content) != 1 {
-		t.Fatalf("len(content) = %d, want 1", len(content))
-	}
-	if content[0]["type"] != "future_block" {
-		t.Errorf("type = %v, want \"future_block\"", content[0]["type"])
-	}
-	if content[0]["value"] != "data" {
-		t.Errorf("value = %v, want \"data\"", content[0]["value"])
+	if len(result) != 0 {
+		t.Fatalf("len(result) = %d, want 0 (custom part dropped)", len(result))
 	}
 }
 
