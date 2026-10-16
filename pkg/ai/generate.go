@@ -734,6 +734,12 @@ type GenerateTextResult struct {
 
 // GenerateText performs non-streaming text generation with optional tool calling
 func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *GenerateTextResult, err error) {
+	// TS generateText rethrows every failure through wrapGatewayError.
+	defer func() {
+		if err != nil {
+			err = wrapGatewayError(err)
+		}
+	}()
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")

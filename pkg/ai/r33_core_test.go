@@ -151,3 +151,37 @@ func TestGenerateObject_WrapsGatewayAuthenticationError(t *testing.T) {
 		t.Fatalf("wrapGatewayError(other) = %v", got)
 	}
 }
+
+// TS generateText and streamText wrap an AI Gateway authentication error
+// (wrapGatewayError) like generateObject; the original stays reachable.
+func TestTextCallsWrapGatewayAuthenticationError(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	const want = "Unauthenticated. Configure AI_GATEWAY_API_KEY or use a provider module. Learn more: https://ai-sdk.dev/unauthenticated-ai-gateway"
+	authErr := gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
+	zero := 0
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, authErr
+		},
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return nil, authErr
+		},
+	}
+	var auth *gatewayerrors.GatewayAuthenticationError
+	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi", MaxRetries: &zero})
+	if err == nil || err.Error() != want || !errors.As(err, &auth) {
+		t.Fatalf("GenerateText err = %v", err)
+	}
+	var onErr error
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &zero,
+		OnError: func(_ context.Context, e error) { onErr = e }})
+	if err == nil {
+		_, err = res.ReadAll()
+	}
+	if err == nil || err.Error() != want || !errors.As(err, &auth) {
+		t.Fatalf("StreamText err = %v", err)
+	}
+	if onErr == nil || onErr.Error() != want {
+		t.Fatalf("StreamText OnError = %v", onErr)
+	}
+}

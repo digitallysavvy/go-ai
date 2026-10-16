@@ -22,7 +22,8 @@ func (e *wrappedGatewayError) Error() string { return e.message }
 func (e *wrappedGatewayError) Unwrap() error { return e.cause }
 
 // wrapGatewayError mirrors TS prompt/wrap-gateway-error.ts, used by
-// generateObject, streamObject and the batch cancel and list calls: an
+// generateText, streamText, generateObject, streamObject and the batch cancel
+// and list calls: an
 // unauthenticated AI Gateway request becomes an error that tells the caller
 // how to authenticate (a short one when NODE_ENV is production).
 func wrapGatewayError(err error) error {
