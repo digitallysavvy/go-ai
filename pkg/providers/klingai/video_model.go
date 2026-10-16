@@ -75,6 +75,7 @@ type klingaiOperation struct {
 // KlingAI endpoint and returns an opaque operation reference
 // (TS KlingAIVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	currentDate := time.Now() // TS: taken before the request is built and sent
 	if err := validateProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
@@ -138,7 +139,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   convertHTTPHeaders(submitResp.Headers),
 		},
@@ -153,6 +154,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // dialed through a DNS-pinning transport, and credentials are only
 // forwarded on the trusted hop.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now() // TS: taken before the status request
 	var op klingaiOperation
 	if err := json.Unmarshal(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("klingai: invalid operation reference: %w", err)
@@ -183,7 +185,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	result := downloaded
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenKlingAIHeaders(result.Headers),
 	}
@@ -331,7 +333,9 @@ func (m *VideoModel) handlePollError(err error) error {
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return parseKlingAIErrorBody(dlErr.StatusCode, dlErr.Body)
 	}
-	return fmt.Errorf("failed to check status: %w", err)
+	// TS getFromApi lets any other failure (an abort, "Cannot connect to
+	// API", a URL rejected by validateUrl) propagate unchanged.
+	return err
 }
 
 // parseKlingAIErrorBody decodes a non-2xx KlingAI response body into the
