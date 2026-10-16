@@ -197,6 +197,7 @@ func quiverAIStripReasoningText(messages []types.Message) []types.Message {
 				"reasoningSummary": reasoningSummary,
 			}
 			rc.Text = ""
+			rc.EncryptedContent = ""
 			rc.ProviderOptions = newOptions
 			newContent[j] = rc
 		}
