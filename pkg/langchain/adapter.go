@@ -391,10 +391,14 @@ func finalizeCallbacks(errs chan<- error, callbacks *StreamCallbacks, textChunks
 			return
 		}
 	}
-	if callbacks != nil && callbacks.OnAbort != nil && isContextAbort(terminalErr) {
-		if err := callbacks.OnAbort(); err != nil {
-			errs <- err
-			return
+	// TS: an abort reaches onAbort only (never onError), whether or not an
+	// onAbort callback is configured.
+	if callbacks != nil && isContextAbort(terminalErr) {
+		if callbacks.OnAbort != nil {
+			if err := callbacks.OnAbort(); err != nil {
+				errs <- err
+				return
+			}
 		}
 	} else if callbacks != nil && callbacks.OnError != nil {
 		if err := callbacks.OnError(terminalErr); err != nil {
