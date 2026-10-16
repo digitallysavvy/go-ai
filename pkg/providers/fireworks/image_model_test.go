@@ -119,7 +119,7 @@ func TestIsAsyncModel(t *testing.T) {
 
 // TestDoGenerateAsync_ImmediateSuccess tests the happy path where polling succeeds on the first attempt.
 func TestDoGenerateAsync_ImmediateSuccess(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-abc123"
 
 	// Use a placeholder; the real image URL will reference the test server after it starts.
@@ -247,7 +247,7 @@ func TestDoGenerateAsync_MultiPollSuccess(t *testing.T) {
 // count-based budget (ceil(timeout/interval) attempts) would let the loop
 // run several times longer than pollTimeoutMs before giving up.
 func TestDoGenerateAsync_TimesOutOnWallClockDeadline(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-slow-poll"
 	const pollLatency = 30 * time.Millisecond
 	const pollTimeoutMs = 50
@@ -309,7 +309,7 @@ func TestDoGenerateAsync_TimesOutOnWallClockDeadline(t *testing.T) {
 // abortSignal, not pollForImageUrl's internal timeoutController signal, so a
 // slow download that outlives the remaining poll budget must still succeed.
 func TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-slow-download"
 	const pollTimeoutMs = 30
 	const downloadLatency = 100 * time.Millisecond
@@ -365,7 +365,7 @@ func TestDoGenerateAsync_DownloadIsNotBoundByPollDeadline(t *testing.T) {
 
 // TestDoGenerateAsync_SubmitRequestBody verifies the submit request body is correctly built.
 func TestDoGenerateAsync_SubmitRequestBody(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-body-check"
 
 	ts := &asyncTestServer{}
@@ -436,7 +436,7 @@ func TestDoGenerateAsync_SubmitRequestBody(t *testing.T) {
 
 // TestDoGenerateAsync_Failure tests that a failed generation returns a descriptive error.
 func TestDoGenerateAsync_Failure(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-fail"
 
 	failResp := fmt.Sprintf(`{"id": %q, "status": "Error", "result": null}`, requestID)
@@ -482,7 +482,7 @@ func TestDoGenerateAsync_FailedStatus(t *testing.T) {
 
 // TestDoGenerateAsync_ContextCancellation tests that cancelling the context stops polling.
 func TestDoGenerateAsync_ContextCancellation(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-cancel"
 
 	// Server always returns Pending so polling would loop forever without cancellation
@@ -512,7 +512,7 @@ func TestDoGenerateAsync_ContextCancellation(t *testing.T) {
 
 // TestDoGenerateAsync_ReadyMissingSample tests error when Ready but result.sample is nil.
 func TestDoGenerateAsync_ReadyMissingSample(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-no-sample"
 
 	// Ready but result has no sample field
@@ -605,7 +605,7 @@ func TestCheckAsyncStatus_Statuses(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			const modelID = "accounts/fireworks/models/flux-kontext-dev"
+			const modelID = "accounts/fireworks/models/flux-kontext-pro"
 			const requestID = "req-status-test"
 
 			var respBody string
@@ -650,7 +650,7 @@ func TestCheckAsyncStatus_Statuses(t *testing.T) {
 // TestBuildAsyncRequestBody verifies that buildAsyncRequestBody includes all expected fields.
 func TestBuildAsyncRequestBody(t *testing.T) {
 	prov := New(Config{APIKey: "test"})
-	model := NewImageModel(prov, "accounts/fireworks/models/flux-kontext-dev")
+	model := NewImageModel(prov, "accounts/fireworks/models/flux-kontext-pro")
 
 	seed := 42
 	n := 1
@@ -777,7 +777,7 @@ func TestDoGenerateSync_ProviderOptionsInRequestBody(t *testing.T) {
 
 // TestDoGenerateAsync_Warnings verifies that unsupported options produce the correct warnings.
 func TestDoGenerateAsync_Warnings(t *testing.T) {
-	const modelID = "accounts/fireworks/models/flux-kontext-dev"
+	const modelID = "accounts/fireworks/models/flux-kontext-pro"
 	const requestID = "req-warnings"
 
 	ts := &asyncTestServer{}
@@ -851,7 +851,7 @@ func TestFireworksFluxKontextAsync(t *testing.T) {
 	prov := New(Config{
 		APIKey: os.Getenv("FIREWORKS_API_KEY"),
 	})
-	model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-dev")
+	model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-pro")
 	if err != nil {
 		t.Fatalf("failed to get model: %v", err)
 	}

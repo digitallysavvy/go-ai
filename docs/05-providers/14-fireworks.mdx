@@ -56,7 +56,6 @@ model (`/v1/completions`).
 
 | Model ID | Type | Notes |
 |----------|------|-------|
-| accounts/fireworks/models/flux-kontext-dev | Text-to-image, image editing | Async polling |
 | accounts/fireworks/models/flux-kontext-pro | Text-to-image, image editing | Async polling |
 | accounts/fireworks/models/flux-kontext-max | Text-to-image, image editing | Async polling |
 | accounts/fireworks/models/stable-diffusion-xl-1024-v1-0 | Text-to-image | Sync |
@@ -120,7 +119,7 @@ func main() {
         APIKey: os.Getenv("FIREWORKS_API_KEY"),
     })
 
-    model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-dev")
+    model, err := prov.ImageModel("accounts/fireworks/models/flux-kontext-pro")
     if err != nil {
         log.Fatal(err)
     }
