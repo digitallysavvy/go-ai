@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -141,6 +142,10 @@ func validateArrayConstraints(value interface{}, sch map[string]interface{}, pat
 		if err := validateUniqueItems(rv, n, path); err != nil {
 			return err
 		}
+	}
+
+	if err := validateContains(rv, n, sch, path, root); err != nil {
+		return err
 	}
 
 	if prefixItems, ok := interfaceSlice(sch["prefixItems"]); ok && len(prefixItems) > 0 {
@@ -332,6 +337,10 @@ func validateObjectConstraints(obj map[string]interface{}, sch map[string]interf
 		}
 	}
 
+	if err := validateDependencies(obj, sch, path, root); err != nil {
+		return err
+	}
+
 	if propertyNamesSchema, ok := sch["propertyNames"].(map[string]interface{}); ok {
 		for key := range obj {
 			if err := validateSchemaValue(key, propertyNamesSchema, fmt.Sprintf("%s.%s (property name)", path, key), root, newRefGuard()); err != nil {
@@ -413,4 +422,109 @@ func supportsDependentRequired(root map[string]interface{}) bool {
 	dialect = strings.TrimSuffix(dialect, "#")
 	return dialect == "https://json-schema.org/draft/2020-12/schema" ||
 		dialect == "https://json-schema.org/draft/2019-09/schema"
+}
+
+// validateAnySchema validates value against a subschema that may be a boolean
+// (true accepts everything, false rejects everything) or an object schema.
+// Any other shape is ignored, like the other applicators.
+func validateAnySchema(value interface{}, raw interface{}, path string, root map[string]interface{}, guard *refGuard) error {
+	switch s := raw.(type) {
+	case bool:
+		if !s {
+			return fmt.Errorf("%s: boolean schema is false", path)
+		}
+	case map[string]interface{}:
+		return validateSchemaValue(value, s, path, root, guard)
+	}
+	return nil
+}
+
+// validateContains mirrors Ajv's contains keyword. minContains and
+// maxContains apply only under JSON Schema 2019-09 / 2020-12 (Ajv2019 and
+// Ajv2020 set opts.next); under draft-07 contains means "at least one item
+// matches".
+func validateContains(rv reflect.Value, n int, sch map[string]interface{}, path string, root map[string]interface{}) error {
+	contains, has := sch["contains"]
+	if !has {
+		return nil
+	}
+	minC, maxC, hasMax := 1, 0, false
+	if supportsDependentRequired(root) {
+		if m, ok := toInt(sch["minContains"]); ok {
+			minC = m
+		}
+		if m, ok := toInt(sch["maxContains"]); ok {
+			maxC, hasMax = m, true
+		}
+	}
+	if !hasMax && minC == 0 {
+		return nil
+	}
+	count := 0
+	for i := 0; i < n; i++ {
+		err := validateAnySchema(rv.Index(i).Interface(), contains, fmt.Sprintf("%s[%d]", path, i), root, newRefGuard())
+		if err == nil {
+			count++
+			continue
+		}
+		if errors.Is(err, errCircularRef) {
+			return err
+		}
+	}
+	if hasMax {
+		if count < minC || count > maxC {
+			return fmt.Errorf("%s: contains: array must contain at least %d and no more than %d valid item(s), found %d", path, minC, maxC, count)
+		}
+		return nil
+	}
+	if count < minC {
+		return fmt.Errorf("%s: contains: array must contain at least %d valid item(s), found %d", path, minC, count)
+	}
+	return nil
+}
+
+// validateDependencies mirrors Ajv's dependencies (property and schema
+// dependencies, draft-07, always enforced like the TS validator) and
+// dependentSchemas (2019-09 / 2020-12 only).
+func validateDependencies(obj map[string]interface{}, sch map[string]interface{}, path string, root map[string]interface{}) error {
+	check := func(keyword string) error {
+		deps, ok := sch[keyword].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		keys := make([]string, 0, len(deps))
+		for key := range deps {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if _, present := obj[key]; !present {
+				continue
+			}
+			if keyword == "dependencies" {
+				if required, ok := stringSlice(deps[key]); ok {
+					for _, dep := range required {
+						if _, exists := obj[dep]; !exists {
+							return fmt.Errorf("%s.%s: dependencies: property is required when %q is present", path, dep, key)
+						}
+					}
+					continue
+				}
+			}
+			if err := validateAnySchema(obj, deps[key], path, root, newRefGuard()); err != nil {
+				if errors.Is(err, errCircularRef) {
+					return err
+				}
+				return fmt.Errorf("%s: %s: %q schema failed (%s)", path, keyword, key, err.Error())
+			}
+		}
+		return nil
+	}
+	if err := check("dependencies"); err != nil {
+		return err
+	}
+	if supportsDependentRequired(root) {
+		return check("dependentSchemas")
+	}
+	return nil
 }
