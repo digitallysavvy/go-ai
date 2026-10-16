@@ -62,6 +62,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	}
 
 	providerName := b.provider.Name()
+	if err := validateAnthropicBatchProviderOptions(providerName, opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	explicitBatchBetas := anthropicBatchProviderBetas(providerName, opts.ProviderOptions)
 	betas := betaSet{}
 	betas.add(explicitBatchBetas...)
@@ -81,6 +84,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	for _, req := range opts.Requests {
 		textReq := req.Text
 
+		if err := validateAnthropicBatchProviderOptions(providerName, textReq.Options.ProviderOptions); err != nil {
+			return nil, err
+		}
 		requestBetas := anthropicBatchProviderBetas(providerName, textReq.Options.ProviderOptions)
 		if len(requestBetas) > 0 {
 			return nil, &providererrors.UnsupportedFunctionalityError{
@@ -386,17 +392,67 @@ func anthropicBetaOptionList(providerOptions map[string]interface{}, key string)
 	if !ok {
 		return nil
 	}
-	raw, ok := opts["anthropicBeta"].([]interface{})
-	if !ok {
-		return nil
+	switch raw := opts["anthropicBeta"].(type) {
+	case []string:
+		return append([]string(nil), raw...)
+	case []interface{}:
+		out := make([]string, 0, len(raw))
+		for _, v := range raw {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
 	}
-	out := make([]string, 0, len(raw))
-	for _, v := range raw {
-		if s, ok := v.(string); ok {
-			out = append(out, s)
+	return nil
+}
+
+// validateAnthropicBatchProviderOptions mirrors TS parseProviderOptions with
+// anthropicLanguageModelOptions.pick({anthropicBeta}) for the canonical
+// `anthropic` key and the provider's own key: a non-object entry or an
+// anthropicBeta that is not an array of strings (null included) fails with an
+// InvalidArgumentError instead of being ignored.
+func validateAnthropicBatchProviderOptions(providerName string, providerOptions map[string]interface{}) error {
+	if idx := strings.IndexByte(providerName, '.'); idx != -1 {
+		providerName = providerName[:idx]
+	}
+	keys := []string{"anthropic"}
+	if providerName != "anthropic" {
+		keys = append(keys, providerName)
+	}
+	for _, key := range keys {
+		value := providerOptions[key]
+		if value == nil {
+			continue
+		}
+		invalid := func(cause error) error {
+			return &providererrors.InvalidArgumentError{
+				Field:   "providerOptions",
+				Message: fmt.Sprintf("invalid %s provider options", key),
+				Cause:   cause,
+			}
+		}
+		opts, ok := value.(map[string]interface{})
+		if !ok {
+			return invalid(fmt.Errorf("expected object, received %T", value))
+		}
+		beta, present := opts["anthropicBeta"]
+		if !present {
+			continue
+		}
+		switch list := beta.(type) {
+		case []string:
+		case []interface{}:
+			for i, v := range list {
+				if _, isString := v.(string); !isString {
+					return invalid(fmt.Errorf("anthropicBeta[%d]: expected string, received %T", i, v))
+				}
+			}
+		default:
+			return invalid(fmt.Errorf("anthropicBeta: expected array, received %T", beta))
 		}
 	}
-	return out
+	return nil
 }
 
 // validateAnthropicTextBatchRequests mirrors TS assertTextBatchRequests: every
