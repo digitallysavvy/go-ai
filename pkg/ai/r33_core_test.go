@@ -9,6 +9,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -116,5 +117,37 @@ func TestStreamText_StartFailureIsReturnedAsIs(t *testing.T) {
 	}
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("err = %v, want boom", err)
+	}
+}
+
+// TS wrapGatewayError: generateObject turns an unauthenticated AI Gateway error
+// into the "Unauthenticated request to AI Gateway" error; the gateway error
+// stays reachable for Go callers.
+func TestGenerateObject_WrapsGatewayAuthenticationError(t *testing.T) {
+	authErr := gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, authErr
+		},
+	}
+	for _, tc := range []struct{ env, want string }{
+		{"", "\u001b[1m\u001b[31mUnauthenticated request to AI Gateway.\u001b[0m\n\nTo authenticate, set the \u001b[33mAI_GATEWAY_API_KEY\u001b[0m environment variable with your API key.\n\nAlternatively, you can use a provider module instead of the AI Gateway.\n\nLearn more: \u001b[34mhttps://ai-sdk.dev/unauthenticated-ai-gateway\u001b[0m\n\n"},
+		{"production", "Unauthenticated. Configure AI_GATEWAY_API_KEY or use a provider module. Learn more: https://ai-sdk.dev/unauthenticated-ai-gateway"},
+	} {
+		t.Setenv("NODE_ENV", tc.env)
+		_, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Prompt: "hi", Schema: r31ObjectSchema})
+		if err == nil || err.Error() != tc.want {
+			t.Fatalf("NODE_ENV=%q err = %q, want %q", tc.env, err, tc.want)
+		}
+		var auth *gatewayerrors.GatewayAuthenticationError
+		if !errors.As(err, &auth) {
+			t.Fatal("the gateway authentication error is no longer reachable")
+		}
+	}
+	// other errors pass through unchanged
+	boom := errors.New("boom")
+	if got := wrapGatewayError(boom); got != boom {
+		t.Fatalf("wrapGatewayError(other) = %v", got)
 	}
 }

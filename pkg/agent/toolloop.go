@@ -798,6 +798,13 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				local.config.ToolCallConcurrency = callConfig.ToolCallConcurrency
 				stepAgent = &local
 			}
+			// The tool-call events report the step's model (a PrepareCall model
+			// override), not the agent's configured one.
+			if callConfig.Model != nil && callConfig.Model != stepAgent.config.Model {
+				local := *stepAgent
+				local.config.Model = callConfig.Model
+				stepAgent = &local
+			}
 			toolResults, err := stepAgent.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
 				stepTel.fail(err)

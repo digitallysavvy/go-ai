@@ -482,7 +482,7 @@ func ExperimentalCancelBatch(ctx context.Context, opts CancelBatchOptions) (*Can
 		Headers:         version.WithUserAgentSuffix(opts.Headers, version.UserAgent()),
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 	return &CancelBatchResult{ProviderMetadata: result.ProviderMetadata}, nil
 }
@@ -548,7 +548,7 @@ func ExperimentalListBatches(ctx context.Context, opts ListBatchesOptions) (*Lis
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	batches := make([]Batch, 0, len(result.Batches))

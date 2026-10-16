@@ -3479,3 +3479,39 @@ func TestValidateAgentPromptOptions_InvalidPromptError(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A PrepareCall model override applies to the tool-call events of the step.
+func TestExecuteTool_EventsReportPreparedModel(t *testing.T) {
+	stepModel := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	base := &mockLanguageModel{}
+	var gotModelID []string
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: base,
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			}}},
+		PrepareCall: func(ctx context.Context, c PrepareCallConfig) PrepareCallConfig {
+			c.Model = namedModel{stepModel, "prepared-model"}
+			return c
+		},
+		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) { gotModelID = append(gotModelID, e.ModelID) },
+		MaxSteps:           2,
+	})
+	if _, err := agent.Execute(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotModelID) != 1 || gotModelID[0] != "prepared-model" {
+		t.Fatalf("tool-call event model ids = %v, want [prepared-model]", gotModelID)
+	}
+}
+
+type namedModel struct {
+	*mockLanguageModel
+	id string
+}
+
+func (n namedModel) ModelID() string { return n.id }
