@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -110,9 +114,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	// Warn about invalid size format — matches TS getArgs warning.
 	if opts.Size != "" {
-		var w, h int
-		n, _ := fmt.Sscanf(opts.Size, "%dx%d", &w, &h)
-		if n != 2 || w <= 0 || h <= 0 {
+		if _, _, ok := parseProdiaSize(opts.Size); !ok {
 			msg := fmt.Sprintf("Invalid size format: %s. Expected format: WIDTHxHEIGHT (e.g., 1024x1024)", opts.Size)
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -170,6 +172,43 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	return result, nil
 }
 
+// jsNumberRe is a decimal JS Number() literal (surrounding whitespace is
+// trimmed first).
+var jsNumberRe = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$`)
+
+// parseProdiaSize mirrors TS getArgs: size.split('x'), both parts non-empty
+// and Number() finite; anything else is an invalid size. Zero, negative and
+// fractional values are not invalid there.
+func parseProdiaSize(size string) (width, height float64, ok bool) {
+	parts := strings.Split(size, "x")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return 0, 0, false
+	}
+	num := func(s string) (float64, bool) {
+		s = strings.TrimSpace(s)
+		if !jsNumberRe.MatchString(s) {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		return f, err == nil && !math.IsInf(f, 0)
+	}
+	w, wok := num(parts[0])
+	h, hok := num(parts[1])
+	if !wok || !hok {
+		return 0, 0, false
+	}
+	return w, h, true
+}
+
+// prodiaNumber keeps a whole number an int (the wire and callers' view of
+// 1024), and a fractional one a float64.
+func prodiaNumber(f float64) interface{} {
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		return int(f)
+	}
+	return f
+}
+
 // buildRequestBody builds the Prodia API request body.
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provOpts *ProdiaImageProviderOptions) map[string]interface{} {
 	jobConfig := map[string]interface{}{
@@ -178,11 +217,9 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, provO
 
 	// Parse size (e.g., "1024x1024")
 	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
-		if width > 0 && height > 0 {
-			jobConfig["width"] = width
-			jobConfig["height"] = height
+		if width, height, ok := parseProdiaSize(opts.Size); ok {
+			jobConfig["width"] = prodiaNumber(width)
+			jobConfig["height"] = prodiaNumber(height)
 		}
 	}
 
