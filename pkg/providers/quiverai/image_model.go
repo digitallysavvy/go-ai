@@ -484,8 +484,19 @@ func quiverRawOptions(providerOptions map[string]interface{}) map[string]interfa
 	if providerOptions == nil {
 		return nil
 	}
-	m, _ := providerOptions["quiverai"].(map[string]interface{})
-	return m
+	raw := providerOptions["quiverai"]
+	if m, ok := raw.(map[string]interface{}); ok {
+		// Nested Go-typed values ([]string, []map[string]string, ints) read
+		// like their JSON form, the form validateImageOptions checked.
+		if encoded, err := json.Marshal(m); err == nil {
+			var normalized map[string]interface{}
+			if json.Unmarshal(encoded, &normalized) == nil {
+				return normalized
+			}
+		}
+		return m
+	}
+	return nil
 }
 
 func quiverWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
