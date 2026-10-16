@@ -107,10 +107,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		})
 	}
 
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("deepgram: failed to marshal speech request metadata: %w", err)
-	}
+	// JSON.stringify leaves <, > and & literal.
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, nil))
 
 	result := &types.SpeechResult{
 		Audio:            resp.Body,
