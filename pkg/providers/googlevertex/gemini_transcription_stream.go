@@ -95,6 +95,17 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	if err := validateLiveInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
+	// The location becomes the WebSocket host and the bearer token rides the
+	// handshake, so validate it here too (TS validates it when the model is
+	// created; the exported constructor can bypass that).
+	location, err := m.provider.loadLocation()
+	if err != nil {
+		return nil, err
+	}
+	project, err := m.provider.loadProject()
+	if err != nil {
+		return nil, err
+	}
 	audioConfig := buildVertexAudioTranscriptionConfig(transcriptionOpts)
 	if audioConfig == nil {
 		audioConfig = map[string]interface{}{}
@@ -122,11 +133,6 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		wsHeaders[k] = v
 	}
 
-	location := m.provider.location()
-	if location == "" {
-		location = "global"
-	}
-
 	// NOTE: Google's GA announcement shows the setup with
 	// `generationConfig: { responseModalities: ['TEXT'] }`, but sending it
 	// suppresses the final `inputTranscription` segments on the current
@@ -135,7 +141,7 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 	// form (mirrors the TS comment in
 	// gemini-transcription/google-vertex-gemini-transcription-model.ts).
 	setup := map[string]interface{}{
-		"model":                   vertexModelResourcePath(m.provider.project(), location, m.modelID),
+		"model":                   vertexModelResourcePath(project, location, m.modelID),
 		"inputAudioTranscription": audioConfig,
 	}
 
@@ -258,10 +264,10 @@ type geminiLiveServerMessage struct {
 }
 
 type geminiLiveTranscription struct {
-	Text         string `json:"text,omitempty"`
-	Finished     bool   `json:"finished,omitempty"`
-	LanguageCode string `json:"languageCode,omitempty"`
-	SpeakerLabel string `json:"speakerLabel,omitempty"`
+	Text         string  `json:"text,omitempty"`
+	Finished     bool    `json:"finished,omitempty"`
+	LanguageCode *string `json:"languageCode,omitempty"`
+	SpeakerLabel string  `json:"speakerLabel,omitempty"`
 }
 
 func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamConfig) {
@@ -487,8 +493,9 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				transcription = serverContent.InputTranscription
 			}
 			if transcription != nil {
-				if transcription.LanguageCode != "" {
-					language = transcription.LanguageCode
+				// TS `languageCode != null`: an empty string overwrites too.
+				if transcription.LanguageCode != nil {
+					language = *transcription.LanguageCode
 				}
 				if transcription.Text != "" {
 					schedulePendingFinish()
