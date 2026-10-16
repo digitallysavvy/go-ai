@@ -418,3 +418,12 @@ func TestRequestOpenCodeGitLabDirectAccessBoundsResponseRead(t *testing.T) {
 		t.Fatalf("err = %v, want invalid JSON from truncated read", err)
 	}
 }
+
+func TestResolveOpenCodeGitLabModelObjectPrototypeMembers(t *testing.T) {
+	for _, id := range []string{"constructor", "toString", "__proto__", "hasOwnProperty"} {
+		got, err := resolveOpenCodeGitLabSubscriptionModel("gitlab/"+id, "gitlab")
+		if err != nil || got != "undefined/"+id {
+			t.Fatalf("%s: got %q, %v", id, got, err)
+		}
+	}
+}

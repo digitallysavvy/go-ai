@@ -459,6 +459,12 @@ func resolveOpenCodeGitLabSubscriptionModel(model, provider string) (string, err
 		return model, nil
 	}
 	mapping, ok := openCodeGitLabModels[modelID]
+	if !ok && isJSObjectPrototypeMember(modelID) {
+		// TS reads the mapping off a plain object, so an Object.prototype
+		// member name resolves to an inherited value: not the unknown-model
+		// error, and with no providerId, so the result is `undefined/<id>`.
+		return "undefined/" + modelID, nil
+	}
 	if !ok {
 		return "", harness.NewCapabilityUnsupportedError(
 			fmt.Sprintf("Harness 'opencode' cannot broker native GitLab subscription credentials for unknown model '%s'.", modelID), HarnessID, nil)
@@ -469,6 +475,18 @@ func resolveOpenCodeGitLabSubscriptionModel(model, provider string) (string, err
 			HarnessID, nil)
 	}
 	return mapping.ProviderID + "/" + modelID, nil
+}
+
+// isJSObjectPrototypeMember reports whether name is a property every plain JS
+// object inherits from Object.prototype.
+func isJSObjectPrototypeMember(name string) bool {
+	switch name {
+	case "constructor", "__defineGetter__", "__defineSetter__", "hasOwnProperty",
+		"__lookupGetter__", "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable",
+		"toString", "valueOf", "__proto__", "toLocaleString":
+		return true
+	}
+	return false
 }
 
 // createOpenCodeSubscriptionAuthContent mirrors TS
