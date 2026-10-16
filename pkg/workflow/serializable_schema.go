@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
 
@@ -369,14 +370,13 @@ func ValidateSerializableToolInput(def SerializableToolDef, input interface{}) (
 	if name == "" {
 		name = "tool"
 	}
-	// The generic validator does not know every keyword Ajv does (if/then/else
-	// among them), so the Ajv-ordered walk decides too.
+	// The Ajv-ordered walk is the validator: it knows the keywords Ajv does and
+	// words the errors like it. A second, generic validator would reject input
+	// Ajv accepts (`required` on a null where the type allows null) and word
+	// errors differently.
 	details := collectActionableErrors(defaulted, params, hint, "data")
 	if len(details) > 0 {
 		return nil, fmt.Errorf("workflow: invalid input for %s: %s", name, strings.Join(details, ", "))
-	}
-	if err := s.Validator().Validate(defaulted); err != nil {
-		return nil, fmt.Errorf("workflow: invalid input for %s: %w", name, err)
 	}
 	return defaulted, nil
 }
@@ -483,7 +483,12 @@ func matchesJSONType(v interface{}, name string) bool {
 	return true
 }
 
+// formatJSNumber is JavaScript's Number toString (1e21 prints as 1e+21, 1e-7
+// as 1e-7), the text Ajv puts in its limit messages.
 func formatJSNumber(f float64) string {
+	if b, err := jsonstr.Marshal(f); err == nil {
+		return string(b)
+	}
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 

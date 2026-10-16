@@ -14,10 +14,10 @@ func TestValidateSerializableToolInputAjvUniqueItemsAndContains(t *testing.T) {
 		{`{"type":"array","uniqueItems":true}`, `[1,2,1]`, `data must NOT have duplicate items (items ## 0 and 2 are identical)`},
 		{`{"type":"array","items":{"type":"number"},"uniqueItems":true}`, `[1,2,1,2]`, `data must NOT have duplicate items (items ## 3 and 1 are identical)`},
 		{`{"type":"array","uniqueItems":true}`, `[{"a":1,"b":2},{"b":2,"a":1}]`, `data must NOT have duplicate items (items ## 0 and 1 are identical)`},
-		{`{"type":"array","uniqueItems":true,"items":{"type":"number"}}`, `[1,1,"x"]`, `data must NOT have duplicate items (items ## 1 and 0 are identical), data/2 must be number`},
-		{`{"type":"array","contains":{"type":"string"}}`, `[1]`, `data must contain at least 1 valid item(s)`},
+		{`{"type":"array","uniqueItems":true,"items":{"type":"number"}}`, `[1,1,"x"]`, `data/2 must be number, data must NOT have duplicate items (items ## 1 and 0 are identical)`},
+		{`{"type":"array","contains":{"type":"string"}}`, `[1]`, `data/0 must be string, data must contain at least 1 valid item(s)`},
 		{`{"type":"array","contains":{"type":"string"}}`, `[]`, `data must contain at least 1 valid item(s)`},
-		{`{` + d2020 + `"type":"array","contains":{"type":"string"},"minContains":2,"maxContains":3}`, `["a",1]`, `data must contain at least 2 and no more than 3 valid item(s)`},
+		{`{` + d2020 + `"type":"array","contains":{"type":"string"},"minContains":2,"maxContains":3}`, `["a",1]`, `data/1 must be string, data must contain at least 2 and no more than 3 valid item(s)`},
 		{`{` + d2020 + `"type":"array","contains":{"type":"string"},"maxContains":1}`, `["a","b"]`, `data must contain at least 1 and no more than 1 valid item(s)`},
 		{`{` + d2020 + `"type":"array","contains":{"type":"string"},"minContains":2}`, `["a"]`, `data must contain at least 2 valid item(s)`},
 	}
