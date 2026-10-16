@@ -88,14 +88,14 @@ func (c Credentials) valid() bool {
 
 // New creates a new AWS Bedrock provider with the given configuration
 func New(cfg Config) *Provider {
-	if cfg.Region == "" {
-		cfg.Region = os.Getenv("AWS_REGION")
-	}
-
-	// AWS Bedrock endpoint
+	// AWS_REGION is not copied into cfg: Region() reads it on every use like
+	// TS loadSetting, so a region exported (or changed) after New is honored.
+	// Requests resolve their URL per call (runtimeBaseURL); the client's base
+	// URL is only a default.
+	region := firstNonEmpty(cfg.Region, os.Getenv("AWS_REGION"))
 	baseURL := cfg.BaseURL
-	if baseURL == "" && cfg.Region != "" {
-		baseURL = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", cfg.Region)
+	if baseURL == "" && region != "" {
+		baseURL = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", region)
 	}
 
 	client := internalhttp.NewClient(internalhttp.Config{

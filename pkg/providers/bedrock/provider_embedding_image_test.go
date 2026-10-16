@@ -948,6 +948,21 @@ func TestBedrockRegionResolvedLazilyFromEnv(t *testing.T) {
 	}
 }
 
+// An AWS_REGION that was already set at New and changes afterwards is read
+// again on use (TS loadSetting), not frozen at construction.
+func TestBedrockRegionChangedAfterNewIsHonored(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-east-1")
+	p := New(Config{})
+	t.Setenv("AWS_REGION", "eu-central-1")
+	base, err := p.runtimeBaseURL()
+	if err != nil || base != "https://bedrock-runtime.eu-central-1.amazonaws.com" {
+		t.Fatalf("runtimeBaseURL = %q, %v", base, err)
+	}
+	if got := New(Config{Region: "ap-south-1"}).Region(); got != "ap-south-1" {
+		t.Fatalf("explicit Region = %q, want ap-south-1", got)
+	}
+}
+
 func TestBedrockImageNumericOptionsAcceptJSONNumber(t *testing.T) {
 	// isNumber (validation) accepts json.Number and unsigned ints, so the
 	// request builder must not drop them silently.
