@@ -181,7 +181,7 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) (map[
 	var contentParts []map[string]interface{}
 
 	for _, part := range msg.Content {
-		switch p := part.(type) {
+		switch p := derefMistralPart(part).(type) {
 		case types.TextContent:
 			text.WriteString(p.Text)
 			contentParts = append(contentParts, map[string]interface{}{"type": "text", "text": p.Text})
@@ -194,8 +194,10 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) (map[
 				},
 				"closed": true,
 			})
-		case types.ToolCallContent, types.SourceContent:
-			// tool calls are collected below; sources are not prompt parts in TS.
+		case types.ToolCallContent, types.SourceContent, types.ToolApprovalRequestContent, types.ToolErrorContent:
+			// Tool calls are collected below. Sources, approval requests and
+			// tool errors are SDK-side parts that TS strips before the
+			// provider sees the prompt.
 		default:
 			// TS: throw new Error(`Unsupported content type in assistant message: ${part.type}`)
 			return nil, fmt.Errorf("Unsupported content type in assistant message: %s", part.ContentType())
@@ -216,7 +218,7 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) (map[
 	toolCalls := msg.ToolCalls
 	if len(toolCalls) == 0 {
 		for _, part := range msg.Content {
-			if tc, ok := part.(types.ToolCallContent); ok {
+			if tc, ok := derefMistralPart(part).(types.ToolCallContent); ok {
 				toolCalls = append(toolCalls, types.ToolCall{ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: tc.Arguments, RawArguments: tc.Input})
 			}
 		}
@@ -282,4 +284,36 @@ func convertMistralToolMessages(msg types.Message) []map[string]interface{} {
 // is unset.
 func mistralToolResultText(tr types.ToolResultContent) string {
 	return prompt.ToolResultText(tr)
+}
+
+// derefMistralPart unwraps pointer content parts so they match the value
+// cases of the assistant part switch.
+func derefMistralPart(part types.ContentPart) types.ContentPart {
+	switch p := part.(type) {
+	case *types.TextContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ReasoningContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ToolCallContent:
+		if p != nil {
+			return *p
+		}
+	case *types.SourceContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ToolApprovalRequestContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ToolErrorContent:
+		if p != nil {
+			return *p
+		}
+	}
+	return part
 }

@@ -90,7 +90,7 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 			}
 			seenCalls := map[string]bool{}
 			for _, part := range msg.Content {
-				switch p := part.(type) {
+				switch p := derefMistralPart(part).(type) {
 				case types.TextContent:
 					content = append(content, map[string]interface{}{"type": "text", "text": p.Text})
 				case types.ReasoningContent:
@@ -109,6 +109,8 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 				case types.ToolResultContent:
 					flush()
 					appendToolResult(p)
+				case types.SourceContent, types.ToolApprovalRequestContent, types.ToolErrorContent:
+					// SDK-side parts TS strips before the provider sees the prompt.
 				default:
 					return nil, "", &providererrors.UnsupportedFunctionalityError{Functionality: fmt.Sprintf("assistant content type: %s", part.ContentType())}
 				}
