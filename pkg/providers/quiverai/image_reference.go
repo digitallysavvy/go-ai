@@ -123,7 +123,7 @@ func validateQuiverAIReferenceBytes(data []byte, argument string) error {
 
 // svgHeadPattern mirrors the TS SDK's isSvg head regex:
 // /^(?:(?:<\?xml[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[\s\S]*?>)\s*)*<svg(?:\s|>)/i
-var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!DOCTYPE.*?>)\s*)*<svg(?:\s|>)`)
+var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!DOCTYPE.*?>)` + jsSpace + `*)*<svg(?:` + jsSpace + `|>)`)
 
 // svgTailPattern and svgSelfClosingPattern mirror
 // prepare-quiverai-image-reference.ts's isSvg suffix checks:
@@ -132,9 +132,13 @@ var svgHeadPattern = regexp.MustCompile(`(?is)^(?:(?:<\?xml.*?\?>|<!--.*?-->|<!D
 // svgStrictHeadPattern is the reference-image variant (at most one xml
 // declaration, comment and doctype, in that order):
 // /^(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--[\s\S]*?-->\s*)?(?:<!DOCTYPE[\s\S]*?>\s*)?<svg[\s>]/i
-var svgStrictHeadPattern = regexp.MustCompile(`(?is)^(?:<\?xml.*?\?>\s*)?(?:<!--.*?-->\s*)?(?:<!DOCTYPE.*?>\s*)?<svg[\s>]`)
-var svgTailPattern = regexp.MustCompile(`(?is)</svg>\s*$`)
-var svgSelfClosingPattern = regexp.MustCompile(`(?is)<svg(?:\s[^>]*)?/>\s*$`)
+var svgStrictHeadPattern = regexp.MustCompile(`(?is)^(?:<\?xml.*?\?>` + jsSpace + `*)?(?:<!--.*?-->` + jsSpace + `*)?(?:<!DOCTYPE.*?>` + jsSpace + `*)?<svg(?:` + jsSpace + `|>)`)
+var svgTailPattern = regexp.MustCompile(`(?is)</svg>` + jsSpace + `*$`)
+var svgSelfClosingPattern = regexp.MustCompile(`(?is)<svg(?:` + jsSpace + `[^>]*)?/>` + jsSpace + `*$`)
+
+// jsSpace is the JavaScript regular expression `\s` class (WhiteSpace and
+// LineTerminator), wider than Go's ASCII-only `\s`.
+const jsSpace = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
 
 const maxSVGHeadSniffBytes = 4096
 
@@ -147,7 +151,8 @@ func isSVGHead(data []byte) bool {
 	if len(head) > maxSVGHeadSniffBytes {
 		head = head[:maxSVGHeadSniffBytes]
 	}
-	text := strings.TrimLeft(string(head), " \t\n\r\f\v")
+	// TextDecoder drops a leading UTF-8 BOM; trimStart then strips JS whitespace.
+	text := providerutils.JSTrimStart(strings.TrimPrefix(string(head), "\uFEFF"))
 	return svgHeadPattern.MatchString(text)
 }
 
@@ -160,7 +165,7 @@ func isSVGBytes(data []byte) bool {
 	if !utf8.Valid(data) {
 		return false
 	}
-	text := strings.TrimSpace(strings.TrimPrefix(string(data), string(rune(0xFEFF))))
+	text := providerutils.JSTrim(strings.TrimPrefix(string(data), "\uFEFF"))
 	if !svgStrictHeadPattern.MatchString(text) {
 		return false
 	}
