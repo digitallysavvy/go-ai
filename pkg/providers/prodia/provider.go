@@ -1,7 +1,6 @@
 package prodia
 
 import (
-	"fmt"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
@@ -96,28 +95,23 @@ func (p *Provider) effectiveAPIKey() (string, error) {
 	return strings.TrimPrefix(h["Authorization"], "Bearer "), nil
 }
 
-// LanguageModel returns a language model by ID.
-// Routes inference.nano-banana.* model IDs to ProdiaLanguageModel.
+// LanguageModel returns a language model by ID. Any ID is accepted (TS
+// ProdiaLanguageModelId is `'inference.nano-banana.img2img.v2' | (string & {})`),
+// so new Prodia job types work without an SDK release.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	if modelID == "" {
 		modelID = LanguageModelNanoBananaImgToImgV2
 	}
-	if strings.HasPrefix(modelID, "inference.nano-banana.") {
-		return NewLanguageModel(p, modelID), nil
-	}
-	return nil, fmt.Errorf("prodia: unsupported language model %q", modelID)
+	return NewLanguageModel(p, modelID), nil
 }
 
-// VideoModel returns a video generation model by ID.
-// Routes inference.wan2-2.* model IDs to ProdiaVideoModel.
+// VideoModel returns a video generation model by ID. Any ID is accepted (TS
+// ProdiaVideoModelId ends in `(string & {})`).
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 	if modelID == "" {
 		modelID = VideoModelWan22LightningTxt2Vid
 	}
-	if strings.HasPrefix(modelID, "inference.wan2-2.") {
-		return NewVideoModel(p, modelID), nil
-	}
-	return nil, fmt.Errorf("prodia: unsupported video model %q", modelID)
+	return NewVideoModel(p, modelID), nil
 }
 
 // EmbeddingModel returns an embedding model by ID

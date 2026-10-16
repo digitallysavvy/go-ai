@@ -482,10 +482,9 @@ func TestProviderLanguageModelRouting(t *testing.T) {
 		t.Errorf("default ModelID() = %q, want %q", lm2.ModelID(), LanguageModelNanoBananaImgToImgV2)
 	}
 
-	// Unknown model ID should return an error.
-	_, err = prov.LanguageModel("gpt-4")
-	if err == nil {
-		t.Error("expected error for unsupported language model, got nil")
+	// TS accepts any model id (`(string & {})`).
+	if lm3, err := prov.LanguageModel("gpt-4"); err != nil || lm3.ModelID() != "gpt-4" {
+		t.Errorf("LanguageModel(any id) = %v, %v", lm3, err)
 	}
 }
 
