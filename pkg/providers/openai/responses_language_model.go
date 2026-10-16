@@ -70,6 +70,8 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		Query:   m.provider.responsesQuery(),
 		Body:    body,
 		Headers: opts.Headers,
+		// TS createJsonResponseHandler(openaiResponsesResponseSchema).
+		ValidateResponse: providerutils.ResponsesResponseValidator(m.Provider()),
 	}, &resp)
 	if err != nil {
 		return nil, m.wrapErr(err)
@@ -2470,6 +2472,12 @@ func convertResponsesUsage(u *responses.ResponsesAPIUsage) types.Usage {
 }
 
 func (m *ResponsesLanguageModel) wrapErr(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 

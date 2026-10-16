@@ -379,7 +379,7 @@ func TestCompatCompletionModels(t *testing.T) {
 				b, _ := io.ReadAll(r.Body)
 				_ = json.Unmarshal(b, &body)
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"id":"c1","choices":[{"text":"done","finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+				_, _ = w.Write([]byte(`{"id":"c1","choices":[{"text":"done","finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`))
 			}))
 			defer srv.Close()
 			var m provider.LanguageModel

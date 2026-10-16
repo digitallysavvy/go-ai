@@ -228,16 +228,31 @@ func (c *Client) requestDefaults() (string, map[string]string, error) {
 
 // overlayHeaders layers extra over headers. HTTP header names are
 // case-insensitive, so an existing entry that differs only in case (the
-// providers' tagged static headers are lower-cased) is replaced, not kept
-// beside the new value where map order would pick the winner.
+// providers' tagged static headers are lower-cased) takes the new value under
+// its own spelling instead of keeping both, where map order would pick the
+// winner.
 func overlayHeaders(headers, extra map[string]string) {
 	for k, v := range extra {
+		keep := k
+		if _, exact := headers[k]; !exact {
+			// Keep the lexicographically first spelling already present so the
+			// result does not depend on map order.
+			first := ""
+			for existing := range headers {
+				if strings.EqualFold(existing, k) && (first == "" || existing < first) {
+					first = existing
+				}
+			}
+			if first != "" {
+				keep = first
+			}
+		}
 		for existing := range headers {
-			if existing != k && strings.EqualFold(existing, k) {
+			if existing != keep && strings.EqualFold(existing, k) {
 				delete(headers, existing)
 			}
 		}
-		headers[k] = v
+		headers[keep] = v
 	}
 }
 

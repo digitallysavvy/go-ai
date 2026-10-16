@@ -112,11 +112,12 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	// Make API request, capturing response headers.
 	var response openAIResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/chat/completions",
-		Query:   m.provider.config.ChatQuery,
-		Body:    reqBody,
-		Headers: opts.Headers,
+		Method:           http.MethodPost,
+		Path:             "/chat/completions",
+		Query:            m.provider.config.ChatQuery,
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), m.responseKind()),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -1040,6 +1041,9 @@ func (m *LanguageModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	// Try to parse as OpenAI error response
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
@@ -1804,4 +1808,14 @@ func (m *LanguageModel) applyCompatMetadataKey(result *types.GenerateResult, pro
 	for i := range result.ToolCalls {
 		move(result.ToolCalls[i].ProviderMetadata)
 	}
+}
+
+// responseKind selects the TS response schema of a non-streaming chat call:
+// openaiChatResponseSchema, or OpenAICompatibleChatResponseSchema for the
+// openai-compatible wrappers.
+func (m *LanguageModel) responseKind() providerutils.ChatResponseKind {
+	if m.provider.config.OpenAICompatible {
+		return providerutils.ResponseKindOpenAICompatible
+	}
+	return providerutils.ResponseKindOpenAI
 }

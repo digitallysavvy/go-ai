@@ -135,7 +135,7 @@ var (
 		"find_in_page": zObj(fl("type", zLit("find_in_page")), fl("url", nStr), fl("pattern", nStr)),
 	}))
 
-	zRespItemDone = zDiscType(map[string]zNode{
+	zRespItemDoneMembers = map[string]zNode{
 		"message":   zObj(fl("type", zLit("message")), fl("id", zStr), fl("phase", zRespPhase)),
 		"reasoning": zObj(fl("type", zLit("reasoning")), fl("id", zStr), fl("encrypted_content", nStr)),
 		"function_call": zObj(fl("type", zLit("function_call")), fl("id", zStr), fl("call_id", zStr), fl("name", zStr), fl("arguments", zStr),
@@ -166,7 +166,9 @@ var (
 		"shell_call_output":  zRespShellOutput,
 		"tool_search_call":   zRespToolSearchCall,
 		"tool_search_output": zRespToolSearchOutput,
-	})
+	}
+
+	zRespItemDone = zDiscType(zRespItemDoneMembers)
 
 	zRespCommonResponse = []zFld{
 		fl("incomplete_details", zNullish(zObj(fl("reason", zStr)))),

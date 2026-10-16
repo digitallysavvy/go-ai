@@ -81,6 +81,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/chat",
 		Body:    reqBody,
 		Headers: opts.Headers,
+		// TS createJsonResponseHandler(cohereChatResponseSchema).
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindCohere),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -535,6 +537,9 @@ func (m *LanguageModel) convertV2Response(resp cohereV2Response) (*types.Generat
 func (m *LanguageModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
 	}
 	return providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
 }

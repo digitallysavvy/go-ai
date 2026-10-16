@@ -562,7 +562,7 @@ func TestResponsesModelMatchesAzureResponsesRequest(t *testing.T) {
 			"id":"resp_123",
 			"model":"test-deployment",
 			"created_at":123,
-			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]}],
 			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
 		}`))
 	}))
@@ -650,7 +650,7 @@ func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"id":"resp_123",
 			"model":"test-deployment",
-			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]}],
 			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
 		}`))
 	}))

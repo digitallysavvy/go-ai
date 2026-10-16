@@ -22,7 +22,7 @@ func TestChatModelDelegatesToOpenAIChat(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"c1","model":"gpt","created":1,"choices":[{"message":{"role":"assistant","content":"ok","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"completion_tokens_details":{"accepted_prediction_tokens":1}}}`))
+		_, _ = w.Write([]byte(`{"id":"c1","model":"gpt","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"ok","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"city\":\"Paris\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5,"completion_tokens_details":{"accepted_prediction_tokens":1}}}`))
 	}))
 	defer srv.Close()
 
@@ -106,7 +106,7 @@ func TestChatModelStreamRequestsUsage(t *testing.T) {
 
 func TestChatModelSystemOnlyPromptDoesNotPanic(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 	p := mustNewProvider(t, Config{APIKey: "k", BaseURL: srv.URL + "/openai/v1"})
