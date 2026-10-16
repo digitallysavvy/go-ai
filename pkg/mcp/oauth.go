@@ -442,7 +442,7 @@ func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string)
 func closeResponse(resp *http.Response) {
 	if resp != nil && resp.Body != nil {
 		drainBody(resp.Body)
-		resp.Body.Close()              //nolint:errcheck
+		resp.Body.Close() //nolint:errcheck
 	}
 }
 
