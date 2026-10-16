@@ -318,3 +318,15 @@ func TestDownloadToolResultFiles_TSMediaTypeDetectionAndBlobType(t *testing.T) {
 		t.Errorf("blob type = %q, want lowercased with parameters", got)
 	}
 }
+
+func TestMarshalJSONCompactKeepsLineSeparatorsRaw(t *testing.T) {
+	// JS JSON.stringify writes U+2028/U+2029 as is; Go's encoder escapes them.
+	ls, ps := string(rune(0x2028)), string(rune(0x2029))
+	if got := marshalJSONCompact("a" + ls + "b" + ps + "c"); got != "\"a"+ls+"b"+ps+"c\"" {
+		t.Fatalf("got %q", got)
+	}
+	// A literal backslash followed by the text u2028 stays an escaped backslash.
+	if got := marshalJSONCompact("a\\u2028b"); got != "\"a\\\\u2028b\"" {
+		t.Fatalf("literal backslash text changed: %q", got)
+	}
+}
