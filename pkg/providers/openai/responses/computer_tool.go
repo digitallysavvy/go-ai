@@ -60,7 +60,7 @@ type ComputerCall struct {
 
 	// PendingSafetyChecks are safety checks that must be acknowledged before
 	// continuing.
-	PendingSafetyChecks []ComputerSafetyCheck `json:"pending_safety_checks,omitempty"`
+	PendingSafetyChecks []ComputerSafetyCheck `json:"pending_safety_checks"`
 }
 
 // ComputerCallOutputScreenshot is the screenshot captured after executing a

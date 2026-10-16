@@ -330,6 +330,12 @@ func fileDataToImageURL(file types.FileContent) (string, error) {
 		if media == "" {
 			media = "image/jpeg"
 		}
+		// TS buildImageUrl: resolveFullMediaType sniffs a bare or wildcard
+		// type (image, image/*) from the inline bytes.
+		media, err := prompt.ResolveFullMediaType(media, file.FileData.Data, true)
+		if err != nil {
+			return "", err
+		}
 		return "data:" + media + ";base64," + base64.StdEncoding.EncodeToString(file.FileData.Data), nil
 	case types.FileDataTypeReference:
 		return "", &providererrors.UnsupportedFunctionalityError{Functionality: "image file parts with provider references"}

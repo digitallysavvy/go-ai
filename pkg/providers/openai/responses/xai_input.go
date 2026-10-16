@@ -162,7 +162,11 @@ func convertXAIFilePart(p types.FileContent) (interface{}, error) {
 				if data == "" {
 					return nil, nil
 				}
-				imageURL = fmt.Sprintf("data:%s;base64,%s", resolveOpenAIFileDataMediaType(mediaType, p), data)
+				resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
+				if resolveErr != nil {
+					return nil, resolveErr
+				}
+				imageURL = fmt.Sprintf("data:%s;base64,%s", resolvedMediaType, data)
 			}
 			if imageURL == "" {
 				return nil, nil
@@ -346,6 +350,10 @@ func xaiToolResultOutput(tr types.ToolResultContent) interface{} {
 					}
 				default:
 					if data := fileContentBlockDataBase64(b); data != "" {
+						// TS resolveFullMediaType sniffs a bare or wildcard type.
+						if resolved, err := resolveInlineBase64MediaType(mediaType, data); err == nil {
+							mediaType = resolved
+						}
 						parts = append(parts, map[string]interface{}{
 							"type":      "input_image",
 							"image_url": fmt.Sprintf("data:%s;base64,%s", mediaType, data),

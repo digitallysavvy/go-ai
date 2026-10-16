@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
-	"net/http"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutil "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // ConvertPromptToInput converts a types.Prompt to the Responses API input slice.
@@ -440,7 +440,11 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 				if data == "" {
 					continue
 				}
-				mediaType = resolveOpenAIFileDataMediaType(mediaType, p)
+				resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
+				if resolveErr != nil {
+					return UserMessage{}, resolveErr
+				}
+				mediaType = resolvedMediaType
 				fileData := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
 				if isImageMediaType(mediaType) {
 					parts = append(parts, UserImageURLPart{
@@ -478,27 +482,23 @@ func openAIFileMediaType(part types.FileContent) string {
 	return firstNonEmpty(part.MediaType, part.MimeType, part.FileData.MediaType)
 }
 
-func resolveOpenAIFileDataMediaType(mediaType string, part types.FileContent) string {
-	if mediaType != "image/*" {
-		return mediaType
+// resolveInlineBase64MediaType is TS resolveFullMediaType for a file part with
+// inline bytes (given base64-encoded): a full type/subtype is kept, a bare or
+// wildcard type (image, image/*) is sniffed from the bytes, and bytes that
+// cannot be identified are an UnsupportedFunctionalityError. An empty media
+// type keeps the legacy pass-through.
+func resolveInlineBase64MediaType(mediaType, base64Data string) (string, error) {
+	if mediaType == "" {
+		return mediaType, nil
 	}
-	data := part.FileData.Data
-	if len(data) == 0 && part.FileData.DataString != "" {
-		if decoded, err := types.DecodeFileDataString(part.FileData.DataString); err == nil {
-			data = decoded
-		}
+	if full, err := promptutil.ResolveFullMediaType(mediaType, nil, true); err == nil {
+		return full, nil
 	}
-	if len(data) == 0 {
-		data = part.Data
+	raw, err := types.DecodeFileDataString(base64Data)
+	if err != nil {
+		return mediaType, nil
 	}
-	if len(data) == 0 {
-		return mediaType
-	}
-	detected := http.DetectContentType(data)
-	if strings.HasPrefix(detected, "image/") {
-		return detected
-	}
-	return mediaType
+	return promptutil.ResolveFullMediaType(mediaType, raw, true)
 }
 
 func openAIFileDataBase64(part types.FileContent) string {
@@ -1922,10 +1922,8 @@ func computerActionsFromArgs(args map[string]interface{}) []map[string]interface
 }
 
 func computerSafetyChecksFromArgs(args map[string]interface{}, key string) []ComputerSafetyCheck {
-	raw, ok := args[key].([]interface{})
-	if !ok {
-		return nil
-	}
+	raw, _ := args[key].([]interface{})
+	// TS always sends pending_safety_checks (an empty array when none).
 	checks := make([]ComputerSafetyCheck, 0, len(raw))
 	for _, item := range raw {
 		m, ok := item.(map[string]interface{})
@@ -2248,7 +2246,12 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 						if data == "" {
 							continue
 						}
-						fileData := fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+						resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, data)
+						if resolveErr != nil {
+							// This path cannot return an error; keep the declared type.
+							resolvedMediaType = mediaType
+						}
+						fileData := fmt.Sprintf("data:%s;base64,%s", resolvedMediaType, data)
 						if isImageMediaType(mediaType) {
 							parts = append(parts, CustomToolCallOutputPart{
 								Type:     "input_image",

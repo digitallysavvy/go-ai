@@ -316,3 +316,27 @@ func TestDeepSeekFilesUploadFileExpiresAfterMustBeInteger(t *testing.T) {
 		}
 	}
 }
+
+// TS always returns providerMetadata.deepseek, an empty object when the
+// response has no optional metadata.
+func TestDeepSeekFilesUploadFileIncompleteResponseHasEmptyMetadata(t *testing.T) {
+	p := newDeepseekProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"id":"file-incomplete"}`))}, nil
+	})
+	files := &FilesAPI{provider: p}
+	result, err := files.UploadFile(context.Background(), types.UploadFileOptions{
+		Data:      types.FileData{Type: types.FileDataTypeData, Data: []byte{0x89, 0x50, 0x4e, 0x47}},
+		MediaType: "image/png",
+		Filename:  "request-filename.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, ok := result.ProviderMetadata["deepseek"].(map[string]interface{})
+	if !ok || len(meta) != 0 {
+		t.Fatalf("ProviderMetadata = %#v, want deepseek: {}", result.ProviderMetadata)
+	}
+	if result.Filename != "request-filename.png" {
+		t.Fatalf("Filename = %q", result.Filename)
+	}
+}

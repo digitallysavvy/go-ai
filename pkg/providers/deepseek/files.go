@@ -216,9 +216,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 	if filename != "" {
 		result.Filename = filename
 	}
-	if len(meta) > 0 {
-		result.ProviderMetadata = map[string]interface{}{"deepseek": meta}
-	}
+	// TS always returns providerMetadata.deepseek, empty when the response
+	// carried no optional metadata.
+	result.ProviderMetadata = map[string]interface{}{"deepseek": meta}
 	return result, nil
 }
 

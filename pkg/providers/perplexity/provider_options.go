@@ -133,6 +133,11 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	if opts.Skills, err = perplexityAgentObjectArrayField(raw, "skills"); err != nil {
 		return nil, nil, err
 	}
+	for _, skill := range opts.Skills {
+		if err := validatePerplexitySkill(skill); err != nil {
+			return nil, nil, err
+		}
+	}
 
 	var extras map[string]interface{}
 	for k, v := range raw {
@@ -324,14 +329,41 @@ func validatePerplexityNativeTool(tool map[string]interface{}) error {
 	return nil
 }
 
+var perplexityBuiltinSkillNames = map[string]bool{
+	"office": true, "office/docx": true, "office/pdf": true,
+	"office/pptx": true, "office/xlsx": true,
+}
+
+// validatePerplexitySkill mirrors TS's skills union: a "builtin" skill needs
+// one of the office skill names; an "inline" skill needs string name,
+// description and instructions.
+func validatePerplexitySkill(skill map[string]interface{}) error {
+	switch skill["type"] {
+	case "builtin":
+		name, ok := skill["name"].(string)
+		if !ok || !perplexityBuiltinSkillNames[name] {
+			return invalidPerplexityProviderOptions("skills", fmt.Sprintf("builtin skill name: invalid value %v", skill["name"]))
+		}
+	case "inline":
+		for _, key := range []string{"name", "description", "instructions"} {
+			if _, ok := skill[key].(string); !ok {
+				return invalidPerplexityProviderOptions("skills", fmt.Sprintf("inline skill %s must be a string", key))
+			}
+		}
+	default:
+		return invalidPerplexityProviderOptions("skills", fmt.Sprintf("invalid skill type %v", skill["type"]))
+	}
+	return nil
+}
+
 func requirePerplexityStringField(tool map[string]interface{}, field, path string) error {
 	v, ok := tool[fieldKeyFromPath(path)]
 	if !ok {
 		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s is required", path))
 	}
-	s, ok := v.(string)
-	if !ok || s == "" {
-		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s must be a non-empty string", path))
+	// TS z.string() accepts the empty string.
+	if _, ok := v.(string); !ok {
+		return invalidPerplexityProviderOptions(field, fmt.Sprintf("%s must be a string", path))
 	}
 	return nil
 }

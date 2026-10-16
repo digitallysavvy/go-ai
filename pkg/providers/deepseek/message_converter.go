@@ -9,6 +9,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 )
 
 // deepseekMaxImageURLLength mirrors the TypeScript SDK's 8192 character limit
@@ -238,6 +239,19 @@ func deepseekResolveImageMediaType(mediaType string) (string, error) {
 	return normalized, nil
 }
 
+// deepseekFullImageMediaType is TS resolveDeepSeekImageMediaType: the part's
+// media type is first resolved to a full type/subtype (sniffed from inline
+// bytes when bare or wildcard), then checked against the supported images.
+func deepseekFullImageMediaType(f types.FileContent) (string, error) {
+	mediaType := firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType)
+	inline := deepseekFileURL(f) == ""
+	resolved, err := prompt.ResolveFullMediaType(mediaType, deepseekFileBytes(f), inline)
+	if err != nil {
+		return "", err
+	}
+	return deepseekResolveImageMediaType(resolved)
+}
+
 func deepseekImageDataURL(mediaType string, data []byte) string {
 	wireMediaType := mediaType
 	if wireMediaType == "image/jpg" {
@@ -265,7 +279,7 @@ func deepseekResolveUserImagePart(f types.FileContent, providerOptionsName strin
 		return map[string]interface{}{"type": "file", "file_id": ref}, nil
 	}
 
-	mediaType, err := deepseekResolveImageMediaType(firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType))
+	mediaType, err := deepseekFullImageMediaType(f)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +345,7 @@ func deepseekResolveToolResultImagePart(f types.FileContent, providerOptionsName
 	}
 	imageDetail, _ := fileOpts["imageDetail"].(string)
 
-	mediaType, err := deepseekResolveImageMediaType(firstNonEmptyDS(f.MediaType, f.MimeType, f.FileData.MediaType))
+	mediaType, err := deepseekFullImageMediaType(f)
 	if err != nil {
 		return nil, err
 	}

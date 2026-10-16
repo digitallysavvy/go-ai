@@ -577,3 +577,30 @@ func TestCohereImagePartDetailValidated(t *testing.T) {
 		t.Fatalf("error = %v, want InvalidArgumentError", err)
 	}
 }
+
+// TS buildImageUrl sniffs a wildcard image media type from inline bytes.
+func TestCohereWildcardImageDataIsSniffed(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(cohereV2MockResponse))
+	}))
+	defer srv.Close()
+
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	model := NewLanguageModel(New(Config{BaseURL: srv.URL, APIKey: "test-key"}), "command-r-plus")
+	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: []types.Message{{
+			Role:    types.RoleUser,
+			Content: []types.ContentPart{types.FileContent{MediaType: "image/*", Data: png}},
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate error: %v", err)
+	}
+	raw, _ := json.Marshal(got)
+	if !strings.Contains(string(raw), "data:image/png;base64,") {
+		t.Fatalf("body = %s, want sniffed image/png data URL", raw)
+	}
+}

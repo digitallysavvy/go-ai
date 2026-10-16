@@ -35,9 +35,15 @@ func convertToPerplexityInput(messages []types.Message) ([]map[string]interface{
 			})
 
 		case types.RoleUser:
-			converted := make([]map[string]interface{}, 0, len(msg.Content))
+			// Legacy ImageContent parts are the TS image file parts; core
+			// normalizes them, but direct provider callers may not.
+			userParts, err := prompt.NormalizeContentParts(msg.Content)
+			if err != nil {
+				return nil, nil, err
+			}
+			converted := make([]map[string]interface{}, 0, len(userParts))
 			isTextOnly := true
-			for _, part := range msg.Content {
+			for _, part := range userParts {
 				item, err := convertPerplexityUserPart(part)
 				if err != nil {
 					return nil, nil, err
