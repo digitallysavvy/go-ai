@@ -115,6 +115,11 @@ const (
 	SchemaDeepSeekFile      MediaResponseSchema = "deepseek-file"
 	SchemaGatewayBatchStart MediaResponseSchema = "gateway-batch-start"
 	SchemaGatewayBatchState MediaResponseSchema = "gateway-batch-status"
+	// SchemaGatewayVideoStart and SchemaGatewayVideoStatus are the
+	// /video-model/start and /video-model/status responses
+	// (gatewayVideoStartResponseSchema, gatewayVideoStatusResponseSchema).
+	SchemaGatewayVideoStart  MediaResponseSchema = "gateway-video-start"
+	SchemaGatewayVideoStatus MediaResponseSchema = "gateway-video-status"
 	// SchemaGatewayBatchItem is one /batch/results NDJSON line
 	// (gatewayBatchItemResultLineSchema: type text, id, status; extra keys pass).
 	SchemaGatewayBatchItem MediaResponseSchema = "gateway-batch-item"
@@ -232,6 +237,29 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		fl("error", zNullish(zObj(fl("message", zStr), fl("type", nStr), fl("code", nStr), fl("statusCode", nNum)))),
 		fl("createdAt", nStr), fl("expiresAt", nStr),
 		fl("providerMetadata", zNullish(zRec(zRec(zAny)))),
+	}
+	gatewayVideoData := zodlite.Union(
+		zodlite.Typed("url", fl("url", zStr), fl("mediaType", zStr)),
+		zodlite.Typed("base64", fl("data", zStr), fl("mediaType", zStr)))
+	gatewayVideoMeta := zNullish(zRec(zodlite.Record))
+	gatewayVideoWarnings := zNullish(zArr(gatewayWarning))
+	gatewayVideoStatusVariants := map[string]zNode{
+		"pending":   zObj(fl("warnings", gatewayVideoWarnings), fl("providerMetadata", gatewayVideoMeta)),
+		"completed": zObj(fl("videos", zArr(gatewayVideoData)), fl("warnings", gatewayVideoWarnings), fl("providerMetadata", gatewayVideoMeta)),
+		"error":     zObj(fl("error", zStr), fl("providerMetadata", gatewayVideoMeta)),
+		"cancelled": zObj(fl("providerMetadata", gatewayVideoMeta)),
+	}
+	gatewayVideoStatus := func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return zodlite.Invalid("object", v, present, path)
+		}
+		status, _ := m["status"].(string)
+		variant, known := gatewayVideoStatusVariants[status]
+		if !known {
+			return &zodlite.Issue{Path: append(append([]interface{}{}, path...), "status"), Code: "invalid_union", Discriminator: "status", Message: "Invalid input"}
+		}
+		return variant(v, present, path)
 	}
 	word := zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum))
 	b64Data := zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))))
@@ -434,7 +462,9 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("expires_at", zNullish(zIntNonneg))),
 		SchemaGatewayBatchStart: zObj(append(append([]zFld{}, gatewayBatchStatus...), fl("batchId", zStr),
 			fl("warnings", zNullish(zArr(zObj(fl("requestId", nStr), fl("warning", zAny))))))...),
-		SchemaGatewayBatchState: zObj(gatewayBatchStatus...),
+		SchemaGatewayBatchState:  zObj(gatewayBatchStatus...),
+		SchemaGatewayVideoStart:  zObj(fl("operation", zAny), fl("warnings", gatewayVideoWarnings), fl("providerMetadata", gatewayVideoMeta)),
+		SchemaGatewayVideoStatus: gatewayVideoStatus,
 		SchemaGatewayBatchItem: zObj(fl("type", zodlite.Literal("text")), fl("id", zStr),
 			fl("status", zodlite.Enum("cancelled", "expired", "failed", "succeeded"))),
 		SchemaMistralSpeech: zObj(fl("audio_data", zStr)),

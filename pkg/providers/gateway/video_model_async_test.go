@@ -309,3 +309,39 @@ func TestVideoModel_DoStart_EncodesFrameImagesAndInputReferences(t *testing.T) {
 		t.Errorf("data = %v, want base64 of 'Hello'", firstImage["data"])
 	}
 }
+
+// TS validates the status response with a discriminated union: an unknown
+// status (or a completed status without videos) is an Invalid JSON response
+// error, not a silent "pending".
+func TestVideoModel_DoStatus_ValidatesResponse(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown status":    `{"status":"running"}`,
+		"completed no list": `{"status":"completed"}`,
+		"error no message":  `{"status":"error"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			model, server := newAsyncTestVideoModel(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			})
+			defer server.Close()
+			res, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: json.RawMessage(`{"id":"x"}`)})
+			if err == nil {
+				t.Fatalf("want a validation error, got %+v", res)
+			}
+		})
+	}
+}
+
+// The SSE spec allows "data:" without the space after the colon.
+func TestVideoModel_DoGenerate_SSEDataWithoutSpace(t *testing.T) {
+	model, server := newAsyncTestVideoModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data:{\"type\":\"result\",\"videos\":[{\"type\":\"url\",\"url\":\"https://x/v.mp4\",\"mediaType\":\"video/mp4\"}]}\n\n"))
+	})
+	defer server.Close()
+	res, err := model.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "p", N: 1})
+	if err != nil || len(res.Videos) != 1 {
+		t.Fatalf("DoGenerate = %+v, %v", res, err)
+	}
+}
