@@ -171,8 +171,7 @@ func extractMistralEmbeddingOptions(opts *provider.EmbedModelOptions) *mistralEm
 	if v, ok := m["metadata"].(map[string]interface{}); ok {
 		result.Metadata = v
 	}
-	if v, ok := m["outputDimension"].(float64); ok {
-		iv := int(v)
+	if iv, ok := providerutils.CoerceInt(m["outputDimension"]); ok {
 		result.OutputDimension = &iv
 	}
 	if v, ok := m["outputDtype"].(string); ok {
