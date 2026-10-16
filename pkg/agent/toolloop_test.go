@@ -3442,3 +3442,20 @@ func TestExecuteWithMessagesToolCallers_LateBindsLocalCaller(t *testing.T) {
 		t.Fatalf("ToolResults[0].Result = %v, want [getInventory] (caller's bound Execute must see the routed callee)", result.ToolResults[0].Result)
 	}
 }
+
+// TS validateTypes({context: {field: 'options'}}) throws a TypeValidationError;
+// the v0.5.2 *InvalidArgumentError stays reachable through the cause chain.
+func TestValidateAgentCallOptions_IsTypeValidationError(t *testing.T) {
+	sch := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"ok"}})
+	_, err := validateAgentCallOptions(sch, map[string]interface{}{"mode": "bad"})
+	if !providererrors.IsValidationError(err) {
+		t.Fatalf("err = %v, want TypeValidationError", err)
+	}
+	if !strings.HasPrefix(err.Error(), "Type validation failed for options: Value: {\"mode\":\"bad\"}.\nError message: ") {
+		t.Fatalf("message = %q", err.Error())
+	}
+	var invalidArg *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalidArg) {
+		t.Fatalf("errors.As(*InvalidArgumentError) failed for %v", err)
+	}
+}

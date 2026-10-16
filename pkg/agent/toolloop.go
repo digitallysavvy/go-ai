@@ -1380,11 +1380,16 @@ func validateAgentCallOptions(callOptionsSchema schema.Schema, callOptions inter
 	}
 	defaulted := schema.ApplyDefaults(callOptions, callOptionsSchema)
 	if err := callOptionsSchema.Validator().Validate(defaulted); err != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "options",
-			Message: fmt.Sprintf("call options failed schema validation: %v", err),
-			Cause:   err,
-		}
+		// TS validateTypes throws TypeValidationError with context
+		// {field: 'options'}. The cause chain keeps the *InvalidArgumentError
+		// v0.5.2 returned, so errors.As on either type matches.
+		return nil, providererrors.NewValidationErrorWithContext(callOptions, err.Error(),
+			&providererrors.InvalidArgumentError{
+				Field:   "options",
+				Message: fmt.Sprintf("call options failed schema validation: %v", err),
+				Cause:   err,
+			},
+			&providererrors.ValidationContext{Field: "options"})
 	}
 	return defaulted, nil
 }
