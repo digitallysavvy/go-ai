@@ -10,13 +10,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"math"
 	"os"
 	"os/exec"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -89,7 +89,7 @@ func ParseJWTPayload(token string) map[string]any {
 	}
 	raw := decodeNodeBase64(segments[1])
 	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	if err := securejson.Unmarshal(raw, &payload); err != nil {
 		return nil
 	}
 	return payload
