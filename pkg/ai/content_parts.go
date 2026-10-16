@@ -125,7 +125,7 @@ func setTrailingReasoningMetadata(parts []types.ContentPart, metadata json.RawMe
 func reasoningPartsOf(content []types.ContentPart) []types.ReasoningContent {
 	var out []types.ReasoningContent
 	for _, p := range content {
-		if rc, ok := p.(types.ReasoningContent); ok && (rc.Text != "" || len(rc.ProviderMetadata) > 0) {
+		if rc, ok := p.(types.ReasoningContent); ok {
 			out = append(out, rc)
 		}
 	}

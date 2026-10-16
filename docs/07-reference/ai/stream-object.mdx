@@ -23,6 +23,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 | Prompt | string | No | Simple string prompt (alternative to Messages) |
 | Messages | []types.Message | No | List of conversation messages |
 | System | string | No | System instructions |
+| Instructions | *string | No | TypeScript-compatible alias for System; takes precedence when set |
+| AllowSystemMessages | bool | No | Permit system-role messages in Messages (default false, as TS `allowSystemInMessages`) |
+| AllowSystemInMessages | bool | No | TypeScript-compatible alias for AllowSystemMessages |
 | ExperimentalDownload | DownloadFunction | No | Downloads remote file URLs the model cannot read directly (per its SupportedURLs); defaults to `DefaultDownload`, as in GenerateText. Mirrors TS `experimental_download`. |
 | Schema | schema.Schema | Yes | Schema for output validation |
 | Temperature | *float64 | No | Sampling temperature (0.0 to 2.0) |

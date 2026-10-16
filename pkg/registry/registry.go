@@ -42,8 +42,11 @@ var globalRegistry = NewRegistry()
 type Registry struct {
 	mu        sync.RWMutex
 	providers map[string]provider.Provider
-	aliases   map[string]string // model alias -> provider:model
-	tools     map[string]ToolEntry
+	// providerOrder lists provider names in first-registration order, the
+	// order TS Object.keys(providers) reports in NoSuchProviderError.
+	providerOrder []string
+	aliases       map[string]string // model alias -> provider:model
+	tools         map[string]ToolEntry
 
 	// separator is used between provider ID and model ID in a combined
 	// "providerId<sep>modelId" identifier. Defaults to ":", matching
@@ -128,6 +131,9 @@ type ToolEntry struct {
 func (r *Registry) RegisterProvider(name string, p provider.Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.providers[name]; !exists {
+		r.providerOrder = append(r.providerOrder, name)
+	}
 	r.providers[name] = p
 }
 
@@ -385,11 +391,7 @@ func (r *Registry) ListProviders() []string {
 }
 
 func (r *Registry) listProvidersLocked() []string {
-	names := make([]string, 0, len(r.providers))
-	for name := range r.providers {
-		names = append(names, name)
-	}
-	return names
+	return append([]string(nil), r.providerOrder...)
 }
 
 // ListAliases returns all registered aliases

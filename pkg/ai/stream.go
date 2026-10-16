@@ -1725,6 +1725,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		// streamedToolResults tracks provider-inline tool results by tool call ID.
 		streamedToolResults := make(map[string]types.ToolResult)
+		var streamedToolResultOrder []string
 		// stepTextIDRemap/stepReasoningIDRemap: see usedTextIDs/usedReasoningIDs above.
 		stepTextIDRemap := make(map[string]string)
 		stepReasoningIDRemap := make(map[string]string)
@@ -2074,7 +2075,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					break
 				}
 				chunk.ToolResult = &enrichedResult
-				streamedToolResults[enrichedResult.ToolCallID] = enrichedResult
+				streamedToolResultOrder = recordStreamedToolResult(streamedToolResults, streamedToolResultOrder, enrichedResult)
 				stepContent = append(stepContent, toolResultContentFromToolResult(enrichedResult))
 			}
 
@@ -2326,6 +2327,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepSawErrorChunk = false
 					stepSawOutput = false
 					streamedToolResults = make(map[string]types.ToolResult)
+					streamedToolResultOrder = nil
 					stepTextIDRemap = make(map[string]string)
 					stepReasoningIDRemap = make(map[string]string)
 					r.mu.Lock()
@@ -2450,7 +2452,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				return ok || contentAnswersProviderCall(stepContent, id)
 			}) {
 				synthetic := emptyProviderResult(call, stepProvider, stepModelID)
-				streamedToolResults[call.ID] = synthetic
+				streamedToolResultOrder = recordStreamedToolResult(streamedToolResults, streamedToolResultOrder, synthetic)
 				stepContent = append(stepContent, toolResultContentFromToolResult(synthetic))
 				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeToolResult, ToolResult: &synthetic}})
 				injectedProviderResult = true
@@ -2652,7 +2654,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		for callID := range streamedToolResults {
 			delete(pendingDeferredToolCalls, callID)
 		}
-		publicStepToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults))
+		publicStepToolResults := types.ResultsForPublicView(mergeStreamedToolResults(stepToolResults, streamedToolResults, streamedToolResultOrder))
 
 		aggToolCallsLen, aggToolResultsLen, aggUsageBefore := len(r.toolCalls), len(r.toolResults), r.usage
 		// Accumulate step tool calls and results into the overall result.
@@ -2838,7 +2840,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				FinishReason:   string(r.finishReason),
 				Usage:          stepTelUsage,
 				Text:           stepText,
-				Reasoning:      stepResult.ReasoningText,
+				Reasoning:      telemetry.JoinReasoning(stepResult.Reasoning),
 				ToolCalls:      stepResult.ToolCalls,
 				ToolResults:    publicStepToolResults,
 				Files:          stepFiles,
@@ -3389,7 +3391,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	streamToolCalls := r.toolCalls
 	var streamReasoningText string
 	if len(allSteps) > 0 {
-		streamReasoningText = allSteps[len(allSteps)-1].ReasoningText
+		streamReasoningText = telemetry.JoinReasoning(allSteps[len(allSteps)-1].Reasoning)
 	}
 	var streamProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
@@ -3593,7 +3595,20 @@ func findToolCallByID(toolCalls []types.ToolCall, toolCallID string) (types.Tool
 	return types.ToolCall{}, false
 }
 
-func mergeStreamedToolResults(executedResults []types.ToolResult, streamedResults map[string]types.ToolResult) []types.ToolResult {
+// recordStreamedToolResult stores a provider-streamed tool result by call ID
+// and remembers the order in which call IDs first arrived.
+func recordStreamedToolResult(streamed map[string]types.ToolResult, order []string, result types.ToolResult) []string {
+	if _, ok := streamed[result.ToolCallID]; !ok {
+		order = append(order, result.ToolCallID)
+	}
+	streamed[result.ToolCallID] = result
+	return order
+}
+
+// mergeStreamedToolResults replaces pending provider-executed markers with
+// their streamed results and appends the remaining streamed results in
+// arrival order (order lists call IDs as they first arrived).
+func mergeStreamedToolResults(executedResults []types.ToolResult, streamedResults map[string]types.ToolResult, order []string) []types.ToolResult {
 	if len(streamedResults) == 0 {
 		return executedResults
 	}
@@ -3608,9 +3623,10 @@ func mergeStreamedToolResults(executedResults []types.ToolResult, streamedResult
 		merged = append(merged, result)
 		seen[result.ToolCallID] = true
 	}
-	for id, streamed := range streamedResults {
-		if !seen[id] {
+	for _, id := range order {
+		if streamed, ok := streamedResults[id]; ok && !seen[id] {
 			merged = append(merged, streamed)
+			seen[id] = true
 		}
 	}
 	return merged
@@ -4108,6 +4124,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 	firstChunk := true
 	var pendingToolCalls []types.ToolCall
 	streamedToolResults := make(map[string]types.ToolResult)
+	var streamedToolResultOrder []string
 	var stepContent []types.ContentPart
 	var stepReasoning []types.ReasoningContent
 	var sawTerminal bool
@@ -4239,7 +4256,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 				return "", convertErr
 			}
 			chunk.ToolResult = &enrichedResult
-			streamedToolResults[enrichedResult.ToolCallID] = enrichedResult
+			streamedToolResultOrder = recordStreamedToolResult(streamedToolResults, streamedToolResultOrder, enrichedResult)
 			stepContent = append(stepContent, toolResultContentFromToolResult(enrichedResult))
 		}
 		if chunk.Type == provider.ChunkTypeReasoning && (chunk.Text != "" || chunk.Reasoning != "" || len(chunk.ProviderMetadata) > 0) {
@@ -4327,7 +4344,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		r.toolCalls = pendingToolCalls
 		r.mu.Unlock()
 	}
-	readAllToolResults := mergeStreamedToolResults(nil, streamedToolResults)
+	readAllToolResults := mergeStreamedToolResults(nil, streamedToolResults, streamedToolResultOrder)
 	if len(readAllToolResults) > 0 {
 		r.mu.Lock()
 		r.toolResults = readAllToolResults
@@ -4427,7 +4444,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		ModelProvider:    r.cbModelProvider,
 		ModelID:          r.cbModelID,
 		Text:             r.text,
-		Reasoning:        step.ReasoningText,
+		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		ReasoningParts:   step.Reasoning,

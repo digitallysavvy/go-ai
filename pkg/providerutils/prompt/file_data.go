@@ -45,7 +45,8 @@ func (e *ReasoningFileConstraintError) Error() string {
 type UnsupportedSystemMessageError struct{}
 
 func (e *UnsupportedSystemMessageError) Error() string {
-	return "system messages are not allowed in the messages field; use the system option instead or set AllowSystemMessages"
+	// TS standardizePrompt's InvalidPromptError message.
+	return "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
 }
 
 // NormalizePrompt applies the core prompt conversion rules before providers see

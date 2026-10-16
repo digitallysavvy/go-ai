@@ -1741,15 +1741,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepTelUsage.ReasoningTokens = genResult.Usage.OutputDetails.ReasoningTokens
 			}
 			var stepTelFiles []types.GeneratedFileContent
-			var stepTelReasoning strings.Builder
+			var stepTelReasoning []types.ReasoningContent
 			for _, part := range genResult.Content {
 				switch v := part.(type) {
 				case types.GeneratedFileContent:
 					stepTelFiles = append(stepTelFiles, v)
 				case types.ReasoningContent:
-					if v.Text != "" {
-						stepTelReasoning.WriteString(v.Text)
-					}
+					stepTelReasoning = append(stepTelReasoning, v)
 				}
 			}
 			telemetry.FireOnStepEnd(stepCtx, telemetry.TelemetryStepEndEvent{
@@ -1759,7 +1757,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				FinishReason:     string(genResult.FinishReason),
 				Usage:            stepTelUsage,
 				Text:             genResult.Text,
-				Reasoning:        stepTelReasoning.String(),
+				Reasoning:        telemetry.JoinReasoning(stepTelReasoning),
 				ToolCalls:        genResult.ToolCalls,
 				ToolResults:      stepResult.ToolResults,
 				Files:            stepTelFiles,
@@ -1890,7 +1888,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ModelProvider:    opts.Model.Provider(),
 		ModelID:          opts.Model.ModelID(),
 		Text:             result.Text,
-		Reasoning:        result.ReasoningText,
+		Reasoning:        telemetry.JoinReasoning(result.Reasoning),
 		ToolCalls:        result.ToolCalls,
 		ToolResults:      result.ToolResults,
 		ReasoningParts:   result.Reasoning,

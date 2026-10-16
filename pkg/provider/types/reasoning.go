@@ -18,19 +18,21 @@ const (
 	// ReasoningNone disables reasoning/thinking entirely.
 	ReasoningNone ReasoningLevel = "none"
 
-	// ReasoningMinimal enables minimal reasoning (Anthropic: 1024 budget tokens).
+	// ReasoningMinimal enables minimal reasoning (a small fraction of the
+	// model's output budget; Anthropic maps it to 2% with a 1024-token floor).
 	ReasoningMinimal ReasoningLevel = "minimal"
 
-	// ReasoningLow enables low reasoning effort (Anthropic: 4000 budget tokens).
+	// ReasoningLow enables low reasoning effort (Anthropic: 10% of the model's
+	// maximum output tokens).
 	ReasoningLow ReasoningLevel = "low"
 
-	// ReasoningMedium enables medium reasoning effort (Anthropic: 10000 budget tokens).
+	// ReasoningMedium enables medium reasoning effort (Anthropic: 30%).
 	ReasoningMedium ReasoningLevel = "medium"
 
-	// ReasoningHigh enables high reasoning effort (Anthropic: 16000 budget tokens).
+	// ReasoningHigh enables high reasoning effort (Anthropic: 60%).
 	ReasoningHigh ReasoningLevel = "high"
 
-	// ReasoningXHigh enables extra-high reasoning effort (Anthropic: 32000 budget tokens).
+	// ReasoningXHigh enables extra-high reasoning effort (Anthropic: 90%).
 	ReasoningXHigh ReasoningLevel = "xhigh"
 
 	// ReasoningMax enables the portable maximum reasoning level. Providers
