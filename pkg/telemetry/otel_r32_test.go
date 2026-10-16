@@ -134,3 +134,18 @@ func TestGenAIAgentNameOnlyOnTextObjectAudioRoots(t *testing.T) {
 		}
 	}
 }
+
+// TS onAbort ends an open decision model-call span along with the root.
+func TestGenAIAbortEndsDecisionModelCallSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{Settings: settings, CallID: "d", ModelID: "m"})
+	integration.OnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{Settings: settings, CallID: "d", ModelID: "m"})
+	integration.OnAbort(ctx, TelemetryAbortEvent{Settings: settings, CallID: "d"})
+	if n := len(rec.Ended()); n != 2 {
+		t.Fatalf("ended spans = %d, want 2 (decision model call + root)", n)
+	}
+}
