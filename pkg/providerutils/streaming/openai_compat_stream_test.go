@@ -1023,3 +1023,18 @@ func TestOpenAICompatStream_EmptyDataEventIsParseError(t *testing.T) {
 		_ = stream.Close()
 	}
 }
+
+// TS records any non-null finish_reason, including "" (mapped to "other"), so
+// a stream whose only finish_reason is empty ends with a finish part and no
+// "ended without a finish reason" error.
+func TestOpenAICompatStream_EmptyFinishReasonIsRecorded(t *testing.T) {
+	stream := newTestStream("data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"\"}]}\n\ndata: [DONE]\n\n")
+	chunks := collectStreamChunks(t, stream)
+	if errs := compatChunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+		t.Fatalf("unexpected error chunk: %+v", errs[0])
+	}
+	fin := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(fin) != 1 || fin[0].FinishReason != types.FinishReasonOther {
+		t.Fatalf("finish = %+v", fin)
+	}
+}

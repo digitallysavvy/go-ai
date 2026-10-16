@@ -413,7 +413,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 
 			// finish_reason is recorded; tool calls and the finish part are
 			// emitted when the stream ends (TS flush()).
-			if choice.FinishReason != nil && *choice.FinishReason != "" {
+			if choice.FinishReason != nil {
 				s.recordFinish(*choice.FinishReason)
 			}
 		}

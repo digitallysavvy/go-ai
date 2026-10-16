@@ -140,7 +140,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// AllowVideo: true -- Together wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "togetherai", ThoughtSignatureKey: "togetherai", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "togetherai", ThoughtSignatureKey: "togetherai", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, CompatFileValidation: true}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {

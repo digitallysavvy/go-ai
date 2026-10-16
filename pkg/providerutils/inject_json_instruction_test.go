@@ -195,3 +195,18 @@ func TestInjectJSONInstructionSchema_NullSchemaIsNoSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestInjectJSONInstructionIntoMessagesKeepsSystemProviderOptions(t *testing.T) {
+	sys := types.Message{
+		Role:            types.RoleSystem,
+		Content:         []types.ContentPart{types.TextContent{Text: "be brief"}},
+		ProviderOptions: map[string]interface{}{"anthropic": map[string]interface{}{"cacheControl": "ephemeral"}},
+	}
+	out := InjectJSONInstructionIntoMessages([]types.Message{sys}, nil, InjectJSONInstructionOptions{})
+	if len(out) != 1 || out[0].ProviderOptions["anthropic"] == nil {
+		t.Fatalf("provider options lost: %+v", out)
+	}
+	if len(sys.Content) != 1 || sys.Content[0].(types.TextContent).Text != "be brief" {
+		t.Fatal("input mutated")
+	}
+}
