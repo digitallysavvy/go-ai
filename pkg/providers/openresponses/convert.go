@@ -451,8 +451,16 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 				if encoded := encodeExtensionInputItems(extensionID, p, opts); len(encoded) > 0 {
 					flush()
 					items = append(items, encoded...)
+					continue
 				}
-				continue
+				// TS only skips a call when getExtensionReplay resolves a
+				// registered extension reference; any other provider-executed
+				// call replays as a plain function_call.
+				if itemID != "" && opts.Registry != nil {
+					if _, registered := opts.Registry.ByExtensionID[extensionID]; registered {
+						continue
+					}
+				}
 			}
 			flush()
 
