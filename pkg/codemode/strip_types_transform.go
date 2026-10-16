@@ -635,6 +635,16 @@ func isMethodParamList(tokens []tsToken, closeIdx int, out []tsToken) bool {
 		if out[k].text != "]" {
 			return false
 		}
+	case "string", "number":
+		// A quoted or numeric method name starts an object member:
+		// `{ 'a-b'(x: number) {} }`.
+		p := k - 1
+		for p >= 0 && (out[p].kind == "space" || out[p].kind == "comment") {
+			p--
+		}
+		if p < 0 || out[p].kind != "punct" || (out[p].text != "{" && out[p].text != ",") {
+			return false
+		}
 	default:
 		return false
 	}
