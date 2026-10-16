@@ -3,7 +3,6 @@ package fishaudio
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -120,7 +119,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("fish-audio: failed to decode base64 audio: %w", err)
 		}

@@ -3,7 +3,6 @@ package groq
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -187,7 +186,7 @@ func groqAudioBytes(opts *provider.TranscriptionOptions) ([]byte, error) {
 		return opts.Audio, nil
 	}
 	if opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, fmt.Errorf("groq: failed to decode base64 audio: %w", err)
 		}

@@ -3,7 +3,6 @@ package azure
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"mime/multipart"
 	stdhttp "net/http"
@@ -152,7 +151,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, &providererrors.InvalidArgumentError{Field: "audio", Message: "invalid base64 audio: " + err.Error()}
 		}

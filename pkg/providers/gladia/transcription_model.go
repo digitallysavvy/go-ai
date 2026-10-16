@@ -274,11 +274,20 @@ func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, s
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
+	audio := opts.Audio
+	if len(audio) == 0 && opts.AudioBase64 != "" {
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
+		if err != nil {
+			return nil, "", fmt.Errorf("gladia: failed to decode base64 audio: %w", err)
+		}
+		audio = decoded
+	}
+
 	part, err := providerutils.CreateTypedFormFile(writer, "audio", "audio."+gladiaAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
-	if _, err := part.Write(opts.Audio); err != nil {
+	if _, err := part.Write(audio); err != nil {
 		return nil, "", err
 	}
 	if err := writer.Close(); err != nil {

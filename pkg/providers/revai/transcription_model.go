@@ -3,7 +3,6 @@ package revai
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime/multipart"
@@ -17,6 +16,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // pollTimeout and pollInterval mirror RevaiTranscriptionModel.doGenerate's
@@ -144,7 +144,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 // against a compromised or misbehaving redirect hop.
 func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, headers map[string]string) (*revaiJobResponse, error) {
 	pollOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "REVAI_API_KEY")}, m.provider.config.Headers, headers)
+	pollOpts.Headers = version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "REVAI_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("revai"))
 
 	pollURL := m.provider.config.BaseURL + "/speechtotext/v1/jobs/" + jobID
 	start := time.Now()
@@ -195,7 +195,7 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 
 	audio := opts.Audio
 	if len(audio) == 0 && opts.AudioBase64 != "" {
-		decoded, err := base64.StdEncoding.DecodeString(opts.AudioBase64)
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
 		if err != nil {
 			return nil, "", fmt.Errorf("revai: failed to decode base64 audio: %w", err)
 		}
