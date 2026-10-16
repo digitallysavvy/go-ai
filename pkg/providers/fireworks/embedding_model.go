@@ -62,8 +62,10 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("no embedding data in response")
 	}
 	r := &types.EmbeddingResult{
-		Embedding: result.Embeddings[0],
-		Usage:     result.Usage,
+		Embedding:        result.Embeddings[0],
+		Usage:            result.Usage,
+		Warnings:         result.Warnings,
+		ProviderMetadata: result.ProviderMetadata,
 	}
 	if len(result.Responses) > 0 {
 		r.Response = result.Responses[0]
@@ -94,7 +96,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		// TS OpenAICompatibleEmbeddingModel always sends encoding_format.
 		"encoding_format": "float",
 	}
-	applyEmbeddingDimensions(reqBody, opts)
+	warnings := applyEmbeddingDimensions(reqBody, opts)
 	var response fireworksEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCompatEmbedding),
@@ -110,15 +112,23 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	for i, item := range response.Data {
 		embeddings[i] = item.Embedding
 	}
-	return &types.EmbeddingsResult{
+	result := &types.EmbeddingsResult{
 		Embeddings: embeddings,
+		Warnings:   warnings,
 		Usage: types.EmbeddingUsage{
 			Tokens:      float64(response.Usage.PromptTokens),
 			InputTokens: response.Usage.PromptTokens,
 			TotalTokens: response.Usage.TotalTokens,
 		},
 		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: providerutils.RawJSONBody(httpResp.Body)}},
-	}, nil
+	}
+	if len(response.ProviderMetadata) > 0 {
+		result.ProviderMetadata = map[string]interface{}{}
+		for k, v := range response.ProviderMetadata {
+			result.ProviderMetadata[k] = v
+		}
+	}
+	return result, nil
 }
 
 // optsEmbedHeaders extracts the Headers map from EmbedModelOptions (nil-safe).
@@ -141,15 +151,17 @@ type fireworksEmbedResponse struct {
 		PromptTokens int `json:"prompt_tokens"`
 		TotalTokens  int `json:"total_tokens"`
 	} `json:"usage"`
+	// ProviderMetadata is passed through like TS OpenAICompatibleEmbeddingModel.
+	ProviderMetadata map[string]map[string]interface{} `json:"providerMetadata"`
 }
 
 // applyEmbeddingDimensions sets the request's dimensions: the provider option
 // wins over the top-level dimensions setting (TS #22338).
-func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) {
+func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.EmbedModelOptions) []types.Warning {
 	if opts == nil {
-		return
+		return nil
 	}
-	resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
+	resolved, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("fireworks", opts.ProviderOptions)
 	if d, ok := providerutils.ResolveEmbeddingDimensions(resolved["dimensions"], opts.Dimensions); ok {
 		reqBody["dimensions"] = d
 	}
@@ -157,4 +169,5 @@ func applyEmbeddingDimensions(reqBody map[string]interface{}, opts *provider.Emb
 	if u, ok := resolved["user"].(string); ok && u != "" {
 		reqBody["user"] = u
 	}
+	return warnings
 }
