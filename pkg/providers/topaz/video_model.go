@@ -240,7 +240,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	metadata := map[string]interface{}{"requestId": requestID}
 	// Preliminary: Topaz estimates up front only when it gets source
 	// metadata, and the completed status carries the billed value.
-	if created.Estimates != nil && len(created.Estimates.Cost) > 0 {
+	if created.Estimates != nil && created.Estimates.Cost != nil {
 		metadata["estimatedCredits"] = created.Estimates.Cost
 	}
 
@@ -317,7 +317,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if credits != nil {
 			metadata["credits"] = *credits
 		}
-		if status.Estimates != nil && len(status.Estimates.Cost) > 0 {
+		if status.Estimates != nil && status.Estimates.Cost != nil {
 			metadata["estimatedCredits"] = status.Estimates.Cost
 		}
 		if status.OutputSize != nil {
