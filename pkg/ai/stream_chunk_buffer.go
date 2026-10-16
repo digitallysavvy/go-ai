@@ -76,6 +76,9 @@ func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
 	r.buf.mu.Lock()
 	defer r.buf.mu.Unlock()
 	for {
+		if r.closed {
+			return nil, io.EOF
+		}
 		if r.index < len(r.buf.chunks) {
 			c := r.buf.chunks[r.index]
 			r.index++
@@ -85,9 +88,6 @@ func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
 			if r.buf.err != nil {
 				return nil, r.buf.err
 			}
-			return nil, io.EOF
-		}
-		if r.closed {
 			return nil, io.EOF
 		}
 		r.buf.cond.Wait()
