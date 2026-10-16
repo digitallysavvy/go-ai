@@ -3236,9 +3236,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.stepReopenModel = nextModel
 		r.stepReopenGenOpts = nextGenOpts
 		r.stepReopenCtx = nextModelCallCtx
-		newStream, err := nextModel.DoStream(nextModelCallCtx, nextGenOpts)
+		newStream, err := doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, opts.MaxRetries)
 		if err != nil {
-			nextStepCancel()
+			// nextStepCancel runs after the error is classified: a cancelled
+			// step context would make every open failure look like a step timeout.
 			if r.timeout != nil && r.timeout.HasPerStep() && nextStepCtx.Err() != nil {
 				err = wrapTimeoutError(TimeoutReasonStep, nextStepCtx.Err())
 			} else if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
@@ -3256,12 +3257,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepErr = nil
 			}
 			if !isAbort {
-				// Same as the first step: the failure is an error part and
-				// goes to onError.
-				if opts.OnError != nil {
-					startErr := r.err
-					safeInvoke(func() { opts.OnError(ctx, startErr) })
-				}
+				// Same as the first step: the failure is an error part. onError
+				// is called once, by the shared error handling after the loop.
 				if onChunk != nil {
 					onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: r.err, Text: r.err.Error()})
 				}
@@ -3270,6 +3267,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if isAbort {
 				fireAbort(r.err)
 			}
+			nextStepCancel()
 			break
 		}
 		pendingStepCtx = nextStepCtx
