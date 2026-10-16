@@ -40,7 +40,7 @@ func TestToolSearchBm2520251119_Schema(t *testing.T) {
 	// Check limit property
 	limit, ok := properties["limit"].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "integer", limit["type"])
+	assert.Equal(t, "number", limit["type"])
 }
 
 func TestToolSearchBm2520251119_Description(t *testing.T) {
@@ -97,7 +97,7 @@ func TestToolSearchRegex20251119_Schema(t *testing.T) {
 	// Check limit property
 	limit, ok := properties["limit"].(map[string]interface{})
 	require.True(t, ok)
-	assert.Equal(t, "integer", limit["type"])
+	assert.Equal(t, "number", limit["type"])
 }
 
 func TestToolSearchRegex20251119_Description(t *testing.T) {
