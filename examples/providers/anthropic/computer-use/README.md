@@ -50,12 +50,17 @@ The computer use tool enables Claude to:
 ## Configuration
 
 ```go
-computerTool := tools.Computer20251124(tools.Computer20251124Args{
-    DisplayWidthPx:  1920,  // Display width in pixels
-    DisplayHeightPx: 1080,  // Display height in pixels
-    DisplayNumber:   nil,   // Optional: X11 display number
-    EnableZoom:      true,  // Enable zoom action
-})
+computerTool := tools.WithExecute(
+    tools.Computer20251124(tools.Computer20251124Args{
+        DisplayWidthPx:  1920,  // Display width in pixels
+        DisplayHeightPx: 1080,  // Display height in pixels
+        DisplayNumber:   nil,   // Optional: X11 display number
+        EnableZoom:      true,  // Enable zoom action
+    }),
+    func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+        return runComputerAction(input) // your screen control
+    },
+)
 ```
 
 ## Important Notes
