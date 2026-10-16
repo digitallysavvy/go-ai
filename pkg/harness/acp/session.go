@@ -635,7 +635,7 @@ func deserializeBridgeError(err any, harnessID string) error {
 			return unsupported(harnessID, message)
 		}
 	}
-	return fmt.Errorf("%v", err)
+	return harness.ErrorFromValue(err)
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
@@ -650,10 +650,10 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		Sandbox: s.p.sandbox, HomePath: s.p.homePath, SkillsDir: s.p.skillsDir, Skills: opts.Skills,
 		SkillNamePattern: SkillNamePattern,
 		InvalidSkillNameMessage: func(name string) string {
-			return fmt.Sprintf("Invalid ACP skill name %q: expected a kebab-case slug.", name)
+			return fmt.Sprintf("Invalid ACP skill name %s: expected a kebab-case slug.", jsonString(name))
 		},
 		InvalidSkillFilePathMessage: func(skillName, filePath string) string {
-			return fmt.Sprintf("Invalid ACP skill file path %q for skill %q: expected a relative POSIX path without traversal.", filePath, skillName)
+			return fmt.Sprintf("Invalid ACP skill file path %s for skill %s: expected a relative POSIX path without traversal.", jsonString(filePath), jsonString(skillName))
 		},
 	}); err != nil {
 		return nil, err
@@ -743,10 +743,10 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		Sandbox: s.p.sandbox, HomePath: s.p.homePath, SkillsDir: s.p.skillsDir, Skills: skills,
 		SkillNamePattern: SkillNamePattern,
 		InvalidSkillNameMessage: func(name string) string {
-			return fmt.Sprintf("Invalid ACP skill name %q: expected a kebab-case slug.", name)
+			return fmt.Sprintf("Invalid ACP skill name %s: expected a kebab-case slug.", jsonString(name))
 		},
 		InvalidSkillFilePathMessage: func(skillName, filePath string) string {
-			return fmt.Sprintf("Invalid ACP skill file path %q for skill %q: expected a relative POSIX path without traversal.", filePath, skillName)
+			return fmt.Sprintf("Invalid ACP skill file path %s for skill %s: expected a relative POSIX path without traversal.", jsonString(filePath), jsonString(skillName))
 		},
 	}); err != nil {
 		return nil, err

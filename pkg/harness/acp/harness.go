@@ -42,10 +42,10 @@ func CreateACP(settings Settings) (harness.Harness, error) {
 		return nil, fmt.Errorf("ACP credentialEnv and credentialBrokering must be configured together.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, reserved := settings.MCPServers[ReservedMCPServerName]; reserved {
-		return nil, fmt.Errorf("ACP MCP server name %q is reserved for HarnessAgent tools.", ReservedMCPServerName) //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, fmt.Errorf("ACP MCP server name %s is reserved for HarnessAgent tools.", jsonString(ReservedMCPServerName)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if !harnessIDRegexp.MatchString(settings.HarnessID) {
-		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %q.", settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %s.", jsonString(settings.HarnessID)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	impl := newImplementation(settings)
 	if err := validateImplementation(impl); err != nil {
@@ -330,7 +330,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
 		}
 		if lifecycleHarnessID != settings.HarnessID {
-			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %q, but this harness is %q.", lifecycleHarnessID, settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %s, but this harness is %s.", jsonString(lifecycleHarnessID), jsonString(settings.HarnessID)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if resumeData.ImplementationIdentity != implementationIdentity {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.") //nolint:staticcheck // matches TS SDK's exact error text
@@ -339,7 +339,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if coords := resumeData.Bridge; coords != nil && coords.SandboxID != "" && sandboxID != "" && coords.SandboxID != sandboxID {
-			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %q, not %q.", coords.SandboxID, sandboxID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %s, not %s.", jsonString(coords.SandboxID), jsonString(sandboxID)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 

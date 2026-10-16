@@ -54,10 +54,10 @@ func validateImplementation(impl implementation) error {
 		}
 	case SourceNPMSimple:
 		if !packageNameRegexp.MatchString(impl.Source.PackageName) {
-			return fmt.Errorf("ACP npm package name is invalid: %q.", impl.Source.PackageName) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP npm package name is invalid: %s.", jsonString(impl.Source.PackageName)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if impl.Source.PackageVersion != "" && !exactSemverRegexp.MatchString(impl.Source.PackageVersion) {
-			return fmt.Errorf("ACP npm package version must be an exact semantic version; received %q.", impl.Source.PackageVersion) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP npm package version must be an exact semantic version; received %s.", jsonString(impl.Source.PackageVersion)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	default:
 		if providerutils.JSTrim(impl.Source.Command) == "" {
@@ -65,7 +65,7 @@ func validateImplementation(impl implementation) error {
 		}
 	}
 	if !executableNameRegexp.MatchString(impl.Executable) {
-		return fmt.Errorf("ACP executable must be a bare command name without a path; received %q.", impl.Executable) //nolint:staticcheck // matches TS SDK's exact error text
+		return fmt.Errorf("ACP executable must be a bare command name without a path; received %s.", jsonString(impl.Executable)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if err := validateForwardEnvironment(impl.ForwardEnv); err != nil {
 		return err
@@ -80,15 +80,15 @@ func validateImplementation(impl implementation) error {
 	credential := toSet(impl.CredentialEnv)
 	for k := range credential {
 		if forwarded[k] {
-			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both forwardEnv and credentialEnv.", k) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and credentialEnv.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	for k := range impl.Env {
 		if forwarded[k] {
-			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both forwardEnv and env.", k) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and env.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if credential[k] {
-			return fmt.Errorf("ACP runtime environment key %q cannot be configured in both credentialEnv and env.", k) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both credentialEnv and env.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return nil
@@ -97,7 +97,7 @@ func validateImplementation(impl implementation) error {
 func validateEnvironment(env map[string]string) error {
 	for k, v := range env {
 		if !envVarNameRegexp.MatchString(k) {
-			return fmt.Errorf("ACP environment variable name is invalid: %q.", k) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP environment variable name is invalid: %s.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if strings.Contains(v, "\x00") {
 			return fmt.Errorf("ACP runtime environment value for %s contains NUL.", k) //nolint:staticcheck // matches TS SDK's exact error text
@@ -109,7 +109,7 @@ func validateEnvironment(env map[string]string) error {
 func validateForwardEnvironment(names []string) error {
 	for _, name := range names {
 		if !envVarNameRegexp.MatchString(name) {
-			return fmt.Errorf("ACP environment variable name is invalid: %q.", name) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP environment variable name is invalid: %s.", jsonString(name)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 	return nil

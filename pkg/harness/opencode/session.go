@@ -296,7 +296,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		forward(f.Part)
 		errPart, _ := f.Part.(*harness.ErrorPart)
 		if errPart != nil {
-			settleError(fmt.Errorf("%v", errPart.Error))
+			settleError(harness.ErrorFromValue(errPart.Error))
 		} else {
 			settleError(errors.New("opencode: bridge reported an error"))
 		}

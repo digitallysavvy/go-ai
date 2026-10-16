@@ -1116,7 +1116,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				// Keep the typed error so errors.As works on the result's Err().
 				return false, false, typed
 			}
-			return false, false, fmt.Errorf("%v", ep.Error)
+			return false, false, ErrorFromValue(ep.Error)
 		}
 
 		if tc, isCall := display.(*ToolCallPart); isCall {

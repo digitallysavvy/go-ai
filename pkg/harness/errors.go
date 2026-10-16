@@ -1,6 +1,10 @@
 package harness
 
-import "errors"
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+)
 
 // Error names, matching the TS `name` property of each error class.
 const (
@@ -152,4 +156,40 @@ func GetHarnessErrorMessage(err error) string {
 		}
 	}
 	return defaultHarnessClientSafeErrorMessage
+}
+
+// ErrorValueMessage renders an arbitrary rejected value the way TS
+// `getErrorMessage` does: nil is "unknown error", a string is itself, an error
+// is its message, and anything else (a decoded wire error object) is its
+// JSON.stringify text, not Go's `%v` map formatting.
+func ErrorValueMessage(v any) string {
+	switch e := v.(type) {
+	case nil:
+		return "unknown error"
+	case string:
+		return e
+	case error:
+		return e.Error()
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return "unknown error"
+	}
+	return string(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+}
+
+type rawValueError struct{ message string }
+
+func (e *rawValueError) Error() string { return e.message }
+
+// ErrorFromValue converts a wire error value to a Go error: an error passes
+// through unchanged (so errors.As keeps working) and anything else becomes an
+// error whose text is ErrorValueMessage(v).
+func ErrorFromValue(v any) error {
+	if err, ok := v.(error); ok {
+		return err
+	}
+	return &rawValueError{message: ErrorValueMessage(v)}
 }
