@@ -22,7 +22,12 @@ func defaultToolResultDownload(ctx context.Context, url string, maxBytes int64) 
 	if err != nil {
 		return nil, "", err
 	}
-	return res.Data, res.ContentType, nil
+	contentType := res.ContentType
+	if contentType == "" && strings.HasPrefix(strings.ToLower(url), "data:") {
+		// fetch() reports the data: URL default media type.
+		contentType = "text/plain;charset=US-ASCII"
+	}
+	return res.Data, contentType, nil
 }
 
 // downloadToolResultFiles ports TS downloadToolResultFiles: Vertex function
@@ -129,13 +134,10 @@ func downloadContentBlocks(ctx context.Context, blocks []types.ToolResultContent
 		if err := fileutil.ValidateDownloadURL(url); err != nil {
 			return nil, false, err
 		}
-		if strings.HasPrefix(strings.ToLower(url), "data:") {
-			// Inline data URL: valid, but nothing to download over the
-			// network — leave the block as-is (mirrors TS, where a data: URL
-			// is always accepted by isUrlSupported/the provider directly and
-			// so never reaches downloadBlob in practice).
-			continue
-		}
+		// A data: URL is not "supported" by isUrlSupported (the supported
+		// patterns are gs:// only), so TS sends it through downloadBlob
+		// (fetch decodes it) and inlines the bytes, for base64 and
+		// non-base64 data URLs and for every Vertex model generation.
 		data, contentType, err := download(ctx, url, maxBytes)
 		if err != nil {
 			return nil, false, err

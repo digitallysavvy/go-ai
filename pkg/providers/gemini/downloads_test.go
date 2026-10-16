@@ -178,59 +178,42 @@ func TestDownloadToolResultFiles_RejectsUnsupportedURLScheme(t *testing.T) {
 	}
 }
 
-// TestDownloadToolResultFiles_DataURLIsNotDownloaded verifies that a
-// "data:" URL — one of the three schemes validateDownloadUrl accepts — is
-// left as-is rather than downloaded (TS: a data: URL never reaches
-// downloadBlob in practice, since it's always natively supported) or
-// rejected as an unsupported scheme.
-func TestDownloadToolResultFiles_DataURLIsNotDownloaded(t *testing.T) {
-	called := false
-	m := &LanguageModel{
-		cfg: Config{
-			ToolResultDownloadMaxBytes: DefaultToolResultDownloadMaxBytes,
-			ToolResultDownload: func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
-				called = true
-				return nil, "", nil
-			},
-		},
-	}
-
-	dataURL := "data:image/png;base64,iVBORw0KGgo="
-	messages := []types.Message{
-		{
-			Role: types.RoleTool,
-			Content: []types.ContentPart{
-				types.ToolResultContent{
-					ToolCallID: "call-1",
-					ToolName:   "get_image",
-					Output: &types.ToolResultOutput{
-						Type: types.ToolResultOutputContent,
-						Content: []types.ToolResultContentBlock{
-							types.FileContentBlock{
-								URL:       dataURL,
-								MediaType: "image/png",
-							},
-						},
-					},
+// TestDownloadToolResultFiles_DataURLIsDownloadedAndInlined: TS passes a
+// data: URL (never matched by the gs:// supported patterns) through
+// downloadBlob and inlines the bytes, base64 or not.
+func TestDownloadToolResultFiles_DataURLIsDownloadedAndInlined(t *testing.T) {
+	for _, dataURL := range []string{"data:text/plain;base64,aGk=", "data:text/plain,hi"} {
+		var gotURL string
+		m := &LanguageModel{
+			cfg: Config{
+				ToolResultDownloadMaxBytes: DefaultToolResultDownloadMaxBytes,
+				ToolResultDownload: func(ctx context.Context, url string, maxBytes int64) ([]byte, string, error) {
+					gotURL = url
+					return []byte("hi"), "text/plain", nil
 				},
 			},
-		},
-	}
-
-	out, err := m.downloadToolResultFiles(context.Background(), messages, nil)
-	if err != nil {
-		t.Fatalf("downloadToolResultFiles: %v", err)
-	}
-	if called {
-		t.Error("downloader must not be called for a data: URL")
-	}
-	tr := out[0].Content[0].(types.ToolResultContent)
-	fb := tr.Output.Content[0].(types.FileContentBlock)
-	if fb.URL != dataURL {
-		t.Errorf("expected the data: URL to be left unchanged, got %q", fb.URL)
-	}
-	if !strings.HasPrefix(fb.URL, "data:") {
-		t.Fatalf("test setup error: fb.URL = %q", fb.URL)
+		}
+		messages := []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "call-1", ToolName: "t",
+				Output: &types.ToolResultOutput{
+					Type:    types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{types.FileContentBlock{URL: dataURL, MediaType: "text/plain"}},
+				},
+			}},
+		}}
+		out, err := m.downloadToolResultFiles(context.Background(), messages, nil)
+		if err != nil {
+			t.Fatalf("downloadToolResultFiles: %v", err)
+		}
+		if gotURL != dataURL {
+			t.Errorf("downloader got %q, want %q", gotURL, dataURL)
+		}
+		fb := out[0].Content[0].(types.ToolResultContent).Output.Content[0].(types.FileContentBlock)
+		if fb.URL != "" || string(fb.Data) != "hi" {
+			t.Errorf("expected inlined bytes, got URL=%q Data=%q", fb.URL, fb.Data)
+		}
 	}
 }
 
