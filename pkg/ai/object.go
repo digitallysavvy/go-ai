@@ -1934,14 +1934,16 @@ streamLoop:
 			accumulatedReasoning += chunk.Reasoning
 
 		case provider.ChunkTypeUsage:
+			// The latest usage wins (TS: usage comes from the finish part,
+			// never summed; StreamText assigns the same way).
 			if chunk.Usage != nil {
-				usage = usage.Add(*chunk.Usage)
+				usage = *chunk.Usage
 			}
 
 		case provider.ChunkTypeFinish:
 			finishReason = chunk.FinishReason
 			if chunk.Usage != nil {
-				usage = usage.Add(*chunk.Usage)
+				usage = *chunk.Usage
 			}
 
 		case provider.ChunkTypeError:

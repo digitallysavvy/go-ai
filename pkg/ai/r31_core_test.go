@@ -118,3 +118,28 @@ func TestGenerateObject_SystemMessagesNeedOptIn(t *testing.T) {
 		t.Fatalf("stream err = %v", err)
 	}
 }
+
+// TS streamObject takes usage from the finish part only; a usage part followed
+// by a finish part with the same totals must not be summed.
+func TestStreamObject_UsageIsNotSummedAcrossParts(t *testing.T) {
+	t.Parallel()
+	in, out, total := int64(3), int64(4), int64(7)
+	u := types.Usage{InputTokens: &in, OutputTokens: &out, TotalTokens: &total}
+	model := &testutil.MockLanguageModel{
+		StructuredSupport: true,
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"name":"x"}`},
+				{Type: provider.ChunkTypeUsage, Usage: &u},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &u},
+			}), nil
+		},
+	}
+	res, err := StreamObject(context.Background(), StreamObjectOptions{Model: model, Prompt: "p", Schema: r31ObjectSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := *res.Usage.TotalTokens; got != 7 {
+		t.Fatalf("total tokens = %d, want 7", got)
+	}
+}
