@@ -527,8 +527,8 @@ const (
 // files the model cannot read by URL (the same download and SupportedURLs
 // handling as GenerateText, TS convertToLanguageModelPrompt) and rejects tool
 // calls without results.
-func prepareObjectPrompt(ctx context.Context, promptText string, messages []types.Message, system string, model provider.LanguageModel, download DownloadFunction) (types.Prompt, error) {
-	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, buildPrompt(promptText, messages, system), true, effectiveDownload(download), supportedURLChecker(model))
+func prepareObjectPrompt(ctx context.Context, promptText string, messages []types.Message, system string, allowSystem bool, model provider.LanguageModel, download DownloadFunction) (types.Prompt, error) {
+	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, buildPrompt(promptText, messages, system), allowSystem, effectiveDownload(download), supportedURLChecker(model))
 	if err != nil {
 		return types.Prompt{}, err
 	}
@@ -547,6 +547,19 @@ type GenerateObjectOptions struct {
 	Prompt   string
 	Messages []types.Message
 	System   string
+
+	// Instructions is a TypeScript-compatible alias for System.
+	// When set, Instructions takes precedence over System.
+	Instructions *string
+
+	// AllowSystemMessages permits system-role messages in Messages. Defaults
+	// to false, as in TS (allowSystemInMessages): use System or Instructions
+	// for system instructions.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
 
 	// ExperimentalDownload downloads remote file URLs the model cannot read
 	// directly (per its SupportedURLs). Defaults to DefaultDownload, as in
@@ -743,6 +756,8 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, fmt.Errorf("model is required")
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// TS: system is `instructions ?? system` everywhere.
+	opts.System = effectiveSystem(opts.System, opts.Instructions)
 
 	// Set default output mode
 	if opts.OutputMode == "" {
@@ -912,7 +927,7 @@ func objectResultValue(mode ObjectOutputMode, r *GenerateObjectResult) interface
 
 // generateObjectMode handles standard object generation
 func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
 	if err != nil {
 		return nil, err
 	}
@@ -1054,7 +1069,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 
 // generateArrayMode handles array generation
 func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
 	if err != nil {
 		return nil, err
 	}
@@ -1223,7 +1238,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 // because most LLMs cannot generate a top-level enum value directly.
 // The model outputs { "result": "value" } and we extract value.result.
 func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
 	if err != nil {
 		return nil, err
 	}
@@ -1393,7 +1408,7 @@ func (n noopValidator) JSONSchema() map[string]interface{} { return n.jsonSchema
 
 // generateNoSchemaMode handles raw JSON generation without validation
 func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc objectCallCtx) (*GenerateObjectResult, error) {
-	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
 	if err != nil {
 		return nil, err
 	}
@@ -1555,6 +1570,19 @@ type StreamObjectOptions struct {
 	Messages []types.Message
 	System   string
 
+	// Instructions is a TypeScript-compatible alias for System.
+	// When set, Instructions takes precedence over System.
+	Instructions *string
+
+	// AllowSystemMessages permits system-role messages in Messages. Defaults
+	// to false, as in TS (allowSystemInMessages): use System or Instructions
+	// for system instructions.
+	AllowSystemMessages bool
+
+	// AllowSystemInMessages is a TypeScript-compatible alias for
+	// AllowSystemMessages. Either field enables system-role messages.
+	AllowSystemInMessages bool
+
 	// ExperimentalDownload downloads remote file URLs the model cannot read
 	// directly (per its SupportedURLs). Defaults to DefaultDownload, as in
 	// GenerateText. Mirrors TS experimental_download.
@@ -1678,6 +1706,8 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		return nil, fmt.Errorf("model is required")
 	}
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
+	// TS: system is `instructions ?? system` everywhere.
+	opts.System = effectiveSystem(opts.System, opts.Instructions)
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
 	}
@@ -1766,7 +1796,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
 	// Build prompt
-	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, opts.Model, opts.ExperimentalDownload)
+	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
 	if err != nil {
 		return nil, err
 	}
