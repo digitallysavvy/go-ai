@@ -724,7 +724,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
-		warnings = append(warnings, responses.UnsupportedProviderToolWarnings(opts.Tools)...)
 		toolSchemaWarnings, err := normalizeResponsesToolSchemas(preparedTools, modelCapabilities.SupportsAsyncToolCalling)
 		if err != nil {
 			return nil, false, nil, err
