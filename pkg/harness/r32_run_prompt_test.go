@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -25,5 +26,15 @@ func TestRunPromptProtocolErrorsMatchTSText(t *testing.T) {
 	if _, err := d.handleHostToolCall(&ToolCallPart{ToolCallID: "x", ToolName: "t"}); err == nil ||
 		err.Error() != "Harness 'h' could not validate host tool 't'." {
 		t.Fatalf("validate: %v", err)
+	}
+}
+
+// TS enqueueHostToolOutcome emits a tool-error with no `dynamic` flag, even for
+// the invalid-input message (only the first-pass invalid call sets it).
+func TestHostOutcomeChunkSetsNoDynamicFlag(t *testing.T) {
+	d := &turnDriver{in: runPromptInput{Harness: &mockHarnessAdapter{id: "h"}}}
+	c := d.hostOutcomeChunk("c", "t", types.ToolCall{ID: "c", ToolName: "t"}, hostToolOutcome{err: errors.New(invalidToolInputMessage)})
+	if c.ToolResult == nil || c.ToolResult.Error == nil || c.ToolResult.Dynamic {
+		t.Fatalf("got %+v", c.ToolResult)
 	}
 }

@@ -2634,13 +2634,13 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 // hostOutcomeChunk is the consumer-stream tool-result / tool-error part for a
 // host tool outcome produced outside the runtime's echo. Mirrors TS
 // `enqueueHostToolOutcome`: the output is work-dir-stripped like every
-// forwarded result; an error keeps the original value; the part is dynamic
-// only for the invalid-input case TS flags (`dynamic: true` is set there).
+// forwarded result; an error keeps the original value. TS's
+// enqueueHostToolOutcome sets no `dynamic` flag on either part (only the
+// first-pass invalid-input tool-error built in the loop carries it).
 func (d *turnDriver) hostOutcomeChunk(toolCallID, toolName string, call types.ToolCall, o hostToolOutcome) provider.StreamChunk {
 	tr := &types.ToolResult{ToolCallID: toolCallID, ToolName: toolName, Input: call.Arguments}
 	if o.err != nil {
 		tr.Error = o.err
-		tr.Dynamic = o.err.Error() == invalidToolInputMessage
 	} else {
 		tr.Result = o.output
 		if stripped, _ := StripWorkDir(&ToolResultPart{ToolCallID: toolCallID, ToolName: toolName, Result: o.output}, d.in.SessionWorkDir).(*ToolResultPart); stripped != nil {
