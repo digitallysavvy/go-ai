@@ -79,6 +79,11 @@ func validateMCPResultShape(method string, raw json.RawMessage) error {
 		}
 	case "completion/complete":
 		check = checkCompleteResult
+	case "tools/call":
+		// CallToolResultSchema extends ResultSchema: _meta must be an object
+		// and resultType a string. The content union is checked by
+		// validateCallToolResult.
+		check = func(map[string]json.RawMessage) error { return nil }
 	default:
 		return nil
 	}

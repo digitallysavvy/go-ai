@@ -41,7 +41,10 @@ func TestValidateMCPResultShape(t *testing.T) {
 		{"caps tools bool", "initialize", `{"protocolVersion":"x","capabilities":{"tools":{"listChanged":"y"}},"serverInfo":{"name":"s","version":"1"}}`, "tools.listChanged must be a boolean"},
 		{"discover scope", "server/discover", `{"supportedVersions":[],"capabilities":{},"cacheScope":"x"}`, "cacheScope"},
 		{"complete total", "completion/complete", `{"completion":{"values":[],"total":1.5}}`, "total must be an integer"},
-		{"unvalidated method", "tools/call", `{}`, ""},
+		{"call bad _meta", "tools/call", `{"content":[],"_meta":5}`, "_meta must be an object"},
+		{"call bad resultType", "tools/call", `{"content":[],"resultType":1}`, "resultType must be a string"},
+		{"call ok", "tools/call", `{"content":[],"_meta":{}}`, ""},
+		{"unvalidated method", "ping", `{}`, ""},
 		{"not an object", "tools/list", `[]`, "must be an object"},
 	}
 	for _, tc := range cases {
