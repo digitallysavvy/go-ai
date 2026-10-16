@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // countingTracer wraps a tracer and records every span name it starts, so a
@@ -214,5 +215,67 @@ func TestLegacyErrorNoHTTPStatusAndAbortEndsDecision(t *testing.T) {
 	integration.OnAbort(dctx, TelemetryAbortEvent{Settings: settings, CallID: "d"})
 	if n := len(rec.Ended()) - before; n != 2 {
 		t.Fatalf("abort ended %d spans, want 2 (decision model call + root)", n)
+	}
+}
+
+type panickingIntegration struct{ NoopTelemetryIntegration }
+
+func (panickingIntegration) OnStart(context.Context, TelemetryStartEvent) context.Context {
+	panic("integration bug")
+}
+func (panickingIntegration) OnEnd(context.Context, TelemetryFinishEvent) { panic("integration bug") }
+func (panickingIntegration) OnError(context.Context, TelemetryErrorEvent) {
+	panic("integration bug")
+}
+
+// TS mergeCallbacks ignores errors thrown by an integration, so one that
+// panics must neither fail the call nor stop the next integration.
+func TestFireIgnoresPanickingIntegration(t *testing.T) {
+	started := 0
+	next := startCountingIntegration{n: &started}
+	settings := &Settings{IsEnabled: Bool(true), Integrations: []TelemetryIntegration{panickingIntegration{}, next}}
+	ctx := FireOnStart(context.Background(), TelemetryStartEvent{Settings: settings, CallID: "c"})
+	FireOnEnd(ctx, TelemetryFinishEvent{Settings: settings, CallID: "c"})
+	FireOnError(ctx, TelemetryErrorEvent{Settings: settings, CallID: "c"})
+	if started != 1 {
+		t.Fatalf("second integration OnStart calls = %d, want 1", started)
+	}
+}
+
+type startCountingIntegration struct {
+	NoopTelemetryIntegration
+	n *int
+}
+
+func (s startCountingIntegration) OnStart(ctx context.Context, _ TelemetryStartEvent) context.Context {
+	*s.n++
+	return ctx
+}
+
+// TS formatOutputMessages always runs for a model call end, so an empty
+// response still records an assistant message with no parts.
+func TestGenAIOutputMessagesRecordedForEmptyResponse(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "c2", ModelID: "m"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "c2", Settings: settings})
+	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{CallID: "c2", Settings: settings, ModelID: "m"})
+	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{CallID: "c2", Settings: settings, ModelID: "m", FinishReason: "length", Content: []types.ContentPart(nil)})
+	var got string
+	for _, s := range rec.Ended() {
+		if s.Name() != "chat m" {
+			continue
+		}
+		for _, a := range s.Attributes() {
+			if string(a.Key) == "gen_ai.output.messages" {
+				got = a.Value.AsString()
+			}
+		}
+	}
+	if got != `[{"role":"assistant","parts":[],"finish_reason":"length"}]` {
+		t.Fatalf("gen_ai.output.messages = %q", got)
 	}
 }

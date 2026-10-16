@@ -798,6 +798,13 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				local.config.ToolCallConcurrency = callConfig.ToolCallConcurrency
 				stepAgent = &local
 			}
+			// The tool-call events report the step's model (a PrepareCall model
+			// override), not the agent's configured one.
+			if callConfig.Model != nil && callConfig.Model != stepAgent.config.Model {
+				local := *stepAgent
+				local.config.Model = callConfig.Model
+				stepAgent = &local
+			}
 			toolResults, err := stepAgent.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
 				stepTel.fail(err)
@@ -1380,11 +1387,16 @@ func validateAgentCallOptions(callOptionsSchema schema.Schema, callOptions inter
 	}
 	defaulted := schema.ApplyDefaults(callOptions, callOptionsSchema)
 	if err := callOptionsSchema.Validator().Validate(defaulted); err != nil {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "options",
-			Message: fmt.Sprintf("call options failed schema validation: %v", err),
-			Cause:   err,
-		}
+		// TS validateTypes throws TypeValidationError with context
+		// {field: 'options'}. The cause chain keeps the *InvalidArgumentError
+		// v0.5.2 returned, so errors.As on either type matches.
+		return nil, providererrors.NewValidationErrorWithContext(callOptions, err.Error(),
+			&providererrors.InvalidArgumentError{
+				Field:   "options",
+				Message: fmt.Sprintf("call options failed schema validation: %v", err),
+				Cause:   err,
+			},
+			&providererrors.ValidationContext{Field: "options"})
 	}
 	return defaulted, nil
 }
@@ -1481,21 +1493,20 @@ func cloneAgentStringAnyMap(in map[string]interface{}) map[string]interface{} {
 }
 
 func validateAgentPromptOptions(prompt string, messages []types.Message) error {
-	if prompt != "" && len(messages) > 0 {
-		return providererrors.NewValidationErrorWithContext(
-			map[string]interface{}{"prompt": prompt, "messages": messages},
-			"agent call requires either prompt or messages, not both",
-			nil,
-			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
-		)
-	}
-	if prompt == "" && len(messages) == 0 {
-		return providererrors.NewValidationErrorWithContext(
-			nil,
-			"agent call requires either prompt or messages",
-			nil,
-			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
-		)
+	// TS hands the call to generateText/streamText, whose standardizePrompt
+	// throws InvalidPromptError. The cause keeps the *ValidationError that
+	// v0.5.2 returned, so errors.As on either type matches.
+	if err := promptutils.ValidatePromptInput(prompt, messages); err != nil {
+		var invalid *providererrors.InvalidPromptError
+		if errors.As(err, &invalid) {
+			invalid.Cause = providererrors.NewValidationErrorWithContext(
+				map[string]interface{}{"prompt": prompt, "messages": messages},
+				invalid.Message,
+				nil,
+				&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
+			)
+		}
+		return err
 	}
 	return nil
 }

@@ -528,6 +528,9 @@ const (
 // handling as GenerateText, TS convertToLanguageModelPrompt) and rejects tool
 // calls without results.
 func prepareObjectPrompt(ctx context.Context, promptText string, messages []types.Message, system string, allowSystem bool, model provider.LanguageModel, download DownloadFunction) (types.Prompt, error) {
+	if err := promptutils.ValidatePromptInput(promptText, messages); err != nil {
+		return types.Prompt{}, err
+	}
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, buildPrompt(promptText, messages, system), allowSystem, effectiveDownload(download), supportedURLChecker(model))
 	if err != nil {
 		return types.Prompt{}, err
@@ -883,7 +886,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 
 	if err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
-		return result, err
+		return result, wrapGatewayError(err)
 	}
 	if result != nil {
 		telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
@@ -1842,6 +1845,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		if err == nil {
 			err = errors.New("stream is nil")
 		}
+		err = wrapGatewayError(err)
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, err) })
 		}
@@ -1891,6 +1895,7 @@ streamLoop:
 			if chunkErr == io.EOF || errors.Is(chunkErr, io.ErrClosedPipe) {
 				break
 			}
+			chunkErr = wrapGatewayError(chunkErr)
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
@@ -1952,7 +1957,7 @@ streamLoop:
 			// finishReason "error" instead of whatever finish reason (if
 			// any) the model happened to send. Mirrors TS stream-object.ts's
 			// TransformStream error handling (audit row b181020 / WG5).
-			chunkErr := streamChunkError(chunk)
+			chunkErr := wrapGatewayError(streamChunkError(chunk))
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}

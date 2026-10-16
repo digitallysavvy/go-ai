@@ -482,7 +482,7 @@ func ExperimentalCancelBatch(ctx context.Context, opts CancelBatchOptions) (*Can
 		Headers:         version.WithUserAgentSuffix(opts.Headers, version.UserAgent()),
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 	return &CancelBatchResult{ProviderMetadata: result.ProviderMetadata}, nil
 }
@@ -548,7 +548,7 @@ func ExperimentalListBatches(ctx context.Context, opts ListBatchesOptions) (*Lis
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	batches := make([]Batch, 0, len(result.Batches))
@@ -696,6 +696,9 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		// since batch does not expose an experimental_download option), so
 		// remote file URLs the batch interface can't consume directly are
 		// inlined before the request is sent.
+		if err := promptutils.ValidatePromptInput(t.Prompt, t.Messages); err != nil {
+			return provider.BatchV4Request{}, err
+		}
 		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
 			ctx,
 			buildPrompt(t.Prompt, t.Messages, t.System),

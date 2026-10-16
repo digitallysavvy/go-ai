@@ -734,6 +734,12 @@ type GenerateTextResult struct {
 
 // GenerateText performs non-streaming text generation with optional tool calling
 func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *GenerateTextResult, err error) {
+	// TS generateText rethrows every failure through wrapGatewayError.
+	defer func() {
+		if err != nil {
+			err = wrapGatewayError(err)
+		}
+	}()
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
@@ -811,6 +817,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Standardize the prompt first: TS standardizePrompt throws before any
 	// start event or telemetry is emitted.
 	// Build prompt
+	if err := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
 	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
 	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
@@ -1212,7 +1221,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if op, ok := opts.Output.(outputProcessor); ok {
 				rf, rfErr := op.ResponseFormat(stepCtx)
 				if rfErr != nil {
-					return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
+					// TS awaits output.responseFormat; a rejection propagates as is.
+					return nil, rfErr
 				}
 				responseFormat = rf
 			}
@@ -1356,6 +1366,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			resolvedResult := *genResult
 			resolvedResult.Content = resolvedContent
 			genResult = &resolvedResult
+		}
+
+		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, toolsByName); err != nil {
+			return nil, err
 		}
 
 		responseID := ""
@@ -1859,7 +1873,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Usage:        &lastUsage,
 		})
 		if parseErr != nil {
-			outputParseErr = fmt.Errorf("output parsing failed: %w", parseErr)
+			// TS parseCompleteOutput rejects with its own error (e.g.
+			// NoObjectGeneratedError), which generateText rethrows unchanged.
+			outputParseErr = parseErr
 		} else {
 			result.Output = parsed
 		}

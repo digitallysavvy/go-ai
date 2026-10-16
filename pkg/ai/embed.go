@@ -641,8 +641,19 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	return embedResult, nil
 }
 
+// telemetryUsageFromEmbeddingUsage carries the embedding token count the legacy
+// root span records as ai.usage.tokens (TS usage.tokens). A provider that
+// reports no usage (TS NaN, Go zero) leaves it unset, like TS dropping the NaN
+// attribute.
 func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage) telemetry.TelemetryUsage {
-	total := int64(usage.TotalTokens)
+	tokens := usage.Tokens
+	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
+		tokens = float64(usage.TotalTokens)
+	}
+	if tokens <= 0 {
+		return telemetry.TelemetryUsage{}
+	}
+	total := int64(tokens)
 	return telemetry.TelemetryUsage{TotalTokens: &total}
 }
 

@@ -360,6 +360,26 @@ func IsInvalidArgumentError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// InvalidPromptError signals an invalid prompt (TS AI_InvalidPromptError):
+// the standardizePrompt checks (neither or both of prompt and messages,
+// empty messages, system messages without the opt-in).
+type InvalidPromptError struct {
+	// Prompt is the offending prompt value, when there is one.
+	Prompt  interface{}
+	Message string
+	Cause   error
+}
+
+func (e *InvalidPromptError) Error() string { return "Invalid prompt: " + e.Message }
+
+func (e *InvalidPromptError) Unwrap() error { return e.Cause }
+
+// IsInvalidPromptError checks if an error is an InvalidPromptError.
+func IsInvalidPromptError(err error) bool {
+	var target *InvalidPromptError
+	return errors.As(err, &target)
+}
+
 // LoadAPIKeyError signals that a required API key was neither passed
 // explicitly nor found in its environment variable (TS AI_LoadAPIKeyError).
 type LoadAPIKeyError struct {
@@ -463,7 +483,8 @@ func (e *ValidationError) Error() string {
 		// Format the full error message
 		msg := contextPrefix
 		if e.Value != nil {
-			msg += "\nValue: " + validationValueText(e.Value) + "."
+			// TS: `${contextPrefix}: Value: ${JSON.stringify(value)}.\n...`
+			msg += " Value: " + validationValueText(e.Value) + "."
 		}
 		if e.Message != "" {
 			msg += fmt.Sprintf("\nError message: %s", e.Message)

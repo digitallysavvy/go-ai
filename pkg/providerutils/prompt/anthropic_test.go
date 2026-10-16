@@ -1334,3 +1334,47 @@ func TestAnthropicFilePartOptionsValidation(t *testing.T) {
 		}
 	}
 }
+
+// TS validates provider tool outputs with the tool's output schema
+// (validateTypes) and throws the TypeValidationError on a mismatch.
+func TestConvertToAnthropicPrompt_ProviderToolOutputValidation(t *testing.T) {
+	json := func(v interface{}) *types.ToolResultOutput {
+		return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: v}
+	}
+	cases := []struct {
+		name, tool string
+		value      interface{}
+		wantErr    string
+	}{
+		{"web_search not array", "web_search", map[string]interface{}{"url": "x"}, "expected array"},
+		{"web_search missing encryptedContent", "web_search", []interface{}{map[string]interface{}{"url": "u", "title": nil, "pageAge": nil, "type": "web_search_result"}}, "encryptedContent"},
+		{"web_fetch missing url", "web_fetch", map[string]interface{}{"type": "web_fetch_result"}, "url"},
+		{"tool_search bad ref", "tool_search_tool_regex", []interface{}{map[string]interface{}{"type": "tool_reference"}}, "toolName"},
+		{"advisor unknown type", "advisor", map[string]interface{}{"type": "nope"}, "No matching discriminator"},
+		{"code_execution bad stdout", "code_execution", map[string]interface{}{"type": "code_execution_result", "stdout": 1, "stderr": "", "return_code": 0}, "stdout"},
+		{"code_execution unknown type", "code_execution", map[string]interface{}{"type": "mystery"}, "No matching discriminator"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolResultContent{ToolCallID: "s", ToolName: tc.tool, Output: json(tc.value)},
+			}}}, AnthropicPromptOptions{})
+			if !providererrors.IsValidationError(err) || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want TypeValidationError containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// zod objects drop keys the schema does not list.
+func TestConvertToAnthropicPrompt_CodeExecutionOutputStripsUnknownKeys(t *testing.T) {
+	got, err := ConvertToAnthropicPrompt([]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+		types.ToolResultContent{ToolCallID: "s", ToolName: "code_execution", Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{
+			"type": "text_editor_code_execution_create_result", "is_file_update": true, "extra": "drop",
+		}}},
+	}}}, AnthropicPromptOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, "content", got.Messages[0]["content"], `[{"type":"text_editor_code_execution_tool_result","tool_use_id":"s","content":{"type":"text_editor_code_execution_create_result","is_file_update":true}}]`)
+}

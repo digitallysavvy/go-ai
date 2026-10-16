@@ -520,24 +520,142 @@ func decodeDataURL(raw string) ([]byte, error) {
 }
 
 func isBase64DataURLMeta(meta string) bool {
-	meta = strings.TrimRight(meta, " ")
-	return strings.HasSuffix(strings.ToLower(meta), ";base64")
+	_, ok := stripBase64Marker(meta)
+	return ok
 }
 
-// dataURLMediaType is the Content-Type fetch gives a data: URL response: the
-// mediatype with its parameters (minus the base64 marker), defaulting to
-// text/plain when none is given.
+// stripBase64Marker removes the WHATWG data URL base64 marker (a ";", any
+// spaces, then "base64" in any case, at the end of the media type) and
+// reports whether it was there.
+func stripBase64Marker(meta string) (string, bool) {
+	trimmed := strings.Trim(meta, " \t\n\r\f")
+	if len(trimmed) < len("base64") || !strings.EqualFold(trimmed[len(trimmed)-len("base64"):], "base64") {
+		return meta, false
+	}
+	rest := strings.TrimRight(trimmed[:len(trimmed)-len("base64")], " ")
+	if !strings.HasSuffix(rest, ";") {
+		return meta, false
+	}
+	return strings.TrimRight(strings.TrimSuffix(rest, ";"), " "), true
+}
+
+// dataURLMediaType is the Content-Type fetch gives a data: URL response (the
+// WHATWG data: URL processor): the media type parsed and serialized, minus
+// the base64 marker; "text/plain" is prepended when it starts with ";", and an
+// absent or unparseable type is text/plain;charset=US-ASCII.
 func dataURLMediaType(raw string) string {
 	comma := strings.IndexByte(raw, ',')
 	if comma < 0 {
 		return ""
 	}
-	meta := strings.TrimSpace(raw[len("data:"):comma])
-	if isBase64DataURLMeta(meta) {
-		meta = meta[:len(meta)-len(";base64")]
+	meta := strings.Trim(raw[len("data:"):comma], " \t\n\r\f")
+	if stripped, ok := stripBase64Marker(meta); ok {
+		meta = stripped
 	}
-	if meta == "" || strings.HasPrefix(meta, ";") {
-		return "text/plain" + meta
+	if strings.HasPrefix(meta, ";") {
+		meta = "text/plain" + meta
 	}
-	return meta
+	if mt, ok := parseWHATWGMediaType(meta); ok {
+		return mt
+	}
+	return "text/plain;charset=US-ASCII"
+}
+
+func isHTTPToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseWHATWGMediaType parses and serializes a MIME type like the MIME Sniffing
+// standard (parameters keep their order, the first of a repeated name wins).
+func parseWHATWGMediaType(input string) (string, bool) {
+	input = strings.Trim(input, " \t\n\r")
+	slash := strings.IndexByte(input, '/')
+	if slash < 0 {
+		return "", false
+	}
+	typ := input[:slash]
+	rest := input[slash+1:]
+	subtype, params, _ := strings.Cut(rest, ";")
+	subtype = strings.TrimRight(subtype, " \t\n\r")
+	if !isHTTPToken(typ) || !isHTTPToken(subtype) {
+		return "", false
+	}
+	var out strings.Builder
+	out.WriteString(strings.ToLower(typ) + "/" + strings.ToLower(subtype))
+	seen := map[string]bool{}
+	for params != "" {
+		params = strings.TrimLeft(params, " \t\n\r")
+		end := strings.IndexAny(params, ";=")
+		var name string
+		if end < 0 {
+			name, params = params, ""
+		} else {
+			name = params[:end]
+			if params[end] == ';' {
+				params = params[end+1:]
+				continue
+			}
+			params = params[end+1:]
+		}
+		name = strings.ToLower(name)
+		var value string
+		if strings.HasPrefix(params, `"`) {
+			var b strings.Builder
+			i := 1
+			for ; i < len(params); i++ {
+				c := params[i]
+				if c == '\\' && i+1 < len(params) {
+					i++
+					b.WriteByte(params[i])
+					continue
+				}
+				if c == '"' {
+					i++
+					break
+				}
+				b.WriteByte(c)
+			}
+			value = b.String()
+			rem := params[i:]
+			if k := strings.IndexByte(rem, ';'); k >= 0 {
+				params = rem[k+1:]
+			} else {
+				params = ""
+			}
+			if !isHTTPToken(name) || seen[name] {
+				continue
+			}
+		} else {
+			var v string
+			if k := strings.IndexByte(params, ';'); k >= 0 {
+				v, params = params[:k], params[k+1:]
+			} else {
+				v, params = params, ""
+			}
+			value = strings.TrimRight(v, " \t\n\r")
+			if value == "" || !isHTTPToken(name) || seen[name] {
+				continue
+			}
+		}
+		seen[name] = true
+		out.WriteString(";" + name + "=")
+		if isHTTPToken(value) {
+			out.WriteString(value)
+		} else {
+			out.WriteString(`"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`)
+		}
+	}
+	return out.String(), true
 }

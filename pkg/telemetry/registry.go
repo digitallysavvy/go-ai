@@ -2570,6 +2570,14 @@ func telemetryDisabled(settings *Settings) bool {
 // Fire functions — fan-out to all registered integrations
 // ---------------------------------------------------------------------------
 
+// callIntegration runs one integration callback. TS mergeCallbacks ignores
+// errors thrown by an integration (Promise.allSettled), so a panicking
+// integration must not fail the generation it observes.
+func callIntegration(fn func()) {
+	defer func() { _ = recover() }()
+	fn()
+}
+
 // FireOnStart calls OnStart on every registered integration.
 //
 // H5: every integration is given the SAME base ctx (not the previous
@@ -2598,7 +2606,7 @@ func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 	PublishDiagnostic(ctx, DiagnosticEventOnStart, e)
 	result := ctx
 	for _, i := range snapshotFor(e.Settings) {
-		result = i.OnStart(ctx, e)
+		callIntegration(func() { result = i.OnStart(ctx, e) })
 	}
 	return result
 }
@@ -2611,7 +2619,7 @@ func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Con
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnStepStart, e)
 	for _, i := range snapshotFor(e.Settings) {
-		ctx = i.OnStepStart(ctx, e)
+		callIntegration(func() { ctx = i.OnStepStart(ctx, e) })
 	}
 	return ctx
 }
@@ -2629,7 +2637,7 @@ func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartE
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallStartHandler); ok {
-			ctx = handler.OnLanguageModelCallStart(ctx, e)
+			callIntegration(func() { ctx = handler.OnLanguageModelCallStart(ctx, e) })
 		}
 	}
 	return ctx
@@ -2643,7 +2651,7 @@ func FireOnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent
 	PublishDiagnostic(ctx, DiagnosticEventOnLanguageModelCallEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(languageModelCallEndHandler); ok {
-			handler.OnLanguageModelCallEnd(ctx, e)
+			callIntegration(func() { handler.OnLanguageModelCallEnd(ctx, e) })
 		}
 	}
 }
@@ -2656,7 +2664,7 @@ func FireOnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnEmbedStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(embedStartHandler); ok {
-			handler.OnEmbedStart(ctx, e)
+			callIntegration(func() { handler.OnEmbedStart(ctx, e) })
 		}
 	}
 }
@@ -2669,11 +2677,11 @@ func FireOnEmbedEnd(ctx context.Context, e EmbeddingModelCallEndEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnEmbedEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(embedEndHandler); ok {
-			handler.OnEmbedEnd(ctx, e)
+			callIntegration(func() { handler.OnEmbedEnd(ctx, e) })
 			continue
 		}
 		if handler, ok := integration.(embedFinishHandler); ok {
-			handler.OnEmbedFinish(ctx, e)
+			callIntegration(func() { handler.OnEmbedFinish(ctx, e) })
 		}
 	}
 }
@@ -2693,7 +2701,7 @@ func FireOnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnRerankStart, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(rerankStartHandler); ok {
-			handler.OnRerankStart(ctx, e)
+			callIntegration(func() { handler.OnRerankStart(ctx, e) })
 		}
 	}
 }
@@ -2706,11 +2714,11 @@ func FireOnRerankEnd(ctx context.Context, e RerankingModelCallEndEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnRerankEnd, e)
 	for _, integration := range snapshotFor(e.Settings) {
 		if handler, ok := integration.(rerankEndHandler); ok {
-			handler.OnRerankEnd(ctx, e)
+			callIntegration(func() { handler.OnRerankEnd(ctx, e) })
 			continue
 		}
 		if handler, ok := integration.(rerankFinishHandler); ok {
-			handler.OnRerankFinish(ctx, e)
+			callIntegration(func() { handler.OnRerankFinish(ctx, e) })
 		}
 	}
 }
@@ -2730,7 +2738,7 @@ func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) con
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionStart, e)
 	for _, i := range snapshotFor(e.Settings) {
-		ctx = i.OnToolExecutionStart(ctx, e)
+		callIntegration(func() { ctx = i.OnToolExecutionStart(ctx, e) })
 	}
 	return ctx
 }
@@ -2742,7 +2750,7 @@ func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnToolExecutionEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
-		i.OnToolExecutionEnd(ctx, e)
+		callIntegration(func() { i.OnToolExecutionEnd(ctx, e) })
 	}
 }
 
@@ -2764,10 +2772,12 @@ func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnStepEnd, e)
 	PublishDiagnostic(ctx, DiagnosticEventOnStepFinish, e)
 	for _, i := range snapshotFor(e.Settings) {
-		i.OnStepEnd(ctx, e)
-		if handler, ok := i.(deprecatedStepFinishHandler); ok {
-			handler.OnStepFinish(ctx, e)
-		}
+		callIntegration(func() {
+			i.OnStepEnd(ctx, e)
+			if handler, ok := i.(deprecatedStepFinishHandler); ok {
+				handler.OnStepFinish(ctx, e)
+			}
+		})
 	}
 }
 
@@ -2785,10 +2795,10 @@ func FireOnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnEnd, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if handler, ok := i.(endHandler); ok {
-			handler.OnEnd(ctx, e)
+			callIntegration(func() { handler.OnEnd(ctx, e) })
 			continue
 		}
-		i.OnFinish(ctx, e)
+		callIntegration(func() { i.OnFinish(ctx, e) })
 	}
 }
 
@@ -2806,7 +2816,7 @@ func FireOnError(ctx context.Context, e TelemetryErrorEvent) {
 	}
 	PublishDiagnostic(ctx, DiagnosticEventOnError, e)
 	for _, i := range snapshotFor(e.Settings) {
-		i.OnError(ctx, e)
+		callIntegration(func() { i.OnError(ctx, e) })
 	}
 }
 
@@ -2818,7 +2828,7 @@ func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	PublishDiagnostic(ctx, DiagnosticEventOnAbort, e)
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(abortHandler); ok {
-			h.OnAbort(ctx, e)
+			callIntegration(func() { h.OnAbort(ctx, e) })
 		}
 	}
 }
@@ -2843,7 +2853,7 @@ func FireOnStepError(ctx context.Context, e TelemetryErrorEvent) {
 	}
 	for _, i := range snapshotFor(e.Settings) {
 		if h, ok := i.(stepErrorHandler); ok {
-			h.OnStepError(ctx, e)
+			callIntegration(func() { h.OnStepError(ctx, e) })
 		}
 	}
 }

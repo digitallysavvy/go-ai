@@ -854,3 +854,39 @@ func textOfContent(parts []types.ContentPart) string {
 	}
 	return b.String()
 }
+
+// validateToolResultParts mirrors TS convertLanguageModelContent: a
+// tool-result (or tool-error) part must answer a tool call of the same
+// response, unless it is the deferred result of a provider tool that supports
+// deferred results. Anything else throws "Tool call <id> not found.".
+func validateToolResultParts(content []types.ContentPart, calls []types.ToolCall, tools map[string]*types.Tool) error {
+	for _, part := range content {
+		var id, name string
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			id, name = p.ToolCallID, p.ToolName
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			id, name = p.ToolCallID, p.ToolName
+		case types.ToolErrorContent:
+			id, name = p.ToolCallID, p.ToolName
+		case *types.ToolErrorContent:
+			if p == nil {
+				continue
+			}
+			id, name = p.ToolCallID, p.ToolName
+		default:
+			continue
+		}
+		if _, ok := toolCallByID(calls, id); ok {
+			continue
+		}
+		if t := tools[name]; t != nil && t.ProviderExecuted && t.SupportsDeferredResults {
+			continue
+		}
+		return fmt.Errorf("Tool call %s not found.", id) //nolint:staticcheck // matches the TS SDK's exact error text
+	}
+	return nil
+}

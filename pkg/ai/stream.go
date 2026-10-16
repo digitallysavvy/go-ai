@@ -853,6 +853,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
 	normalizedPrompt, normErr := promptutils.NormalizePrompt(prompt, allowSystem)
+	if normErr == nil {
+		normErr = promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
+	}
 	if normErr != nil {
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
 		r.fail(normErr)
@@ -1126,7 +1129,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 					stepCancel()
 				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: rfErr})
-				r.fail(fmt.Errorf("output.ResponseFormat failed: %w", rfErr))
+				r.fail(rfErr)
 				return
 			}
 			responseFormat = rf
@@ -1139,7 +1142,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
-		r.fail(fmt.Errorf("prompt normalization failed: %w", normErr))
+		r.fail(normErr)
 		return
 	}
 	if toolResultsErr := validateStepToolResults(stepPrompt.Messages, opts.Tools); toolResultsErr != nil {
@@ -1300,7 +1303,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
-		startErr := fmt.Errorf("failed to start stream: %w", err)
+		// TS reports the doStream failure itself, without wrapper text, after
+		// wrapGatewayError (stream-text.ts error parts).
+		startErr := wrapGatewayError(err)
 		if !isAbortErr(stepCtx, err) {
 			// TS streamText turns a doStream failure into an `error` part
 			// after `start` and reports it to onError instead of throwing.
@@ -2217,6 +2222,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					// this list.
 					normalizedErr = providererrors.NormalizeStreamProviderError(rawErr, stepProvider, chunk.Raw)
 				}
+				// TS: const error = wrapGatewayError(value.error) before onError.
+				normalizedErr = wrapGatewayError(normalizedErr)
 				// A terminal error whose held-back attempt chunks were just
 				// replayed: OnError and the retry decision already ran.
 				alreadyDecided := replayed && chunk == decidedErr
@@ -3128,7 +3135,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
 			nextStepCancel()
-			r.err = fmt.Errorf("prompt normalization failed for step %d: %w", stepNum+1, normErr)
+			r.err = normErr
 			break
 		}
 		if toolResultsErr := validateStepToolResults(nextPrompt.Messages, opts.Tools); toolResultsErr != nil {
@@ -3252,7 +3259,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			} else if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
 			}
-			r.err = fmt.Errorf("failed to start stream for step %d: %w", stepNum+1, err)
+			r.err = wrapGatewayError(err)
 			// Close the still-open step span and the model-call/"chat" span
 			// opened just above via FireOnStepStart/FireOnLanguageModelCallStart
 			// (this next step's own iteration of the outer loop is never

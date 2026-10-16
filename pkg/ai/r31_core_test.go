@@ -102,7 +102,7 @@ func TestGenerateObject_SystemMessagesNeedOptIn(t *testing.T) {
 		{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "be nice"}}},
 		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
 	}
-	const tsText = "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+	const tsText = "Invalid prompt: System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
 	var sysErr *promptutils.UnsupportedSystemMessageError
 	_, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Messages: sysMsg, Schema: r31ObjectSchema})
 	if !errors.As(err, &sysErr) || err.Error() != tsText {

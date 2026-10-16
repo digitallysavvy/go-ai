@@ -3442,3 +3442,76 @@ func TestExecuteWithMessagesToolCallers_LateBindsLocalCaller(t *testing.T) {
 		t.Fatalf("ToolResults[0].Result = %v, want [getInventory] (caller's bound Execute must see the routed callee)", result.ToolResults[0].Result)
 	}
 }
+
+// TS validateTypes({context: {field: 'options'}}) throws a TypeValidationError;
+// the v0.5.2 *InvalidArgumentError stays reachable through the cause chain.
+func TestValidateAgentCallOptions_IsTypeValidationError(t *testing.T) {
+	sch := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object", "required": []interface{}{"ok"}})
+	_, err := validateAgentCallOptions(sch, map[string]interface{}{"mode": "bad"})
+	if !providererrors.IsValidationError(err) {
+		t.Fatalf("err = %v, want TypeValidationError", err)
+	}
+	if !strings.HasPrefix(err.Error(), "Type validation failed for options: Value: {\"mode\":\"bad\"}.\nError message: ") {
+		t.Fatalf("message = %q", err.Error())
+	}
+	var invalidArg *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalidArg) {
+		t.Fatalf("errors.As(*InvalidArgumentError) failed for %v", err)
+	}
+}
+
+// The agent hands the call to generateText/streamText, so the prompt checks are
+// TS InvalidPromptErrors; the v0.5.2 ValidationError stays reachable.
+func TestValidateAgentPromptOptions_InvalidPromptError(t *testing.T) {
+	err := validateAgentPromptOptions("", nil)
+	var invalid *providererrors.InvalidPromptError
+	if !errors.As(err, &invalid) || err.Error() != "Invalid prompt: prompt or messages must be defined" {
+		t.Fatalf("err = %v", err)
+	}
+	if !providererrors.IsValidationError(err) {
+		t.Fatalf("v0.5.2 ValidationError not reachable from %v", err)
+	}
+	user := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}
+	if err := validateAgentPromptOptions("p", user); err == nil || err.Error() != "Invalid prompt: prompt and messages cannot be defined at the same time" {
+		t.Fatalf("both: %v", err)
+	}
+	if err := validateAgentPromptOptions("p", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A PrepareCall model override applies to the tool-call events of the step.
+func TestExecuteTool_EventsReportPreparedModel(t *testing.T) {
+	stepModel := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}, Usage: types.Usage{TotalTokens: intPtr(1)}},
+		{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}},
+	}}
+	base := &mockLanguageModel{}
+	var gotModelID []string
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: base,
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			}}},
+		PrepareCall: func(ctx context.Context, c PrepareCallConfig) PrepareCallConfig {
+			c.Model = namedModel{stepModel, "prepared-model"}
+			return c
+		},
+		OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) { gotModelID = append(gotModelID, e.ModelID) },
+		MaxSteps:           2,
+	})
+	if _, err := agent.Execute(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotModelID) != 1 || gotModelID[0] != "prepared-model" {
+		t.Fatalf("tool-call event model ids = %v, want [prepared-model]", gotModelID)
+	}
+}
+
+type namedModel struct {
+	*mockLanguageModel
+	id string
+}
+
+func (n namedModel) ModelID() string { return n.id }

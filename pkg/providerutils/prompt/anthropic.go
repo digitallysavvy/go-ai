@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -1655,10 +1656,14 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			unsupportedOutput()
 			return nil
 		}
+		value, err := validateAnthropicToolOutput(output.value, zWebFetchOutput)
+		if err != nil {
+			return err
+		}
 		push(map[string]interface{}{
 			"type":        "web_fetch_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     anthropicWebFetchResultContent(output.value),
+			"content":     anthropicWebFetchResultContent(value),
 		}, true)
 
 	case "web_search":
@@ -1677,10 +1682,14 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			unsupportedOutput()
 			return nil
 		}
+		value, err := validateAnthropicToolOutput(output.value, zWebSearchOutput)
+		if err != nil {
+			return err
+		}
 		push(map[string]interface{}{
 			"type":        "web_search_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     anthropicWebSearchResultContent(output.value),
+			"content":     anthropicWebSearchResultContent(value),
 		}, true)
 
 	case "tool_search_tool_regex", "tool_search_tool_bm25":
@@ -1705,8 +1714,12 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			unsupportedOutput()
 			return nil
 		}
+		toolSearchValue, err := validateAnthropicToolOutput(output.value, zToolSearchOutput)
+		if err != nil {
+			return err
+		}
 		refs := make([]map[string]interface{}, 0)
-		for _, item := range interfaceSlice(output.value) {
+		for _, item := range interfaceSlice(toolSearchValue) {
 			if m, ok := item.(map[string]interface{}); ok {
 				refs = append(refs, map[string]interface{}{"type": "tool_reference", "tool_name": m["toolName"]})
 			}
@@ -1725,7 +1738,11 @@ func (c *anthropicConverter) convertProviderToolResult(content *[]map[string]int
 			unsupportedOutput()
 			return nil
 		}
-		value, _ := output.value.(map[string]interface{})
+		advisorValue, err := validateAnthropicToolOutput(output.value, zAdvisorOutput)
+		if err != nil {
+			return err
+		}
+		value, _ := advisorValue.(map[string]interface{})
 		var resultContent map[string]interface{}
 		switch value["type"] {
 		case "advisor_result":
@@ -1785,12 +1802,34 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 		unsupportedOutput()
 		return nil
 	}
-	value, ok := output.value.(map[string]interface{})
-	valueType, typeOK := value["type"].(string)
+	rawValue, ok := output.value.(map[string]interface{})
+	valueType, typeOK := rawValue["type"].(string)
+	if !ok {
+		// A typed (non-map) value is checked through its JSON form.
+		if normalized, err := normalizeToolOutput(output.value); err == nil {
+			rawValue, ok = normalized.(map[string]interface{})
+			valueType, typeOK = rawValue["type"].(string)
+		}
+	}
 	if !ok || !typeOK {
 		c.warn(fmt.Sprintf("provider executed tool result output value is not a valid code execution result for tool %s", part.ToolName))
 		return nil
 	}
+	// TS picks the schema from the result type: code_execution_result is
+	// the 20250522 schema, encrypted_code_execution_result the 20260120 one,
+	// everything else the 20250825 union.
+	schema := zCodeExecution20250825Output
+	switch valueType {
+	case "code_execution_result":
+		schema = zCodeExecution20250522Output
+	case "encrypted_code_execution_result":
+		schema = zCodeExecution20260120Output
+	}
+	validated, err := validateAnthropicToolOutput(rawValue, schema)
+	if err != nil {
+		return err
+	}
+	value, _ := validated.(map[string]interface{})
 	switch valueType {
 	case "code_execution_result":
 		push(map[string]interface{}{
@@ -1801,7 +1840,7 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 				"stdout":      value["stdout"],
 				"stderr":      value["stderr"],
 				"return_code": value["return_code"],
-				"content":     sliceOrEmpty(value["content"]),
+				"content":     codeExecutionOutputFiles(value["content"]),
 			},
 		}, false)
 	case "encrypted_code_execution_result":
@@ -1813,7 +1852,7 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 				"encrypted_stdout": value["encrypted_stdout"],
 				"stderr":           value["stderr"],
 				"return_code":      value["return_code"],
-				"content":          sliceOrEmpty(value["content"]),
+				"content":          codeExecutionOutputFiles(value["content"]),
 			},
 		}, false)
 	case "bash_code_execution_result":
@@ -1825,24 +1864,158 @@ func (c *anthropicConverter) convertCodeExecutionResult(part types.ToolResultCon
 				"stdout":      value["stdout"],
 				"stderr":      value["stderr"],
 				"return_code": value["return_code"],
-				"content":     value["content"],
+				"content":     codeExecutionOutputFiles(value["content"]),
 			},
 		}, false)
 	case "bash_code_execution_tool_result_error":
 		push(map[string]interface{}{
 			"type":        "bash_code_execution_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     value,
+			"content":     pickKeys(value, "type", "error_code"),
 		}, false)
 	default:
+		// zod strips keys the schema does not list.
 		push(map[string]interface{}{
 			"type":        "text_editor_code_execution_tool_result",
 			"tool_use_id": part.ToolCallID,
-			"content":     value,
+			"content":     pickKeys(value, textEditorKeys[valueType]...),
 		}, false)
 	}
 	return nil
 }
+
+var textEditorKeys = map[string][]string{
+	"text_editor_code_execution_tool_result_error":  {"type", "error_code"},
+	"text_editor_code_execution_view_result":        {"type", "content", "file_type", "num_lines", "start_line", "total_lines"},
+	"text_editor_code_execution_create_result":      {"type", "is_file_update"},
+	"text_editor_code_execution_str_replace_result": {"type", "lines", "new_lines", "new_start", "old_lines", "old_start"},
+}
+
+// pickKeys keeps only keys of m (zod object parsing drops unknown keys).
+func pickKeys(m map[string]interface{}, keys ...string) map[string]interface{} {
+	out := make(map[string]interface{}, len(keys))
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// codeExecutionOutputFiles returns the validated file list with only the
+// schema's keys (type, file_id); an absent list is the zod default [].
+func codeExecutionOutputFiles(v interface{}) interface{} {
+	items, ok := v.([]interface{})
+	if !ok {
+		return []interface{}{}
+	}
+	out := make([]interface{}, len(items))
+	for i, item := range items {
+		m, _ := item.(map[string]interface{})
+		out[i] = pickKeys(m, "type", "file_id")
+	}
+	return out
+}
+
+// normalizeToolOutput round-trips a tool output value through JSON so typed
+// values are validated and read like the JS object the TS SDK receives.
+func normalizeToolOutput(v interface{}) (interface{}, error) {
+	data, err := jsonstr.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// validateAnthropicToolOutput is TS validateTypes for a provider tool output
+// schema: a mismatch is the TypeValidationError the TS conversion throws. It
+// returns the JSON-normalized value.
+func validateAnthropicToolOutput(value interface{}, schema zodlite.Node) (interface{}, error) {
+	normalized, err := normalizeToolOutput(value)
+	if err != nil {
+		return nil, err
+	}
+	data := jsonStringify(normalized)
+	if message := zodlite.ValidationMessage(schema, data); message != "" {
+		return nil, providererrors.NewValidationErrorWithContext(zodlite.CompactJSON(data), zodlite.IssueText(message), nil, &providererrors.ValidationContext{})
+	}
+	return normalized, nil
+}
+
+// Output schemas of the Anthropic provider tools (packages/anthropic/src/tool).
+var (
+	zCEOutputFiles = func(t string) zodlite.Node {
+		return zodlite.Optional(zodlite.Array(zodlite.Typed(t, zodlite.F("file_id", zodlite.String))))
+	}
+	zCEResult = zodlite.Typed("code_execution_result",
+		zodlite.F("stdout", zodlite.String), zodlite.F("stderr", zodlite.String),
+		zodlite.F("return_code", zodlite.Number), zodlite.F("content", zCEOutputFiles("code_execution_output")))
+	zCEEncrypted = zodlite.Typed("encrypted_code_execution_result",
+		zodlite.F("encrypted_stdout", zodlite.String), zodlite.F("stderr", zodlite.String),
+		zodlite.F("return_code", zodlite.Number), zodlite.F("content", zCEOutputFiles("code_execution_output")))
+	zCEBash = zodlite.Typed("bash_code_execution_result",
+		zodlite.F("content", zodlite.Array(zodlite.Typed("bash_code_execution_output", zodlite.F("file_id", zodlite.String)))),
+		zodlite.F("stdout", zodlite.String), zodlite.F("stderr", zodlite.String), zodlite.F("return_code", zodlite.Number))
+	zCEBashError   = zodlite.Typed("bash_code_execution_tool_result_error", zodlite.F("error_code", zodlite.String))
+	zCEEditorError = zodlite.Typed("text_editor_code_execution_tool_result_error", zodlite.F("error_code", zodlite.String))
+	zCEEditorView  = zodlite.Typed("text_editor_code_execution_view_result",
+		zodlite.F("content", zodlite.String), zodlite.F("file_type", zodlite.String),
+		zodlite.F("num_lines", zodlite.Nullable(zodlite.Number)), zodlite.F("start_line", zodlite.Nullable(zodlite.Number)),
+		zodlite.F("total_lines", zodlite.Nullable(zodlite.Number)))
+	zCEEditorCreate  = zodlite.Typed("text_editor_code_execution_create_result", zodlite.F("is_file_update", zodlite.Boolean))
+	zCEEditorReplace = zodlite.Typed("text_editor_code_execution_str_replace_result",
+		zodlite.F("lines", zodlite.Nullable(zodlite.Array(zodlite.String))), zodlite.F("new_lines", zodlite.Nullable(zodlite.Number)),
+		zodlite.F("new_start", zodlite.Nullable(zodlite.Number)), zodlite.F("old_lines", zodlite.Nullable(zodlite.Number)),
+		zodlite.F("old_start", zodlite.Nullable(zodlite.Number)))
+
+	zCodeExecution20250522Output = zCEResult
+	zCodeExecution20250825Output = zodlite.Disc(map[string]zodlite.Node{
+		"code_execution_result":                         zCEResult,
+		"bash_code_execution_result":                    zCEBash,
+		"bash_code_execution_tool_result_error":         zCEBashError,
+		"text_editor_code_execution_tool_result_error":  zCEEditorError,
+		"text_editor_code_execution_view_result":        zCEEditorView,
+		"text_editor_code_execution_create_result":      zCEEditorCreate,
+		"text_editor_code_execution_str_replace_result": zCEEditorReplace,
+	})
+	zCodeExecution20260120Output = zodlite.Disc(map[string]zodlite.Node{
+		"code_execution_result":                         zCEResult,
+		"encrypted_code_execution_result":               zCEEncrypted,
+		"bash_code_execution_result":                    zCEBash,
+		"bash_code_execution_tool_result_error":         zCEBashError,
+		"text_editor_code_execution_tool_result_error":  zCEEditorError,
+		"text_editor_code_execution_view_result":        zCEEditorView,
+		"text_editor_code_execution_create_result":      zCEEditorCreate,
+		"text_editor_code_execution_str_replace_result": zCEEditorReplace,
+	})
+
+	zWebFetchOutput = zodlite.Typed("web_fetch_result",
+		zodlite.F("url", zodlite.String),
+		zodlite.F("content", zodlite.Typed("document",
+			zodlite.F("title", zodlite.Nullable(zodlite.String)),
+			zodlite.F("citations", zodlite.Optional(zodlite.Object(zodlite.F("enabled", zodlite.Boolean)))),
+			zodlite.F("source", zodlite.Union(
+				zodlite.Typed("base64", zodlite.F("mediaType", zodlite.Literal("application/pdf")), zodlite.F("data", zodlite.String)),
+				zodlite.Typed("text", zodlite.F("mediaType", zodlite.Literal("text/plain")), zodlite.F("data", zodlite.String)),
+			)))),
+		zodlite.F("retrievedAt", zodlite.Nullable(zodlite.String)))
+
+	zWebSearchOutput = zodlite.Array(zodlite.Typed("web_search_result",
+		zodlite.F("url", zodlite.String), zodlite.F("title", zodlite.Nullable(zodlite.String)),
+		zodlite.F("pageAge", zodlite.Nullable(zodlite.String)), zodlite.F("encryptedContent", zodlite.String)))
+
+	zToolSearchOutput = zodlite.Array(zodlite.Typed("tool_reference", zodlite.F("toolName", zodlite.String)))
+
+	zAdvisorOutput = zodlite.Disc(map[string]zodlite.Node{
+		"advisor_result":            zodlite.Typed("advisor_result", zodlite.F("text", zodlite.String), zodlite.F("stopReason", zodlite.Optional(zodlite.String))),
+		"advisor_redacted_result":   zodlite.Typed("advisor_redacted_result", zodlite.F("encryptedContent", zodlite.String), zodlite.F("stopReason", zodlite.Optional(zodlite.String))),
+		"advisor_tool_result_error": zodlite.Typed("advisor_tool_result_error", zodlite.F("errorCode", zodlite.String)),
+	})
+)
 
 // moveToolUseBlocksToEnd moves client tool_use blocks after the other blocks
 // of their segment; thinking and redacted_thinking blocks delimit segments.
@@ -1982,13 +2155,6 @@ func withoutKey(m map[string]interface{}, key string) map[string]interface{} {
 		}
 	}
 	return out
-}
-
-func sliceOrEmpty(v interface{}) interface{} {
-	if v == nil {
-		return []interface{}{}
-	}
-	return v
 }
 
 func stringValue(v interface{}) string {

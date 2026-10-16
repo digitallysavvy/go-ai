@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -45,8 +46,31 @@ func (e *ReasoningFileConstraintError) Error() string {
 type UnsupportedSystemMessageError struct{}
 
 func (e *UnsupportedSystemMessageError) Error() string {
-	// TS standardizePrompt's InvalidPromptError message.
-	return "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+	// TS standardizePrompt's InvalidPromptError message ("Invalid prompt: " prefix included).
+	return "Invalid prompt: " + unsupportedSystemMessageText
+}
+
+const unsupportedSystemMessageText = "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+
+// Unwrap exposes the TS InvalidPromptError the condition corresponds to, so
+// errors.As matches *InvalidPromptError as well as this type.
+func (e *UnsupportedSystemMessageError) Unwrap() error {
+	return &providererrors.InvalidPromptError{Message: unsupportedSystemMessageText}
+}
+
+// ValidatePromptInput is the first part of TS standardizePrompt: a call must
+// carry a prompt or messages, not both, and the messages must not be empty.
+// (An empty prompt string counts as unset in Go.)
+func ValidatePromptInput(prompt string, messages []types.Message) error {
+	switch {
+	case prompt != "" && len(messages) > 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt and messages cannot be defined at the same time"}
+	case prompt == "" && messages == nil:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt or messages must be defined"}
+	case prompt == "" && len(messages) == 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "messages must not be empty"}
+	}
+	return nil
 }
 
 // NormalizePrompt applies the core prompt conversion rules before providers see
@@ -697,14 +721,16 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 		return types.FileContent{}, err
 	}
 	part.FileData = normalized
-	if data.Type == types.FileDataTypeURL && strings.HasPrefix(data.URL, "data:") && normalized.MediaType != "" {
+	if data.Type == types.FileDataTypeURL && strings.HasPrefix(data.URL, "data:") {
 		// TS: mediaType = dataUrlMediaType ?? part.mediaType, so the media
-		// type embedded in a data: URL wins over the declared one.
+		// type embedded in a data: URL wins over the declared one, even when
+		// it is the empty string of `data:;base64,...`.
 		part.MediaType = normalized.MediaType
 		part.MimeType = normalized.MediaType
+	} else {
+		part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
+		part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
 	}
-	part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
-	part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
 	part.Data = nil
 	part.URL = ""
 	part.Reference = ""
@@ -877,10 +903,9 @@ func ParseDataURL(value string) (types.FileData, error) {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("missing comma separator")}
 	}
 	parts := strings.Split(meta, ";")
+	// TS splitDataUrl: `data:;base64,...` has the empty media type "" (not
+	// text/plain), and "" is not nullish so it wins over the declared one.
 	mediaType := parts[0]
-	if mediaType == "" {
-		mediaType = "text/plain"
-	}
 	if err := validateMediaType(mediaType); err != nil {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
 	}
