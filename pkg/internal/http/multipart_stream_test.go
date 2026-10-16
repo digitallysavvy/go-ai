@@ -213,7 +213,7 @@ func TestNewMultipartStreamBody_BlobFilenameAndHeaderSanitizing(t *testing.T) {
 
 func TestNewMultipartStreamBody_CloseReleasesUnfinishedContent(t *testing.T) {
 	pr, pw := io.Pipe() // never written: Read blocks until closed
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 	c := &closeTrackingReader{PipeReader: pr, closed: make(chan struct{})}
 	body, _, err := NewMultipartStreamBody([]MultipartStreamPart{{IsFile: true, Name: "f", Content: c}})
 	if err != nil {
