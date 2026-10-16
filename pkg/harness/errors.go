@@ -1,9 +1,9 @@
 package harness
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 // Error names, matching the TS `name` property of each error class.
@@ -171,13 +171,11 @@ func ErrorValueMessage(v any) string {
 	case error:
 		return e.Error()
 	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
+	b, err := jsstr.Marshal(v)
+	if err != nil {
 		return "unknown error"
 	}
-	return string(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+	return string(b)
 }
 
 type rawValueError struct{ message string }

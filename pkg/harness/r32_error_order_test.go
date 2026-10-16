@@ -20,3 +20,9 @@ func TestDecodedErrorPartKeepsWireKeyOrder(t *testing.T) {
 		t.Fatalf("replaced Error should not use stale text, got %s", got)
 	}
 }
+
+func TestErrorValueMessageKeepsLineSeparatorsRaw(t *testing.T) {
+	if got := ErrorValueMessage(map[string]any{"a": "x y<"}); got != "{\"a\":\"x y<\"}" {
+		t.Fatalf("got %q", got)
+	}
+}

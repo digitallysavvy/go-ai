@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -378,14 +379,11 @@ func isJSONArray(raw json.RawMessage) bool {
 
 // stringifyJSON mirrors `${JSON.stringify(value, null, 2)}\n`.
 func stringifyJSON(value any) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(value); err != nil {
+	b, err := jsstr.MarshalIndent(value)
+	if err != nil {
 		return "", err
 	}
-	return buf.String(), nil
+	return string(b) + "\n", nil
 }
 
 func writeSkillsManifest(ctx context.Context, sandbox providerutils.SandboxSession, manifestPath string, manifest skillsManifest) error {

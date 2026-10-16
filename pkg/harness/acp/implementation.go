@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -436,20 +436,14 @@ func jsonString(s string) string {
 // encodeNoEscape is json.Marshal without HTML escaping (`<`, `>`, `&` stay
 // literal, like JSON.stringify), so identity digests can match TS byte for byte.
 func encodeNoEscape(value any) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(value); err != nil {
+	b, err := jsstr.Marshal(value)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSuffix(buf.String(), "\n"), nil
+	return string(b), nil
 }
 
 func marshalIndentNoEscape(value any) string {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(value)
-	return strings.TrimSuffix(buf.String(), "\n")
+	b, _ := jsstr.MarshalIndent(value)
+	return string(b)
 }

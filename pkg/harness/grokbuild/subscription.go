@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 const (
@@ -291,13 +292,7 @@ func renderRefreshedAuthRecords(text []byte, scope, accessToken, refreshToken st
 	}{{"key", accessToken}, {"refresh_token", refreshToken}, {"expires_at", expiresAt}}
 	var buf bytes.Buffer
 	enc := func(v any) ([]byte, error) {
-		var b bytes.Buffer
-		e := json.NewEncoder(&b)
-		e.SetEscapeHTML(false)
-		if err := e.Encode(v); err != nil {
-			return nil, err
-		}
-		return bytes.TrimRight(b.Bytes(), "\n"), nil
+		return jsstr.Marshal(v)
 	}
 	buf.WriteByte('{')
 	for i, k := range keys {

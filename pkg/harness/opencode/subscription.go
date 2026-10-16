@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 // Native OpenCode subscription auth. Mirrors TS opencode-subscription.ts.
@@ -479,11 +480,8 @@ func createOpenCodeSubscriptionAuthContent(authentication *Subscription, accessT
 	// Built by hand: JSON.stringify keeps insertion order and does not
 	// HTML-escape, which a Go map would not.
 	q := func(s string) string {
-		var b bytes.Buffer
-		enc := json.NewEncoder(&b)
-		enc.SetEscapeHTML(false)
-		_ = enc.Encode(s)
-		return strings.TrimSuffix(b.String(), "\n")
+		b, _ := jsstr.Marshal(s)
+		return string(b)
 	}
 	var value string
 	if authentication.ProviderID == SubscriptionOpenCodeGo {
