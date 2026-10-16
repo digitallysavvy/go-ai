@@ -404,3 +404,17 @@ func TestHasOpenCodeCredential(t *testing.T) {
 		t.Fatal("an unrelated env var must not report a credential")
 	}
 }
+
+// A vendor response larger than the read cap is truncated, so it fails as
+// invalid JSON instead of being buffered whole.
+func TestRequestOpenCodeGitLabDirectAccessBoundsResponseRead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"pad":"` + strings.Repeat("a", 2<<20) + `","token":"t","headers":{}}`))
+	}))
+	defer server.Close()
+
+	_, err := requestOpenCodeGitLabDirectAccess(context.Background(), server.Client(), "tok", server.URL, "")
+	if err == nil || !strings.Contains(err.Error(), "returned invalid JSON") {
+		t.Fatalf("err = %v, want invalid JSON from truncated read", err)
+	}
+}

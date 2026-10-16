@@ -293,7 +293,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
-	sessionArgs.bridgePort = port
+	sessionArgs.bridgePort = launched.Port
 	sessionArgs.bridgeToken = token
 	sessionArgs.isResume = isResume
 	return newSession(sessionArgs), nil

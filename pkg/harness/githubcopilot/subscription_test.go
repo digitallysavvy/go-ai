@@ -347,3 +347,19 @@ func TestFindGitHubCliExecutable_RelativePathEntryResolved(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+// TS `access(candidate, X_OK)` accepts a directory with an execute bit, and the
+// PATH entry loses one leading and one trailing quote only.
+func TestFindGitHubCliExecutableDirectoryAndQuotes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "gh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FindGitHubCliExecutable(context.Background(), map[string]string{"PATH": `"` + dir + `"`}, "linux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Join(dir, "gh") {
+		t.Fatalf("got %q, want the gh directory", got)
+	}
+}

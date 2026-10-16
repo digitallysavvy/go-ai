@@ -199,16 +199,64 @@ func parseQuestionsOutput(toolResult types.ToolResultContent) (*harness.Question
 var errInvalidToolResult = errors.New("Grok Build askUserQuestions requires a JSON tool result.") //nolint:staticcheck // matches TS SDK's exact error text
 
 func matchesNativeRequest(previousNativeRequest, nativeRequest any) bool {
-	previous, ok1 := parseGrokBuildQuestionRequest(previousNativeRequest)
-	current, ok2 := parseGrokBuildQuestionRequest(nativeRequest)
+	_, ok1 := parseGrokBuildQuestionRequest(previousNativeRequest)
+	_, ok2 := parseGrokBuildQuestionRequest(nativeRequest)
 	if !ok1 || !ok2 {
 		return false
 	}
-	return questionFingerprint(previous) == questionFingerprint(current)
+	return questionFingerprint(previousNativeRequest) == questionFingerprint(nativeRequest)
 }
 
-func questionFingerprint(req *grokBuildQuestionRequest) string {
-	data, _ := json.Marshal(map[string]any{"questions": req.Questions, "mode": req.Mode})
+// questionFingerprint mirrors TS `JSON.stringify({ questions, mode })` over the
+// zod-parsed request. Zod strips unknown keys, emits the remaining keys in
+// schema order, and keeps an explicit `null` for the nullable().optional()
+// fields (`preview`, `multi_select`) while an absent key stays absent, so a
+// request with `preview: null` fingerprints differently from one without it.
+// The request has already passed validGrokBuildQuestionRequestShape.
+func questionFingerprint(raw any) string {
+	root, _ := raw.(map[string]any)
+	questions, _ := root["questions"].([]any)
+	var b strings.Builder
+	b.WriteString(`{"questions":[`)
+	for i, q := range questions {
+		qm, _ := q.(map[string]any)
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"question":`)
+		b.WriteString(fingerprintJSON(qm["question"]))
+		b.WriteString(`,"options":[`)
+		options, _ := qm["options"].([]any)
+		for j, o := range options {
+			om, _ := o.(map[string]any)
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"label":`)
+			b.WriteString(fingerprintJSON(om["label"]))
+			b.WriteString(`,"description":`)
+			b.WriteString(fingerprintJSON(om["description"]))
+			if v, present := om["preview"]; present {
+				b.WriteString(`,"preview":`)
+				b.WriteString(fingerprintJSON(v))
+			}
+			b.WriteByte('}')
+		}
+		b.WriteByte(']')
+		if v, present := qm["multi_select"]; present {
+			b.WriteString(`,"multi_select":`)
+			b.WriteString(fingerprintJSON(v))
+		}
+		b.WriteByte('}')
+	}
+	b.WriteString(`],"mode":`)
+	b.WriteString(fingerprintJSON(root["mode"]))
+	b.WriteByte('}')
+	return b.String()
+}
+
+func fingerprintJSON(v any) string {
+	data, _ := json.Marshal(v)
 	return string(data)
 }
 

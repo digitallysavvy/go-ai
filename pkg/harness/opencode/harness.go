@@ -325,7 +325,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
-	sessionArgs.bridgePort = port
+	sessionArgs.bridgePort = launched.Port
 	sessionArgs.bridgeToken = token
 	sessionArgs.isResume = respawnStrategy != ""
 	sessionArgs.seedResumeSessionOnFirstPrompt = respawnStrategy != ""

@@ -307,7 +307,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		codexConfig:          settings.CodexConfig, mcpServers: settings.MCPServers, headers: opts.Headers,
 		isResume: isResume, seedResumeThreadOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun",
 		resumeThreadID: resumeData.ThreadID,
-		bridgePort:     port, bridgeToken: token, sandboxID: sandboxID,
+		bridgePort:     launched.Port, bridgeToken: token, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
 		permissionMode:               opts.PermissionMode, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,
 		turnConfigurationFingerprint: resumeData.TurnConfigurationFingerprint,

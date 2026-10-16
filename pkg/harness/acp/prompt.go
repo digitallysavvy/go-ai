@@ -36,10 +36,10 @@ func convertPromptToTextBlocks(prompt harness.Prompt, harnessID string) ([]TextC
 			case "audio":
 				return nil, unsupportedPromptContent(harnessID, "audio content")
 			default:
-				return nil, unsupportedPromptContent(harnessID, fmt.Sprintf("embedded resource content with media type %q", p.MediaType))
+				return nil, unsupportedPromptContent(harnessID, fmt.Sprintf("embedded resource content with media type %s", jsonString(p.MediaType)))
 			}
 		default:
-			return nil, unsupportedPromptContent(harnessID, fmt.Sprintf("content parts of type %q", part.ContentType()))
+			return nil, unsupportedPromptContent(harnessID, fmt.Sprintf("content parts of type %s", jsonString(part.ContentType())))
 		}
 	}
 	return blocks, nil

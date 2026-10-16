@@ -1,7 +1,6 @@
 package githubcopilot
 
 import (
-	"bytes"
 	"context"
 	"net/url"
 	"os"
@@ -180,7 +179,7 @@ func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos stri
 		names = windowsGitHubCliExecutableNames(pathExt, pathExtSet)
 	}
 	for _, directory := range strings.Split(path, separator) {
-		directory = strings.Trim(directory, `"`)
+		directory = strings.TrimSuffix(strings.TrimPrefix(directory, `"`), `"`) // TS replace(/^"|"$/g, '')
 		if directory == "" {
 			continue
 		}
@@ -189,7 +188,9 @@ func FindGitHubCliExecutable(_ context.Context, env map[string]string, goos stri
 			if abs, err := filepath.Abs(candidate); err == nil {
 				candidate = abs // TS resolve(directory, name)
 			}
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			// TS access(candidate, X_OK) also accepts a directory with an
+			// execute bit, so a directory named `gh` ends the search.
+			if info, err := os.Stat(candidate); err == nil {
 				if harnessutil.IsWindows(goos) || info.Mode().Perm()&0o111 != 0 {
 					return candidate, nil
 				}
@@ -219,14 +220,11 @@ func readHostGitHubCliToken(ctx context.Context, executable, hostname string, en
 	// Mirrors TS `readHostGitHubCliToken`'s `timeout: 10_000`.
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, executable, "auth", "token", "--hostname", hostname)
-	cmd.Env = mapToEnvList(env)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return "", err
-	}
-	return stdout.String(), nil
+	return subscription.RunCapped(ctx, func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, executable, "auth", "token", "--hostname", hostname)
+		cmd.Env = mapToEnvList(env)
+		return cmd
+	})
 }
 
 func mapToEnvList(env map[string]string) []string {

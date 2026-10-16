@@ -173,7 +173,7 @@ func wireTurn(ctx context.Context, channel *bridge.Channel, emit harness.EmitFun
 		errPart, _ := f.Part.(*harness.ErrorPart)
 		var err error
 		if errPart != nil {
-			err = fmt.Errorf("%v", errPart.Error)
+			err = harness.ErrorFromValue(errPart.Error)
 		} else {
 			err = errors.New("deepagents: bridge reported an error")
 		}

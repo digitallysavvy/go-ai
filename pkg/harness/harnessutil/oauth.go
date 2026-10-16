@@ -18,6 +18,14 @@ import (
 // maxTokenResponseBytes caps the OAuth token endpoint response read.
 const maxTokenResponseBytes = 1 << 20
 
+// ReadBoundedResponse reads at most 1 MiB of a vendor response body. Vendor
+// auth/discovery/userinfo responses are a few hundred bytes; the bound keeps a
+// misbehaving endpoint from exhausting memory. An over-long body is truncated,
+// so it fails JSON parsing like any other malformed response.
+func ReadBoundedResponse(body io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(body, maxTokenResponseBytes))
+}
+
 // DefaultRefreshWindow is the default window before expiry in which an access
 // token is considered expiring.
 const DefaultRefreshWindow = 5 * time.Minute
@@ -115,7 +123,7 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	defer resp.Body.Close() //nolint:errcheck
 	// A token response is a few hundred bytes; bound the read so a misbehaving
 	// endpoint cannot exhaust memory.
-	responseText, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
+	responseText, err := ReadBoundedResponse(resp.Body)
 	if err != nil {
 		return nil, err
 	}

@@ -42,10 +42,10 @@ func CreateACP(settings Settings) (harness.Harness, error) {
 		return nil, fmt.Errorf("ACP credentialEnv and credentialBrokering must be configured together.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if _, reserved := settings.MCPServers[ReservedMCPServerName]; reserved {
-		return nil, fmt.Errorf("ACP MCP server name %q is reserved for HarnessAgent tools.", ReservedMCPServerName) //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, fmt.Errorf("ACP MCP server name %s is reserved for HarnessAgent tools.", jsonString(ReservedMCPServerName)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if !harnessIDRegexp.MatchString(settings.HarnessID) {
-		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %q.", settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
+		return nil, fmt.Errorf("ACP harnessId must be a stable kebab-case identifier; received %s.", jsonString(settings.HarnessID)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	impl := newImplementation(settings)
 	if err := validateImplementation(impl); err != nil {
@@ -211,11 +211,70 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 			return fmt.Errorf("ACP lifecycle state data: recovery.reason is required.") //nolint:staticcheck // mirrors the TS zod requirement
 		}
 	}
+	// acpTurnStartConfigSchema / acpColdSessionStateSchema: the persisted start
+	// configuration must be well-formed before it is trusted for recovery.
+	if raw, ok := probe["turnStartConfig"]; ok {
+		if err := validateStartConfigShape(raw, "turnStartConfig", true); err != nil {
+			return err
+		}
+	}
+	if raw, ok := probe["coldSession"]; ok {
+		if err := validateStartConfigShape(raw, "coldSession", false); err != nil {
+			return err
+		}
+	}
 	if r := v.Recovery; r != nil && r.Mode != "disk-replay" && r.Mode != "lossy-rerun" {
 		return fmt.Errorf("ACP lifecycle state data: recovery.mode must be 'disk-replay' or 'lossy-rerun'.") //nolint:staticcheck // mirrors the TS zod enum
 	}
 	if r := v.Restoration; r != nil && r.Method != "resume" && r.Method != "load" {
 		return fmt.Errorf("ACP lifecycle state data: restoration.method must be 'resume' or 'load'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	return nil
+}
+
+// validateStartConfigShape checks the required, enum and array fields of a
+// persisted turnStartConfig (withPrompt) or coldSession object, mirroring the
+// zod schemas' `version: literal(1)`, `configurationFingerprint: string`,
+// `permissionMode` enum, `prompt` text blocks and `tools`/`builtinTools`
+// arrays (`.default([])` accepts only an absent key, not null).
+func validateStartConfigShape(raw json.RawMessage, key string, withPrompt bool) error {
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &cfg); err != nil || cfg == nil {
+		return fmt.Errorf("ACP lifecycle state data: %s must be an object.", key) //nolint:staticcheck // mirrors the TS zod object
+	}
+	if v, ok := cfg["version"]; !ok || string(bytes.TrimSpace(v)) != "1" {
+		return fmt.Errorf("ACP lifecycle state data: %s.version must be 1.", key) //nolint:staticcheck // mirrors the TS zod literal
+	}
+	var fingerprint string
+	if v, ok := cfg["configurationFingerprint"]; !ok || json.Unmarshal(v, &fingerprint) != nil {
+		return fmt.Errorf("ACP lifecycle state data: %s.configurationFingerprint must be a string.", key) //nolint:staticcheck // mirrors the TS zod string
+	}
+	var mode string
+	if v, ok := cfg["permissionMode"]; !ok || json.Unmarshal(v, &mode) != nil ||
+		(mode != string(harness.PermissionModeAllowReads) && mode != string(harness.PermissionModeAllowEdits) && mode != string(harness.PermissionModeAllowAll)) {
+		return fmt.Errorf("ACP lifecycle state data: %s.permissionMode must be one of allow-reads, allow-edits, allow-all.", key) //nolint:staticcheck // mirrors the TS zod enum
+	}
+	for _, name := range []string{"tools", "builtinTools"} {
+		if v, ok := cfg[name]; ok {
+			var items []json.RawMessage
+			if err := json.Unmarshal(v, &items); err != nil || items == nil {
+				return fmt.Errorf("ACP lifecycle state data: %s.%s must be an array.", key, name) //nolint:staticcheck // mirrors the TS zod array
+			}
+		}
+	}
+	if withPrompt {
+		var blocks []struct {
+			Type string  `json:"type"`
+			Text *string `json:"text"`
+		}
+		if v, ok := cfg["prompt"]; !ok || json.Unmarshal(v, &blocks) != nil || blocks == nil {
+			return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+		}
+		for _, b := range blocks {
+			if b.Type != "text" || b.Text == nil {
+				return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+			}
+		}
 	}
 	return nil
 }
@@ -330,7 +389,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
 		}
 		if lifecycleHarnessID != settings.HarnessID {
-			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %q, but this harness is %q.", lifecycleHarnessID, settings.HarnessID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("ACP lifecycle state was produced by harness %s, but this harness is %s.", jsonString(lifecycleHarnessID), jsonString(settings.HarnessID)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if resumeData.ImplementationIdentity != implementationIdentity {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.") //nolint:staticcheck // matches TS SDK's exact error text
@@ -339,7 +398,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if coords := resumeData.Bridge; coords != nil && coords.SandboxID != "" && sandboxID != "" && coords.SandboxID != sandboxID {
-			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %q, not %q.", coords.SandboxID, sandboxID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, fmt.Errorf("ACP lifecycle state belongs to sandbox %s, not %s.", jsonString(coords.SandboxID), jsonString(sandboxID)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
 
@@ -695,7 +754,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
-	sessionArgs.bridgePort = port
+	sessionArgs.bridgePort = launched.Port
 	sessionArgs.bridgeToken = token
 	sessionArgs.isResume = isResume
 	sessionArgs.acpSessionID = resumeData.ACPSessionID
@@ -768,7 +827,7 @@ func resolveBridgeEndpoint(ctx context.Context, sandboxSession providerutils.San
 func wrapPortError(err error, harnessID string) error {
 	if err == bridge.ErrNoPort {
 		return unsupported(harnessID, fmt.Sprintf(
-			"The %s ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or pass `port` in settings.", harnessID))
+			"The %s ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or configure the harness `port`.", harnessID))
 	}
 	return err
 }
@@ -798,8 +857,7 @@ func writeAuthenticationFiles(ctx context.Context, sandbox providerutils.Sandbox
 			}
 		}
 		if f.Path == "" || posixpath.IsAbs(f.Path) || traversal {
-			quoted, _ := json.Marshal(f.Path)
-			return fmt.Errorf("ACP authentication file path must be relative without traversal: %s.", quoted) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP authentication file path must be relative without traversal: %s.", jsonString(f.Path)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		targetPaths[i] = posixpath.Join(homePath, f.Path)
 	}

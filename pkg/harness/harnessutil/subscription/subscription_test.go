@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -127,5 +128,23 @@ func TestWriteMacOSKeychainPasswordKeepsSecretOutOfArgs(t *testing.T) {
 	want := "add-generic-password -U -s \"Claude Code-credentials\" -a \"us\\\"er\" -X 733363726574\n"
 	if gotInput != want {
 		t.Fatalf("input = %q, want %q", gotInput, want)
+	}
+}
+
+// Node's execFile fails (and kills the child) once stdout passes maxBuffer.
+func TestExecFileCapsStdoutLikeNodeMaxBuffer(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("needs /bin/sh")
+	}
+	out, err := ExecFile(context.Background(), "/bin/sh", []string{"-c", "head -c 3000000 /dev/zero"}, nil)
+	if err == nil {
+		t.Fatalf("expected a max-buffer error, got %d bytes", len(out))
+	}
+	if len(out) > MaxBuffer {
+		t.Fatalf("collected %d bytes, over the %d cap", len(out), MaxBuffer)
+	}
+	ok, err := ExecFile(context.Background(), "/bin/sh", []string{"-c", "printf hello"}, nil)
+	if err != nil || ok != "hello" {
+		t.Fatalf("small output = %q, %v", ok, err)
 	}
 }

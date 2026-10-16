@@ -166,3 +166,23 @@ func TestPositionalIDIndex_JSNumberSemantics(t *testing.T) {
 		}
 	}
 }
+
+// TS fingerprints the zod-parsed request, which keeps an explicit `null` for
+// nullable().optional() fields while an absent key stays absent.
+func TestMatchesNativeRequestDistinguishesNullFromOmitted(t *testing.T) {
+	build := func(extra string) any {
+		return toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q","options":[{"label":"a","description":"d"`+extra+`}]}]}`))
+	}
+	omitted, withNull, withNull2 := build(""), build(`,"preview":null`), build(`,"preview":null`)
+	if AskUserQuestions.MatchesNativeRequest(omitted, withNull) {
+		t.Fatal("preview:null must not match an omitted preview")
+	}
+	if !AskUserQuestions.MatchesNativeRequest(withNull, withNull2) {
+		t.Fatal("identical null previews must match")
+	}
+	ms := toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q","options":[],"multi_select":null}]}`))
+	noMS := toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"default","questions":[{"question":"q","options":[]}]}`))
+	if AskUserQuestions.MatchesNativeRequest(ms, noMS) {
+		t.Fatal("multi_select:null must not match an omitted multi_select")
+	}
+}

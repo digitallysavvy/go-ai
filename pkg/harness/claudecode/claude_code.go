@@ -332,7 +332,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		maxTurns: settings.MaxTurns, agentProgressSummaries: settings.AgentProgressSummaries, forwardSubagentText: settings.ForwardSubagentText, env: sandboxClaudeEnv, thinking: *settings.Thinking, effort: settings.Effort,
 		isResume: isResume, continueOnFirstPrompt: isResume, rerunContinue: respawnStrategy == "rerun",
 		resumeSessionID: resumeData.ClaudeSessionID,
-		bridgePort:      port, bridgeToken: token, sandboxID: sandboxID,
+		bridgePort:      launched.Port, bridgeToken: token, sandboxID: sandboxID,
 		sandboxCredentialEnvironment: sandboxCredentialEnv,
 		permissionMode:               opts.PermissionMode, builtinToolFiltering: opts.BuiltinToolFiltering,
 		mcpServers: settings.MCPServers, sandbox: restricted, sandboxHomeDir: sandboxHomeDir,

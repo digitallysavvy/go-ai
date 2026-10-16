@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"os"
@@ -354,7 +353,7 @@ func fetchGrokAccountID(ctx context.Context, accessToken string, client *http.Cl
 		return "", err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(resp.Body)
+	body, err := harnessutil.ReadBoundedResponse(resp.Body)
 	if err != nil {
 		return "", err
 	}

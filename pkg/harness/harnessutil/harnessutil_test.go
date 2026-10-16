@@ -817,3 +817,13 @@ func TestR25NormalizeHeadersDeterministicForbidden(t *testing.T) {
 		}
 	}
 }
+
+func TestReadBoundedResponseCapsAt1MiB(t *testing.T) {
+	got, err := ReadBoundedResponse(strings.NewReader(strings.Repeat("a", 3<<20)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1<<20 {
+		t.Fatalf("read %d bytes, want %d", len(got), 1<<20)
+	}
+}
