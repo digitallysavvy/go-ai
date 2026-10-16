@@ -1272,3 +1272,25 @@ func TestBatch_RequestHeaderBetasAreNotCollected(t *testing.T) {
 		t.Fatalf("anthropic-beta = %q, want only explicit-beta", capturedBeta)
 	}
 }
+
+// TestBatchResult_ErroredAcceptsEmptyStrings mirrors the TS errored schema,
+// where error.error.type and error.error.message are plain z.string() (empty
+// is valid); only a missing/non-string field invalidates the line.
+func TestBatchResult_ErroredAcceptsEmptyStrings(t *testing.T) {
+	s := &anthropicBatchResultsStream{}
+	line := anthropicBatchResultLineWire{
+		CustomID: "r1",
+		Result:   []byte(`{"type":"errored","error":{"type":"error","error":{"type":"","message":""}}}`),
+	}
+	got := s.convertResult(line)
+	if got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "" {
+		t.Fatalf("empty-string error treated as invalid: %+v", got)
+	}
+	missing := anthropicBatchResultLineWire{
+		CustomID: "r2",
+		Result:   []byte(`{"type":"errored","error":{"type":"error","error":{"type":"x"}}}`),
+	}
+	if got := s.convertResult(missing); got.Error == nil || got.Error.Code != "invalid_response" {
+		t.Fatalf("missing message must be invalid: %+v", got)
+	}
+}
