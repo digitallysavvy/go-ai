@@ -2,6 +2,7 @@ package deepgram
 
 import (
 	"context"
+	"math"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,8 +125,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		},
 	}
 	// TS: `...(charCount != null ? { usage: { characters: charCount } } : {})`.
-	if charCount := headerInt(resp.Headers, "Dg-Char-Count"); charCount != nil {
-		result.Usage = map[string]interface{}{"characters": *charCount}
+	if charCount := headerNumber(resp.Headers, "Dg-Char-Count"); charCount != nil {
+		result.Usage = map[string]interface{}{"characters": charCount}
 	}
 	return result, nil
 }
@@ -258,14 +259,14 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 			query["container"] = "ogg"
 		}
 		if sampleRateErr == nil {
-			validRates := map[string][]int{
+			validRates := map[string][]float64{
 				"linear16": {8000, 16000, 24000, 32000, 48000},
 				"mulaw":    {8000, 16000},
 				"alaw":     {8000, 16000},
 				"flac":     {8000, 16000, 22050, 32000, 48000},
 			}
-			if rates, ok := validRates[firstPart]; ok && intInSlice(rates, sampleRate) {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+			if rates, ok := validRates[firstPart]; ok && inRates(rates, sampleRate) {
+				query["sample_rate"] = jsNumString(sampleRate)
 			}
 		}
 	case "wav", "ogg":
@@ -277,14 +278,15 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 			query["encoding"] = "opus"
 		}
 		if sampleRateErr == nil {
-			query["sample_rate"] = strconv.Itoa(sampleRate)
+			query["sample_rate"] = jsNumString(sampleRate)
 		}
 	}
 }
 
-// jsParseInt is JS parseInt(s, 10): the leading integer of s, an error (NaN)
-// when s does not start with one.
-func jsParseInt(s string) (int, error) {
+// jsParseInt is JS parseInt(s, 10): the leading integer of s (arbitrarily
+// large values become the nearest double, as in JS), an error (NaN) when s does
+// not start with one.
+func jsParseInt(s string) (float64, error) {
 	s = strings.TrimLeft(s, " \t\n\r\v\f")
 	end := 0
 	if end < len(s) && (s[end] == '+' || s[end] == '-') {
@@ -297,11 +299,65 @@ func jsParseInt(s string) (int, error) {
 	if end == digits {
 		return 0, fmt.Errorf("not a number: %q", s)
 	}
-	return strconv.Atoi(s[:end])
+	return strconv.ParseFloat(s[:end], 64)
 }
 
-func intInSlice(s []int, v int) bool {
-	for _, x := range s {
+// jsNumber is JS Number(s) for a string: ok is false when the result is NaN.
+func jsNumber(s string) (float64, bool) {
+	s = providerutils.JSTrim(s)
+	if s == "" {
+		return 0, true
+	}
+	if len(s) > 2 && s[0] == '0' {
+		base := 0
+		switch s[1] {
+		case 'x', 'X':
+			base = 16
+		case 'o', 'O':
+			base = 8
+		case 'b', 'B':
+			base = 2
+		}
+		if base != 0 {
+			if strings.ContainsAny(s[2:], "_+-") {
+				return 0, false
+			}
+			u, err := strconv.ParseUint(s[2:], base, 64)
+			if err != nil {
+				return 0, false
+			}
+			return float64(u), true
+		}
+	}
+	switch s {
+	case "Infinity", "+Infinity":
+		return math.Inf(1), true
+	case "-Infinity":
+		return math.Inf(-1), true
+	}
+	// Reject Go-only float syntax (underscores, hex floats, inf/nan words).
+	for _, c := range s {
+		if (c < '0' || c > '9') && c != '.' && c != 'e' && c != 'E' && c != '+' && c != '-' {
+			return 0, false
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return 0, false
+	}
+	return f, true
+}
+
+// jsNumString is JS String(number): plain digits below 1e21, "1e+21" above.
+func jsNumString(f float64) string {
+	if math.Abs(f) >= 1e21 {
+		return strconv.FormatFloat(f, 'e', -1, 64)
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+func inRates(rates []float64, v float64) bool {
+	for _, x := range rates {
 		if x == v {
 			return true
 		}
@@ -394,7 +450,7 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 		encoding := strings.ToLower(query["encoding"])
 		sampleRate := *sampleRatePtr
 		// JS String(number): 22050.5 stays fractional, 48000 has no ".0".
-		rateStr := strconv.FormatFloat(sampleRate, 'f', -1, 64)
+		rateStr := jsNumString(sampleRate)
 		inRates := func(rates ...float64) bool {
 			for _, r := range rates {
 				if r == sampleRate {
@@ -435,7 +491,12 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 	if opts.BitRate != nil {
 		encoding := strings.ToLower(query["encoding"])
 		bitRateStr := fmt.Sprint(opts.BitRate)
-		bitRateNum, _ := strconv.ParseFloat(bitRateStr, 64)
+		// TS Number(bitRate): a non-numeric string is NaN, so every range
+		// comparison is false (opus/aac accept it) and mp3's list check fails.
+		bitRateNum, numOK := jsNumber(bitRateStr)
+		if !numOK {
+			bitRateNum = math.NaN()
+		}
 		switch encoding {
 		case "mp3":
 			if bitRateNum != 32000 && bitRateNum != 48000 {
@@ -503,17 +564,17 @@ func buildSpeechProviderMetadata(headers http.Header) map[string]interface{} {
 	if v := headers.Get("Dg-Model-Uuid"); v != "" {
 		metadata["modelUuid"] = v
 	}
-	if v := headers.Get("Dg-Additional-Model-Uuids"); v != "" {
-		metadata["additionalModelUuids"] = strings.Split(v, ",")
+	if vals := headers.Values("Dg-Additional-Model-Uuids"); len(vals) > 0 {
+		metadata["additionalModelUuids"] = strings.Split(vals[0], ",")
 	}
-	if v := headerInt(headers, "Dg-Char-Count"); v != nil {
-		metadata["charCount"] = *v
+	if v := headerNumber(headers, "Dg-Char-Count"); v != nil {
+		metadata["charCount"] = v
 	}
-	if v := headerInt(headers, "Dg-Breaks-Applied"); v != nil {
-		metadata["breaksApplied"] = *v
+	if v := headerNumber(headers, "Dg-Breaks-Applied"); v != nil {
+		metadata["breaksApplied"] = v
 	}
-	if v := headerInt(headers, "Dg-Pronunciations-Applied"); v != nil {
-		metadata["pronunciationsApplied"] = *v
+	if v := headerNumber(headers, "Dg-Pronunciations-Applied"); v != nil {
+		metadata["pronunciationsApplied"] = v
 	}
 	if v := headers.Get("Dg-Pronunciation-Warnings"); v != "" {
 		metadata["pronunciationWarnings"] = v
@@ -524,14 +585,19 @@ func buildSpeechProviderMetadata(headers http.Header) map[string]interface{} {
 	return metadata
 }
 
-func headerInt(headers http.Header, name string) *int {
-	v := headers.Get(name)
-	if v == "" {
+// headerNumber is the TS headerNumber helper: absent -> nil, otherwise
+// Number(value) (an empty header is 0), NaN -> nil. Integral values stay int.
+func headerNumber(headers http.Header, name string) interface{} {
+	vals := headers.Values(name)
+	if len(vals) == 0 {
 		return nil
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
+	f, ok := jsNumber(vals[0])
+	if !ok || math.IsNaN(f) {
 		return nil
 	}
-	return &n
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		return int(f)
+	}
+	return f
 }
