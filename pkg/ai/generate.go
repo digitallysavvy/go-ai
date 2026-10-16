@@ -1215,7 +1215,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if op, ok := opts.Output.(outputProcessor); ok {
 				rf, rfErr := op.ResponseFormat(stepCtx)
 				if rfErr != nil {
-					return nil, fmt.Errorf("output.ResponseFormat failed: %w", rfErr)
+					// TS awaits output.responseFormat; a rejection propagates as is.
+					return nil, rfErr
 				}
 				responseFormat = rf
 			}
@@ -1866,7 +1867,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Usage:        &lastUsage,
 		})
 		if parseErr != nil {
-			outputParseErr = fmt.Errorf("output parsing failed: %w", parseErr)
+			// TS parseCompleteOutput rejects with its own error (e.g.
+			// NoObjectGeneratedError), which generateText rethrows unchanged.
+			outputParseErr = parseErr
 		} else {
 			result.Output = parsed
 		}

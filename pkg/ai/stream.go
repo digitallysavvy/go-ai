@@ -1129,7 +1129,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 					stepCancel()
 				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: rfErr})
-				r.fail(fmt.Errorf("output.ResponseFormat failed: %w", rfErr))
+				r.fail(rfErr)
 				return
 			}
 			responseFormat = rf

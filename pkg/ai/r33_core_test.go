@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -75,5 +76,26 @@ func TestTelemetryUsageFromEmbeddingUsage(t *testing.T) {
 	}
 	if u := telemetryUsageFromEmbeddingUsage(types.EmbeddingUsage{TotalTokens: 3}); u.TotalTokens == nil || *u.TotalTokens != 3 {
 		t.Fatalf("legacy TotalTokens-only usage -> %v", u.TotalTokens)
+	}
+}
+
+// TS generateText rethrows the output parse error unchanged (no wrapper text).
+func TestGenerateText_OutputParseErrorIsReturnedAsIs(t *testing.T) {
+	t.Parallel()
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "not json", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "hi",
+		Output: ObjectOutput[map[string]interface{}](ObjectOutputOptions{Schema: r31ObjectSchema}),
+	})
+	var noObj *NoObjectGeneratedError
+	if !errors.As(err, &noObj) {
+		t.Fatalf("err = %T %v, want NoObjectGeneratedError", err, err)
+	}
+	if strings.HasPrefix(err.Error(), "output parsing failed") {
+		t.Fatalf("err text has a wrapper prefix: %v", err)
 	}
 }
