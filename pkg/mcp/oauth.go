@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -235,17 +236,14 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 // header (e.g. WWW-Authenticate), matching TS's per-param regex extraction in
 // extractWWWAuthenticateParams.
 func extractQuotedChallengeParam(header, key string) string {
-	needle := key + `="`
-	start := strings.Index(header, needle)
-	if start < 0 {
-		return ""
+	// TS: header.match(/(?:^|[,\s])key="([^"]*)"/i): the name must start the
+	// header or follow a comma or whitespace (not be the tail of another
+	// name), and matches case-insensitively.
+	re := regexp.MustCompile(`(?i)(?:^|[,\s])` + regexp.QuoteMeta(key) + `="([^"]*)"`)
+	if m := re.FindStringSubmatch(header); m != nil {
+		return m[1]
 	}
-	start += len(needle)
-	end := strings.Index(header[start:], `"`)
-	if end < 0 {
-		return ""
-	}
-	return header[start : start+end]
+	return ""
 }
 
 // DiscoverOAuthProtectedResourceMetadata discovers MCP protected resource
