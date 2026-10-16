@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -617,7 +617,7 @@ type cohereV2Stream struct {
 	parser            *streaming.SSEParser
 	err               error
 	flushQueue        []*provider.StreamChunk
-	pendingTools      map[string]*cohereV2PendingTool
+	pendingTool       *cohereV2PendingTool
 	isActiveReasoning bool
 
 	// includeRawChunks emits a raw chunk before each event is processed
@@ -674,9 +674,8 @@ type cohereV2PendingTool struct {
 
 func newCohereV2Stream(reader io.ReadCloser) *cohereV2Stream {
 	return &cohereV2Stream{
-		reader:       reader,
-		parser:       streaming.NewSSEParser(reader),
-		pendingTools: make(map[string]*cohereV2PendingTool),
+		reader: reader,
+		parser: streaming.NewSSEParser(reader),
 	}
 }
 
@@ -761,7 +760,9 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			var start struct {
 				ID *string `json:"id"`
 			}
-			if json.Unmarshal([]byte(event.Data), &start) == nil && start.ID != nil && *start.ID != "" {
+			// TS: response-metadata { id: value.id ?? undefined } -- an
+			// empty-string id is still forwarded.
+			if json.Unmarshal([]byte(event.Data), &start) == nil && start.ID != nil {
 				return &provider.StreamChunk{
 					Type:             provider.ChunkTypeResponseMetadata,
 					ResponseMetadata: &provider.ResponseMetadata{ID: *start.ID},
@@ -777,14 +778,18 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					} `json:"content"`
 				} `json:"message"`
 			}
-			if err := json.Unmarshal(ev.Delta, &delta); err == nil && delta.Message.Content.Type == "thinking" {
+			if err := json.Unmarshal(ev.Delta, &delta); err != nil {
+				continue
+			}
+			// TS: ids are String(value.index) for text and reasoning blocks.
+			if delta.Message.Content.Type == "thinking" {
 				s.isActiveReasoning = true
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningStart,
-					ID:   fmt.Sprintf("reasoning-%d", ev.Index),
+					ID:   strconv.Itoa(ev.Index),
 				}, nil
 			}
-			continue
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(ev.Index)}, nil
 
 		case "content-delta":
 			// TS decides by key (`'thinking' in content`), not by the type the
@@ -803,14 +808,15 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 					return &provider.StreamChunk{
 						Type:      provider.ChunkTypeReasoning,
 						Reasoning: thinking,
-						ID:        fmt.Sprintf("reasoning-%d", ev.Index),
+						ID:        strconv.Itoa(ev.Index),
 					}, nil
 				}
 				continue
 			}
 			var text string
-			if json.Unmarshal(delta.Message.Content["text"], &text) == nil && text != "" {
-				return &provider.StreamChunk{Type: provider.ChunkTypeText, Text: text}, nil
+			// TS emits the text-delta even when the delta is empty.
+			if json.Unmarshal(delta.Message.Content["text"], &text) == nil {
+				return &provider.StreamChunk{Type: provider.ChunkTypeText, ID: strconv.Itoa(ev.Index), Text: text}, nil
 			}
 			continue
 
@@ -821,10 +827,10 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				s.isActiveReasoning = false
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeReasoningEnd,
-					ID:   fmt.Sprintf("reasoning-%d", ev.Index),
+					ID:   strconv.Itoa(ev.Index),
 				}, nil
 			}
-			continue
+			return &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: strconv.Itoa(ev.Index)}, nil
 
 		case "tool-call-start":
 			var delta struct {
@@ -840,7 +846,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			}
 			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
 				id := delta.Message.ToolCalls.ID
-				s.pendingTools[id] = &cohereV2PendingTool{
+				s.pendingTool = &cohereV2PendingTool{
 					id:        id,
 					name:      delta.Message.ToolCalls.Function.Name,
 					arguments: delta.Message.ToolCalls.Function.Arguments,
@@ -866,37 +872,32 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 				} `json:"message"`
 			}
 			if err := json.Unmarshal(ev.Delta, &delta); err == nil {
-				// Cohere v2 supports only one pending tool call at a time; append to it.
-				for _, tc := range s.pendingTools {
-					if !tc.finished {
-						tc.arguments += delta.Message.ToolCalls.Function.Arguments
-						s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-							Type: provider.ChunkTypeToolInputDelta, ID: tc.id, Text: delta.Message.ToolCalls.Function.Arguments,
-						})
-						break
-					}
+				// TS keeps a single pendingToolCall (the latest start).
+				if tc := s.pendingTool; tc != nil && !tc.finished {
+					tc.arguments += delta.Message.ToolCalls.Function.Arguments
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
+						Type: provider.ChunkTypeToolInputDelta, ID: tc.id, Text: delta.Message.ToolCalls.Function.Arguments,
+					})
 				}
 			}
 			continue
 
 		case "tool-call-end":
-			for id, tc := range s.pendingTools {
-				if !tc.finished {
-					tc.finished = true
-					delete(s.pendingTools, id)
-					text := strings.TrimSpace(tc.arguments)
-					if text == "" {
-						text = "{}"
-					}
-					// TS: JSON.stringify(await parseJSON({text})) -- tool-input-end
-					// is emitted first, then an unparsable input errors the stream.
-					s.flushQueue = append(s.flushQueue,
-						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}})
-					var parsed interface{}
-					if err := json.Unmarshal([]byte(text), &parsed); err != nil {
-						s.err = providererrors.NewJSONParseError(text, err)
-						break
-					}
+			if tc := s.pendingTool; tc != nil && !tc.finished {
+				tc.finished = true
+				s.pendingTool = nil
+				text := strings.TrimSpace(tc.arguments)
+				if text == "" {
+					text = "{}"
+				}
+				// TS: JSON.stringify(await parseJSON({text})) -- tool-input-end
+				// is emitted first, then an unparsable input errors the stream.
+				s.flushQueue = append(s.flushQueue,
+					&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: tc.id, ToolCall: &types.ToolCall{ID: tc.id, ToolName: tc.name}})
+				var parsed interface{}
+				if err := json.Unmarshal([]byte(text), &parsed); err != nil {
+					s.err = providererrors.NewJSONParseError(text, err)
+				} else {
 					args, _ := parsed.(map[string]interface{})
 					if args == nil {
 						args = map[string]interface{}{}
@@ -911,7 +912,6 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 								RawArguments: cohereToolInputText(tc.arguments, args),
 							},
 						})
-					break
 				}
 			}
 			continue

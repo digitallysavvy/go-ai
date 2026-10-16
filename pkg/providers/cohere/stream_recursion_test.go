@@ -58,6 +58,9 @@ func runCohereStreamRecursionChild() {
 	// This call used to recurse once per "message-start" event -- 300,000
 	// deep -- before reaching the real text chunk.
 	chunk, err := s.Next()
+	if err == nil && chunk != nil && chunk.Type == provider.ChunkTypeTextStart {
+		chunk, err = s.Next()
+	}
 	if err != nil {
 		fmt.Println("BF5_CHILD_FAIL: unexpected error:", err)
 		return
