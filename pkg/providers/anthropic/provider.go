@@ -260,16 +260,9 @@ func requestAuthHeaders(cfg Config) (map[string]string, error) {
 		}
 		envVar, description = cfg.APIKeyEnvVar, cfg.APIKeyDescription
 	}
-	for k := range cfg.Headers {
-		if strings.EqualFold(k, "x-api-key") || strings.EqualFold(k, "authorization") {
-			return nil, nil
-		}
-	}
-	apiKey, err := providerutils.LoadAPIKey(cfg.APIKey, envVar, description)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]string{"x-api-key": apiKey}, nil
+	// An explicit x-api-key or Authorization header keeps the caller's own
+	// credential.
+	return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, envVar, description, "x-api-key", "", "authorization")
 }
 
 // newID returns a fresh generated id (see Config.GenerateID).
