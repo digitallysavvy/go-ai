@@ -7,6 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -828,17 +829,28 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *
 // convertToOpenAICompatibleContentPart for file parts. A nil part with a nil
 // error means "not handled here" (images, video and PDFs stay on the shared
 // path).
-func compatFilePart(file types.FileContent, mediaType string) (map[string]interface{}, error) {
+func compatFilePart(file types.FileContent, mediaType string) (map[string]interface{}, string, error) {
 	unsupported := func(f string) error { return &providererrors.UnsupportedFunctionalityError{Functionality: f} }
 	hasData := len(file.Data) > 0
 	if file.FileData.Type == types.FileDataTypeText || (file.Text != "" && !hasData && file.URL == "") {
-		return nil, unsupported("text file parts")
+		return nil, "", unsupported("text file parts")
 	}
 	top := mediaType
 	if i := strings.Index(mediaType, "/"); i >= 0 {
 		top = mediaType[:i]
 	}
 	isURL := file.URL != "" && !hasData
+	// TS resolveFullMediaType: a bare top-level type with inline bytes is
+	// resolved by signature sniffing, else unsupported.
+	resolve := func() (string, error) {
+		if strings.Contains(mediaType, "/") {
+			return mediaType, nil
+		}
+		if detected, ok := fileutil.DetectMediaTypeSignature(file.Data, top); ok {
+			return detected, nil
+		}
+		return "", unsupported(fmt.Sprintf("file of media type \"%s\" must specify subtype since it could not be auto-detected", mediaType))
+	}
 	meta := func(part map[string]interface{}) map[string]interface{} {
 		if m, ok := file.ProviderOptions["openaiCompatible"].(map[string]interface{}); ok {
 			for k, v := range m {
@@ -849,19 +861,27 @@ func compatFilePart(file types.FileContent, mediaType string) (map[string]interf
 	}
 	switch top {
 	case "image", "video":
-		return nil, nil
+		if isURL || !hasData {
+			return nil, "", nil
+		}
+		full, err := resolve()
+		return nil, full, err
 	case "audio":
 		if isURL {
-			return nil, unsupported("audio file parts with URLs")
+			return nil, "", unsupported("audio file parts with URLs")
+		}
+		full, err := resolve()
+		if err != nil {
+			return nil, "", err
 		}
 		var format string
-		switch mediaType {
+		switch full {
 		case "audio/wav":
 			format = "wav"
 		case "audio/mp3", "audio/mpeg":
 			format = "mp3"
 		default:
-			return nil, unsupported("audio media type " + mediaType)
+			return nil, "", unsupported("audio media type " + full)
 		}
 		return meta(map[string]interface{}{
 			"type": "input_audio",
@@ -869,23 +889,27 @@ func compatFilePart(file types.FileContent, mediaType string) (map[string]interf
 				"data":   base64.StdEncoding.EncodeToString(file.Data),
 				"format": format,
 			},
-		}), nil
+		}), full, nil
 	case "application":
 		if isURL {
-			return nil, unsupported("PDF file parts with URLs")
+			return nil, "", unsupported("PDF file parts with URLs")
 		}
-		if mediaType != "application/pdf" {
-			return nil, unsupported("file part media type " + mediaType)
+		full, err := resolve()
+		if err != nil {
+			return nil, "", err
 		}
-		return nil, nil
+		if full != "application/pdf" {
+			return nil, "", unsupported("file part media type " + full)
+		}
+		return nil, full, nil
 	case "text":
 		text := string(file.Data)
 		if isURL {
 			text = file.URL
 		}
-		return meta(map[string]interface{}{"type": "text", "text": text}), nil
+		return meta(map[string]interface{}{"type": "text", "text": text}), "", nil
 	}
-	return nil, unsupported("file part media type " + mediaType)
+	return nil, "", unsupported("file part media type " + mediaType)
 }
 
 // ExtractSystemMessage extracts the system message from a list of messages
@@ -937,10 +961,14 @@ func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, ref
 	}
 	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
 	if refs != nil && refs.strict {
-		if part, err := compatFilePart(file, mediaType); err != nil {
+		part, resolved, err := compatFilePart(file, mediaType)
+		if err != nil {
 			refs.fail(err)
 		} else if part != nil {
 			return part
+		}
+		if resolved != "" {
+			mediaType = resolved
 		}
 	}
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {

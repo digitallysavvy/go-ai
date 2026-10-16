@@ -169,3 +169,30 @@ func TestToOpenAIMessagesWithError_CompatTextFile(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestToOpenAIMessagesWithError_CompatSniffsBareMediaType(t *testing.T) {
+	opt := ToOpenAIMessagesOptions{CompatFileValidation: true}
+	pdf := []byte("%PDF-1.4 hello")
+	got, err := ToOpenAIMessagesWithError(compatUserFile(types.FileContent{MediaType: "application", Data: pdf}), opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := got[0]["content"].([]map[string]interface{})[0]["file"].(map[string]interface{})
+	if f["file_data"] == nil {
+		t.Fatalf("file = %v", f)
+	}
+	png := []byte("\x89PNG\r\n\x1a\n0000")
+	got, err = ToOpenAIMessagesWithError(compatUserFile(types.FileContent{MediaType: "image", Data: png}), opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := got[0]["content"].([]map[string]interface{})[0]["image_url"].(map[string]interface{})["url"].(string)
+	if len(url) < 22 || url[:22] != "data:image/png;base64," {
+		t.Fatalf("url = %s", url)
+	}
+	_, err = ToOpenAIMessagesWithError(compatUserFile(types.FileContent{MediaType: "audio", Data: []byte("zzzz")}), opt)
+	var ufe *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &ufe) {
+		t.Fatalf("err = %v", err)
+	}
+}
