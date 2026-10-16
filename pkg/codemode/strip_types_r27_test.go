@@ -53,6 +53,10 @@ func TestStripR27NodeParity(t *testing.T) {
 		{"const f = (a: (A | B)): (A | B) => a; return f;", "const f = (a         )          => a; return f;"},
 		{"let g: (this: Foo, ...r: A[]) => void = y; return g;", "let g                                 = y; return g;"},
 		{"let h: ({ a }: P) => void = y; return h;", "let h                     = y; return h;"},
+		{"declare type X = number; return 1;", "                         return 1;"},
+		{"declare const enum E { A } return 1;", "                           return 1;"},
+		{"declare type X<T> = T\nreturn 1;", "                     \nreturn 1;"},
+		{"declare type = 1; return 1;", "declare type = 1; return 1;"},
 	} {
 		got, _ := stripTypeScriptAnnotations(tc.src)
 		if got != tc.want {
