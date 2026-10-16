@@ -24,16 +24,59 @@ import (
 // env == nil inherits the host environment.
 type ExecFileFunc func(ctx context.Context, name string, args []string, env []string) (string, error)
 
+// MaxBuffer is Node's default `execFile` `maxBuffer`: a child whose stdout
+// exceeds it is killed and the call fails.
+const MaxBuffer = 1024 * 1024
+
+// CappedBuffer collects up to Limit bytes and then fails the write, calling
+// OnOverflow (to kill the child) once. Mirrors Node's `maxBuffer` handling.
+type CappedBuffer struct {
+	Limit      int
+	OnOverflow func()
+	buf        bytes.Buffer
+}
+
+// ErrMaxBuffer is returned once a child's output exceeds MaxBuffer.
+var ErrMaxBuffer = errors.New("stdout maxBuffer length exceeded")
+
+func (b *CappedBuffer) Write(p []byte) (int, error) {
+	if b.buf.Len()+len(p) > b.Limit {
+		if b.OnOverflow != nil {
+			b.OnOverflow()
+		}
+		return 0, ErrMaxBuffer
+	}
+	return b.buf.Write(p)
+}
+
+// String returns the collected output.
+func (b *CappedBuffer) String() string { return b.buf.String() }
+
+// RunCapped runs the command newCmd builds (it must use the ctx it is given
+// with exec.CommandContext) and collects at most MaxBuffer bytes of stdout. A
+// child that writes more is killed and the call fails, like Node's execFile.
+func RunCapped(ctx context.Context, newCmd func(ctx context.Context) *exec.Cmd) (string, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := newCmd(ctx)
+	stdout := &CappedBuffer{Limit: MaxBuffer, OnOverflow: cancel}
+	cmd.Stdout = stdout
+	err := cmd.Run()
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return stdout.String(), err
+}
+
 // ExecFile is the process runner used by the readers; replaceable in tests.
 var ExecFile ExecFileFunc = func(ctx context.Context, name string, args []string, env []string) (string, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if env != nil {
-		cmd.Env = env
-	}
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	err := cmd.Run()
-	return stdout.String(), err
+	return RunCapped(ctx, func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, name, args...)
+		if env != nil {
+			cmd.Env = env
+		}
+		return cmd
+	})
 }
 
 // ParseJWTPayload decodes the payload of a three-segment JWT. It returns nil
