@@ -2,12 +2,13 @@ package ai
 
 import (
 	"context"
-	"strings"
+	"errors"
 	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
@@ -101,9 +102,22 @@ func TestGenerateObject_SystemMessagesNeedOptIn(t *testing.T) {
 		{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "be nice"}}},
 		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}},
 	}
+	const tsText = "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+	var sysErr *promptutils.UnsupportedSystemMessageError
 	_, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Messages: sysMsg, Schema: r31ObjectSchema})
-	if err == nil || !strings.Contains(err.Error(), "system messages are not allowed") {
+	if !errors.As(err, &sysErr) || err.Error() != tsText {
 		t.Fatalf("err = %v", err)
+	}
+	// GenerateText and StreamText reject the same way (all four entry points agree).
+	sres, err := StreamText(context.Background(), StreamTextOptions{Model: model, Messages: sysMsg})
+	if err == nil {
+		_, err = sres.ReadAll()
+	}
+	if !errors.As(err, &sysErr) {
+		t.Fatalf("StreamText err = %v", err)
+	}
+	if _, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Messages: sysMsg}); !errors.As(err, &sysErr) || err.Error() != tsText {
+		t.Fatalf("GenerateText err = %v", err)
 	}
 	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{Model: model, Messages: sysMsg, Schema: r31ObjectSchema, AllowSystemInMessages: true}); err != nil {
 		t.Fatalf("opt-in failed: %v", err)
@@ -116,7 +130,7 @@ func TestGenerateObject_SystemMessagesNeedOptIn(t *testing.T) {
 		t.Fatalf("system = %q, want %q", system, instr)
 	}
 	_, err = StreamObject(context.Background(), StreamObjectOptions{Model: model, Messages: sysMsg, Schema: r31ObjectSchema})
-	if err == nil || !strings.Contains(err.Error(), "system messages are not allowed") {
+	if !errors.As(err, &sysErr) || err.Error() != tsText {
 		t.Fatalf("stream err = %v", err)
 	}
 }
