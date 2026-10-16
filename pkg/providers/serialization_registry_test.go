@@ -126,6 +126,7 @@ var registryAliasKeys = map[string]string{
 	// Pre-TS-parity provider ids: models serialized before Provider() followed
 	// TS config.provider (for example groq.chat) carry the bare name. The bare
 	// key stays registered so those payloads restore under the TS id.
+	"anthropic":     "pre-TS-parity serialization key, restores under the TS config.provider id (anthropic.messages)",
 	"google-vertex": "pre-TS-parity serialization key, restores under the TS config.provider id (google.vertex.chat/embedding/image)",
 	"groq":          "pre-TS-parity serialization key, restores under the TS config.provider id",
 	"cerebras":      "pre-TS-parity serialization key, restores under the TS config.provider id",

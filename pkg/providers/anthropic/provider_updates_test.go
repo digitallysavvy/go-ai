@@ -541,8 +541,8 @@ func TestClaudeSonnet4_6ModelID(t *testing.T) {
 		t.Errorf("ModelID() = %q, want %q", model.ModelID(), ClaudeSonnet4_6)
 	}
 
-	if model.Provider() != "anthropic" {
-		t.Errorf("Provider() = %q, want %q", model.Provider(), "anthropic")
+	if model.Provider() != "anthropic.messages" {
+		t.Errorf("Provider() = %q, want %q", model.Provider(), "anthropic.messages")
 	}
 }
 

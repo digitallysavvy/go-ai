@@ -44,8 +44,15 @@ func (m *LanguageModel) SpecificationVersion() string {
 }
 
 // Provider returns the provider name
+//
+// Like TS config.provider this is "anthropic.messages" for the direct
+// provider (Config.Name, when set, is used as is); Provider.Name() keeps the
+// bare "anthropic" registry name.
 func (m *LanguageModel) Provider() string {
-	return m.provider.Name()
+	if m.provider.config.Name != "" {
+		return m.provider.config.Name
+	}
+	return "anthropic.messages"
 }
 
 // ModelID returns the model ID
