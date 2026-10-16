@@ -827,3 +827,11 @@ func TestValidationErrorValueIsJSON(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
+
+func TestInvalidArgumentErrorText(t *testing.T) {
+	t.Parallel()
+
+	if got, want := (&InvalidArgumentError{Field: "maxRetries", Message: "maxRetries must be >= 0"}).Error(), "Invalid argument for parameter maxRetries: maxRetries must be >= 0"; got != want {
+		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}

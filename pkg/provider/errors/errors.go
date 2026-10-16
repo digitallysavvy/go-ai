@@ -292,9 +292,10 @@ type InvalidArgumentError struct {
 
 func (e *InvalidArgumentError) Error() string {
 	if e.Field == "" {
-		return "invalid argument: " + e.Message
+		return "Invalid argument: " + e.Message
 	}
-	return fmt.Sprintf("invalid argument for %s: %s", e.Field, e.Message)
+	// TS InvalidArgumentError: `Invalid argument for parameter ${parameter}: ${message}`.
+	return fmt.Sprintf("Invalid argument for parameter %s: %s", e.Field, e.Message)
 }
 
 func (e *InvalidArgumentError) Unwrap() error { return e.Cause }
