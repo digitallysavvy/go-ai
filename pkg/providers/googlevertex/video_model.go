@@ -79,24 +79,42 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 	if opts == nil {
 		return nil, nil, nil
 	}
-	raw, ok := opts["googleVertex"]
-	if !ok {
-		raw, ok = opts["vertex"]
+	// TS parseProviderOptions returns undefined for a null/absent entry, so
+	// a nil "googleVertex" value falls through to the legacy "vertex" key.
+	raw := opts["googleVertex"]
+	if raw == nil {
+		raw = opts["vertex"]
 	}
-	if !ok {
+	if raw == nil {
 		return nil, nil, nil
 	}
 	jsonData, err := json.Marshal(raw)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal googleVertex video provider options: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to marshal googleVertex video provider options: %w", err))
 	}
 	var provOpts GoogleVertexVideoModelOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to unmarshal googleVertex video provider options: %w", err))
 	}
 	var rawMap map[string]interface{}
 	if err := json.Unmarshal(jsonData, &rawMap); err != nil {
-		return nil, nil, fmt.Errorf("failed to unmarshal googleVertex video provider options map: %w", err)
+		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to unmarshal googleVertex video provider options map: %w", err))
+	}
+	// TS googleVertexVideoModelOptionsSchema: personGeneration is an enum and
+	// the poll settings are positive numbers.
+	if provOpts.PersonGeneration != nil {
+		switch *provOpts.PersonGeneration {
+		case "dont_allow", "allow_adult", "allow_all":
+		default:
+			return nil, nil, invalidVertexVideoOptions(fmt.Errorf("personGeneration: invalid option %q, expected one of dont_allow, allow_adult, allow_all", *provOpts.PersonGeneration))
+		}
+	}
+	for _, key := range []string{"pollIntervalMs", "pollTimeoutMs"} {
+		if v, ok := rawMap[key]; ok && v != nil {
+			if n, isNum := v.(float64); !isNum || n <= 0 {
+				return nil, nil, invalidVertexVideoOptions(fmt.Errorf("%s: expected a positive number", key))
+			}
+		}
 	}
 	extra := make(map[string]interface{})
 	for k, v := range rawMap {
@@ -105,6 +123,14 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 		}
 	}
 	return &provOpts, extra, nil
+}
+
+func invalidVertexVideoOptions(cause error) error {
+	return &providererrors.InvalidArgumentError{
+		Field:   "providerOptions",
+		Message: "invalid googleVertex provider options",
+		Cause:   cause,
+	}
 }
 
 func vertexVideoGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
