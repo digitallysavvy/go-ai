@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -1697,5 +1698,54 @@ func TestWorkflowResumeDoesNotStartQueuedApprovedCallsAfterCancel(t *testing.T) 
 	defer mu.Unlock()
 	if !reflect.DeepEqual(started, []string{"a"}) {
 		t.Fatalf("started = %v, want only [a]", started)
+	}
+}
+
+// TS resolveToolContext: an approved tool resumed from history sees its
+// context normalized by the tool's context schema (defaults applied), the
+// same value the start/end callbacks report; an invalid context fails the
+// resume instead of becoming a tool result.
+func TestWorkflowResumeApprovedToolUsesSchemaNormalizedContext(t *testing.T) {
+	ctxSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type":       "object",
+		"properties": map[string]interface{}{"region": map[string]interface{}{"type": "string", "default": "eu"}},
+		"required":   []interface{}{"region"},
+	})
+	var executed, started, ended interface{}
+	tool := types.Tool{
+		Name:          "slow",
+		ToolApproval:  true,
+		ContextSchema: ctxSchema,
+		Execute: func(_ context.Context, _ map[string]interface{}, o types.ToolExecutionOptions) (interface{}, error) {
+			executed = o.ToolContext
+			return "ok", nil
+		},
+	}
+	_, _, err := processWorkflowApprovalResume(context.Background(), workflowApprovalResumeOptions{
+		messages:     approvedResumeMessages("a"),
+		tools:        []types.Tool{tool},
+		toolsContext: map[string]interface{}{"slow": map[string]interface{}{}},
+		onToolStart:  func(_ context.Context, e ai.OnToolCallStartEvent) { started = e.ToolContext },
+		onToolEnd:    func(_ context.Context, e ai.OnToolCallFinishEvent) { ended = e.ToolContext },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]interface{}{"region": "eu"}
+	if !reflect.DeepEqual(executed, want) || !reflect.DeepEqual(started, want) || !reflect.DeepEqual(ended, want) {
+		t.Fatalf("execute=%v start=%v end=%v, want %v", executed, started, ended, want)
+	}
+
+	bad := tool
+	bad.ContextSchema = schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object", "properties": map[string]interface{}{"region": map[string]interface{}{"type": "string"}}, "required": []interface{}{"region"},
+	})
+	_, _, err = processWorkflowApprovalResume(context.Background(), workflowApprovalResumeOptions{
+		messages:     approvedResumeMessages("a"),
+		tools:        []types.Tool{bad},
+		toolsContext: map[string]interface{}{"slow": map[string]interface{}{}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid tool context for slow") {
+		t.Fatalf("err = %v, want invalid tool context failure", err)
 	}
 }
