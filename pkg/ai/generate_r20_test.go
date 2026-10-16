@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -397,5 +398,40 @@ func TestGenerateText_ModelErrorHasNoStepPrefix(t *testing.T) {
 	_, err := GenerateText(context.Background(), GenerateTextOptions{Model: model, Prompt: "hi"})
 	if err == nil || strings.Contains(err.Error(), "at step") {
 		t.Fatalf("err = %v, want unprefixed model error", err)
+	}
+}
+
+// A tool-execution failure (the caller cancels in the first of two serial
+// tool calls, so the second never starts) is
+// rethrown as is, without a "tool execution failed at step N" prefix (TS).
+func TestGenerateText_ToolExecutionErrorHasNoStepPrefix(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}, {ID: "2", ToolName: "t", Arguments: map[string]interface{}{}}},
+			}, nil
+		},
+	}
+	one := 1
+	_, err := GenerateText(ctx, GenerateTextOptions{
+		Model:               model,
+		Prompt:              "hi",
+		ToolCallConcurrency: &one,
+		Tools: []types.Tool{{
+			Name:       "t",
+			Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+				cancel()
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+		}},
+	})
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "at step") {
+		t.Fatalf("err = %v, want an unprefixed context.Canceled", err)
 	}
 }

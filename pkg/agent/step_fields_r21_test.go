@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,5 +67,32 @@ func TestLegacyLoopToolOptionsAndTimeout(t *testing.T) {
 	var te *ai.TimeoutError
 	if len(res.ToolResults) != 1 || !errors.As(res.ToolResults[0].Error, &te) || te.Reason != ai.TimeoutReasonTool {
 		t.Fatalf("tool results = %+v", res.ToolResults)
+	}
+}
+
+// A tool-execution failure (cancelled before the second serial call starts)
+// is rethrown without a "failed at step N" prefix
+// (TS rethrows the original error).
+func TestLegacyLoopToolExecutionErrorHasNoStepPrefix(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tool := types.Tool{
+		Name:       "t",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, _ map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+			cancel()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}, {ID: "2", ToolName: "t", Arguments: map[string]interface{}{}}},
+	}, {Text: "done", FinishReason: types.FinishReasonStop}}}
+	one := 1
+	a := NewToolLoopAgent(AgentConfig{Model: model, Tools: []types.Tool{tool}, ToolCallConcurrency: &one})
+	_, err := a.Execute(ctx, "q")
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "at step") {
+		t.Fatalf("err = %v, want an unprefixed context.Canceled", err)
 	}
 }
