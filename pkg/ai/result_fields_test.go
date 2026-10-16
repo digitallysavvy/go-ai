@@ -16,7 +16,7 @@ func TestBuildReasoningTextAndToolFilters(t *testing.T) {
 		{Text: ""},
 		{Text: "step 2"},
 	}
-	if got := buildReasoningText(reasoning); got != "step 1\nstep 2" {
+	if got := buildReasoningText(reasoning); got != "step 1step 2" {
 		t.Fatalf("buildReasoningText() = %q", got)
 	}
 
@@ -102,7 +102,7 @@ func TestGenerateTextPopulatesStepAndFinalFields(t *testing.T) {
 		t.Fatalf("GenerateText() error = %v", err)
 	}
 
-	if result.ReasoningText != "reasoning-a\nreasoning-b" || len(result.Reasoning) != 2 {
+	if result.ReasoningText != "reasoning-areasoning-b" || len(result.Reasoning) != 2 {
 		t.Fatalf("unexpected final reasoning fields: %+v", result)
 	}
 	if len(result.StaticToolCalls) != 1 || result.StaticToolCalls[0].ID != "tc-static" {
@@ -122,7 +122,7 @@ func TestGenerateTextPopulatesStepAndFinalFields(t *testing.T) {
 		t.Fatalf("expected 1 step, got %d", len(result.Steps))
 	}
 	step := result.Steps[0]
-	if step.ReasoningText != "reasoning-a\nreasoning-b" {
+	if step.ReasoningText != "reasoning-areasoning-b" {
 		t.Fatalf("step reasoning text = %q", step.ReasoningText)
 	}
 	if len(step.StaticToolCalls) != 1 || len(step.DynamicToolCalls) != 1 {

@@ -237,9 +237,6 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 	s.closed = true
 	var reasoning strings.Builder
 	for _, r := range step.Reasoning {
-		if reasoning.Len() > 0 {
-			reasoning.WriteByte('\n')
-		}
 		reasoning.WriteString(r.Text)
 	}
 	telemetry.FireOnStepEnd(s.stepCtx, telemetry.TelemetryStepEndEvent{
