@@ -90,6 +90,11 @@ func consumeTypeExprScan(tokens []tsToken, i int, stopAtBrace, allowSplit bool) 
 		if depth == 0 && prev != nil && typeOperandEnds(prev) && endsTypeBeforeOperator(t, prev, extendsOpen) {
 			return i, noSplit
 		}
+		// A following `as`/`satisfies` is the next assertion of a chain
+		// (`y as unknown as T`), not part of this type.
+		if depth == 0 && prev != nil && typeOperandEnds(prev) && t.kind == "ident" && (t.text == "as" || t.text == "satisfies") {
+			return i, noSplit
+		}
 		if depth == 0 && t.kind == "ident" && t.text == "extends" {
 			extendsOpen++
 		}

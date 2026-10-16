@@ -31,6 +31,9 @@ func TestStripR27NodeParity(t *testing.T) {
 		{"class A { readonly\nx = 1 }\nreturn A;", "class A { readonly\nx = 1 }\nreturn A;"},
 		{"class A { public\nx = 1 }\nreturn A;", "class A { public\nx = 1 }\nreturn A;"},
 		{"class A { readonly?: number; get<T>(): T { return 1 } }\nreturn A;", "class A { readonly         ; get   ()    { return 1 } }\nreturn A;"},
+		{"x = a as // line\n   any as // line\n   string; return x;", "x = a           \n                 \n         ; return x;"},
+		{"let x = a satisfies B as // line\n   C; return x;", "let x = a                       \n    ; return x;"},
+		{"let x = y as unknown /* c */ as\n   T[]; return x;", "let x = y                      \n      ; return x;"},
 	} {
 		got, _ := stripTypeScriptAnnotations(tc.src)
 		if got != tc.want {
