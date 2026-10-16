@@ -367,3 +367,43 @@ func TestDownloadImage_RejectsPrivateIPRedirect(t *testing.T) {
 		t.Errorf("expected an SSRF validation error, got: %v", err)
 	}
 }
+
+// TestDoGenerate_MediaTypeFromSignatureTables: when the download carries no
+// usable Content-Type, the media type comes from the shared TS signature
+// tables (bmp is recognised; unknown bytes default to image/png, not jpeg).
+func TestDoGenerate_MediaTypeFromSignatureTables(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"bmp", []byte{'B', 'M', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, "image/bmp"},
+		{"unknown", []byte{1, 2, 3, 4, 5, 6, 7, 8}, "image/png"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var serverURL string
+			mux := http.NewServeMux()
+			mux.HandleFunc("/dream-machine/v1/generations/image", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "gen-1", "state": "queued"})
+			})
+			mux.HandleFunc("/dream-machine/v1/generations/gen-1", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "gen-1", "state": "completed", "assets": map[string]interface{}{"image": serverURL + "/image"}})
+			})
+			mux.HandleFunc("/image", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				_, _ = w.Write(tc.data)
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			serverURL = server.URL
+			model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelPhoton1)
+			res, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.MimeType != tc.want {
+				t.Errorf("MimeType = %q, want %q", res.MimeType, tc.want)
+			}
+		})
+	}
+}
