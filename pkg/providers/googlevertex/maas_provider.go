@@ -304,8 +304,16 @@ func (p *MaaSProvider) ChatModel(modelID string) (provider.LanguageModel, error)
 	return p.LanguageModel(modelID)
 }
 
+// CompletionModel returns a model for the /completions endpoint (TS
+// provider.completionModel); ChatModel/LanguageModel use /chat/completions.
 func (p *MaaSProvider) CompletionModel(modelID string) (provider.LanguageModel, error) {
-	return p.LanguageModel(modelID)
+	if modelID == "" {
+		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if err := p.init(); err != nil {
+		return nil, err
+	}
+	return p.provider.CompletionModel(modelID)
 }
 
 func (p *MaaSProvider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {

@@ -66,7 +66,7 @@ type minimaxOperation struct {
 // dropped, but not how many survived, which callers that meter usage need.
 type minimaxResolvedInputs struct {
 	ImageCount            int   `json:"imageCount"`
-	ReferenceVideoIndices []int `json:"referenceVideoIndices,omitempty"`
+	ReferenceVideoIndices []int `json:"referenceVideoIndices"`
 }
 
 // DoStart starts an asynchronous video generation via MiniMax's task
@@ -120,6 +120,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, NewVideoGenerationError(fmt.Sprintf("No task_id returned from the MiniMax API. Response: %s", string(submitResp.Body)))
 	}
 
+	if resolvedInputs.ReferenceVideoIndices == nil {
+		resolvedInputs.ReferenceVideoIndices = []int{}
+	}
 	operation, _ := json.Marshal(minimaxOperation{TaskID: createResp.TaskID, ResolvedInputs: resolvedInputs})
 
 	return &provider.VideoModelV3OperationStartResult{
@@ -200,12 +203,17 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 			return nil, nil, NewVideoGenerationError(fmt.Sprintf("MiniMax video generation completed but no video URL was returned. Task ID: %s", op.TaskID))
 		}
 
+		referenceVideoIndices := op.ResolvedInputs.ReferenceVideoIndices
+		if referenceVideoIndices == nil {
+			// TS always reports an array (an empty one when no video was sent).
+			referenceVideoIndices = []int{}
+		}
 		meta := map[string]interface{}{
 			"taskId":   op.TaskID,
 			"videoUrl": task.Content.URL,
 			"resolvedInputs": map[string]interface{}{
 				"imageCount":            op.ResolvedInputs.ImageCount,
-				"referenceVideoIndices": op.ResolvedInputs.ReferenceVideoIndices,
+				"referenceVideoIndices": referenceVideoIndices,
 			},
 		}
 		if task.Duration != nil {
@@ -301,6 +309,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	var finalStatus *provider.VideoModelV3OperationStatusResult
 	var jobFailureErr error
+	var statusCheckErr error
 
 	checker := func(ctx context.Context) (*polling.JobResult, error) {
 		status, statusErr, err := m.getStatus(ctx, &provider.VideoModelV3StatusOptions{
@@ -308,6 +317,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			Headers:   opts.Headers,
 		})
 		if err != nil {
+			statusCheckErr = err
 			return nil, err
 		}
 		switch status.Status {
@@ -333,6 +343,10 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		if jobFailureErr != nil {
 			return nil, jobFailureErr
 		}
+		if statusCheckErr != nil && ctx.Err() == nil && !strings.Contains(pollErr.Error(), "polling timeout") {
+			// TS lets the getFromApi / schema error propagate unchanged.
+			return nil, statusCheckErr
+		}
 		if strings.Contains(pollErr.Error(), "polling timeout") || strings.Contains(pollErr.Error(), "max polling attempts") {
 			return nil, NewTimeoutError(fmt.Sprintf("MiniMax video generation timed out after %dms. Task ID: %s", pollTimeoutMs, op.TaskID))
 		}
@@ -341,7 +355,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	providerMetadata := finalStatus.ProviderMetadata
 	if mmMeta, ok := providerMetadata["minimax"].(map[string]interface{}); ok {
-		var referenceVideoURLs []string
+		referenceVideoURLs := []string{}
 		for _, idx := range op.ResolvedInputs.ReferenceVideoIndices {
 			if idx >= 0 && idx < len(opts.InputReferences) {
 				file := opts.InputReferences[idx]
@@ -350,10 +364,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 				}
 			}
 		}
-		resolved := map[string]interface{}{"imageCount": op.ResolvedInputs.ImageCount}
-		if referenceVideoURLs != nil {
-			resolved["referenceVideoUrls"] = referenceVideoURLs
-		}
+		resolved := map[string]interface{}{"imageCount": op.ResolvedInputs.ImageCount, "referenceVideoUrls": referenceVideoURLs}
 		enriched := map[string]interface{}{}
 		for k, v := range mmMeta {
 			enriched[k] = v
@@ -458,7 +469,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 	}
 
 	sentImageCount := 0
-	var sentReferenceVideoIndices []int
+	sentReferenceVideoIndices := []int{}
 
 	firstFrameImage := minimaxGetFirstFrame(opts)
 	firstFrame := firstFrameImage

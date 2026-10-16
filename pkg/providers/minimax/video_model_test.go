@@ -1215,3 +1215,67 @@ func TestVideoModel_ProviderIntegration(t *testing.T) {
 		t.Error("expected an error for an empty model ID")
 	}
 }
+
+// TS serializes the operation with referenceVideoIndices: [] and reports
+// referenceVideoUrls: [] / referenceVideoIndices: [] when no reference video
+// was sent (minimax-video-model.test.ts "should report nothing sent for a
+// text-only request").
+func TestResolvedInputsAreEmptyArraysWhenNoReferenceVideo(t *testing.T) {
+	server, _, _ := newMinimaxTestServer(t, minimaxTestTaskID, []string{minimaxSucceededResponse(), minimaxSucceededResponse()})
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), ModelH3)
+
+	start, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: *minimaxDefaultCallOptions(nil)})
+	if err != nil {
+		t.Fatalf("DoStart() error: %v", err)
+	}
+	var op map[string]interface{}
+	if err := json.Unmarshal(start.Operation, &op); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := op["resolvedInputs"].(map[string]interface{})["referenceVideoIndices"].([]interface{}); !ok || len(got) != 0 {
+		t.Errorf("operation referenceVideoIndices = %#v, want []", op["resolvedInputs"])
+	}
+
+	status, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: start.Operation})
+	if err != nil {
+		t.Fatalf("DoStatus() error: %v", err)
+	}
+	statusResolved := status.ProviderMetadata["minimax"].(map[string]interface{})["resolvedInputs"].(map[string]interface{})
+	if got, ok := statusResolved["referenceVideoIndices"].([]int); !ok || got == nil || len(got) != 0 {
+		t.Errorf("status referenceVideoIndices = %#v, want []", statusResolved["referenceVideoIndices"])
+	}
+
+	gen, err := model.DoGenerate(context.Background(), minimaxDefaultCallOptions(nil))
+	if err != nil {
+		t.Fatalf("DoGenerate() error: %v", err)
+	}
+	genResolved := gen.ProviderMetadata["minimax"].(map[string]interface{})["resolvedInputs"].(map[string]interface{})
+	if got, ok := genResolved["referenceVideoUrls"].([]string); !ok || got == nil || len(got) != 0 {
+		t.Errorf("referenceVideoUrls = %#v, want []", genResolved["referenceVideoUrls"])
+	}
+}
+
+// TS doGenerate lets a status-request failure propagate unchanged (no
+// "status check failed:" wrapper).
+func TestDoGenerate_StatusErrorPropagatesUnchanged(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/video_generation", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"task_id": %q}`, minimaxTestTaskID)
+	})
+	mux.HandleFunc("/v2/query/video_generation/"+minimaxTestTaskID, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"upstream exploded"}}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	model := newVideoModel(providerForMinimaxServer(server.URL), ModelH3)
+
+	_, err := model.DoGenerate(context.Background(), minimaxDefaultCallOptions(minimaxProviderOptions(map[string]interface{}{"pollIntervalMs": 1})))
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if err.Error() != "upstream exploded" {
+		t.Errorf("error = %q, want %q", err.Error(), "upstream exploded")
+	}
+}
