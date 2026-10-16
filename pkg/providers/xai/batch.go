@@ -405,7 +405,9 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	}
 	counts := providerutils.NormalizeBatchRequestCounts(total, pending, completed, failed)
 
-	isCancelled := (b.CancelTime != nil && *b.CancelTime != "") || (b.CancelByXAIMessage != nil && *b.CancelByXAIMessage != "")
+	// TS: cancel_time != null || cancel_by_xai_message != null (an empty
+	// string still counts).
+	isCancelled := b.CancelTime != nil || b.CancelByXAIMessage != nil
 	isExpired := xaiIsPastDate(b.ExpireTime)
 
 	var status provider.BatchStatusValue
@@ -427,7 +429,7 @@ func convertXAIBatchStatus(b xaiBatchResponseWire) provider.BatchV4Status {
 	switch {
 	case isCancelled:
 		msg := fmt.Sprintf("xAI batch %q was cancelled.", b.BatchID)
-		if b.CancelByXAIMessage != nil && *b.CancelByXAIMessage != "" {
+		if b.CancelByXAIMessage != nil {
 			msg = *b.CancelByXAIMessage
 		}
 		result.Error = &provider.BatchError{Message: msg, Code: "batch_cancelled"}
