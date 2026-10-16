@@ -14,6 +14,8 @@ func ParsePartialJSON(text string) jsonparser.ParseResult {
 }
 
 // SimulateReadableStream creates a simple text stream from in-memory chunks.
+// perChunkDelay is waited between chunks (TS chunkDelayInMs); the first chunk
+// is emitted without delay, as TS initialDelayInMs defaults to 0.
 func SimulateReadableStream(chunks []provider.StreamChunk, perChunkDelay time.Duration) provider.TextStream {
 	copied := make([]provider.StreamChunk, len(chunks))
 	copy(copied, chunks)
@@ -30,7 +32,7 @@ func (s *simulatedReadableStream) Next() (*provider.StreamChunk, error) {
 	if s.idx >= len(s.chunks) {
 		return nil, io.EOF
 	}
-	if s.perChunkDelay > 0 {
+	if s.idx > 0 && s.perChunkDelay > 0 {
 		timer := time.NewTimer(s.perChunkDelay)
 		<-timer.C
 	}
