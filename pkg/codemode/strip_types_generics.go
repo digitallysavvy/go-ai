@@ -376,7 +376,59 @@ func consumeCallGenerics(tokens []tsToken, i int) (int, bool) {
 	if next >= 0 && tokens[next].kind == "string" && strings.HasPrefix(tokens[next].text, "`") {
 		return end, true
 	}
+	// An instantiation expression (`const f = id<number>;`): TS
+	// canFollowTypeArgumentsInExpression accepts the type arguments when the
+	// next token cannot continue a comparison.
+	if canFollowTypeArgsInExpression(tokens, end) {
+		return end, true
+	}
 	return i, false
+}
+
+// canFollowTypeArgsInExpression mirrors the TypeScript parser's rule for
+// `expr<T>` without a call: the type arguments stand when a line break
+// follows, when the next token is a binary operator, or when it cannot start
+// an expression. `<`, `>`, `+` and `-` never qualify.
+func canFollowTypeArgsInExpression(tokens []tsToken, end int) bool {
+	lineBreak := false
+	p := end
+	for p < len(tokens) && (tokens[p].kind == "space" || tokens[p].kind == "comment") {
+		if tokens[p].kind == "space" && strings.Contains(tokens[p].text, "\n") {
+			lineBreak = true
+		}
+		p++
+	}
+	if p >= len(tokens) {
+		return true
+	}
+	t := tokens[p]
+	switch t.kind {
+	case "ident":
+		if lineBreak {
+			return true
+		}
+		switch t.text {
+		case "in", "instanceof", "as", "satisfies", "of":
+			return true
+		}
+		return false
+	case "number", "regex":
+		return lineBreak
+	case "string":
+		return lineBreak || strings.HasPrefix(t.text, "`")
+	}
+	switch t.text {
+	case "<", ">", "+", "-", ">>", ">>>", ">=", ">>=", ">>>=", "?.":
+		return false
+	}
+	if lineBreak {
+		return true
+	}
+	switch t.text {
+	case "(", "[", "{", "!", "~", "++", "--", "@", "#", "...":
+		return t.text == "("
+	}
+	return true
 }
 
 // stripOptionalTypeParams drops a declaration's own `<...>` type parameter
@@ -517,4 +569,78 @@ func scanUntilTopLevelBrace(tokens []tsToken, i int) int {
 		i++
 	}
 	return i
+}
+
+// returnTypedArrowEndsInConditional reports whether the arrow function whose
+// parameter list closes at tokens[closeIdx], written with a `: ReturnType`,
+// may stand as the true branch of a conditional. TypeScript only accepts it
+// there when the arrow body is followed by the `:` of the conditional;
+// otherwise `c ? (x) : y => z` is a conditional whose false branch is the
+// arrow `y => z`.
+func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
+	colon := nextSignificant(tokens, closeIdx+1)
+	if colon < 0 || tokens[colon].text != ":" {
+		return true
+	}
+	end := consumeTypeExpr(tokens, colon+1, true)
+	arrow := nextSignificant(tokens, end)
+	if arrow < 0 || tokens[arrow].text != "=>" {
+		return true
+	}
+	j := nextSignificant(tokens, arrow+1)
+	if j < 0 {
+		return false
+	}
+	if tokens[j].kind == "punct" && tokens[j].text == "{" {
+		m := matchParen(tokens, j)
+		if m < 0 {
+			return false
+		}
+		n := nextSignificant(tokens, m+1)
+		return n >= 0 && tokens[n].kind == "punct" && tokens[n].text == ":"
+	}
+	depth, pending := 0, 0
+	for ; j < len(tokens); j++ {
+		t := tokens[j]
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case "(", "[", "{":
+			depth++
+		case ")", "]", "}":
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case ";", ",":
+			if depth == 0 {
+				return false
+			}
+		case "?":
+			if depth == 0 {
+				pending++
+			}
+		case ":":
+			if depth == 0 {
+				if pending == 0 {
+					return true
+				}
+				pending--
+			}
+		}
+	}
+	return false
+}
+
+// followsConditionalQuestion reports whether the last significant emitted
+// token is the `?` of a conditional expression.
+func followsConditionalQuestion(out []tsToken) bool {
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].kind == "space" || out[i].kind == "comment" {
+			continue
+		}
+		return out[i].kind == "punct" && out[i].text == "?"
+	}
+	return false
 }

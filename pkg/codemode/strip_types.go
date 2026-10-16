@@ -176,6 +176,11 @@ func tokenizeTS(src string) []tsToken {
 	// token, used to disambiguate a leading `/` as a regex literal (as
 	// opposed to division) the same way real JS lexers do.
 	var prevSignificant *tsToken
+	// divisionAfterPrev is set when prevSignificant is a `}` closing an
+	// expression (object literal) or a `>` closing type arguments: a `/`
+	// after either divides instead of starting a regex literal.
+	divisionAfterPrev := false
+	var braceIsExpr []bool
 	i := 0
 	for i < n {
 		c := runes[i]
@@ -200,7 +205,7 @@ func tokenizeTS(src string) []tsToken {
 			tokens = append(tokens, tsToken{"comment", string(runes[i:end]), i})
 			i = end
 
-		case c == '/' && regexAllowedAfter(prevSignificant):
+		case c == '/' && regexAllowedAfter(prevSignificant) && !divisionAfterPrev:
 			if end, ok := scanRegexLiteral(runes, i); ok {
 				tokens = append(tokens, tsToken{"regex", string(runes[i:end]), i})
 				i = end
@@ -254,6 +259,20 @@ func tokenizeTS(src string) []tsToken {
 		if len(tokens) > 0 {
 			last := tokens[len(tokens)-1]
 			if last.kind != "space" && last.kind != "comment" {
+				divisionAfterPrev = false
+				if last.kind == "punct" {
+					switch last.text {
+					case "{":
+						braceIsExpr = append(braceIsExpr, braceOpensExpression(prevSignificant))
+					case "}":
+						if n := len(braceIsExpr); n > 0 {
+							divisionAfterPrev = braceIsExpr[n-1]
+							braceIsExpr = braceIsExpr[:n-1]
+						}
+					case ">":
+						divisionAfterPrev = closesTypeArguments(tokens)
+					}
+				}
 				prevSignificant = &tokens[len(tokens)-1]
 			}
 		}
@@ -414,6 +433,67 @@ func regexAllowedAfter(prev *tsToken) bool {
 		}
 	}
 	return true
+}
+
+// braceOpensExpression reports whether a `{` after prev opens an object
+// literal (or type literal) rather than a block, so the matching `}` ends an
+// operand and a following `/` divides.
+func braceOpensExpression(prev *tsToken) bool {
+	if prev == nil {
+		return false
+	}
+	switch prev.kind {
+	case "ident":
+		return isRegexPrecedingKeyword(prev.text)
+	case "punct":
+		switch prev.text {
+		case ")", ";", "}", "{", "=>", ">", "]":
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// closesTypeArguments reports whether the `>` that ends tokens closes the
+// type arguments of an instantiation expression (`id<T>`), after which a `/`
+// is a division (TypeScript treats `/` as a binary operator there, so
+// `a<b>/c/d` parses as `(a<b>) / c / d`).
+func closesTypeArguments(tokens []tsToken) bool {
+	depth := 1
+	for k, steps := len(tokens)-2, 0; k >= 0 && steps < 256; k, steps = k-1, steps+1 {
+		t := tokens[k]
+		if t.kind == "space" || t.kind == "comment" {
+			continue
+		}
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case ">":
+			depth++
+		case ">>":
+			depth += 2
+		case "<":
+			depth--
+			if depth == 0 {
+				for m := k - 1; m >= 0; m-- {
+					if tokens[m].kind == "space" || tokens[m].kind == "comment" {
+						continue
+					}
+					return tokens[m].kind == "ident" && !isRegexPrecedingKeyword(tokens[m].text)
+				}
+				return false
+			}
+		case ";", "=", "==", "===", "!=", "!==", "&&", "||", "??", "+", "-", "*", "/", "%",
+			"<=", ">=", "+=", "-=", "{", "}", "(", ")":
+			if t.text == "{" || t.text == "}" || t.text == "(" || t.text == ")" {
+				continue
+			}
+			return false
+		}
+	}
+	return false
 }
 
 var regexPrecedingKeywords = map[string]bool{
