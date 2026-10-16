@@ -1061,6 +1061,10 @@ type xaiResponsesStream struct {
 	rawFinishReason string
 	finishUsage     *types.Usage
 	finishMeta      json.RawMessage
+	// usageMeta is the usage-derived metadata (costInUsdTicks, cost). TS only
+	// replaces it when a terminal event carries usage, so a later event
+	// without usage keeps the earlier value.
+	usageMeta map[string]interface{}
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -1631,19 +1635,25 @@ func (s *xaiResponsesStream) recordUsage(u *responses.ResponsesAPIUsage) {
 }
 
 func (s *xaiResponsesStream) recordMetadata(u *responses.ResponsesAPIUsage, serviceTier, promptCacheKey, safetyIdentifier string) {
-	xaiMeta := map[string]interface{}{}
-	if u != nil && u.CostInUsdTicks != nil {
-		xaiMeta["costInUsdTicks"] = *u.CostInUsdTicks
+	if u != nil {
+		s.usageMeta = map[string]interface{}{}
+		if u.CostInUsdTicks != nil {
+			s.usageMeta["costInUsdTicks"] = *u.CostInUsdTicks
+		}
+		if u.InputTokensCost != nil || u.OutputTokensCost != nil {
+			cost := map[string]interface{}{}
+			if u.InputTokensCost != nil {
+				cost["inputTokensCost"] = *u.InputTokensCost
+			}
+			if u.OutputTokensCost != nil {
+				cost["outputTokensCost"] = *u.OutputTokensCost
+			}
+			s.usageMeta["cost"] = cost
+		}
 	}
-	if u != nil && (u.InputTokensCost != nil || u.OutputTokensCost != nil) {
-		cost := map[string]interface{}{}
-		if u.InputTokensCost != nil {
-			cost["inputTokensCost"] = *u.InputTokensCost
-		}
-		if u.OutputTokensCost != nil {
-			cost["outputTokensCost"] = *u.OutputTokensCost
-		}
-		xaiMeta["cost"] = cost
+	xaiMeta := map[string]interface{}{}
+	for k, v := range s.usageMeta {
+		xaiMeta[k] = v
 	}
 	if serviceTier != "" {
 		xaiMeta["serviceTier"] = serviceTier
