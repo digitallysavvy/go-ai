@@ -489,3 +489,37 @@ func TestImageModelEditOnlyOptionsRejectedForOtherOperations(t *testing.T) {
 		t.Fatal("expected edit-only option maxReviewSteps to be rejected for generate")
 	}
 }
+
+func TestImageModelErrorBodyOffSchemaUsesStatusText(t *testing.T) {
+	bodies := map[string]string{
+		"empty":            ``,
+		"plain text":       `upstream exploded`,
+		"missing fields":   `{"code":"temporary","message":"try again"}`,
+		"empty request id": `{"status":500,"code":"x","message":"m","request_id":""}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(body))
+			}))
+			defer server.Close()
+			model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelArrow11)
+			_, err := model.DoGenerate(t.Context(), &provider.ImageGenerateOptions{Prompt: "logo"})
+			var perr *providererrors.ProviderError
+			if !errors.As(err, &perr) {
+				t.Fatalf("error = %T %v", err, err)
+			}
+			if perr.Message != "Bad Gateway" {
+				t.Fatalf("Message = %q, want status text", perr.Message)
+			}
+		})
+	}
+}
+
+func TestParseQuiverAIErrorBodyFullSchema(t *testing.T) {
+	e, ok := parseQuiverAIErrorBody([]byte(`{"status":429,"code":"rate","message":"slow down","request_id":"r1"}`))
+	if !ok || e.Message != "slow down" || e.RequestID != "r1" || e.Status != 429 {
+		t.Fatalf("got %+v %v", e, ok)
+	}
+}

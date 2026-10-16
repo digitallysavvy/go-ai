@@ -3,6 +3,7 @@ package quiverai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -520,12 +521,12 @@ func (m *ImageModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
-	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
-		var apiErr quiverAPIError
-		if json.Unmarshal(statusErr.Body, &apiErr) == nil && apiErr.Message != "" {
+	var statusErr *internalhttp.HTTPStatusError
+	if errors.As(err, &statusErr) {
+		if apiErr, ok := parseQuiverAIErrorBody(statusErr.Body); ok {
 			return providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, err)
 		}
-		return providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", string(statusErr.Body), err)
+		return providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", http.StatusText(statusErr.StatusCode), err)
 	}
 	return providererrors.NewProviderError("quiverai", http.StatusInternalServerError, "", err.Error(), err)
 }

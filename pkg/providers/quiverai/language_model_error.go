@@ -2,6 +2,8 @@ package quiverai
 
 import (
 	"encoding/json"
+	"math"
+	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -16,16 +18,40 @@ import (
 // (quiverai-error.ts): isRetryable is classified by the HTTP response
 // status (429 or >=500), not the embedded `status` field.
 func quiverAIFailedResponseHandler(statusErr *internalhttp.HTTPStatusError) error {
-	var apiErr quiverAPIError
-	if json.Unmarshal(statusErr.Body, &apiErr) == nil && apiErr.Message != "" {
+	apiErr, ok := parseQuiverAIErrorBody(statusErr.Body)
+	if ok {
 		perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, nil)
 		perr.Data = apiErr
 		perr.ResponseBody = string(statusErr.Body)
 		return perr
 	}
-	perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", string(statusErr.Body), nil)
+	perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", http.StatusText(statusErr.StatusCode), nil)
 	perr.ResponseBody = string(statusErr.Body)
 	return perr
+}
+
+// parseQuiverAIErrorBody validates body against the TS quiveraiErrorSchema:
+// status is an integer and code, message and request_id are non-empty
+// strings. Anything else (empty body, non-JSON, a partial object) is not an
+// API error body, and TS createJsonErrorResponseHandler then uses the HTTP
+// status text as the message.
+func parseQuiverAIErrorBody(body []byte) (quiverAPIError, bool) {
+	var raw struct {
+		Status    *float64 `json:"status"`
+		Code      *string  `json:"code"`
+		Message   *string  `json:"message"`
+		RequestID *string  `json:"request_id"`
+	}
+	if json.Unmarshal(body, &raw) != nil {
+		return quiverAPIError{}, false
+	}
+	if raw.Status == nil || *raw.Status != math.Trunc(*raw.Status) ||
+		raw.Code == nil || *raw.Code == "" ||
+		raw.Message == nil || *raw.Message == "" ||
+		raw.RequestID == nil || *raw.RequestID == "" {
+		return quiverAPIError{}, false
+	}
+	return quiverAPIError{Status: int(*raw.Status), Code: *raw.Code, Message: *raw.Message, RequestID: *raw.RequestID}, true
 }
 
 // quiverAIResponseErrorMetadata extracts QuiverAI's endpoint-specific
