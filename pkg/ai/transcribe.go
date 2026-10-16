@@ -31,7 +31,13 @@ type TranscribeOptions struct {
 	ProviderOptions map[string]interface{}
 	Headers         map[string]string
 	Download        URLDownloadFunction
-	MaxRetries      *int
+	// DownloadWithMetadata downloads AudioURL and also returns the response
+	// media type, which then takes precedence over magic-byte detection (TS
+	// transcribe: downloadedMediaType ?? detectMediaType(...) ?? 'audio/wav').
+	// Download wins when both are set. When neither is set, the default
+	// download (2 GiB limit) is used and its Content-Type is honored.
+	DownloadWithMetadata URLDownloadWithMetadataFunction
+	MaxRetries           *int
 
 	// Telemetry configures observability for this operation.
 	// When both Telemetry and ExperimentalTelemetry are set, Telemetry wins.
@@ -122,21 +128,36 @@ func Transcribe(ctx context.Context, opts TranscribeOptions) (*TranscribeResult,
 		}
 		audio = decoded
 	}
+	var downloadedMediaType string
 	if len(audio) == 0 && opts.AudioURL != "" {
-		download := opts.Download
-		if download == nil {
-			download = CreateURLDownload(nil)
+		if opts.Download != nil {
+			data, err := opts.Download(ctx, opts.AudioURL)
+			if err != nil {
+				return failPreparation(err)
+			}
+			audio = data
+		} else {
+			download := opts.DownloadWithMetadata
+			if download == nil {
+				download = CreateURLDownloadWithMetadata(nil)
+			}
+			result, err := download(ctx, opts.AudioURL)
+			if err != nil {
+				return failPreparation(err)
+			}
+			if result != nil {
+				audio = result.Data
+				downloadedMediaType = result.MediaType
+			}
 		}
-		data, err := download(ctx, opts.AudioURL)
-		if err != nil {
-			return failPreparation(err)
-		}
-		audio = data
 	}
 	if len(audio) == 0 {
 		return nil, fmt.Errorf("audio is required")
 	}
 	mediaType := opts.MimeType
+	if mediaType == "" {
+		mediaType = downloadedMediaType
+	}
 	if mediaType == "" {
 		mediaType = detectTranscriptionMediaType(audio)
 	}
