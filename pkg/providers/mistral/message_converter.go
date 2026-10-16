@@ -56,7 +56,11 @@ func ConvertToMistralChatMessagesWithError(messages []types.Message) ([]map[stri
 			}
 			result = append(result, converted)
 		case types.RoleAssistant:
-			result = append(result, convertMistralAssistantMessage(msg, isLastMessage))
+			converted, err := convertMistralAssistantMessage(msg, isLastMessage)
+			if err != nil {
+				return result, err
+			}
+			result = append(result, converted)
 		case types.RoleTool:
 			result = append(result, convertMistralToolMessages(msg)...)
 		}
@@ -171,7 +175,7 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 // reasoning, in which case content becomes an ordered array mixing
 // {"type":"text",...} and {"type":"thinking",...} blocks (mirrors TS exactly:
 // `content: hasReasoning ? contentParts : text`).
-func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[string]interface{} {
+func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) (map[string]interface{}, error) {
 	var text strings.Builder
 	hasReasoning := false
 	var contentParts []map[string]interface{}
@@ -190,6 +194,11 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[s
 				},
 				"closed": true,
 			})
+		case types.ToolCallContent, types.SourceContent:
+			// tool calls are collected below; sources are not prompt parts in TS.
+		default:
+			// TS: throw new Error(`Unsupported content type in assistant message: ${part.type}`)
+			return nil, fmt.Errorf("Unsupported content type in assistant message: %s", part.ContentType())
 		}
 	}
 
@@ -215,7 +224,7 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[s
 	if len(toolCalls) > 0 {
 		result["tool_calls"] = mistralToolCalls(toolCalls)
 	}
-	return result
+	return result, nil
 }
 
 // mistralToolCalls builds the OpenAI-shaped tool_calls array Mistral expects
