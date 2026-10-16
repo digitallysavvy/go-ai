@@ -1,6 +1,8 @@
 package ai
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -183,5 +185,71 @@ func TestTextCallsWrapGatewayAuthenticationError(t *testing.T) {
 	}
 	if onErr == nil || onErr.Error() != want {
 		t.Fatalf("StreamText OnError = %v", onErr)
+	}
+}
+
+// TS startBatch, getBatchStatus and getBatchResults wrap an AI Gateway
+// authentication error like cancelBatch and listBatches do.
+func TestBatchCallsWrapGatewayAuthenticationError(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	const want = "Unauthenticated. Configure AI_GATEWAY_API_KEY or use a provider module. Learn more: https://ai-sdk.dev/unauthenticated-ai-gateway"
+	authErr := gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
+	zero := 0
+	api := &mockBatchV4{
+		providerName: "mock.batch",
+		startFn: func(context.Context, provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
+			return nil, authErr
+		},
+		statusFn: func(context.Context, provider.BatchV4OperationOptions) (*provider.BatchV4Status, error) {
+			return nil, authErr
+		},
+		resultsFn: func(context.Context, provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
+			return nil, authErr
+		},
+	}
+	check := func(name string, err error) {
+		t.Helper()
+		var auth *gatewayerrors.GatewayAuthenticationError
+		if err == nil || err.Error() != want || !errors.As(err, &auth) {
+			t.Fatalf("%s err = %v", name, err)
+		}
+	}
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{Provider: api, Requests: []BatchRequest{textBatchRequest("r1", "m")}})
+	check("start", err)
+	ref := BatchReference{Version: 2, ID: "b1", Provider: "mock.batch"}
+	_, err = ExperimentalGetBatchStatus(context.Background(), GetBatchStatusOptions{Provider: api, Batch: ref, MaxRetries: &zero})
+	check("status", err)
+	_, err = ExperimentalGetBatchResults(context.Background(), GetBatchResultsOptions{Provider: api, Batch: ref, MaxRetries: &zero})
+	check("results", err)
+
+	stream := &BatchResultsStream{inner: &mockBatchItemStream{err: authErr}}
+	check("stream err", stream.Err())
+}
+
+// TS standardizePrompt checks prompt/messages before system messages: both
+// defined plus a system message reports the "same time" error.
+func TestStreamTextPromptInputCheckPrecedesSystemMessageCheck(t *testing.T) {
+	model := &testutil.MockLanguageModel{}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "hi",
+		Messages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "s"}}}},
+	})
+	if err == nil && res != nil {
+		_, err = res.ReadAll()
+	}
+	if err == nil || !strings.Contains(err.Error(), "prompt and messages cannot be defined at the same time") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS writes SSE data with JSON.stringify: <, > and & stay literal.
+func TestUIMessageSSEChunkIsNotHTMLEscaped(t *testing.T) {
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	if err := writeUIMessageSSEChunk(bw, func() error { return bw.Flush() }, UIMessageChunk{"type": "text-delta", "delta": "a<b>&c"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := buf.String(); !strings.Contains(got, `"delta":"a<b>&c"`) {
+		t.Fatalf("SSE data = %q", got)
 	}
 }

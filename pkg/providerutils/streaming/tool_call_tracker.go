@@ -31,10 +31,16 @@ func GenerateID() string {
 // mid-stream, and the tracker is responsible for correlating fragments
 // correctly regardless (see StreamingToolCallTracker).
 type ToolCallDelta struct {
-	Index            *int
-	ID               string
-	Name             string
-	ArgumentsDelta   string
+	Index          *int
+	ID             string
+	Name           string
+	ArgumentsDelta string
+	// ArgumentsPresent reports that the wire delta carried an arguments
+	// string (possibly empty). TS emits a tool-input-delta for a present
+	// empty string on an existing call (`arguments != null`) but nothing
+	// for a missing or null one. Callers that leave it false get the
+	// string-only behavior (an empty ArgumentsDelta emits nothing).
+	ArgumentsPresent bool
 	ProviderMetadata map[string]interface{}
 
 	// NameBlank reports that the wire delta carried a function name that was
@@ -601,7 +607,7 @@ func (t *StreamingToolCallTracker) processExistingToolCall(call *trackedToolCall
 		return t.startChunksForNewCall(call)
 	}
 
-	if delta.ArgumentsDelta == "" {
+	if delta.ArgumentsDelta == "" && !delta.ArgumentsPresent {
 		return nil
 	}
 	return []ToolCallChunk{

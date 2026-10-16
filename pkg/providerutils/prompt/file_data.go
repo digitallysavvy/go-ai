@@ -2,7 +2,6 @@ package prompt
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"mime"
 	"net/url"
@@ -912,7 +911,13 @@ func ParseDataURL(value string) (types.FileData, error) {
 	if len(parts) == 1 || parts[len(parts)-1] != "base64" {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("only base64 data URLs are supported")}
 	}
-	decoded, err := base64.StdEncoding.DecodeString(body)
+	// TS keeps the text after the first comma and later decodes it with atob
+	// after mapping the URL-safe alphabet (convertBase64ToUint8Array): the
+	// forgiving decode accepts whitespace and missing padding.
+	if i := strings.IndexByte(body, ','); i >= 0 {
+		body = body[:i]
+	}
+	decoded, err := fileutil.DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(body))
 	if err != nil {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
 	}

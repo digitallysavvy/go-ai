@@ -852,9 +852,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// Build prompt
 	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
-	normalizedPrompt, normErr := promptutils.NormalizePrompt(prompt, allowSystem)
+	// TS standardizePrompt reports a missing/duplicated/empty prompt before
+	// the system-message check.
+	var normalizedPrompt types.Prompt
+	normErr := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
 	if normErr == nil {
-		normErr = promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
+		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
 	}
 	if normErr != nil {
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})

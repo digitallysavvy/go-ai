@@ -7,6 +7,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // StreamTransformStopper stops the source stream of a StreamText call. It is
@@ -160,7 +162,7 @@ func syncRawArguments(call *types.ToolCall) {
 	if err := json.Unmarshal([]byte(call.RawArguments), &decoded); err == nil && reflect.DeepEqual(decoded, call.Arguments) {
 		return
 	}
-	if raw, err := json.Marshal(call.Arguments); err == nil {
+	if raw, err := jsonstr.Marshal(call.Arguments); err == nil {
 		call.RawArguments = string(raw)
 	}
 }

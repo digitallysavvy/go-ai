@@ -528,6 +528,13 @@ func invokeToolInputCallbacks(ctx context.Context, calls []types.ToolCall, tools
 	return nil
 }
 
+// InvokeToolInputCallbacks is the exported form of the non-streaming tool
+// input notification for the legacy agent loop: OnInputStart and then
+// OnInputAvailable for every valid call, in order.
+func InvokeToolInputCallbacks(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, toolsContext map[string]interface{}) error {
+	return invokeToolInputCallbacks(ctx, calls, tools, messages, toolsContext)
+}
+
 type validatedToolContext struct {
 	value interface{}
 	err   error

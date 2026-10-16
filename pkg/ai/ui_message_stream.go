@@ -1972,7 +1972,7 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 // writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
 // as one SSE "data: ...\n\n" event, then flushes it.
 func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
-	b, err := json.Marshal(chunk)
+	b, err := jsonstr.Marshal(chunk)
 	if err != nil {
 		return err
 	}

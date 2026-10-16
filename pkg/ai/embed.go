@@ -12,6 +12,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // newCallID generates the call ID that correlates start/finish events: "call-"
@@ -664,7 +666,7 @@ func telemetryInputValue(settings *TelemetrySettings, value interface{}) string 
 	if str, ok := value.(string); ok {
 		return str
 	}
-	b, err := json.Marshal(value)
+	b, err := jsonstr.Marshal(value)
 	if err != nil {
 		return ""
 	}

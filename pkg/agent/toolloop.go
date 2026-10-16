@@ -1708,6 +1708,20 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
+	// URL-backed generated files are downloaded once, before anything observes
+	// the content (TS convertLanguageModelContent).
+	if resolvedContent, resolveErr := ai.ResolveContentFiles(stepCtx, genResult.Content); resolveErr != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, resolveErr
+	} else if len(resolvedContent) > 0 {
+		resolvedResult := *genResult
+		resolvedResult.Content = resolvedContent
+		genResult = &resolvedResult
+	}
+	// A tool-result part must answer a tool call of the same response (TS
+	// convertLanguageModelContent: "Tool call <id> not found.").
+	if err := ai.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
 	modelCallContent := contentFromGenerateResult(genResult, toolCalls)
 	// Sources, files and reasoning come from the content parts, as in
 	// GenerateText (TS DefaultStepResult getters).
@@ -1769,6 +1783,13 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if violation := ai.CheckToolChoiceViolation(genOpts.ToolChoice, genResult.ToolCalls, genResult.FinishReason, stepModel.Provider(), stepModel.ModelID(), contentFromGenerateResult(genResult, genResult.ToolCalls)); violation != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, violation
 	}
+	// Notify the tools that their calls are available (TS order: OnInputStart
+	// then OnInputAvailable, valid calls only), before any tool runs.
+	if err := ai.InvokeToolInputCallbacks(stepCtx, toolCalls, callConfig.Tools, callConfig.Messages, callConfig.ToolsContext); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	// TS logs each step's model warnings just before the step is recorded.
+	ai.LogWarnings(ai.LogWarningsOptions{Warnings: genResult.Warnings, Provider: stepModel.Provider(), Model: stepModel.ModelID()})
 	stepResult := &types.StepResult{
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
@@ -1797,8 +1818,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Performance:    performance,
 	}
 
-	// Determine if we should continue
-	shouldContinue := genResult.FinishReason == types.FinishReasonToolCalls && len(toolCalls) > 0
+	// Determine if we should continue. TS generateText continues on the
+	// presence of client tool calls whatever the finish reason (a "stop"
+	// response that carries tool calls still runs them); the caller's later
+	// checks stop the loop when a call is left without a result, which is
+	// what happens for the finish reasons that never execute tools.
+	shouldContinue := len(toolCalls) > 0
 
 	return stepResult, shouldContinue, callConfig.CustomData, callConfig.Tools, nil
 }

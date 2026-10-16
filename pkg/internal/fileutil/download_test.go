@@ -874,3 +874,27 @@ func TestDownloadDataURLFetchSemantics(t *testing.T) {
 		}
 	}
 }
+
+// The fetch data: URL processor percent-decodes every valid escape and keeps
+// malformed ones literal; base64 follows forgiving-base64 (no stray padding).
+func TestDownloadDataURLPercentAndForgivingBase64(t *testing.T) {
+	ok := map[string]string{
+		"data:,%41%zz":                      "A%zz",
+		"data:,100%":                        "100%",
+		"data:,%4":                          "%4",
+		"data:text/plain;base64,aGk":        "hi",
+		"data:text/plain;base64,aGk=":       "hi",
+		"data:text/plain;base64,%61GVsbG8=": "hello",
+	}
+	for u, want := range ok {
+		res, err := DownloadWithMetadata(context.Background(), u, insecureDownloadOptions())
+		if err != nil || string(res.Data) != want {
+			t.Errorf("%s: %q %v, want %q", u, res.Data, err, want)
+		}
+	}
+	for _, u := range []string{"data:;base64,aGk===", "data:;base64,a", "data:;base64,aG=k"} {
+		if _, err := DownloadWithMetadata(context.Background(), u, insecureDownloadOptions()); err == nil {
+			t.Errorf("%s: want a download error", u)
+		}
+	}
+}

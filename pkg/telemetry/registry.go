@@ -15,6 +15,8 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ---------------------------------------------------------------------------
@@ -936,7 +938,7 @@ func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settin
 				out = append(out, attribute.Float64Slice(key, finite))
 			}
 		default:
-			if b, err := json.Marshal(v); err == nil {
+			if b, err := jsonstr.Marshal(v); err == nil {
 				out = append(out, attribute.String(key, string(b)))
 			}
 		}
@@ -1101,7 +1103,7 @@ func legacyJSONEachElement(v interface{}) []string {
 
 // legacyJSONOrEmpty JSON-encodes v, returning "" if it cannot be marshaled.
 func legacyJSONOrEmpty(v interface{}) string {
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return ""
 	}
@@ -1274,7 +1276,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 			// TS: 'ai.schema' is input-gated; schema.name/description and
 			// settings.output are plain (unconditional) values.
 			if recordInputs && len(e.Schema) > 0 {
-				if b, err := json.Marshal(e.Schema); err == nil {
+				if b, err := jsonstr.Marshal(e.Schema); err == nil {
 					span.SetAttributes(attribute.String("ai.schema", string(b)))
 				}
 			}
@@ -1366,7 +1368,7 @@ func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value
 		}
 		return attrs
 	default:
-		if b, err := json.Marshal(v); err == nil {
+		if b, err := jsonstr.Marshal(v); err == nil {
 			return append(attrs, attribute.String(key, string(b)))
 		}
 		return attrs
@@ -1513,14 +1515,14 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if recordInputs {
 		if len(e.PromptMessages) > 0 {
-			if b, err := json.Marshal(e.PromptMessages); err == nil {
+			if b, err := jsonstr.Marshal(e.PromptMessages); err == nil {
 				stepSpan.SetAttributes(attribute.String("ai.prompt.messages", string(b)))
 			}
 		}
 		if len(e.StepTools) > 0 {
 			tools := make([]string, 0, len(e.StepTools))
 			for _, t := range e.StepTools {
-				if b, err := json.Marshal(t); err == nil {
+				if b, err := jsonstr.Marshal(t); err == nil {
 					tools = append(tools, string(b))
 				}
 			}
@@ -1529,7 +1531,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 			}
 		}
 		if e.ToolChoice.Type != "" {
-			if b, err := json.Marshal(e.ToolChoice); err == nil {
+			if b, err := jsonstr.Marshal(e.ToolChoice); err == nil {
 				stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
 			}
 		}
@@ -1662,7 +1664,9 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	// never gated by recordOutputs; sanitizeAttributeValue drops it when
 	// usage.tokens is NaN (provider returned no usage), which
 	// setFiniteFloat64 mirrors.
-	entry.span.SetAttributes(setFiniteFloat64(nil, "ai.usage.tokens", e.Usage.Tokens)...)
+	if tokens, ok := embeddingUsageTokens(e.Usage); ok {
+		entry.span.SetAttributes(attribute.Float64("ai.usage.tokens", float64(tokens)))
+	}
 	entry.span.End()
 }
 
@@ -1807,7 +1811,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	// input-gated — the model's tool-call arguments are treated as part of
 	// the generation's output.
 	if (e.Settings == nil || e.Settings.RecordOutputs) && e.Args != nil {
-		if b, err := json.Marshal(e.Args); err == nil {
+		if b, err := jsonstr.Marshal(e.Args); err == nil {
 			child.SetAttributes(attribute.String("ai.toolCall.args", string(b)))
 		}
 	}
@@ -1859,7 +1863,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e Telemetry
 	if e.Error != nil {
 		legacyRecordSpanError(span, e.Error)
 	} else if (e.Settings == nil || e.Settings.RecordOutputs) && e.Result != nil {
-		if b, err := json.Marshal(e.Result); err == nil {
+		if b, err := jsonstr.Marshal(e.Result); err == nil {
 			span.SetAttributes(attribute.String("ai.toolCall.result", string(b)))
 		}
 	}
@@ -1897,7 +1901,7 @@ func legacyToolCallsJSON(toolCalls []types.ToolCall) (string, bool) {
 	for i, tc := range toolCalls {
 		entries[i] = toolCallEntry{ToolCallID: tc.ID, ToolName: tc.ToolName, Input: tc.Arguments}
 	}
-	b, err := json.Marshal(entries)
+	b, err := jsonstr.Marshal(entries)
 	if err != nil {
 		return "", false
 	}
@@ -1919,7 +1923,7 @@ func legacyFilesJSON(files []types.GeneratedFileContent) (string, bool) {
 	for i, f := range files {
 		entries[i] = fileEntry{Type: "file", MediaType: f.MediaType, Data: base64.StdEncoding.EncodeToString(f.Data)}
 	}
-	b, err := json.Marshal(entries)
+	b, err := jsonstr.Marshal(entries)
 	if err != nil {
 		return "", false
 	}
@@ -2026,7 +2030,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 			objectAttr := e.Text
 			var parsed interface{}
 			if json.Unmarshal([]byte(e.Text), &parsed) == nil {
-				if b, err := json.Marshal(parsed); err == nil {
+				if b, err := jsonstr.Marshal(parsed); err == nil {
 					objectAttr = string(b)
 				}
 			}
@@ -2108,7 +2112,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		stepSpan.SetAttributes(attribute.String("ai.response.timestamp", e.ResponseTimestamp.UTC().Format("2006-01-02T15:04:05.000Z")))
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -2255,12 +2259,12 @@ func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e Teleme
 		span.SetAttributes(attrs...)
 	}
 	if e.ProviderUsage != nil {
-		if b, err := json.Marshal(e.ProviderUsage); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderUsage); err == nil {
 			span.SetAttributes(attribute.String("ai.response.usage", string(b)))
 		}
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -2295,7 +2299,7 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 		}
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -2308,12 +2312,12 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 func (i LegacyOpenTelemetry) legacyOnObjectOperationEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
 	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
 	if recordOutputs && e.Object != nil {
-		if b, err := json.Marshal(e.Object); err == nil {
+		if b, err := jsonstr.Marshal(e.Object); err == nil {
 			span.SetAttributes(attribute.String("ai.response.object", string(b)))
 		}
 	}
 	if e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -2338,7 +2342,7 @@ func (i LegacyOpenTelemetry) legacyOnEmbedOperationEnd(span trace.Span, e Teleme
 			span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(v)))
 		}
 	case []float64:
-		if b, err := json.Marshal(v); err == nil {
+		if b, err := jsonstr.Marshal(v); err == nil {
 			span.SetAttributes(attribute.String("ai.embedding", string(b)))
 		}
 	}

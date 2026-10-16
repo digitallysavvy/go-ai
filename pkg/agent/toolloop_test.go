@@ -3515,3 +3515,122 @@ type namedModel struct {
 }
 
 func (n namedModel) ModelID() string { return n.id }
+
+func TestExecuteStep_ToolResultWithoutCallIsRejected(t *testing.T) {
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "x",
+		FinishReason: types.FinishReasonStop,
+		Content:      []types.ContentPart{types.ToolResultContent{ToolCallID: "ghost", ToolName: "t", Result: "r"}},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: model, MaxSteps: 1})
+	_, err := agent.Execute(context.Background(), "hi")
+	if err == nil || !strings.Contains(err.Error(), "Tool call ghost not found.") {
+		t.Fatalf("err = %v, want Tool call ghost not found.", err)
+	}
+}
+
+// TS convertLanguageModelContent downloads URL-backed generated files and the
+// step logs its model warnings; the legacy loop does both.
+func TestExecuteStep_DownloadsGeneratedFileURLsAndLogsWarnings(t *testing.T) {
+	logged := captureWarnings(t)
+	orig := ai.DefaultDownload
+	t.Cleanup(func() { ai.DefaultDownload = orig })
+	ai.DefaultDownload = func(_ context.Context, reqs []ai.DownloadRequest) ([]*ai.DownloadResult, error) {
+		out := make([]*ai.DownloadResult, len(reqs))
+		for i := range reqs {
+			out[i] = &ai.DownloadResult{Data: []byte("PNGDATA")}
+		}
+		return out, nil
+	}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "x",
+		FinishReason: types.FinishReasonStop,
+		Warnings:     []types.Warning{{Type: "other", Message: "careful"}},
+		Content: []types.ContentPart{types.GeneratedFileContent{
+			MediaType: "image/png",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/a.png"},
+		}},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: model, MaxSteps: 1})
+	res, err := agent.Execute(context.Background(), "hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || len(res.Steps[0].Files) != 1 || string(res.Steps[0].Files[0].Data) != "PNGDATA" {
+		t.Fatalf("files = %#v", res.Steps)
+	}
+	if got := logged(); len(got) != 1 || len(got[0].Warnings) != 1 || got[0].Warnings[0].Message != "careful" {
+		t.Fatalf("logged warnings = %#v", got)
+	}
+}
+
+// TS continues after client tool calls whatever the finish reason: a "stop"
+// response that carries tool calls runs them and takes another step, while a
+// truncated ("length") one never executes them and ends the run.
+func TestRunLoop_ContinuesAfterToolCallsWithStopFinishReason(t *testing.T) {
+	for _, tc := range []struct {
+		finish    types.FinishReason
+		wantSteps int
+		wantExec  int
+	}{
+		{types.FinishReasonStop, 2, 1},
+		{types.FinishReasonLength, 1, 0},
+	} {
+		t.Run(string(tc.finish), func(t *testing.T) {
+			executed := 0
+			model := &mockLanguageModel{responses: []types.GenerateResult{
+				{Text: "call", FinishReason: tc.finish, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}},
+				{Text: "done", FinishReason: types.FinishReasonStop},
+			}}
+			agent := NewToolLoopAgent(AgentConfig{
+				Model: model,
+				Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+					Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+						executed++
+						return "ok", nil
+					}}},
+				MaxSteps: 3,
+			})
+			res, err := agent.Execute(context.Background(), "hi")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Steps) != tc.wantSteps || executed != tc.wantExec {
+				t.Fatalf("steps=%d executed=%d, want %d and %d", len(res.Steps), executed, tc.wantSteps, tc.wantExec)
+			}
+		})
+	}
+}
+
+// TS generateText notifies tools (onInputStart then onInputAvailable) before
+// they run; the legacy loop does too.
+func TestExecuteStep_InvokesToolInputCallbacks(t *testing.T) {
+	var order []string
+	model := &mockLanguageModel{responses: []types.GenerateResult{
+		{Text: "call", FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{"a": 1.0}}}},
+		{Text: "done", FinishReason: types.FinishReasonStop},
+	}}
+	agent := NewToolLoopAgent(AgentConfig{
+		Model: model,
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+			OnInputStart: func(_ context.Context, o types.OnInputStartOptions) error {
+				order = append(order, "start:"+o.ToolCallID)
+				return nil
+			},
+			OnInputAvailable: func(_ context.Context, o types.OnInputAvailableOptions) error {
+				order = append(order, "available:"+o.ToolCallID)
+				return nil
+			},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				order = append(order, "execute")
+				return "ok", nil
+			}}},
+		MaxSteps: 3,
+	})
+	if _, err := agent.Execute(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(order, ","); got != "start:c1,available:c1,execute" {
+		t.Fatalf("order = %s", got)
+	}
+}

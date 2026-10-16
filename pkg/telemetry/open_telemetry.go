@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -12,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ---------------------------------------------------------------------------
@@ -281,12 +284,12 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	span.SetAttributes(requestSettingAttributes(e, !isObjectOperation)...)
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if recordInputs && e.System != "" {
-		if b, err := json.Marshal(formatSystemInstructions(e.System)); err == nil {
+		if b, err := jsonstr.Marshal(formatSystemInstructions(e.System)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.system_instructions", string(b)))
 		}
 	}
 	if recordInputs && len(e.Messages) > 0 {
-		if b, err := json.Marshal(formatInputMessages(e.Messages)); err == nil {
+		if b, err := jsonstr.Marshal(formatInputMessages(e.Messages)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
 	}
@@ -305,7 +308,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		)
 		if recordInputs && e.Text != "" {
 			span.SetAttributes(attribute.String("ai.request.text", e.Text))
-			if b, err := json.Marshal([]semConvInputMessage{{
+			if b, err := jsonstr.Marshal([]semConvInputMessage{{
 				Role:  "user",
 				Parts: []semConvPart{{"type": "text", "content": e.Text}},
 			}}); err == nil {
@@ -326,7 +329,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	}
 	if i.opts.Schema {
 		if len(e.Schema) > 0 {
-			if b, err := json.Marshal(e.Schema); err == nil {
+			if b, err := jsonstr.Marshal(e.Schema); err == nil {
 				span.SetAttributes(attribute.String("ai.schema", string(b)))
 			}
 		}
@@ -444,7 +447,7 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	stepSpan.SetAttributes(attribute.String("gen_ai.operation.name", "agent_step"))
 	stepSpan.SetAttributes(genAIBaseSupplemental(e.CallID)...)
 	if i.opts.ToolChoice && e.ToolChoice.Type != "" {
-		if b, err := json.Marshal(e.ToolChoice); err == nil {
+		if b, err := jsonstr.Marshal(e.ToolChoice); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
 		}
 	}
@@ -529,20 +532,20 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	}
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if recordInputs && e.System != "" {
-		if b, err := json.Marshal(formatSystemInstructions(e.System)); err == nil {
+		if b, err := jsonstr.Marshal(formatSystemInstructions(e.System)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.system_instructions", string(b)))
 		}
 	}
 	if recordInputs {
 		if messages, ok := promptMessages(e.Prompt); ok && len(messages) > 0 {
-			if b, err := json.Marshal(formatInputMessages(messages)); err == nil {
+			if b, err := jsonstr.Marshal(formatInputMessages(messages)); err == nil {
 				attrs = append(attrs, attribute.String("gen_ai.input.messages", string(b)))
 			}
 		}
 	}
 	toolDefs := toolDefinitionsList(e.Tools)
 	if recordInputs && len(toolDefs) > 0 {
-		if b, err := json.Marshal(toolDefs); err == nil {
+		if b, err := jsonstr.Marshal(toolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
 	}
@@ -705,7 +708,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	// included ([{role, parts: [], finish_reason}]); only an event that carries
 	// no content at all (nil) skips it.
 	if recordOutputs && e.Content != nil {
-		if b, err := json.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
+		if b, err := jsonstr.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	}
@@ -717,13 +720,13 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	// their GenAI equivalents (open-telemetry.ts), so only isEnabled and the
 	// providerMetadata supplemental flag gate it.
 	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			attrs = append(attrs, attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
 	mergedToolDefs, changed := mergeProviderExecutedToolDefs(entry.toolDefs, content)
 	if changed && (e.Settings == nil || e.Settings.RecordInputs) {
-		if b, err := json.Marshal(mergedToolDefs); err == nil {
+		if b, err := jsonstr.Marshal(mergedToolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
 	}
@@ -757,7 +760,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			if !recordOutputs {
 				break
 			}
-			if b, err := json.Marshal(toolResultResponseValue(out)); err == nil {
+			if b, err := jsonstr.Marshal(toolResultResponseValue(out)); err == nil {
 				toolSpan.SetAttributes(attribute.String("gen_ai.tool.call.result", string(b)))
 			}
 		case types.ToolErrorContent:
@@ -777,7 +780,7 @@ func jsonOrString(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s
 	}
-	if b, err := json.Marshal(v); err == nil {
+	if b, err := jsonstr.Marshal(v); err == nil {
 		return string(b)
 	}
 	return ""
@@ -876,7 +879,7 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 func jsonStringifyEach[T any](values []T) []string {
 	out := make([]string, len(values))
 	for i, v := range values {
-		if b, err := json.Marshal(v); err == nil {
+		if b, err := jsonstr.Marshal(v); err == nil {
 			out[i] = string(b)
 		}
 	}
@@ -913,13 +916,32 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 		entry.span.End()
 		return
 	}
-	if e.Usage.InputTokens > 0 {
-		entry.span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", e.Usage.InputTokens))
+	if tokens, ok := embeddingUsageTokens(e.Usage); ok {
+		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", tokens))
 	}
 	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
 		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
 	entry.span.End()
+}
+
+// embeddingUsageTokens is TS usage.tokens for an embedding call: the
+// TS-shaped Tokens field when the provider reported one, else the Go
+// InputTokens/TotalTokens counters. A NaN (provider reported nothing) is
+// dropped; a reported 0 is indistinguishable from the zero value and is
+// dropped too (open item).
+func embeddingUsageTokens(u types.EmbeddingUsage) (int64, bool) {
+	tokens := u.Tokens
+	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
+		tokens = float64(u.InputTokens)
+		if tokens <= 0 {
+			tokens = float64(u.TotalTokens)
+		}
+	}
+	if tokens <= 0 {
+		return 0, false
+	}
+	return int64(tokens), true
 }
 
 // OnRerankStart creates the reranking request span.
@@ -1053,7 +1075,7 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	)
 	// TS: gen_ai.tool.call.arguments is an input (recordInputs gate).
 	if e.Settings == nil || e.Settings.RecordInputs {
-		if b, err := json.Marshal(e.Args); err == nil {
+		if b, err := jsonstr.Marshal(e.Args); err == nil {
 			child.SetAttributes(attribute.String("gen_ai.tool.call.arguments", string(b)))
 		}
 	}
@@ -1096,7 +1118,7 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 		RecordErrorOnSpan(span, e.Error)
 	} else if e.Settings == nil || e.Settings.RecordOutputs {
 		// TS: gen_ai.tool.call.result is an output (recordOutputs gate).
-		if b, err := json.Marshal(e.Result); err == nil {
+		if b, err := jsonstr.Marshal(e.Result); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.tool.call.result", string(b)))
 		}
 	}
@@ -1107,7 +1129,7 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 // gen_ai.tool.call.arguments (JSON.stringify of the parsed tool input).
 func toolCallArgumentsJSON(tc types.ToolCallContent) (string, bool) {
 	if tc.Arguments != nil {
-		b, err := json.Marshal(tc.Arguments)
+		b, err := jsonstr.Marshal(tc.Arguments)
 		return string(b), err == nil
 	}
 	if tc.Input == "" {
@@ -1119,7 +1141,7 @@ func toolCallArgumentsJSON(tc types.ToolCallContent) (string, bool) {
 			return compact.String(), true
 		}
 	}
-	b, err := json.Marshal(tc.Input)
+	b, err := jsonstr.Marshal(tc.Input)
 	return string(b), err == nil
 }
 
@@ -1154,7 +1176,7 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	// Gated only by opts.ProviderMetadata (not recordOutputs) — see the
 	// identical comment in OnLanguageModelCallEnd.
 	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			attrs = append(attrs, attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -1233,7 +1255,7 @@ func (i OpenTelemetry) onGenerateEnd(span trace.Span, e TelemetryFinishEvent, re
 	}
 	attrs = append(attrs, baseUsageAttrs(e.Usage, true)...)
 	if recordOutputs {
-		if b, err := json.Marshal(formatOutputMessagesFromFinish(e)); err == nil {
+		if b, err := jsonstr.Marshal(formatOutputMessagesFromFinish(e)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
 	}
@@ -1250,8 +1272,8 @@ func (i OpenTelemetry) onObjectOperationEnd(span trace.Span, e TelemetryFinishEv
 	}
 	attrs = append(attrs, baseUsageAttrs(e.Usage, false)...)
 	if recordOutputs && e.Object != nil {
-		if objectJSON, err := json.Marshal(e.Object); err == nil {
-			if b, err := json.Marshal(formatObjectOutputMessages(string(objectJSON), e.FinishReason)); err == nil {
+		if objectJSON, err := jsonstr.Marshal(e.Object); err == nil {
+			if b, err := jsonstr.Marshal(formatObjectOutputMessages(string(objectJSON), e.FinishReason)); err == nil {
 				attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 			}
 		}
@@ -1273,7 +1295,7 @@ func (i OpenTelemetry) onEmbedOperationEnd(span trace.Span, e TelemetryFinishEve
 			span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(v)))
 		}
 	case []float64:
-		if b, err := json.Marshal(v); err == nil {
+		if b, err := jsonstr.Marshal(v); err == nil {
 			span.SetAttributes(attribute.String("ai.embedding", string(b)))
 		}
 	}
@@ -1285,7 +1307,7 @@ func (i OpenTelemetry) onEmbedOperationEnd(span trace.Span, e TelemetryFinishEve
 func (i OpenTelemetry) endSupplementalAttrs(e TelemetryFinishEvent) []attribute.KeyValue {
 	var attrs []attribute.KeyValue
 	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			attrs = append(attrs, attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
@@ -1368,7 +1390,7 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 			// this attribute has no finish_reason key (unlike the shared
 			// chat-response formatter), since audio operations have no
 			// finish reason at all.
-			if b, err := json.Marshal([]map[string]interface{}{{
+			if b, err := jsonstr.Marshal([]map[string]interface{}{{
 				"role":  "assistant",
 				"parts": []semConvPart{{"type": "text", "content": e.Text}},
 			}}); err == nil {
@@ -1391,12 +1413,12 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 		span.SetAttributes(attrs...)
 	}
 	if i.opts.Usage && e.ProviderUsage != nil {
-		if b, err := json.Marshal(e.ProviderUsage); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderUsage); err == nil {
 			span.SetAttributes(attribute.String("ai.response.usage", string(b)))
 		}
 	}
 	if i.opts.ProviderMetadata && e.ProviderMetadata != nil {
-		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
+		if b, err := jsonstr.Marshal(e.ProviderMetadata); err == nil {
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}

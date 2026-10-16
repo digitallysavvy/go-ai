@@ -2,7 +2,9 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"time"
@@ -210,7 +212,7 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 		WebhookURL:      opts.WebhookURL,
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	modelByRequestID := make(map[string]string, len(opts.Requests))
@@ -278,7 +280,7 @@ func ExperimentalGetBatchStatus(ctx context.Context, opts GetBatchStatusOptions)
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	return &Batch{BatchReference: opts.Batch, BatchV4Status: *status}, nil
@@ -337,7 +339,10 @@ type BatchResultsStream struct {
 func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 	item, err := s.inner.Next()
 	if err != nil {
-		return nil, err
+		if errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		return nil, wrapGatewayError(err)
 	}
 	textResult := item.TextResult
 	if textResult != nil && item.Status == provider.BatchItemSucceeded {
@@ -371,7 +376,7 @@ func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 
 // Err returns any error that occurred during streaming.
 func (s *BatchResultsStream) Err() error {
-	return s.inner.Err()
+	return wrapGatewayError(s.inner.Err())
 }
 
 // Close releases resources held by the stream, including the operation
@@ -418,7 +423,7 @@ func ExperimentalGetBatchResults(ctx context.Context, opts GetBatchResultsOption
 	})
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, wrapGatewayError(err)
 	}
 
 	return &BatchResultsStream{inner: inner, cancel: cancel, ctx: callCtx, tools: opts.Tools}, nil
