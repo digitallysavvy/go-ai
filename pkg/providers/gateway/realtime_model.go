@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"reflect"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -138,7 +139,43 @@ func (m *RealtimeModel) SerializeClientEvent(event provider.RealtimeClientEvent)
 			out["providerOptions"] = event.ProviderOptions
 		}
 	default:
-		return nil, nil
+		// TS returns the event itself (`return event`), so an event type
+		// this SDK doesn't model still reaches the Gateway, carrying
+		// whichever of its fields are set.
+		if event.Type == "" {
+			return nil, nil
+		}
+		out = map[string]interface{}{"type": event.Type}
+		if !reflect.ValueOf(event.Config).IsZero() {
+			out["config"] = event.Config
+		}
+		if event.Audio != "" {
+			out["audio"] = event.Audio
+		}
+		if item := gatewayRealtimeConversationItem(event.Item); item != nil {
+			out["item"] = item
+		}
+		if event.ItemID != "" {
+			out["itemId"] = event.ItemID
+		}
+		if event.ContentIndex != 0 {
+			out["contentIndex"] = event.ContentIndex
+		}
+		if event.AudioEndMs != 0 {
+			out["audioEndMs"] = event.AudioEndMs
+		}
+		if event.Options != nil {
+			out["options"] = event.Options
+		}
+		if event.Content != "" {
+			out["content"] = event.Content
+		}
+		if event.DelegationID != nil {
+			out["delegationId"] = *event.DelegationID
+		}
+		if len(event.ProviderOptions) > 0 {
+			out["providerOptions"] = event.ProviderOptions
+		}
 	}
 	// TS returns the event itself, so an optional eventId rides along.
 	if event.EventID != "" {

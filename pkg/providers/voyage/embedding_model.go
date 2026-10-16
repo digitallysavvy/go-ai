@@ -97,7 +97,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("voyage", 0, "", err.Error(), err)
+		return nil, handleError(err)
 	}
 	sort.Slice(response.Data, func(i, j int) bool { return response.Data[i].Index < response.Data[j].Index })
 	embeddings := make([][]float64, 0, len(response.Data))

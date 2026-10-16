@@ -15,3 +15,15 @@ func validateEmbeddingProviderOptions(providerOptions map[string]interface{}) er
 	_, err := providerutils.ParseProviderOptions("voyage", providerOptions, voyageEmbeddingOptionsSchema)
 	return err
 }
+
+// voyageRerankingOptionsSchema mirrors voyageRerankingModelOptionsSchema (TS
+// reranking/voyage-reranking-model-options.ts).
+var voyageRerankingOptionsSchema = providerutils.OptionSchema{
+	"returnDocuments": providerutils.OptBool,
+	"truncation":      providerutils.OptBool,
+}
+
+func validateRerankProviderOptions(providerOptions map[string]interface{}) error {
+	_, err := providerutils.ParseProviderOptions("voyage", providerOptions, voyageRerankingOptionsSchema)
+	return err
+}

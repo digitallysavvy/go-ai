@@ -50,10 +50,42 @@ type revaiJobResponse struct {
 }
 
 type revaiTranscriptElement struct {
-	Type  string   `json:"type"`
-	Value string   `json:"value"`
-	TS    *float64 `json:"ts"`
-	EndTS *float64 `json:"end_ts"`
+	Type string `json:"type"`
+	// Value is the element text. TS (`z.string().nullish()`) lets it be
+	// null or absent; `+=` on it then yields "null" / "undefined" in segment
+	// text, while Array.join treats both as "" in the monologue text.
+	Value revaiNullableString `json:"value"`
+	TS    *float64            `json:"ts"`
+	EndTS *float64            `json:"end_ts"`
+}
+
+// revaiNullableString records whether a JSON string was a string, null or
+// absent.
+type revaiNullableString struct {
+	Str  string
+	Null bool // explicit JSON null
+	Set  bool // present as a string
+}
+
+// UnmarshalJSON implements json.Unmarshaler (only called when present).
+func (s *revaiNullableString) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		s.Null = true
+		return nil
+	}
+	s.Set = true
+	return json.Unmarshal(b, &s.Str)
+}
+
+// concat is the JS `"" + value` rendering.
+func (s revaiNullableString) concat() string {
+	switch {
+	case s.Set:
+		return s.Str
+	case s.Null:
+		return "null"
+	}
+	return "undefined"
 }
 
 type revaiTranscriptMonologue struct {
@@ -214,18 +246,8 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	config := map[string]interface{}{"transcriber": m.modelID}
-	if revaiOpts != nil {
-		b, err := json.Marshal(revaiOpts)
-		if err != nil {
-			return nil, "", err
-		}
-		var fields map[string]interface{}
-		if err := json.Unmarshal(b, &fields); err != nil {
-			return nil, "", err
-		}
-		for k, v := range fields {
-			config[k] = v
-		}
+	for k, v := range revaiOpts {
+		config[k] = v
 	}
 	configBytes, err := json.Marshal(config)
 	if err != nil {
@@ -255,7 +277,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 	for _, monologue := range transcript.Monologues {
 		var monologueText string
 		for _, el := range monologue.Elements {
-			monologueText += el.Value
+			monologueText += el.Value.Str
 		}
 		textParts = append(textParts, monologueText)
 
@@ -264,7 +286,7 @@ func convertRevaiTranscript(transcript revaiTranscriptResponse) (string, []types
 		hasStartedSegment := false
 
 		for _, el := range monologue.Elements {
-			currentSegmentText += el.Value
+			currentSegmentText += el.Value.concat()
 
 			if el.Type != "text" {
 				continue
