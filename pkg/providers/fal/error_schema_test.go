@@ -1,6 +1,10 @@
 package fal
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+)
 
 func TestParseFalErrorMessageFollowsTSSchema(t *testing.T) {
 	for _, c := range []struct{ name, body, want string }{
@@ -29,5 +33,35 @@ func TestFalImageErrorMessageFollowsTSUnion(t *testing.T) {
 		if got := falImageErrorMessage(400, []byte(c.body)); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// zod .nullish().default(x) keeps an explicit null: language is sent as null,
+// version and batchSize (`?? undefined`) are omitted, and a null chunkLevel is
+// falsy so the base 'word' stays.
+func TestTranscriptionExplicitNullOptionsFollowTS(t *testing.T) {
+	m := &TranscriptionModel{}
+	body, err := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
+		"fal": map[string]interface{}{"language": nil, "version": nil, "batchSize": nil, "chunkLevel": nil},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, present := body["language"]; !present || v != nil {
+		t.Errorf("language = %v (present %v), want explicit null", v, present)
+	}
+	if _, present := body["version"]; present {
+		t.Error("version must be omitted")
+	}
+	if _, present := body["batch_size"]; present {
+		t.Error("batch_size must be omitted")
+	}
+	if body["chunk_level"] != "word" {
+		t.Errorf("chunk_level = %v, want word", body["chunk_level"])
+	}
+	// Absent keys still take the zod defaults.
+	body, _ = m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{"fal": map[string]interface{}{}}})
+	if body["language"] != "en" || body["version"] != "3" || body["batch_size"] != float64(64) || body["chunk_level"] != "segment" {
+		t.Errorf("defaults = %v", body)
 	}
 }
