@@ -1056,3 +1056,28 @@ func TestResolveAllowedTools_DirectNameWinsOverAlias(t *testing.T) {
 		t.Fatalf("choice = %#v, want the direct function-tool match to win", choice)
 	}
 }
+
+// TS mapShellSkills sends version "latest" for a skill reference without a
+// version, and mapShellEnvironment sends type "local" for an untyped env.
+func TestPrepareTools_Shell_SkillReferenceDefaultsToLatestAndUntypedEnvIsLocal(t *testing.T) {
+	ref, id, pinned := "skill_reference", "skill_1", "7"
+	tool := NewShellTool(WithShellEnvironment(ShellEnvironment{
+		Type: "container_auto",
+		Skills: []ShellSkill{
+			{Type: &ref, SkillID: &id},
+			{Type: &ref, SkillID: &id, Version: &pinned},
+		},
+	}))
+	def := PrepareTools([]types.Tool{tool})[0].(ShellToolDef)
+	if v := def.Environment.Skills[0].Version; v == nil || *v != "latest" {
+		t.Fatalf("version = %v, want latest", v)
+	}
+	if v := def.Environment.Skills[1].Version; v == nil || *v != "7" {
+		t.Fatalf("pinned version = %v", v)
+	}
+
+	local := PrepareTools([]types.Tool{NewShellTool(WithShellEnvironment(ShellEnvironment{}))})[0].(ShellToolDef)
+	if local.Environment == nil || local.Environment.Type != "local" {
+		t.Fatalf("env = %#v", local.Environment)
+	}
+}

@@ -406,12 +406,24 @@ func convertShellTool(t types.Tool) ShellToolDef {
 		return def
 	}
 
-	env, ok := t.ProviderOptions.(*ShellEnvironment)
-	if !ok {
+	var env *ShellEnvironment
+	switch v := t.ProviderOptions.(type) {
+	case *ShellEnvironment:
+		env = v
+	case ShellEnvironment:
+		env = &v
+	}
+	if env == nil {
 		return def
 	}
 
-	toolEnv := &ShellToolDefEnvironment{Type: env.Type}
+	// TS mapShellEnvironment: anything that is not containerAuto or
+	// containerReference is the local environment, sent as type "local".
+	envType := env.Type
+	if envType == "" {
+		envType = "local"
+	}
+	toolEnv := &ShellToolDefEnvironment{Type: envType}
 
 	if len(env.FileIDs) > 0 {
 		toolEnv.FileIDs = env.FileIDs
@@ -423,7 +435,17 @@ func convertShellTool(t types.Tool) ShellToolDef {
 		toolEnv.NetworkPolicy = env.NetworkPolicy
 	}
 	if len(env.Skills) > 0 {
-		toolEnv.Skills = env.Skills
+		// TS mapShellSkills: a skill reference without a version is sent
+		// as version "latest".
+		skills := make([]ShellSkill, len(env.Skills))
+		copy(skills, env.Skills)
+		for i := range skills {
+			if skills[i].Type != nil && *skills[i].Type == "skill_reference" && skills[i].Version == nil {
+				latest := "latest"
+				skills[i].Version = &latest
+			}
+		}
+		toolEnv.Skills = skills
 	}
 	if env.ContainerID != nil {
 		toolEnv.ContainerID = env.ContainerID
