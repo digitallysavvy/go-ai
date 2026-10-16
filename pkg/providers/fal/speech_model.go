@@ -52,15 +52,9 @@ type falSpeechResponse struct {
 	RequestID  string   `json:"request_id,omitempty"`
 }
 
-// buildRequestBody mirrors FalSpeechModel.getArgs in fal-speech-model.ts.
-func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {
-	body, warnings := m.buildOrderedRequestBody(opts)
-	return body.Map(), warnings
-}
-
-// buildOrderedRequestBody is buildRequestBody with the JS object key order
-// (text, output_format, voice, speed, then provider options), which
-// JSON.stringify(requestBody) records in request.body.
+// buildOrderedRequestBody mirrors FalSpeechModel.getArgs in fal-speech-model.ts
+// with the JS object key order (text, output_format, voice, speed, then
+// provider options), which JSON.stringify(requestBody) records in request.body.
 func (m *SpeechModel) buildOrderedRequestBody(opts *provider.SpeechGenerateOptions) (*jsonorder.Object, []types.Warning) {
 	warnings := []types.Warning{}
 
