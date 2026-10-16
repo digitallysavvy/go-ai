@@ -13,6 +13,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 const (
@@ -93,6 +95,9 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (map[st
 	text, err := os.ReadFile(authPath)
 	if err != nil {
 		return nil, nil
+	}
+	if securejson.Check(text) != nil {
+		return nil, nil // safeParseJSON rejects a __proto__ key
 	}
 	scopeOrder, authRecords, err := decodeOrderedObject(text)
 	if err != nil {
@@ -190,7 +195,7 @@ func decodeOrderedObject(data []byte) ([]string, map[string]any, error) {
 		order = append(order, key)
 		m[key] = v
 	}
-	return order, m, nil
+	return jsonorder.JSKeyOrder(order), m, nil
 }
 
 // selectOAuthRecord mirrors TS `selectOAuthRecord`: the first scope (in
@@ -266,7 +271,7 @@ func discoverTokenEndpoint(ctx context.Context, issuer string, client *http.Clie
 		return "", fmt.Errorf("Grok OAuth discovery failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := securejson.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("Grok OAuth discovery returned no token endpoint.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	endpoint, ok := parsed["token_endpoint"].(string)
@@ -306,12 +311,15 @@ func renderRefreshedAuthRecords(text []byte, scope, accessToken, refreshToken st
 		buf.Write(kb)
 		buf.WriteByte(':')
 		if k != scope {
-			buf.Write(values[k])
+			buf.WriteString(canonicalJSON(values[k]))
 			continue
 		}
 		innerKeys, innerValues, err := decodeRawObject(values[k])
 		if err != nil {
 			innerKeys, innerValues = nil, map[string]json.RawMessage{}
+		}
+		for ik, raw := range innerValues {
+			innerValues[ik] = json.RawMessage(canonicalJSON(raw))
 		}
 		for _, u := range updates {
 			ub, err := enc(u.value)
@@ -347,6 +355,16 @@ func renderRefreshedAuthRecords(text []byte, scope, accessToken, refreshToken st
 	return out.Bytes(), nil
 }
 
+// canonicalJSON is JSON.stringify(JSON.parse(raw)): the persisted file is
+// re-serialized from the parsed value, so escapes (\u003c), number spellings
+// (1.0) and key order normalize the way they do in TS.
+func canonicalJSON(raw json.RawMessage) string {
+	if v, ok := jsonorder.Parse(raw); ok {
+		return jsonorder.Stringify(v)
+	}
+	return string(raw)
+}
+
 // decodeRawObject returns an object's keys in file order (first occurrence)
 // with each key's last raw value, like a JS object parsed from JSON.
 func decodeRawObject(data []byte) ([]string, map[string]json.RawMessage, error) {
@@ -375,7 +393,7 @@ func decodeRawObject(data []byte) ([]string, map[string]json.RawMessage, error) 
 		}
 		m[key] = raw
 	}
-	return order, m, nil
+	return jsonorder.JSKeyOrder(order), m, nil
 }
 
 func persistAuthRecords(path string, data []byte) error {

@@ -149,7 +149,11 @@ func ReadSubscription(ctx context.Context, opts ReadSubscriptionOptions) (*Subsc
 		findExecutable = FindGitHubCliExecutable
 	}
 	executable, err := findExecutable(ctx, env, goos)
-	if err != nil || executable == "" {
+	if err != nil {
+		// TS awaits the finder without a catch: a rejection propagates.
+		return nil, err
+	}
+	if executable == "" {
 		return nil, nil
 	}
 
