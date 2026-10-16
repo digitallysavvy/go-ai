@@ -117,3 +117,20 @@ func NewMissingVideoOptionsError(field string) *Error {
 func newVideoGenerationErrorText(message string) *Error {
 	return &Error{Code: 500, ErrorCode: "KLINGAI_VIDEO_GENERATION_ERROR", Message: message}
 }
+
+// missingCredentialsError is the error DoStart and DoStatus return when no
+// credentials are configured: TS throws LoadAPIKeyError, while v0.5.2 returned
+// the *Error from NewAuthError. Both match with errors.As; the text is the TS
+// LoadAPIKeyError message.
+type missingCredentialsError struct {
+	loadErr error
+	auth    *Error
+}
+
+func newMissingCredentialsError(loadErr error) error {
+	return &missingCredentialsError{loadErr: loadErr, auth: NewAuthError(loadErr.Error())}
+}
+
+func (e *missingCredentialsError) Error() string { return e.loadErr.Error() }
+
+func (e *missingCredentialsError) Unwrap() []error { return []error{e.loadErr, e.auth} }
