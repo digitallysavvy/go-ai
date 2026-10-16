@@ -139,3 +139,21 @@ data: {"type":"response.completed","response":{"object":"response","output":[],"
 		t.Fatalf("finish = %v, want tool-calls", chunks[2].FinishReason)
 	}
 }
+
+// TS xai-responses doStream enqueues reasoning-delta for every
+// reasoning_summary_text.delta / reasoning_text.delta, including empty ones.
+func TestXAIResponsesStreamEmptyReasoningDeltasEmitted(t *testing.T) {
+	chunks := drainXAIResponses(t, `data: {"type":"response.reasoning_summary_part.added","item_id":"r1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
+
+data: {"type":"response.reasoning_summary_text.delta","item_id":"r1","output_index":0,"summary_index":0,"delta":""}
+
+data: {"type":"response.reasoning_text.delta","item_id":"r2","output_index":1,"content_index":0,"delta":""}
+
+data: {"type":"response.completed","response":{"object":"response","output":[],"status":"completed","usage":{"input_tokens":2,"output_tokens":3}}}
+
+`)
+	got := strings.Join(xaiChunkTypes(chunks), ",")
+	if !strings.HasPrefix(got, "reasoning-start,reasoning,reasoning-start,reasoning") {
+		t.Fatalf("chunks = %s", got)
+	}
+}

@@ -93,7 +93,7 @@ func convertMistralSystemMessage(msg types.Message) map[string]interface{} {
 func convertMistralUserMessage(msg types.Message) (map[string]interface{}, error) {
 	parts := make([]map[string]interface{}, 0, len(msg.Content))
 	for _, part := range msg.Content {
-		switch p := part.(type) {
+		switch p := derefMistralUserPart(part).(type) {
 		case types.TextContent:
 			parts = append(parts, map[string]interface{}{"type": "text", "text": p.Text})
 		case types.ImageContent:
@@ -263,8 +263,16 @@ func mistralToolCalls(toolCalls []types.ToolCall) []map[string]interface{} {
 func convertMistralToolMessages(msg types.Message) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(msg.Content))
 	for _, part := range msg.Content {
-		tr, ok := part.(types.ToolResultContent)
-		if !ok {
+		var tr types.ToolResultContent
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			tr = p
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			tr = *p
+		default:
 			continue
 		}
 		result = append(result, map[string]interface{}{
@@ -311,6 +319,30 @@ func derefMistralPart(part types.ContentPart) types.ContentPart {
 			return *p
 		}
 	case *types.ToolErrorContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ToolResultContent:
+		if p != nil {
+			return *p
+		}
+	}
+	return part
+}
+
+// derefMistralUserPart unwraps pointer user content parts so a *TextContent or
+// *FileContent is converted exactly like its value form instead of dropped.
+func derefMistralUserPart(part types.ContentPart) types.ContentPart {
+	switch p := part.(type) {
+	case *types.TextContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ImageContent:
+		if p != nil {
+			return *p
+		}
+	case *types.FileContent:
 		if p != nil {
 			return *p
 		}

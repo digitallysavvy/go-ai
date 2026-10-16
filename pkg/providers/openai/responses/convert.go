@@ -161,7 +161,7 @@ func (o ConvertOptions) toolSearchName() string {
 func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode string, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
 	input := make([]interface{}, 0, len(prompt.Messages)+1)
 	var warnings []types.Warning
-	if err := validateToolOutputFileReferences(prompt, openAIProviderOptionsName(opts)); err != nil {
+	if err := validateToolOutputFileReferences(prompt, opts); err != nil {
 		return nil, nil, err
 	}
 	opts.programmaticCallerIDs = collectProgrammaticCallerIDs(prompt, openAIProviderOptionsName(opts))
@@ -1781,6 +1781,10 @@ func convertToolSearchOutput(part types.ToolResultContent, execution string) int
 	if execution == "client" {
 		callID = &part.ToolCallID
 	}
+	// TS always sends `tools` (an empty array when nothing was loaded).
+	if parsed.Tools == nil {
+		parsed.Tools = []json.RawMessage{}
+	}
 	return ToolSearchOutputItem{
 		Type:      "tool_search_output",
 		Execution: execution,
@@ -2101,7 +2105,8 @@ func shouldSkipApprovalDeniedOutput(part types.ToolResultContent) bool {
 // validateToolOutputFileReferences mirrors TS resolveProviderReference for
 // file blocks inside tool-result content: a reference naming other providers
 // but not providerName is a NoSuchProviderReferenceError.
-func validateToolOutputFileReferences(prompt types.Prompt, providerName string) error {
+func validateToolOutputFileReferences(prompt types.Prompt, opts ConvertOptions) error {
+	providerName := openAIProviderOptionsName(opts)
 	for _, msg := range prompt.Messages {
 		for _, part := range msg.Content {
 			var tr types.ToolResultContent
@@ -2119,14 +2124,28 @@ func validateToolOutputFileReferences(prompt types.Prompt, providerName string) 
 			if tr.Output == nil {
 				continue
 			}
+			if tr.Output.Type != types.ToolResultOutputContent {
+				continue
+			}
+			// TS custom tool outputs have no reference branch.
+			isCustom := isOpenAICustomToolName(tr.ToolName, opts.CustomToolNames)
 			for _, block := range tr.Output.Content {
 				b, ok := block.(types.FileContentBlock)
 				if !ok {
 					continue
 				}
-				if len(b.FileData.Reference) > 0 && (b.FileData.Type == types.FileDataTypeReference || b.FileData.Type == "") {
+				if !isCustom && len(b.FileData.Reference) > 0 && (b.FileData.Type == types.FileDataTypeReference || b.FileData.Type == "") {
 					if _, err := resolveProviderReferenceStrict(b.FileData.Reference, providerName); err != nil {
 						return err
+					}
+				}
+				// TS resolveFullMediaType throws for inline bytes whose bare or
+				// wildcard media type cannot be detected.
+				if toolResultBlockDataType(b) == types.FileDataTypeData {
+					if data := fileContentBlockDataBase64(b); data != "" {
+						if _, err := resolveInlineBase64MediaType(firstNonEmpty(b.MediaType, b.FileData.MediaType), data); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -2220,19 +2239,7 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 					})
 				case types.FileContentBlock:
 					mediaType := firstNonEmpty(b.MediaType, b.FileData.MediaType)
-					fileDataType := b.FileData.Type
-					if fileDataType == "" {
-						switch {
-						case b.URL != "":
-							fileDataType = types.FileDataTypeURL
-						case b.Reference != "" || len(b.FileData.Reference) > 0:
-							fileDataType = types.FileDataTypeReference
-						case len(b.Data) > 0:
-							fileDataType = types.FileDataTypeData
-						case b.FileData.DataString != "" || len(b.FileData.Data) > 0:
-							fileDataType = types.FileDataTypeData
-						}
-					}
+					fileDataType := toolResultBlockDataType(b)
 					switch fileDataType {
 					case types.FileDataTypeReference:
 						if opts.customToolOutput {
@@ -2317,11 +2324,34 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 			// were all dropped is sent as an empty array.
 			return parts
 		}
+		// TS custom tool outputs default to "" for an unknown output type.
+		if opts.customToolOutput {
+			return ""
+		}
 	}
 	if s, ok := tr.Result.(string); ok {
 		return s
 	}
 	return fmt.Sprintf("%v", tr.Result)
+}
+
+// toolResultBlockDataType returns the block's explicit file data type, or the
+// one implied by which payload field is set.
+func toolResultBlockDataType(b types.FileContentBlock) types.FileDataType {
+	if b.FileData.Type != "" {
+		return b.FileData.Type
+	}
+	switch {
+	case b.URL != "":
+		return types.FileDataTypeURL
+	case b.Reference != "" || len(b.FileData.Reference) > 0:
+		return types.FileDataTypeReference
+	case len(b.Data) > 0:
+		return types.FileDataTypeData
+	case b.FileData.DataString != "" || len(b.FileData.Data) > 0:
+		return types.FileDataTypeData
+	}
+	return ""
 }
 
 func fileContentBlockDataBase64(block types.FileContentBlock) string {

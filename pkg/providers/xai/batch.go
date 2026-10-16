@@ -232,10 +232,13 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 func (b *Batch) prepareBatchRequest(req provider.BatchV4Request) (endpoint string, body map[string]interface{}, warnings []types.Warning, err error) {
 	if req.Type == provider.BatchRequestTypeText {
 		lm := NewResponsesLanguageModel(b.provider, req.Text.ModelID)
-		reqBody, reqWarnings, err := lm.buildRequestBody(&req.Text.Options, false)
+		reqBody, bodyWarnings, err := lm.buildRequestBody(&req.Text.Options, false)
 		if err != nil {
 			return "", nil, nil, err
 		}
+		// TS prepareRequest returns the full warning list: the unsupported
+		// penalty/stop settings first, then the body warnings.
+		reqWarnings := append(xaiResponsesWarnings(&req.Text.Options), bodyWarnings...)
 		// The batch sub-request URL already encodes the intent (a
 		// non-streaming Responses call); the wire body itself carries no
 		// `stream` key in TS.
@@ -757,6 +760,24 @@ type xaiBatchTextUsageWire struct {
 	CostInUsdTicks          *int64                    `json:"cost_in_usd_ticks,omitempty"`
 	PromptTokensDetails     *xaiBatchUsageDetailsWire `json:"prompt_tokens_details,omitempty"`
 	CompletionTokensDetails *xaiBatchUsageDetailsWire `json:"completion_tokens_details,omitempty"`
+
+	// Raw is the complete usage object (TS `raw: usage`).
+	Raw map[string]interface{} `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the full object in Raw.
+func (u *xaiBatchTextUsageWire) UnmarshalJSON(data []byte) error {
+	type alias xaiBatchTextUsageWire
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	*u = xaiBatchTextUsageWire(a)
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err == nil {
+		u.Raw = raw
+	}
+	return nil
 }
 
 type xaiBatchTextResponseWire struct {
@@ -823,6 +844,7 @@ func convertXAIBatchTextUsage(u xaiBatchTextUsageWire) types.Usage {
 			TextTokens:      &textOut,
 			ReasoningTokens: &reasoning,
 		},
+		Raw: u.Raw,
 	}
 }
 

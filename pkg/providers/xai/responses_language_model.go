@@ -193,12 +193,6 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 	if opts == nil {
 		return warnings
 	}
-	if len(opts.StopSequences) > 0 {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "stopSequences",
-		})
-	}
 	// Row dc2f851: xAI Responses does not support frequencyPenalty/
 	// presencePenalty (topK IS supported and forwarded as top_k, see
 	// buildRequestBody).
@@ -207,6 +201,13 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 	}
 	if opts.PresencePenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
+	}
+	// TS warns frequencyPenalty, presencePenalty, then stopSequences.
+	if len(opts.StopSequences) > 0 {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "stopSequences",
+		})
 	}
 	return warnings
 }
@@ -246,47 +247,6 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		body["stream"] = true
 	}
 
-	// Reasoning effort: provider option takes precedence over top-level
-	// opts.Reasoning. Effort map mirrors TS: {minimal:'low', low:'low',
-	// medium:'medium', high:'high', xhigh: grok-4.6 ? 'xhigh' : 'high'}.
-	// Row 8e006de: grok-4.20-(non-)reasoning models reject the reasoning
-	// effort parameter entirely (including "none"); reasoning:"none" maps to
-	// effort "none" (not omitted) on models that do support it.
-	effort := xaiOpts.ReasoningEffort
-	// TS gates this whole branch on isCustomReasoning(reasoning), which
-	// excludes the "provider-default" sentinel (types.ReasoningDefault):
-	// requesting the provider's own default reasoning is never "custom"
-	// reasoning and must never trigger the unsupported-model warning below.
-	if effort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
-		if !supportsReasoningEffort(m.modelID) {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoning",
-				Details: fmt.Sprintf("reasoning %q is not supported by this model.", string(*opts.Reasoning)),
-			})
-		} else {
-			if *opts.Reasoning == types.ReasoningNone {
-				effort = "none"
-			} else {
-				xhigh := "high"
-				if m.modelID == "grok-4.6" {
-					xhigh = "xhigh"
-				}
-				effort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, map[types.ReasoningLevel]string{
-					types.ReasoningMinimal: "low", types.ReasoningLow: "low",
-					types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
-					types.ReasoningXHigh: xhigh, types.ReasoningMax: xhigh,
-				}, &warnings)
-			}
-		}
-	}
-
-	// Row 0a5dd0f9c3: xAI ignores the requested reasoning summary level and
-	// always returns a detailed summary, so reasoning.summary is no longer
-	// sent (xaiOpts.ReasoningSummary is deprecated and read nowhere here).
-	if effort != "" {
-		body["reasoning"] = map[string]interface{}{"effort": effort}
-	}
 	if opts.MaxTokens != nil {
 		body["max_output_tokens"] = *opts.MaxTokens
 	}
@@ -407,6 +367,49 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 				body["tool_choice"] = choice
 			}
 		}
+	}
+
+	// TS resolves reasoning after the input and tool warnings.
+	// Reasoning effort: provider option takes precedence over top-level
+	// opts.Reasoning. Effort map mirrors TS: {minimal:'low', low:'low',
+	// medium:'medium', high:'high', xhigh: grok-4.6 ? 'xhigh' : 'high'}.
+	// Row 8e006de: grok-4.20-(non-)reasoning models reject the reasoning
+	// effort parameter entirely (including "none"); reasoning:"none" maps to
+	// effort "none" (not omitted) on models that do support it.
+	effort := xaiOpts.ReasoningEffort
+	// TS gates this whole branch on isCustomReasoning(reasoning), which
+	// excludes the "provider-default" sentinel (types.ReasoningDefault):
+	// requesting the provider's own default reasoning is never "custom"
+	// reasoning and must never trigger the unsupported-model warning below.
+	if effort == "" && opts.Reasoning != nil && *opts.Reasoning != types.ReasoningDefault {
+		if !supportsReasoningEffort(m.modelID) {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoning",
+				Details: fmt.Sprintf("reasoning %q is not supported by this model.", string(*opts.Reasoning)),
+			})
+		} else {
+			if *opts.Reasoning == types.ReasoningNone {
+				effort = "none"
+			} else {
+				xhigh := "high"
+				if m.modelID == "grok-4.6" {
+					xhigh = "xhigh"
+				}
+				effort, _ = providerutils.MapReasoningToProviderEffort(*opts.Reasoning, map[types.ReasoningLevel]string{
+					types.ReasoningMinimal: "low", types.ReasoningLow: "low",
+					types.ReasoningMedium: "medium", types.ReasoningHigh: "high",
+					types.ReasoningXHigh: xhigh, types.ReasoningMax: xhigh,
+				}, &warnings)
+			}
+		}
+	}
+
+	// Row 0a5dd0f9c3: xAI ignores the requested reasoning summary level and
+	// always returns a detailed summary, so reasoning.summary is no longer
+	// sent (xaiOpts.ReasoningSummary is deprecated and read nowhere here).
+	if effort != "" {
+		body["reasoning"] = map[string]interface{}{"effort": effort}
 	}
 
 	return body, warnings, nil
@@ -1313,9 +1316,6 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			if e.Delta == "" {
-				continue
-			}
 			blockID := "reasoning-" + e.ItemID
 			meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1337,9 +1337,6 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				Delta  string `json:"delta"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-				continue
-			}
-			if e.Delta == "" {
 				continue
 			}
 			blockID := "reasoning-" + e.ItemID

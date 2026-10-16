@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -55,10 +54,14 @@ func ConvertPromptToXAIInput(prompt types.Prompt) ([]interface{}, []types.Warnin
 				default:
 					continue
 				}
+				output, err := xaiToolResultOutput(tr)
+				if err != nil {
+					return nil, warnings, err
+				}
 				input = append(input, map[string]interface{}{
 					"type":    "function_call_output",
 					"call_id": tr.ToolCallID,
-					"output":  xaiToolResultOutput(tr),
+					"output":  output,
 				})
 			}
 		}
@@ -311,36 +314,36 @@ func xaiUnsupportedAssistantPart(kind string) types.Warning {
 // xaiToolResultOutput maps a tool result to function_call_output.output:
 // text and error text verbatim, JSON values stringified, and content blocks
 // as input_text / input_image parts (other blocks are dropped).
-func xaiToolResultOutput(tr types.ToolResultContent) interface{} {
+func xaiToolResultOutput(tr types.ToolResultContent) (interface{}, error) {
 	out := tr.Output
 	if out == nil {
 		if tr.Error != "" {
-			return tr.Error
+			return tr.Error, nil
 		}
 		if s, ok := tr.Result.(string); ok {
-			return s
+			return s, nil
 		}
 		b, err := jsonstr.Marshal(tr.Result)
 		if err != nil {
-			return ""
+			return "", nil
 		}
-		return string(b)
+		return string(b), nil
 	}
 	switch out.Type {
 	case types.ToolResultOutputText, types.ToolResultOutputErrorText, types.ToolResultOutputError:
 		if s, ok := out.Value.(string); ok {
-			return s
+			return s, nil
 		}
 		b, _ := jsonstr.Marshal(out.Value)
-		return string(b)
+		return string(b), nil
 	case types.ToolResultOutputExecutionDenied:
 		if out.Reason != "" {
-			return out.Reason
+			return out.Reason, nil
 		}
-		return "tool execution denied"
+		return "tool execution denied", nil
 	case types.ToolResultOutputJSON, types.ToolResultOutputErrorJSON:
 		b, _ := jsonstr.Marshal(out.Value)
-		return string(b)
+		return string(b), nil
 	case types.ToolResultOutputContent:
 		parts := []interface{}{}
 		for _, block := range out.Content {
@@ -365,9 +368,11 @@ func xaiToolResultOutput(tr types.ToolResultContent) interface{} {
 				default:
 					if data := fileContentBlockDataBase64(b); data != "" {
 						// TS resolveFullMediaType sniffs a bare or wildcard type.
-						if resolved, err := resolveInlineBase64MediaType(mediaType, data); err == nil {
-							mediaType = resolved
+						resolved, err := resolveInlineBase64MediaType(mediaType, data)
+						if err != nil {
+							return nil, err
 						}
+						mediaType = resolved
 						parts = append(parts, map[string]interface{}{
 							"type":      "input_image",
 							"image_url": fmt.Sprintf("data:%s;base64,%s", mediaType, data),
@@ -376,7 +381,8 @@ func xaiToolResultOutput(tr types.ToolResultContent) interface{} {
 				}
 			}
 		}
-		return parts
+		return parts, nil
 	}
-	return strings.TrimSpace(fmt.Sprint(out.Value))
+	// TS: an unknown output type sends "".
+	return "", nil
 }
