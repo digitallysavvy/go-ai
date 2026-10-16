@@ -524,10 +524,13 @@ func (m *ImageModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
+		code, message := "", http.StatusText(statusErr.StatusCode)
 		if apiErr, ok := parseQuiverAIErrorBody(statusErr.Body); ok {
-			return providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, err)
+			code, message = apiErr.Code, apiErr.Message
 		}
-		return providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", http.StatusText(statusErr.StatusCode), err)
+		perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, code, message, err)
+		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
+		return perr
 	}
 	// Not an HTTP response (an abort, "Cannot connect to API", an invalid-JSON
 	// body already typed as an APICallError): TS lets these through unchanged,

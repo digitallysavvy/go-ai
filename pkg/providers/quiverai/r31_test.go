@@ -24,3 +24,19 @@ func TestDoGenerateCancelledContextIsNotAProviderError500(t *testing.T) {
 		t.Fatalf("err = %#v", err)
 	}
 }
+
+// TS quiveraiFailedResponseHandler: isRetryable is 429 or >=500 only, so 408
+// and 409 (retryable by the APICallError default) are not.
+func TestFailedResponsesRetryOnly429And5xx(t *testing.T) {
+	for status, want := range map[int]bool{400: false, 408: false, 409: false, 429: true, 500: true, 503: true} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		_, err := NewImageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), ModelArrow11).DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "logo"})
+		srv.Close()
+		var perr *providererrors.ProviderError
+		if !errors.As(err, &perr) || perr.IsRetryable() != want {
+			t.Errorf("status %d: retryable = %v, want %v (err %v)", status, perr != nil && perr.IsRetryable(), want, err)
+		}
+	}
+}

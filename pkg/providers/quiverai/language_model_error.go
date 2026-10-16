@@ -23,11 +23,21 @@ func quiverAIFailedResponseHandler(statusErr *internalhttp.HTTPStatusError) erro
 		perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, nil)
 		perr.Data = apiErr
 		perr.ResponseBody = string(statusErr.Body)
+		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 		return perr
 	}
 	perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", http.StatusText(statusErr.StatusCode), nil)
 	perr.ResponseBody = string(statusErr.Body)
+	perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 	return perr
+}
+
+// quiverAIRetryable is the TS quiveraiFailedResponseHandler isRetryable:
+// only 429 and 5xx, unlike the APICallError default that also retries 408
+// and 409.
+func quiverAIRetryable(status int) *bool {
+	retryable := status == http.StatusTooManyRequests || status >= 500
+	return &retryable
 }
 
 // parseQuiverAIErrorBody validates body against the TS quiveraiErrorSchema:
