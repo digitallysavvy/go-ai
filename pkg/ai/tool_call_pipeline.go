@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 )
@@ -362,8 +363,9 @@ func parseProviderExecutedDynamicToolCall(call types.ToolCall) (types.ToolCall, 
 // input takes precedence; an empty input is treated as an empty object (many
 // models emit empty strings for tools without arguments).
 func toolCallInputArguments(call types.ToolCall) (map[string]interface{}, error) {
-	raw := strings.TrimSpace(call.RawArguments)
-	if raw == "" {
+	raw := call.RawArguments
+	// TS: toolCall.input.trim() === '' (JavaScript whitespace).
+	if providerutils.JSTrim(raw) == "" {
 		if call.Arguments == nil {
 			return map[string]interface{}{}, nil
 		}

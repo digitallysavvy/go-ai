@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // GenerateID returns a compact random ID for provider deltas that omit a tool
@@ -207,7 +207,7 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 	name := nonBlank(delta.Name)
 	index := delta.Index
 	hasExplicitCallStart := name != "" && StartsWithStructuredValue(delta.ArgumentsDelta)
-	hasEmptyArguments := strings.TrimSpace(delta.ArgumentsDelta) == ""
+	hasEmptyArguments := providerutils.JSTrim(delta.ArgumentsDelta) == ""
 
 	res := t.resolveToolCall(wireID, index, name, hasExplicitCallStart, hasEmptyArguments)
 	if res.kind == resolutionAmbiguous {
@@ -711,7 +711,7 @@ func cloneIntPtr(p *int) *int {
 // otherwise "". Ports TS StreamingToolCallTracker.getNonBlankString; the
 // returned string is never trimmed, only tested for blankness.
 func nonBlank(value string) string {
-	if strings.TrimSpace(value) == "" {
+	if providerutils.JSTrim(value) == "" {
 		return ""
 	}
 	return value
