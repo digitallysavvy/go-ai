@@ -1981,7 +1981,7 @@ func executionDeniedOutput(reason string) map[string]interface{} {
 func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (awaiting bool, err error) {
 	call, ok := d.toolCallsByID[part.ToolCallID]
 	if !ok {
-		return false, fmt.Errorf("harness '%s' emitted approval request '%s' for unknown tool call '%s'", d.in.Harness.HarnessID(), part.ApprovalID, part.ToolCallID)
+		return false, fmt.Errorf("Harness '%s' emitted approval request '%s' for unknown tool call '%s'.", d.in.Harness.HarnessID(), part.ApprovalID, part.ToolCallID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	raw := d.execToolCallsByID[part.ToolCallID]
 	toolName := call.ToolName
@@ -1991,7 +1991,7 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 	if !IsBuiltinToolIncluded(toolName, d.in.BuiltinToolFiltering) {
 		submitter, ok := d.control.(ToolApprovalSubmitter)
 		if !ok {
-			return false, fmt.Errorf("harness '%s' emitted a built-in tool approval request but does not support approval responses", d.in.Harness.HarnessID())
+			return false, fmt.Errorf("Harness '%s' emitted a built-in tool approval request but does not support approval responses.", d.in.Harness.HarnessID()) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		// The runtime may report a step boundary while it waits for this
 		// decision; that boundary must not end the step before the denied
@@ -2066,7 +2066,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 
 	hostCall := d.validatedHostCallsByID[raw.ToolCallID]
 	if hostCall == nil {
-		return false, fmt.Errorf("harness '%s' could not validate host tool '%s'", d.in.Harness.HarnessID(), raw.ToolName)
+		return false, fmt.Errorf("Harness '%s' could not validate host tool '%s'.", d.in.Harness.HarnessID(), raw.ToolName) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	// Schema-invalid input is rejected here, before any approval decision is
 	// made and without ever calling tool.Execute — mirrors TS's
@@ -2574,7 +2574,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		d.settledBuiltinIDs[approval.ToolCallID] = struct{}{}
 		submitter, ok := d.control.(ToolApprovalSubmitter)
 		if !ok {
-			return turnOutcomeContinue, fmt.Errorf("harness '%s' emitted a built-in tool approval request but does not support approval responses", d.in.Harness.HarnessID())
+			return turnOutcomeContinue, fmt.Errorf("Harness '%s' emitted a built-in tool approval request but does not support approval responses.", d.in.Harness.HarnessID()) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if err := submitter.SubmitToolApproval(d.ctx, ToolApprovalSubmission{ApprovalID: approval.ApprovalID, Approved: continuation.Approved, Reason: continuation.Reason}); err != nil {
 			return turnOutcomeContinue, err
@@ -2592,7 +2592,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	}
 
 	if validatedHostToolCall == nil {
-		return turnOutcomeContinue, fmt.Errorf("harness '%s' could not validate approved host tool '%s'", d.in.Harness.HarnessID(), approval.ToolName)
+		return turnOutcomeContinue, fmt.Errorf("Harness '%s' could not validate approved host tool '%s'.", d.in.Harness.HarnessID(), approval.ToolName) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	// Revalidation rejected the input: settle as a tool-error, exactly like
 	// a first-pass invalid host tool call (rejectInvalidHostToolCall),
