@@ -278,6 +278,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	// Step 2: Submit transcription job.
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, warnings := m.buildRequestBody(opts)
 	body["audio_url"] = uploadResult.UploadURL
 

@@ -175,6 +175,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, err := m.buildRequestBody(opts)
 	if err != nil {
 		return nil, err

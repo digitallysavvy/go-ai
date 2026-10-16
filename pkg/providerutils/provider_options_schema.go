@@ -497,3 +497,27 @@ func OptURL(httpsOnly bool) OptionCheck {
 		return nil
 	}
 }
+
+// OptObjectWith is z.object({...}) for a nested object whose listed members
+// are required (the others are optional, null rejected like .optional()).
+func OptObjectWith(schema OptionSchema, required ...string) OptionCheck {
+	inner := OptObject(schema)
+	return func(path string, v interface{}) error {
+		obj, ok := asOptionObject(v)
+		if !ok {
+			return typeIssue(path, "object", v)
+		}
+		for _, key := range required {
+			if member, present := obj[key]; !present || member == nil {
+				// Let the member's own check word the failure when present (null).
+				if check, known := schema[key]; known {
+					if err := check(path+"."+key, member); err != nil {
+						return err
+					}
+				}
+				return typeIssue(path+"."+key, "value", nil)
+			}
+		}
+		return inner(path, v)
+	}
+}

@@ -163,6 +163,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	currentDate := time.Now()
 	callOpts := &opts.VideoModelV3CallOptions
 
+	if err := validateVideoOptions(callOpts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, err := m.buildStartRequestBody(callOpts)
 	if err != nil {
 		return nil, err

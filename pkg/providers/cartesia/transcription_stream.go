@@ -128,6 +128,9 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 
 	currentDate := time.Now()
 	warnings := []types.Warning{}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	cartesiaOpts := extractTranscriptionModelOptions(opts.ProviderOptions)
 
 	var language *string

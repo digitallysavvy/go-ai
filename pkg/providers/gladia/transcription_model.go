@@ -208,6 +208,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	// Step 2: start a pre-recorded transcription job.
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body := buildRequestBody(extractOptions(opts.ProviderOptions))
 	body["audio_url"] = uploadResult.AudioURL
 

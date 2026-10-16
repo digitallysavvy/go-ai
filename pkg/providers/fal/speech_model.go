@@ -108,6 +108,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, warnings := m.buildRequestBody(opts)
 	currentDate := time.Now()
 
