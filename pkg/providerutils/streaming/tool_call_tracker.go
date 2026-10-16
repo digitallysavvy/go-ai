@@ -36,6 +36,62 @@ type ToolCallDelta struct {
 	Name             string
 	ArgumentsDelta   string
 	ProviderMetadata map[string]interface{}
+
+	// NameBlank reports that the wire delta carried a function name that was
+	// present but empty or whitespace-only. TS ignores such a delta when it
+	// would start a new call (it never creates a tracked call) and never
+	// treats it as an error, even when no other call exists.
+	NameBlank bool
+	// NameAbsent reports that the wire delta had no function name at all
+	// (missing or null). TS throws "Expected 'function.name' to be a string."
+	// when such a delta would start a new call, regardless of sibling calls.
+	// Callers that cannot tell blank from absent leave both false and get the
+	// legacy deferred behavior (see Flush).
+	NameAbsent bool
+}
+
+// WireName is a function name decoded from JSON that remembers whether the
+// field was present, so callers can fill ToolCallDelta.NameBlank/NameAbsent
+// the way TS distinguishes `name: ""` from a missing or null name.
+type WireName struct {
+	Value   string
+	Present bool
+}
+
+// UnmarshalJSON decodes a JSON string (Present) or null (absent).
+func (n *WireName) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		*n = WireName{}
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*n = WireName{Value: v, Present: true}
+	return nil
+}
+
+// MarshalJSON encodes the name as a string (null when absent).
+func (n WireName) MarshalJSON() ([]byte, error) {
+	if !n.Present {
+		return []byte("null"), nil
+	}
+	return json.Marshal(n.Value)
+}
+
+// String returns the decoded name ("" when absent).
+func (n WireName) String() string { return n.Value }
+
+// TrackWire is Track for callers that decoded the function name as a
+// WireName: a present-but-blank name and an absent name behave as in TS.
+func (t *StreamingToolCallTracker) TrackWire(index *int, id string, name WireName, delta string) []ToolCallChunk {
+	d := ToolCallDelta{Index: index, ID: id, Name: name.Value, ArgumentsDelta: delta}
+	if nonBlank(name.Value) == "" {
+		d.NameBlank = name.Present
+		d.NameAbsent = !name.Present
+	}
+	return t.TrackDelta(d)
 }
 
 // ToolCallChunk is a chunk emitted by the tracker while processing or
@@ -63,6 +119,10 @@ type trackedToolCall struct {
 	hasFinished    bool
 	inputStarted   bool
 	metadata       map[string]interface{}
+	// strictAbsent is set when the creating delta was known to have no
+	// function name at all (ToolCallDelta.NameAbsent): TS throws for such a
+	// call whatever else is in flight, so Flush never drops it silently.
+	strictAbsent bool
 }
 
 // resolutionKind mirrors TS's ToolCallResolution discriminated union
@@ -158,7 +218,13 @@ func (t *StreamingToolCallTracker) TrackDelta(delta ToolCallDelta) []ToolCallChu
 	var chunks []ToolCallChunk
 
 	if res.kind == resolutionNew {
+		// TS: a present-but-blank name cannot start a usable call and is
+		// ignored outright -- never an error, even if nothing else succeeds.
+		if name == "" && delta.NameBlank {
+			return nil
+		}
 		call = t.processNewToolCall(delta, wireID, index, name)
+		call.strictAbsent = name == "" && delta.NameAbsent
 		if name != "" {
 			chunks = t.startChunksForNewCall(call)
 		}
@@ -247,7 +313,7 @@ func (t *StreamingToolCallTracker) Flush() []ToolCallChunk {
 		if call.hasFinished {
 			continue
 		}
-		if call.name == "" && hasNamedCall {
+		if call.name == "" && hasNamedCall && !call.strictAbsent {
 			call.hasFinished = true
 			continue
 		}

@@ -235,8 +235,8 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 						ID       string  `json:"id"`
 						Type     *string `json:"type"` // nullable mid-stream
 						Function struct {
-							Name      string `json:"name"`
-							Arguments string `json:"arguments"`
+							Name      WireName `json:"name"`
+							Arguments string   `json:"arguments"`
 						} `json:"function"`
 						ExtraContent map[string]interface{} `json:"extra_content,omitempty"`
 					} `json:"tool_calls,omitempty"`
@@ -400,13 +400,18 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
 				for _, tc := range choice.Delta.ToolCalls {
-					chunks := s.toolCallTracker.TrackDelta(ToolCallDelta{
+					delta := ToolCallDelta{
 						Index:            tc.Index,
 						ID:               tc.ID,
-						Name:             tc.Function.Name,
+						Name:             tc.Function.Name.Value,
 						ArgumentsDelta:   tc.Function.Arguments,
 						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent, s.MetadataKey),
-					})
+					}
+					if nonBlank(delta.Name) == "" {
+						delta.NameBlank = tc.Function.Name.Present
+						delta.NameAbsent = !tc.Function.Name.Present
+					}
+					chunks := s.toolCallTracker.TrackDelta(delta)
 					s.enqueueChunks(chunks)
 				}
 			}

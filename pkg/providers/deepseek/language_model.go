@@ -704,8 +704,8 @@ type deepseekStreamChunk struct {
 				ID       string `json:"id"`
 				Type     string `json:"type"`
 				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
+					Name      streaming.WireName `json:"name"`
+					Arguments string             `json:"arguments"`
 				} `json:"function"`
 			} `json:"tool_calls"`
 		} `json:"delta"`
@@ -935,7 +935,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: "reasoning-0"})
 				}
 				for _, tc := range choice.Delta.ToolCalls {
-					for _, chunk := range s.toolCallTracker.Track(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+					for _, chunk := range s.toolCallTracker.TrackWire(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 						c := chunk
 						s.flushQueue = append(s.flushQueue, &c)
 					}
