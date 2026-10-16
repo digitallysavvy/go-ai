@@ -123,7 +123,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 

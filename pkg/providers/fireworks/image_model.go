@@ -135,7 +135,7 @@ func (m *ImageModel) doGenerateSync(ctx context.Context, opts *provider.ImageGen
 		return nil, providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, internalhttp.StatusProviderError("fireworks", resp.StatusCode, resp.Headers, resp.Body)
 	}
 

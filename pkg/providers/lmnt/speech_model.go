@@ -85,7 +85,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	defer resp.Body.Close() //nolint:errcheck
 
 	// Check response status
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, internalhttp.StatusProviderError("lmnt", resp.StatusCode, nil, []byte(bodyBytes))
 	}

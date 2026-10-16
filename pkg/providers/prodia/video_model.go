@@ -136,7 +136,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		})
 		if err != nil {
 			reqErr = fmt.Errorf("prodia API request failed: %w", err)
-		} else if resp.StatusCode != 200 {
+		} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			reqErr = newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 		} else {
 			respBodyBytes = resp.Body

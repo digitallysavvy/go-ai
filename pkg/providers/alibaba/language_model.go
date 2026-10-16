@@ -124,7 +124,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 
 	// Check for HTTP errors
-	if httpResp.StatusCode != 200 {
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		body, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close() //nolint:errcheck
 		return nil, internalhttp.StatusProviderError("alibaba", httpResp.StatusCode, httpResp.Header, []byte(body))

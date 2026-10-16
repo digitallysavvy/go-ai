@@ -240,7 +240,7 @@ func postMultipartToProdia(ctx context.Context, reqURL, apiKey string, body *byt
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, nil, newProdiaProviderError(resp.StatusCode, respBody, resp.Header)
 	}
 

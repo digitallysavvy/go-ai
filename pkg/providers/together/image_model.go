@@ -61,7 +61,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, internalhttp.StatusProviderError("together", resp.StatusCode, resp.Headers, resp.Body)
 	}
 	if err := providerutils.MediaResponseValidator("together", providerutils.SchemaTogetherImage)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
