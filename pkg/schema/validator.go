@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 
@@ -222,14 +223,15 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 		}
 	}
 
+	// "required" and "properties" only constrain objects; any other instance
+	// type is accepted by them (the "type" keyword rejects wrong types), e.g.
+	// a {"type": ["object","null"], "required": [...]} schema accepts null.
 	if required, ok := stringSlice(sch["required"]); ok {
-		obj, ok := asMap(value)
-		if !ok {
-			return fmt.Errorf("%s: required: expected object for required properties", path)
-		}
-		for _, key := range required {
-			if _, exists := obj[key]; !exists {
-				return fmt.Errorf("%s.%s: required: property is missing", path, key)
+		if obj, isObj := asMap(value); isObj {
+			for _, key := range required {
+				if _, exists := obj[key]; !exists {
+					return fmt.Errorf("%s.%s: required: property is missing", path, key)
+				}
 			}
 		}
 	}
@@ -250,10 +252,7 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 	}
 
 	if props, ok := sch["properties"].(map[string]interface{}); ok {
-		obj, ok := asMap(value)
-		if !ok {
-			return fmt.Errorf("%s: properties: expected object", path)
-		}
+		obj, _ := asMap(value)
 		for key, rawPropSchema := range props {
 			propValue, exists := obj[key]
 			if !exists {
@@ -546,6 +545,7 @@ func validateJSONType(value interface{}, typ, path string) error {
 					return nil
 				}
 			}
+			return fmt.Errorf("%s: expected %s, got %T", path, typ, value)
 		}
 	}
 	return nil
@@ -636,18 +636,25 @@ func isInteger(value interface{}) bool {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
 		return true
 	case float32:
-		return v == float32(int64(v))
+		return isIntegralFloat(float64(v))
 	case float64:
-		return v == float64(int64(v))
+		return isIntegralFloat(v)
 	case json.Number:
 		if _, err := v.Int64(); err == nil {
 			return true
 		}
 		f, ok := toFloat64(v)
-		return ok && f == float64(int64(f))
+		return ok && isIntegralFloat(f)
 	default:
 		return false
 	}
+}
+
+// isIntegralFloat reports whether f is a finite whole number. JSON Schema
+// treats any such value (1.0, 1e20) as an integer, including magnitudes beyond
+// the int64 range.
+func isIntegralFloat(f float64) bool {
+	return !math.IsInf(f, 0) && !math.IsNaN(f) && f == math.Trunc(f)
 }
 
 // toFloat64 converts any JSON-decodable numeric Go type to float64. JSON
