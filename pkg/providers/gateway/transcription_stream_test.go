@@ -389,10 +389,16 @@ func TestTranscriptionModel_DoStream_AbnormalDisconnectAfterServerErrorSurfacesG
 		// error frame written above has necessarily already been delivered
 		// to the client's kernel socket buffer (same TCP stream, FIFO
 		// ordered), so the RST below cannot race ahead of it.
-		if _, err := gatewayTestReadClientFrame(buf.Reader); err != nil {
-			conn.Close() //nolint:errcheck
-			return
-		}
+		//
+		// The audio-done frame is NOT guaranteed: once the client sees the
+		// error part it stops audio (TS stopAudio), and if that wins the race
+		// against the pump's Next on the already-closed empty stream, the pump
+		// returns without sending audio-done. An unbounded read here then
+		// blocks forever while the client waits for the close (a rare
+		// 600s hang under load). Bound the wait and proceed either way; a
+		// short delay still lets the error frame reach the client first.
+		_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		_, _ = gatewayTestReadClientFrame(buf.Reader)
 
 		if tcpConn, ok := conn.(*net.TCPConn); ok {
 			// SetLinger(0) makes the following Close() send a RST instead of
