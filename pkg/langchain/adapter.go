@@ -211,6 +211,10 @@ func isStreamEventsEvent(v interface{}) bool {
 	if data == nil {
 		return true
 	}
+	// TS `typeof obj.data === 'object'`: an array counts.
+	if _, ok := asSlice(data); ok {
+		return true
+	}
 	_, ok = asMap(data)
 	return ok
 }
@@ -1504,7 +1508,12 @@ func processStreamEventsEvent(state *eventState, data interface{}) []ai.UIMessag
 	}
 	payload, ok := asMap(event["data"])
 	if !ok {
-		return nil
+		// TS skips only a null/undefined data; an array is a truthy object
+		// with none of the properties read below.
+		if _, isArray := asSlice(event["data"]); !isArray {
+			return nil
+		}
+		payload = map[string]interface{}{}
 	}
 	switch stringValue(event["event"]) {
 	case "on_chat_model_start":
@@ -1770,16 +1779,26 @@ func actionRequests(root map[string]interface{}) []actionRequest {
 	return out
 }
 
+// messageDataSource is the object a message's fields live on: kwargs for a
+// serialized `{type: "constructor", kwargs}` message, the message itself
+// otherwise (TS `msgObj.type === 'constructor' && msgObj.kwargs`).
 func messageDataSource(message map[string]interface{}) map[string]interface{} {
-	if kwargs, ok := asMap(message["kwargs"]); ok {
-		return kwargs
+	if message["type"] == "constructor" {
+		if kwargs, ok := asMap(message["kwargs"]); ok {
+			return kwargs
+		}
 	}
 	return message
 }
 
+// isToolMessage mirrors TS isToolMessageType for plain objects: type "tool", or
+// a serialized constructor whose id path names ToolMessage.
 func isToolMessage(message map[string]interface{}) bool {
-	if stringValue(message["type"]) == "tool" || stringValue(message["type"]) == "ToolMessage" {
+	if message["type"] == "tool" {
 		return true
+	}
+	if message["type"] != "constructor" {
+		return false
 	}
 	ids, ok := asSlice(message["id"])
 	if !ok {
@@ -1825,7 +1844,9 @@ func messageText(message map[string]interface{}) string {
 		}
 		return b.String()
 	default:
-		return stringValue(source["text"])
+		// TS getMessageText: content that is neither a string nor an array
+		// (or absent) yields no text.
+		return ""
 	}
 }
 
