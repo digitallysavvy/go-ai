@@ -549,6 +549,12 @@ func TestTSReplay_LifecycleIdentityMismatchRejected(t *testing.T) {
 	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(`{"bridge":{"port":1}}`)); err == nil {
 		t.Fatal("state without implementationIdentity must be rejected")
 	}
+	// zod .optional() rejects explicit nulls.
+	for _, bad := range []string{`{"implementationIdentity":"x","bridge":null}`, `{"implementationIdentity":"x","acpSessionId":null}`} {
+		if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(bad)); err == nil {
+			t.Fatalf("%s must be rejected", bad)
+		}
+	}
 }
 
 // finishingServer answers every `start` with a finish and records the start frames.
@@ -1186,5 +1192,56 @@ func TestTSReplay_QuestionCallbackPanicFailsTurn(t *testing.T) {
 	defer mu.Unlock()
 	if !strings.Contains(errText, "boom from fromNativeRequest") {
 		t.Fatalf("error part = %q", errText)
+	}
+}
+
+// The zod authenticationProfile schema requires digest and providerKind and
+// restricts providerKind, providerMode and gatewayCredentialSource to their
+// enums (gatewayCredentialSource may be null).
+func TestLifecycleStateAuthenticationProfileValidatedLikeZod(t *testing.T) {
+	sandbox := replaySandbox(t, "tok")
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.HarnessID = "auth-profile-acp"
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s", SandboxSession: sandbox, SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resume, err := sess.DoStop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := h.(harness.LifecycleStateValidator)
+	mutate := func(edit func(profile map[string]any)) json.RawMessage {
+		var data map[string]any
+		if err := json.Unmarshal(resume.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		profile, ok := data["authenticationProfile"].(map[string]any)
+		if !ok {
+			t.Fatalf("no authenticationProfile in %s", resume.Data)
+		}
+		edit(profile)
+		out, _ := json.Marshal(data)
+		return out
+	}
+	if err := v.ValidateLifecycleStateData(mutate(func(p map[string]any) { p["gatewayCredentialSource"] = nil })); err != nil {
+		t.Fatalf("null gatewayCredentialSource rejected: %v", err)
+	}
+	bad := map[string]func(map[string]any){
+		"missing digest":       func(p map[string]any) { delete(p, "digest") },
+		"missing providerKind": func(p map[string]any) { delete(p, "providerKind") },
+		"bad providerKind":     func(p map[string]any) { p["providerKind"] = "other" },
+		"bad providerMode":     func(p map[string]any) { p["providerMode"] = "other" },
+		"bad credential":       func(p map[string]any) { p["gatewayCredentialSource"] = "OTHER" },
+	}
+	for name, edit := range bad {
+		if err := v.ValidateLifecycleStateData(mutate(edit)); err == nil {
+			t.Fatalf("%s: state must be rejected", name)
+		}
 	}
 }

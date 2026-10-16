@@ -1,10 +1,12 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -135,6 +137,12 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 	if raw, ok := probe["implementationIdentity"]; !ok || json.Unmarshal(raw, &identity) != nil {
 		return fmt.Errorf("ACP lifecycle state data: implementationIdentity must be a string.") //nolint:staticcheck // mirrors the TS zod string requirement
 	}
+	// zod `.optional()` rejects an explicit null.
+	for _, key := range []string{"authenticationProfile", "sandboxCredentialEnvironment", "acpSessionId", "bridge", "coldSession", "turnStartConfig", "recovery", "restoration", "initialGuidanceApplied", "instructionsFingerprint", "skillsDirectory"} {
+		if raw, ok := probe[key]; ok && string(bytes.TrimSpace(raw)) == "null" {
+			return fmt.Errorf("ACP lifecycle state data: %s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
+		}
+	}
 	var v resumeStateData
 	if err := json.Unmarshal(data, &v); err != nil {
 		return fmt.Errorf("ACP lifecycle state data is invalid: %w", err)
@@ -146,6 +154,48 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 			if _, ok := bridgeProbe[key]; !ok {
 				return fmt.Errorf("ACP lifecycle state data: bridge.%s is required.", key) //nolint:staticcheck // mirrors the TS zod requirement
 			}
+		}
+	}
+	if rawProfile, ok := probe["authenticationProfile"]; ok {
+		var profile map[string]json.RawMessage
+		if err := json.Unmarshal(rawProfile, &profile); err != nil || profile == nil {
+			return fmt.Errorf("ACP lifecycle state data: authenticationProfile must be an object.") //nolint:staticcheck // mirrors the TS zod object
+		}
+		if _, ok := profile["digest"]; !ok {
+			return fmt.Errorf("ACP lifecycle state data: authenticationProfile.digest is required.") //nolint:staticcheck // mirrors the TS zod requirement
+		}
+		enums := []struct {
+			key      string
+			required bool
+			nullable bool
+			allowed  []string
+		}{
+			{"providerKind", true, false, []string{"implementation-default", "direct", "ai-gateway"}},
+			{"providerMode", false, false, []string{"auto", "direct", "ai-gateway"}},
+			{"gatewayCredentialSource", false, true, []string{"AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"}},
+		}
+		for _, e := range enums {
+			raw, present := profile[e.key]
+			if !present {
+				if e.required {
+					return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s is required.", e.key) //nolint:staticcheck // mirrors the TS zod requirement
+				}
+				continue
+			}
+			if e.nullable && string(bytes.TrimSpace(raw)) == "null" {
+				continue
+			}
+			var value string
+			if json.Unmarshal(raw, &value) != nil || !slices.Contains(e.allowed, value) {
+				return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s must be one of %s.", e.key, strings.Join(e.allowed, ", ")) //nolint:staticcheck // mirrors the TS zod enum
+			}
+		}
+	}
+	if rawRecovery, ok := probe["recovery"]; ok {
+		var recovery map[string]json.RawMessage
+		_ = json.Unmarshal(rawRecovery, &recovery)
+		if _, ok := recovery["reason"]; !ok {
+			return fmt.Errorf("ACP lifecycle state data: recovery.reason is required.") //nolint:staticcheck // mirrors the TS zod requirement
 		}
 	}
 	if r := v.Recovery; r != nil && r.Mode != "disk-replay" && r.Mode != "lossy-rerun" {
