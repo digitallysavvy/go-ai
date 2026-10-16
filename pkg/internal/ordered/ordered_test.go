@@ -75,3 +75,28 @@ func TestRunStopsAfterErrorAndCancel(t *testing.T) {
 		t.Fatalf("after cancel, started = %v", started)
 	}
 }
+
+// TS Promise.all starts every call up front when the limit is unset or covers
+// all items, so one call failing must not stop a sibling from starting.
+func TestRunUnboundedStartsEveryCallDespiteError(t *testing.T) {
+	for _, limit := range []int{0, 8} {
+		for iter := 0; iter < 200; iter++ {
+			var mu sync.Mutex
+			ran := map[int]bool{}
+			started := Run(context.Background(), 8, limit, func(i int) error {
+				mu.Lock()
+				ran[i] = true
+				mu.Unlock()
+				if i == 0 {
+					return errors.New("boom")
+				}
+				return nil
+			})
+			for i, s := range started {
+				if !s {
+					t.Fatalf("limit %d iter %d: index %d not started", limit, iter, i)
+				}
+			}
+		}
+	}
+}

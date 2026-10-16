@@ -29,10 +29,16 @@ func Run(ctx context.Context, n, limit int, fn func(i int) error) []bool {
 		next    int
 		stopped bool
 	)
+	// TS mapWithConcurrency uses Promise.all(items.map(execute)) when the
+	// limit is unset or covers every item: every call starts up front, so a
+	// failure or cancellation never prevents a sibling from starting.
+	// A context that is already done on entry still starts nothing.
+	unbounded := workers == n
+	doneOnEntry := ctx != nil && ctx.Err() != nil
 	claim := func() (int, bool) {
 		mu.Lock()
 		defer mu.Unlock()
-		if stopped || next >= n || (ctx != nil && ctx.Err() != nil) {
+		if next >= n || (unbounded && doneOnEntry) || (!unbounded && (stopped || (ctx != nil && ctx.Err() != nil))) {
 			return 0, false
 		}
 		i := next
