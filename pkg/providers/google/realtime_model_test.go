@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestGoogleRealtimeParseSingleMessageToMultipleEvents(t *testing.T) {
@@ -856,8 +858,9 @@ func TestGoogleRealtimeClientSecretErrorsAndURLs(t *testing.T) {
 	t.Setenv("GOOGLE_GENERATIVE_AI_API_KEY", "")
 	_, err = NewRealtimeModel(New(Config{BaseURL: srv.URL + "/v1beta"}), "gemini-2.0-flash-live-001").
 		DoCreateClientSecret(context.Background(), provider.ClientSecretOptions{})
-	if err == nil || !strings.Contains(err.Error(), "API key is required") {
-		t.Fatalf("err = %v, want API key is required", err)
+	var loadErr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &loadErr) {
+		t.Fatalf("err = %v, want LoadAPIKeyError (TS getHeaders loads the key first)", err)
 	}
 
 	for base, want := range map[string]string{

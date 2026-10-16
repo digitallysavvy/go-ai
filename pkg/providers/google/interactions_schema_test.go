@@ -240,7 +240,7 @@ func TestInteractionsOptionValidationAndAgentConfigMatchTS(t *testing.T) {
 }
 
 // TS getArgs warning order: penalties, then tool warnings; function tools send
-// description ?? '' and provider tool args keep empty strings.
+// description ?? ” and provider tool args keep empty strings.
 func TestInteractionsWarningOrderAndToolShapeMatchTS(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	model, _ := p.Interactions(ModelGemini25Flash)

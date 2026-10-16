@@ -192,6 +192,10 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 	// Resolve the API key from the provider-level and per-call header maps
 	// separately, with the per-call value taking precedence, before merging
 	// them (see the matching comment in transcription_stream.go DoStream).
+	// TS getHeaders() loads the key first: a missing key is a LoadAPIKeyError.
+	if _, err := m.prov.apiKeyHeaders(); err != nil {
+		return nil, err
+	}
 	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(m.baseSpeechTranslationHeaders())
 	callAPIKey, filteredCallHeaders := extractGoogleAPIKeyHeader(opts.Headers)
 	apiKey := baseAPIKey
