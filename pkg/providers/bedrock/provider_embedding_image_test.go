@@ -17,6 +17,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerErrs "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
@@ -908,4 +909,41 @@ type bedrockRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f bedrockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestBedrockRerankingInvalidProviderOptions(t *testing.T) {
+	model := NewRerankingModel(New(Config{Region: "us-east-1"}), "amazon.rerank-v1:0")
+	for name, po := range map[string]map[string]interface{}{
+		"nextToken number":   {"amazonBedrock": map[string]interface{}{"nextToken": 5}},
+		"fields not object":  {"bedrock": map[string]interface{}{"additionalModelRequestFields": "x"}},
+		"options not object": {"amazonBedrock": "x"},
+	} {
+		_, err := model.buildRequestBody(&provider.RerankOptions{Query: "q", Documents: []string{"a"}, ProviderOptions: po})
+		var iae *providerErrs.InvalidArgumentError
+		if !errors.As(err, &iae) {
+			t.Errorf("%s: err = %#v, want InvalidArgumentError", name, err)
+		}
+	}
+}
+
+func TestBedrockFlattenHeadersJoinsMultiValues(t *testing.T) {
+	h := http.Header{}
+	h.Add("X-Multi", "a")
+	h.Add("X-Multi", "b")
+	if got := flattenHeaders(h)["X-Multi"]; got != "a, b" {
+		t.Fatalf("got %q, want %q", got, "a, b")
+	}
+}
+
+func TestBedrockRegionResolvedLazilyFromEnv(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	p := New(Config{})
+	t.Setenv("AWS_REGION", "us-west-2")
+	if got := p.Region(); got != "us-west-2" {
+		t.Fatalf("Region() = %q, want us-west-2", got)
+	}
+	base, err := p.runtimeBaseURL()
+	if err != nil || base != "https://bedrock-runtime.us-west-2.amazonaws.com" {
+		t.Fatalf("runtimeBaseURL = %q, %v", base, err)
+	}
 }

@@ -103,6 +103,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 }
 
 func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[string]interface{}, error) {
+	if err := validateRerankProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	options := bedrockRerankingOptions(opts.ProviderOptions)
 	sources, err := bedrockRerankSources(opts.Documents)
 	if err != nil {

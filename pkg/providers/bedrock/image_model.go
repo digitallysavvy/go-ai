@@ -388,11 +388,10 @@ func boolPtr(b bool) *bool {
 }
 
 func flattenHeaders(headers http.Header) map[string]string {
-	out := make(map[string]string, len(headers))
-	for key, values := range headers {
-		if len(values) > 0 {
-			out[key] = values[0]
-		}
+	// Multi-valued headers are joined with ", " like TS extractResponseHeaders.
+	out := providerutils.ExtractHeaders(headers)
+	if out == nil {
+		return map[string]string{}
 	}
 	return out
 }

@@ -83,13 +83,17 @@ type Config struct {
 // via AWS Bedrock.
 type BedrockAnthropicProvider struct {
 	config Config
-	region string
 }
 
 // New creates a new Bedrock Anthropic provider.
 func New(config Config) *BedrockAnthropicProvider {
-	region := firstNonEmpty(config.Region, os.Getenv("AWS_REGION"))
-	return &BedrockAnthropicProvider{config: config, region: region}
+	return &BedrockAnthropicProvider{config: config}
+}
+
+// awsRegion resolves the region on every use (TS loadSetting reads AWS_REGION
+// lazily), so a region exported after New is still honored.
+func (p *BedrockAnthropicProvider) awsRegion() string {
+	return firstNonEmpty(p.config.Region, os.Getenv("AWS_REGION"))
 }
 
 // CreateAmazonBedrockAnthropic mirrors the TypeScript SDK's
@@ -112,7 +116,7 @@ func (p *BedrockAnthropicProvider) Name() string { return providerName }
 func (p *BedrockAnthropicProvider) runtimeBaseURL() (string, error) {
 	return bedrock.ResolveAmazonBedrockBaseURL(bedrock.ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
-		Region:                               p.region,
+		Region:                               p.awsRegion(),
 		Service:                              "bedrock-runtime",
 		ServiceEndpointURLEnvironmentVarName: "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
 	})
@@ -257,7 +261,7 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 		return nil, err
 	}
 
-	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.provider.region)
+	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.provider.awsRegion())
 	if err := signer.SignRequest(req, body); err != nil {
 		return nil, err
 	}

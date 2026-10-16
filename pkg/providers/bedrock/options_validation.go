@@ -231,6 +231,29 @@ func validateImageProviderOptions(providerOptions map[string]interface{}) error 
 	return nil
 }
 
+// validateRerankProviderOptions mirrors the zod validation TS runs on the
+// reranking providerOptions (amazonBedrockRerankingModelOptionsSchema):
+// nextToken must be a string and additionalModelRequestFields an object.
+func validateRerankProviderOptions(providerOptions map[string]interface{}) error {
+	key, v := firstAmazonBedrockOptions(providerOptions)
+	if key == "" {
+		return nil
+	}
+	opts, ok := v.(map[string]interface{})
+	if !ok {
+		return invalidProviderOptions(key, fmt.Errorf("expected object, received %T", v))
+	}
+	if err := checkString(opts, "nextToken"); err != nil {
+		return invalidProviderOptions(key, err)
+	}
+	if f, ok := opts["additionalModelRequestFields"]; ok && f != nil {
+		if _, isMap := f.(map[string]interface{}); !isMap {
+			return invalidProviderOptions(key, fmt.Errorf("additionalModelRequestFields: expected object, received %T", f))
+		}
+	}
+	return nil
+}
+
 func checkString(m map[string]interface{}, key string) error {
 	if v, ok := m[key]; ok && v != nil {
 		if _, isStr := v.(string); !isStr {
