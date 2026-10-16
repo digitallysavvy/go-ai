@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -33,7 +34,18 @@ func TestValidateMCPResultShape(t *testing.T) {
 		{"initialize missing serverInfo", "initialize", `{"protocolVersion":"2025-11-25","capabilities":{}}`, "serverInfo must be an object"},
 		{"initialize ok", "initialize", `{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"s","version":"1"}}`, ""},
 		{"discover missing versions", "server/discover", `{"capabilities":{}}`, "supportedVersions must be an array"},
-		{"unvalidated method", "tools/call", `{}`, ""},
+		{"tool description number", "tools/list", `{"tools":[{"name":"a","description":5,"inputSchema":{}}]}`, "description must be a string"},
+		{"tool annotation hint", "tools/list", `{"tools":[{"name":"a","annotations":{"readOnlyHint":"y"},"inputSchema":{}}]}`, "readOnlyHint must be a boolean"},
+		{"bad nextCursor", "tools/list", `{"tools":[],"nextCursor":1}`, "nextCursor must be a string"},
+		{"bad _meta", "tools/list", `{"tools":[],"_meta":[]}`, "_meta must be an object"},
+		{"resource size", "resources/list", `{"resources":[{"uri":"u","name":"n","size":"1"}]}`, "size must be a number"},
+		{"caps tools bool", "initialize", `{"protocolVersion":"x","capabilities":{"tools":{"listChanged":"y"}},"serverInfo":{"name":"s","version":"1"}}`, "tools.listChanged must be a boolean"},
+		{"discover scope", "server/discover", `{"supportedVersions":[],"capabilities":{},"cacheScope":"x"}`, "cacheScope"},
+		{"complete total", "completion/complete", `{"completion":{"values":[],"total":1.5}}`, "total must be an integer"},
+		{"call bad _meta", "tools/call", `{"content":[],"_meta":5}`, "_meta must be an object"},
+		{"call bad resultType", "tools/call", `{"content":[],"resultType":1}`, "resultType must be a string"},
+		{"call ok", "tools/call", `{"content":[],"_meta":{}}`, ""},
+		{"unvalidated method", "ping", `{}`, ""},
 		{"not an object", "tools/list", `[]`, "must be an object"},
 	}
 	for _, tc := range cases {
@@ -91,5 +103,33 @@ func TestValidateMCPResultShapeR18(t *testing.T) {
 	}
 	if isBase64String("aGk=\n") {
 		t.Error("zod z.base64() rejects newlines")
+	}
+}
+
+// undecodableCallTransport answers tools/call with a body that passes the
+// result shape check but cannot decode into CallToolResult.
+type undecodableCallTransport struct{ *mockTransport }
+
+func (u undecodableCallTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	if msg.Method == "tools/call" {
+		u.messages <- &MCPMessage{JSONRpc: "2.0", ID: msg.ID, Result: json.RawMessage(`{"content":"not-an-array"}`)}
+		return nil
+	}
+	return u.mockTransport.Send(ctx, msg)
+}
+
+// TS parses the result with its schema and reports a mismatch as
+// MCPClientError "Failed to parse server response"; a typed decode failure is
+// the same error, not a plain unmarshal error.
+func TestClientTypedDecodeFailureIsParseServerResponseError(t *testing.T) {
+	client := NewMCPClient(undecodableCallTransport{newMockTransport()}, MCPClientConfig{})
+	if err := client.Connect(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close() //nolint:errcheck
+	_, err := client.CallTool(t.Context(), "x", nil)
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || mcpErr.Message != "Failed to parse server response" {
+		t.Fatalf("err = %v, want MCPClientError Failed to parse server response", err)
 	}
 }

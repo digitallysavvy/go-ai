@@ -25,13 +25,22 @@ func validateMCPResultShape(method string, raw json.RawMessage) error {
 	case "resources/list":
 		check = func(obj map[string]json.RawMessage) error {
 			return checkObjectArray(obj, "resources", func(item map[string]json.RawMessage) error {
-				return requireStrings(item, "uri", "name")
+				if err := requireStrings(item, "uri", "name"); err != nil {
+					return err
+				}
+				if err := optionalStrings(item, "title", "description", "mimeType"); err != nil {
+					return err
+				}
+				return optionalOf(item, "a number", isJSONNumber, "size")
 			})
 		}
 	case "resources/templates/list":
 		check = func(obj map[string]json.RawMessage) error {
 			return checkObjectArray(obj, "resourceTemplates", func(item map[string]json.RawMessage) error {
-				return requireStrings(item, "uriTemplate", "name")
+				if err := requireStrings(item, "uriTemplate", "name"); err != nil {
+					return err
+				}
+				return optionalStrings(item, "title", "description", "mimeType")
 			})
 		}
 	case "resources/read":
@@ -41,15 +50,40 @@ func validateMCPResultShape(method string, raw json.RawMessage) error {
 	case "prompts/list":
 		check = func(obj map[string]json.RawMessage) error {
 			return checkObjectArray(obj, "prompts", func(item map[string]json.RawMessage) error {
-				return requireStrings(item, "name")
+				if err := requireStrings(item, "name"); err != nil {
+					return err
+				}
+				if err := optionalStrings(item, "title", "description"); err != nil {
+					return err
+				}
+				if _, ok := item["arguments"]; ok {
+					return checkObjectArray(item, "arguments", func(arg map[string]json.RawMessage) error {
+						if err := requireStrings(arg, "name"); err != nil {
+							return err
+						}
+						if err := optionalStrings(arg, "description"); err != nil {
+							return err
+						}
+						return optionalBools(arg, "required")
+					})
+				}
+				return nil
 			})
 		}
 	case "prompts/get":
 		check = func(obj map[string]json.RawMessage) error {
+			if err := optionalStrings(obj, "description"); err != nil {
+				return err
+			}
 			return checkObjectArray(obj, "messages", checkPromptMessage)
 		}
 	case "completion/complete":
 		check = checkCompleteResult
+	case "tools/call":
+		// CallToolResultSchema extends ResultSchema: _meta must be an object
+		// and resultType a string. The content union is checked by
+		// validateCallToolResult.
+		check = func(map[string]json.RawMessage) error { return nil }
 	default:
 		return nil
 	}
@@ -57,8 +91,88 @@ func validateMCPResultShape(method string, raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
 		return &MCPClientError{Message: "Failed to parse server response", Cause: fmt.Errorf("%s result must be an object", method)}
 	}
+	if err := checkResultBase(obj); err != nil {
+		return &MCPClientError{Message: "Failed to parse server response", Cause: fmt.Errorf("invalid %s result: %w", method, err)}
+	}
 	if err := check(obj); err != nil {
 		return &MCPClientError{Message: "Failed to parse server response", Cause: fmt.Errorf("invalid %s result: %w", method, err)}
+	}
+	return nil
+}
+
+func isJSONBool(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return bytes.Equal(raw, []byte("true")) || bytes.Equal(raw, []byte("false"))
+}
+
+func isJSONNumber(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) > 0 && (raw[0] == '-' || (raw[0] >= '0' && raw[0] <= '9'))
+}
+
+// optionalOf rejects a present key (null included, like z.optional) whose
+// value does not satisfy is.
+func optionalOf(obj map[string]json.RawMessage, what string, is func(json.RawMessage) bool, keys ...string) error {
+	for _, key := range keys {
+		if v, ok := obj[key]; ok && !is(v) {
+			return fmt.Errorf("%s must be %s", key, what)
+		}
+	}
+	return nil
+}
+
+func optionalStrings(obj map[string]json.RawMessage, keys ...string) error {
+	return optionalOf(obj, "a string", isJSONString, keys...)
+}
+
+func optionalBools(obj map[string]json.RawMessage, keys ...string) error {
+	return optionalOf(obj, "a boolean", isJSONBool, keys...)
+}
+
+func optionalObjects(obj map[string]json.RawMessage, keys ...string) error {
+	return optionalOf(obj, "an object", isJSONObject, keys...)
+}
+
+// checkResultBase mirrors ResultSchema (_meta object, resultType string) and
+// PaginatedResultSchema (nextCursor string).
+func checkResultBase(obj map[string]json.RawMessage) error {
+	if err := optionalObjects(obj, "_meta"); err != nil {
+		return err
+	}
+	return optionalStrings(obj, "resultType", "nextCursor")
+}
+
+// checkServerCapabilities mirrors ServerCapabilitiesSchema.
+func checkServerCapabilities(caps map[string]json.RawMessage) error {
+	if err := optionalObjects(caps, "experimental", "logging", "completions", "elicitation"); err != nil {
+		return err
+	}
+	if events, ok := caps["events"]; ok && !bytes.Equal(bytes.TrimSpace(events), []byte("null")) {
+		obj, err := requireObject(caps, "events")
+		if err != nil {
+			return err
+		}
+		if v, ok := obj["listChanged"]; ok && !bytes.Equal(bytes.TrimSpace(v), []byte("null")) && !isJSONBool(v) {
+			return fmt.Errorf("events.listChanged must be a boolean")
+		}
+	}
+	for key, flags := range map[string][]string{"prompts": {"listChanged"}, "resources": {"subscribe", "listChanged"}, "tools": {"listChanged"}} {
+		if _, ok := caps[key]; !ok {
+			continue
+		}
+		obj, err := requireObject(caps, key)
+		if err != nil {
+			return err
+		}
+		if err := optionalBools(obj, flags...); err != nil {
+			return fmt.Errorf("%s.%w", key, err)
+		}
+	}
+	if _, ok := caps["elicitation"]; ok {
+		obj, _ := requireObject(caps, "elicitation")
+		if err := optionalBools(obj, "applyDefaults"); err != nil {
+			return fmt.Errorf("elicitation.%w", err)
+		}
 	}
 	return nil
 }
@@ -123,14 +237,24 @@ func checkImplementation(obj map[string]json.RawMessage, key string) error {
 	if err != nil {
 		return err
 	}
-	return requireStrings(impl, "name", "version")
+	if err := requireStrings(impl, "name", "version"); err != nil {
+		return err
+	}
+	return optionalStrings(impl, "title")
 }
 
 func checkInitializeResult(obj map[string]json.RawMessage) error {
 	if err := requireStrings(obj, "protocolVersion"); err != nil {
 		return err
 	}
-	if _, err := requireObject(obj, "capabilities"); err != nil {
+	caps, err := requireObject(obj, "capabilities")
+	if err != nil {
+		return err
+	}
+	if err := checkServerCapabilities(caps); err != nil {
+		return fmt.Errorf("capabilities.%w", err)
+	}
+	if err := optionalStrings(obj, "instructions"); err != nil {
 		return err
 	}
 	return checkImplementation(obj, "serverInfo")
@@ -149,13 +273,46 @@ func checkDiscoverResult(obj map[string]json.RawMessage) error {
 			return fmt.Errorf("supportedVersions must contain strings")
 		}
 	}
-	_, err := requireObject(obj, "capabilities")
-	return err
+	caps, err := requireObject(obj, "capabilities")
+	if err != nil {
+		return err
+	}
+	if err := checkServerCapabilities(caps); err != nil {
+		return fmt.Errorf("capabilities.%w", err)
+	}
+	if err := optionalStrings(obj, "instructions"); err != nil {
+		return err
+	}
+	if err := optionalOf(obj, "a number", isJSONNumber, "ttlMs"); err != nil {
+		return err
+	}
+	if v, ok := obj["cacheScope"]; ok {
+		var scope string
+		if json.Unmarshal(v, &scope) != nil || (scope != "public" && scope != "private") {
+			return fmt.Errorf(`cacheScope must be "public" or "private"`)
+		}
+	}
+	return nil
 }
 
 func checkToolDefinition(tool map[string]json.RawMessage) error {
 	if err := requireStrings(tool, "name"); err != nil {
 		return err
+	}
+	if err := optionalStrings(tool, "title", "description"); err != nil {
+		return err
+	}
+	if err := optionalObjects(tool, "_meta", "annotations"); err != nil {
+		return err
+	}
+	if _, ok := tool["annotations"]; ok {
+		ann, _ := requireObject(tool, "annotations")
+		if err := optionalStrings(ann, "title"); err != nil {
+			return fmt.Errorf("annotations.%w", err)
+		}
+		if err := optionalBools(ann, "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"); err != nil {
+			return fmt.Errorf("annotations.%w", err)
+		}
 	}
 	inputSchema, err := requireObject(tool, "inputSchema")
 	if err != nil {
@@ -172,6 +329,9 @@ func checkToolDefinition(tool map[string]json.RawMessage) error {
 
 func checkResourceContents(contents map[string]json.RawMessage) error {
 	if err := requireStrings(contents, "uri"); err != nil {
+		return err
+	}
+	if err := optionalStrings(contents, "name", "title", "mimeType"); err != nil {
 		return err
 	}
 	// TS union: text string, or blob that is valid base64 (z.base64()).
@@ -215,6 +375,15 @@ func checkCompleteResult(obj map[string]json.RawMessage) error {
 	var values []json.RawMessage
 	if err := json.Unmarshal(completion["values"], &values); err != nil {
 		return fmt.Errorf("completion.values must be an array")
+	}
+	if err := optionalBools(completion, "hasMore"); err != nil {
+		return fmt.Errorf("completion.%w", err)
+	}
+	if total, ok := completion["total"]; ok {
+		var f float64
+		if json.Unmarshal(total, &f) != nil || f != float64(int64(f)) {
+			return fmt.Errorf("completion.total must be an integer")
+		}
 	}
 	if len(values) > 100 {
 		return fmt.Errorf("completion.values must contain at most 100 items")

@@ -38,7 +38,10 @@ func sliceVisible(input string, width int) string {
 	var out strings.Builder
 	visible := 0
 	i := 0
-	for i < len(input) {
+	// TS: `while (index < input.length && visible < width)`; once the width
+	// is filled only trailing ANSI sequences are kept, so a following
+	// zero-width character (combining mark, control) is dropped.
+	for i < len(input) && visible < width {
 		if input[i] == 0x1b {
 			loc := ansiPattern.FindStringIndex(input[i:])
 			if loc != nil && loc[0] == 0 {
