@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -64,4 +65,22 @@ func TestVideoAndEmbeddingHTTPErrorsCarryBody(t *testing.T) {
 	check(err)
 	_, err = NewEmbeddingModel(prov, AlibabaEmbeddingTextV4).DoEmbedMany(context.Background(), []string{"a"}, nil)
 	check(err)
+}
+
+// TS takes currentDate before the request is sent, not after the response.
+func TestVideoResponseTimestampIsTakenBeforeTheRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"output":{"task_id":"t","task_status":"PENDING"}}`))
+	}))
+	defer server.Close()
+	model := NewVideoModel(New(Config{APIKey: "k", VideoBaseURL: server.URL}), "wan2.6-t2v")
+	start, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "p"}})
+	if err != nil || time.Since(start.Response.Timestamp) < 60*time.Millisecond {
+		t.Fatalf("DoStart timestamp %v, err %v", start.Response.Timestamp, err)
+	}
+	status, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: []byte(`{"taskId":"t"}`)})
+	if err != nil || time.Since(status.Response.Timestamp) < 60*time.Millisecond {
+		t.Fatalf("DoStatus timestamp %v, err %v", status.Response.Timestamp, err)
+	}
 }
