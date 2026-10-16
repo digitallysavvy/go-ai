@@ -1170,8 +1170,8 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 			}
 			completedToolCallIDs[toolCallID] = true
 			if idx >= trailingStart {
-				outputID := messageID(msg)
-				if outputID == "" {
+				outputID, hasID := messageIDOpt(msg)
+				if !hasID {
 					outputID = fmt.Sprintf("%s:%d", toolCallID, idx)
 				}
 				trailingToolMessages[toolCallID] = trailingToolMessage{data: source, outputID: outputID}
@@ -1232,7 +1232,7 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 						}
 						chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": call.id, "errorText": errText})
 					} else {
-						chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": call.id, "output": trailing.data["content"]})
+						chunks = append(chunks, toolOutputChunk(call.id, trailing.data, "content", false))
 					}
 				}
 			}
@@ -1263,6 +1263,29 @@ func processValuesEvent(state *eventState, event StreamEvent) []ai.UIMessageChun
 
 // nowMillis is Date.now(); a variable so tests can pin it like TS vi.spyOn.
 var nowMillis = func() int64 { return time.Now().UnixMilli() }
+
+// toolOutputChunk builds a tool-output-available chunk with the output read
+// from source[key]: an absent member is left off the wire like a TS undefined
+// (JSON.stringify drops it); an explicit null is kept.
+func toolOutputChunk(toolCallID string, source map[string]interface{}, key string, preliminary bool) ai.UIMessageChunk {
+	chunk := ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID}
+	if output, present := source[key]; present {
+		chunk["output"] = output
+	}
+	if preliminary {
+		chunk["preliminary"] = true
+	}
+	return chunk
+}
+
+// stringOr is `typeof v === 'string' ? v : fallback`: unlike firstString an
+// empty string is kept.
+func stringOr(v interface{}, fallback string) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fallback
+}
 
 // toolInputAvailableChunk builds a tool-input-available chunk; an undefined
 // (nil) input is left off the wire like TS, not sent as null.
@@ -1313,7 +1336,7 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	if toolCallID == "" {
 		return nil
 	}
-	toolName := firstString(payload["name"], "unknown")
+	toolName := stringOr(payload["name"], "unknown")
 	ns := namespaceKey(event.Namespace)
 
 	var chunks []ai.UIMessageChunk
@@ -1324,11 +1347,11 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, false)...)
 	case "on_tool_event":
 		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["data"], "preliminary": true})
+		chunks = append(chunks, toolOutputChunk(toolCallID, payload, "data", true))
 	case "on_tool_end":
 		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": payload["output"]})
+		chunks = append(chunks, toolOutputChunk(toolCallID, payload, "output", false))
 	case "on_tool_error":
 		chunks = append(chunks, ensureToolInputLifecycle(state, toolCallID, toolName, ns, payload, true)...)
 		state.markToolOutputEmitted(toolCallID, ns)
@@ -1410,7 +1433,7 @@ func processToolMessage(state *eventState, message map[string]interface{}, ns st
 			chunks = append(chunks, ai.UIMessageChunk{"type": "start-step"})
 		}
 		state.markToolCallStarted(toolCallID, ns)
-		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": firstString(stringValue(source["name"]), "unknown"), "dynamic": true})
+		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": toolCallID, "toolName": stringOr(source["name"], "unknown"), "dynamic": true})
 	}
 	if msgID := messageID(message); msgID != "" {
 		state.emittedToolOutputMessageIDs[msgID] = true
@@ -1424,7 +1447,7 @@ func processToolMessage(state *eventState, message map[string]interface{}, ns st
 		chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": toolCallID, "errorText": errText})
 		return chunks
 	}
-	chunks = append(chunks, ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": toolCallID, "output": source["content"]})
+	chunks = append(chunks, toolOutputChunk(toolCallID, source, "content", false))
 	return chunks
 }
 
@@ -1552,7 +1575,7 @@ func processStreamEventsEvent(state *eventState, data interface{}) []ai.UIMessag
 		if runID == "" {
 			return nil
 		}
-		return []ai.UIMessageChunk{{"type": "tool-output-available", "toolCallId": runID, "output": payload["output"]}}
+		return []ai.UIMessageChunk{toolOutputChunk(runID, payload, "output", false)}
 	default:
 		return nil
 	}
@@ -1830,11 +1853,20 @@ func metadataMap(items []interface{}) (map[string]interface{}, bool) {
 }
 
 func messageID(message map[string]interface{}) string {
-	if id := stringValue(message["id"]); id != "" {
-		return id
+	id, _ := messageIDOpt(message)
+	return id
+}
+
+// messageIDOpt is TS getMessageId: `typeof id === 'string'` on the message,
+// else on its kwargs for a serialized constructor. An empty string id is an
+// id (present), which matters for `getMessageId(msg) ?? fallback`.
+func messageIDOpt(message map[string]interface{}) (string, bool) {
+	if id, ok := message["id"].(string); ok {
+		return id, true
 	}
 	source := messageDataSource(message)
-	return stringValue(source["id"])
+	id, ok := source["id"].(string)
+	return id, ok
 }
 
 func messageText(message map[string]interface{}) string {
@@ -1867,19 +1899,24 @@ func messageText(message map[string]interface{}) string {
 func messageReasoning(message map[string]interface{}) string {
 	source := kwargsSource(message)
 	var b strings.Builder
+	parts := 0
 	for _, block := range langChainContentBlocks(source) {
 		switch stringValue(block["type"]) {
 		case "reasoning":
 			if text, ok := block["reasoning"].(string); ok {
 				b.WriteString(text)
+				parts++
 			}
 		case "thinking":
 			if text, ok := block["thinking"].(string); ok {
 				b.WriteString(text)
+				parts++
 			}
 		}
 	}
-	if b.Len() > 0 {
+	// TS returns once any block contributed, even an empty string: the
+	// additional_kwargs fallback is only for messages with no such block.
+	if parts > 0 {
 		return b.String()
 	}
 	if additional, ok := asMap(source["additional_kwargs"]); ok {
@@ -1896,9 +1933,14 @@ type langChainCitation struct {
 	URL       string
 	Title     string
 	CitedText string
-	Start     interface{}
-	End       interface{}
-	Source    interface{}
+	// TitleEmpty and CitedTextEmpty mark a title or cited text that is the
+	// empty string rather than absent: TS `??` and `typeof === 'string'`
+	// tell the two apart.
+	TitleEmpty     bool
+	CitedTextEmpty bool
+	Start          interface{}
+	End            interface{}
+	Source         interface{}
 }
 
 func extractCitations(message map[string]interface{}) []langChainCitation {
@@ -1914,13 +1956,20 @@ func extractCitations(message map[string]interface{}) []langChainCitation {
 			if !ok || stringValue(annotation["type"]) != "citation" {
 				continue
 			}
+			citedText := firstPresent(annotation, "cited_text", "citedText", "text")
 			citation := langChainCitation{
 				URL:       stringValue(annotation["url"]),
 				Title:     stringValue(annotation["title"]),
-				CitedText: stringValue(firstPresent(annotation, "cited_text", "citedText", "text")),
+				CitedText: stringValue(citedText),
 				Start:     firstPresent(annotation, "start_index", "startIndex"),
 				End:       firstPresent(annotation, "end_index", "endIndex"),
 				Source:    annotation["source"],
+			}
+			if title, ok := annotation["title"].(string); ok && title == "" {
+				citation.TitleEmpty = true
+			}
+			if text, ok := citedText.(string); ok && text == "" {
+				citation.CitedTextEmpty = true
 			}
 			out = append(out, citation)
 		}
@@ -1958,7 +2007,9 @@ func emitSourceChunks(state *eventState, messageID string, citations []langChain
 		// carries only the citation's own title.
 		label := citation.Title
 		if citation.URL == "" {
-			if label == "" {
+			// TS `citation.title ?? citation.source`: an empty title is not
+			// absent, so it does not fall back to the source.
+			if label == "" && !citation.TitleEmpty {
 				label = stringValue(citation.Source)
 			}
 			if label == "" {
@@ -1993,7 +2044,7 @@ func emitSourceChunks(state *eventState, messageID string, citations []langChain
 
 func citationProviderMetadata(citation langChainCitation) map[string]interface{} {
 	metadata := map[string]interface{}{}
-	if citation.CitedText != "" {
+	if citation.CitedText != "" || citation.CitedTextEmpty {
 		metadata["citedText"] = citation.CitedText
 	}
 	if isNumber(citation.Start) {
@@ -2002,7 +2053,8 @@ func citationProviderMetadata(citation langChainCitation) map[string]interface{}
 	if isNumber(citation.End) {
 		metadata["endIndex"] = citation.End
 	}
-	if stringValue(citation.Source) != "" {
+	// TS `typeof citation.source === 'string'`: an empty string counts.
+	if _, ok := citation.Source.(string); ok {
 		metadata["source"] = citation.Source
 	}
 	return metadata

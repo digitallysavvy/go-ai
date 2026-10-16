@@ -579,6 +579,17 @@ func asiGuard(tokens []tsToken, next int, out *[]tsToken, pos int, statement boo
 	default:
 		return
 	}
+	// A `;` that already ends the previous statement is the boundary: Node
+	// writes no second one over the erased construct.
+	for n := len(*out) - 1; n >= 0; n-- {
+		if k := (*out)[n].kind; k == "space" || k == "comment" {
+			continue
+		}
+		if (*out)[n].kind == "punct" && (*out)[n].text == ";" {
+			return
+		}
+		break
+	}
 	*out = append(*out, tsToken{kind: "punct", text: ";", pos: pos})
 }
 

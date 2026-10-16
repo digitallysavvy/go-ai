@@ -783,6 +783,10 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		}
 
 		result, execErr := executeWorkflowApprovedTool(ctx, tool, call, opts)
+		var ctxErr *workflowToolContextError
+		if errors.As(execErr, &ctxErr) {
+			return approvedOutcome{err: ctxErr.err}
+		}
 		if execErr != nil {
 			// TS writeApprovalToolResults writes a plain tool-result whose output
 			// is the error text (rawOutput), not a tool-error, so the UI stream
@@ -949,16 +953,50 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 // executeWorkflowApprovedTool runs an approved tool with the conversation
 // messages and fires the tool execution start/end callbacks (TS
 // executeToolWithCallbacks).
+// workflowToolContextError marks a per-tool context that failed its schema,
+// which fails the whole resume rather than yielding an error-text result.
+type workflowToolContextError struct{ err error }
+
+func (e *workflowToolContextError) Error() string { return e.err.Error() }
+func (e *workflowToolContextError) Unwrap() error { return e.err }
+
+// resolveWorkflowToolContext is TS resolveToolContext: the tool's entry in the
+// tools context, normalized and validated by its context schema when it has one.
+func resolveWorkflowToolContext(tool *types.Tool, toolName string, toolsContext map[string]interface{}) (interface{}, error) {
+	var entry interface{}
+	if toolsContext != nil {
+		entry = toolsContext[toolName]
+	}
+	if tool == nil || tool.ContextSchema == nil {
+		return entry, nil
+	}
+	normalized := schema.ApplyDefaults(entry, tool.ContextSchema)
+	if err := tool.ContextSchema.Validator().Validate(normalized); err != nil {
+		return nil, providererrors.NewValidationErrorWithContext(
+			normalized,
+			fmt.Sprintf("invalid tool context for %s: %v", toolName, err),
+			err,
+			&providererrors.ValidationContext{Field: "tool context", EntityName: toolName},
+		)
+	}
+	return normalized, nil
+}
+
 func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call types.ToolCall, opts workflowApprovalResumeOptions) (interface{}, error) {
-	var toolContext interface{}
-	if opts.toolsContext != nil {
-		toolContext = opts.toolsContext[call.ToolName]
+	// TS resolveToolContext: the per-tool context is validated and normalized
+	// by the tool's context schema before any callback or execute sees it. A
+	// failure there is thrown outside executeTool's own handling, so it fails
+	// the run instead of becoming a tool result.
+	toolContext, ctxErr := resolveWorkflowToolContext(tool, call.ToolName, opts.toolsContext)
+	if ctxErr != nil {
+		return nil, &workflowToolContextError{err: ctxErr}
 	}
 	if opts.onToolStart != nil {
 		opts.onToolStart(ctx, ai.OnToolCallStartEvent{
-			ToolCallID: call.ID,
-			ToolName:   call.ToolName,
-			ToolCall:   call,
+			ToolCallID:  call.ID,
+			ToolName:    call.ToolName,
+			ToolCall:    call,
+			ToolContext: toolContext,
 			// Args/StepNumber are deprecated, JSON-excluded aliases kept for
 			// callbacks still reading the old fields; ToolCall.Arguments is
 			// the replacement for Args above.
@@ -1009,6 +1047,7 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 			ToolCallID:      call.ID,
 			ToolName:        call.ToolName,
 			ToolCall:        call,
+			ToolContext:     toolContext,
 			ToolOutput:      toolOutput,
 			ToolExecutionMs: toolExecutionMs,
 			// Args/Error/DurationMs/StepNumber are deprecated, JSON-excluded

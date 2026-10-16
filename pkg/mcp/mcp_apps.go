@@ -357,7 +357,16 @@ func decodeBase64Lenient(s string) ([]byte, error) {
 		}
 		return r
 	}, s)
-	return base64.RawStdEncoding.DecodeString(strings.TrimRight(s, "="))
+	// WHATWG forgiving-base64: only when the length is a multiple of four are
+	// one or two trailing "=" dropped; any other "=" is an invalid character.
+	if len(s)%4 == 0 {
+		if strings.HasSuffix(s, "==") {
+			s = s[:len(s)-2]
+		} else if strings.HasSuffix(s, "=") {
+			s = s[:len(s)-1]
+		}
+	}
+	return base64.RawStdEncoding.DecodeString(s)
 }
 
 // mcpAppError builds a plain error whose text starts with a capital letter,
