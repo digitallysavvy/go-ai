@@ -124,7 +124,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("luma: failed to submit generation request: %w", err)
+		// TS postJsonToApi lets a transport failure propagate unchanged.
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
 		return nil, m.parseErrorResponse(resp.Body, resp.StatusCode)
@@ -211,7 +212,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			Headers: headers,
 		})
 		if err != nil {
-			return "", fmt.Errorf("luma: failed to check generation status: %w", err)
+			return "", err // TS getFromApi lets a transport failure propagate unchanged
 		}
 		if resp.StatusCode >= 400 {
 			return "", m.parseErrorResponse(resp.Body, resp.StatusCode)
