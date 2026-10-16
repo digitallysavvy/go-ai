@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -53,6 +54,14 @@ type falSpeechResponse struct {
 
 // buildRequestBody mirrors FalSpeechModel.getArgs in fal-speech-model.ts.
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {
+	body, warnings := m.buildOrderedRequestBody(opts)
+	return body.Map(), warnings
+}
+
+// buildOrderedRequestBody is buildRequestBody with the JS object key order
+// (text, output_format, voice, speed, then provider options), which
+// JSON.stringify(requestBody) records in request.body.
+func (m *SpeechModel) buildOrderedRequestBody(opts *provider.SpeechGenerateOptions) (*jsonorder.Object, []types.Warning) {
 	warnings := []types.Warning{}
 
 	outputFormat := "url"
@@ -60,15 +69,14 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		outputFormat = "hex"
 	}
 
-	body := map[string]interface{}{
-		"text":          opts.Text,
-		"output_format": outputFormat,
-	}
+	body := jsonorder.New()
+	body.Set("text", opts.Text)
+	body.Set("output_format", outputFormat)
 	if opts.Voice != "" {
-		body["voice"] = opts.Voice
+		body.Set("voice", opts.Voice)
 	}
 	if opts.Speed != nil {
-		body["speed"] = *opts.Speed
+		body.Set("speed", *opts.Speed)
 	}
 
 	// Provider options (voice_setting, audio_setting, language_boost,
@@ -76,8 +84,33 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	// TS SDK's `...falOptions` spread into the top-level request body.
 	if opts.ProviderOptions != nil {
 		if falOpts, ok := opts.ProviderOptions["fal"].(map[string]interface{}); ok {
+			// zod looseObject output: the schema's keys in schema order, then
+			// the unknown keys.
+			known := []string{"voice_setting", "audio_setting", "language_boost", "pronunciation_dict"}
+			rest := map[string]interface{}{}
 			for k, v := range falOpts {
-				body[k] = v
+				rest[k] = v
+			}
+			for _, k := range known {
+				v, ok := falOpts[k]
+				if !ok {
+					continue
+				}
+				delete(rest, k)
+				if vs, isMap := v.(map[string]interface{}); isMap && k == "voice_setting" {
+					// z.object strips unknown keys and follows the schema order.
+					ordered := jsonorder.New()
+					for _, sk := range []string{"speed", "vol", "voice_id", "pitch", "english_normalization", "emotion"} {
+						if sv, ok := vs[sk]; ok {
+							ordered.Set(sk, sv)
+						}
+					}
+					v = ordered
+				}
+				body.Set(k, v)
+			}
+			for _, k := range jsonorder.FromMap(rest).Keys() {
+				body.Set(k, rest[k])
 			}
 		}
 	}
@@ -111,7 +144,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
-	body, warnings := m.buildRequestBody(opts)
+	body, warnings := m.buildOrderedRequestBody(opts)
 	currentDate := time.Now()
 
 	requestPath := fmt.Sprintf("%s/%s", m.provider.speechHost, m.modelID)
@@ -141,11 +174,6 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, fmt.Errorf("failed to download fal speech audio: %w", err)
 	}
 
-	requestBytes, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal fal speech request: %w", err)
-	}
-
 	var rawResponse interface{}
 	_ = json.Unmarshal(httpResp.Body, &rawResponse)
 
@@ -153,7 +181,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		Audio:    audioData,
 		Warnings: warnings,
 		Request: &types.StepRequest{
-			Body: string(requestBytes),
+			Body: jsonorder.Stringify(body),
 		},
 		Response: &types.ResponseMetadata{
 			Timestamp: currentDate,
