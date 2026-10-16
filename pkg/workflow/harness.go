@@ -763,21 +763,14 @@ func toUsageSummary(u types.Usage) *HarnessWorkflowUsageSummary {
 	return &HarnessWorkflowUsageSummary{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
 }
 
-// abortErrorPattern mirrors TS `isAbortError`'s regex plus one Go-specific
-// addition: pkg/harness's run_prompt.go models a bridge closing its
-// connection mid-turn (exactly what a real adapter's DoSuspendTurn does) as
-// a soft `ChunkTypeError` carrying "adapter ended the turn without emitting
-// `finish`" (see run_prompt.go's consumeLoop, `!ok` branch), rather than TS's
-// clean, error-free ReadableStream close (to-harness-stream.ts's
-// `control.done` resolving calls safeClose() with no error at all). Both are
-// the same event — a suspend-induced closure of the in-flight turn — so both
-// must be swallowed here under the same suspend-in-flight guard.
-var abortErrorPattern = regexp.MustCompile(`(?i)\baborted\b|AbortError|operation was aborted|ended the turn without emitting`)
+// abortErrorPattern is TS `isAbortError`'s regex (run-harness-agent.ts). A
+// turn that a suspend closes without `finish` settles normally in
+// pkg/harness (TS result.finish(undefined)), so no Go-only pattern is needed.
+var abortErrorPattern = regexp.MustCompile(`(?i)\baborted\b|AbortError|operation was aborted`)
 
 // isAbortErrorValue reports whether a UI-message error chunk's errorText
 // describes an abort — the expected consequence of SuspendTurn tearing the
-// turn down at a slice boundary. Mirrors TS `isAbortError` (see
-// abortErrorPattern's doc for the one Go-specific addition).
+// turn down at a slice boundary. Mirrors TS `isAbortError`.
 func isAbortErrorValue(v any) bool {
 	s, ok := v.(string)
 	if !ok || s == "" {
