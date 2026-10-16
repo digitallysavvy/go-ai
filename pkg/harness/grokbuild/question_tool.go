@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -68,8 +69,7 @@ func fromNativeRequest(nativeRequest any, _ *acp.ToolCall) *harness.ToolCallPart
 	if !ok {
 		return nil
 	}
-	input := toHarnessQuestionsInput(req)
-	inputJSON, err := json.Marshal(input)
+	inputJSON, err := jsstr.Marshal(toHarnessQuestionsInput(req))
 	if err != nil {
 		return nil
 	}
@@ -82,32 +82,46 @@ func fromNativeRequest(nativeRequest any, _ *acp.ToolCall) *harness.ToolCallPart
 	}
 }
 
-func toHarnessQuestionsInput(req *grokBuildQuestionRequest) harness.QuestionsToolInput {
-	questions := make([]harness.Question, len(req.Questions))
+// The harness input is built from local wire types, not harness.Question /
+// harness.QuestionOption: TS spreads `description` (even "") and `preview`
+// (even "") whenever the request carries them, while the shared types drop
+// empty strings (omitempty).
+type wireQuestionOption struct {
+	ID          string  `json:"id"`
+	Label       string  `json:"label"`
+	Description string  `json:"description"`
+	Preview     *string `json:"preview,omitempty"`
+}
+
+type wireQuestion struct {
+	ID            string               `json:"id"`
+	Question      string               `json:"question"`
+	Options       []wireQuestionOption `json:"options"`
+	AllowMultiple *bool                `json:"allowMultiple,omitempty"`
+	AllowFreeForm bool                 `json:"allowFreeForm"`
+}
+
+type wireQuestionsInput struct {
+	AllowPartialAnswers bool           `json:"allowPartialAnswers"`
+	Questions           []wireQuestion `json:"questions"`
+}
+
+func toHarnessQuestionsInput(req *grokBuildQuestionRequest) wireQuestionsInput {
+	questions := make([]wireQuestion, len(req.Questions))
 	for i, q := range req.Questions {
-		options := make([]harness.QuestionOption, len(q.Options))
+		options := make([]wireQuestionOption, len(q.Options))
 		for j, o := range q.Options {
-			options[j] = harness.QuestionOption{
-				ID:          optionID(j),
-				Label:       o.Label,
-				Description: o.Description,
-			}
-			if o.Preview != nil {
-				options[j].Preview = *o.Preview
-			}
+			options[j] = wireQuestionOption{ID: optionID(j), Label: o.Label, Description: o.Description, Preview: o.Preview}
 		}
-		question := harness.Question{
+		questions[i] = wireQuestion{
 			ID:            questionID(i),
 			Question:      q.Question,
 			Options:       options,
-			AllowFreeForm: &harness.AllowFreeForm{Enabled: true},
+			AllowMultiple: q.MultiSelect,
+			AllowFreeForm: true,
 		}
-		if q.MultiSelect != nil {
-			question.AllowMultiple = q.MultiSelect
-		}
-		questions[i] = question
 	}
-	return harness.QuestionsToolInput{AllowPartialAnswers: true, Questions: questions}
+	return wireQuestionsInput{AllowPartialAnswers: true, Questions: questions}
 }
 
 // toNativeResponse mirrors TS `toNativeResponse`: TS parses nativeRequest
