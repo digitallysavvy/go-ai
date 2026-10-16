@@ -813,13 +813,11 @@ func typeSpanUnterminated(span []tsToken) bool {
 			if !pop('<') {
 				return true
 			}
-		case ">>":
-			if !pop('<') || !pop('<') {
-				return true
-			}
-		case ">>>":
-			if !pop('<') || !pop('<') || !pop('<') {
-				return true
+		case ">>", ">>>":
+			for range len(t.text) {
+				if !pop('<') {
+					return true
+				}
 			}
 		}
 	}
