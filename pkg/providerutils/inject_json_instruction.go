@@ -98,10 +98,13 @@ func InjectJSONInstructionIntoMessagesSchema(messages []types.Message, schema in
 		existingText = concatTextContent(messages[0].Content)
 	}
 
-	systemMessage := types.Message{
-		Role:    types.RoleSystem,
-		Content: []types.ContentPart{types.TextContent{Text: InjectJSONInstructionSchema(existingText, schema, opts)}},
+	// TS `{ ...messages[0] }` keeps the system message's providerOptions (and
+	// any other fields); only its content is replaced.
+	systemMessage := types.Message{Role: types.RoleSystem}
+	if hasLeadingSystem {
+		systemMessage = messages[0]
 	}
+	systemMessage.Content = []types.ContentPart{types.TextContent{Text: InjectJSONInstructionSchema(existingText, schema, opts)}}
 
 	rest := messages
 	if hasLeadingSystem {
