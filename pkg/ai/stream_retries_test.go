@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -373,5 +374,66 @@ func TestStreamText_StreamRetriesFlushesBufferedPartsOnTerminalError(t *testing.
 	}
 	if reported != 1 {
 		t.Fatalf("OnError calls = %d, want 1", reported)
+	}
+}
+
+// TestStreamText_StreamRetriesToolInputCallbacksUseExecutionTools verifies
+// that after a streamRetries reopen the tool-input callbacks are rebuilt from
+// the execution tools (TS invokeToolCallbacksFromStream receives the same
+// tools on every attempt), so a tool hidden from the model by a tool caller
+// still gets OnInputStart on the retried attempt.
+func TestStreamText_StreamRetriesToolInputCallbacksUseExecutionTools(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			callCount++
+			start := provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ID: "c1", ToolCall: &types.ToolCall{ID: "c1", ToolName: "hidden"}}
+			if callCount == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					start,
+					{Type: provider.ChunkTypeError, Text: "Internal Server Error"},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				start,
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+
+	var mu sync.Mutex
+	starts := 0
+	streamRetries := 1
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:         model,
+		Prompt:        "hi",
+		StreamRetries: &streamRetries,
+		Tools: []types.Tool{
+			localCallerTool("code_mode", nil),
+			{
+				Name:       "hidden",
+				Parameters: map[string]interface{}{"type": "object"},
+				OnInputStart: func(context.Context, types.OnInputStartOptions) error {
+					mu.Lock()
+					starts++
+					mu.Unlock()
+					return nil
+				},
+			},
+		},
+		ExperimentalToolCallers: ExperimentalToolCallers{"hidden": {"code_mode"}},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if callCount != 2 || starts != 1 {
+		t.Fatalf("callCount=%d starts=%d, want 2 and 1 (the dropped first attempt is held back; the retried attempt must reach the hidden tool)", callCount, starts)
 	}
 }

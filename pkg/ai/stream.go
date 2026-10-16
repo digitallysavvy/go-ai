@@ -2309,7 +2309,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepResponseModelID = stepModelID
 					stepResponseID = ""
 					stepResponseTimestamp = time.Time{}
-					toolInputCallbacks = newStreamToolInputCallbacks(stepTools, currentMessages, r.cbToolsCtx)
+					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					preRefinementCalls = nil
 					stepTextParts = nil
 					stepPartialTracker.reset()
