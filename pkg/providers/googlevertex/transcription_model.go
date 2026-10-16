@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -38,15 +40,18 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
-	vertexOpts := vertexTranscriptionOptions(opts.ProviderOptions)
+	vertexOpts, err := vertexTranscriptionOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	region := vertexOpts.Region
 	regionArg := "location"
-	if region != "" {
+	if vertexOpts.hasRegion {
 		regionArg = "region"
 	} else {
 		region = m.provider.config.Location
 	}
-	if region == "" {
+	if region == "" && !vertexOpts.hasRegion {
 		region = "global"
 	}
 	// region is interpolated directly into the Cloud Speech-to-Text request
@@ -60,7 +65,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}
 	}
 	languages := vertexOpts.LanguageCodes
-	if len(languages) == 0 {
+	if languages == nil {
 		if opts.Language != "" {
 			languages = []string{opts.Language}
 		} else {
@@ -132,36 +137,75 @@ type vertexTranscriptionProviderOptions struct {
 	LanguageCodes              []string
 	EnableWordTimeOffsets      *bool
 	EnableAutomaticPunctuation *bool
+	hasRegion                  bool
 }
 
 func vertexTranscriptionOptions(providerOptions map[string]interface{}) vertexTranscriptionProviderOptions {
+	out, _ := vertexTranscriptionOptionsChecked(providerOptions)
+	return out
+}
+
+// vertexTranscriptionOptionsChecked is the zod-validating form of
+// googleVertexTranscriptionProviderOptionsSchema: a present value of the wrong
+// type fails with an InvalidArgumentError. Empty languageCodes stay non-nil
+// because TS forwards `languageCodes: []`.
+func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexTranscriptionProviderOptions, error) {
+	invalid := func(cause error) error {
+		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid google provider options", Cause: cause}
+	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
-		raw, ok := providerOptions[key].(map[string]interface{})
-		if !ok {
+		rawAny, present := providerOptions[key]
+		if !present || rawAny == nil {
 			continue
 		}
-		var out vertexTranscriptionProviderOptions
-		if region, ok := raw["region"].(string); ok {
-			out.Region = region
+		raw, ok := rawAny.(map[string]interface{})
+		if !ok {
+			return vertexTranscriptionProviderOptions{}, invalid(fmt.Errorf("%s: expected object, received %T", key, rawAny))
 		}
-		if values, ok := raw["languageCodes"].([]string); ok {
-			out.LanguageCodes = values
-		} else if values, ok := raw["languageCodes"].([]interface{}); ok {
-			for _, v := range values {
-				if s, ok := v.(string); ok {
-					out.LanguageCodes = append(out.LanguageCodes, s)
+		var out vertexTranscriptionProviderOptions
+		if v, has := raw["region"]; has && v != nil {
+			region, isStr := v.(string)
+			if !isStr {
+				return out, invalid(fmt.Errorf("region: expected string, received %T", v))
+			}
+			out.Region = region
+			out.hasRegion = true
+		}
+		if v, has := raw["languageCodes"]; has && v != nil {
+			switch values := v.(type) {
+			case []string:
+				out.LanguageCodes = append([]string{}, values...)
+			case []interface{}:
+				out.LanguageCodes = make([]string, 0, len(values))
+				for i, item := range values {
+					str, isStr := item.(string)
+					if !isStr {
+						return out, invalid(fmt.Errorf("languageCodes[%d]: expected string, received %T", i, item))
+					}
+					out.LanguageCodes = append(out.LanguageCodes, str)
 				}
+			default:
+				return out, invalid(fmt.Errorf("languageCodes: expected array, received %T", v))
 			}
 		}
-		if v, ok := raw["enableWordTimeOffsets"].(bool); ok {
-			out.EnableWordTimeOffsets = &v
+		for _, name := range []string{"enableWordTimeOffsets", "enableAutomaticPunctuation"} {
+			v, has := raw[name]
+			if !has || v == nil {
+				continue
+			}
+			b, isBool := v.(bool)
+			if !isBool {
+				return out, invalid(fmt.Errorf("%s: expected boolean, received %T", name, v))
+			}
+			if name == "enableWordTimeOffsets" {
+				out.EnableWordTimeOffsets = &b
+			} else {
+				out.EnableAutomaticPunctuation = &b
+			}
 		}
-		if v, ok := raw["enableAutomaticPunctuation"].(bool); ok {
-			out.EnableAutomaticPunctuation = &v
-		}
-		return out
+		return out, nil
 	}
-	return vertexTranscriptionProviderOptions{}
+	return vertexTranscriptionProviderOptions{}, nil
 }
 
 func vertexTranscriptionHeaders(cfg Config, extra map[string]string) map[string]string {
@@ -202,17 +246,19 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 	var texts []string
 	var segments []types.TranscriptionTimestamp
 	language := ""
+	if len(resp.Results) > 0 {
+		// TS: convertBcp47ToIso6391(results[0]?.languageCode).
+		language = iso6391(resp.Results[0].LanguageCode)
+	}
 	for _, result := range resp.Results {
-		if language == "" {
-			language = iso6391(result.LanguageCode)
-		}
+		// TS joins every result's primary transcript ('' when absent), so an
+		// empty one still contributes a separator.
 		if len(result.Alternatives) == 0 {
+			texts = append(texts, "")
 			continue
 		}
 		alt := result.Alternatives[0]
-		if alt.Transcript != "" {
-			texts = append(texts, alt.Transcript)
-		}
+		texts = append(texts, alt.Transcript)
 		for _, word := range alt.Words {
 			start, okStart := parseGoogleDuration(word.StartOffset)
 			end, okEnd := parseGoogleDuration(word.EndOffset)
@@ -252,14 +298,21 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 	}
 }
 
+// parseGoogleDuration is TS Number.parseFloat for a Speech-to-Text duration
+// such as "1.200s": the longest leading decimal prefix, finite only.
 func parseGoogleDuration(value string) (float64, bool) {
-	value = strings.TrimSuffix(value, "s")
-	if value == "" {
+	m := leadingFloatRE.FindString(strings.TrimLeft(value, " \t\r\n"))
+	if m == "" {
 		return 0, false
 	}
-	seconds, err := strconv.ParseFloat(value, 64)
-	return seconds, err == nil
+	seconds, err := strconv.ParseFloat(m, 64)
+	if err != nil || math.IsInf(seconds, 0) || math.IsNaN(seconds) {
+		return 0, false
+	}
+	return seconds, true
 }
+
+var leadingFloatRE = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?`)
 
 func iso6391(value string) string {
 	if value == "" {

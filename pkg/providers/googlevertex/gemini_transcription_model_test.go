@@ -299,3 +299,20 @@ func TestGeminiTranscriptionModel_OptionValidationAndHTTPErrors(t *testing.T) {
 	assert.Equal(t, 429, pe.StatusCode)
 	assert.Contains(t, pe.Message, "slow down")
 }
+
+// TS Chirp doGenerate: every result contributes a separator even when its
+// transcript is empty, only results[0] sets the language, durations parse like
+// Number.parseFloat, and option types are validated.
+func TestChirpTranscriptionResponseJoinAndOptions(t *testing.T) {
+	resp := vertexTranscriptionResponse{}
+	require.NoError(t, json.Unmarshal([]byte(`{"results":[{"alternatives":[{"transcript":"a"}]},{"alternatives":[{"transcript":""}]},{"alternatives":[{"transcript":"b"}],"languageCode":"en-US"}],"metadata":{"totalBilledDuration":"3.5s"}}`), &resp))
+	got := convertVertexTranscriptionResponse(resp, "chirp_2", http.Header{}, []byte(`{}`))
+	assert.Equal(t, "a  b", got.Text)
+	assert.Equal(t, "", got.Language)
+	require.NotNil(t, got.DurationInSeconds)
+	assert.Equal(t, 3.5, *got.DurationInSeconds)
+
+	_, err := vertexTranscriptionOptionsChecked(map[string]interface{}{"vertex": map[string]interface{}{"enableWordTimeOffsets": "yes"}})
+	var ia *providererrors.InvalidArgumentError
+	require.ErrorAs(t, err, &ia)
+}
