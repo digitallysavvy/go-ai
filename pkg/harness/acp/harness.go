@@ -151,8 +151,13 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 		var bridgeProbe map[string]json.RawMessage
 		_ = json.Unmarshal(probe["bridge"], &bridgeProbe)
 		for _, key := range []string{"port", "token", "lastSeenEventId"} {
-			if _, ok := bridgeProbe[key]; !ok {
+			if raw, ok := bridgeProbe[key]; !ok || isJSONNull(raw) {
 				return fmt.Errorf("ACP lifecycle state data: bridge.%s is required.", key) //nolint:staticcheck // mirrors the TS zod requirement
+			}
+		}
+		for _, key := range []string{"sandboxId", "stateDir"} {
+			if raw, ok := bridgeProbe[key]; ok && isJSONNull(raw) {
+				return fmt.Errorf("ACP lifecycle state data: bridge.%s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
 			}
 		}
 	}
@@ -161,7 +166,12 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 		if err := json.Unmarshal(rawProfile, &profile); err != nil || profile == nil {
 			return fmt.Errorf("ACP lifecycle state data: authenticationProfile must be an object.") //nolint:staticcheck // mirrors the TS zod object
 		}
-		if _, ok := profile["digest"]; !ok {
+		for _, key := range []string{"acpMethodId", "providerMode"} {
+			if raw, ok := profile[key]; ok && isJSONNull(raw) {
+				return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s must not be null.", key) //nolint:staticcheck // mirrors the TS zod optional
+			}
+		}
+		if raw, ok := profile["digest"]; !ok || isJSONNull(raw) {
 			return fmt.Errorf("ACP lifecycle state data: authenticationProfile.digest is required.") //nolint:staticcheck // mirrors the TS zod requirement
 		}
 		enums := []struct {
@@ -194,7 +204,7 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 	if rawRecovery, ok := probe["recovery"]; ok {
 		var recovery map[string]json.RawMessage
 		_ = json.Unmarshal(rawRecovery, &recovery)
-		if _, ok := recovery["reason"]; !ok {
+		if raw, ok := recovery["reason"]; !ok || isJSONNull(raw) {
 			return fmt.Errorf("ACP lifecycle state data: recovery.reason is required.") //nolint:staticcheck // mirrors the TS zod requirement
 		}
 	}
@@ -206,6 +216,8 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 	}
 	return nil
 }
+
+func isJSONNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
 
 func unsupported(harnessID, message string) error {
 	return harness.NewCapabilityUnsupportedError(message, harnessID, nil)
