@@ -454,6 +454,9 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 	if err := RequireKeys(typ, fields, spec.required); err != nil {
 		return nil, err
 	}
+	if err := requireUsageShape(typ, fields); err != nil {
+		return nil, err
+	}
 	part := spec.newPart()
 	if tc, ok := part.(*ToolCallPart); ok {
 		// TS dropped `stepToolCallCount` from the tool-call schema, so zod
@@ -482,6 +485,32 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 		tc.ProviderExecutedOmitted = !present
 	}
 	return part, nil
+}
+
+// requireUsageShape checks the usage of a finish-step or finish part like
+// `harnessV1UsageSchema`: `inputTokens` and `outputTokens` are required
+// objects, so an empty usage object is invalid.
+func requireUsageShape(typ string, fields map[string]json.RawMessage) error {
+	key := "usage"
+	if typ == PartTypeFinish {
+		key = "totalUsage"
+	} else if typ != PartTypeFinishStep {
+		return nil
+	}
+	invalid := func() error {
+		return fmt.Errorf("harness: invalid %s frame: %s must carry inputTokens and outputTokens objects", typ, key)
+	}
+	var usage map[string]json.RawMessage
+	if err := json.Unmarshal(fields[key], &usage); err != nil || usage == nil {
+		return invalid()
+	}
+	for _, member := range []string{"inputTokens", "outputTokens"} {
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(usage[member], &obj); err != nil || obj == nil {
+			return invalid()
+		}
+	}
+	return nil
 }
 
 // ReadTagged returns the `type` discriminator and the raw top-level fields of
