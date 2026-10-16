@@ -1062,7 +1062,7 @@ func imageOutputChunks(state *eventState, source map[string]interface{}) []ai.UI
 // extractReasoningID mirrors TS extractReasoningId: the GPT-5 reasoning block
 // id, consistent across streaming and values events.
 func extractReasoningID(message map[string]interface{}) string {
-	source := messageDataSource(message)
+	source := kwargsSource(message)
 	if additional, ok := asMap(source["additional_kwargs"]); ok {
 		if reasoning, ok := asMap(additional["reasoning"]); ok {
 			if id := stringValue(reasoning["id"]); id != "" {
@@ -1102,7 +1102,7 @@ func summaryTexts(summary []interface{}, requireNonEmpty bool) string {
 // accumulated reasoning in response_metadata.output (GPT-5 final format), with
 // additional_kwargs.reasoning.summary as a fallback.
 func reasoningFromValuesMessage(message map[string]interface{}) string {
-	source := messageDataSource(message)
+	source := kwargsSource(message)
 	if metadata, ok := asMap(source["response_metadata"]); ok {
 		items, _ := asSlice(metadata["output"])
 		var b strings.Builder
@@ -1791,6 +1791,16 @@ func messageDataSource(message map[string]interface{}) map[string]interface{} {
 	return message
 }
 
+// kwargsSource is the object the TS reasoning and citation extractors read: the
+// message's kwargs whenever it has an object kwargs (no `type: "constructor"`
+// check there), the message itself otherwise.
+func kwargsSource(message map[string]interface{}) map[string]interface{} {
+	if kwargs, ok := asMap(message["kwargs"]); ok {
+		return kwargs
+	}
+	return message
+}
+
 // isToolMessage mirrors TS isToolMessageType for plain objects: type "tool", or
 // a serialized constructor whose id path names ToolMessage.
 func isToolMessage(message map[string]interface{}) bool {
@@ -1855,7 +1865,7 @@ func messageText(message map[string]interface{}) string {
 // then additional_kwargs.reasoning.summary. It never reads
 // response_metadata.output, which holds accumulated text.
 func messageReasoning(message map[string]interface{}) string {
-	source := messageDataSource(message)
+	source := kwargsSource(message)
 	var b strings.Builder
 	for _, block := range langChainContentBlocks(source) {
 		switch stringValue(block["type"]) {
@@ -1892,7 +1902,7 @@ type langChainCitation struct {
 }
 
 func extractCitations(message map[string]interface{}) []langChainCitation {
-	source := messageDataSource(message)
+	source := kwargsSource(message)
 	var out []langChainCitation
 	for _, block := range langChainContentBlocks(source) {
 		rawAnnotations, ok := asSlice(block["annotations"])

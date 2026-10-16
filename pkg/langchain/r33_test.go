@@ -81,3 +81,22 @@ func TestR33MessageShapesMatchTSGuards(t *testing.T) {
 		}
 	}
 }
+
+// The TS reasoning extractors read kwargs whenever the message has an object
+// kwargs, with no type check (unlike getMessageText/getMessageId).
+func TestR33ReasoningReadsKwargsWithoutConstructorType(t *testing.T) {
+	in := make(chan StreamEvent, 1)
+	in <- StreamEvent{Mode: "messages", Data: []interface{}{map[string]interface{}{
+		"id":   "m1",
+		"type": "ai",
+		"kwargs": map[string]interface{}{
+			"contentBlocks": []interface{}{map[string]interface{}{"type": "thinking", "thinking": "hmm"}},
+		},
+	}}}
+	close(in)
+	out, errs := ToUIMessageStream(context.Background(), in)
+	deltas := chunksOfType(collectOutputChunks(t, out, errs), "reasoning-delta")
+	if len(deltas) != 1 || deltas[0]["delta"] != "hmm" {
+		t.Fatalf("reasoning deltas %v, want one \"hmm\"", deltas)
+	}
+}
