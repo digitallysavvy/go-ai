@@ -319,6 +319,13 @@ func (b *Batch) handleError(err error) error {
 func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range headers {
+		// TS normalizeHeaders lower-cases the caller's keys and the computed
+		// { 'anthropic-beta': undefined } entry then replaces any caller
+		// value, so a caller anthropic-beta never reaches the wire, whatever
+		// its casing and even when no betas are computed.
+		if strings.EqualFold(k, "anthropic-beta") {
+			continue
+		}
 		out[k] = v
 	}
 	if len(betas) > 0 {
@@ -527,8 +534,8 @@ type anthropicBatchListResponseWire struct {
 type anthropicBatchResultErrorWire struct {
 	Type  string `json:"type"`
 	Error struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
+		Type    *string `json:"type"`
+		Message *string `json:"message"`
 	} `json:"error"`
 	RequestID *string `json:"request_id"`
 }
@@ -602,16 +609,16 @@ func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLin
 		}
 		// Mirrors TS anthropicBatchResultSchema's discriminated-union member for
 		// "errored", which requires error.type === "error" (z.literal('error'))
-		// plus non-empty error.error.type/message; any mismatch fails the whole
+		// plus string error.error.type/message (empty is valid); any mismatch fails the whole
 		// result line rather than surfacing a partially-populated error.
-		if errWire.Type != "error" || errWire.Error.Type == "" || errWire.Error.Message == "" {
+		if errWire.Type != "error" || errWire.Error.Type == nil || errWire.Error.Message == nil {
 			return invalidAnthropicBatchResult(wire.CustomID)
 		}
 		item := &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     wire.CustomID,
 			Status: provider.BatchItemFailed,
-			Error:  &provider.BatchError{Message: errWire.Error.Message, Type: errWire.Error.Type},
+			Error:  &provider.BatchError{Message: *errWire.Error.Message, Type: *errWire.Error.Type},
 		}
 		if errWire.RequestID != nil {
 			item.ProviderMetadata = map[string]interface{}{"anthropic": map[string]interface{}{"requestId": *errWire.RequestID}}

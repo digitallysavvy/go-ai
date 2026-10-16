@@ -419,18 +419,22 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 			base["is_error"] = true
 			base["result"] = part.Error
 		} else {
-			base["result"] = fmt.Sprintf("%v", part.Result)
+			base["result"] = interactionResultText(part.Result)
 		}
 		return base, nil, nil
 	}
 	switch part.Output.Type {
 	case types.ToolResultOutputText:
-		base["result"] = fmt.Sprintf("%v", part.Output.Value)
+		base["result"] = interactionResultText(part.Output.Value)
 	case types.ToolResultOutputJSON:
 		base["result"] = jsonStringify(part.Output.Value)
-	case types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
+	case types.ToolResultOutputErrorJSON:
+		// TS: is_error + JSON.stringify(output.value).
 		base["is_error"] = true
-		base["result"] = fmt.Sprintf("%v", part.Output.Value)
+		base["result"] = jsonStringify(part.Output.Value)
+	case types.ToolResultOutputError, types.ToolResultOutputErrorText:
+		base["is_error"] = true
+		base["result"] = interactionResultText(part.Output.Value)
 	case types.ToolResultOutputExecutionDenied:
 		base["is_error"] = true
 		base["result"] = firstNonEmpty(part.Output.Reason, "Tool execution denied by user.")
@@ -442,9 +446,22 @@ func toolResultToInteractionBlock(part types.ToolResultContent) (map[string]inte
 		base["result"] = blocks
 		return base, warnings, nil
 	default:
-		base["result"] = fmt.Sprintf("%v", part.Output.Value)
+		base["result"] = interactionResultText(part.Output.Value)
 	}
 	return base, nil, nil
+}
+
+// interactionResultText renders a tool result value for function_result.result:
+// a string is passed through, anything else is JSON.stringify(value) (never
+// Go's %v rendering, which prints maps as map[k:v]).
+func interactionResultText(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if v == nil {
+		return ""
+	}
+	return jsonStringify(v)
 }
 
 func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[string]interface{}, []types.Warning, error) {
@@ -457,7 +474,8 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 		case types.ImageContentBlock:
 			out = append(out, map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString(b.Data), "mime_type": b.MediaType})
 		case types.FileContentBlock:
-			if !strings.HasPrefix(b.MediaType, "image/") {
+			// TS getTopLevelMediaType(mediaType) !== 'image'.
+			if top, _, _ := strings.Cut(b.MediaType, "/"); top != "image" {
 				msg := fmt.Sprintf("google.interactions: tool-result file with mediaType %q is not supported (Interactions %s accepts only text and image content); part dropped.", b.MediaType, "`function_result.result`")
 				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 				continue

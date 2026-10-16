@@ -44,6 +44,13 @@ type interactionsStream struct {
 	resumable        bool
 	finished         bool
 
+	// attempt and receivedEvent mirror streamGoogleInteractionEvents'
+	// consecutive-failure accounting (stream-google-interactions.ts):
+	// attempt counts failed (re)connects, receivedEvent whether the current
+	// connection produced any event.
+	attempt       int
+	receivedEvent bool
+
 	// includeRawChunks emits a ChunkTypeRaw chunk with the parsed SSE payload
 	// ahead of the chunks each event produces (TS includeRawChunks).
 	includeRawChunks bool
@@ -106,7 +113,7 @@ func newInteractionsStream(ctx context.Context, client *internalhttp.Client, int
 		resumable:       true,
 		serviceTier:     headerServiceTier(responseHeaders),
 	}
-	if err := s.openGETStream(); err != nil {
+	if err := s.openWithRetry(); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -266,7 +273,7 @@ restart:
 		}
 		if err == io.EOF {
 			if s.resumable && !s.completed && s.interactionID != "" {
-				if err := s.reopenAfterEOF(); err != nil {
+				if err := s.reconnectAfterEOF(); err != nil {
 					s.err = err
 					return nil, err
 				}
@@ -286,9 +293,27 @@ restart:
 			}
 		}
 		if err != nil {
+			// TS reconnects with last_event_id after a mid-stream read
+			// failure, up to maxRetries consecutive failures; an abort is
+			// surfaced as is.
+			if s.resumable && !s.completed && s.interactionID != "" && s.ctx.Err() == nil {
+				s.attempt++
+				if s.attempt < interactionsStreamMaxRetries {
+					if rerr := s.sleepBeforeRetry(); rerr != nil {
+						s.err = rerr
+						return nil, rerr
+					}
+					if rerr := s.reopenWithRetry(); rerr != nil {
+						s.err = rerr
+						return nil, rerr
+					}
+					continue
+				}
+			}
 			s.err = err
 			return nil, err
 		}
+		s.receivedEvent = true
 		if streaming.IsStreamDone(event) {
 			continue
 		}
@@ -366,17 +391,89 @@ func (s *interactionsStream) openGETStream() error {
 	return nil
 }
 
-func (s *interactionsStream) reopenAfterEOF() error {
-	if s.reader != nil {
-		_ = s.reader.Close()
-	}
+// Reconnect policy of streamGoogleInteractionEvents (stream-google-interactions.ts):
+// at most interactionsStreamMaxRetries consecutive failures, retryDelay*attempt
+// between them.
+const interactionsStreamMaxRetries = 3
+
+// interactionsStreamRetryDelay is the base delay between reconnect attempts
+// (a variable so tests can shorten it).
+var interactionsStreamRetryDelay = 500 * time.Millisecond
+
+// cancelOnAbort fires the best-effort POST /interactions/{id}/cancel TS sends
+// when the caller aborts before the interaction completed.
+func (s *interactionsStream) cancelOnAbort() {
+	_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(context.Background(), s.interactionID, s.headers)
+}
+
+// sleepBeforeRetry waits retryDelay*attempt, returning ctx.Err() (after the
+// cancel call) when the caller aborts meanwhile.
+func (s *interactionsStream) sleepBeforeRetry() error {
+	timer := time.NewTimer(interactionsStreamRetryDelay * time.Duration(s.attempt))
+	defer timer.Stop()
 	select {
 	case <-s.ctx.Done():
-		_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(context.Background(), s.interactionID, s.headers)
+		s.cancelOnAbort()
 		return s.ctx.Err()
-	default:
-		return s.openGETStream()
+	case <-timer.C:
+		return nil
 	}
+}
+
+// reconnectAfterEOF handles a connection that ended before the terminal
+// event: an attempt that produced no event at all counts as a failure (an
+// empty/misbehaving server must not loop forever), otherwise the failure
+// counter resets and the stream resumes from last_event_id.
+func (s *interactionsStream) reconnectAfterEOF() error {
+	if !s.receivedEvent {
+		s.attempt++
+		if s.attempt >= interactionsStreamMaxRetries {
+			return fmt.Errorf("google.interactions: SSE stream closed without producing any events.") //nolint:staticcheck // matches TS SDK exact error text
+		}
+		if err := s.sleepBeforeRetry(); err != nil {
+			return err
+		}
+	} else {
+		s.attempt = 0
+	}
+	return s.reopenWithRetry()
+}
+
+// openWithRetry opens the GET stream, retrying failed connects like TS
+// (attempt++, give up at maxRetries, retryDelay*attempt between tries).
+func (s *interactionsStream) openWithRetry() error {
+	for {
+		if s.ctx.Err() != nil {
+			s.cancelOnAbort()
+			return s.ctx.Err()
+		}
+		err := s.openGETStream()
+		if err == nil {
+			s.receivedEvent = false
+			return nil
+		}
+		if s.ctx.Err() != nil {
+			s.cancelOnAbort()
+			return err
+		}
+		s.attempt++
+		if s.attempt >= interactionsStreamMaxRetries {
+			return err
+		}
+		if err := s.sleepBeforeRetry(); err != nil {
+			return err
+		}
+	}
+}
+
+// reopenWithRetry is openWithRetry for a reconnect: the previous reader is
+// closed first.
+func (s *interactionsStream) reopenWithRetry() error {
+	if s.reader != nil {
+		_ = s.reader.Close()
+		s.reader = nil
+	}
+	return s.openWithRetry()
 }
 
 func (s *interactionsStream) processEvent(event interactionsEvent) {

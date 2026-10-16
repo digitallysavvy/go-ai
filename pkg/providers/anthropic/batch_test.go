@@ -162,6 +162,35 @@ func TestBatch_ComputedBetaHeaderWinsOverCallerHeader(t *testing.T) {
 	}
 }
 
+// TestBatch_CallerBetaHeaderDroppedWhenNoBetasComputed mirrors TS
+// getStartBatchHeaders: the computed { 'anthropic-beta': undefined } entry
+// replaces a caller anthropic-beta (any casing) on the create request.
+func TestBatch_CallerBetaHeaderDroppedWhenNoBetasComputed(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Values("anthropic-beta")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "msgbatch_1", "type": "message_batch", "processing_status": "in_progress",
+			"request_counts": {"processing": 1, "succeeded": 0, "errored": 0, "canceled": 0, "expired": 0},
+			"created_at": "2024-01-01T00:00:00Z", "expires_at": "2024-01-02T00:00:00Z"
+		}`))
+	}))
+	defer srv.Close()
+
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	_, err := p.ExperimentalBatch().DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{textBatchRequest("req-1", ClaudeSonnet4_5, "Hello")},
+		Headers:  map[string]string{"Anthropic-Beta": "caller-literal-beta"},
+	})
+	if err != nil {
+		t.Fatalf("DoStartBatch: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("anthropic-beta = %v, want none (TS drops the caller value)", got)
+	}
+}
+
 func TestBatch_RejectsPerRequestBetas(t *testing.T) {
 	p := New(Config{APIKey: "k"})
 	b := p.ExperimentalBatch()
@@ -1241,5 +1270,27 @@ func TestBatch_RequestHeaderBetasAreNotCollected(t *testing.T) {
 	}
 	if capturedBeta != "explicit-beta" {
 		t.Fatalf("anthropic-beta = %q, want only explicit-beta", capturedBeta)
+	}
+}
+
+// TestBatchResult_ErroredAcceptsEmptyStrings mirrors the TS errored schema,
+// where error.error.type and error.error.message are plain z.string() (empty
+// is valid); only a missing/non-string field invalidates the line.
+func TestBatchResult_ErroredAcceptsEmptyStrings(t *testing.T) {
+	s := &anthropicBatchResultsStream{}
+	line := anthropicBatchResultLineWire{
+		CustomID: "r1",
+		Result:   []byte(`{"type":"errored","error":{"type":"error","error":{"type":"","message":""}}}`),
+	}
+	got := s.convertResult(line)
+	if got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "" {
+		t.Fatalf("empty-string error treated as invalid: %+v", got)
+	}
+	missing := anthropicBatchResultLineWire{
+		CustomID: "r2",
+		Result:   []byte(`{"type":"errored","error":{"type":"error","error":{"type":"x"}}}`),
+	}
+	if got := s.convertResult(missing); got.Error == nil || got.Error.Code != "invalid_response" {
+		t.Fatalf("missing message must be invalid: %+v", got)
 	}
 }
