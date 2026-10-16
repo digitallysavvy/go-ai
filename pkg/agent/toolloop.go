@@ -753,7 +753,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				refined, refineErr := ai.RefineToolCalls(stepCtx, stepResult.ToolCalls, callConfig.Tools, callConfig.ExperimentalRefineToolInput, callConfig.RuntimeContext, callConfig.ToolsContext)
 				if refineErr != nil {
 					stepTel.fail(refineErr)
-					return nil, fmt.Errorf("tool input refinement failed at step %d: %w", stepIndex, refineErr)
+					return nil, refineErr
 				}
 				stepResult.ToolCalls = refined
 			}
@@ -772,7 +772,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				if errors.As(err, &conversionErr) {
 					return nil, conversionErr.Unwrap()
 				}
-				return nil, fmt.Errorf("tool execution failed at step %d: %w", stepNum, err)
+				return nil, err
 			}
 
 			// WorkflowAgent: a provider-executed call with no result gets an
@@ -1596,11 +1596,55 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
+	// Sources, files and reasoning come from the content parts, as in
+	// GenerateText (TS DefaultStepResult getters).
+	var stepSources []types.SourceContent
+	var stepFiles []types.GeneratedFileContent
+	var stepReasoning []types.ReasoningContent
+	var stepReasoningTexts []string
+	for _, part := range genResult.Content {
+		switch v := part.(type) {
+		case types.SourceContent:
+			stepSources = append(stepSources, v)
+		case types.GeneratedFileContent:
+			stepFiles = append(stepFiles, v)
+		case types.ReasoningContent:
+			stepReasoning = append(stepReasoning, v)
+			if v.Text != "" {
+				stepReasoningTexts = append(stepReasoningTexts, v.Text)
+			}
+		}
+	}
+	stepResponse := types.StepResponse{
+		ID:        ai.GenerateID(),
+		Timestamp: time.Now(),
+		ModelID:   stepModel.ModelID(),
+		Headers:   genResult.ResponseHeaders,
+		Body:      includeValue(include.ResponseBody, genResult.RawResponse),
+	}
+	if meta := genResult.ResponseMetadata; meta != nil {
+		if meta.ID != "" {
+			stepResponse.ID = meta.ID
+		}
+		if !meta.Timestamp.IsZero() {
+			stepResponse.Timestamp = meta.Timestamp
+		}
+		if meta.ModelID != "" {
+			stepResponse.ModelID = meta.ModelID
+		}
+		if meta.Headers != nil {
+			stepResponse.Headers = meta.Headers
+		}
+	}
 	stepResult := &types.StepResult{
 		StepNumber:       callConfig.StepNumber,
 		Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
 		Text:             genResult.Text,
 		Content:          contentFromGenerateResult(genResult, toolCalls),
+		Reasoning:        stepReasoning,
+		ReasoningText:    strings.Join(stepReasoningTexts, "\n"),
+		Files:            stepFiles,
+		Sources:          stepSources,
 		ToolCalls:        toolCalls,
 		StaticToolCalls:  filterAgentStaticToolCalls(toolCalls),
 		DynamicToolCalls: filterAgentDynamicToolCalls(toolCalls),
@@ -1614,11 +1658,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 			Body:     includeValue(include.RequestBody, genResult.RawRequest),
 			Messages: includeAgentRequestMessages(include.RequestMessages, prompt.Messages),
 		},
-		Response: types.StepResponse{
-			Headers:  genResult.ResponseHeaders,
-			Messages: nil,
-			Body:     includeValue(include.ResponseBody, genResult.RawResponse),
-		},
+		Response:       stepResponse,
 		ToolsContext:   callConfig.ToolsContext,
 		RuntimeContext: callConfig.RuntimeContext,
 		Performance:    performance,
@@ -1816,10 +1856,17 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 
 			// CB-T23: Emit OnToolCallStartEvent
+			eventCallID := ""
+			if lt, ok := ctx.Value(loopTelemetryKey{}).(*loopTelemetry); ok && lt != nil {
+				eventCallID = lt.callID
+			}
 			ai.Notify(ctx, ai.OnToolCallStartEvent{
-				ToolCallID: call.ID,
-				ToolName:   call.ToolName,
-				ToolCall:   call,
+				CallID:      eventCallID,
+				ToolContext: toolContext,
+				Messages:    messages,
+				ToolCallID:  call.ID,
+				ToolName:    call.ToolName,
+				ToolCall:    call,
 				// Args/StepNumber/ModelProvider are deprecated, JSON-excluded
 				// aliases kept for callbacks still reading the old fields
 				// (mirrors generate.go's OnToolCallStartEvent population);
@@ -1833,12 +1880,16 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ToolsContext:        toolsContext,
 			}, cbs.onToolCallStart)
 
+			execUsage := usage // per-call copy: calls may run concurrently
 			execOptions := types.ToolExecutionOptions{
 				ToolCallID:          call.ID,
 				UserContext:         runtimeContext,
 				RuntimeContext:      runtimeContext,
 				ToolContext:         toolContext,
 				ToolMetadata:        call.ToolMetadata,
+				Messages:            messages,
+				Usage:               &execUsage,
+				Metadata:            make(map[string]interface{}),
 				ExperimentalSandbox: experimentalSandbox,
 			}
 			// Dispatch tool-call telemetry: integrations open a child span of
@@ -1856,12 +1907,27 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				Args:        call.Arguments,
 				ToolContext: telemetryToolContextFor(tsettings, call.ToolName, toolContext),
 			})
+			// Per-tool timeout (TS timeout.toolMs / tools[name]).
+			execCtx := toolTelCtx
+			execCancel := func() {}
+			toolTimeout := a.config.Timeout.GetToolTimeout(call.ToolName)
+			if toolTimeout != nil {
+				execCtx, execCancel = context.WithTimeout(toolTelCtx, *toolTimeout)
+			}
 			toolStarted := time.Now()
-			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(toolTelCtx, tsettings, call.ToolName, call.Arguments,
+			toolResult, toolErr := telemetry.FireExecuteToolWithSettings(execCtx, tsettings, call.ToolName, call.Arguments,
 				func(execCtx context.Context, args map[string]interface{}) (interface{}, error) {
 					return tool.Execute(execCtx, args, execOptions)
 				})
 			durationMs := time.Since(toolStarted).Milliseconds()
+			// Only the tool timeout's own deadline counts (see ai.executeToolsConfigured).
+			if toolTimeout != nil && errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+				if toolErr == nil {
+					toolErr = context.DeadlineExceeded
+				}
+				toolErr = &ai.TimeoutError{Reason: ai.TimeoutReasonTool, Err: toolErr}
+			}
+			execCancel()
 			timings.record(call.ID, durationMs)
 			telemetry.FireOnToolCallFinish(toolTelCtx, telemetry.TelemetryToolCallFinishEvent{
 				Settings:    tsettings,
@@ -1918,6 +1984,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 			// CB-T23: Emit OnToolCallFinishEvent
 			ai.Notify(ctx, ai.OnToolCallFinishEvent{
+				CallID:          eventCallID,
+				ToolContext:     toolContext,
+				Messages:        messages,
 				ToolCallID:      call.ID,
 				ToolName:        call.ToolName,
 				ToolCall:        call,

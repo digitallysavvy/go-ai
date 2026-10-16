@@ -230,6 +230,12 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		return nil, err
 	}
 
+	// TS abortSignal?.throwIfAborted() after the model call.
+	if err := ctx.Err(); err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
+		return nil, err
+	}
+
 	if err := validateDecisionAnswers(opts.Questions, result.Answers, result.Rounding); err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
 		return nil, err

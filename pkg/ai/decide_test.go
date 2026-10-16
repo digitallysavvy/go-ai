@@ -462,3 +462,20 @@ func TestExperimentalDecide_AcceptsRoundedChoiceTies(t *testing.T) {
 		t.Fatal("expected an error without declared rounding")
 	}
 }
+
+// TS abortSignal.throwIfAborted() after the model call: an aborted caller
+// gets the abort error, not the model's answers.
+func TestExperimentalDecide_AbortAfterModelCall(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mock := &mockDecisionModel{
+		providerName: "test", modelID: "test-model",
+		doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+			cancel()
+			return &provider.DecisionResult{Answers: decisionAnswersFixture()}, nil
+		},
+	}
+	_, err := ExperimentalDecide(ctx, DecideOptions{Model: mock, State: map[string]interface{}{"m": "x"}, Questions: decisionQuestionsFixture()})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}

@@ -313,6 +313,11 @@ type BatchItemResult struct {
 	// Image is populated when Type is image and Status is succeeded.
 	Image *types.ImageResult
 
+	// Images are the generated images of a succeeded image result as
+	// generated files with detected media types and per-image provider
+	// metadata (TS convertImageResult -> DefaultGeneratedFile).
+	Images []types.GeneratedFile
+
 	Error            *provider.BatchError
 	ProviderMetadata map[string]interface{}
 }
@@ -344,7 +349,16 @@ func (s *BatchResultsStream) Next() (*BatchItemResult, error) {
 		}
 		textResult = parsed
 	}
+	var images []types.GeneratedFile
+	if item.ImageResult != nil && item.Status == provider.BatchItemSucceeded {
+		files, convErr := generatedFilesFromImageResult(item.ImageResult)
+		if convErr != nil {
+			return nil, convErr
+		}
+		images = files
+	}
 	return &BatchItemResult{
+		Images:           images,
 		Type:             item.Type,
 		ID:               item.ID,
 		Status:           item.Status,

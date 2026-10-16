@@ -2032,7 +2032,9 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 			))
 		}
 	} else {
-		if recordOutputs && e.Text != "" {
+		// TS records ai.response.text even when it is empty (a tool-call-only
+		// step): selectAttributes only drops null/undefined.
+		if recordOutputs {
 			stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
 		}
 		if recordOutputs && e.Reasoning != "" {
@@ -2084,10 +2086,13 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		)
 	}
 	if e.ResponseModelID != "" {
-		stepSpan.SetAttributes(attribute.String("ai.response.model", e.ResponseModelID))
+		stepSpan.SetAttributes(
+			attribute.String("ai.response.model", e.ResponseModelID),
+			attribute.String("gen_ai.response.model", e.ResponseModelID),
+		)
 	}
 	if !e.ResponseTimestamp.IsZero() {
-		stepSpan.SetAttributes(attribute.String("ai.response.timestamp", e.ResponseTimestamp.UTC().Format(time.RFC3339)))
+		stepSpan.SetAttributes(attribute.String("ai.response.timestamp", e.ResponseTimestamp.UTC().Format("2006-01-02T15:04:05.000Z")))
 	}
 	if e.ProviderMetadata != nil {
 		if b, err := json.Marshal(e.ProviderMetadata); err == nil {
@@ -2250,9 +2255,8 @@ func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e Teleme
 func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFinishEvent, recordOutputs bool) {
 	span.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
 	if recordOutputs {
-		if e.Text != "" {
-			span.SetAttributes(attribute.String("ai.response.text", e.Text))
-		}
+		// Empty text is recorded too (TS `event.text ?? undefined`).
+		span.SetAttributes(attribute.String("ai.response.text", e.Text))
 		if e.Reasoning != "" {
 			span.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
 		}

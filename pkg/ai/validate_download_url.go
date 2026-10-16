@@ -40,7 +40,10 @@ func validateDownloadURL(rawURL string) error {
 		)
 	}
 
-	host := strings.ToLower(u.Hostname())
+	// Strip trailing dots so a fully-qualified name like "localhost." (which
+	// resolves identically to "localhost") cannot bypass the hostname
+	// blocklist below (TS validateDownloadUrl).
+	host := strings.TrimRight(strings.ToLower(u.Hostname()), ".")
 	if host == "" {
 		return providererrors.NewSSRFError(rawURL, "URL must have a hostname", nil)
 	}
