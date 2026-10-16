@@ -674,6 +674,19 @@ func (t ToolErrorContent) ContentType() string {
 	return "tool-error"
 }
 
+// MarshalJSON emits the TypeScript SDK discriminated content-part shape
+// (`type: "tool-error"`), like every other content part.
+func (t ToolErrorContent) MarshalJSON() ([]byte, error) {
+	type toolErrorContentAlias ToolErrorContent
+	return json.Marshal(struct {
+		Type string `json:"type"`
+		toolErrorContentAlias
+	}{
+		Type:                  t.ContentType(),
+		toolErrorContentAlias: toolErrorContentAlias(t),
+	})
+}
+
 // ToolApprovalRequestContent indicates that a tool call requires approval before execution.
 type ToolApprovalRequestContent struct {
 	ApprovalID  string   `json:"approvalId"`

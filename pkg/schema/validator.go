@@ -356,7 +356,32 @@ func validateSchemaValue(value interface{}, sch map[string]interface{}, path str
 		}
 	}
 
+	if cond, ok := sch["if"]; ok {
+		if _, isBool := cond.(bool); isBool || isSchemaMap(cond) {
+			branch := "else"
+			condErr := validateAnySchema(value, cond, path, root, guard)
+			if condErr == nil {
+				branch = "then"
+			} else if errors.Is(condErr, errCircularRef) {
+				return condErr
+			}
+			if bm, has := sch[branch]; has {
+				if err := validateAnySchema(value, bm, path, root, guard); err != nil {
+					if errors.Is(err, errCircularRef) {
+						return err
+					}
+					return fmt.Errorf("%s: if: value must match %q schema (%s)", path, branch, err.Error())
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+func isSchemaMap(v interface{}) bool {
+	_, ok := v.(map[string]interface{})
+	return ok
 }
 
 // applyDefaultsWithRoot mirrors zod's .default()-filling during parse. root

@@ -527,6 +527,9 @@ func TestAgent_CustomToolApprovalPauseAndContinue(t *testing.T) {
 		continueScript: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
 				&ToolResultPart{ToolCallID: "call_1", ToolName: "deleteFile", Result: "deleted"},
+				// The resumed step closes with a finish-step the driver swallows (TS
+				// closingResumedStep); the follow-up model step comes after it.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}},
 				&TextDeltaPart{ID: "t1", Delta: "Done."},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
@@ -590,6 +593,9 @@ func TestAgent_ClientSideToolPauseAndContinue(t *testing.T) {
 		continueScript: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
 				&ToolResultPart{ToolCallID: "call_1", ToolName: "askUser", Result: "blue"},
+				// The resumed step closes with a finish-step the driver swallows (TS
+				// closingResumedStep); the follow-up model step comes after it.
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}},
 				&TextDeltaPart{ID: "t1", Delta: "Got it: blue."},
 				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
 				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(2, 2)},
