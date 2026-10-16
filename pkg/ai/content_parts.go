@@ -890,3 +890,14 @@ func validateToolResultParts(content []types.ContentPart, calls []types.ToolCall
 	}
 	return nil
 }
+
+// ValidateToolResultParts runs the "Tool call <id> not found." check of TS
+// convertLanguageModelContent for callers outside this package (the legacy
+// agent loop). tools is the step's tool set.
+func ValidateToolResultParts(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) error {
+	byName := make(map[string]*types.Tool, len(tools))
+	for i := range tools {
+		byName[tools[i].Name] = &tools[i]
+	}
+	return validateToolResultParts(content, calls, byName)
+}

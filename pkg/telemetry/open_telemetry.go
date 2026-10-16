@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -913,8 +914,16 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 		entry.span.End()
 		return
 	}
-	if e.Usage.InputTokens > 0 {
-		entry.span.SetAttributes(attribute.Int("gen_ai.usage.input_tokens", e.Usage.InputTokens))
+	// TS records usage.tokens; a NaN (provider reported nothing) is dropped.
+	// Go providers that fill only the TS-shaped Tokens field still count.
+	// A reported 0 is indistinguishable from the zero value, so it stays
+	// unrecorded (open item).
+	tokens := e.Usage.Tokens
+	if math.IsNaN(tokens) || math.IsInf(tokens, 0) || tokens <= 0 {
+		tokens = float64(e.Usage.InputTokens)
+	}
+	if tokens > 0 {
+		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", int64(tokens)))
 	}
 	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
 		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))

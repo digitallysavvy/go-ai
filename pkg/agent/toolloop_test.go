@@ -3515,3 +3515,16 @@ type namedModel struct {
 }
 
 func (n namedModel) ModelID() string { return n.id }
+
+func TestExecuteStep_ToolResultWithoutCallIsRejected(t *testing.T) {
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text:         "x",
+		FinishReason: types.FinishReasonStop,
+		Content:      []types.ContentPart{types.ToolResultContent{ToolCallID: "ghost", ToolName: "t", Result: "r"}},
+	}}}
+	agent := NewToolLoopAgent(AgentConfig{Model: model, MaxSteps: 1})
+	_, err := agent.Execute(context.Background(), "hi")
+	if err == nil || !strings.Contains(err.Error(), "Tool call ghost not found.") {
+		t.Fatalf("err = %v, want Tool call ghost not found.", err)
+	}
+}

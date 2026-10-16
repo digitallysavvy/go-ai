@@ -236,7 +236,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 						Type     *string `json:"type"` // nullable mid-stream
 						Function struct {
 							Name      WireName `json:"name"`
-							Arguments string   `json:"arguments"`
+							Arguments *string  `json:"arguments"`
 						} `json:"function"`
 						ExtraContent map[string]interface{} `json:"extra_content,omitempty"`
 					} `json:"tool_calls,omitempty"`
@@ -404,8 +404,11 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 						Index:            tc.Index,
 						ID:               tc.ID,
 						Name:             tc.Function.Name.Value,
-						ArgumentsDelta:   tc.Function.Arguments,
 						ProviderMetadata: openAICompatToolCallMetadata(tc.ExtraContent, s.MetadataKey),
+					}
+					if tc.Function.Arguments != nil {
+						delta.ArgumentsDelta = *tc.Function.Arguments
+						delta.ArgumentsPresent = true
 					}
 					if nonBlank(delta.Name) == "" {
 						delta.NameBlank = tc.Function.Name.Present

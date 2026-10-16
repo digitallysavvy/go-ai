@@ -1708,6 +1708,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	toolCalls = enrichAgentToolCallMetadata(toolCalls, callConfig.Tools)
+	// A tool-result part must answer a tool call of the same response (TS
+	// convertLanguageModelContent: "Tool call <id> not found.").
+	if err := ai.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
 	modelCallContent := contentFromGenerateResult(genResult, toolCalls)
 	// Sources, files and reasoning come from the content parts, as in
 	// GenerateText (TS DefaultStepResult getters).
