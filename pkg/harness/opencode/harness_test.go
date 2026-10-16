@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -1057,5 +1058,37 @@ func TestDoStart_PropagatesNativeConfigThroughPromptsCompactionAndResumedSession
 	assertNativeConfig(t, "resumed prompt", resumedPromptStart, OperationPrompt, "opencode-session")
 	if resumedPromptStart["prompt"] != "resume thinking" || resumedPromptStart["instructions"] != "be concise" {
 		t.Fatalf("resumed prompt start = %v", resumedPromptStart)
+	}
+}
+
+// A compaction whose bridge never answers must return when the caller's
+// context ends instead of blocking forever.
+func TestDoCompact_ReturnsWhenContextEnds(t *testing.T) {
+	const token = "compact-ctx-token"
+	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "compact-ctx", SessionWorkDir: "/vercel/sandbox/compact-ctx", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- sess.DoCompact(ctx, "") }()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("DoCompact error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("DoCompact did not return after its context ended")
 	}
 }
