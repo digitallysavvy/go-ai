@@ -149,8 +149,8 @@ type vertexTranscriptionProviderOptions struct {
 // type fails with an InvalidArgumentError. Empty languageCodes stay non-nil
 // because TS forwards `languageCodes: []`.
 func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexTranscriptionProviderOptions, error) {
-	invalid := func(cause error) error {
-		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid google provider options", Cause: cause}
+	invalid := func(key string, cause error) error {
+		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid " + key + " provider options", Cause: cause}
 	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		rawAny, present := providerOptions[key]
@@ -159,13 +159,13 @@ func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (
 		}
 		raw, ok := rawAny.(map[string]interface{})
 		if !ok {
-			return vertexTranscriptionProviderOptions{}, invalid(fmt.Errorf("%s: expected object, received %T", key, rawAny))
+			return vertexTranscriptionProviderOptions{}, invalid(key, fmt.Errorf("%s: expected object, received %T", key, rawAny))
 		}
 		var out vertexTranscriptionProviderOptions
 		if v, has := raw["region"]; has && v != nil {
 			region, isStr := v.(string)
 			if !isStr {
-				return out, invalid(fmt.Errorf("region: expected string, received %T", v))
+				return out, invalid(key, fmt.Errorf("region: expected string, received %T", v))
 			}
 			out.Region = region
 			out.hasRegion = true
@@ -179,12 +179,12 @@ func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (
 				for i, item := range values {
 					str, isStr := item.(string)
 					if !isStr {
-						return out, invalid(fmt.Errorf("languageCodes[%d]: expected string, received %T", i, item))
+						return out, invalid(key, fmt.Errorf("languageCodes[%d]: expected string, received %T", i, item))
 					}
 					out.LanguageCodes = append(out.LanguageCodes, str)
 				}
 			default:
-				return out, invalid(fmt.Errorf("languageCodes: expected array, received %T", v))
+				return out, invalid(key, fmt.Errorf("languageCodes: expected array, received %T", v))
 			}
 		}
 		for _, name := range []string{"enableWordTimeOffsets", "enableAutomaticPunctuation"} {
@@ -194,7 +194,7 @@ func vertexTranscriptionOptionsChecked(providerOptions map[string]interface{}) (
 			}
 			b, isBool := v.(bool)
 			if !isBool {
-				return out, invalid(fmt.Errorf("%s: expected boolean, received %T", name, v))
+				return out, invalid(key, fmt.Errorf("%s: expected boolean, received %T", name, v))
 			}
 			if name == "enableWordTimeOffsets" {
 				out.EnableWordTimeOffsets = &b

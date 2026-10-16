@@ -75,8 +75,8 @@ type vertexGeminiTranscriptionOptions struct {
 // with an InvalidArgumentError. Empty arrays stay non-nil because TS forwards
 // `languageCodes: []`.
 func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]interface{}) (vertexGeminiTranscriptionOptions, error) {
-	invalid := func(cause error) error {
-		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid google provider options", Cause: cause}
+	invalid := func(key string, cause error) error {
+		return &providererrors.InvalidArgumentError{Field: "providerOptions", Message: "invalid " + key + " provider options", Cause: cause}
 	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		rawAny, present := providerOptions[key]
@@ -85,7 +85,7 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 		}
 		raw, ok := rawAny.(map[string]interface{})
 		if !ok {
-			return vertexGeminiTranscriptionOptions{}, invalid(fmt.Errorf("%s: expected object, received %T", key, rawAny))
+			return vertexGeminiTranscriptionOptions{}, invalid(key, fmt.Errorf("%s: expected object, received %T", key, rawAny))
 		}
 		var out vertexGeminiTranscriptionOptions
 		strList := func(name string) ([]string, error) {
@@ -101,13 +101,13 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 				for i, item := range list {
 					str, isStr := item.(string)
 					if !isStr {
-						return nil, invalid(fmt.Errorf("%s[%d]: expected string, received %T", name, i, item))
+						return nil, invalid(key, fmt.Errorf("%s[%d]: expected string, received %T", name, i, item))
 					}
 					res = append(res, str)
 				}
 				return res, nil
 			}
-			return nil, invalid(fmt.Errorf("%s: expected array, received %T", name, v))
+			return nil, invalid(key, fmt.Errorf("%s: expected array, received %T", name, v))
 		}
 		var err error
 		if out.LanguageCodes, err = strList("languageCodes"); err != nil {
@@ -123,7 +123,7 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 			}
 			b, isBool := v.(bool)
 			if !isBool {
-				return out, invalid(fmt.Errorf("%s: expected boolean, received %T", name, v))
+				return out, invalid(key, fmt.Errorf("%s: expected boolean, received %T", name, v))
 			}
 			if name == "wordTimestamp" {
 				out.WordTimestamp = &b
@@ -134,7 +134,7 @@ func parseVertexGeminiTranscriptionOptionsChecked(providerOptions map[string]int
 		if v, has := raw["mode"]; has && v != nil {
 			mode, isStr := v.(string)
 			if !isStr || (mode != "SMART" && mode != "VERBATIM") {
-				return out, invalid(fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))
+				return out, invalid(key, fmt.Errorf("mode: invalid option %v, expected one of SMART, VERBATIM", v))
 			}
 			out.Mode = mode
 		}

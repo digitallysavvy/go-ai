@@ -82,12 +82,15 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 	// TS parseProviderOptions returns undefined for a null/absent entry, so
 	// a nil "googleVertex" value falls through to the legacy "vertex" key.
 	raw := opts["googleVertex"]
+	key := "googleVertex"
 	if raw == nil {
 		raw = opts["vertex"]
+		key = "vertex"
 	}
 	if raw == nil {
 		return nil, nil, nil
 	}
+	invalidVertexVideoOptions := func(cause error) error { return invalidVertexVideoOptionsFor(key, cause) }
 	jsonData, err := json.Marshal(raw)
 	if err != nil {
 		return nil, nil, invalidVertexVideoOptions(fmt.Errorf("failed to marshal googleVertex video provider options: %w", err))
@@ -125,10 +128,12 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*GoogleVertexVide
 	return &provOpts, extra, nil
 }
 
-func invalidVertexVideoOptions(cause error) error {
+// invalidVertexVideoOptionsFor mirrors TS parseProviderOptions, which names
+// the key it parsed (googleVertex or the legacy vertex).
+func invalidVertexVideoOptionsFor(key string, cause error) error {
 	return &providererrors.InvalidArgumentError{
 		Field:   "providerOptions",
-		Message: "invalid googleVertex provider options",
+		Message: "invalid " + key + " provider options",
 		Cause:   cause,
 	}
 }
