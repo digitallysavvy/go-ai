@@ -601,3 +601,19 @@ func TestDecisionModel_MetadataUsageDropsUnknownKeys(t *testing.T) {
 		t.Fatalf("usage = %v, want %v", got, want)
 	}
 }
+
+// TS uses JSON.stringify for json state parts, so a string value stays quoted
+// and HTML characters are not escaped.
+func TestDecisionModel_JSONStateStringKeepsQuotesAndSkipsHTMLEscaping(t *testing.T) {
+	p, rec := newDecisionProvider(t, decisionFixture, 200)
+	opts := decisionTestOptions()
+	opts.State = []provider.DecisionStatePart{provider.DecisionJSONPart("a <b> & c")}
+	if _, err := decide(t, p, opts); err != nil {
+		t.Fatal(err)
+	}
+	input := rec.body["input"].([]interface{})[0].(map[string]interface{})["content"]
+	want := []interface{}{map[string]interface{}{"type": "input_text", "text": `"a <b> & c"`}}
+	if !reflect.DeepEqual(input, want) {
+		t.Fatalf("input = %v", input)
+	}
+}
