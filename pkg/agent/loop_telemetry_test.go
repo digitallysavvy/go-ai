@@ -174,3 +174,31 @@ func TestGenerateAgentStepEndTelemetryReasoningIsNewlineJoined(t *testing.T) {
 		t.Fatalf("step-end Reasoning = %q, want %q", got, "a\nb")
 	}
 }
+
+type startEventRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	starts []telemetry.TelemetryStartEvent
+}
+
+func (r *startEventRecorder) OnStart(ctx context.Context, e telemetry.TelemetryStartEvent) context.Context {
+	r.starts = append(r.starts, e)
+	return ctx
+}
+
+// A root span opened late for a PrepareCall telemetry override carries the
+// same call-level request settings and retry count as the loop's own root.
+func TestAdoptPreparedTelemetryStartEventCarriesRequestSettings(t *testing.T) {
+	rec := &startEventRecorder{}
+	temp := 0.3
+	a := NewToolLoopAgent(AgentConfig{Model: &mockLanguageModel{}, Temperature: &temp})
+	override := &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}}
+	lt := &loopTelemetry{settings: &telemetry.Options{}, callID: "c1"}
+	_ = a.adoptPreparedTelemetry(context.Background(), lt, override, nil)
+	if len(rec.starts) != 1 {
+		t.Fatalf("start events = %d, want 1", len(rec.starts))
+	}
+	e := rec.starts[0]
+	if e.CallID != "c1" || e.Temperature == nil || *e.Temperature != temp || e.MaxRetries == nil || *e.MaxRetries != 2 {
+		t.Fatalf("start event = %+v", e)
+	}
+}

@@ -64,18 +64,45 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 		return ctx
 	}
 	lt.ownsRoot = true
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:         lt.callID,
-		OperationType:  "ai.generateText",
-		ModelProvider:  a.config.Model.Provider(),
-		ModelID:        a.config.Model.ModelID(),
-		Settings:       settings,
-		Messages:       messages,
-		RuntimeContext: telemetryRuntimeContextFor(settings, a.runtimeContext()),
-		ToolsContext:   telemetryToolsContextFor(settings, a.config.ToolsContext),
-	})
+	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
 	lt.rootCtx = ctx
 	return ctx
+}
+
+// loopStartEvent is the root start event of the legacy loop: call-level
+// request settings and the retry count, as GenerateText reports them on its
+// start event (TS onGenerateStart). Used for the loop's own root span and for
+// one opened late by a PrepareCall telemetry override.
+func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySettings, messages []types.Message) telemetry.TelemetryStartEvent {
+	var sys string
+	if settings != nil && settings.RecordInputs {
+		sys = a.config.System
+	}
+	maxRetries := 2
+	if a.config.MaxRetries != nil {
+		maxRetries = *a.config.MaxRetries
+	}
+	return telemetry.TelemetryStartEvent{
+		CallID:           callID,
+		OperationType:    "ai.generateText",
+		ModelProvider:    a.config.Model.Provider(),
+		ModelID:          a.config.Model.ModelID(),
+		Settings:         settings,
+		System:           sys,
+		Messages:         messages,
+		Headers:          a.config.Headers,
+		MaxOutputTokens:  a.config.MaxTokens,
+		Temperature:      a.config.Temperature,
+		TopP:             a.config.TopP,
+		TopK:             a.config.TopK,
+		PresencePenalty:  a.config.PresencePenalty,
+		FrequencyPenalty: a.config.FrequencyPenalty,
+		StopSequences:    a.config.StopSequences,
+		Seed:             a.config.Seed,
+		MaxRetries:       &maxRetries,
+		RuntimeContext:   telemetryRuntimeContextFor(settings, a.runtimeContext()),
+		ToolsContext:     telemetryToolsContextFor(settings, a.config.ToolsContext),
+	}
 }
 
 func (a *ToolLoopAgent) loopTelemetrySettings() *ai.TelemetrySettings {
@@ -153,37 +180,7 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types
 		return ctx, &loopTelemetry{settings: settings, callID: id}
 	}
 	lt := &loopTelemetry{settings: settings, callID: newTelemetryCallID(), ownsRoot: true}
-	var sys string
-	if settings != nil && settings.RecordInputs {
-		sys = a.config.System
-	}
-	maxRetries := 2
-	if a.config.MaxRetries != nil {
-		maxRetries = *a.config.MaxRetries
-	}
-	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:        lt.callID,
-		OperationType: "ai.generateText",
-		ModelProvider: a.config.Model.Provider(),
-		ModelID:       a.config.Model.ModelID(),
-		Settings:      settings,
-		System:        sys,
-		Messages:      messages,
-		Headers:       a.config.Headers,
-		// Call-level request settings and the retry count, as GenerateText
-		// reports them on its start event (TS onGenerateStart).
-		MaxOutputTokens:  a.config.MaxTokens,
-		Temperature:      a.config.Temperature,
-		TopP:             a.config.TopP,
-		TopK:             a.config.TopK,
-		PresencePenalty:  a.config.PresencePenalty,
-		FrequencyPenalty: a.config.FrequencyPenalty,
-		StopSequences:    a.config.StopSequences,
-		Seed:             a.config.Seed,
-		MaxRetries:       &maxRetries,
-		RuntimeContext:   telemetryRuntimeContextFor(settings, a.runtimeContext()),
-		ToolsContext:     telemetryToolsContextFor(settings, a.config.ToolsContext),
-	})
+	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
 	return ctx, lt
 }
 
