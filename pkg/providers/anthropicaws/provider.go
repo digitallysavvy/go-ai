@@ -247,10 +247,10 @@ func (t *sigV4Transport) credentials(ctx context.Context) (Credentials, error) {
 	secretAccessKey := firstNonEmpty(t.secretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
 	sessionToken := firstNonEmpty(t.sessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 	if accessKeyID == "" {
-		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in Config\n3. Use a CredentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or Config.APIKey\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")
+		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in Config\n3. Use a CredentialProvider function\n4. Use API key authentication with ANTHROPIC_AWS_API_KEY or Config.APIKey\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	if secretAccessKey == "" {
-		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.")
+		return Credentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	return Credentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil
 }

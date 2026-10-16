@@ -295,14 +295,14 @@ func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSC
 	sessionToken := firstNonEmpty(explicitSessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 
 	if accessKeyID == "" {
-		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" +
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" + //nolint:staticcheck // message text matches TS
 			"1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n" +
 			"2. Provide Credentials in Config\n" +
 			"3. Use a CredentialProvider function\n" +
-			"4. Use API key authentication with BearerToken or AWS_BEARER_TOKEN_BEDROCK\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")
+			"4. Use API key authentication with BearerToken or AWS_BEARER_TOKEN_BEDROCK\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") //nolint:staticcheck // message text matches TS
 	}
 	if secretAccessKey == "" {
-		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.")
+		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 	}
 
 	return AWSCredentials{AccessKeyID: accessKeyID, SecretAccessKey: secretAccessKey, SessionToken: sessionToken}, nil
