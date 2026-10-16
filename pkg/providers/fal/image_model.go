@@ -452,7 +452,7 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 		}
 		var decoded interface{}
 		if json.Unmarshal(v, &decoded) == nil {
-			falMeta[k] = decoded
+			falMeta[k] = stripFalNested(k, decoded)
 		}
 	}
 
@@ -480,4 +480,30 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string) ([]byte, err
 	opts := fileutil.TrustedOriginDownloadOptions(baseURL, m.provider.client.HTTPClient().Transport)
 	opts.Timeout = 30 * time.Second
 	return fileutil.Download(ctx, url, opts)
+}
+
+// falNestedKeys are the keys the TS falImageResponseSchema declares for its
+// nested z.object schemas. Zod strips every other key of those objects (only
+// the top-level looseObject passes unknown keys through), so the metadata
+// carries just these.
+var falNestedKeys = map[string][]string{
+	"timings":                {"inference"},
+	"debug_latents":          {"url", "content_type", "file_name", "file_data", "file_size"},
+	"debug_per_pass_latents": {"url", "content_type", "file_name", "file_data", "file_size"},
+	"image":                  {"url", "width", "height", "content_type", "file_name", "file_data", "file_size"},
+}
+
+func stripFalNested(key string, v interface{}) interface{} {
+	allowed, ok := falNestedKeys[key]
+	obj, isMap := v.(map[string]interface{})
+	if !ok || !isMap {
+		return v
+	}
+	out := make(map[string]interface{}, len(allowed))
+	for _, k := range allowed {
+		if val, present := obj[k]; present {
+			out[k] = val
+		}
+	}
+	return out
 }
