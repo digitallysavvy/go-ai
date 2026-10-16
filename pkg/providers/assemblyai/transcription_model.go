@@ -367,8 +367,10 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 		case "completed":
 			return raw, resp, nil
 		case "error":
-			errMsg, _ := raw["error"].(string)
-			if errMsg == "" {
+			// TS `transcript.error ?? 'Unknown error'`: only null/absent falls
+			// back, an empty string is kept.
+			errMsg, ok := raw["error"].(string)
+			if !ok {
 				errMsg = "Unknown error"
 			}
 			return nil, nil, fmt.Errorf("Transcription failed: %s", errMsg) //nolint:staticcheck // matches TS SDK's exact error text
