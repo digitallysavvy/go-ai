@@ -257,3 +257,28 @@ func assertWordCountAtMost(t *testing.T, description string, max int) {
 		t.Fatalf("word count %d exceeds max %d", len(words), max)
 	}
 }
+
+// JS enumerates array-index keys first (ascending), then the rest in
+// insertion order, for both the schema properties and the example input.
+func TestToolPromptIntegerKeysFirst(t *testing.T) {
+	tools := ToolSet{"t": {
+		Name: "t",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"b":  map[string]interface{}{"type": "string"},
+				"10": map[string]interface{}{"type": "string"},
+				"2":  map[string]interface{}{"type": "string"},
+			},
+		},
+		InputExamples: []types.ToolInputExample{{Input: map[string]interface{}{"a": 1, "10": 2, "9": 3}}},
+		Execute:       noopExecute,
+	}}
+	got := BuildCodeModeToolDescription(tools, ToolDiscoveryDescription)
+	if !strings.Contains(got, `{ "2"?: string; "10"?: string; b?: string; }`) {
+		t.Fatalf("schema order:\n%s", got)
+	}
+	if !strings.Contains(got, `tools.t({"9":3,"10":2,"a":1})`) {
+		t.Fatalf("example order:\n%s", got)
+	}
+}

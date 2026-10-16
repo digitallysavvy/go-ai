@@ -43,6 +43,7 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 	operandStart := true
 	fnCandidate := false
 	genericCandidate := false
+	extendsOpen := 0
 	var prev *tsToken
 	sawNewline := false
 	for i < len(tokens) {
@@ -58,6 +59,12 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 			return i
 		}
 		sawNewline = false
+		if depth == 0 && prev != nil && typeOperandEnds(prev) && endsTypeBeforeOperator(t, prev, extendsOpen) {
+			return i
+		}
+		if depth == 0 && t.kind == "ident" && t.text == "extends" {
+			extendsOpen++
+		}
 		if t.kind == "punct" {
 			switch t.text {
 			case "(", "[":
@@ -115,6 +122,9 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 			case "?":
 				if depth == 0 {
 					cond++
+					if extendsOpen > 0 {
+						extendsOpen--
+					}
 				}
 			case ":":
 				if depth == 0 {
@@ -136,6 +146,49 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 		i++
 	}
 	return i
+}
+
+// binaryOperatorTokens are the operators that can follow a complete type at
+// the top level only because the type ended there: `a as number + 1`, `x as T
+// === y`. A type never continues into one of them.
+var binaryOperatorTokens = map[string]bool{
+	"+": true, "-": true, "*": true, "/": true, "%": true, "**": true,
+	"==": true, "===": true, "!=": true, "!==": true, "<=": true, ">=": true,
+	">": true, ">>": true, ">>>": true, "<<": true, "&&": true, "||": true,
+	"??": true, "^": true,
+	"+=": true, "-=": true, "*=": true, "/=": true, "%=": true, "**=": true,
+	"&=": true, "|=": true, "^=": true, "<<=": true, ">>=": true, ">>>=": true,
+	"&&=": true, "||=": true, "??=": true,
+}
+
+// primitiveTypeKeywords are type names that can never take type arguments,
+// so a `<` after one is a less-than comparison.
+var primitiveTypeKeywords = map[string]bool{
+	"number": true, "string": true, "boolean": true, "any": true, "unknown": true,
+	"never": true, "void": true, "null": true, "undefined": true, "object": true,
+	"symbol": true, "bigint": true, "true": true, "false": true, "this": true,
+}
+
+// endsTypeBeforeOperator reports whether t, right after the complete type
+// operand prev at the top level, ends the type because it is an expression
+// operator (`as number + 1`, `as T in obj`, `as T ? a : b`). extendsOpen
+// counts `extends` keywords whose conditional `?` has not been seen yet: only
+// those make a `?` part of the type.
+func endsTypeBeforeOperator(t tsToken, prev *tsToken, extendsOpen int) bool {
+	switch t.kind {
+	case "punct":
+		switch {
+		case binaryOperatorTokens[t.text]:
+			return true
+		case t.text == "?":
+			return extendsOpen == 0
+		case t.text == "<":
+			return prev.kind == "string" || prev.kind == "number" || (prev.kind == "ident" && primitiveTypeKeywords[prev.text])
+		}
+	case "ident":
+		return t.text == "in" || t.text == "instanceof"
+	}
+	return false
 }
 
 // typeOperandStarts reports whether a type operand begins right after t at

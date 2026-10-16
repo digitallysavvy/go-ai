@@ -200,12 +200,16 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 			switch t.text {
 			case "interface":
 				if isStatementStart(*out) && nextOnSameLine(tokens, i) {
+					pos := t.pos
 					i = skipInterfaceDecl(tokens, i)
+					asiGuard(tokens, i, out, pos, true)
 					continue
 				}
 			case "type":
 				if isStatementStart(*out) && nextOnSameLine(tokens, i) && looksLikeTypeAlias(tokens, i) {
+					pos := t.pos
 					i = skipTypeAlias(tokens, i)
+					asiGuard(tokens, i, out, pos, true)
 					continue
 				}
 			case "satisfies", "as":
@@ -218,7 +222,12 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 					for n := len(*out); n > 0 && ((*out)[n-1].kind == "space" || (*out)[n-1].kind == "comment"); n-- {
 						*out = (*out)[:n-1]
 					}
+					tokStart := i + 1
 					i = consumeTypeExpr(tokens, i+1, false)
+					if typeStart := nextSignificant(tokens, tokStart); typeStart < 0 || tokens[typeStart].text != "const" {
+						// `as const` keeps the following line as is.
+						asiGuard(tokens, i, out, t.pos, false)
+					}
 					continue
 				}
 			case "enum":
@@ -240,9 +249,13 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 			case "declare":
 				if isStatementStart(*out) {
 					var err error
+					pos, before := t.pos, len(*out)
 					i, err = handleDeclare(tokens, i, out)
 					if err != nil {
 						return i, err
+					}
+					if len(*out) == before {
+						asiGuard(tokens, i, out, pos, true)
 					}
 					continue
 				}
@@ -294,9 +307,13 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				continue
 			case "function":
 				var err error
+				pos, before := t.pos, len(*out)
 				i, err = handleFunctionSignature(tokens, i, out)
 				if err != nil {
 					return i, err
+				}
+				if len(*out) == before {
+					asiGuard(tokens, i, out, pos, true)
 				}
 				continue
 			case "class":
@@ -456,6 +473,10 @@ func endsExpression(out []tsToken) bool {
 			switch t.text {
 			case ")", "]", "}":
 				return true
+			case "++", "--":
+				// Postfix when an operand precedes it on the same line
+				// (`y++ as T`); otherwise a prefix operator.
+				return endsExpression(out[:i]) && !endsWithLineBreak(out[:i])
 			}
 			return false
 		}
@@ -473,6 +494,38 @@ var expressionPrefixKeywords = map[string]bool{
 	"satisfies": true, "as": true, "enum": true, "namespace": true,
 	"declare": true, "abstract": true, "readonly": true, "public": true,
 	"private": true, "protected": true, "static": true, "instanceof": true,
+}
+
+// asiGuard keeps the statement boundary a type-only construct provided. After
+// an erased `as T`, type alias, interface, declare statement or overload
+// signature, a following line that starts with `(`, `[`, a template, `+`, `-`
+// or `/` would otherwise continue the previous expression (`x = y as T`
+// newline `(z)` becomes `x = y (z)`). Node writes a `;` over the first erased
+// character in that case; pos is that character's rune offset. After an
+// expression's `as T` Node does this for `(`, `[` and templates only, because
+// a following `+`, `-` or `/` continues the expression as an operator; after a
+// statement-level construct (statement is true) it does it for those too.
+func asiGuard(tokens []tsToken, next int, out *[]tsToken, pos int, statement bool) {
+	sawNewline := false
+	j := next
+	for ; j < len(tokens) && (tokens[j].kind == "space" || tokens[j].kind == "comment"); j++ {
+		if strings.ContainsAny(tokens[j].text, "\n\r") {
+			sawNewline = true
+		}
+	}
+	if !sawNewline || j >= len(tokens) {
+		return
+	}
+	t := tokens[j]
+	switch {
+	case t.kind == "string" && strings.HasPrefix(t.text, "`"):
+	case t.kind == "punct" && (t.text == "(" || t.text == "["):
+	case statement && t.kind == "regex":
+	case statement && t.kind == "punct" && (t.text == "+" || t.text == "-" || t.text == "/"):
+	default:
+		return
+	}
+	*out = append(*out, tsToken{kind: "punct", text: ";", pos: pos})
 }
 
 func isExpressionPrefixKeyword(ident string) bool { return expressionPrefixKeywords[ident] }

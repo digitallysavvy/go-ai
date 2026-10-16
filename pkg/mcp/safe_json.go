@@ -100,3 +100,10 @@ func rejectUnsafeJSONWalk(value interface{}, depth, maxDepth, maxFields int, fie
 	}
 	return nil
 }
+
+// drainBody discards the rest of a response body we do not use, so the
+// connection can be reused. TS never reads such a body; reading is capped so
+// a server that streams forever cannot hold the caller.
+func drainBody(r io.Reader) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(r, mcpMaxErrorBodyBytes))
+}

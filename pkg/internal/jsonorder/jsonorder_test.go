@@ -95,3 +95,23 @@ func TestHintedRestoresRawKeyOrder(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+func TestJSKeyOrderIntegerKeysFirst(t *testing.T) {
+	v, ok := Parse([]byte(`{"b":1,"10":2,"a":3,"2":4,"01":5,"4294967295":6}`))
+	if !ok {
+		t.Fatal("parse")
+	}
+	if got, want := Stringify(v), `{"2":4,"10":2,"b":1,"a":3,"01":5,"4294967295":6}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	o := New()
+	o.Set("x", 1)
+	o.Set("3", 2)
+	o.Set("1", 3)
+	if got, want := Stringify(o), `{"1":3,"3":2,"x":1}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+	if got, want := Stringify(FromMap(map[string]interface{}{"10": 1, "9": 2, "a": 3})), `{"9":2,"10":1,"a":3}`; got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}

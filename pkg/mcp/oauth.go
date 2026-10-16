@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -442,8 +441,8 @@ func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string)
 
 func closeResponse(resp *http.Response) {
 	if resp != nil && resp.Body != nil {
-		io.Copy(io.Discard, resp.Body) //nolint:errcheck
-		resp.Body.Close()              //nolint:errcheck
+		drainBody(resp.Body)
+		resp.Body.Close() //nolint:errcheck
 	}
 }
 

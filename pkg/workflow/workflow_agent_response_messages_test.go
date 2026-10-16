@@ -2,7 +2,9 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -199,6 +201,71 @@ func TestWorkflowIncompleteStreamClassifiesOutputChunks(t *testing.T) {
 			}
 			if st.Text() != "partial output" {
 				t.Fatalf("text = %q", st.Text())
+			}
+		})
+	}
+}
+
+// TS modelCallIterator ends the run after a step whose finish reason is not
+// stop or tool-calls (done = !isToolExecutionAllowed): invalid local calls get
+// their validation error, nothing is executed or sent for approval, and the
+// model is not asked again. stream() has no step limit, so the loop used to
+// run forever on a model that repeats the truncated call.
+func TestWorkflowLengthStopWithLocalToolCallEndsRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args interface{}
+	}{{"unknown", "x"}, {"local", 123}, {"local", "ok"}} {
+		tc := tc
+		t.Run(tc.name+fmt.Sprint(tc.args), func(t *testing.T) {
+			executed, generateCalls := 0, 0
+			call := types.ToolCall{ID: "bad", ToolName: tc.name, Arguments: map[string]interface{}{"value": tc.args}}
+			m := &fnModel{
+				gen: func() *types.GenerateResult {
+					generateCalls++
+					return &types.GenerateResult{FinishReason: types.FinishReasonLength, ToolCalls: []types.ToolCall{call}}
+				},
+				chunks: []provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonLength},
+				},
+			}
+			tools := []types.Tool{{
+				Name:       "local",
+				Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}},
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					executed++
+					return "x", nil
+				},
+			}}
+			a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: tools})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			st, err := a.StreamWithOptions(ctx, WorkflowStreamOptions{Prompt: "hi"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.ReadAll(); err != nil {
+				t.Fatal(err)
+			}
+			if n := len(st.Steps()); n != 1 {
+				t.Fatalf("stream steps = %d, want 1", n)
+			}
+			if executed != 0 {
+				t.Fatalf("stream: executed=%d, want none", executed)
+			}
+			res, err := a.GenerateWithOptions(ctx, WorkflowGenerateOptions{Prompt: "hi", StopWhen: []ai.StopCondition{ai.IsStepCount(5)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Steps) != 1 || generateCalls != 1 {
+				t.Fatalf("generate steps = %d, model calls = %d, want 1", len(res.Steps), generateCalls)
+			}
+			if executed != 0 {
+				t.Fatalf("executed=%d, want none", executed)
 			}
 		})
 	}

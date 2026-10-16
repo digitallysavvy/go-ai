@@ -1238,7 +1238,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
 		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
 		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
-		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = opts.StopWhen, opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
+		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = withFinishReasonStop(opts.StopWhen), opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
 		if w.FilterActiveTools != nil {
 			c.Tools = w.FilterActiveTools(ctx, c.StepNumber, c.Tools)
 		}
@@ -1524,7 +1524,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages)
 	}
 	return agent.NewToolLoopAgent(agent.AgentConfig{
-		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: stopWhen,
+		ID: w.ID, Model: w.Model, System: system, Prompt: w.Prompt, Tools: tools, StopWhen: withFinishReasonStop(stopWhen),
 		AllowSystemInMessages: allowSystemInMessages,
 		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx, !streaming), PrepareStep: stepAdapter,
 		Temperature: callSetting(ovr.Temperature, govr.Temperature, w.Temperature), MaxTokens: callSetting(ovr.MaxTokens, govr.MaxTokens, w.MaxTokens),
@@ -1554,6 +1554,32 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
 		OnEndEvent:                     onEnd,
 	})
+}
+
+// withFinishReasonStop adds the WorkflowAgent rule that a step which ended
+// with any finish reason other than stop or tool-calls (length, content-filter,
+// error, other) is the last one: TS modelCallIterator sets
+// `done = !isToolExecutionAllowed` after answering that step's tool calls
+// (validation errors and provider results only; nothing is executed). Without
+// it the loop asked the model again with the error results and, in stream()
+// where no step limit applies, never ended. Empty conditions stay empty so
+// the caller's defaulting is unchanged.
+func withFinishReasonStop(conditions []ai.StopCondition) []ai.StopCondition {
+	if len(conditions) == 0 {
+		return conditions
+	}
+	out := make([]ai.StopCondition, 0, len(conditions)+1)
+	out = append(out, func(state ai.StopConditionState) string {
+		if n := len(state.Steps); n > 0 {
+			switch reason := state.Steps[n-1].FinishReason; reason {
+			case "", types.FinishReasonStop, types.FinishReasonToolCalls:
+			default:
+				return "step finished with finish reason " + string(reason)
+			}
+		}
+		return ""
+	})
+	return append(out, conditions...)
 }
 
 func (w *WorkflowAgent) effectiveToolApprovalSecret(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions) []byte {
@@ -1690,7 +1716,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 			system = normalized
 		}
 	}
-	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions}
+	call := agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions}
 	result, err := a.GenerateAgent(agent.WithTelemetryCallID(ctx, callID), call)
 	if err != nil {
 		if isWorkflowAbort(ctx, err) {
@@ -1861,7 +1887,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: opts.StopWhen, Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,

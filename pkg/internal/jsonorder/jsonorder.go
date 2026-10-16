@@ -32,6 +32,53 @@ type Object struct {
 	vals map[string]interface{}
 }
 
+// isArrayIndex reports whether k is a canonical JS array index ("0" or digits
+// without a leading zero, below 2^32-1), the keys a JS object enumerates first.
+func isArrayIndex(k string) (uint64, bool) {
+	if k == "" || len(k) > 10 || (len(k) > 1 && k[0] == '0') {
+		return 0, false
+	}
+	var n uint64
+	for i := 0; i < len(k); i++ {
+		if k[i] < '0' || k[i] > '9' {
+			return 0, false
+		}
+		n = n*10 + uint64(k[i]-'0')
+	}
+	return n, n < 1<<32-1
+}
+
+// JSKeyOrder returns keys in the order a JavaScript object enumerates them
+// (Object.keys, JSON.stringify): array-index keys first in ascending numeric
+// order, then the other keys in the given (insertion) order. The input slice
+// is returned unchanged when it has no array-index key.
+func JSKeyOrder(keys []string) []string {
+	idx := 0
+	for _, k := range keys {
+		if _, ok := isArrayIndex(k); ok {
+			idx++
+		}
+	}
+	if idx == 0 {
+		return keys
+	}
+	nums := make([]string, 0, idx)
+	rest := make([]string, 0, len(keys)-idx)
+	for _, k := range keys {
+		if _, ok := isArrayIndex(k); ok {
+			nums = append(nums, k)
+		} else {
+			rest = append(rest, k)
+		}
+	}
+	sort.SliceStable(nums, func(i, j int) bool {
+		a, _ := isArrayIndex(nums[i])
+		b, _ := isArrayIndex(nums[j])
+		return a < b
+	})
+	return append(nums, rest...)
+}
+
 // Parse parses raw JSON into an ordered tree: *Object for
 // objects, []interface{} for arrays and json.Number, string, bool or nil for
 // scalars.
@@ -78,6 +125,7 @@ func decode(dec *json.Decoder) (interface{}, bool) {
 		if _, err := dec.Token(); err != nil {
 			return nil, false
 		}
+		o.keys = JSKeyOrder(o.keys)
 		return o, true
 	case '[':
 		arr := []interface{}{}
@@ -137,6 +185,7 @@ func FromMap(m map[string]interface{}) *Object {
 		o.keys = append(o.keys, k)
 	}
 	sort.Strings(o.keys)
+	o.keys = JSKeyOrder(o.keys)
 	for k, v := range m {
 		o.vals[k] = v
 	}
@@ -171,6 +220,7 @@ func (o *Object) WithLead(key string, val interface{}) *Object {
 		out.keys = append(out.keys, k)
 		out.vals[k] = o.vals[k]
 	}
+	out.keys = JSKeyOrder(out.keys)
 	return out
 }
 
@@ -202,7 +252,7 @@ func (o *Object) Set(key string, val interface{}) {
 		o.vals = map[string]interface{}{}
 	}
 	if _, ok := o.vals[key]; !ok {
-		o.keys = append(o.keys, key)
+		o.keys = JSKeyOrder(append(o.keys, key))
 	}
 	o.vals[key] = val
 }
