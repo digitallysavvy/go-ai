@@ -181,10 +181,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	// Submit video generation/edit/extension request
 	var createResp xaiVideoCreateResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    endpoint,
-		Body:    body,
-		Headers: callOpts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator("xai", providerutils.SchemaXAIVideoCreate),
+		Method:           http.MethodPost,
+		Path:             endpoint,
+		Body:             body,
+		Headers:          callOpts.Headers,
 	}, &createResp)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -504,6 +505,10 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 			parseXAIErrorMessage(resp.Body), nil)
 	}
 
+	// TS xaiVideoStatusJsonResponseHandler: createJsonResponseHandler(schema).
+	if err := providerutils.MediaResponseValidator("xai", providerutils.SchemaXAIVideoStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, nil, err
+	}
 	var status xaiVideoStatusResponse
 	if err := json.Unmarshal(resp.Body, &status); err != nil {
 		return nil, nil, fmt.Errorf("failed to decode JSON response: %w", err)

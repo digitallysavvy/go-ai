@@ -76,6 +76,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	quiverOpts, err := parseQuiverAIImageModelOptions(quiverRawOptions(opts.ProviderOptions))
 	if err != nil {
 		return nil, err
@@ -90,17 +93,18 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	var response svgGenerationResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    operationPath(operation),
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaQuiverSVG),
+		Method:           http.MethodPost,
+		Path:             operationPath(operation),
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
 	if len(response.Data) == 0 {
-		// TS returns an empty `images` array; core retries and then throws
-		// NoImageGeneratedError, so an empty response is not a provider error.
+		// Unreachable for a conforming body: the TS schema requires data.min(1),
+		// so an empty array is "Invalid JSON response" before this point.
 		return &types.ImageResult{}, nil
 	}
 

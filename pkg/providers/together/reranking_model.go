@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // RerankingModel implements the provider.RerankingModel interface for
@@ -74,6 +75,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, providererrors.NewProviderError("together", 0, "", "rerank options cannot be nil", nil)
 	}
 
+	if err := validateRerankingOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	rerankOpts := extractTogetherRerankingOptions(opts.ProviderOptions)
 
 	reqBody := map[string]interface{}{
@@ -91,10 +95,11 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 
 	var response togetherRerankingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/rerank",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaTogetherRerank),
+		Method:           http.MethodPost,
+		Path:             "/v1/rerank",
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("together", 0, "", err.Error(), err)

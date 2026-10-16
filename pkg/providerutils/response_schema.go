@@ -329,7 +329,7 @@ func InvalidJSONResponseError(providerName string, statusCode int, headers http.
 
 // InvalidJSONResponseMessage is the TS createJsonResponseHandler failure
 // message.
-const InvalidJSONResponseMessage = "Invalid JSON response"
+const InvalidJSONResponseMessage = providererrors.InvalidJSONResponseMessage
 
 // IsInvalidJSONResponse reports whether err is the createJsonResponseHandler
 // failure (so provider error handlers can return it as is).

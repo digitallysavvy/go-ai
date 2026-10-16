@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -220,9 +221,9 @@ func normalizeFileContentData(file types.FileContent) (types.FileContent, error)
 	case types.FileDataTypeURL:
 		file.URL = file.FileData.URL
 	case types.FileDataTypeReference:
-		return types.FileContent{}, fmt.Errorf("openresponses: file parts with provider references are not supported")
+		return types.FileContent{}, &providererrors.UnsupportedFunctionalityError{Functionality: "file parts with provider references"}
 	case types.FileDataTypeText:
-		return types.FileContent{}, fmt.Errorf("openresponses: text file parts are not supported")
+		return types.FileContent{}, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
 	}
 	if file.FileData.MediaType != "" && file.MediaType == "" {
 		file.MediaType = file.FileData.MediaType

@@ -3,6 +3,7 @@ package prodia
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -265,8 +266,9 @@ func TestDoGenerateRejectsInvalidAspectRatio(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid aspect ratio, got nil")
 	}
-	if !strings.Contains(err.Error(), "aspectRatio") {
-		t.Errorf("error %q does not mention aspectRatio", err.Error())
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) || ia.Cause == nil || !strings.Contains(ia.Cause.Error(), "aspectRatio") {
+		t.Errorf("error %v is not an InvalidArgumentError naming aspectRatio", err)
 	}
 }
 

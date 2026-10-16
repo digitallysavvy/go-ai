@@ -69,6 +69,13 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
+	// TS OpenAICompatibleEmbeddingModel parses provider options before the
+	// too-many-values check.
+	if opts != nil {
+		if err := providerutils.ValidateOpenAICompatibleEmbeddingOptions(opts.ProviderOptions, "fireworks"); err != nil {
+			return nil, err
+		}
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
 		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
 			Provider:             m.Provider(),
@@ -84,10 +91,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	applyEmbeddingDimensions(reqBody, opts)
 	var response fireworksEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/embeddings",
-		Body:    reqBody,
-		Headers: optsEmbedHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCompatEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/v1/embeddings",
+		Body:             reqBody,
+		Headers:          optsEmbedHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("fireworks", 0, "", err.Error(), err)

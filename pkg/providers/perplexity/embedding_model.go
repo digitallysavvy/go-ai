@@ -124,10 +124,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response perplexityEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/embeddings",
-		Body:    reqBody,
-		Headers: embedOptsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaPerplexityEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/v1/embeddings",
+		Body:             reqBody,
+		Headers:          embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)

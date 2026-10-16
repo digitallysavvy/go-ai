@@ -86,10 +86,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		} `json:"usage,omitempty"`
 	}
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaVoyageEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("voyage", 0, "", err.Error(), err)

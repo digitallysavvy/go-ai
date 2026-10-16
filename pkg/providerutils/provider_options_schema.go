@@ -1,6 +1,7 @@
 package providerutils
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/url"
@@ -520,4 +521,29 @@ func OptObjectWith(schema OptionSchema, required ...string) OptionCheck {
 		}
 		return inner(path, v)
 	}
+}
+
+// ValidateMapProviderOptions is ParseProviderOptions for providers whose
+// option value may also be a typed Go struct (valid by construction): only the
+// JSON-shaped (map) form is validated.
+func ValidateMapProviderOptions(provider string, providerOptions map[string]interface{}, schema OptionSchema) error {
+	raw := providerOptions[provider]
+	if raw == nil {
+		return nil
+	}
+	if rv := reflect.ValueOf(raw); rv.Kind() != reflect.Map {
+		return nil
+	}
+	// Nested typed values (structs, typed slices) are valid by construction
+	// and reach the wire through their JSON form, so validate that form.
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var normalized interface{}
+	if json.Unmarshal(encoded, &normalized) != nil {
+		return nil
+	}
+	_, err = ParseProviderOptions(provider, map[string]interface{}{provider: normalized}, schema)
+	return err
 }

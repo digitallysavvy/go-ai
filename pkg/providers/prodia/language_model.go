@@ -85,6 +85,9 @@ func extractLanguageProviderOptions(opts *provider.GenerateOptions) *ProdiaLangu
 // DoGenerate sends the prompt (and optional image) to the Prodia API using
 // multipart form-data and returns the generated content.
 func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if err := validateLanguageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	var warnings []types.Warning
 
 	// Warn about features this provider does not support.

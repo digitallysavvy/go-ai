@@ -102,6 +102,9 @@ func extractProviderOptions(opts *provider.ImageGenerateOptions) *ProdiaImagePro
 
 // DoGenerate performs image generation using the Prodia API.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	var warnings []types.Warning
 

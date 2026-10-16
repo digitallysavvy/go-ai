@@ -91,6 +91,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, newXAIProviderError(m.Provider(), resp.StatusCode, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaXAITranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
+
 	var parsed xaiTranscriptionResponse
 	if err := json.Unmarshal(resp.Body, &parsed); err != nil {
 		return nil, fmt.Errorf("failed to decode xAI transcription response: %w", err)

@@ -87,6 +87,9 @@ func boolPtr(b bool) *bool {
 // DoGenerate performs image generation, routing flux-kontext-* models through
 // the async submission and polling path.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if m.isAsyncModel() {
 		return m.doGenerateAsync(ctx, opts)
 	}
@@ -185,7 +188,10 @@ func (m *ImageModel) submitAsyncRequest(ctx context.Context, opts *provider.Imag
 	body := m.buildAsyncRequestBody(opts)
 
 	var submitResp AsyncSubmitResponse
-	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID, Body: body, Headers: opts.Headers}, &submitResp); err != nil {
+	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID, Body: body, Headers: opts.Headers, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncSubmitNode)}, &submitResp); err != nil {
+		if providerutils.IsInvalidJSONResponse(err) {
+			return "", err
+		}
 		return "", fmt.Errorf("Fireworks async submit failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 
@@ -202,7 +208,10 @@ func (m *ImageModel) checkAsyncStatus(ctx context.Context, requestID string, cal
 	pollBody := map[string]interface{}{"id": requestID}
 
 	var pollResp AsyncPollResponse
-	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID + "/get_result", Body: pollBody, Headers: callHeaders}, &pollResp); err != nil {
+	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: "/v1/workflows/" + m.modelID + "/get_result", Body: pollBody, Headers: callHeaders, ValidateResponse: providerutils.NodeResponseValidator("fireworks", asyncPollNode)}, &pollResp); err != nil {
+		if providerutils.IsInvalidJSONResponse(err) {
+			return "", false, err
+		}
 		return "", false, fmt.Errorf("Fireworks async status check failed: %w", err) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 	}
 

@@ -15,7 +15,7 @@ func TestVoyageEmbeddingRequestAndResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.2,0.3],"index":1},{"embedding":[0.1,0.4],"index":0}],"usage":{"total_tokens":12}}`))
+		_, _ = w.Write([]byte(`{"data":[{"embedding":[0.2,0.3],"index":1},{"embedding":[0.1,0.4],"index":0}],"model":"voyage-3","usage":{"total_tokens":12}}`))
 	}))
 	defer srv.Close()
 

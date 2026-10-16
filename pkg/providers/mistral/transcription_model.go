@@ -65,6 +65,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, internalhttp.StatusProviderError("mistral", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("mistral", providerutils.SchemaMistralTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
+
 	var response mistralTranscriptionResponse
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode transcription response: %w", err)

@@ -14,6 +14,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -69,6 +70,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 
 	body, contentType, err := m.buildMultipartBody(opts)
@@ -78,28 +82,35 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var submission revaiJobResponse
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/speechtotext/v1/jobs",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaRevAIJob),
+		Method:           http.MethodPost,
+		Path:             "/speechtotext/v1/jobs",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &submission)
 	if err != nil {
 		return nil, handleError(err)
 	}
 	if submission.Status == "failed" {
-		return nil, fmt.Errorf("revai: failed to submit transcription job")
+		// TS AISDKError TranscriptionJobSubmissionFailed (cause: the response).
+		failure := providererrors.NewProviderError("revai", 0, "", "Failed to submit transcription job to Rev.ai", nil)
+		failure.Data = submission
+		return nil, failure
 	}
 
-	jobStatus, err := m.pollJobStatus(ctx, submission.ID, opts.Headers)
-	if err != nil {
-		return nil, err
+	// TS polls only while the job is not yet "transcribed".
+	if submission.Status != "transcribed" {
+		if _, err := m.pollJobStatus(ctx, submission.ID, opts.Headers); err != nil {
+			return nil, err
+		}
 	}
 
 	var transcript revaiTranscriptResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", submission.ID),
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaRevAITranscript),
+		Method:           http.MethodGet,
+		Path:             fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", submission.ID),
+		Headers:          opts.Headers,
 	}, &transcript)
 	if err != nil {
 		return nil, handleError(err)
@@ -108,10 +119,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	text, segments, durationInSeconds := convertRevaiTranscript(transcript)
 
 	return &types.TranscriptionResult{
-		Text:              text,
-		Segments:          segments,
-		Timestamps:        segments,
-		Language:          jobStatus.Language,
+		Text:       text,
+		Segments:   segments,
+		Timestamps: segments,
+		// TS reports the submission response's language, not the polled one.
+		Language:          submission.Language,
 		DurationInSeconds: &durationInSeconds,
 		Warnings:          []types.Warning{},
 		Usage:             types.TranscriptionUsage{DurationSeconds: durationInSeconds},
@@ -143,19 +155,31 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, he
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			return nil, fmt.Errorf("revai: transcription job polling timed out")
+			// TS AISDKError TranscriptionJobPollingTimedOut.
+			return nil, providererrors.NewProviderError("revai", 0, "", "Transcription job polling timed out", nil)
 		}
 
-		var status revaiJobResponse
-		if _, err := fileutil.PollJSON(ctx, pollURL, pollOpts, &status); err != nil {
+		download, err := fileutil.DownloadWithMetadata(ctx, pollURL, pollOpts)
+		if err != nil {
 			return nil, handleError(err)
+		}
+		// TS createJsonResponseHandler(revaiTranscriptionJobResponseSchema).
+		if err := providerutils.MediaResponseValidator("revai.transcription", providerutils.SchemaRevAIJob)(http.StatusOK, http.Header(download.Headers), download.Data); err != nil {
+			return nil, err
+		}
+		var status revaiJobResponse
+		if err := json.Unmarshal(download.Data, &status); err != nil {
+			return nil, fmt.Errorf("revai: failed to decode job status: %w", err)
 		}
 
 		switch status.Status {
 		case "transcribed":
 			return &status, nil
 		case "failed":
-			return nil, fmt.Errorf("revai: transcription job failed")
+			// TS AISDKError TranscriptionJobFailed (cause: the job response).
+			failure := providererrors.NewProviderError("revai", 0, "", "Transcription job failed", nil)
+			failure.Data = status
+			return nil, failure
 		}
 
 		select {

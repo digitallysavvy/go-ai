@@ -465,6 +465,9 @@ func (m *azureMaiImageModel) call(ctx context.Context, extra map[string]string, 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return azureMaiImageCallResult{}, azureMaiImageAPIError(resp.StatusCode, headers, respBody)
 	}
+	if err := providerutils.MediaResponseValidator("azure.image", providerutils.SchemaAzureMAIImage)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return azureMaiImageCallResult{}, err
+	}
 	var parsed azureMaiImageResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return azureMaiImageCallResult{}, providererrors.NewProviderError("azure.image", resp.StatusCode, "", "Invalid JSON response", err)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdhttp "net/http"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // default polling configuration matching the AI SDK core's own default
@@ -236,6 +238,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
 	}
 
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceTask)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
+		return nil, err
+	}
 	var createResp taskCreateResponse
 	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse creation response: %v", err))
@@ -276,10 +281,17 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	pollURL := strings.TrimRight(m.prov.config.BaseURL, "/") + "/contents/generations/tasks/" + operation.TaskID
 
-	var statusResp taskStatusResponse
-	result, err := fileutil.PollJSON(ctx, pollURL, downloadOpts, &statusResp)
+	result, err := fileutil.DownloadWithMetadata(ctx, pollURL, downloadOpts)
 	if err != nil {
 		return nil, m.handlePollError(err)
+	}
+	// TS createJsonResponseHandler(byteDanceStatusResponseSchema).
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceStatus)(200, stdhttp.Header(result.Headers), result.Data); err != nil {
+		return nil, err
+	}
+	var statusResp taskStatusResponse
+	if err := json.Unmarshal(result.Data, &statusResp); err != nil {
+		return nil, fmt.Errorf("bytedance: failed to decode status response: %w", err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{

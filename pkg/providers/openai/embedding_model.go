@@ -76,10 +76,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 	var response openAIEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: m.responseValidator(),
+		Method:           http.MethodPost,
+		Path:             "/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -144,10 +145,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response openAIEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: m.responseValidator(),
+		Method:           http.MethodPost,
+		Path:             "/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -186,6 +188,17 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 	return result, nil
+}
+
+// responseValidator is the TS response schema of the embeddings call:
+// openaiTextEmbeddingResponseSchema, or the openai-compatible variant (with
+// providerMetadata) for the compatible wrappers.
+func (m *EmbeddingModel) responseValidator() func(int, http.Header, []byte) error {
+	schema := providerutils.SchemaOpenAIEmbedding
+	if m.provider.config.OpenAICompatible {
+		schema = providerutils.SchemaCompatEmbedding
+	}
+	return providerutils.MediaResponseValidator(m.Provider(), schema)
 }
 
 // handleError converts various errors to provider errors

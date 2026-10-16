@@ -130,7 +130,7 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 	if voiceFamilyIDs[m.modelID] {
 		trimmedVoice := strings.TrimSpace(opts.Voice)
 		if trimmedVoice == "" {
-			return nil, nil, fmt.Errorf("deepgram: speech model %q requires a `voice` to be set (e.g. voice: 'thalia')", m.modelID)
+			return nil, nil, fmt.Errorf("Deepgram speech model %q requires a `voice` to be set (e.g. voice: 'thalia')", m.modelID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		language := opts.Language
 		if language == "auto" {
@@ -231,12 +231,12 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 	}
 
 	// Try to parse a format like "wav_44100" or "linear16_24000".
-	parts := strings.SplitN(formatLower, "_", 2)
+	parts := strings.Split(formatLower, "_")
 	if len(parts) < 2 {
 		return
 	}
 	firstPart, secondPart := parts[0], parts[1]
-	sampleRate, sampleRateErr := strconv.Atoi(secondPart)
+	sampleRate, sampleRateErr := jsParseInt(secondPart)
 
 	switch firstPart {
 	case "linear16", "mulaw", "alaw", "mp3", "opus", "flac", "aac":
@@ -270,6 +270,24 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 			query["sample_rate"] = strconv.Itoa(sampleRate)
 		}
 	}
+}
+
+// jsParseInt is JS parseInt(s, 10): the leading integer of s, an error (NaN)
+// when s does not start with one.
+func jsParseInt(s string) (int, error) {
+	s = strings.TrimLeft(s, " \t\n\r\v\f")
+	end := 0
+	if end < len(s) && (s[end] == '+' || s[end] == '-') {
+		end++
+	}
+	digits := end
+	for end < len(s) && s[end] >= '0' && s[end] <= '9' {
+		end++
+	}
+	if end == digits {
+		return 0, fmt.Errorf("not a number: %q", s)
+	}
+	return strconv.Atoi(s[:end])
 }
 
 func intInSlice(s []int, v int) bool {

@@ -83,6 +83,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, internalhttp.StatusProviderError("openai", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAITranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
+
 	var response openaiTranscriptionResponse
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode transcription response: %w", err)

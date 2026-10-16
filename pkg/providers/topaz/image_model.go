@@ -59,6 +59,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	var warnings []types.Warning
 
@@ -86,6 +89,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
+	}
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazSubmit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var submit topazImageSubmitResponse
@@ -427,6 +433,9 @@ func (m *ImageModel) getStatus(ctx context.Context, processID string, headers ma
 	if resp.StatusCode >= 400 {
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var status topazImageStatusResponse
 	if err := json.Unmarshal(resp.Body, &status); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode status response: %w", err)
@@ -463,6 +472,9 @@ func (m *ImageModel) download(ctx context.Context, processID string, headers map
 		return nil, nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazDownload)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, nil, err
+	}
 	var downloadResp topazImageDownloadResponse
 	if err := json.Unmarshal(resp.Body, &downloadResp); err != nil {
 		return nil, nil, fmt.Errorf("topaz: failed to decode download response: %w", err)

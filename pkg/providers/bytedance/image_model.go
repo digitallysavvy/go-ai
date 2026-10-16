@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for ByteDance's
@@ -128,6 +129,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	if httpResp.StatusCode >= 400 {
 		return nil, m.parseAPIError(httpResp.Body, httpResp.StatusCode)
+	}
+	if err := providerutils.MediaResponseValidator("bytedance", providerutils.SchemaByteDanceImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {
+		return nil, err
 	}
 
 	var imgResp byteDanceImageResponse

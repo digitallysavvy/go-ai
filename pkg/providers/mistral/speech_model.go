@@ -58,6 +58,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, internalhttp.StatusProviderError("mistral", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("mistral", providerutils.SchemaMistralSpeech)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var response mistralSpeechResponse
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("mistral: failed to decode speech response: %w", err)

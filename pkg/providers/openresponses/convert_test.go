@@ -244,7 +244,7 @@ func TestConvertToOpenResponsesInput_ReferenceFilePartsAreUnsupportedLikeTS(t *t
 	}
 
 	_, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
-	if err == nil || !strings.Contains(err.Error(), "provider references are not supported") {
+	if err == nil || !strings.Contains(err.Error(), "file parts with provider references") {
 		t.Fatalf("error = %v, want unsupported provider reference", err)
 	}
 }
@@ -265,7 +265,7 @@ func TestConvertToOpenResponsesInput_TextFilePartsAreUnsupportedLikeTS(t *testin
 	}
 
 	_, _, _, err := ConvertToOpenResponsesInputForProvider(msgs, "", "open-responses")
-	if err == nil || !strings.Contains(err.Error(), "text file parts are not supported") {
+	if err == nil || !strings.Contains(err.Error(), "text file parts") {
 		t.Fatalf("error = %v, want unsupported text file", err)
 	}
 }

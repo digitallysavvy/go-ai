@@ -1590,3 +1590,24 @@ func TestProvider_GetAvailableModels_RejectsMalformedResponses(t *testing.T) {
 		t.Fatalf("empty list: %v %v", m, err)
 	}
 }
+
+// TS createJsonResponseHandler on the credits and generation-info bodies: a
+// body that does not match the schema reaches the caller as a
+// GatewayResponseError (asGatewayError of the APICallError), not a zero value.
+func TestProvider_GetCreditsAndGenerationInfoRejectMalformedBodies(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"balance":1000}`))
+	}))
+	defer server.Close()
+	provider, err := New(Config{APIKey: "k", BaseURL: server.URL + "/v3/ai"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var respErr *gatewayerrors.GatewayResponseError
+	if _, err := provider.GetCredits(context.Background()); !errors.As(err, &respErr) {
+		t.Errorf("GetCredits error = %v, want GatewayResponseError", err)
+	}
+	if _, err := provider.GetGenerationInfo(context.Background(), GenerationInfoParams{ID: "gen_1"}); !errors.As(err, &respErr) {
+		t.Errorf("GetGenerationInfo error = %v, want GatewayResponseError", err)
+	}
+}

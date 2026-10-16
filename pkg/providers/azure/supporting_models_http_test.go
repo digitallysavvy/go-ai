@@ -85,15 +85,15 @@ func TestAzureImageAndSpeechDoGenerateHTTP(t *testing.T) {
 		if !strings.HasPrefix(r.URL.RequestURI(), "/v1/images/generations?api-version=2024-10-21") {
 			t.Fatalf("image path = %q", r.URL.RequestURI())
 		}
-		return azureJSONResponse(200, `{"data":[{"url":"https://example.com/image.png"}]}`, nil), nil
+		return azureJSONResponse(200, `{"data":[{"b64_json":"aW1n"}]}`, nil), nil
 	})
 	im := NewImageModel(pImage, "img")
 	img, err := im.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "cat"})
 	if err != nil {
 		t.Fatalf("image DoGenerate error = %v", err)
 	}
-	if img.URL == "" {
-		t.Fatalf("expected URL image result: %#v", img)
+	if img.Base64Image != "aW1n" {
+		t.Fatalf("expected base64 image result: %#v", img)
 	}
 
 	pSpeech := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -120,7 +120,7 @@ func TestAzureTranscriptionDoTranscribeHTTPAndSerialization(t *testing.T) {
 		}
 		body, _ := io.ReadAll(r.Body)
 		seenBody = string(body)
-		return azureJSONResponse(200, `{"text":"hello","duration":1.5,"segments":[{"text":"hello","start":0.0,"end":1.5}]}`, nil), nil
+		return azureJSONResponse(200, `{"text":"hello","duration":1.5,"segments":[{"id":0,"seek":0,"text":"hello","start":0.0,"end":1.5,"tokens":[1],"temperature":0,"avg_logprob":-0.1,"compression_ratio":1,"no_speech_prob":0}]}`, nil), nil
 	})
 
 	tm := NewTranscriptionModel(p, "whisper-1")
@@ -185,7 +185,7 @@ func TestAzureADTokenProviderAuthenticatesEveryRequestSurface(t *testing.T) {
 			case "/v1/embeddings":
 				return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`, nil), nil
 			case "/v1/images/generations":
-				return azureJSONResponse(200, `{"data":[{"url":"https://example.com/image.png"}]}`, nil), nil
+				return azureJSONResponse(200, `{"data":[{"b64_json":"aW1n"}]}`, nil), nil
 			case "/v1/audio/speech":
 				return azureTextResponse(200, "AUDIO"), nil
 			case "/v1/audio/transcriptions":

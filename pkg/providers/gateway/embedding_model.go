@@ -8,6 +8,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // EmbeddingModel implements the provider.EmbeddingModel interface for AI Gateway
@@ -69,10 +70,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embedding-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/embedding-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
@@ -114,10 +116,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response gatewayEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embedding-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/embedding-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)

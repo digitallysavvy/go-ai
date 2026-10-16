@@ -107,6 +107,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
 	}
 
+	if err := providerutils.MediaResponseValidator("minimax", providerutils.SchemaMiniMaxCreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
+		return nil, err
+	}
 	var createResp struct {
 		TaskID string `json:"task_id"`
 	}
@@ -171,10 +174,17 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 
 	statusURL := strings.TrimRight(m.prov.videoBaseURL, "/") + "/v2/query/video_generation/" + providerutils.EncodePathSegment(op.TaskID)
 
-	var statusResp minimaxStatusResponse
-	result, err := fileutil.PollJSON(ctx, statusURL, downloadOpts, &statusResp)
+	result, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
 		return nil, nil, m.handlePollError(err)
+	}
+	// TS createJsonResponseHandler(minimaxVideoStatusResponseSchema).
+	if err := providerutils.MediaResponseValidator("minimax", providerutils.SchemaMiniMaxStatus)(stdhttp.StatusOK, stdhttp.Header(result.Headers), result.Data); err != nil {
+		return nil, nil, err
+	}
+	var statusResp minimaxStatusResponse
+	if err := json.Unmarshal(result.Data, &statusResp); err != nil {
+		return nil, nil, fmt.Errorf("minimax: failed to decode status response: %w", err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{

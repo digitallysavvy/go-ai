@@ -11,6 +11,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -60,19 +61,21 @@ var (
 )
 
 func (m *XAIRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	if m.provider.config.APIKey == "" {
-		return provider.ClientSecretResult{}, fmt.Errorf("xAI API key API key is missing. Pass it using the 'apiKey' parameter or the XAI_API_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
-	}
 	body := map[string]interface{}{}
 	if opts.ExpiresAfterSeconds != nil {
 		body["expires_after"] = map[string]interface{}{"seconds": *opts.ExpiresAfterSeconds}
 	}
+	// TS loadApiKey runs for the client-secret request: a missing key is a
+	// LoadAPIKeyError (and XAI_API_KEY is read now, not at construction).
+	userHeaders, userKey := m.provider.config.Headers, m.provider.config.APIKey
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: m.provider.realtimeBaseURL,
 		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + m.provider.config.APIKey,
-			"Content-Type":  "application/json",
+			"Content-Type": "application/json",
 		}, m.provider.config.Headers), version.ProviderUserAgent("xai")),
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(userHeaders, userKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
+		},
 		HTTPClient: m.provider.client.HTTPClient(),
 	})
 	resp, err := client.Do(ctx, internalhttp.Request{

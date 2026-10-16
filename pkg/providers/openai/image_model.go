@@ -157,11 +157,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	reqBody := m.buildRequestBody(opts)
 	var response openaiImageResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/images/generations",
-		Query:   m.provider.config.ImageQuery,
-		Body:    reqBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIImage),
+		Method:           http.MethodPost,
+		Path:             "/images/generations",
+		Query:            m.provider.config.ImageQuery,
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
@@ -245,11 +246,12 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 
 	var response openaiImageResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/images/edits",
-		Query:   m.provider.config.ImageQuery,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
-		Body:    body,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIImage),
+		Method:           http.MethodPost,
+		Path:             "/images/edits",
+		Query:            m.provider.config.ImageQuery,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		Body:             body,
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)

@@ -14,6 +14,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // maxDeepSeekFileSizeBytes is the largest file DeepSeek accepts for upload.
@@ -146,6 +147,9 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 		return nil, internalhttp.StatusProviderError("deepseek", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("deepseek", providerutils.SchemaDeepSeekFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out struct {
 		ID        string   `json:"id"`
 		Object    string   `json:"object"`

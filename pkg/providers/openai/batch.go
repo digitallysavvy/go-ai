@@ -147,8 +147,9 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var batchResp openAIBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/batches",
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatch),
+		Method:           http.MethodPost,
+		Path:             "/batches",
 		Body: map[string]interface{}{
 			"input_file_id":     uploadedFile.ID,
 			"endpoint":          openaiBatchEndpoint,
@@ -202,6 +203,9 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, expire
 		return nil, b.handleError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 	}
 
+	if err := providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIFile)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var out openAIFilesResponse
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		return nil, err
@@ -223,10 +227,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var resp openAIBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatch),
+		Method:           http.MethodPost,
+		Path:             "/batches/" + providerutils.EncodePathSegment(opts.BatchID) + "/cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -245,10 +250,11 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 
 	var resp openAIBatchListResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatchList),
+		Method:           http.MethodGet,
+		Path:             "/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -298,9 +304,10 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*openAIBatchResponseWire, error) {
 	var resp openAIBatchResponseWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/batches/" + providerutils.EncodePathSegment(batchID),
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(b.Provider(), providerutils.SchemaOpenAIBatch),
+		Method:           http.MethodGet,
+		Path:             "/batches/" + providerutils.EncodePathSegment(batchID),
+		Headers:          headers,
 	}, &resp); err != nil {
 		return nil, b.handleError(err)
 	}

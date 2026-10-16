@@ -168,8 +168,8 @@ func TestTranscriptionDiarizedSegmentsProviderMetadata(t *testing.T) {
 			"text":"hello there",
 			"duration":2.0,
 			"segments":[
-				{"text":"hello","start":0.0,"end":1.0,"speaker":"A"},
-				{"text":"there","start":1.0,"end":2.0,"speaker":"B"}
+				{"type":"transcript.text.segment","id":"seg_1","text":"hello","start":0.0,"end":1.0,"speaker":"A"},
+				{"type":"transcript.text.segment","id":"seg_2","text":"there","start":1.0,"end":2.0,"speaker":"B"}
 			]
 		}`))
 	}))
@@ -251,7 +251,7 @@ func TestTranscriptionDoTranscribeSuccessAndErrors(t *testing.T) {
 	}))
 	defer closeBadJSON()
 	mBadJSON := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: badJSONServerURL + "/v1"}), "whisper-1")
-	if _, err := mBadJSON.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"}); err == nil || !strings.Contains(err.Error(), "failed to decode transcription response") {
+	if _, err := mBadJSON.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"}); err == nil || !strings.Contains(err.Error(), "Invalid JSON response") {
 		t.Fatalf("expected decode error, got %v", err)
 	}
 }

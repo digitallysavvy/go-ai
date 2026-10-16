@@ -62,7 +62,11 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		warnings = append(warnings, UnsupportedStreamingTranscriptionWarning("timestampGranularities"))
 	}
 
-	headers := internalhttp.MergeHeaders(m.baseWSHeaders(), opts.Headers)
+	baseHeaders, err := m.baseWSHeaders()
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 	sessionUpdate := BuildOpenAIRealtimeTranscriptionSession(m.modelID, opts.InputAudioFormat, streamOpts)
 	wsURL := realtimeTranscriptionWebSocketURL(m.provider.config.BaseURL)
 
@@ -94,8 +98,8 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 // mirroring TS openai-transcription-model.ts's doStream, which reuses
 // `this.config.headers()` -- the same tagged getHeaders() closure used for
 // REST calls -- rather than rebuilding an untagged header set.
-func (m *TranscriptionModel) baseWSHeaders() map[string]string {
-	return m.provider.client.Headers()
+func (m *TranscriptionModel) baseWSHeaders() (map[string]string, error) {
+	return m.provider.client.RequestHeaders()
 }
 
 func UnsupportedStreamingTranscriptionWarning(option string) types.Warning {

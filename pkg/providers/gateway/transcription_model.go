@@ -12,6 +12,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // TranscriptionModel implements the provider.TranscriptionModel interface for AI Gateway.
@@ -116,10 +117,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var response gatewayTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/transcription-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayTranscription),
+		Method:           http.MethodPost,
+		Path:             "/transcription-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleErrorWithContext(ctx, err)

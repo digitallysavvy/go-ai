@@ -1115,6 +1115,10 @@ func (m *LanguageModel) handleErrorWithContext(ctx context.Context, err error) e
 		return err
 	}
 
+	if converted, ok := m.provider.gatewayInvalidJSONError(ctx, err); ok {
+		return converted
+	}
+
 	// Check if it's already a provider error
 	if providererrors.IsProviderError(err) {
 		return err

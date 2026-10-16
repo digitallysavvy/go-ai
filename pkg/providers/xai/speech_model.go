@@ -101,6 +101,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	audio := resp.Body
 	var envelope *xaiSpeechTimestampsResponse
 	if withTimestamps {
+		if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaXAISpeechTimestamps)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return nil, err
+		}
 		var parsed xaiSpeechTimestampsResponse
 		if err := json.Unmarshal(resp.Body, &parsed); err != nil {
 			return nil, providererrors.NewProviderError(m.Provider(), 0, "",

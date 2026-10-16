@@ -65,10 +65,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	currentDate := time.Now()
 	var response elevenlabsTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/speech-to-text",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaElevenLabsTr),
+		Method:           http.MethodPost,
+		Path:             "/v1/speech-to-text",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &response)
 	if err != nil {
 		return nil, handleTranscriptionError(err)

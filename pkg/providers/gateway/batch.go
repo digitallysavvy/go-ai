@@ -86,10 +86,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var response gatewayBatchStartResponse
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batch/start",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayBatchStart),
+		Method:           http.MethodPost,
+		Path:             "/batch/start",
+		Body:             body,
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(ctx, err)
 	}
@@ -113,10 +114,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 
 	var response gatewayBatchStatusFields
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batch/status",
-		Body:    map[string]interface{}{"batchId": opts.BatchID},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayBatchState),
+		Method:           http.MethodPost,
+		Path:             "/batch/status",
+		Body:             map[string]interface{}{"batchId": opts.BatchID},
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(ctx, err)
 	}
@@ -132,10 +134,11 @@ func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4Operatio
 
 	var response gatewayBatchStatusFields
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/batch/cancel",
-		Body:    map[string]interface{}{"batchId": opts.BatchID},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayBatchState),
+		Method:           http.MethodPost,
+		Path:             "/batch/cancel",
+		Body:             map[string]interface{}{"batchId": opts.BatchID},
+		Headers:          headers,
 	}, &response); err != nil {
 		return nil, b.handleError(ctx, err)
 	}

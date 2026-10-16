@@ -44,6 +44,10 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*VideoModelOption
 		return &VideoModelOptions{}, nil
 	}
 
+	if err := validateVideoOptions(opts); err != nil {
+		return nil, err
+	}
+
 	jsonData, err := json.Marshal(mmOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal minimax video provider options: %w", err)
@@ -52,12 +56,6 @@ func extractVideoProviderOptions(opts map[string]interface{}) (*VideoModelOption
 	var provOpts VideoModelOptions
 	if err := json.Unmarshal(jsonData, &provOpts); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal minimax video provider options: %w", err)
-	}
-	if provOpts.PollIntervalMs != nil && *provOpts.PollIntervalMs <= 0 {
-		return nil, fmt.Errorf("invalid minimax provider option pollIntervalMs: must be positive")
-	}
-	if provOpts.PollTimeoutMs != nil && *provOpts.PollTimeoutMs <= 0 {
-		return nil, fmt.Errorf("invalid minimax provider option pollTimeoutMs: must be positive")
 	}
 
 	return &provOpts, nil

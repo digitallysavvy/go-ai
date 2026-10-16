@@ -100,7 +100,7 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	setOptional(body, "structured_data_extraction", gOpts.StructuredDataExtraction)
 	setOptional(body, "sentiment_analysis", gOpts.SentimentAnalysis)
 	setOptional(body, "audio_to_llm", gOpts.AudioToLlm)
-	if len(gOpts.CustomMetadata) > 0 {
+	if gOpts.CustomMetadata != nil {
 		body["custom_metadata"] = gOpts.CustomMetadata
 	}
 	setOptional(body, "sentences", gOpts.Sentences)
@@ -122,7 +122,7 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	}
 	if gOpts.SubtitlesConfig != nil {
 		cfg := map[string]interface{}{}
-		if len(gOpts.SubtitlesConfig.Formats) > 0 {
+		if gOpts.SubtitlesConfig.Formats != nil {
 			cfg["formats"] = gOpts.SubtitlesConfig.Formats
 		}
 		setOptional(cfg, "minimum_duration", gOpts.SubtitlesConfig.MinimumDuration)
@@ -198,10 +198,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		AudioURL string `json:"audio_url"`
 	}
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/upload",
-		Body:    uploadBody,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaGladiaUpload),
+		Method:           http.MethodPost,
+		Path:             "/upload",
+		Body:             uploadBody,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &uploadResult)
 	if err != nil {
 		return nil, handleError(err)
@@ -218,10 +219,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		ResultURL string `json:"result_url"`
 	}
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/pre-recorded",
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaGladiaInit),
+		Method:           http.MethodPost,
+		Path:             "/pre-recorded",
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &initResult)
 	if err != nil {
 		return nil, handleError(err)
@@ -233,6 +235,13 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	raw, headers, err := m.pollResult(ctx, initResult.ResultURL, opts.Headers)
 	if err != nil {
 		return nil, err
+	}
+
+	// TS AISDKError TranscriptionResultEmpty (cause: the result).
+	if result, ok := raw["result"].(map[string]interface{}); !ok || result == nil {
+		empty := providererrors.NewProviderError("gladia", 0, "", "Transcription result is empty", nil)
+		empty.Data = raw
+		return nil, empty
 	}
 
 	return convertPollResult(raw, headers, currentDate), nil
@@ -276,13 +285,21 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		default:
 		}
 		if time.Since(start) > pollTimeout {
-			return nil, nil, fmt.Errorf("gladia: transcription job polling timed out")
+			// TS AISDKError TranscriptionJobPollingTimedOut.
+			return nil, nil, providererrors.NewProviderError("gladia", 0, "", "Transcription job polling timed out", nil)
 		}
 
-		var raw map[string]interface{}
-		result, err := fileutil.PollJSON(ctx, resultURL, pollOpts, &raw)
+		result, err := fileutil.DownloadWithMetadata(ctx, resultURL, pollOpts)
 		if err != nil {
 			return nil, nil, handleError(err)
+		}
+		// TS createJsonResponseHandler(gladiaTranscriptionResultResponseSchema).
+		if err := providerutils.MediaResponseValidator("gladia.transcription", providerutils.SchemaGladiaResult)(http.StatusOK, http.Header(result.Headers), result.Data); err != nil {
+			return nil, nil, err
+		}
+		var raw map[string]interface{}
+		if err := json.Unmarshal(result.Data, &raw); err != nil {
+			return nil, nil, fmt.Errorf("gladia: failed to decode poll response: %w", err)
 		}
 
 		status, _ := raw["status"].(string)
@@ -290,7 +307,10 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		case "done":
 			return raw, flattenHeaders(result.Headers), nil
 		case "error":
-			return nil, nil, fmt.Errorf("gladia: transcription job failed: %v", raw["error_code"])
+			// TS AISDKError TranscriptionJobFailed (cause: the result).
+			failure := providererrors.NewProviderError("gladia", 0, "", "Transcription job failed", nil)
+			failure.Data = raw
+			return nil, nil, failure
 		}
 
 		select {

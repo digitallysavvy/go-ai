@@ -178,6 +178,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.extensionRegistry = m.provider.extensionRegistry
 	stream.getResponseErrorMetadata = m.provider.config.GetResponseErrorMetadata
 	stream.requestBody = reqBody
+	stream.includeRawChunks = opts.IncludeRawChunks
 	// TS enqueues stream-start with the warnings first.
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(stream, warnings), httpResp.Header, m.ModelID()), nil
 }
@@ -1146,6 +1147,13 @@ type openResponsesStream struct {
 	extensionRegistry *ExtensionRegistry
 	extensionState    map[string]interface{}
 
+	// includeRawChunks emits a raw chunk before each event is processed
+	// (LanguageModelV4CallOptions.includeRawChunks); pendingEventData holds the
+	// event whose raw chunk was just returned.
+	includeRawChunks bool
+	pendingEventData string
+	hasPendingEvent  bool
+
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -1199,28 +1207,47 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 			return nil, s.err
 		}
 
-		// Get next SSE event
-		event, err := s.parser.Next()
-		if err != nil {
-			if err == io.EOF {
+		var eventData string
+		if s.hasPendingEvent {
+			// The raw chunk for this event was returned by the previous call.
+			eventData = s.pendingEventData
+			s.pendingEventData, s.hasPendingEvent = "", false
+		} else {
+			// Get next SSE event
+			event, err := s.parser.Next()
+			if err != nil {
+				if err == io.EOF {
+					s.queueFlush()
+					continue
+				}
+				s.err = err
+				return nil, err
+			}
+
+			// TS only skips the [DONE] marker; flush() runs when the stream ends.
+			if streaming.IsStreamDone(event) {
 				s.queueFlush()
 				continue
 			}
-			s.err = err
-			return nil, err
-		}
+			eventData = event.Data
 
-		// TS only skips the [DONE] marker; flush() runs when the stream ends.
-		if streaming.IsStreamDone(event) {
-			s.queueFlush()
-			continue
+			// TS enqueues {type: 'raw', rawValue} for every parse result
+			// before processing it when includeRawChunks is set.
+			if s.includeRawChunks {
+				s.pendingEventData, s.hasPendingEvent = eventData, true
+				var raw interface{}
+				if err := json.Unmarshal([]byte(eventData), &raw); err != nil {
+					raw = eventData
+				}
+				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
+			}
 		}
 
 		// Parse the event data as JSON. TS enqueues an error part for an
 		// event that does not parse and keeps reading.
 		var streamEvent StreamEvent
-		if err := json.Unmarshal([]byte(event.Data), &streamEvent); err != nil {
-			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
+		if err := json.Unmarshal([]byte(eventData), &streamEvent); err != nil {
+			msg, perr := providerutils.ChunkParseFailure(eventData, err)
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
@@ -1246,9 +1273,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		if event.Item != nil && event.Item.Type == "function_call" {
 			// Initialize tool call tracking
 			s.toolCallsByItemID[event.Item.ID] = &toolCallState{
-				ID:               event.Item.CallID,
-				ToolName:         event.Item.Name,
-				ArgsJSON:         "",
+				ID:       event.Item.CallID,
+				ToolName: event.Item.Name,
+				// TS seeds the accumulator with the item's own arguments;
+				// later deltas append to them.
+				ArgsJSON:         event.Item.Arguments,
 				ProviderMetadata: openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace),
 			}
 			return nil, false

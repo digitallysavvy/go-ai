@@ -68,11 +68,12 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 			return nil, err
 		}
 		httpResp, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodPost,
-			Path:    "/images/edits",
-			Query:   m.provider.config.ImageQuery,
-			Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
-			Body:    body,
+			ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCompatImage),
+			Method:           http.MethodPost,
+			Path:             "/images/edits",
+			Query:            m.provider.config.ImageQuery,
+			Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+			Body:             body,
 		}, &response)
 	} else {
 		body := map[string]interface{}{"model": m.modelID}
@@ -89,11 +90,12 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 			body[k] = v
 		}
 		httpResp, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodPost,
-			Path:    "/images/generations",
-			Query:   m.provider.config.ImageQuery,
-			Body:    body,
-			Headers: opts.Headers,
+			ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCompatImage),
+			Method:           http.MethodPost,
+			Path:             "/images/generations",
+			Query:            m.provider.config.ImageQuery,
+			Body:             body,
+			Headers:          opts.Headers,
 		}, &response)
 	}
 	if err != nil {

@@ -615,6 +615,9 @@ func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayCredits)(http.StatusOK, http.Header{}, body); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
 	var wire struct {
 		Balance   string `json:"balance"`
 		TotalUsed string `json:"total_used"`
@@ -649,6 +652,9 @@ func (p *Provider) handleErrorWithContext(ctx context.Context, err error) error 
 	}
 	if gatewayerrors.IsGatewayError(err) {
 		return err
+	}
+	if converted, ok := p.gatewayInvalidJSONError(ctx, err); ok {
+		return converted
 	}
 	if providererrors.IsProviderError(err) {
 		return err
@@ -768,6 +774,27 @@ func (p *Provider) gatewayAPIErrorWithContext(ctx context.Context, resp *interna
 		Data:            gatewayErrorData(resp.Body),
 	}
 	return gatewayerrors.CreateGatewayErrorFromResponse(resp.Body, resp.StatusCode, "Gateway request failed", cause, authMethod)
+}
+
+// gatewayInvalidJSONError converts a successful body that failed its response
+// schema (TS createJsonResponseHandler APICallError "Invalid JSON response")
+// the way TS asGatewayError does for any APICallError: the body is parsed as
+// a gateway error response (which fails for a normal body, giving a
+// GatewayResponseError "Invalid error response format: Gateway request
+// failed" with the original status), with the APICallError as the cause.
+func (p *Provider) gatewayInvalidJSONError(ctx context.Context, err error) (error, bool) {
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != providererrors.InvalidJSONResponseMessage {
+		return nil, false
+	}
+	authMethod := ""
+	if p.authResolver != nil {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		_, authMethod, _ = p.authResolver(ctx)
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse([]byte(pe.ResponseBody), pe.StatusCode, "Gateway request failed", pe, authMethod), true
 }
 
 func (p *Provider) gatewayUnknownError(err error) error {
