@@ -408,8 +408,15 @@ func protectedResourceMetadataURL(serverURL, explicit string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	pathname := strings.TrimSuffix(server.Path, "/")
-	server.Path = "/.well-known/oauth-protected-resource" + pathname
+	// WHATWG pathname keeps percent-encoding (%2F stays %2F), so the encoded
+	// path is carried over rather than the decoded one.
+	rawPath := "/.well-known/oauth-protected-resource" + strings.TrimSuffix(server.EscapedPath(), "/")
+	decoded, err := url.PathUnescape(rawPath)
+	if err != nil {
+		return "", err
+	}
+	server.Path = decoded
+	server.RawPath = rawPath
 	return server.String(), nil
 }
 
