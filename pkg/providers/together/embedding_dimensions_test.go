@@ -92,3 +92,19 @@ func TestEmbeddingTogetherAIOptionsKey(t *testing.T) {
 		t.Fatalf("body = %v", body)
 	}
 }
+
+// TS OpenAICompatibleEmbeddingModel always sends encoding_format: "float".
+func TestEmbeddingSendsEncodingFormatFloat(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "embed")
+	_, _ = m.DoEmbedMany(context.Background(), []string{"a"}, nil)
+	if body["encoding_format"] != "float" {
+		t.Fatalf("encoding_format = %v, want float", body["encoding_format"])
+	}
+}
