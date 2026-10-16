@@ -1,6 +1,7 @@
 package prodia
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -203,7 +204,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 }
 
 func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *providererrors.ProviderError {
-	message := prodiaErrorMessage(body)
+	message := prodiaErrorMessage(statusCode, body)
 	err := providererrors.NewProviderError("prodia", statusCode, "", message, nil)
 	err.ResponseBody = string(body)
 	err.ResponseHeaders = map[string]string{}
@@ -215,27 +216,49 @@ func newProdiaProviderError(statusCode int, body []byte, headers http.Header) *p
 	return err
 }
 
-func prodiaErrorMessage(body []byte) string {
-	var parsed struct {
-		Message interface{} `json:"message"`
-		Detail  interface{} `json:"detail"`
-		Error   interface{} `json:"error"`
+// prodiaErrorMessage mirrors TS prodiaFailedResponseHandler: the body must
+// match {message?: string, detail?: unknown, error?: string}, else the HTTP
+// status text is the message. Then: a string detail, else the compact JSON of
+// any non-null detail, else `error ?? message ?? 'Unknown Prodia error'`.
+func prodiaErrorMessage(statusCode int, body []byte) string {
+	var fields map[string]json.RawMessage
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &fields) != nil {
+		return http.StatusText(statusCode)
 	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "Unknown Prodia error"
+	optionalString := func(key string) (string, bool, bool) {
+		raw, present := fields[key]
+		if !present {
+			return "", false, true
+		}
+		var s string
+		// z.string().optional() accepts absent but not null.
+		if string(bytes.TrimSpace(raw)) == "null" || json.Unmarshal(raw, &s) != nil {
+			return "", false, false
+		}
+		return s, true, true
 	}
-	if detail, ok := parsed.Detail.(string); ok {
-		return detail
+	message, hasMessage, ok := optionalString("message")
+	if !ok {
+		return http.StatusText(statusCode)
 	}
-	if parsed.Detail != nil {
-		if b, err := json.Marshal(parsed.Detail); err == nil {
-			return string(b)
+	errorField, hasError, ok := optionalString("error")
+	if !ok {
+		return http.StatusText(statusCode)
+	}
+	if raw, present := fields["detail"]; present && string(bytes.TrimSpace(raw)) != "null" {
+		var detail string
+		if json.Unmarshal(raw, &detail) == nil {
+			return detail
+		}
+		var compact bytes.Buffer
+		if json.Compact(&compact, raw) == nil {
+			return compact.String()
 		}
 	}
-	if errorField, ok := parsed.Error.(string); ok {
+	if hasError {
 		return errorField
 	}
-	if message, ok := parsed.Message.(string); ok {
+	if hasMessage {
 		return message
 	}
 	return "Unknown Prodia error"
