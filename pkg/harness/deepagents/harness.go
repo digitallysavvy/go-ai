@@ -105,11 +105,7 @@ type bridgeCoords struct {
 
 // ValidateLifecycleStateData mirrors TS `lifecycleStateSchema`.
 func (h *deepAgentsHarness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 {
-		return nil
-	}
-	var v resumeStateData
-	return json.Unmarshal(data, &v)
+	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
 func unsupported(capability string) error {

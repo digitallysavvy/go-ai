@@ -80,11 +80,7 @@ type bridgeCoords struct {
 }
 
 func (h *openCodeHarness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 {
-		return nil
-	}
-	var v resumeStateData
-	return json.Unmarshal(data, &v)
+	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
 func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions) (harness.Session, error) {

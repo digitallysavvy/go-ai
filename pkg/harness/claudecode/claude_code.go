@@ -86,14 +86,7 @@ type bridgeCoords struct {
 // ValidateLifecycleStateData accepts any JSON object or null (TS
 // `z.looseObject`).
 func (h *Harness) ValidateLifecycleStateData(data json.RawMessage) error {
-	if len(data) == 0 || string(data) == "null" {
-		return nil
-	}
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return fmt.Errorf("claude-code: invalid lifecycle state data: %w", err)
-	}
-	return nil
+	return harnessutil.ValidateLifecycleStateObject(data, &resumeStateData{})
 }
 
 // DoStart starts a fresh session or respawns the bridge for a resumed one.
