@@ -121,6 +121,7 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`).
 	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 
+	imageFiles, imageMask := normalizeImageInputs(opts.Files, opts.Mask)
 	callImageCounts := imageCallCounts(opts.N, resolveMaxImagesPerCall(opts))
 
 	images := make([]types.GeneratedFile, 0, totalImageCount(callImageCounts))
@@ -156,8 +157,8 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 				Seed:            opts.Seed,
 				Quality:         opts.Quality,
 				Style:           opts.Style,
-				Files:           opts.Files,
-				Mask:            opts.Mask,
+				Files:           imageFiles,
+				Mask:            imageMask,
 				ProviderOptions: opts.ProviderOptions,
 				Headers:         opts.Headers,
 			}, opts.MaxRetries)
@@ -229,6 +230,55 @@ func GenerateImage(ctx context.Context, opts GenerateImageOptions) (*GenerateIma
 		Usage:            usage,
 		Calls:            calls,
 	}, nil
+}
+
+// normalizeImageInputs mirrors TS toImageModelV4File for the Go ImageFile
+// shape: a data: URL becomes an inline file whose media type is the URL's own
+// (when non-empty), else detected from the bytes, else image/png; inline bytes
+// without a media type get the detected one (image/png when unknown).
+func normalizeImageInputs(files []provider.ImageFile, mask *provider.ImageFile) ([]provider.ImageFile, *provider.ImageFile) {
+	if len(files) == 0 && mask == nil {
+		return files, mask
+	}
+	out := make([]provider.ImageFile, len(files))
+	for i, f := range files {
+		out[i] = normalizeImageInput(f)
+	}
+	if mask != nil {
+		m := normalizeImageInput(*mask)
+		mask = &m
+	}
+	return out, mask
+}
+
+func normalizeImageInput(f provider.ImageFile) provider.ImageFile {
+	if f.Type == "url" && strings.HasPrefix(f.URL, "data:") {
+		if header, body, ok := strings.Cut(f.URL, ","); ok {
+			if data, err := types.DecodeFileDataString(body); err == nil {
+				urlType := strings.TrimPrefix(strings.SplitN(header, ";", 2)[0], "data:")
+				return provider.ImageFile{
+					Type:            "file",
+					Data:            data,
+					MediaType:       firstNonEmptyString(urlType, resolveGeneratedImageMediaType(data, "")),
+					ProviderOptions: f.ProviderOptions,
+				}
+			}
+		}
+		return f
+	}
+	if f.Type == "file" && f.MediaType == "" {
+		f.MediaType = resolveGeneratedImageMediaType(f.Data, "")
+	}
+	return f
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func generatedFilesFromImageResult(raw *types.ImageResult) ([]types.GeneratedFile, error) {
