@@ -263,8 +263,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if prediction.Output == nil {
 			return nil, providererrors.NewVideoGenerationError("replicate", m.modelID, "No video URL in response", nil)
 		}
+		// TS `!prediction.output`: an empty string is also "no video URL".
 		outputURL, ok := prediction.Output.(string)
-		if !ok {
+		if !ok || outputURL == "" {
 			return nil, providererrors.NewVideoGenerationError("replicate", m.modelID, "No video URL in response", nil)
 		}
 
