@@ -63,3 +63,16 @@ func TestR30StripDeclarationAfterReturnOrPostfixIncrement(t *testing.T) {
 		}
 	}
 }
+
+// Node 24.20 keeps the prefix NOT in `await !x` and `for (k of !x)`.
+func TestR30StripKeepsPrefixNotAfterAwaitAndOf(t *testing.T) {
+	for _, tc := range [][2]string{
+		{"for (const k of !(a as T)) {}", "for (const k of !(a     )) {}"},
+		{"await !(a as T);", "await !(a     );"},
+	} {
+		got, err := stripTypeScriptAnnotations(tc[0])
+		if err != nil || got != tc[1] {
+			t.Errorf("%q\n got  %q (err %v)\n want %q", tc[0], got, err, tc[1])
+		}
+	}
+}

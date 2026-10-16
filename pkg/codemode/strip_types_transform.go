@@ -542,6 +542,9 @@ var expressionPrefixKeywords = map[string]bool{
 	"satisfies": true, "as": true, "enum": true, "namespace": true,
 	"declare": true, "abstract": true, "readonly": true, "public": true,
 	"private": true, "protected": true, "static": true, "instanceof": true,
+	// `await !x` and `for (k of !x)`: what follows is an operand, so a `!` is a
+	// prefix NOT, not a non-null assertion.
+	"await": true, "of": true,
 }
 
 // asiGuard keeps the statement boundary a type-only construct provided. After
