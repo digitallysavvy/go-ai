@@ -1785,9 +1785,8 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		if item.ID == "" && item.EncryptedContent == "" {
-			return nil, false
-		}
+		// TS emits reasoning-start/-end for every done reasoning item, even
+		// one without an id or encrypted content.
 		meta := map[string]interface{}{}
 		if item.ID != "" {
 			meta["itemId"] = item.ID
@@ -1801,7 +1800,11 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		// If no reasoning-start was emitted yet (encrypted reasoning path where
 		// reasoning_summary_part.added events are not sent), emit one now.
 		if _, started := s.activeReasoning[item.ID]; !started {
-			startMeta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": item.ID}})
+			startXAI := map[string]interface{}{}
+			if item.ID != "" {
+				startXAI["itemId"] = item.ID
+			}
+			startMeta, _ := json.Marshal(map[string]interface{}{"xai": startXAI})
 			s.flushQueue = append(s.flushQueue,
 				&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: blockID, ProviderMetadata: startMeta},
 				&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: blockID, ProviderMetadata: providerMeta},
