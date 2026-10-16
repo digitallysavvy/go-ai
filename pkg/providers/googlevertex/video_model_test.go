@@ -29,7 +29,7 @@ func TestVertexVideoModel_ConstructorInfo(t *testing.T) {
 	if model.SpecificationVersion() != "v4" {
 		t.Errorf("SpecificationVersion() = %q", model.SpecificationVersion())
 	}
-	if model.Provider() != "google-vertex" {
+	if model.Provider() != "google.vertex.video" {
 		t.Errorf("Provider() = %q", model.Provider())
 	}
 	if model.ModelID() != "veo-3.1-generate-preview" {

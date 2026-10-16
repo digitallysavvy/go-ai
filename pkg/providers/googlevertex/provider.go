@@ -39,6 +39,24 @@ const (
 // Provider implements the provider.Provider interface for Google Vertex AI
 type Provider struct {
 	config Config
+
+	// mergedHeaders and httpClient are the project/location independent
+	// pieces of every request client; the clients themselves are derived
+	// lazily (see clients) because TS reads GOOGLE_VERTEX_PROJECT and
+	// GOOGLE_VERTEX_LOCATION when a model is created, not when the provider
+	// is.
+	mergedHeaders map[string]string
+	httpClient    *stdhttp.Client
+
+	mu     sync.Mutex
+	cached *vertexClients
+}
+
+// vertexClients holds the request clients derived from the resolved project
+// and location.
+type vertexClients struct {
+	project, location string
+
 	client *http.Client
 
 	// endpointClient targets the endpoint-style base URL (no
@@ -163,70 +181,26 @@ func (c *cachedTokenSource) tokenFor(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-// New creates a new Google Vertex AI provider with the given configuration
+// New creates a new Google Vertex AI provider with the given configuration.
+//
+// Like TS createGoogleVertex, only the API key is read from the environment
+// here. Project and location (GOOGLE_VERTEX_PROJECT / GOOGLE_VERTEX_LOCATION)
+// are read lazily when a model is created, and a missing value is reported
+// then (TS loadSetting inside loadBaseURL).
 func New(cfg Config) (*Provider, error) {
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("GOOGLE_VERTEX_API_KEY")
 	}
-	if cfg.Project == "" {
-		cfg.Project = os.Getenv("GOOGLE_VERTEX_PROJECT")
-	}
-	if cfg.Location == "" {
-		cfg.Location = os.Getenv("GOOGLE_VERTEX_LOCATION")
-	}
 
-	explicitBaseURL := cfg.BaseURL != ""
-	baseURL := cfg.BaseURL
-	var endpointBaseURL string
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
 	httpClient := cfg.HTTPClient
 
-	if cfg.APIKey != "" {
-		// Vertex express mode (TS parity): API key auth and publishers/google base URL.
-		// Tuned "endpoints/{id}" models are rejected in Express Mode (checked
-		// in LanguageModel), so no endpoint-style base URL is needed here.
-		if baseURL == "" {
-			baseURL = "https://aiplatform.googleapis.com/v1/publishers/google"
-		}
-	} else {
-		// Project and location are only needed to derive the base URL (TS
-		// loadBaseURL returns an explicit baseURL before loading either), so
-		// they are required here only without a BaseURL. Models that address
-		// the project directly (transcription) check them when created.
-		if baseURL == "" {
-			if err := requireProjectLocation(cfg); err != nil {
-				return nil, err
-			}
-		}
+	if cfg.APIKey == "" {
 		// With no AuthToken, AccessToken or TokenSource, authentication falls
 		// back to Application Default Credentials, resolved lazily on the
 		// first request (TS createVertex defaults to google-auth-library).
-		if baseURL == "" {
-			// Location is interpolated directly into the request host
-			// (https://{location}-aiplatform.googleapis.com/...), so only a
-			// single DNS label is accepted; a value like
-			// "user@internal:8080/#" could otherwise rewrite the request
-			// destination. Only validated here (not unconditionally above)
-			// because an explicit BaseURL makes location unused. Ports TS
-			// google-vertex-provider-base.ts (TS #21842).
-			if !providerutils.IsValidHostnamePart(cfg.Location) {
-				return nil, &providererrors.InvalidArgumentError{
-					Field:   "location",
-					Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-				}
-			}
-			baseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s/publishers/google",
-				vertexHost(cfg.Location), cfg.Project, cfg.Location)
-			// Tuned models are addressed via their deployed endpoint
-			// ".../locations/{region}/endpoints/{id}" instead of the
-			// base-model ".../publishers/google/models/{id}" path, so they
-			// omit the "/publishers/google" suffix (TS loadBaseURL({endpoint: true})).
-			endpointBaseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s",
-				vertexHost(cfg.Location), cfg.Project, cfg.Location)
-		}
-
 		tokenCache := &cachedTokenSource{
 			resolve: func(ctx context.Context) (string, time.Time, error) {
 				if cfg.AuthToken != nil {
@@ -282,25 +256,122 @@ func New(cfg Config) (*Provider, error) {
 		mergedHeaders["x-goog-api-key"] = cfg.APIKey
 	}
 	mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent("google-vertex"))
-	client := http.NewClient(http.Config{
-		BaseURL:    baseURL,
-		Headers:    mergedHeaders,
-		HTTPClient: httpClient,
-	})
 
-	var endpointClient *http.Client
+	return &Provider{
+		config:        cfg,
+		mergedHeaders: mergedHeaders,
+		httpClient:    httpClient,
+	}, nil
+}
+
+// project returns the configured project, falling back to
+// GOOGLE_VERTEX_PROJECT at call time (TS loadSetting).
+func (p *Provider) project() string {
+	if p.config.Project != "" {
+		return p.config.Project
+	}
+	return os.Getenv("GOOGLE_VERTEX_PROJECT")
+}
+
+// location returns the configured location, falling back to
+// GOOGLE_VERTEX_LOCATION at call time (TS loadSetting).
+func (p *Provider) location() string {
+	if p.config.Location != "" {
+		return p.config.Location
+	}
+	return os.Getenv("GOOGLE_VERTEX_LOCATION")
+}
+
+// loadLocation ports TS loadGoogleVertexLocation: the location must be set
+// and a single DNS label.
+func (p *Provider) loadLocation() (string, error) {
+	location := p.location()
+	if location == "" {
+		return "", fmt.Errorf("Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+	}
+	// Location is interpolated directly into the request host
+	// (https://{location}-aiplatform.googleapis.com/...), so only a
+	// single DNS label is accepted; a value like "user@internal:8080/#"
+	// could otherwise rewrite the request destination. Ports TS
+	// google-vertex-provider-base.ts (TS #21842).
+	if !providerutils.IsValidHostnamePart(location) {
+		return "", &providererrors.InvalidArgumentError{
+			Field:   "location",
+			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
+		}
+	}
+	return location, nil
+}
+
+// loadProject ports TS loadGoogleVertexProject.
+func (p *Provider) loadProject() (string, error) {
+	project := p.project()
+	if project == "" {
+		return "", fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+	}
+	return project, nil
+}
+
+// clients derives the request clients, reading the project and location
+// lazily like TS loadBaseURL (called from createConfig for every model).
+// Project and location are only needed to derive the base URL; TS
+// loadBaseURL returns an explicit baseURL before loading either. The result
+// is cached while the resolved project and location are unchanged.
+func (p *Provider) clients() (*vertexClients, error) {
+	cfg := p.config
+	baseURL := cfg.BaseURL
+	var project, location string
+	var endpointBaseURL string
+
+	switch {
+	case cfg.APIKey != "":
+		// Vertex express mode (TS parity): API key auth and publishers/google
+		// base URL. Tuned "endpoints/{id}" models are rejected in Express
+		// Mode (checked in LanguageModel), so no endpoint-style base URL is
+		// needed here.
+		if baseURL == "" {
+			baseURL = "https://aiplatform.googleapis.com/v1/publishers/google"
+		}
+	case baseURL == "":
+		var err error
+		if location, err = p.loadLocation(); err != nil {
+			return nil, err
+		}
+		if project, err = p.loadProject(); err != nil {
+			return nil, err
+		}
+		baseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s/publishers/google",
+			vertexHost(location), project, location)
+		// Tuned models are addressed via their deployed endpoint
+		// ".../locations/{region}/endpoints/{id}" instead of the
+		// base-model ".../publishers/google/models/{id}" path, so they
+		// omit the "/publishers/google" suffix (TS loadBaseURL({endpoint: true})).
+		endpointBaseURL = fmt.Sprintf("https://%s/v1beta1/projects/%s/locations/%s",
+			vertexHost(location), project, location)
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if c := p.cached; c != nil && c.project == project && c.location == location {
+		return c, nil
+	}
+
+	c := &vertexClients{project: project, location: location}
+	c.client = http.NewClient(http.Config{
+		BaseURL:    baseURL,
+		Headers:    p.mergedHeaders,
+		HTTPClient: p.httpClient,
+	})
 	// An explicit BaseURL is used verbatim for every model (TS: loadBaseURL
 	// returns `options.baseURL` unconditionally when set, ignoring the
 	// endpoint flag), so the alternate client only exists for auto-derived URLs.
-	if !explicitBaseURL && endpointBaseURL != "" {
-		endpointClient = http.NewClient(http.Config{
+	if endpointBaseURL != "" {
+		c.endpointClient = http.NewClient(http.Config{
 			BaseURL:    endpointBaseURL,
-			Headers:    mergedHeaders,
-			HTTPClient: httpClient,
+			Headers:    p.mergedHeaders,
+			HTTPClient: p.httpClient,
 		})
 	}
-
-	var cloudTTSClient *http.Client
 	// Chirp speech models reject Express Mode outright (checked in
 	// SpeechModel), so the Cloud TTS client is only built for OAuth auth.
 	if cfg.APIKey == "" {
@@ -308,31 +379,36 @@ func New(cfg Config) (*Provider, error) {
 		if cloudTTSBaseURL == "" {
 			cloudTTSBaseURL = defaultCloudTTSSynthesizeURL
 		}
-		cloudTTSClient = http.NewClient(http.Config{
+		c.cloudTTSClient = http.NewClient(http.Config{
 			BaseURL:    cloudTTSBaseURL,
-			Headers:    mergedHeaders,
-			HTTPClient: httpClient,
+			Headers:    p.mergedHeaders,
+			HTTPClient: p.httpClient,
 		})
 	}
-
-	return &Provider{
-		config:         cfg,
-		client:         client,
-		endpointClient: endpointClient,
-		cloudTTSClient: cloudTTSClient,
-	}, nil
+	p.cached = c
+	return c, nil
 }
 
-// requireProjectLocation ports TS loadSetting for the project and location:
-// both must be set.
-func requireProjectLocation(cfg Config) error {
-	if cfg.Project == "" {
-		return fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+// failingRoundTripper reports a deferred configuration error (missing
+// project/location) from requests of a model constructed through an exported
+// New* constructor that has no error return.
+type failingRoundTripper struct{ err error }
+
+func (f failingRoundTripper) RoundTrip(*stdhttp.Request) (*stdhttp.Response, error) {
+	return nil, f.err
+}
+
+// mainClient returns the base-model request client, or a client that fails
+// every request with the project/location error.
+func (p *Provider) mainClient() *http.Client {
+	c, err := p.clients()
+	if err != nil {
+		return http.NewClient(http.Config{
+			BaseURL:    "https://invalid.invalid",
+			HTTPClient: &stdhttp.Client{Transport: failingRoundTripper{err}},
+		})
 	}
-	if cfg.Location == "" {
-		return fmt.Errorf("Google Vertex location setting is missing. Pass it using the 'location' parameter or the GOOGLE_VERTEX_LOCATION environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
-	}
-	return nil
+	return c.client
 }
 
 func vertexHost(location string) string {
@@ -376,6 +452,9 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 		return nil, fmt.Errorf("Google Vertex tuned models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
+	if _, err := p.clients(); err != nil {
+		return nil, err
+	}
 	return NewLanguageModel(p, modelID), nil
 }
 
@@ -392,6 +471,9 @@ func (p *Provider) Interactions(modelID string) (provider.LanguageModel, error) 
 	if p.config.APIKey != "" {
 		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	if _, err := p.clients(); err != nil {
+		return nil, err
+	}
 	return googleprovider.NewInteractionsLanguageModelWithConfig(p.interactionsConfig(), modelID), nil
 }
 
@@ -403,6 +485,9 @@ func (p *Provider) InteractionsAgent(agent string) (provider.LanguageModel, erro
 	}
 	if p.config.APIKey != "" {
 		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	if _, err := p.clients(); err != nil {
+		return nil, err
 	}
 	return googleprovider.NewInteractionsAgentModelWithConfig(p.interactionsConfig(), agent), nil
 }
@@ -416,6 +501,9 @@ func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, 
 	if p.config.APIKey != "" {
 		return nil, fmt.Errorf("Google Vertex Interactions models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	if _, err := p.clients(); err != nil {
+		return nil, err
+	}
 	return googleprovider.NewInteractionsManagedAgentModelWithConfig(p.interactionsConfig(), id), nil
 }
 
@@ -426,9 +514,9 @@ func (p *Provider) InteractionsManagedAgent(id string) (provider.LanguageModel, 
 // (TS loadBaseURL returns an explicit baseURL verbatim regardless of the
 // endpoint flag, so there is no separate endpoint client in that case).
 func (p *Provider) interactionsConfig() googleprovider.InteractionsConfig {
-	client := p.client
-	if p.endpointClient != nil {
-		client = p.endpointClient
+	client := p.mainClient()
+	if c, err := p.clients(); err == nil && c.endpointClient != nil {
+		client = c.endpointClient
 	}
 	return googleprovider.InteractionsConfig{
 		ProviderName: "google.vertex.interactions",
@@ -450,8 +538,8 @@ func (p *Provider) AnthropicModel(modelID string, settings ...*anthropicprovider
 		opts = settings[0]
 	}
 	vertexAnthropic := vertexanthropic.NewGoogleVertexAnthropicProvider(vertexanthropic.Options{
-		Project:   p.config.Project,
-		Location:  p.config.Location,
+		Project:   p.project(),
+		Location:  p.location(),
 		BaseURL:   p.config.BaseURL,
 		Headers:   p.config.Headers,
 		AuthToken: p.vertexAuthToken,
@@ -492,6 +580,9 @@ func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, erro
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
+	if _, err := p.clients(); err != nil {
+		return nil, err
+	}
 	return NewEmbeddingModel(p, modelID), nil
 }
 
@@ -502,6 +593,9 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 
+	if _, err := p.clients(); err != nil {
+		return nil, err
+	}
 	return NewImageModel(p, modelID), nil
 }
 
@@ -514,7 +608,13 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 		if p.config.APIKey != "" {
 			return nil, fmt.Errorf("Google Vertex Chirp speech models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
+		if _, err := p.clients(); err != nil {
+			return nil, err
+		}
 		return NewCloudTTSSpeechModel(p, modelID), nil
+	}
+	if _, err := p.clients(); err != nil {
+		return nil, err
 	}
 	return googleprovider.NewSpeechModelWithConfig(modelID, googleprovider.SpeechModelConfig{
 		ProviderName:        "google.vertex.speech",
@@ -523,7 +623,7 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 		GeneratePath: func(id string) string {
 			return fmt.Sprintf("/models/%s:generateContent", id)
 		},
-		Client: p.client,
+		Client: p.mainClient(),
 		// Kind/SerializableConfig let Serialize()/deserializeSpeechModel
 		// (serialization.go) tell this Gemini TTS model apart from
 		// CloudTTSSpeechModel, which shares the same "google.vertex.speech"
@@ -553,15 +653,17 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 	if p.config.APIKey != "" {
 		return nil, fmt.Errorf("Google Vertex transcription models do not support Express Mode API keys. Use standard Google Cloud credentials instead.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	// TS loads the project and location settings when it creates either model.
-	if err := requireProjectLocation(p.config); err != nil {
+	// TS createConfig (loadBaseURL) loads location then project when there is
+	// no explicit baseURL; the transcription models then load both settings
+	// again themselves (project first), which also covers an explicit baseURL.
+	if _, err := p.clients(); err != nil {
 		return nil, err
 	}
-	if !providerutils.IsValidHostnamePart(p.config.Location) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "location",
-			Message: "Invalid Google Vertex location. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
-		}
+	if _, err := p.loadProject(); err != nil {
+		return nil, err
+	}
+	if _, err := p.loadLocation(); err != nil {
+		return nil, err
 	}
 	if strings.HasPrefix(modelID, "gemini") {
 		return NewGeminiTranscriptionModel(p, modelID), nil
@@ -581,20 +683,23 @@ func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 		return nil, fmt.Errorf("model ID cannot be empty")
 	}
 
+	if _, err := p.clients(); err != nil {
+		return nil, err
+	}
 	return NewVideoModel(p, modelID), nil
 }
 
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
-	return p.client
+	return p.mainClient()
 }
 
 // Project returns the Google Cloud project ID
 func (p *Provider) Project() string {
-	return p.config.Project
+	return p.project()
 }
 
 // Location returns the Google Cloud location
 func (p *Provider) Location() string {
-	return p.config.Location
+	return p.location()
 }

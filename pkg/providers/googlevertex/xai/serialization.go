@@ -37,7 +37,7 @@ func init() {
 // case called out in SER2: even that one case is intentionally excluded
 // here for credential hygiene, consistent with the rest of this SDK.
 func (m *LanguageModel) Serialize() provider.SerializedModel {
-	return provider.SerializedModel{Provider: m.Provider(), ModelID: m.ModelID(), Config: provider.SerializableConfig(m.provider.config)}
+	return provider.SerializedModel{Provider: m.Provider(), ModelID: m.ModelID(), Config: provider.SerializableConfig(m.provider.resolvedConfig())}
 }
 
 func deserializeModel(serialized provider.SerializedModel) (provider.LanguageModel, error) {

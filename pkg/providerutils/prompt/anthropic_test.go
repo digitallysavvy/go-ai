@@ -864,6 +864,25 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			}}},
 			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
 		},
+		// TS anthropicFallbackContentSchema requires type: 'fallback'.
+		{
+			name: "warn and omit fallback boundaries without the fallback type",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.fallback", ProviderOptions: anthropicOpt("from", map[string]interface{}{"model": "claude-opus-5-5"}, "to", map[string]interface{}{"model": "claude-opus-4-8"})},
+			}}},
+			wantMessages: `[]`,
+			wantWarnings: []string{"anthropic fallback metadata must include from.model and to.model"},
+		},
+		// TS only replays anthropic.fallback custom parts: other kinds, such as
+		// the container_upload a code execution response returns, are dropped.
+		{
+			name: "drop non-fallback custom parts when replaying assistant content",
+			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.CustomContent{Kind: "anthropic.container_upload", ProviderOptions: anthropicOpt("fileId", "file_1")},
+				types.TextContent{Text: "Hi!"},
+			}}},
+			wantMessages: `[{"role":"assistant","content":[{"type":"text","text":"Hi!"}]}]`,
+		},
 		{
 			name: "warn and omit fallback boundaries with invalid metadata",
 			messages: []types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{

@@ -69,7 +69,11 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := New(tt.config)
+			p, err := New(tt.config)
+			if err != nil {
+				t.Fatalf("New() must not load project/location eagerly, got %v", err)
+			}
+			_, err = p.LanguageModel("gemini-2.5-flash")
 			if err == nil {
 				t.Errorf("Expected error containing '%s', got nil", tt.expectedErr)
 			} else if err.Error() != tt.expectedErr {
@@ -86,7 +90,11 @@ func TestNewProvider_ValidationErrors(t *testing.T) {
 func TestNewProvider_RejectsLocationThatWouldRewriteHost(t *testing.T) {
 	for _, location := range []string{"user@internal:8080/#", "evil.example.com/#", "us central 1"} {
 		t.Run(location, func(t *testing.T) {
-			_, err := New(Config{Project: "test-project", Location: location, AccessToken: "test-token"})
+			p, err := New(Config{Project: "test-project", Location: location, AccessToken: "test-token"})
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			_, err = p.LanguageModel("gemini-2.5-flash")
 			var invalid *providererrors.InvalidArgumentError
 			if !errors.As(err, &invalid) {
 				t.Fatalf("New(location=%q) error = %v, want InvalidArgumentError", location, err)
@@ -219,7 +227,7 @@ func TestProvider_LanguageModel(t *testing.T) {
 			if model == nil {
 				t.Errorf("Expected model '%s' to be created", modelID)
 			}
-			if model.Provider() != "google-vertex" {
+			if model.Provider() != "google.vertex.chat" {
 				t.Errorf("Expected provider name 'google-vertex', got '%s'", model.Provider())
 			}
 			if model.ModelID() != modelID {
@@ -403,8 +411,8 @@ func TestLanguageModel_EndpointModelID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if p.endpointClient != nil {
-		t.Error("expected no endpointClient when BaseURL is explicit")
+	if c, err := p.clients(); err != nil || c.endpointClient != nil {
+		t.Errorf("expected no endpointClient when BaseURL is explicit (err=%v)", err)
 	}
 
 	model, err := p.LanguageModel("endpoints/1234")
@@ -430,8 +438,8 @@ func TestLanguageModel_EndpointModelID_AutoBaseURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if p.endpointClient == nil {
-		t.Fatal("expected an endpointClient when BaseURL is auto-derived")
+	if c, err := p.clients(); err != nil || c.endpointClient == nil {
+		t.Fatalf("expected an endpointClient when BaseURL is auto-derived (err=%v)", err)
 	}
 	if p.config.APIKey == "" {
 		if _, err := p.LanguageModel("endpoints/1234"); err != nil {

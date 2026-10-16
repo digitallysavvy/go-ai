@@ -38,7 +38,7 @@ func (m *ImageModel) SpecificationVersion() string {
 
 // Provider returns the provider name
 func (m *ImageModel) Provider() string {
-	return "google-vertex"
+	return "google.vertex.image"
 }
 
 // ModelID returns the model ID

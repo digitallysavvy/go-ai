@@ -18,15 +18,15 @@ type LanguageModel struct {
 
 // NewLanguageModel creates a Google Vertex AI language model.
 func NewLanguageModel(p *Provider, modelID string) *LanguageModel {
-	client := p.client
-	if isEndpointModelID(modelID) && p.endpointClient != nil {
+	client := p.mainClient()
+	if c, err := p.clients(); err == nil && isEndpointModelID(modelID) && c.endpointClient != nil {
 		// Tuned models are served from ".../locations/{region}/endpoints/{id}",
 		// which omits the "/publishers/google" suffix the base-model paths
 		// carry (TS isEndpointModelId / loadBaseURL({endpoint: true})).
-		client = p.endpointClient
+		client = c.endpointClient
 	}
 	cfg := gemini.Config{
-		ProviderName: "google-vertex",
+		ProviderName: "google.vertex.chat",
 		MetadataKey:  "vertex",
 		// TS parity: Vertex reads "googleVertex" first, then the legacy "vertex"
 		// key, then "google" (cross-namespace fallback), and writes provider

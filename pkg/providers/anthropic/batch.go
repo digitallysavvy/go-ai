@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -364,6 +365,11 @@ func (b *Batch) rawRequestHeaders(extra map[string]string) (map[string]string, e
 // provider was constructed with a custom Name), mirroring TS
 // getAnthropicBatchProviderBetas's canonical+custom option merge.
 func anthropicBatchProviderBetas(providerName string, providerOptions map[string]interface{}) []string {
+	// TS: provider.split('.')[0], the same name the language model reads its
+	// options under ("foo.messages" -> "foo").
+	if idx := strings.IndexByte(providerName, '.'); idx != -1 {
+		providerName = providerName[:idx]
+	}
 	betas := anthropicBetaOptionList(providerOptions, "anthropic")
 	if providerName != "anthropic" {
 		if opts, ok := providerOptions[providerName].(map[string]interface{}); ok {
@@ -683,84 +689,61 @@ var anthropicKnownBatchContentTypes = map[string]bool{
 	"web_search_tool_result":                 true,
 }
 
-// anthropicBatchContentBlockRequiredFields lists the JSON fields
-// anthropicResponseSchema requires to be present for content-block types
-// simple enough to check by field presence alone (mirrors the per-variant
-// required fields in anthropic-api.ts's anthropicResponseSchema). A known
-// type with no entry here (e.g. the several deeply nested
-// *_tool_result/*_code_execution_* variants) is accepted once it parses as
-// a JSON object with a recognized type; porting every nested union's full
-// shape is out of scope for this presence-level check.
-var anthropicBatchContentBlockRequiredFields = map[string][]string{
-	"text":              {"text"},
-	"thinking":          {"thinking", "signature"},
-	"redacted_thinking": {"data"},
-	"tool_use":          {"id", "name"},
-	"server_tool_use":   {"id", "name"},
-	"mcp_tool_use":      {"id", "name", "server_name"},
-	"mcp_tool_result":   {"tool_use_id", "is_error", "content"},
-}
-
-// validateAnthropicBatchMessage mirrors TS parseAnthropicBatchResponse: a
-// partial, field-presence-level port of anthropicResponseSchema. It
-// validates the message envelope (type "message", a content array, and a
-// usage object with numeric input/output token counts — all required,
-// non-nullish fields of the schema), then per content block: an
-// unrecognized block type is dropped; a recognized type missing one of its
-// required fields fails the whole message; anything else is kept as-is.
-// Returns the (possibly content-filtered) message JSON and true on success,
-// or nil/false when the message can't be salvaged into a valid result at
-// all, matching TS returning undefined from parseAnthropicBatchResponse.
+// validateAnthropicBatchMessage mirrors TS parseAnthropicBatchResponse: the
+// message must match anthropicResponseSchema (zAnthropicResponse). When it
+// does not, each content block is validated on its own: a block outside the
+// known types is dropped (a possible future block type), while a known type
+// that fails its schema, or a block that is not an object with a string type,
+// makes the whole message invalid. The remaining blocks must then pass the
+// schema together. It returns the (possibly content-filtered) message JSON,
+// or nil/false when TS returns undefined.
 func validateAnthropicBatchMessage(raw json.RawMessage) (json.RawMessage, bool) {
-	var envelope struct {
-		Type    string            `json:"type"`
-		Content []json.RawMessage `json:"content"`
-		Usage   *struct {
-			InputTokens  *float64 `json:"input_tokens"`
-			OutputTokens *float64 `json:"output_tokens"`
-		} `json:"usage"`
+	if zodlite.ValidationMessage(zAnthropicResponse, string(raw)) == "" {
+		return raw, true
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil ||
-		envelope.Type != "message" ||
-		envelope.Content == nil ||
-		envelope.Usage == nil ||
-		envelope.Usage.InputTokens == nil ||
-		envelope.Usage.OutputTokens == nil {
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &full); err != nil || full == nil {
 		return nil, false
 	}
-
-	filtered := make([]json.RawMessage, 0, len(envelope.Content))
-	for _, block := range envelope.Content {
-		var fields map[string]interface{}
-		if err := json.Unmarshal(block, &fields); err != nil {
+	var parts []json.RawMessage
+	if err := json.Unmarshal(full["content"], &parts); err != nil || parts == nil {
+		return nil, false
+	}
+	withContent := func(content []json.RawMessage) (json.RawMessage, bool) {
+		contentJSON, err := json.Marshal(content)
+		if err != nil {
 			return nil, false
 		}
-		blockType, _ := fields["type"].(string)
-		if !anthropicKnownBatchContentTypes[blockType] {
-			continue
+		clone := make(map[string]json.RawMessage, len(full))
+		for k, v := range full {
+			clone[k] = v
 		}
-		for _, field := range anthropicBatchContentBlockRequiredFields[blockType] {
-			if v, ok := fields[field]; !ok || v == nil {
-				return nil, false
-			}
-		}
-		filtered = append(filtered, block)
+		clone["content"] = contentJSON
+		out, err := json.Marshal(clone)
+		return out, err == nil
 	}
 
-	var full map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &full); err != nil {
+	kept := make([]json.RawMessage, 0, len(parts))
+	for _, part := range parts {
+		single, ok := withContent([]json.RawMessage{part})
+		if ok && zodlite.ValidationMessage(zAnthropicResponse, string(single)) == "" {
+			kept = append(kept, part)
+			continue
+		}
+		var fields map[string]interface{}
+		if err := json.Unmarshal(part, &fields); err != nil || fields == nil {
+			return nil, false
+		}
+		blockType, isString := fields["type"].(string)
+		if !isString || anthropicKnownBatchContentTypes[blockType] {
+			return nil, false
+		}
+	}
+	recovered, ok := withContent(kept)
+	if !ok || zodlite.ValidationMessage(zAnthropicResponse, string(recovered)) != "" {
 		return nil, false
 	}
-	filteredJSON, err := json.Marshal(filtered)
-	if err != nil {
-		return nil, false
-	}
-	full["content"] = filteredJSON
-	rebuilt, err := json.Marshal(full)
-	if err != nil {
-		return nil, false
-	}
-	return rebuilt, true
+	return recovered, true
 }
 
 func invalidAnthropicBatchResult(id string) *provider.BatchV4ItemResult {

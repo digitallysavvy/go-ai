@@ -11,7 +11,9 @@ import (
 
 func TestNew_ValidationErrors(t *testing.T) {
 	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
-	_, err := New(Config{})
+	prov, err := New(Config{})
+	require.NoError(t, err, "TS loads the project when the first model is created, not up front")
+	_, err = prov.LanguageModel("grok-4")
 	require.Error(t, err)
 	assert.Equal(t, "Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.", err.Error())
 }
@@ -71,7 +73,9 @@ func TestNew_BaseURLConstruction(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.NotNil(t, prov)
-			assert.Equal(t, tt.want, prov.config.BaseURL)
+			cfg, _, err := prov.resolve()
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.BaseURL)
 		})
 	}
 }
@@ -138,11 +142,26 @@ func TestProvider_UnsupportedModelTypes(t *testing.T) {
 func TestNew_EnvAndTrailingSlash(t *testing.T) {
 	t.Setenv("GOOGLE_VERTEX_PROJECT", "env-project")
 	t.Setenv("GOOGLE_VERTEX_LOCATION", "us-east5")
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "")
 	prov, err := New(Config{AccessToken: "t"})
 	require.NoError(t, err)
-	assert.Equal(t, "https://aiplatform.googleapis.com/v1/projects/env-project/locations/us-east5/endpoints/openapi", prov.config.BaseURL)
+	// Environment variables are read when the first model is created.
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "env-project")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "us-east5")
+	_, err = prov.LanguageModel("grok-4")
+	require.NoError(t, err)
+	cfg, _, err := prov.resolve()
+	require.NoError(t, err)
+	assert.Equal(t, "https://aiplatform.googleapis.com/v1/projects/env-project/locations/us-east5/endpoints/openapi", cfg.BaseURL)
 
+	// An explicit baseURL needs neither project nor location (TS loadBaseURL).
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
 	prov, err = New(Config{AccessToken: "t", BaseURL: "https://example.com/v1/"})
 	require.NoError(t, err)
-	assert.Equal(t, "https://example.com/v1", prov.config.BaseURL)
+	_, err = prov.LanguageModel("grok-4")
+	require.NoError(t, err)
+	cfg, _, err = prov.resolve()
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/v1", cfg.BaseURL)
 }

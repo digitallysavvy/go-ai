@@ -38,6 +38,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -88,6 +89,13 @@ type Config struct {
 // Google Vertex AI's MaaS OpenAI-compatible endpoint. Mirrors TS
 // createGoogleVertexXai / GoogleVertexXaiProvider.
 type Provider struct {
+	raw Config
+
+	// The base URL (and so GOOGLE_VERTEX_PROJECT / GOOGLE_VERTEX_LOCATION)
+	// is resolved when the first model is created and cached from then on,
+	// like TS's cachedProvider ??= createOpenAICompatible(...).
+	mu     sync.Mutex
+	ready  bool
 	config Config
 	client *internalhttp.Client
 }
@@ -100,32 +108,46 @@ var _ provider.Provider = (*Provider)(nil)
 //
 //	https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/endpoints/openapi
 //
-// with location defaulting to "global" when unset.
+// with location defaulting to "global" when unset. Like TS, the project and
+// location (and their environment variables) are only read when the first
+// model is created, and an explicit BaseURL needs neither.
 func New(cfg Config) (*Provider, error) {
-	// TS loads project/location from GOOGLE_VERTEX_PROJECT / GOOGLE_VERTEX_LOCATION
-	// when the options leave them out.
-	if cfg.Project == "" {
-		cfg.Project = os.Getenv("GOOGLE_VERTEX_PROJECT")
-	}
-	if cfg.Location == "" {
-		cfg.Location = os.Getenv("GOOGLE_VERTEX_LOCATION")
-	}
-	if cfg.Project == "" {
-		return nil, fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
-	}
+	return &Provider{raw: cfg}, nil
+}
 
-	location := cfg.Location
-	if location == "" {
-		location = "global"
+// resolve builds (once) the request client and the resolved config.
+func (p *Provider) resolve() (Config, *internalhttp.Client, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.ready {
+		return p.config, p.client, nil
 	}
+	cfg := p.raw
 
 	// TS withoutTrailingSlash(options.baseURL).
 	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
+	location := cfg.Location
 	if baseURL == "" {
+		// TS loads project/location from GOOGLE_VERTEX_PROJECT /
+		// GOOGLE_VERTEX_LOCATION when the options leave them out.
+		if cfg.Project == "" {
+			cfg.Project = os.Getenv("GOOGLE_VERTEX_PROJECT")
+		}
+		if location == "" {
+			location = os.Getenv("GOOGLE_VERTEX_LOCATION")
+		}
+		if cfg.Project == "" {
+			return Config{}, nil, fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
+		}
+		if location == "" {
+			location = "global"
+		}
 		baseURL = fmt.Sprintf(
 			"https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/endpoints/openapi",
 			cfg.Project, location,
 		)
+	} else if location == "" {
+		location = "global"
 	}
 
 	baseTransport := http.RoundTripper(http.DefaultTransport)
@@ -141,16 +163,14 @@ func New(cfg Config) (*Provider, error) {
 		Transport: &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken()},
 	}
 
-	client := internalhttp.NewClient(internalhttp.Config{
+	p.client = internalhttp.NewClient(internalhttp.Config{
 		BaseURL:    baseURL,
 		Headers:    internalhttp.MergeHeaders(map[string]string{"Content-Type": "application/json"}, cfg.Headers),
 		HTTPClient: authedClient,
 	})
-
-	return &Provider{
-		config: Config{Project: cfg.Project, Location: location, BaseURL: baseURL, Headers: cfg.Headers},
-		client: client,
-	}, nil
+	p.config = Config{Project: cfg.Project, Location: location, BaseURL: baseURL, Headers: cfg.Headers}
+	p.ready = true
+	return p.config, p.client, nil
 }
 
 // Name returns the provider name. Matches TS's `name: 'googleVertex.xai'`
@@ -165,6 +185,9 @@ func (p *Provider) Name() string {
 func (p *Provider) newChatModel(modelID string) (*LanguageModel, error) {
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID cannot be empty")
+	}
+	if _, _, err := p.resolve(); err != nil {
+		return nil, err
 	}
 	return &LanguageModel{provider: p, modelID: modelID}, nil
 }
@@ -212,4 +235,16 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // VideoModel always errors: not exposed by this sub-provider.
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
 	return nil, providererrors.NewNoSuchModelError(modelID, "videoModel")
+}
+
+// mustClient returns the client resolved when the model was created.
+func (p *Provider) mustClient() *internalhttp.Client {
+	_, c, _ := p.resolve()
+	return c
+}
+
+// resolvedConfig returns the config resolved when the model was created.
+func (p *Provider) resolvedConfig() Config {
+	c, _, _ := p.resolve()
+	return c
 }

@@ -121,12 +121,18 @@ func (m *CloudTTSSpeechModel) DoGenerate(ctx context.Context, opts *provider.Spe
 		"audioConfig": audioConfig,
 	}
 
-	if m.prov.cloudTTSClient == nil {
+	var ttsClient *internalhttp.Client
+	if c, err := m.prov.clients(); err != nil {
+		return nil, err
+	} else {
+		ttsClient = c.cloudTTSClient
+	}
+	if ttsClient == nil {
 		return nil, providererrors.NewProviderError("google-vertex", 0, "",
 			"google Vertex Chirp speech models require standard Google Cloud credentials (Express Mode API keys are not supported)", nil)
 	}
 
-	resp, err := m.prov.cloudTTSClient.Do(ctx, internalhttp.Request{
+	resp, err := ttsClient.Do(ctx, internalhttp.Request{
 		Method:  "POST",
 		Headers: opts.Headers,
 		Body:    reqBody,
