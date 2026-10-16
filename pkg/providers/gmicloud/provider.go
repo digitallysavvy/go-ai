@@ -6,7 +6,7 @@ package gmicloud
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
 	stdhttp "net/http"
@@ -102,29 +102,29 @@ func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
 // EmbeddingModel returns an error: GMI Cloud does not support embeddings
 // (TS createGmicloud throws NoSuchModelError for embeddingModel).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support embedding models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an error: GMI Cloud does not support image generation
 // (TS createGmicloud throws NoSuchModelError for imageModel).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support image models (no such model: %q)", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns an error: GMI Cloud does not support speech synthesis.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns an error: GMI Cloud does not support
 // transcription.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns an error: GMI Cloud does not support reranking.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("gmicloud provider does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client used for API requests.

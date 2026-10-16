@@ -3,7 +3,7 @@
 package gladia
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -67,22 +67,22 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by Gladia)
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("gladia does not provide language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "Gladia does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model (not supported by Gladia)
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("gladia does not provide embedding models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Gladia does not provide embedding models"}
 }
 
 // ImageModel returns an image model (not supported by Gladia)
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("gladia does not provide image models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Gladia does not provide image models"}
 }
 
 // SpeechModel returns a speech synthesis model (not supported by Gladia)
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("gladia does not provide speech synthesis models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model
@@ -95,5 +95,5 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model (not supported by Gladia)
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("gladia does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

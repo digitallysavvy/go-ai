@@ -1,7 +1,7 @@
 package elevenlabs
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
@@ -64,17 +64,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "ElevenLabs does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support embeddings")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "ElevenLabs does not provide embedding models"}
 }
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support image generation")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "ElevenLabs does not provide image models"}
 }
 
 // SpeechModel returns a speech synthesis model by ID
@@ -89,7 +89,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("ElevenLabs does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

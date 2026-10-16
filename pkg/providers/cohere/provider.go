@@ -2,6 +2,7 @@ package cohere
 
 import (
 	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"net/url"
 	"strings"
 
@@ -105,17 +106,17 @@ func (p *Provider) EmbeddingModelWithOptions(modelID string, options EmbeddingOp
 
 // ImageModel returns an image generation model by ID
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("cohere does not support image generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("cohere does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("cohere does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID

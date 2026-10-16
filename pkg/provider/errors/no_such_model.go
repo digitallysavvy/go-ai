@@ -44,3 +44,9 @@ func IsNoSuchModelError(err error) bool {
 func NewNoSuchModelError(modelID, modelType string) *NoSuchModelError {
 	return &NoSuchModelError{ModelID: modelID, ModelType: modelType}
 }
+
+// Is reports whether target is ErrModelNotFound, so callers that matched
+// the sentinel on providers that previously wrapped it keep working.
+func (e *NoSuchModelError) Is(target error) bool {
+	return target == ErrModelNotFound
+}

@@ -170,13 +170,13 @@ func TestCohereUnsupportedFileURLReturnsError(t *testing.T) {
 
 func TestCohereUnsupportedCapabilityErrors(t *testing.T) {
 	prov := New(Config{APIKey: "test-key"})
-	if _, err := prov.ImageModel("x"); err == nil || err.Error() != "cohere does not support image generation" {
+	if _, err := prov.ImageModel("x"); err == nil || err.Error() != "No such imageModel: x" {
 		t.Fatalf("ImageModel error = %v", err)
 	}
-	if _, err := prov.SpeechModel("x"); err == nil || err.Error() != "cohere does not support speech synthesis" {
+	if _, err := prov.SpeechModel("x"); err == nil || err.Error() != "No such speechModel: x" {
 		t.Fatalf("SpeechModel error = %v", err)
 	}
-	if _, err := prov.TranscriptionModel("x"); err == nil || err.Error() != "cohere does not support transcription" {
+	if _, err := prov.TranscriptionModel("x"); err == nil || err.Error() != "No such transcriptionModel: x" {
 		t.Fatalf("TranscriptionModel error = %v", err)
 	}
 }
