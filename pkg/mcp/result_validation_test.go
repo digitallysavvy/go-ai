@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -102,5 +103,33 @@ func TestValidateMCPResultShapeR18(t *testing.T) {
 	}
 	if isBase64String("aGk=\n") {
 		t.Error("zod z.base64() rejects newlines")
+	}
+}
+
+// undecodableCallTransport answers tools/call with a body that passes the
+// result shape check but cannot decode into CallToolResult.
+type undecodableCallTransport struct{ *mockTransport }
+
+func (u undecodableCallTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	if msg.Method == "tools/call" {
+		u.messages <- &MCPMessage{JSONRpc: "2.0", ID: msg.ID, Result: json.RawMessage(`{"content":"not-an-array"}`)}
+		return nil
+	}
+	return u.mockTransport.Send(ctx, msg)
+}
+
+// TS parses the result with its schema and reports a mismatch as
+// MCPClientError "Failed to parse server response"; a typed decode failure is
+// the same error, not a plain unmarshal error.
+func TestClientTypedDecodeFailureIsParseServerResponseError(t *testing.T) {
+	client := NewMCPClient(undecodableCallTransport{newMockTransport()}, MCPClientConfig{})
+	if err := client.Connect(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close() //nolint:errcheck
+	_, err := client.CallTool(t.Context(), "x", nil)
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || mcpErr.Message != "Failed to parse server response" {
+		t.Fatalf("err = %v, want MCPClientError Failed to parse server response", err)
 	}
 }
