@@ -152,7 +152,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	switch {
-	case len(response.Segments) > 0:
+	// TS `segments?.map(...) ?? words?.map(...)`: an empty segments array wins.
+	case response.Segments != nil:
 		for _, seg := range response.Segments {
 			result.Segments = append(result.Segments, types.TranscriptionTimestamp{
 				Text:  seg.Text,
@@ -160,7 +161,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 				End:   seg.End,
 			})
 		}
-	case len(response.Words) > 0:
+	case response.Words != nil:
 		// Fall back to word-level timestamps when segment timestamps aren't
 		// available (TS: response.segments?.map(...) ?? response.words?.map(...)).
 		for _, word := range response.Words {
