@@ -8,9 +8,11 @@ import (
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 type RerankingModel struct {
@@ -91,8 +93,7 @@ func toVoyageDocuments(docs interface{}) ([]string, []types.Warning) {
 	case []map[string]interface{}:
 		out := make([]string, 0, len(v))
 		for _, item := range v {
-			raw, _ := json.Marshal(item)
-			out = append(out, string(raw))
+			out = append(out, stringifyDocument(item))
 		}
 		return out, []types.Warning{{
 			Type:    "compatibility",
@@ -108,8 +109,7 @@ func toVoyageDocuments(docs interface{}) ([]string, []types.Warning) {
 				continue
 			}
 			objects = true
-			raw, _ := json.Marshal(item)
-			out = append(out, string(raw))
+			out = append(out, stringifyDocument(item))
 		}
 		if !objects {
 			return out, nil
@@ -119,7 +119,29 @@ func toVoyageDocuments(docs interface{}) ([]string, []types.Warning) {
 			Feature: "object documents",
 			Details: "Object documents are converted to strings.",
 		}}
+	case []json.RawMessage:
+		items := make([]interface{}, len(v))
+		for i, item := range v {
+			items[i] = item
+		}
+		return toVoyageDocuments(items)
 	default:
 		return []string{}, nil
 	}
+}
+
+// stringifyDocument is JSON.stringify(document) for an object document: raw
+// JSON keeps its key order, HTML characters stay literal. A Go map has no
+// order, so its keys are sorted.
+func stringifyDocument(doc interface{}) string {
+	if raw, ok := providerutils.RawJSONObject(doc); ok {
+		if parsed, ok := jsonorder.Parse(raw); ok {
+			return jsonorder.Stringify(parsed)
+		}
+	}
+	b, err := jsonstr.Marshal(doc)
+	if err != nil {
+		return "null"
+	}
+	return string(b)
 }

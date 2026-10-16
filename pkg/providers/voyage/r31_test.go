@@ -1,6 +1,7 @@
 package voyage
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -14,5 +15,16 @@ func TestHandleErrorKeepsEmptyDetail(t *testing.T) {
 	var perr *providererrors.ProviderError
 	if !errors.As(err, &perr) || perr.Message != "" || perr.StatusCode != 400 || perr.ResponseBody != `{"detail":""}` {
 		t.Fatalf("got %#v", perr)
+	}
+}
+
+func TestToVoyageDocumentsObjectOrderAndHTML(t *testing.T) {
+	docs, warns := toVoyageDocuments([]json.RawMessage{json.RawMessage(`{ "title": "a<b", "id": 1.0, "body": "&" }`)})
+	if len(warns) != 1 || len(docs) != 1 || docs[0] != `{"title":"a<b","id":1,"body":"&"}` {
+		t.Fatalf("docs = %q, warnings = %v", docs, warns)
+	}
+	docs, _ = toVoyageDocuments([]map[string]interface{}{{"t": "<x>"}})
+	if docs[0] != `{"t":"<x>"}` {
+		t.Fatalf("docs = %q", docs)
 	}
 }
