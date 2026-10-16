@@ -10,6 +10,7 @@ import (
 )
 
 func TestNew_ValidationErrors(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "")
 	_, err := New(Config{})
 	require.Error(t, err)
 	assert.Equal(t, "Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.", err.Error())
@@ -132,4 +133,16 @@ func TestProvider_UnsupportedModelTypes(t *testing.T) {
 	assert.Error(t, err)
 	_, err = prov.VideoModel("m")
 	assert.Error(t, err)
+}
+
+func TestNew_EnvAndTrailingSlash(t *testing.T) {
+	t.Setenv("GOOGLE_VERTEX_PROJECT", "env-project")
+	t.Setenv("GOOGLE_VERTEX_LOCATION", "us-east5")
+	prov, err := New(Config{AccessToken: "t"})
+	require.NoError(t, err)
+	assert.Equal(t, "https://aiplatform.googleapis.com/v1/projects/env-project/locations/us-east5/endpoints/openapi", prov.config.BaseURL)
+
+	prov, err = New(Config{AccessToken: "t", BaseURL: "https://example.com/v1/"})
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/v1", prov.config.BaseURL)
 }
