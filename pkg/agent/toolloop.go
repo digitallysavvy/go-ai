@@ -761,7 +761,20 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			// AppendToolCallerMessages announcement), not currentMessages,
 			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
 			timings := &toolTimings{}
-			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, executionTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage), timings)
+			callTools := executionTools
+			if reason := stepResult.FinishReason; reason != "" && reason != types.FinishReasonStop && reason != types.FinishReasonToolCalls {
+				// A truncated, filtered or errored step never runs local
+				// tools (TS isToolExecutionAllowedFinishReason); approvals and
+				// error results for invalid calls still resolve.
+				callTools = make([]types.Tool, len(executionTools))
+				for i, tool := range executionTools {
+					if !tool.ProviderExecuted {
+						tool.Execute = nil
+					}
+					callTools[i] = tool
+				}
+			}
+			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
 				stepTel.fail(err)
 				// Call OnChainError callback
