@@ -426,7 +426,7 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 		}
 	}
 	if duration == nil && untimedKeyframeCount >= untimedKeyframesNeedingDuration {
-		return nil, nil, providererrors.NewValidationError("duration",
+		return nil, nil, invalidArgument("duration",
 			fmt.Sprintf("FLUX 3 video requires an explicit duration when %d or more keyframes are sent without a timestamp.", untimedKeyframesNeedingDuration), nil)
 	}
 
@@ -520,23 +520,98 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 // ensurePollingURLHasID adds the request id as an `id` query parameter when
 // the polling URL does not already carry one (TS doStatus's
-// url.searchParams.set fallback).
+// url.searchParams.set fallback). Like URLSearchParams, set() re-serializes
+// the whole query as application/x-www-form-urlencoded (key order kept,
+// "%20" becomes "+", "a" becomes "a=", ...), but only when it actually runs;
+// a URL that already has `id` (even an empty `id=`) is left untouched.
 func ensurePollingURLHasID(pollingURL, requestID string) (string, error) {
 	u, err := url.Parse(pollingURL)
 	if err != nil {
 		return "", err
 	}
-	// searchParams.has('id'): a present-but-empty `id=` counts. The pair is
-	// appended in place; re-encoding the query would sort the keys.
-	if !u.Query().Has("id") {
-		pair := "id=" + url.QueryEscape(requestID)
-		if u.RawQuery == "" {
-			u.RawQuery = pair
-		} else {
-			u.RawQuery += "&" + pair
+	pairs := parseFormURLEncoded(u.RawQuery)
+	for _, p := range pairs {
+		if p[0] == "id" {
+			return u.String(), nil
 		}
 	}
+	pairs = append(pairs, [2]string{"id", requestID})
+	var sb strings.Builder
+	for i, p := range pairs {
+		if i > 0 {
+			sb.WriteByte('&')
+		}
+		sb.WriteString(formURLEncode(p[0]))
+		sb.WriteByte('=')
+		sb.WriteString(formURLEncode(p[1]))
+	}
+	u.RawQuery = sb.String()
 	return u.String(), nil
+}
+
+// parseFormURLEncoded is the WHATWG application/x-www-form-urlencoded parser
+// (new URLSearchParams(query)): empty segments are skipped, '+' is a space,
+// malformed percent escapes stay literal and invalid UTF-8 becomes U+FFFD.
+func parseFormURLEncoded(q string) [][2]string {
+	var out [][2]string
+	for _, seg := range strings.Split(q, "&") {
+		if seg == "" {
+			continue
+		}
+		name, value, _ := strings.Cut(seg, "=")
+		out = append(out, [2]string{formDecode(name), formDecode(value)})
+	}
+	return out
+}
+
+func formDecode(s string) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '+':
+			b = append(b, ' ')
+		case c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
+			b = append(b, unhex(s[i+1])<<4|unhex(s[i+2]))
+			i += 2
+		default:
+			b = append(b, c)
+		}
+	}
+	return string([]rune(string(b)))
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case c >= 'a':
+		return c - 'a' + 10
+	case c >= 'A':
+		return c - 'A' + 10
+	}
+	return c - '0'
+}
+
+func formURLEncode(s string) string {
+	const hexd = "0123456789ABCDEF"
+	var sb strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == ' ':
+			sb.WriteByte('+')
+		case c == '*' || c == '-' || c == '.' || c == '_' || c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z':
+			sb.WriteByte(c)
+		default:
+			sb.WriteByte('%')
+			sb.WriteByte(hexd[c>>4])
+			sb.WriteByte(hexd[c&15])
+		}
+	}
+	return sb.String()
 }
 
 // fetchStatusJSON fetches and decodes the poll response for pollURL, which

@@ -144,7 +144,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	contentType := resp.Headers.Get("Content-Type")
 	jobResp, imageData, mimeType, err := parseMultipartResponseFor(contentType, resp.Body, "image/")
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse prodia response: %w", err)
+		return nil, err
 	}
 
 	// TS: 'Prodia multipart response missing output image'. The legacy imageUrl

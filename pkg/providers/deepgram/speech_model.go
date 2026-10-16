@@ -141,7 +141,7 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 	if voiceFamilyIDs[m.modelID] {
 		trimmedVoice := providerutils.JSTrim(opts.Voice)
 		if trimmedVoice == "" {
-			return nil, nil, fmt.Errorf("Deepgram speech model %q requires a `voice` to be set (e.g. voice: 'thalia')", m.modelID) //nolint:staticcheck // matches TS SDK's exact error text
+			return nil, nil, fmt.Errorf("Deepgram speech model \"%s\" requires a `voice` to be set (e.g. voice: 'thalia').", m.modelID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		language := opts.Language
 		if language == "auto" {

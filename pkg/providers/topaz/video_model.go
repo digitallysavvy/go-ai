@@ -510,10 +510,10 @@ func selectInputVideo(opts *provider.VideoModelV3CallOptions, warnings *[]types.
 
 	if len(videos) == 0 {
 		if opts.Image != nil {
-			return nil, providererrors.NewValidationError("image",
+			return nil, invalidArgument("image",
 				"Topaz video models enhance an existing video, not a still image. Pass the input video via `inputReferences`.", nil)
 		}
-		return nil, providererrors.NewValidationError("inputReferences",
+		return nil, invalidArgument("inputReferences",
 			"Topaz video models require an input video. Pass it via `inputReferences`, "+
 				"e.g. `inputReferences: [{ type: \"file\", mediaType: \"video/mp4\", data: bytes }]`. "+
 				"For URL references, include `mediaType` so the reference is recognized as a video.", nil)
@@ -563,7 +563,7 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 	if topazOpts != nil && topazOpts.Source != nil && topazOpts.Source.Container != nil {
 		declared := *topazOpts.Source.Container
 		if !topazSourceContainers[declared] {
-			return "", providererrors.NewValidationError("providerOptions.topaz.source.container",
+			return "", invalidArgument("providerOptions.topaz.source.container",
 				fmt.Sprintf("%q is not a container Topaz accepts for the input video.", declared), nil)
 		}
 		return declared, nil
@@ -572,7 +572,7 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 	if input.Type == "file" {
 		container := mediaTypeContainers[strings.ToLower(input.MediaType)]
 		if container == "" {
-			return "", providererrors.NewValidationError("inputReferences",
+			return "", invalidArgument("inputReferences",
 				fmt.Sprintf("Could not map the media type %q onto a Topaz container. Set the `source.container` provider option explicitly.", input.MediaType), nil)
 		}
 		return container, nil
@@ -586,7 +586,7 @@ func resolveContainer(input *provider.VideoModelV3File, topazOpts *VideoModelOpt
 		container = containerFromURL(input.URL)
 	}
 	if container == "" {
-		return "", providererrors.NewValidationError("inputReferences",
+		return "", invalidArgument("inputReferences",
 			fmt.Sprintf("Could not determine the container of the input video at %q. Set the `source.container` provider option, or pass `mediaType` on the reference.", input.URL), nil)
 	}
 	return container, nil
@@ -653,7 +653,7 @@ func resolveSource(topazOpts *VideoModelOptions, container string) (resolvedSour
 
 	if source.Width == nil || source.Height == nil || source.Duration == nil ||
 		source.FrameRate == nil || frameCount == nil {
-		return resolvedSource{}, providererrors.NewValidationError("providerOptions.topaz.source",
+		return resolvedSource{}, invalidArgument("providerOptions.topaz.source",
 			fmt.Sprintf("Source metadata must be complete. Missing: %s.", strings.Join(missing, ", ")), nil)
 	}
 
@@ -690,7 +690,7 @@ func buildOutput(opts *provider.VideoModelV3CallOptions, topazOpts *VideoModelOp
 		output = topazOpts.Output
 	}
 	if output != nil && output.Container != nil && !topazOutputContainers[*output.Container] {
-		return nil, "", providererrors.NewValidationError("providerOptions.topaz.output.container",
+		return nil, "", invalidArgument("providerOptions.topaz.output.container",
 			fmt.Sprintf("%q is not a container Topaz can produce for the enhanced video.", *output.Container), nil)
 	}
 
@@ -700,7 +700,7 @@ func buildOutput(opts *provider.VideoModelV3CallOptions, topazOpts *VideoModelOp
 	height := firstIntPtr(outputHeight(output), resHeight, sourceHeight(source))
 
 	if width == nil || height == nil {
-		return nil, "", providererrors.NewValidationError("resolution",
+		return nil, "", invalidArgument("resolution",
 			"Topaz needs the output resolution. Set the `resolution` call option or the `output.width` / `output.height` provider options.", nil)
 	}
 

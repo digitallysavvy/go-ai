@@ -299,7 +299,7 @@ func TestPollPrediction_RespondsPromptlyToContextCancellation(t *testing.T) {
 	}()
 
 	start := time.Now()
-	_, err := m.pollPrediction(ctx, "p1")
+	_, err := m.pollPrediction(ctx, "p1", nil)
 	elapsed := time.Since(start)
 
 	if err == nil {

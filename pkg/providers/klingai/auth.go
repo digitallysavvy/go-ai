@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -46,10 +47,11 @@ func resolveKlingAIAuthToken(apiKey, accessKey, secretKey string) (string, error
 		trimmedSettingPresent(secretKey, "KLINGAI_SECRET_KEY")
 
 	if !hasLegacyCredentials {
-		return "", fmt.Errorf("KlingAI API key is missing. Pass it using the 'apiKey' parameter " + //nolint:staticcheck // matches TS SDK's exact error text
+		// TS throws LoadAPIKeyError here.
+		return "", &providererrors.LoadAPIKeyError{Message: "KlingAI API key is missing. Pass it using the 'apiKey' parameter " +
 			"or the KLINGAI_API_KEY environment variable. Alternatively, pass the " +
 			"legacy 'accessKey' and 'secretKey' parameters or the " +
-			"KLINGAI_ACCESS_KEY and KLINGAI_SECRET_KEY environment variables.")
+			"KLINGAI_ACCESS_KEY and KLINGAI_SECRET_KEY environment variables."}
 	}
 
 	return generateJWTToken(accessKey, secretKey)
@@ -75,13 +77,14 @@ func generateJWTToken(accessKey, secretKey string) (string, error) {
 		accessKey = os.Getenv("KLINGAI_ACCESS_KEY")
 	}
 	if accessKey == "" {
-		return "", fmt.Errorf("KlingAI access key is required (set KLINGAI_ACCESS_KEY or provide Config.AccessKey)")
+		// TS loadSetting's LoadSettingError text.
+		return "", fmt.Errorf("KlingAI access key setting is missing. Pass it using the 'accessKey' parameter or the KLINGAI_ACCESS_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if secretKey == "" {
 		secretKey = os.Getenv("KLINGAI_SECRET_KEY")
 	}
 	if secretKey == "" {
-		return "", fmt.Errorf("KlingAI secret key is required (set KLINGAI_SECRET_KEY or provide Config.SecretKey)")
+		return "", fmt.Errorf("KlingAI secret key setting is missing. Pass it using the 'secretKey' parameter or the KLINGAI_SECRET_KEY environment variable.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	now := time.Now().Unix()

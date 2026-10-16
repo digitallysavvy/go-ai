@@ -197,13 +197,13 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	if respCT == "" {
 		respCT, err = detectMultipartContentType(respBody)
 		if err != nil {
-			return nil, fmt.Errorf("prodia: cannot detect multipart boundary: %w", err)
+			return nil, errMissingBoundary("")
 		}
 	}
 
 	jobResp, outputs, err := parseMultipartOutputs(respCT, respBody)
 	if err != nil {
-		return nil, fmt.Errorf("prodia: %w", err)
+		return nil, err
 	}
 
 	result := &types.GenerateResult{
@@ -264,20 +264,19 @@ func (m *ProdiaLanguageModel) DoStream(ctx context.Context, opts *provider.Gener
 		})
 	}
 
-	// Text block.
-	if gr.Text != "" {
-		const blockID = "text-0"
-		chunks = append(chunks,
-			&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: blockID},
-			&provider.StreamChunk{Type: provider.ChunkTypeText, ID: blockID, Text: gr.Text},
-			&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: blockID},
-		)
-	}
-
-	// File blocks (generated images).
+	// TS doStream walks result.content in order: a text part (even an empty
+	// one) becomes a text block, a file part a file chunk.
 	for _, part := range gr.Content {
-		if fc, ok := part.(types.GeneratedFileContent); ok {
-			cp := fc
+		switch p := part.(type) {
+		case types.TextContent:
+			const blockID = "text-0"
+			chunks = append(chunks,
+				&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: blockID},
+				&provider.StreamChunk{Type: provider.ChunkTypeText, ID: blockID, Text: p.Text},
+				&provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: blockID},
+			)
+		case types.GeneratedFileContent:
+			cp := p
 			chunks = append(chunks, &provider.StreamChunk{
 				Type:                 provider.ChunkTypeFile,
 				GeneratedFileContent: &cp,

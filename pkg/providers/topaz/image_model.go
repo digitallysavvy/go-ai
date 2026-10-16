@@ -16,7 +16,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -211,7 +210,7 @@ func addImageUnsupportedWarnings(opts *provider.ImageGenerateOptions, warnings *
 // request (TS TopazImageModel#buildFormData).
 func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpts *ImageModelOptions, warnings *[]types.Warning) (io.Reader, string, error) {
 	if len(opts.Files) == 0 {
-		return nil, "", providererrors.NewValidationError("files",
+		return nil, "", invalidArgument("files",
 			"Topaz image models enhance an existing image. Pass the input image via `prompt.images`.", nil)
 	}
 
