@@ -256,12 +256,20 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
 
+	// TS loads the region first (createSigV4FetchFunction's credentials
+	// callback), so a missing region is reported before any credential
+	// problem. It matters with an explicit BaseURL, which needs no region.
+	region := t.provider.awsRegion()
+	if region == "" {
+		return nil, fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.") //nolint:staticcheck // message text matches TS
+	}
+
 	creds, err := t.provider.resolveCredentials(req.Context())
 	if err != nil {
 		return nil, err
 	}
 
-	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.provider.awsRegion())
+	signer := bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, region)
 	if err := signer.SignRequest(req, body); err != nil {
 		return nil, err
 	}
