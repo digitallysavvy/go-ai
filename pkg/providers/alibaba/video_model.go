@@ -3,6 +3,7 @@ package alibaba
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -752,15 +753,17 @@ func (m *VideoModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
-	var httpErr *internalhttp.HTTPStatusError
-	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
-		httpErr = statusErr
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
 	}
-	if httpErr == nil {
-		return providererrors.NewVideoGenerationError("alibaba", m.modelID, err.Error(), err)
+	var httpErr *internalhttp.HTTPStatusError
+	if !errors.As(err, &httpErr) {
+		// TS postJsonToApi / getFromApi let a transport failure (abort,
+		// "Cannot connect to API") propagate unchanged.
+		return err
 	}
 	message, code := alibabaNativeErrorMessage(httpErr.StatusCode, httpErr.Body)
-	return providererrors.NewProviderError("alibaba", httpErr.StatusCode, code, message, err)
+	return providererrors.NewProviderErrorFromResponse("alibaba", 0, code, message, err)
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {

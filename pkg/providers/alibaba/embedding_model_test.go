@@ -199,7 +199,7 @@ func TestAlibabaEmbeddingModelParsesProviderErrorPayload(t *testing.T) {
 	if providerErr.StatusCode != http.StatusBadRequest || providerErr.ErrorCode != "InvalidParameter" || providerErr.Message != "bad embedding request" {
 		t.Fatalf("provider error = %#v", providerErr)
 	}
-	if providerErr.ResponseHeaders["X-Request-Id"] != "bad-1" {
+	if providerErr.ResponseHeaders["x-request-id"] != "bad-1" {
 		t.Fatalf("response headers = %#v", providerErr.ResponseHeaders)
 	}
 }
