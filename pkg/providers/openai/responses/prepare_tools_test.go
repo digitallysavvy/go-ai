@@ -1081,3 +1081,32 @@ func TestPrepareTools_Shell_SkillReferenceDefaultsToLatestAndUntypedEnvIsLocal(t
 		t.Fatalf("env = %#v", local.Environment)
 	}
 }
+
+// TS sends tool_search `execution` whenever the caller set it (including an
+// explicit "server") and omits it otherwise; an openai.mcp tool needs a
+// serverUrl or connectorId (mcpArgsSchema refinement).
+func TestPrepareTools_ToolSearchExplicitServerExecutionAndMCPRefinement(t *testing.T) {
+	explicit, err := PrepareToolsWithError([]types.Tool{openaitool.ToolSearch(openaitool.ToolSearchArgs{Execution: "server"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := explicit[0].(ToolSearchToolDef).Execution; got != "server" {
+		t.Errorf("explicit server execution = %q, want server", got)
+	}
+	implicit, _ := PrepareToolsWithError([]types.Tool{openaitool.ToolSearch(openaitool.ToolSearchArgs{})})
+	if got := implicit[0].(ToolSearchToolDef).Execution; got != "" {
+		t.Errorf("default execution = %q, want omitted", got)
+	}
+
+	if _, err := PrepareToolsWithError([]types.Tool{openaitool.MCP(openaitool.MCPConfig{ServerLabel: "x"})}); err == nil {
+		t.Error("mcp without serverUrl/connectorId must fail validation")
+	}
+	for _, cfg := range []openaitool.MCPConfig{
+		{ServerLabel: "x", ServerURL: "https://m"},
+		{ServerLabel: "x", ConnectorID: "connector_gmail"},
+	} {
+		if _, err := PrepareToolsWithError([]types.Tool{openaitool.MCP(cfg)}); err != nil {
+			t.Errorf("valid mcp config rejected: %v", err)
+		}
+	}
+}
