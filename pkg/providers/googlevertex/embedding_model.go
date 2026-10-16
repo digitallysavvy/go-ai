@@ -106,6 +106,10 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if len(inputs) == 0 {
 		return &types.EmbeddingsResult{Embeddings: [][]float64{}, Usage: types.EmbeddingUsage{}}, nil
 	}
+	// TS parses (and validates) providerOptions before the value-count check.
+	if err := validateVertexEmbeddingOptions(opts); err != nil {
+		return nil, err
+	}
 	if len(inputs) > m.MaxEmbeddingsPerCall() {
 		return nil, &providererrors.TooManyEmbeddingValuesForCallError{
 			Provider:             m.Provider(),
@@ -113,10 +117,6 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 			MaxEmbeddingsPerCall: m.MaxEmbeddingsPerCall(),
 			Values:               inputs,
 		}
-	}
-
-	if err := validateVertexEmbeddingOptions(opts); err != nil {
-		return nil, err
 	}
 	vopts := vertexEmbeddingOptions(opts)
 	if vopts.OutputDimensionality == nil && opts != nil && opts.Dimensions != nil {
