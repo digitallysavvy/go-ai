@@ -384,63 +384,73 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		if !ok {
 			return
 		}
-		if s.p.askUserQuestions == nil {
-			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
-			return
-		}
-		nativeRequest := rawJSONToAny(f.NativeRequest)
-		toolCall := s.p.askUserQuestions.FromNativeRequest(nativeRequest, f.NativeToolCall)
-		if toolCall == nil {
-			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
-			return
-		}
-		if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || toolCall.ProviderExecuted || toolCall.ProviderExecutedOmitted {
-			// ProviderExecuted must be an explicit false (client-executed; TS
-			// checks `providerExecuted !== false`, so an undefined flag is
-			// rejected too, which Go signals with ProviderExecutedOmitted); mirrors TS's
-			// thrown Error for a misconfigured settings.askUserQuestions
-			// (acp-v1-harness.ts), which is caught and settles the turn
-			// with an error part, an abort command, and settle(error).
-			err := fmt.Errorf("%s ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call", s.p.harnessID)
+		// Mirrors TS's try/catch around the whole handler: an error from
+		// the adapter's callbacks (a panic in Go) or a misconfigured
+		// fromNativeRequest settles the turn with an error part and an
+		// abort command.
+		err := func() (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("%v", r)
+				}
+			}()
+			if s.p.askUserQuestions == nil {
+				_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
+				return nil
+			}
+			nativeRequest := rawJSONToAny(f.NativeRequest)
+			toolCall := s.p.askUserQuestions.FromNativeRequest(nativeRequest, f.NativeToolCall)
+			if toolCall == nil {
+				_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
+				return nil
+			}
+			if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || toolCall.ProviderExecuted || toolCall.ProviderExecutedOmitted {
+				// ProviderExecuted must be an explicit false (client-executed; TS
+				// checks `providerExecuted !== false`, so an undefined flag is
+				// rejected too, which Go signals with ProviderExecutedOmitted).
+				return fmt.Errorf("%s ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call", s.p.harnessID)
+			}
+			withNative := *toolCall
+			if withNative.ProviderMetadata == nil {
+				withNative.ProviderMetadata = harness.ProviderMetadata{}
+			}
+			meta := map[string]any{}
+			for k, v := range withNative.ProviderMetadata[s.p.harnessID] {
+				meta[k] = v
+			}
+			meta["nativeRequest"] = nativeRequest
+			withNative.ProviderMetadata[s.p.harnessID] = meta
+
+			buffered, hasBuffered := s.takeBufferedQuestionResult(withNative.ToolCallID, nativeRequest)
+
+			c.mu.Lock()
+			c.activeQuestions[withNative.ToolCallID] = activeQuestion{RequestID: f.RequestID, NativeRequest: f.NativeRequest}
+			c.questionToolCallByRequest[f.RequestID] = withNative.ToolCallID
+			c.mu.Unlock()
+			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "handled", "toolCallId": withNative.ToolCallID}})
+
+			if !hasBuffered {
+				forward(&withNative)
+				return nil
+			}
+			var isErr bool
+			if buffered.IsError != nil {
+				isErr = *buffered.IsError
+			}
+			var tr types.ToolResultContent
+			if buffered.ToolResult != nil {
+				tr = *buffered.ToolResult
+			}
+			output := s.p.askUserQuestions.ToNativeResponse(nativeRequest, tr)
+			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: withNative.ToolCallID, Output: output, IsError: isErr, ToolResult: buffered.ToolResult})
+			return nil
+		}()
+		if err != nil {
 			closeForwardedBlock()
 			forward(&harness.ErrorPart{Error: err.Error()})
 			_ = s.p.channel.Send(bridge.AbortCommand{})
 			settle(err)
-			return
 		}
-		withNative := *toolCall
-		if withNative.ProviderMetadata == nil {
-			withNative.ProviderMetadata = harness.ProviderMetadata{}
-		}
-		meta := map[string]any{}
-		for k, v := range withNative.ProviderMetadata[s.p.harnessID] {
-			meta[k] = v
-		}
-		meta["nativeRequest"] = nativeRequest
-		withNative.ProviderMetadata[s.p.harnessID] = meta
-
-		buffered, hasBuffered := s.takeBufferedQuestionResult(withNative.ToolCallID, nativeRequest)
-
-		c.mu.Lock()
-		c.activeQuestions[withNative.ToolCallID] = activeQuestion{RequestID: f.RequestID, NativeRequest: f.NativeRequest}
-		c.questionToolCallByRequest[f.RequestID] = withNative.ToolCallID
-		c.mu.Unlock()
-		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "handled", "toolCallId": withNative.ToolCallID}})
-
-		if !hasBuffered {
-			forward(&withNative)
-			return
-		}
-		var isErr bool
-		if buffered.IsError != nil {
-			isErr = *buffered.IsError
-		}
-		var tr types.ToolResultContent
-		if buffered.ToolResult != nil {
-			tr = *buffered.ToolResult
-		}
-		output := s.p.askUserQuestions.ToNativeResponse(nativeRequest, tr)
-		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: withNative.ToolCallID, Output: output, IsError: isErr, ToolResult: buffered.ToolResult})
 	}))
 
 	unsub = append(unsub, s.p.channel.On(TypeQuestionResolved, func(e bridge.Event) {
