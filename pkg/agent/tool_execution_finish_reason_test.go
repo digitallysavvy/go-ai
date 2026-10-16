@@ -42,7 +42,9 @@ func TestToolLoopAgent_NonStopFinishReasonSkipsLocalToolExecution(t *testing.T) 
 				{Text: "done", FinishReason: types.FinishReasonStop},
 			}}
 			a := NewToolLoopAgent(AgentConfig{Model: model, Tools: []types.Tool{tool}, StopWhen: []ai.StopCondition{ai.IsStepCount(2)}})
-			if _, err := a.Generate(context.Background(), AgentGenerateOptions{Prompt: "go"}); err != nil {
+			// GenerateAgent runs the agent's own loop (runLoop); Generate
+			// delegates to ai.GenerateText, which has its own check.
+			if _, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"}); err != nil {
 				t.Fatal(err)
 			}
 			if got := atomic.LoadInt32(&executed); got != tc.runs {
