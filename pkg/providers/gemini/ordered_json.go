@@ -3,6 +3,8 @@ package gemini
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // orderedMap is an insertion-order-preserving JSON object, mirroring the key
@@ -40,14 +42,12 @@ func (m *orderedMap) set(key string, value interface{}) {
 // json.Number/etc.) the way JS `JSON.stringify` does for a single value: no
 // indentation and no HTML-escaping of `<`, `>`, `&`.
 func marshalJSONCompact(v interface{}) string {
-	var buf strings.Builder
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		b, _ := json.Marshal(v)
-		return string(b)
+	// jsonstr also writes U+2028/U+2029 raw, like JSON.stringify.
+	b, err := jsonstr.Marshal(v)
+	if err != nil {
+		b, _ = json.Marshal(v)
 	}
-	return strings.TrimRight(buf.String(), "\n")
+	return string(b)
 }
 
 // marshalOrdered compact-serializes an ordered JSON tree (*orderedMap /

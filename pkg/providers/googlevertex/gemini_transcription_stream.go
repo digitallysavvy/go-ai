@@ -435,11 +435,11 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 					return
 				}
 				if !wsutil.IsCleanClose(res.Err) {
-					fail(errors.New("Google Vertex Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					fail(errors.New("Vertex Live transcription error.")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				} else if drainAudioEnded() || audioEnded {
 					finish()
 				} else {
-					fail(fmt.Errorf("Google Vertex Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+					fail(fmt.Errorf("Vertex Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
 				}
 				return
 			}
@@ -471,7 +471,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			if message.Error != nil {
 				msg := message.Error.Message
 				if msg == "" {
-					msg = "Google Vertex Live API error"
+					msg = "Vertex Live API error"
 				}
 				fail(errors.New(msg))
 				return

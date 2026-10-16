@@ -1,7 +1,9 @@
 package bedrock
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -121,6 +123,11 @@ func toFloat64(value interface{}) (float64, bool) {
 		return float64(v), true
 	case int64:
 		return float64(v), true
+	case uint, uint32, uint64:
+		return float64(reflect.ValueOf(v).Uint()), true
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
 	default:
 		return 0, false
 	}

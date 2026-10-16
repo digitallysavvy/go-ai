@@ -495,3 +495,52 @@ func TestGeminiTranscriptionModel_DoStream_CleanCloseRacingAudioEnded(t *testing
 		t.Fatalf("last part = %+v", last)
 	}
 }
+
+// TS createVertexLiveTranscriptionStream error texts start with "Vertex Live"
+// (not "Google Vertex Live").
+func TestGeminiTranscriptionModel_DoStream_ErrorTextsMatchTS(t *testing.T) {
+	t.Run("server error without message", func(t *testing.T) {
+		server := newLiveTranscriptionTestServer(t)
+		defer server.close()
+		model := newLiveTestModel(t, server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            &chanAudioStream{chunks: make(chan []byte)},
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Stream.Close() //nolint:errcheck
+		if _, err := result.Stream.Next(); err != nil {
+			t.Fatal(err)
+		}
+		server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+		server.toSend <- map[string]interface{}{"error": map[string]interface{}{}}
+		_, err = drainUntilFinishOrError(t, result.Stream)
+		if err == nil || err.Error() != "Vertex Live API error" {
+			t.Fatalf("err = %v, want %q", err, "Vertex Live API error")
+		}
+	})
+	t.Run("close before finishing", func(t *testing.T) {
+		server := newLiveTranscriptionTestServer(t)
+		defer server.close()
+		model := newLiveTestModel(t, server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            &chanAudioStream{chunks: make(chan []byte)},
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Stream.Close() //nolint:errcheck
+		if _, err := result.Stream.Next(); err != nil {
+			t.Fatal(err)
+		}
+		server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+		server.closeConnection()
+		_, err = drainUntilFinishOrError(t, result.Stream)
+		if err == nil || !strings.HasPrefix(err.Error(), "Vertex Live transcription") {
+			t.Fatalf("err = %v, want a \"Vertex Live transcription ...\" error", err)
+		}
+	})
+}

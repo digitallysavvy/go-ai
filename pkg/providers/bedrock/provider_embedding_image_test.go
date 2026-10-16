@@ -17,6 +17,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerErrs "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
@@ -908,4 +909,70 @@ type bedrockRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f bedrockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func TestBedrockRerankingInvalidProviderOptions(t *testing.T) {
+	model := NewRerankingModel(New(Config{Region: "us-east-1"}), "amazon.rerank-v1:0")
+	for name, po := range map[string]map[string]interface{}{
+		"nextToken number":   {"amazonBedrock": map[string]interface{}{"nextToken": 5}},
+		"fields not object":  {"bedrock": map[string]interface{}{"additionalModelRequestFields": "x"}},
+		"options not object": {"amazonBedrock": "x"},
+	} {
+		_, err := model.buildRequestBody(&provider.RerankOptions{Query: "q", Documents: []string{"a"}, ProviderOptions: po})
+		var iae *providerErrs.InvalidArgumentError
+		if !errors.As(err, &iae) {
+			t.Errorf("%s: err = %#v, want InvalidArgumentError", name, err)
+		}
+	}
+}
+
+func TestBedrockFlattenHeadersJoinsMultiValues(t *testing.T) {
+	h := http.Header{}
+	h.Add("X-Multi", "a")
+	h.Add("X-Multi", "b")
+	if got := flattenHeaders(h)["X-Multi"]; got != "a, b" {
+		t.Fatalf("got %q, want %q", got, "a, b")
+	}
+}
+
+func TestBedrockRegionResolvedLazilyFromEnv(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	p := New(Config{})
+	t.Setenv("AWS_REGION", "us-west-2")
+	if got := p.Region(); got != "us-west-2" {
+		t.Fatalf("Region() = %q, want us-west-2", got)
+	}
+	base, err := p.runtimeBaseURL()
+	if err != nil || base != "https://bedrock-runtime.us-west-2.amazonaws.com" {
+		t.Fatalf("runtimeBaseURL = %q, %v", base, err)
+	}
+}
+
+// An AWS_REGION that was already set at New and changes afterwards is read
+// again on use (TS loadSetting), not frozen at construction.
+func TestBedrockRegionChangedAfterNewIsHonored(t *testing.T) {
+	t.Setenv("AWS_REGION", "us-east-1")
+	p := New(Config{})
+	t.Setenv("AWS_REGION", "eu-central-1")
+	base, err := p.runtimeBaseURL()
+	if err != nil || base != "https://bedrock-runtime.eu-central-1.amazonaws.com" {
+		t.Fatalf("runtimeBaseURL = %q, %v", base, err)
+	}
+	if got := New(Config{Region: "ap-south-1"}).Region(); got != "ap-south-1" {
+		t.Fatalf("explicit Region = %q, want ap-south-1", got)
+	}
+}
+
+func TestBedrockImageNumericOptionsAcceptJSONNumber(t *testing.T) {
+	// isNumber (validation) accepts json.Number and unsigned ints, so the
+	// request builder must not drop them silently.
+	opts, err := parseBedrockImageOptions(map[string]interface{}{
+		"amazonBedrock": map[string]interface{}{"cfgScale": json.Number("7.5"), "similarityStrength": uint32(1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.CfgScaleSet || opts.CfgScale != 7.5 || !opts.SimilarityStrengthSet || opts.SimilarityStrength != 1 {
+		t.Fatalf("options = %+v", opts)
+	}
 }
