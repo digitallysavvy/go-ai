@@ -197,17 +197,15 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if opts.Documents == nil {
-		return nil, fmt.Errorf("documents are required")
-	}
-	if opts.Query == "" {
-		return nil, fmt.Errorf("query is required")
-	}
+	// TS rerank() does not reject an empty query or missing documents: an
+	// empty query reaches the provider and zero documents short-circuit below.
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 
 	// Validate documents type
 	var documentsSlice []interface{}
 	switch docs := opts.Documents.(type) {
+	case nil:
+		documentsSlice = []interface{}{}
 	case []string:
 		documentsSlice = make([]interface{}, len(docs))
 		for i, d := range docs {

@@ -47,21 +47,27 @@ func TestEmbed_NilModel(t *testing.T) {
 	}
 }
 
-func TestEmbed_EmptyInput(t *testing.T) {
+// TS embed() does not reject an empty value; it reaches the provider.
+func TestEmbed_EmptyInputReachesProvider(t *testing.T) {
 	t.Parallel()
 
-	model := &testutil.MockEmbeddingModel{}
-
-	_, err := Embed(context.Background(), EmbedOptions{
-		Model: model,
-		Input: "",
-	})
-
-	if err == nil {
-		t.Fatal("expected error for empty input")
+	var got []string
+	model := &testutil.MockEmbeddingModel{
+		DoEmbedFunc: func(ctx context.Context, input string, _ *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
+			got = append(got, input)
+			return &types.EmbeddingResult{Embedding: []float64{0.1}}, nil
+		},
 	}
-	if err.Error() != "input is required" {
-		t.Errorf("unexpected error message: %v", err)
+
+	res, err := Embed(context.Background(), EmbedOptions{Model: model, Input: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "" {
+		t.Fatalf("provider calls = %#v, want one call with empty input", got)
+	}
+	if len(res.Embedding) != 1 {
+		t.Errorf("embedding = %v", res.Embedding)
 	}
 }
 
