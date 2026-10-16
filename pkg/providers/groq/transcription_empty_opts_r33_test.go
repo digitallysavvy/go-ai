@@ -32,3 +32,30 @@ func TestGroqTranscriptionEmptyStringOptionsSentR33(t *testing.T) {
 		}
 	}
 }
+
+// Unset options are not sent (only an explicit "" is forwarded).
+func TestGroqTranscriptionUnsetOptionsOmittedR33(t *testing.T) {
+	var form map[string][]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(10 << 20)
+		form = r.MultipartForm.Value
+		_, _ = w.Write([]byte(`{"text":"x","x_groq":{"id":"r"}}`))
+	}))
+	defer server.Close()
+	model := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: server.URL}), "whisper-large-v3")
+	_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio: []byte("a"), MimeType: "audio/wav",
+		ProviderOptions: map[string]interface{}{"groq": map[string]interface{}{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if form == nil {
+		t.Fatal("no form captured")
+	}
+	for _, k := range []string{"language", "prompt", "response_format"} {
+		if v, ok := form[k]; ok {
+			t.Errorf("%s = %v sent although the option is unset", k, v)
+		}
+	}
+}

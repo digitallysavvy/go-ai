@@ -30,3 +30,20 @@ func TestResponsesEmptyStringOptionsAndIncludeR33(t *testing.T) {
 		t.Errorf("include = %#v, want empty array", body["include"])
 	}
 }
+
+// Unset options are not sent (only an explicit "" is forwarded).
+func TestResponsesUnsetStringOptionsOmittedR33(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-4")
+	body, _, err := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"prompt_cache_key", "safety_identifier", "user", "previous_response_id"} {
+		if v, ok := body[k]; ok {
+			t.Errorf("%s = %v sent although the option is unset", k, v)
+		}
+	}
+}
