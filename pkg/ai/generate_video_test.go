@@ -440,8 +440,17 @@ func TestConvertPromptImageAndVideoDataHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default data URL image conversion error = %v", err)
 	}
-	if dataURLDefaultImg == nil || dataURLDefaultImg.MediaType != "image/png" {
+	// TS splitDataUrl yields "" for an empty type and `"" ?? detect` keeps it.
+	if dataURLDefaultImg == nil || dataURLDefaultImg.MediaType != "" || !bytes.Equal(dataURLDefaultImg.Data, []byte{1, 2}) {
 		t.Fatalf("unexpected default data URL media type: %+v", dataURLDefaultImg)
+	}
+
+	dataURLDefaultRef, err := convertReferenceImage(&VideoPromptImage{DataString: "data:;base64,AQI="})
+	if err != nil {
+		t.Fatalf("default data URL reference conversion error = %v", err)
+	}
+	if dataURLDefaultRef == nil || dataURLDefaultRef.MediaType != "" {
+		t.Fatalf("unexpected default data URL reference media type: %+v", dataURLDefaultRef)
 	}
 
 	urlFile, err := convertVideoData(context.Background(), provider.VideoModelV3VideoData{
