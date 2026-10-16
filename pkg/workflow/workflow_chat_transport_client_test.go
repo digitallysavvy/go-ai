@@ -619,3 +619,27 @@ func TestWorkflowChatTransportDefaultPostBodyMatchesTS(t *testing.T) {
 		t.Fatalf("POST body keys = %v, want [extra messages]", keys)
 	}
 }
+
+// TS `maxConsecutiveErrors ?? 3`: an explicit 0 fails on the first error.
+func TestWorkflowChatTransportExplicitZeroMaxConsecutiveErrors(t *testing.T) {
+	var mu sync.Mutex
+	gets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gets++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+	}))
+	defer srv.Close()
+	tr := NewWorkflowChatTransport(WorkflowChatTransportOptions{API: srv.URL, MaxConsecutiveErrorsSet: true})
+	out, errs := tr.ReconnectToStream(context.Background(), ai.ChatTransportReconnectToStreamRequest{ChatID: "z"})
+	_, err := collectChunks(out, errs, 3*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "Failed to reconnect after 0 consecutive errors") {
+		t.Fatalf("err = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gets != 1 {
+		t.Fatalf("gets = %d, want 1", gets)
+	}
+}
