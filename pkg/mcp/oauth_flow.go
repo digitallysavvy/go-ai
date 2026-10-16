@@ -766,11 +766,14 @@ func RefreshOAuthAuthorization(ctx context.Context, authorizationServerURL strin
 	if err != nil {
 		return nil, err
 	}
-	tokens, err := decodeOAuthTokenResponse(resp)
+	tokens, hasRefresh, err := decodeOAuthTokenResponseFields(resp)
 	if err != nil {
 		return nil, err
 	}
-	if tokens.RefreshToken == "" {
+	// TS: OAuthTokensSchema.parse({refresh_token: refreshToken, ...response}):
+	// the original is kept only when the response omits the key, so an empty
+	// refresh_token overrides it.
+	if !hasRefresh {
 		tokens.RefreshToken = params.RefreshToken
 	}
 	return tokens, nil
@@ -943,38 +946,46 @@ func oauthTokenPOSTClient(httpClient *http.Client, allowLoopback bool) *http.Cli
 }
 
 func decodeOAuthTokenResponse(resp *http.Response) (*OAuthTokens, error) {
+	tokens, _, err := decodeOAuthTokenResponseFields(resp)
+	return tokens, err
+}
+
+// decodeOAuthTokenResponseFields also reports whether the response carried a
+// refresh_token key (even an empty one).
+func decodeOAuthTokenResponseFields(resp *http.Response) (*OAuthTokens, bool, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, ParseOAuthErrorResponse(resp)
+		return nil, false, ParseOAuthErrorResponse(resp)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	rawBody, err := readLimitedOAuthBody(resp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read OAuth token response: %w", err)
+		return nil, false, fmt.Errorf("failed to read OAuth token response: %w", err)
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(rawBody, &fields); err != nil || fields == nil {
-		return nil, fmt.Errorf("failed to decode OAuth token response: expected an object")
+		return nil, false, fmt.Errorf("failed to decode OAuth token response: expected an object")
 	}
 	// TS OAuthTokensSchema requires access_token and token_type strings.
 	for _, key := range []string{"access_token", "token_type"} {
 		if !isJSONString(fields[key]) {
-			return nil, fmt.Errorf("failed to decode OAuth token response: %s must be a string", key)
+			return nil, false, fmt.Errorf("failed to decode OAuth token response: %s must be a string", key)
 		}
 	}
 	if err := checkOAuthOptionalFields(fields, oauthTokenFieldRules); err != nil {
-		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
+		return nil, false, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
 	integerizeOAuthNumbers(fields, "expires_in")
 	var tokens OAuthTokens
 	if err := decodeOAuthFields(fields, &tokens); err != nil {
-		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
+		return nil, false, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
 	// TS OAuthTokensSchema validates issuer/authorization_server/
 	// token_endpoint with SafeUrlSchema.
 	if key, ok := unsafeOAuthURLField(fields, "issuer", "authorization_server", "token_endpoint"); ok {
-		return nil, fmt.Errorf("failed to decode OAuth token response: %s must be a safe URL", key)
+		return nil, false, fmt.Errorf("failed to decode OAuth token response: %s must be a safe URL", key)
 	}
-	return &tokens, nil
+	_, hasRefresh := fields["refresh_token"]
+	return &tokens, hasRefresh, nil
 }
 
 // unsafeOAuthURLField returns the first of keys whose JSON value is present

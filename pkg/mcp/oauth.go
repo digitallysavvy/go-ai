@@ -404,7 +404,9 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		if err := json.Unmarshal(rawBody, &metadata); err != nil {
 			return nil, err
 		}
-		if err := validateOAuthAuthorizationServerMetadata(metadata, candidate.Type); err != nil {
+		// TS issuer is z.string(): present-but-empty passes the schema and is
+		// then rejected by the issuer match below.
+		if err := validateOAuthAuthorizationServerMetadataIssuer(metadata, candidate.Type, isJSONString(asFields["issuer"])); err != nil {
 			return nil, err
 		}
 		if !oauthIssuerMatches(metadata.Issuer, candidate.ExpectedIssuer) {
@@ -553,7 +555,11 @@ func validateOAuthProtectedResourceMetadata(metadata OAuthProtectedResourceMetad
 }
 
 func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerMetadata, metadataType string) error {
-	if metadata.Issuer == "" {
+	return validateOAuthAuthorizationServerMetadataIssuer(metadata, metadataType, metadata.Issuer != "")
+}
+
+func validateOAuthAuthorizationServerMetadataIssuer(metadata OAuthAuthorizationServerMetadata, metadataType string, issuerPresent bool) error {
+	if !issuerPresent {
 		return fmt.Errorf("OAuth authorization server metadata missing required issuer")
 	}
 	if metadata.AuthorizationEndpoint == "" {
