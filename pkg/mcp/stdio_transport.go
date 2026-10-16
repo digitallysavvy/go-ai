@@ -36,9 +36,10 @@ type StdioTransport struct {
 	// State. mu guards connected/reader/writer; writeMu serializes writes so
 	// a Send blocked on a full pipe never holds mu (Close must stay able to
 	// take it, close stdin and kill the child).
-	connected bool
-	mu        sync.Mutex
-	writeMu   sync.Mutex
+	connected  bool
+	mu         sync.Mutex
+	writeMu    sync.Mutex // guards writeSemCh creation
+	writeSemCh chan struct{}
 
 	onError func(error)
 	stderrW io.Writer
@@ -227,6 +228,7 @@ func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 	t.mu.Lock()
 	connected := t.connected
 	writer := t.writer
+	stdin := t.stdin
 	t.mu.Unlock()
 
 	if !connected {
@@ -243,23 +245,41 @@ func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 		fmt.Printf("MCP Send: %s\n", string(data))
 	}
 
-	t.writeMu.Lock()
-	defer t.writeMu.Unlock()
-
-	// Write message followed by newline
-	if _, err := writer.Write(data); err != nil {
-		return NewTransportError("failed to write message", err)
+	// A write into a full stdin pipe blocks until the child drains it. Honor
+	// ctx (TS aborts the send via AbortSignal): acquire the write slot and
+	// perform the write while watching ctx. An abandoned write may have
+	// left a partial line in the pipe, so the stdin pipe is closed to unblock
+	// the writer and fail later sends rather than interleave frames.
+	select {
+	case t.writeSem() <- struct{}{}:
+	case <-ctx.Done():
+		return NewTransportError("send cancelled", ctx.Err())
 	}
-	if err := writer.WriteByte('\n'); err != nil {
-		return NewTransportError("failed to write newline", err)
+	done := make(chan error, 1)
+	go func() {
+		defer func() { <-t.writeSem() }()
+		done <- func() error {
+			if _, err := writer.Write(data); err != nil {
+				return NewTransportError("failed to write message", err)
+			}
+			if err := writer.WriteByte('\n'); err != nil {
+				return NewTransportError("failed to write newline", err)
+			}
+			if err := writer.Flush(); err != nil {
+				return NewTransportError("failed to flush", err)
+			}
+			return nil
+		}()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		if stdin != nil {
+			_ = stdin.Close()
+		}
+		return NewTransportError("send cancelled", ctx.Err())
 	}
-
-	// Flush
-	if err := writer.Flush(); err != nil {
-		return NewTransportError("failed to flush", err)
-	}
-
-	return nil
 }
 
 // Receive receives a message from the MCP server
@@ -341,4 +361,15 @@ func (t *StdioTransport) logStderr() {
 	// the child blocks once the OS pipe buffer fills and the MCP server
 	// hangs.
 	_, _ = io.Copy(io.Discard, t.stderr)
+}
+
+// writeSem returns the single-slot channel that serializes writes while
+// remaining cancellable (a sync.Mutex cannot be waited on with a context).
+func (t *StdioTransport) writeSem() chan struct{} {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+	if t.writeSemCh == nil {
+		t.writeSemCh = make(chan struct{}, 1)
+	}
+	return t.writeSemCh
 }

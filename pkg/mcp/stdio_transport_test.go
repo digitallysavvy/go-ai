@@ -276,3 +276,27 @@ func TestStdioTransportSupportsProtocolVersionDiscovery(t *testing.T) {
 		t.Fatal("stdio transport must support protocol version discovery")
 	}
 }
+
+// TestStdioSendHonorsContextOnFullPipe: a child that never reads stdin fills
+// the pipe; Send must return when ctx expires instead of blocking forever.
+func TestStdioSendHonorsContextOnFullPipe(t *testing.T) {
+	tr := NewStdioTransport(StdioTransportConfig{Command: "sleep", Args: []string{"30"}})
+	if err := tr.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	big := `"` + strings.Repeat("x", 4<<20) + `"`
+	msg := &MCPMessage{JSONRpc: "2.0", ID: 0, Method: "m", Params: []byte(big)}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- tr.Send(ctx, msg) }()
+	select {
+	case err := <-done:
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("err = %v, want deadline exceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Send did not honor ctx")
+	}
+}
