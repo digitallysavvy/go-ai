@@ -81,3 +81,15 @@ func TestR33_NullRequestIDFailsSchema(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// voice?.trim() is JS trim: a BOM-only voice is empty, a NEL-only voice is not.
+func TestR33_VoiceTrimIsJSTrim(t *testing.T) {
+	m := NewSpeechModel(New(Config{APIKey: "k"}), "aura-2")
+	if _, _, err := m.buildArgs(&provider.SpeechGenerateOptions{Text: "x", Voice: "\ufeff"}); err == nil {
+		t.Error("BOM-only voice accepted")
+	}
+	q, _, err := m.buildArgs(&provider.SpeechGenerateOptions{Text: "x", Voice: "\u0085"})
+	if err != nil || q["model"] != "aura-2-\u0085-en" {
+		t.Errorf("NEL voice: %v %v", q, err)
+	}
+}

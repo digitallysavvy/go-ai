@@ -2,10 +2,10 @@ package deepgram
 
 import (
 	"context"
-	"math"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -139,7 +139,7 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 	// family ID is used; full voice IDs pass through.
 	upstreamModelID := m.modelID
 	if voiceFamilyIDs[m.modelID] {
-		trimmedVoice := strings.TrimSpace(opts.Voice)
+		trimmedVoice := providerutils.JSTrim(opts.Voice)
 		if trimmedVoice == "" {
 			return nil, nil, fmt.Errorf("Deepgram speech model %q requires a `voice` to be set (e.g. voice: 'thalia')", m.modelID) //nolint:staticcheck // matches TS SDK's exact error text
 		}
