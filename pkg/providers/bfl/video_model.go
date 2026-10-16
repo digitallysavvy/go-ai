@@ -1,6 +1,7 @@
 package bfl
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -676,6 +677,11 @@ func describePollDetails(raw json.RawMessage) string {
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		return s
+	}
+	// TS JSON.stringify(details): compact, whatever whitespace the response had.
+	var compact bytes.Buffer
+	if json.Compact(&compact, raw) == nil {
+		return compact.String()
 	}
 	return string(raw)
 }

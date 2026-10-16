@@ -43,3 +43,13 @@ func TestBFLStatusErrorFollowsTSHandler(t *testing.T) {
 		}
 	}
 }
+
+func TestDescribePollDetailsIsCompactJSON(t *testing.T) {
+	got := describePollDetails([]byte("{ \"reason\": \"nsfw\",\n  \"scores\": [1, 2] }"))
+	if want := `{"reason":"nsfw","scores":[1,2]}`; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if got := describePollDetails([]byte(`"plain"`)); got != "plain" {
+		t.Fatalf("string details = %q", got)
+	}
+}
