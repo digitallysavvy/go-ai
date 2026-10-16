@@ -159,10 +159,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response vertexEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    body,
-		Headers: embedOptsHeaders(opts),
+		ValidateResponse: vertexValidator(m.Provider(), zVertexTextEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             body,
+		Headers:          embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
 		// A ProviderError keeps the HTTP status, body and the extracted
@@ -231,10 +232,11 @@ func (m *EmbeddingModel) doEmbedContent(ctx context.Context, value string, vopts
 
 	var response vertexEmbedContentResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    body,
-		Headers: embedOptsHeaders(opts),
+		ValidateResponse: vertexValidator(m.Provider(), zVertexEmbedContent),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             body,
+		Headers:          embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
 		// A ProviderError keeps the HTTP status, body and the extracted
@@ -406,6 +408,9 @@ func isNumber(v interface{}) bool {
 // failure gives the TS googleVertexFailedResponseHandler message (error.message
 // of a Google error body, else the HTTP status text).
 func vertexEmbeddingError(providerName string, err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return gemini.GoogleHTTPError(providerName, statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)

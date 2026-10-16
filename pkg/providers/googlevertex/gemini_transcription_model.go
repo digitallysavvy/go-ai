@@ -249,10 +249,11 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 
 	var response vertexGeminiTranscriptionResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(m.modelID)),
-		Body:    reqBody,
-		Headers: opts.Headers,
+		ValidateResponse: vertexValidator(m.Provider(), zVertexGeminiTranscription),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/%s:generateContent", gemini.GetModelPath(m.modelID)),
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -329,6 +330,9 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 // a missing key/credential error passes through and HTTP failures keep
 // status, headers and body for retry decisions.
 func (m *GeminiTranscriptionModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
 	var loadKeyErr *providererrors.LoadAPIKeyError
 	if errors.As(err, &loadKeyErr) {
 		return err

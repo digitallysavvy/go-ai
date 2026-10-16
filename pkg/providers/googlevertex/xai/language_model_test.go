@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -247,4 +248,22 @@ func TestLanguageModel_TopKWarning(t *testing.T) {
 	require.Len(t, result.Warnings, 1)
 	assert.Equal(t, "unsupported", result.Warnings[0].Type)
 	assert.Equal(t, "topK", result.Warnings[0].Feature)
+}
+
+// TS createJsonResponseHandler(openai-compatible chat schema): a 200 body that
+// does not match is an APICallError "Invalid JSON response".
+func TestLanguageModel_DoGenerate_InvalidResponseSchema(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"choices":"nope"}`))
+	}))
+	defer server.Close()
+	prov, err := New(Config{Project: "test-project", AccessToken: "test-token", BaseURL: server.URL})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	var perr *providererrors.ProviderError
+	require.ErrorAs(t, err, &perr)
+	assert.Equal(t, "Invalid JSON response", perr.Message)
+	assert.Equal(t, 200, perr.StatusCode)
 }
