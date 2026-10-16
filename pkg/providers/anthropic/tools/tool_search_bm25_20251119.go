@@ -65,7 +65,7 @@ func ToolSearchBm2520251119() types.Tool {
 				"description": "A natural language query to search for tools. Claude will use BM25 text search to find relevant tools.",
 			},
 			"limit": map[string]interface{}{
-				"type":        "integer",
+				"type":        "number",
 				"description": "Maximum number of tools to return. Optional.",
 			},
 		},

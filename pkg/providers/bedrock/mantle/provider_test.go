@@ -304,3 +304,22 @@ func TestBaseURLForModel_ExplicitBaseURLAlwaysWins(t *testing.T) {
 		t.Fatalf("baseURLForModel = %q, want explicit override", got)
 	}
 }
+
+func TestBedrockMantleMissingCredentialsIncludeOriginalError(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	tr := &sigV4Transport{region: "us-east-1", base: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("unexpected send")
+	})}
+	req, _ := http.NewRequest("POST", "https://example.com", nil)
+	_, err := tr.RoundTrip(req)
+	if err == nil || !strings.HasSuffix(err.Error(), "\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") {
+		t.Fatalf("access key error = %v", err)
+	}
+	tr.accessKeyID = "akid"
+	_, err = tr.RoundTrip(req)
+	if err == nil || !strings.HasSuffix(err.Error(), "provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") {
+		t.Fatalf("secret error = %v", err)
+	}
+}

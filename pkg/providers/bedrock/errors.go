@@ -10,8 +10,8 @@ import (
 // bedrockErrorBody mirrors the TS SDK's AmazonBedrockErrorSchema:
 // { message: string, type?: string }.
 type bedrockErrorBody struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
+	Message *string `json:"message"`
+	Type    *string `json:"type"`
 }
 
 // bedrockAPIError parses a failed Bedrock HTTP response body and returns a
@@ -32,11 +32,13 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 	if message == "" {
 		message = string(body)
 	}
-	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != "" {
-		if parsed.Type != "" {
-			message = parsed.Type + ": " + parsed.Message
+	// TS: error.type == null ? error.message : `${error.type}: ${error.message}`;
+	// an empty string is a valid message or type.
+	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != nil {
+		if parsed.Type != nil {
+			message = *parsed.Type + ": " + *parsed.Message
 		} else {
-			message = parsed.Message
+			message = *parsed.Message
 		}
 	}
 	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", message, nil)
@@ -52,10 +54,10 @@ func bedrockAPIError(statusCode int, body []byte, headers map[string]string) *pr
 // endpoint, which uses the shared handler above).
 func bedrockConverseGenerateAPIError(statusCode int, body []byte, headers map[string]string) *providererrors.ProviderError {
 	var parsed bedrockErrorBody
-	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Message == "" {
+	if err := json.Unmarshal(body, &parsed); err != nil || parsed.Message == nil {
 		return bedrockAPIError(statusCode, body, headers)
 	}
-	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", parsed.Message, nil)
+	providerErr := providererrors.NewProviderError("amazon-bedrock", statusCode, "", *parsed.Message, nil)
 	providerErr.ResponseHeaders = headers
 	providerErr.ResponseBody = string(body)
 	return providerErr

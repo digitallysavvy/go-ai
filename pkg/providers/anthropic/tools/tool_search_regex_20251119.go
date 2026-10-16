@@ -67,7 +67,7 @@ func ToolSearchRegex20251119() types.Tool {
 				"maxLength":   200,
 			},
 			"limit": map[string]interface{}{
-				"type":        "integer",
+				"type":        "number",
 				"description": "Maximum number of tools to return. Optional.",
 			},
 		},

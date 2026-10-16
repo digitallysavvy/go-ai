@@ -145,12 +145,12 @@ func Computer20251124(args Computer20251124Args) types.Tool {
 	return types.Tool{
 		Name:            "anthropic.computer_20251124",
 		Description:     buildComputerDescription(args),
-		Parameters:      buildComputer20251124Schema(args.EnableZoom),
+		Parameters:      buildComputer20251124Schema(),
 		ProviderOptions: &computer20251124Opts{Args: args},
 	}
 }
 
-func buildComputer20251124Schema(enableZoom bool) map[string]interface{} {
+func buildComputer20251124Schema() map[string]interface{} {
 	// Build action enum
 	actions := []string{
 		string(ActionKey),
@@ -169,10 +169,8 @@ func buildComputer20251124Schema(enableZoom bool) map[string]interface{} {
 		string(ActionScroll),
 		string(ActionWait),
 		string(ActionScreenshot),
-	}
-
-	if enableZoom {
-		actions = append(actions, string(ActionZoom))
+		// TS's schema always lists zoom, whatever enableZoom says.
+		string(ActionZoom),
 	}
 
 	schema := map[string]interface{}{
@@ -206,7 +204,7 @@ func buildComputer20251124Schema(enableZoom bool) map[string]interface{} {
 				"description": "[x1, y1, x2, y2]: The coordinates defining the region to zoom into. x1, y1 is the top-left corner and x2, y2 is the bottom-right corner. Required for zoom action.",
 			},
 			"scroll_amount": map[string]interface{}{
-				"type":        "integer",
+				"type":        "number",
 				"description": "The number of 'clicks' to scroll. Required for scroll action.",
 			},
 			"scroll_direction": map[string]interface{}{

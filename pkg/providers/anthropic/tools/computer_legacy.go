@@ -65,8 +65,9 @@ func Computer20241022(args Computer20241022Args) types.Tool {
 // Computer20250124 creates a computer use tool that enables Claude to control computers
 // through mouse, keyboard, and screenshot capabilities.
 //
-// Supported actions: key, type, mouse_move, left_click, left_click_drag, right_click,
-// middle_click, double_click, screenshot, cursor_position.
+// Supported actions: key, hold_key, type, cursor_position, mouse_move, left_mouse_down,
+// left_mouse_up, left_click, left_click_drag, right_click, middle_click, double_click,
+// triple_click, scroll, wait, screenshot.
 //
 // Requires beta header: computer-use-2025-01-24 (injected automatically).
 //
@@ -81,9 +82,21 @@ func Computer20250124(args Computer20241022Args) types.Tool {
 	return types.Tool{
 		Name:            "anthropic.computer_20250124",
 		Description:     buildLegacyComputerDescription(args.DisplayWidthPx, args.DisplayHeightPx, args.DisplayNumber),
-		Parameters:      buildLegacyComputerSchema(),
+		Parameters:      buildComputer20250124Schema(),
 		ProviderOptions: &computer20241022Opts{Args: args, APIType: "computer_20250124"},
 	}
+}
+
+// buildComputer20250124Schema is TS's computer_20250124 input schema: the
+// 20251124 one without the zoom action and its region argument.
+func buildComputer20250124Schema() map[string]interface{} {
+	schema := buildComputer20251124Schema()
+	props := schema["properties"].(map[string]interface{})
+	delete(props, "region")
+	action := props["action"].(map[string]interface{})
+	enum := action["enum"].([]string)
+	action["enum"] = enum[:len(enum)-1] // zoom is last
+	return schema
 }
 
 func buildLegacyComputerSchema() map[string]interface{} {
@@ -101,8 +114,6 @@ func buildLegacyComputerSchema() map[string]interface{} {
 			"coordinate": map[string]interface{}{
 				"type":        "array",
 				"items":       map[string]interface{}{"type": "integer"},
-				"minItems":    2,
-				"maxItems":    2,
 				"description": "(x, y) pixel coordinate. Required for mouse actions.",
 			},
 			"text": map[string]interface{}{

@@ -36,6 +36,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -100,6 +102,14 @@ var _ provider.Provider = (*Provider)(nil)
 //
 // with location defaulting to "global" when unset.
 func New(cfg Config) (*Provider, error) {
+	// TS loads project/location from GOOGLE_VERTEX_PROJECT / GOOGLE_VERTEX_LOCATION
+	// when the options leave them out.
+	if cfg.Project == "" {
+		cfg.Project = os.Getenv("GOOGLE_VERTEX_PROJECT")
+	}
+	if cfg.Location == "" {
+		cfg.Location = os.Getenv("GOOGLE_VERTEX_LOCATION")
+	}
 	if cfg.Project == "" {
 		return nil, fmt.Errorf("Google Vertex project setting is missing. Pass it using the 'project' parameter or the GOOGLE_VERTEX_PROJECT environment variable.") //nolint:staticcheck // message matches the TS loadSetting error text
 	}
@@ -109,7 +119,8 @@ func New(cfg Config) (*Provider, error) {
 		location = "global"
 	}
 
-	baseURL := cfg.BaseURL
+	// TS withoutTrailingSlash(options.baseURL).
+	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = fmt.Sprintf(
 			"https://aiplatform.googleapis.com/v1/projects/%s/locations/%s/endpoints/openapi",
