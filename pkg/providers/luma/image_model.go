@@ -334,7 +334,10 @@ func (m *ImageModel) getEditingOptions(files []provider.ImageFile, mask *provide
 			}
 			identities[id] = append(identities[id], f.URL)
 		}
-		for id, imgs := range identities {
+		// TS validates in insertion order, so the first oversized identity
+		// is the one reported.
+		for _, id := range order {
+			imgs := identities[id]
 			if len(imgs) > 4 {
 				return nil, fmt.Errorf("Luma AI character supports up to 4 images per identity. Identity '%s' has %d images.", id, len(imgs)) //nolint:staticcheck // matches TS SDK's exact error text
 			}
