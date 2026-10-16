@@ -1039,3 +1039,13 @@ func TestOpenAICompatStream_EmptyFinishReasonCountsAsFinish(t *testing.T) {
 		t.Fatalf("want finish/other, got %+v", last)
 	}
 }
+
+// TS derives totalTokens as input + output; the wire total_tokens is optional.
+func TestOpenAICompatStream_TotalTokensIsInputPlusOutput(t *testing.T) {
+	stream := newTestStream("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n")
+	chunks := collectStreamChunks(t, stream)
+	last := chunks[len(chunks)-1]
+	if last.Usage == nil || last.Usage.TotalTokens == nil || *last.Usage.TotalTokens != 15 {
+		t.Fatalf("usage = %+v", last.Usage)
+	}
+}
