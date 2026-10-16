@@ -75,6 +75,12 @@ func extractOptions(providerOptions map[string]interface{}) *TranscriptionModelO
 func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOptions) (map[string]interface{}, []types.Warning) {
 	warnings := []types.Warning{}
 	aaiOpts := extractOptions(opts.ProviderOptions)
+	rawOpts := rawProviderOptions(opts.ProviderOptions)
+	setStr := func(dst map[string]interface{}, key string, path ...string) {
+		if v, ok := stringOpt(rawOpts, path...); ok {
+			dst[key] = v
+		}
+	}
 
 	body := map[string]interface{}{}
 
@@ -120,7 +126,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		setOptional(body, "audio_start_from", aaiOpts.AudioStartFrom)
 		setOptional(body, "auto_chapters", aaiOpts.AutoChapters)
 		setOptional(body, "auto_highlights", aaiOpts.AutoHighlights)
-		setOptionalString(body, "boost_param", aaiOpts.BoostParam)
+		setStr(body, "boost_param", "boostParam")
 		setOptional(body, "content_safety", aaiOpts.ContentSafety)
 		setOptional(body, "content_safety_confidence", aaiOpts.ContentSafetyConfidence)
 		if aaiOpts.CustomSpelling != nil {
@@ -134,41 +140,39 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		if aaiOpts.KeytermsPrompt != nil {
 			body["keyterms_prompt"] = aaiOpts.KeytermsPrompt
 		}
-		if aaiOpts.LanguageCode != "" {
-			body["language_code"] = aaiOpts.LanguageCode
-		}
+		setStr(body, "language_code", "languageCode")
 		setOptional(body, "language_confidence_threshold", aaiOpts.LanguageConfidenceThreshold)
 		setOptional(body, "language_detection", aaiOpts.LanguageDetection)
 		setOptional(body, "multichannel", aaiOpts.Multichannel)
-		setOptionalString(body, "prompt", aaiOpts.Prompt)
+		setStr(body, "prompt", "prompt")
 		setOptional(body, "punctuate", aaiOpts.Punctuate)
 		setOptional(body, "redact_pii", aaiOpts.RedactPii)
 		setOptional(body, "redact_pii_audio", aaiOpts.RedactPiiAudio)
-		setOptionalString(body, "redact_pii_audio_quality", aaiOpts.RedactPiiAudioQuality)
+		setStr(body, "redact_pii_audio_quality", "redactPiiAudioQuality")
 		if aaiOpts.RedactPiiPolicies != nil {
 			body["redact_pii_policies"] = aaiOpts.RedactPiiPolicies
 		}
 		setOptional(body, "redact_pii_return_unredacted", aaiOpts.RedactPiiReturnUnredacted)
-		setOptionalString(body, "redact_pii_sub", aaiOpts.RedactPiiSub)
+		setStr(body, "redact_pii_sub", "redactPiiSub")
 		if aaiOpts.RedactStaticEntities != nil {
 			body["redact_static_entities"] = aaiOpts.RedactStaticEntities
 		}
-		setOptionalString(body, "remove_audio_tags", aaiOpts.RemoveAudioTags)
+		setStr(body, "remove_audio_tags", "removeAudioTags")
 		setOptional(body, "sentiment_analysis", aaiOpts.SentimentAnalysis)
 		setOptional(body, "speaker_labels", aaiOpts.SpeakerLabels)
 		setOptional(body, "speakers_expected", aaiOpts.SpeakersExpected)
 		setOptional(body, "speech_threshold", aaiOpts.SpeechThreshold)
 		setOptional(body, "summarization", aaiOpts.Summarization)
-		setOptionalString(body, "summary_model", aaiOpts.SummaryModel)
-		setOptionalString(body, "summary_type", aaiOpts.SummaryType)
+		setStr(body, "summary_model", "summaryModel")
+		setStr(body, "summary_type", "summaryType")
 		setOptional(body, "temperature", aaiOpts.Temperature)
-		setOptionalString(body, "webhook_auth_header_name", aaiOpts.WebhookAuthHeaderName)
-		setOptionalString(body, "webhook_auth_header_value", aaiOpts.WebhookAuthHeaderValue)
-		setOptionalString(body, "webhook_url", aaiOpts.WebhookUrl)
+		setStr(body, "webhook_auth_header_name", "webhookAuthHeaderName")
+		setStr(body, "webhook_auth_header_value", "webhookAuthHeaderValue")
+		setStr(body, "webhook_url", "webhookUrl")
 		if aaiOpts.WordBoost != nil {
 			body["word_boost"] = aaiOpts.WordBoost
 		}
-		setOptionalString(body, "domain", aaiOpts.Domain)
+		setStr(body, "domain", "domain")
 
 		if aaiOpts.SpeakerOptions != nil {
 			speakerOptions := map[string]interface{}{}
@@ -182,7 +186,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 			if aaiOpts.LanguageDetectionOptions.ExpectedLanguages != nil {
 				ldo["expected_languages"] = aaiOpts.LanguageDetectionOptions.ExpectedLanguages
 			}
-			setOptionalString(ldo, "fallback_language", aaiOpts.LanguageDetectionOptions.FallbackLanguage)
+			setStr(ldo, "fallback_language", "languageDetectionOptions", "fallbackLanguage")
 			setOptional(ldo, "code_switching", aaiOpts.LanguageDetectionOptions.CodeSwitching)
 			setOptional(ldo, "code_switching_confidence_threshold", aaiOpts.LanguageDetectionOptions.CodeSwitchingConfidenceThreshold)
 			body["language_detection_options"] = ldo
@@ -191,7 +195,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		if aaiOpts.RedactPiiAudioOptions != nil {
 			rpao := map[string]interface{}{}
 			setOptional(rpao, "return_redacted_no_speech_audio", aaiOpts.RedactPiiAudioOptions.ReturnRedactedNoSpeechAudio)
-			setOptionalString(rpao, "override_audio_redaction_method", aaiOpts.RedactPiiAudioOptions.OverrideAudioRedactionMethod)
+			setStr(rpao, "override_audio_redaction_method", "redactPiiAudioOptions", "overrideAudioRedactionMethod")
 			body["redact_pii_audio_options"] = rpao
 		}
 
@@ -199,7 +203,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		if aaiOpts.WordBoost != nil {
 			deprecatedBoostOptions = append(deprecatedBoostOptions, "wordBoost")
 		}
-		if aaiOpts.BoostParam != "" {
+		if _, ok := stringOpt(rawOpts, "boostParam"); ok {
 			deprecatedBoostOptions = append(deprecatedBoostOptions, "boostParam")
 		}
 		if len(deprecatedBoostOptions) > 0 {
@@ -232,7 +236,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 			})
 		}
 		languageDetectionEnabled := aaiOpts.LanguageDetection != nil && *aaiOpts.LanguageDetection
-		if aaiOpts.LanguageCode != "" && languageDetectionEnabled {
+		if _, ok := stringOpt(rawOpts, "languageCode"); ok && languageDetectionEnabled {
 			warnings = append(warnings, types.Warning{
 				Type:    "other",
 				Message: "'languageDetection' cannot be combined with an explicit 'languageCode'; AssemblyAI rejects requests that set both.",
@@ -243,15 +247,38 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 	return body, warnings
 }
 
+// rawProviderOptions returns the untyped "assemblyai" options so string
+// options set to "" (kept by TS `?? undefined`) can be told apart from absent.
+func rawProviderOptions(providerOptions map[string]interface{}) map[string]interface{} {
+	raw, _ := providerOptions["assemblyai"].(map[string]interface{})
+	if raw == nil {
+		if v, ok := providerOptions["assemblyai"]; ok && v != nil {
+			b, err := json.Marshal(v)
+			if err == nil {
+				_ = json.Unmarshal(b, &raw)
+			}
+		}
+	}
+	return raw
+}
+
+// stringOpt reports the string at raw[path...] and whether it is present.
+func stringOpt(raw map[string]interface{}, path ...string) (string, bool) {
+	var cur interface{} = raw
+	for _, k := range path {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return "", false
+		}
+		cur = m[k]
+	}
+	s, ok := cur.(string)
+	return s, ok
+}
+
 func setOptional[T any](body map[string]interface{}, key string, value *T) {
 	if value != nil {
 		body[key] = *value
-	}
-}
-
-func setOptionalString(body map[string]interface{}, key, value string) {
-	if value != "" {
-		body[key] = value
 	}
 }
 
