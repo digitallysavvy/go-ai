@@ -27,6 +27,31 @@ type prodiaJobResponse struct {
 	Metrics   *prodiaMetrics   `json:"metrics,omitempty"`
 	Price     *prodiaPrice     `json:"price,omitempty"`
 	ImageURL  string           `json:"imageUrl,omitempty"` // legacy field
+
+	// createdAtSet / updatedAtSet record that the wire carried the key (even
+	// as ""): TS spreads `created_at != null`, so an empty string is kept.
+	createdAtSet bool
+	updatedAtSet bool
+}
+
+// UnmarshalJSON decodes the job metadata and notes which optional string
+// fields were present.
+func (j *prodiaJobResponse) UnmarshalJSON(data []byte) error {
+	type plain prodiaJobResponse
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(data, &keys)
+	isString := func(key string) bool {
+		raw, ok := keys[key]
+		return ok && len(raw) > 0 && raw[0] == '"'
+	}
+	p.createdAtSet = isString("created_at")
+	p.updatedAtSet = isString("updated_at")
+	*j = prodiaJobResponse(p)
+	return nil
 }
 
 // prodiaJobState is the state object returned by the Prodia API.
@@ -56,6 +81,13 @@ type prodiaPrice struct {
 // It extracts the "job" JSON metadata part and the "output" binary data part.
 // Returns the job metadata, output bytes, output MIME type, and any error.
 func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse, []byte, string, error) {
+	return parseMultipartResponseFor(contentType, body, "video/")
+}
+
+// parseMultipartResponseFor is parseMultipartResponse with the media type
+// prefix that identifies an unnamed output part: TS accepts "video/" parts in
+// the video model's handler and "image/" parts in the image model's.
+func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix string) (*prodiaJobResponse, []byte, string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("failed to parse response Content-Type %q: %w", contentType, err)
@@ -113,7 +145,7 @@ func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse
 			// Fallback: treat any part whose Content-Type starts with "video/" as output.
 			if outputData == nil && partCT != "" {
 				if mt, _, err2 := mime.ParseMediaType(partCT); err2 == nil {
-					if len(mt) >= 6 && mt[:6] == "video/" {
+					if strings.HasPrefix(mt, fallbackPrefix) {
 						outputData = partData
 						outputMIME = mt
 					}
@@ -151,10 +183,10 @@ func buildProdiaProviderMetadata(job *prodiaJobResponse) map[string]interface{} 
 			m["iterationsPerSecond"] = *job.Metrics.IPS
 		}
 	}
-	if job.CreatedAt != "" {
+	if job.CreatedAt != "" || job.createdAtSet {
 		m["createdAt"] = job.CreatedAt
 	}
-	if job.UpdatedAt != "" {
+	if job.UpdatedAt != "" || job.updatedAtSet {
 		m["updatedAt"] = job.UpdatedAt
 	}
 	if job.Price != nil && job.Price.Dollars != nil {

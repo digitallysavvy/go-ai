@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -144,9 +142,15 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	contentType := resp.Headers.Get("Content-Type")
-	jobResp, imageData, mimeType, err := parseMultipartResponse(contentType, resp.Body)
+	jobResp, imageData, mimeType, err := parseMultipartResponseFor(contentType, resp.Body, "image/")
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse prodia response: %w", err)
+	}
+
+	// TS: 'Prodia multipart response missing output image'. The legacy imageUrl
+	// field is the only other source of the image.
+	if len(imageData) == 0 && jobResp.ImageURL == "" {
+		return nil, fmt.Errorf("Prodia multipart response missing output image") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 
 	if mimeType == "" {
@@ -171,10 +175,6 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	return result, nil
 }
 
-// jsNumberRe is a decimal JS Number() literal (surrounding whitespace is
-// trimmed first).
-var jsNumberRe = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$`)
-
 // parseProdiaSize mirrors TS getArgs: size.split('x'), both parts non-empty
 // and Number() finite; anything else is an invalid size. Zero, negative and
 // fractional values are not invalid there.
@@ -184,12 +184,8 @@ func parseProdiaSize(size string) (width, height float64, ok bool) {
 		return 0, 0, false
 	}
 	num := func(s string) (float64, bool) {
-		s = strings.TrimSpace(s)
-		if !jsNumberRe.MatchString(s) {
-			return 0, false
-		}
-		f, err := strconv.ParseFloat(s, 64)
-		return f, err == nil && !math.IsInf(f, 0)
+		f, ok := providerutils.JSNumber(s)
+		return f, ok && !math.IsInf(f, 0)
 	}
 	w, wok := num(parts[0])
 	h, hok := num(parts[1])
