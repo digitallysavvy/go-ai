@@ -3,7 +3,6 @@ package ai
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -15,11 +14,16 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
-// newCallID generates a short random hex string for correlating start/finish events.
+// newCallID generates the call ID that correlates start/finish events: "call-"
+// plus 24 random alphanumerics, the TS createIdGenerator({prefix: 'call',
+// size: 24}) default every AI SDK operation uses for callId.
 func newCallID() string {
-	b := make([]byte, 8)
+	b := make([]byte, 24)
 	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	for i := range b {
+		b[i] = defaultIDAlphabet[int(b[i])%len(defaultIDAlphabet)]
+	}
+	return "call-" + string(b)
 }
 
 func warningsOrEmpty(warnings []types.Warning) []types.Warning {

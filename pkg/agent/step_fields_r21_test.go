@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -98,7 +99,7 @@ func TestLegacyLoopToolExecutionErrorHasNoStepPrefix(t *testing.T) {
 }
 
 // Multiple reasoning parts concatenate with no separator (TS asReasoningText
-// joins with '').
+// joins with ”).
 func TestLegacyLoopReasoningTextConcatenatesWithoutSeparator(t *testing.T) {
 	model := &mockLanguageModel{responses: []types.GenerateResult{{
 		Text: "hi",
@@ -115,5 +116,11 @@ func TestLegacyLoopReasoningTextConcatenatesWithoutSeparator(t *testing.T) {
 	}
 	if got := res.Steps[0].ReasoningText; got != "ab" {
 		t.Fatalf("ReasoningText = %q, want %q", got, "ab")
+	}
+}
+
+func TestNewTelemetryCallIDShape(t *testing.T) {
+	if id := newTelemetryCallID(); !regexp.MustCompile(`^call-[0-9A-Za-z]{24}$`).MatchString(id) {
+		t.Fatalf("newTelemetryCallID() = %q", id)
 	}
 }
