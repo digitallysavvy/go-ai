@@ -169,3 +169,35 @@ func TestRunPrompt_PendingApprovalWinsOverAllowDecision(t *testing.T) {
 		t.Fatalf("approval-request chunks = %d, want 1", n)
 	}
 }
+
+// After a built-in approval is settled the runtime executes the tool and emits
+// its tool-result; only the replayed tool-call and approval-request are
+// skipped (TS settledBuiltinApprovalReplay), the result reaches the consumer.
+func TestRunPrompt_BuiltinApprovalContinuationKeepsToolResult(t *testing.T) {
+	yes := true
+	mock := newMockHarness(mockHarnessOptions{
+		continueScript: func(submit func(string, interface{})) []StreamPart {
+			stop := FinishReason{Unified: FinishReasonStop}
+			return []StreamPart{
+				&ToolCallPart{ToolCallID: "c1", ToolName: "bash", Input: `{}`, ProviderExecuted: true, Dynamic: true},
+				&ToolApprovalRequestPart{ApprovalID: "a1", ToolCallID: "c1"},
+				&ToolResultPart{ToolCallID: "c1", ToolName: "bash", Result: "ran"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Mode: "continue", SandboxSession: testSandbox(),
+		PendingToolApprovals:      []PendingToolApproval{{ApprovalID: "a1", ToolCallID: "c1", ToolName: "bash", Input: `{}`, Kind: PendingToolApprovalBuiltin, ProviderExecuted: &yes}},
+		ToolApprovalContinuations: []types.ToolApprovalResponseContent{{ApprovalID: "a1", ToolCallID: "c1", Approved: true}},
+	})
+	chunks := drainRunPrompt(t, out)
+	if n := len(chunksOfType(chunks, provider.ChunkTypeToolCall)); n != 0 {
+		t.Fatalf("replayed tool-call chunks = %d, want 0", n)
+	}
+	results := chunksOfType(chunks, provider.ChunkTypeToolResult)
+	if len(results) != 1 || results[0].ToolResult.Result != "ran" {
+		t.Fatalf("tool-result chunks = %+v, want the executed tool's result", results)
+	}
+}

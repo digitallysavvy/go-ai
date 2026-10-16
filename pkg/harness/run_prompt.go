@@ -1032,8 +1032,17 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 
 		display := StripWorkDir(part, d.in.SessionWorkDir)
 
-		if id, hasID := toolCallIDOf(display); hasID && isReplayable(display) && d.isSettled(id) {
-			continue
+		// TS: a settled host call replays as tool-call, tool-result and
+		// approval-request; a settled built-in approval only as tool-call and
+		// approval-request (the runtime's real tool-result must come through).
+		if id, hasID := toolCallIDOf(display); hasID && isReplayable(display) {
+			if _, isResult := display.(*ToolResultPart); isResult {
+				if d.isSettledHost(id) {
+					continue
+				}
+			} else if d.isSettled(id) {
+				continue
+			}
 		}
 
 		if fs, isFinishStep := display.(*FinishStepPart); isFinishStep {
@@ -1277,6 +1286,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			}
 		}
 	}
+}
+
+func (d *turnDriver) isSettledHost(id string) bool {
+	_, ok := d.settledHostIDs[id]
+	return ok
 }
 
 func (d *turnDriver) isSettled(id string) bool {
@@ -2505,7 +2519,7 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 	d.suspendedOutcomes = nil
 	d.execMu.Unlock()
 	for _, tr := range outcomes {
-		if d.isSettled(tr.ToolCallID) {
+		if d.isSettledHost(tr.ToolCallID) {
 			continue
 		}
 		display, _ := StripWorkDir(tr, d.in.SessionWorkDir).(*ToolResultPart)
