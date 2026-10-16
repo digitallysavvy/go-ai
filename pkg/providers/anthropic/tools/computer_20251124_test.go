@@ -145,3 +145,36 @@ func TestComputer20251124_AllActions(t *testing.T) {
 
 	assert.ElementsMatch(t, expectedActions, actionEnum)
 }
+
+func TestComputer20250124_SchemaMatchesTS(t *testing.T) {
+	tool := Computer20250124(Computer20241022Args{DisplayWidthPx: 1, DisplayHeightPx: 1})
+	props := tool.Parameters.(map[string]interface{})["properties"].(map[string]interface{})
+	enum := props["action"].(map[string]interface{})["enum"].([]string)
+	assert.Contains(t, enum, "scroll")
+	assert.Contains(t, enum, "hold_key")
+	assert.NotContains(t, enum, "zoom")
+	assert.Len(t, enum, 16)
+	assert.NotContains(t, props, "region")
+	assert.Contains(t, props, "duration")
+	assert.Contains(t, props, "scroll_direction")
+	// 20251124 keeps zoom (the shared builder must not be mutated)
+	tool2 := Computer20251124(Computer20251124Args{DisplayWidthPx: 1, DisplayHeightPx: 1})
+	enum2 := tool2.Parameters.(map[string]interface{})["properties"].(map[string]interface{})["action"].(map[string]interface{})["enum"].([]string)
+	assert.Contains(t, enum2, "zoom")
+}
+
+func TestComputerToolset20260801_SchemaAndEmptyConfigs(t *testing.T) {
+	tool := ComputerToolset20260801(ComputerToolset20260801Config{Configs: map[ComputerToolset20260801Member]ComputerToolset20260801MemberConfig{}})
+	props := tool.Parameters.(map[string]interface{})["properties"].(map[string]interface{})
+	enum := props["action"].(map[string]interface{})["enum"].([]string)
+	assert.Equal(t, "screenshot", enum[0])
+	assert.Len(t, enum, 17)
+	assert.Contains(t, props, "repeat")
+	assert.Contains(t, props, "region")
+	m := tool.ProviderOptions.(*computerToolset20260801Opts).ToAnthropicAPIMap()
+	_, ok := m["configs"]
+	assert.True(t, ok, "TS emits configs:{} when configs is {}")
+	m = ComputerToolset20260801(ComputerToolset20260801Config{}).ProviderOptions.(*computerToolset20260801Opts).ToAnthropicAPIMap()
+	_, ok = m["configs"]
+	assert.False(t, ok)
+}

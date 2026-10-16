@@ -63,7 +63,7 @@ func (o *computerToolset20260801Opts) ToAnthropicAPIMap() map[string]interface{}
 	m := map[string]interface{}{
 		"type": "computer_toolset_20260801",
 	}
-	if len(o.Config.Configs) > 0 {
+	if o.Config.Configs != nil {
 		configs := make(map[string]interface{}, len(o.Config.Configs))
 		for member, cfg := range o.Config.Configs {
 			entry := map[string]interface{}{}
@@ -100,16 +100,25 @@ func ComputerToolset20260801(config ComputerToolset20260801Config) types.Tool {
 	return types.Tool{
 		Name:        "anthropic.computer_toolset_20260801",
 		Description: "Computer use toolset (Anthropic, version 2026-08-01). Each member action is executed by the caller.",
-		Parameters: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"action": map[string]interface{}{
-					"type":        "string",
-					"description": "The member tool that Claude invoked.",
-				},
-			},
-			"required": []string{"action"},
-		},
+		Parameters:      buildComputerToolset20260801Schema(),
 		ProviderOptions: &computerToolset20260801Opts{Config: config},
 	}
+}
+
+// buildComputerToolset20260801Schema is TS's computerToolset_20260801 input
+// schema: the 20251124 properties plus repeat, with the toolset's member
+// order as the action enum.
+func buildComputerToolset20260801Schema() map[string]interface{} {
+	schema := buildComputer20251124Schema()
+	props := schema["properties"].(map[string]interface{})
+	props["action"].(map[string]interface{})["enum"] = []string{
+		"screenshot", "zoom", "left_click", "right_click", "middle_click", "double_click",
+		"triple_click", "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up",
+		"cursor_position", "scroll", "type", "key", "hold_key", "wait",
+	}
+	props["repeat"] = map[string]interface{}{
+		"type":        "integer",
+		"description": "Number of times to repeat the action.",
+	}
+	return schema
 }
