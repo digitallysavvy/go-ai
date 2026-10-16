@@ -303,18 +303,27 @@ func responseValidator(providerName string, validate func(body []byte) error) fu
 		if err == nil {
 			return nil
 		}
-		if _, ok := err.(*ChunkSchemaError); !ok {
-			err = nil // not JSON: ChunkParseFailure reports the parse failure
-		}
-		_, cause := ChunkParseFailure(string(body), err)
-		return &providererrors.ProviderError{
-			Provider:        providerName,
-			StatusCode:      statusCode,
-			Message:         InvalidJSONResponseMessage,
-			Cause:           cause,
-			ResponseHeaders: ExtractHeaders(headers),
-			ResponseBody:    string(body),
-		}
+		return InvalidJSONResponseError(providerName, statusCode, headers, body, err)
+	}
+}
+
+// InvalidJSONResponseError builds the failure of TS createJsonResponseHandler:
+// an APICallError "Invalid JSON response" carrying the response status,
+// headers and body, whose cause is the TypeValidationError for a schema
+// mismatch (cause is a *ChunkSchemaError) or the JSONParseError for text that
+// is not JSON (any other cause).
+func InvalidJSONResponseError(providerName string, statusCode int, headers http.Header, body []byte, cause error) error {
+	if _, ok := cause.(*ChunkSchemaError); !ok {
+		cause = nil // not JSON: ChunkParseFailure reports the parse failure
+	}
+	_, typed := ChunkParseFailure(string(body), cause)
+	return &providererrors.ProviderError{
+		Provider:        providerName,
+		StatusCode:      statusCode,
+		Message:         InvalidJSONResponseMessage,
+		Cause:           typed,
+		ResponseHeaders: ExtractHeaders(headers),
+		ResponseBody:    string(body),
 	}
 }
 

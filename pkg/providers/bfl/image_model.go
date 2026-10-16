@@ -84,8 +84,13 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	// TS: the response timestamp is taken before the request is sent.
+	startedAt := time.Now()
 	if len(opts.Files) > 10 {
 		return nil, fmt.Errorf("black forest labs supports up to 10 input images")
+	}
+	if err := validateBFLImageOptions(m.modelID, opts.ProviderOptions); err != nil {
+		return nil, err
 	}
 	var reqBody map[string]interface{}
 	var warnings []types.Warning
@@ -111,11 +116,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	// TS createJsonResponseHandler(bflSubmitSchema).
+	if err := validateBFLSubmitBody(resp.Body); err != nil {
+		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
+	}
 	var createResp bflCreateResponse
 	if err := json.Unmarshal(resp.Body, &createResp); err != nil {
-		return nil, fmt.Errorf("failed to decode create response: %w", err)
-	}
-	if err := validateBFLCreateResponse(createResp); err != nil {
 		return nil, fmt.Errorf("failed to decode create response: %w", err)
 	}
 
@@ -126,21 +132,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, err
 	}
 
-	return m.convertResponse(ctx, result, createResp, warnings, requestHeaders)
-}
-
-func validateBFLCreateResponse(resp bflCreateResponse) error {
-	if resp.ID == "" {
-		return fmt.Errorf("missing id")
-	}
-	if resp.PollingURL == "" {
-		return fmt.Errorf("missing polling_url")
-	}
-	parsed, err := url.Parse(resp.PollingURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("invalid polling_url")
-	}
-	return nil
+	return m.convertResponse(ctx, result, createResp, warnings, requestHeaders, startedAt)
 }
 
 func bflInternalRequest(method, path string, body interface{}, headers map[string]string) internalhttp.Request {
@@ -216,49 +208,6 @@ var flux3SupportedOptions = map[string]bool{
 	"resolution": true, "safetyTolerance": true, "version": true,
 }
 
-// validateFlux3Options mirrors blackForestLabsFlux3ImageModelOptionsSchema for
-// the options FLUX 3 sends. Invalid values fail before the request is submitted.
-func validateFlux3Options(raw map[string]interface{}) error {
-	invalid := func(msg string) error {
-		return fmt.Errorf("invalid blackForestLabs provider options: %s", msg)
-	}
-	if v, ok := raw["resolution"]; ok && v != nil {
-		str, _ := v.(string)
-		switch str {
-		case "768sq", "1k", "1.5k", "2k", "4k":
-		default:
-			return invalid("resolution must be one of 768sq, 1k, 1.5k, 2k, 4k")
-		}
-	}
-	if v, ok := raw["grounding"]; ok && v != nil {
-		if _, isBool := v.(bool); !isBool {
-			return invalid("grounding must be a boolean")
-		}
-	}
-	if v, ok := raw["version"]; ok && v != nil {
-		if str, _ := v.(string); str != "latest" {
-			return invalid(`version must be "latest"`)
-		}
-	}
-	if v, ok := raw["safetyTolerance"]; ok && v != nil {
-		var f float64
-		switch n := v.(type) {
-		case int:
-			f = float64(n)
-		case int64:
-			f = float64(n)
-		case float64:
-			f = n
-		default:
-			return invalid("safetyTolerance must be an integer between 0 and 4")
-		}
-		if f != float64(int64(f)) || f < 0 || f > 4 {
-			return invalid("safetyTolerance must be an integer between 0 and 4")
-		}
-	}
-	return nil
-}
-
 // bflImageOptionOrder is the key order of TS blackForestLabsImageProviderOptions.
 var bflImageOptionOrder = []string{
 	"resolution", "grounding", "version", "imagePrompt", "imagePromptStrength",
@@ -291,9 +240,6 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map
 	var raw map[string]interface{}
 	if opts.ProviderOptions != nil {
 		raw, _ = opts.ProviderOptions["blackForestLabs"].(map[string]interface{})
-	}
-	if err := validateFlux3Options(raw); err != nil {
-		return nil, nil, err
 	}
 
 	finalAspectRatio := opts.AspectRatio
@@ -504,6 +450,11 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 			return bflResult{}, err
 		}
 
+		// TS createJsonResponseHandler(bflPollSchema): an unknown status, a
+		// missing status/state or a malformed result is "Invalid JSON response".
+		if err := validateBFLPollBody(body); err != nil {
+			return bflResult{}, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, nil, body, err)
+		}
 		var result bflResult
 		if err := json.Unmarshal(body, &result); err != nil {
 			return bflResult{}, fmt.Errorf("failed to decode result: %w", err)
@@ -648,7 +599,7 @@ func bflTrustedURL(urlText, baseURL string) bool {
 	return host == "bfl.ai" || strings.HasSuffix(host, ".bfl.ai")
 }
 
-func (m *ImageModel) convertResponse(ctx context.Context, result bflResult, createResp bflCreateResponse, warnings []types.Warning, headers map[string]string) (*types.ImageResult, error) {
+func (m *ImageModel) convertResponse(ctx context.Context, result bflResult, createResp bflCreateResponse, warnings []types.Warning, headers map[string]string, startedAt time.Time) (*types.ImageResult, error) {
 	if result.Result.Sample == "" {
 		return nil, fmt.Errorf("no image URL in result")
 	}
@@ -668,7 +619,7 @@ func (m *ImageModel) convertResponse(ctx context.Context, result bflResult, crea
 		Warnings:         warnings,
 		ProviderMetadata: bflProviderMetadata(createResp, result),
 		Response: &types.ResponseMetadata{
-			Timestamp: time.Now(),
+			Timestamp: startedAt,
 			ModelID:   m.modelID,
 			Headers:   responseHeaders,
 		},
