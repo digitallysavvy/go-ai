@@ -1,9 +1,6 @@
 package tools
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -89,9 +86,5 @@ Use this tool to persist information that should survive across conversation ses
 				},
 			},
 		},
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("memory tool must be executed by the provider (Anthropic)")
-		},
-		ProviderExecuted: true,
 	}
 }

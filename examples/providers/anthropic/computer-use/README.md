@@ -60,7 +60,7 @@ computerTool := tools.Computer20251124(tools.Computer20251124Args{
 
 ## Important Notes
 
-- This tool is executed by the Anthropic API, not locally
+- This tool runs on your machine, not on Anthropic's servers: the model's tool calls are returned to you. Install your own executor with `tools.WithExecute(tool, fn)`
 - Requires Claude Opus 4.5 or compatible model
 - Image results are automatically handled by the API
 - Use `MaxSteps` to allow multiple tool calls in sequence

@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -56,14 +55,10 @@ func (o *computer20241022Opts) ToAnthropicAPIMap() map[string]interface{} {
 //	})
 func Computer20241022(args Computer20241022Args) types.Tool {
 	return types.Tool{
-		Name:        "anthropic.computer_20241022",
-		Description: buildLegacyComputerDescription(args.DisplayWidthPx, args.DisplayHeightPx, args.DisplayNumber),
-		Parameters:  buildLegacyComputerSchema(),
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("computer tool must be executed by the provider (Anthropic)")
-		},
-		ProviderExecuted: true,
-		ProviderOptions:  &computer20241022Opts{Args: args, APIType: "computer_20241022"},
+		Name:            "anthropic.computer_20241022",
+		Description:     buildLegacyComputerDescription(args.DisplayWidthPx, args.DisplayHeightPx, args.DisplayNumber),
+		Parameters:      buildLegacyComputerSchema(),
+		ProviderOptions: &computer20241022Opts{Args: args, APIType: "computer_20241022"},
 	}
 }
 
@@ -84,14 +79,10 @@ func Computer20241022(args Computer20241022Args) types.Tool {
 //	})
 func Computer20250124(args Computer20241022Args) types.Tool {
 	return types.Tool{
-		Name:        "anthropic.computer_20250124",
-		Description: buildLegacyComputerDescription(args.DisplayWidthPx, args.DisplayHeightPx, args.DisplayNumber),
-		Parameters:  buildLegacyComputerSchema(),
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("computer tool must be executed by the provider (Anthropic)")
-		},
-		ProviderExecuted: true,
-		ProviderOptions:  &computer20241022Opts{Args: args, APIType: "computer_20250124"},
+		Name:            "anthropic.computer_20250124",
+		Description:     buildLegacyComputerDescription(args.DisplayWidthPx, args.DisplayHeightPx, args.DisplayNumber),
+		Parameters:      buildLegacyComputerSchema(),
+		ProviderOptions: &computer20241022Opts{Args: args, APIType: "computer_20250124"},
 	}
 }
 

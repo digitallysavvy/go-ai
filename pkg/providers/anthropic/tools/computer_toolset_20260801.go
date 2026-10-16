@@ -1,9 +1,6 @@
 package tools
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -102,7 +99,7 @@ func (o *computerToolset20260801Opts) ToAnthropicAPIMap() map[string]interface{}
 func ComputerToolset20260801(config ComputerToolset20260801Config) types.Tool {
 	return types.Tool{
 		Name:        "anthropic.computer_toolset_20260801",
-		Description: "Computer use toolset (Anthropic, version 2026-08-01). Each member action is executed by Anthropic's servers.",
+		Description: "Computer use toolset (Anthropic, version 2026-08-01). Each member action is executed by the caller.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -113,10 +110,6 @@ func ComputerToolset20260801(config ComputerToolset20260801Config) types.Tool {
 			},
 			"required": []string{"action"},
 		},
-		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("computer_toolset_20260801 is executed by the Anthropic provider, not locally")
-		},
-		ProviderExecuted: true,
-		ProviderOptions:  &computerToolset20260801Opts{Config: config},
+		ProviderOptions: &computerToolset20260801Opts{Config: config},
 	}
 }
