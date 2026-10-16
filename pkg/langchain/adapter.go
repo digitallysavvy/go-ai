@@ -2269,7 +2269,7 @@ func isNonWebURL(raw string) bool {
 	}
 	for i, r := range scheme {
 		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
-		if !isAlpha && (i == 0 || !((r >= '0' && r <= '9') || r == '+' || r == '-' || r == '.')) {
+		if !isAlpha && (i == 0 || ((r < '0' || r > '9') && r != '+' && r != '-' && r != '.')) {
 			return false
 		}
 	}

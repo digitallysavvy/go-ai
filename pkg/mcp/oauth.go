@@ -518,7 +518,8 @@ func oauthURLHref(u *url.URL) string {
 	if strings.Contains(host, ":") {
 		host = "[" + host + "]"
 	}
-	if port := c.Port(); port != "" && !((strings.ToLower(c.Scheme) == "http" && port == "80") || (strings.ToLower(c.Scheme) == "https" && port == "443")) {
+	scheme, port := strings.ToLower(c.Scheme), c.Port()
+	if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
 		host += ":" + port
 	}
 	c.Host = host

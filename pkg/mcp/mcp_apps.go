@@ -383,16 +383,18 @@ func decodeUTF8Lenient(b []byte) string {
 			need = 1
 		case lead >= 0xE0 && lead <= 0xEF:
 			need = 2
-			if lead == 0xE0 {
+			switch lead {
+			case 0xE0:
 				lower = 0xA0
-			} else if lead == 0xED {
+			case 0xED:
 				upper = 0x9F
 			}
 		case lead >= 0xF0 && lead <= 0xF4:
 			need = 3
-			if lead == 0xF0 {
+			switch lead {
+			case 0xF0:
 				lower = 0x90
-			} else if lead == 0xF4 {
+			case 0xF4:
 				upper = 0x8F
 			}
 		}
