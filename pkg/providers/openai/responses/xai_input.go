@@ -8,6 +8,7 @@ import (
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -87,13 +88,18 @@ func xaiPartString(options map[string]interface{}, metadata json.RawMessage, key
 	return "", false
 }
 
-func xaiImageDetail(options map[string]interface{}) string {
-	if opts, ok := options["xai"].(map[string]interface{}); ok {
-		if v, ok := opts["imageDetail"].(string); ok {
-			return v
-		}
+// xaiFilePartOptionsSchema mirrors TS xaiFilePartProviderOptions.
+var xaiFilePartOptionsSchema = providerutils.OptionSchema{"imageDetail": providerutils.OptEnum("low", "high", "auto")}
+
+// xaiImageDetail parses providerOptions.xai on an image part the way TS
+// parseProviderOptions does: an invalid imageDetail fails the call.
+func xaiImageDetail(options map[string]interface{}) (string, error) {
+	parsed, err := providerutils.ParseProviderOptions("xai", options, xaiFilePartOptionsSchema)
+	if err != nil {
+		return "", err
 	}
-	return ""
+	detail, _ := parsed["imageDetail"].(string)
+	return detail, nil
 }
 
 func convertXAIUserParts(msg types.Message) ([]interface{}, error) {
@@ -110,7 +116,11 @@ func convertXAIUserParts(msg types.Message) ([]interface{}, error) {
 			if imageURL == "" {
 				continue
 			}
-			parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: imageURL, Detail: xaiImageDetail(p.ProviderOptions)})
+			detail, err := xaiImageDetail(p.ProviderOptions)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, UserImageURLPart{Type: "input_image", ImageURL: imageURL, Detail: detail})
 		case types.FileContent:
 			item, err := convertXAIFilePart(p)
 			if err != nil {
@@ -171,7 +181,11 @@ func convertXAIFilePart(p types.FileContent) (interface{}, error) {
 			if imageURL == "" {
 				return nil, nil
 			}
-			return UserImageURLPart{Type: "input_image", ImageURL: imageURL, Detail: xaiImageDetail(p.ProviderOptions)}, nil
+			detail, err := xaiImageDetail(p.ProviderOptions)
+			if err != nil {
+				return nil, err
+			}
+			return UserImageURLPart{Type: "input_image", ImageURL: imageURL, Detail: detail}, nil
 		}
 		if fileDataType == types.FileDataTypeURL {
 			if fileURL == "" {

@@ -68,3 +68,27 @@ func TestConvert_CustomToolContentWarningText(t *testing.T) {
 		t.Fatalf("warnings = %+v", warnings)
 	}
 }
+
+// TS xaiFilePartProviderOptions rejects an invalid imageDetail.
+func TestConvertXAI_InvalidImageDetailRejected(t *testing.T) {
+	msg := types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.FileContent{
+		MediaType:       "image/png",
+		FileData:        types.FileData{Type: types.FileDataTypeURL, URL: "https://x/a.png"},
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"imageDetail": "ultra"}},
+	}}}
+	if _, _, err := ConvertPromptToXAIInput(types.Prompt{Messages: []types.Message{msg}}); err == nil {
+		t.Fatal("expected invalid imageDetail error")
+	}
+	msg.Content[0] = types.FileContent{
+		MediaType:       "image/png",
+		FileData:        types.FileData{Type: types.FileDataTypeURL, URL: "https://x/a.png"},
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{"imageDetail": "low"}},
+	}
+	input, _, err := ConvertPromptToXAIInput(types.Prompt{Messages: []types.Message{msg}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(input); got != `[{"role":"user","content":[{"type":"input_image","image_url":"https://x/a.png","detail":"low"}]}]` {
+		t.Fatalf("input = %s", got)
+	}
+}
