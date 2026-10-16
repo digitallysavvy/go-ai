@@ -6,10 +6,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // gmicloudErrorPayload documents the GMI Cloud API error shape:
@@ -81,7 +81,7 @@ func gmicloudCodeMatchesSchema(raw json.RawMessage) bool {
 // returns its message, or "" if details is empty, unparsable, or has no
 // non-empty message.
 func unwrapGmicloudDetailsMessage(details string) string {
-	if strings.TrimSpace(details) == "" {
+	if details == "" {
 		return ""
 	}
 	var inner struct {
@@ -93,7 +93,7 @@ func unwrapGmicloudDetailsMessage(details string) string {
 		return ""
 	}
 	// TS checks message.trim() !== '' but returns the message untrimmed.
-	if strings.TrimSpace(inner.Error.Message) == "" {
+	if providerutils.JSTrim(inner.Error.Message) == "" {
 		return ""
 	}
 	return inner.Error.Message
