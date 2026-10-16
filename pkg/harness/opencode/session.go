@@ -578,7 +578,9 @@ func (s *session) runCompactOperation(ctx context.Context, msg StartMessage) err
 	unsub = append(unsub, s.p.channel.On(harness.PartTypeError, func(e bridge.Event) {
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			if ep, ok := f.Part.(*harness.ErrorPart); ok {
-				settle(fmt.Errorf("%v", ep.Error))
+				// TS rejects with the raw error value; a wire object keeps its
+				// wire key order and typed errors keep their type.
+				settle(ep.AsError())
 				return
 			}
 		}

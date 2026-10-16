@@ -2,12 +2,16 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
 )
 
 // safeParseJSON rejects a __proto__ key: the store and the direct-access
@@ -57,5 +61,30 @@ func TestWriteAuthStoreHasNoHTMLEscapes(t *testing.T) {
 	want := "{\n  \"a\": {\n    \"e\": \"<x&y> \"\n  }\n}\n"
 	if string(data) != want {
 		t.Fatalf("got %q want %q", data, want)
+	}
+}
+
+// A compaction failure rejects with the raw bridge error value: a wire object
+// keeps its wire key order in the message text.
+func TestDoCompact_ErrorObjectKeepsWireKeyOrder(t *testing.T) {
+	const token = "compact-err-token"
+	srv := newServer(t, token, func(turn *bridgetest.Turn, _ map[string]any) {
+		turn.Emit(map[string]any{"type": "error", "error": json.RawMessage(`{"zeta":1,"alpha":2}`)})
+	})
+	sandbox := newFakeSandbox(srv)
+	h, err := CreateOpenCode(Settings{MintBridgeToken: func(string) string { return token }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "compact-err", SessionWorkDir: "/vercel/sandbox/compact-err", SandboxSession: sandbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	err = sess.DoCompact(context.Background(), "")
+	if err == nil || err.Error() != `{"zeta":1,"alpha":2}` {
+		t.Fatalf("err = %v", err)
 	}
 }
