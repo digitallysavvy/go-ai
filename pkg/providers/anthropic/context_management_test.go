@@ -728,3 +728,21 @@ func TestUsageIterations(t *testing.T) {
 func intPtr(i int) *int {
 	return &i
 }
+
+// TS sends exclude_tools whenever excludeTools is defined, including [].
+func TestWireContextManagement_EmptyExcludeToolsSent(t *testing.T) {
+	cm := &ContextManagement{Edits: []ContextManagementEdit{&ClearToolUsesEdit{Type: "clear_tool_uses_20250919", ExcludeTools: []string{}}}}
+	wire, err := wireContextManagement(cm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := wire["edits"].([]map[string]interface{})[0]
+	if v, ok := edit["exclude_tools"].([]string); !ok || len(v) != 0 {
+		t.Fatalf("exclude_tools = %#v, want empty slice", edit["exclude_tools"])
+	}
+	cm.Edits[0].(*ClearToolUsesEdit).ExcludeTools = nil
+	wire, _ = wireContextManagement(cm)
+	if _, ok := wire["edits"].([]map[string]interface{})[0]["exclude_tools"]; ok {
+		t.Fatal("nil ExcludeTools must be omitted")
+	}
+}

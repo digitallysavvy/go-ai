@@ -122,8 +122,16 @@ func TestEmbeddingModel_DoEmbed_ErrorPaths(t *testing.T) {
 func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 	t.Parallel()
 
-	t.Run("empty inputs", func(t *testing.T) {
-		p := New(Config{APIKey: "test-key"})
+	t.Run("empty inputs sends an empty batch like TS", func(t *testing.T) {
+		var gotPath string
+		var gotBody map[string]interface{}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_, _ = w.Write([]byte(`{"embeddings":[]}`))
+		}))
+		defer server.Close()
+		p := New(Config{APIKey: "test-key", BaseURL: server.URL})
 		m := NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding001)
 		res, err := m.DoEmbedMany(context.Background(), nil, nil)
 		if err != nil {
@@ -131,6 +139,13 @@ func TestEmbeddingModel_DoEmbedMany(t *testing.T) {
 		}
 		if len(res.Embeddings) != 0 {
 			t.Fatalf("expected empty embeddings, got %d", len(res.Embeddings))
+		}
+		if !strings.HasSuffix(gotPath, ":batchEmbedContents") {
+			t.Fatalf("path = %q, want batchEmbedContents", gotPath)
+		}
+		reqs, ok := gotBody["requests"].([]interface{})
+		if !ok || len(reqs) != 0 {
+			t.Fatalf("requests = %#v, want empty array", gotBody["requests"])
 		}
 	})
 

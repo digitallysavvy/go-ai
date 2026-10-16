@@ -88,7 +88,7 @@ func marshalClearToolUsesEdit(e *ClearToolUsesEdit) (map[string]interface{}, err
 		result["clearToolInputs"] = *e.ClearToolInputs
 	}
 
-	if len(e.ExcludeTools) > 0 {
+	if e.ExcludeTools != nil {
 		result["excludeTools"] = e.ExcludeTools
 	}
 

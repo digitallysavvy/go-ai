@@ -96,10 +96,10 @@ func validateLiveInputAudioFormat(format provider.AudioFormat) error {
 // options are set. Mirrors TS buildAudioTranscriptionConfig exactly.
 func buildAudioTranscriptionConfig(opts transcriptionModelOptions) map[string]interface{} {
 	config := map[string]interface{}{}
-	if len(opts.LanguageCodes) > 0 {
+	if opts.LanguageCodes != nil {
 		config["languageCodes"] = opts.LanguageCodes
 	}
-	if len(opts.CustomVocabulary) > 0 {
+	if opts.CustomVocabulary != nil {
 		config["customVocabulary"] = opts.CustomVocabulary
 	}
 	if opts.WordTimestamp != nil {
@@ -135,11 +135,13 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		}
 	}
 
+	transcriptionOpts, err := parseTranscriptionModelOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateLiveInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
-
-	transcriptionOpts := parseTranscriptionModelOptions(opts.ProviderOptions)
 
 	// Resolve the API key from the provider-level and per-call header maps
 	// separately, with the per-call value taking precedence, before merging
@@ -148,6 +150,10 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// whenever a per-call header overrides a differently-cased provider
 	// header (TS's combineHeaders is deterministic here because JS object
 	// spread preserves insertion order).
+	// TS getHeaders() loads the key first: a missing key is a LoadAPIKeyError.
+	if _, err := m.prov.apiKeyHeaders(); err != nil {
+		return nil, err
+	}
 	baseAPIKey, filteredBaseHeaders := extractGoogleAPIKeyHeader(m.baseTranscriptionHeaders())
 	callAPIKey, filteredCallHeaders := extractGoogleAPIKeyHeader(opts.Headers)
 	apiKey := baseAPIKey

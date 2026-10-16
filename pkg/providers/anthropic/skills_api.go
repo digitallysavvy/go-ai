@@ -56,6 +56,9 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 	if resp.StatusCode >= 400 {
 		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
 	}
+	if err := anthropicSchemaValidator(s.provider.Name(), zSkillResponse)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 
 	var out struct {
 		ID            string `json:"id"`
@@ -76,7 +79,9 @@ func (s *SkillsAPI) UploadSkill(ctx context.Context, opts types.UploadSkillOptio
 		// getFromApi call uses anthropicFailedResponseHandler, which throws on a
 		// non-2xx response, and uploadSkill does not catch it -- the error
 		// propagates to the caller rather than being silently ignored.
-		meta, err := s.fetchVersionMetadata(ctx, out.ID, out.LatestVersion, headers)
+		// TS getFromApi reuses the beta header set only; the multipart
+		// Content-Type belongs to the upload request.
+		meta, err := s.fetchVersionMetadata(ctx, out.ID, out.LatestVersion, map[string]string{"anthropic-beta": BetaHeaderSkills})
 		if err != nil {
 			return nil, err
 		}
@@ -126,6 +131,9 @@ func (s *SkillsAPI) fetchVersionMetadata(ctx context.Context, skillID, version s
 	// throws on any non-2xx response from this endpoint.
 	if resp.StatusCode >= 400 {
 		return nil, anthropicHTTPError(s.provider.Name(), resp.StatusCode, resp.Headers, resp.Body, nil)
+	}
+	if err := anthropicSchemaValidator(s.provider.Name(), zSkillVersionResponse)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 	var out struct {
 		Name        string `json:"name"`

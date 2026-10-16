@@ -248,7 +248,7 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	if opts.PresencePenalty != nil && !isGemini25DeveloperAPI {
 		genConfig["presencePenalty"] = *opts.PresencePenalty
 	}
-	if len(opts.StopSequences) > 0 {
+	if opts.StopSequences != nil {
 		genConfig["stopSequences"] = opts.StopSequences
 	}
 	if opts.Seed != nil {

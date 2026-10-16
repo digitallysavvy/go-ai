@@ -698,3 +698,46 @@ func errorsAs(err error, target **providererrors.InvalidArgumentError) bool {
 	*target = e
 	return true
 }
+
+// TS sends stop_sequences as given: an explicitly empty array is on the wire.
+func TestStopSequences_EmptyIsSentNilIsOmitted(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+	o := genOpts("hi", nil)
+	o.StopSequences = []string{}
+	body := model.buildRequestBody(o, false)
+	if v, ok := body["stop_sequences"].([]string); !ok || len(v) != 0 {
+		t.Fatalf("stop_sequences = %#v, want empty slice", body["stop_sequences"])
+	}
+	body = model.buildRequestBody(genOpts("hi", nil), false)
+	if _, ok := body["stop_sequences"]; ok {
+		t.Fatal("nil StopSequences must be omitted")
+	}
+}
+
+// TS anthropicLanguageModelOptions zod enums and required fields.
+func TestPerCall_ZodSchemaRejections(t *testing.T) {
+	prov := New(Config{APIKey: "test-key"})
+	model := NewLanguageModel(prov, ClaudeSonnet4_6, nil)
+	bad := map[string]map[string]interface{}{
+		"thinking display":        {"thinking": map[string]interface{}{"type": "adaptive", "display": "bogus"}},
+		"thinking without type":   {"thinking": map[string]interface{}{}},
+		"blockBinding behavior":   {"thinking": map[string]interface{}{"type": "adaptive", "blockBinding": map[string]interface{}{"prefixMismatchBehavior": "x"}}},
+		"cacheControl type":       {"cacheControl": map[string]interface{}{"type": "persistent"}},
+		"cacheControl ttl":        {"cacheControl": map[string]interface{}{"type": "ephemeral", "ttl": "2h"}},
+		"taskBudget remaining":    {"taskBudget": map[string]interface{}{"type": "tokens", "total": 20000, "remaining": -1}},
+		"fallback speed":          {"fallbacks": []interface{}{map[string]interface{}{"model": "m", "speed": "slow"}}},
+		"mcp server without name": {"mcpServers": []interface{}{map[string]interface{}{"type": "url", "url": "https://x"}}},
+		"anthropic skill no id":   {"container": map[string]interface{}{"skills": []interface{}{map[string]interface{}{"type": "anthropic"}}}},
+		"custom skill no ref":     {"container": map[string]interface{}{"skills": []interface{}{map[string]interface{}{"type": "custom"}}}},
+	}
+	for name, o := range bad {
+		if _, _, err := model.resolveCallOptions(genOpts("hi", map[string]interface{}{"anthropic": o})); err == nil {
+			t.Errorf("%s: expected an InvalidArgumentError", name)
+		}
+	}
+	ok := map[string]interface{}{"thinking": map[string]interface{}{"blockBinding": map[string]interface{}{"prefixMismatchBehavior": "drop_block"}}}
+	if _, _, err := model.resolveCallOptions(genOpts("hi", map[string]interface{}{"anthropic": ok})); err != nil {
+		t.Errorf("binding-only thinking must be accepted: %v", err)
+	}
+}

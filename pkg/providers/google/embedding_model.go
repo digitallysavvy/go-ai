@@ -240,12 +240,6 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
 func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts *provider.EmbedModelOptions) (*types.EmbeddingsResult, error) {
-	if len(inputs) == 0 {
-		return &types.EmbeddingsResult{
-			Embeddings: [][]float64{},
-			Usage:      types.EmbeddingUsage{},
-		}, nil
-	}
 	googleOpts, err := parseEmbeddingProviderOptions(opts)
 	if err != nil {
 		return nil, err
@@ -271,6 +265,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}, nil
 	}
 
+	if googleOpts.Content != nil && len(googleOpts.Content) != len(inputs) {
+		return nil, fmt.Errorf("The number of multimodal content entries (%d) must match the number of values (%d).", len(googleOpts.Content), len(inputs)) //nolint:staticcheck // matches TS SDK's exact error text
+	}
 	requests := make([]map[string]interface{}, 0, len(inputs))
 	for i, input := range inputs {
 		parts, err := embeddingPartsForValue(input, i, len(inputs), googleOpts)
@@ -301,7 +298,9 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	if err != nil {
 		return nil, m.handleError(err)
 	}
-	if len(response.Embeddings) != len(inputs) {
+	// TS sends an empty batch for zero values and returns whatever the API
+	// answers; only non-empty batches are checked for count alignment.
+	if len(inputs) > 0 && len(response.Embeddings) != len(inputs) {
 		return nil, fmt.Errorf("google embedding response count %d does not match input count %d", len(response.Embeddings), len(inputs))
 	}
 	embeddings := make([][]float64, len(response.Embeddings))

@@ -198,6 +198,31 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 			return fmt.Errorf("thinking.type: invalid value %q", o.Thinking.Type)
 		}
 	}
+	if o.Thinking != nil {
+		// zod: the second union branch (no type) requires blockBinding.
+		if o.Thinking.Type == "" && o.Thinking.BlockBinding == nil {
+			return fmt.Errorf("thinking: invalid input")
+		}
+		switch o.Thinking.Display {
+		case "", ThinkingDisplayOmitted, ThinkingDisplaySummarized, ThinkingDisplayUpdates:
+		default:
+			return fmt.Errorf("thinking.display: invalid value %q", o.Thinking.Display)
+		}
+		if bb := o.Thinking.BlockBinding; bb != nil && bb.PrefixMismatchBehavior != "error" && bb.PrefixMismatchBehavior != "drop_block" {
+			return fmt.Errorf("thinking.blockBinding.prefixMismatchBehavior: invalid value %q", bb.PrefixMismatchBehavior)
+		}
+	}
+	if cc := o.CacheControl; cc != nil {
+		if cc.Type != "ephemeral" {
+			return fmt.Errorf("cacheControl.type: invalid value %q", cc.Type)
+		}
+		if cc.TTL != "" && cc.TTL != "5m" && cc.TTL != "1h" {
+			return fmt.Errorf("cacheControl.ttl: invalid value %q", cc.TTL)
+		}
+	}
+	if o.TaskBudget != nil && o.TaskBudget.Remaining != nil && *o.TaskBudget.Remaining < 0 {
+		return fmt.Errorf("taskBudget.remaining: must be >= 0, got %d", *o.TaskBudget.Remaining)
+	}
 	if o.Effort != "" {
 		switch o.Effort {
 		case EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax:
@@ -245,17 +270,29 @@ func validateAnthropicCallOptions(o *ModelOptions) error {
 		if s.Type != "url" {
 			return fmt.Errorf("mcpServers[].type: invalid value %q", s.Type)
 		}
+		if s.Name == "" || s.URL == "" {
+			return fmt.Errorf("mcpServers[]: name and url are required")
+		}
 	}
 	if o.Container != nil {
 		for _, sk := range o.Container.Skills {
 			if sk.Type != "anthropic" && sk.Type != "custom" {
 				return fmt.Errorf("container.skills[].type: invalid value %q", sk.Type)
 			}
+			if sk.Type == "anthropic" && sk.SkillID == "" {
+				return fmt.Errorf("container.skills[].skillId: required")
+			}
+			if sk.Type == "custom" && sk.ProviderReference == nil {
+				return fmt.Errorf("container.skills[].providerReference: required")
+			}
 		}
 	}
 	for _, fb := range o.Fallbacks {
 		if fb.Model == "" {
 			return fmt.Errorf("fallbacks[].model: required")
+		}
+		if fb.Speed != "" && fb.Speed != SpeedFast && fb.Speed != SpeedStandard {
+			return fmt.Errorf("fallbacks[].speed: invalid value %q", fb.Speed)
 		}
 	}
 	return nil

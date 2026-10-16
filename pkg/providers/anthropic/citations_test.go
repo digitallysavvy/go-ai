@@ -401,6 +401,7 @@ func TestDoGenerate_WebFetchCitationDocument(t *testing.T) {
 							"type": "page_location",
 							"cited_text": "growth",
 							"document_index": 0,
+							"document_title": null,
 							"start_page_number": 1,
 							"end_page_number": 2
 						}

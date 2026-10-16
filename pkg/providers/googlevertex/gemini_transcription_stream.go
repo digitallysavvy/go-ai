@@ -93,11 +93,13 @@ func (m *GeminiTranscriptionModel) DoStream(ctx context.Context, opts *provider.
 		}
 	}
 
+	transcriptionOpts, err := parseVertexGeminiTranscriptionOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 	if err := validateLiveInputAudioFormat(opts.InputAudioFormat); err != nil {
 		return nil, err
 	}
-
-	transcriptionOpts := parseVertexGeminiTranscriptionOptions(opts.ProviderOptions)
 	audioConfig := buildVertexAudioTranscriptionConfig(transcriptionOpts)
 	if audioConfig == nil {
 		audioConfig = map[string]interface{}{}

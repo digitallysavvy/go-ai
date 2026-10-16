@@ -266,8 +266,9 @@ func TestTranscriptionModel_DoStream_RequiresAPIKey(t *testing.T) {
 		Audio:            newChanAudioStream(),
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
 	})
-	if err == nil || !strings.Contains(err.Error(), "API key is required for streaming transcription") {
-		t.Fatalf("err = %v, want a missing-API-key message", err)
+	var loadErr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &loadErr) {
+		t.Fatalf("err = %v, want LoadAPIKeyError (TS getHeaders loads the key first)", err)
 	}
 }
 

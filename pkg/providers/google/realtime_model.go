@@ -66,7 +66,10 @@ var (
 )
 
 func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts provider.ClientSecretOptions) (provider.ClientSecretResult, error) {
-	apiKey := m.googleRealtimeAPIKey()
+	apiKey, err := m.googleRealtimeAPIKey()
+	if err != nil {
+		return provider.ClientSecretResult{}, err
+	}
 	if apiKey == "" {
 		return provider.ClientSecretResult{}, fmt.Errorf("Google Generative AI API key is required for realtime token creation.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
@@ -123,12 +126,19 @@ func (m *GoogleRealtimeModel) DoCreateClientSecret(ctx context.Context, opts pro
 	}, nil
 }
 
-func (m *GoogleRealtimeModel) googleRealtimeAPIKey() string {
-	headers := map[string]string{"x-goog-api-key": m.provider.APIKey()}
-	for k, v := range m.provider.config.Headers {
+// googleRealtimeAPIKey mirrors TS `this.config.headers()['x-goog-api-key']`:
+// the provider's getHeaders loads the key (a missing key is a
+// LoadAPIKeyError), and a configured x-goog-api-key header wins.
+func (m *GoogleRealtimeModel) googleRealtimeAPIKey() (string, error) {
+	headers := m.provider.defaultHeaders()
+	extra, err := m.provider.apiKeyHeaders()
+	if err != nil {
+		return "", err
+	}
+	for k, v := range extra {
 		headers[k] = v
 	}
-	return headers["x-goog-api-key"]
+	return headers["x-goog-api-key"], nil
 }
 
 func (m *GoogleRealtimeModel) GetWebSocketConfig(token, wsURL string) provider.WebSocketConfig {

@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
@@ -110,6 +112,7 @@ func TestInteractionsEnvironmentAndBackgroundMatchTS(t *testing.T) {
 	agent, _ := p.InteractionsAgent("deep-research-pro-preview-12-2025")
 	model, _ := p.Interactions(ModelGemini25Flash)
 	env := map[string]interface{}{
+		"type": "remote",
 		"sources": []interface{}{
 			map[string]interface{}{"type": "inline", "content": "c", "target": "/a.txt"},
 			map[string]interface{}{"type": "gcs", "source": "gs://b/o"},
@@ -190,5 +193,73 @@ func TestInteractionsOrderedSchemaKeepsOrder(t *testing.T) {
 	}
 	if n := strings.Count(string(raw), `"properties":{"zeta":{"type":"string"},"alpha":{"type":"string"}}`); n != 2 {
 		t.Fatalf("property order kept %d times, want 2: %s", n, raw)
+	}
+}
+
+// TS parseProviderOptions: googleInteractionsLanguageModelOptions rejects bad
+// shapes with InvalidArgumentError, and getArgs only sends agent_config for
+// agents, built from the deep-research fields or {type: "dynamic"}.
+func TestInteractionsOptionValidationAndAgentConfigMatchTS(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	agent, _ := p.InteractionsAgent("deep-research-pro-preview-12-2025")
+	model, _ := p.Interactions(ModelGemini25Flash)
+	mk := func(g map[string]interface{}) *provider.GenerateOptions {
+		return &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}, ProviderOptions: map[string]interface{}{"google": g}}
+	}
+	bad := map[string]map[string]interface{}{
+		"store type":          {"store": "yes"},
+		"environment no type": {"environment": map[string]interface{}{"network": "disabled"}},
+		"responseFormat type": {"responseFormat": []interface{}{map[string]interface{}{"type": "bogus"}}},
+		"agentConfig no type": {"agentConfig": map[string]interface{}{"visualization": "auto"}},
+		"polling":             {"pollingTimeoutMs": 0},
+		"inline no target":    {"environment": map[string]interface{}{"type": "remote", "sources": []interface{}{map[string]interface{}{"type": "inline", "content": "c"}}}},
+	}
+	for name, g := range bad {
+		_, _, _, err := model.(*InteractionsLanguageModel).buildArgs(mk(g), false)
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) {
+			t.Errorf("%s: err = %v, want InvalidArgumentError", name, err)
+		}
+	}
+
+	cfg := map[string]interface{}{"agentConfig": map[string]interface{}{"type": "dynamic", "extra": 1}}
+	body, _, _, err := agent.(*InteractionsLanguageModel).buildArgs(mk(cfg), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(body.AgentConfig); string(b) != `{"type":"dynamic"}` {
+		t.Errorf("agent_config = %s", b)
+	}
+	body, _, _, err = model.(*InteractionsLanguageModel).buildArgs(mk(cfg), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.AgentConfig != nil {
+		t.Errorf("agent_config on a model call = %v, want omitted", body.AgentConfig)
+	}
+}
+
+// TS getArgs warning order: penalties, then tool warnings; function tools send
+// description ?? ” and provider tool args keep empty strings.
+func TestInteractionsWarningOrderAndToolShapeMatchTS(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	model, _ := p.Interactions(ModelGemini25Flash)
+	pen := 0.5
+	body, warnings, _, err := model.(*InteractionsLanguageModel).buildArgs(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "x"},
+		PresencePenalty: &pen,
+		Tools: []types.Tool{
+			{Type: types.ToolTypeFunction, Name: "f", Parameters: map[string]interface{}{"type": "object"}},
+			{Type: types.ToolTypeProviderDefined, ProviderID: "google.nope"},
+		},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 2 || warnings[0].Feature != "presencePenalty" || !strings.Contains(warnings[1].Feature, "google.nope") {
+		t.Fatalf("warnings = %#v", warnings)
+	}
+	if v, ok := body.Tools[0]["description"]; !ok || v != "" {
+		t.Fatalf("function tool = %#v, want description \"\"", body.Tools[0])
 	}
 }

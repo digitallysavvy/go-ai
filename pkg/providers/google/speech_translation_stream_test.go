@@ -108,8 +108,9 @@ func TestSpeechTranslationModel_DoStream_RequiresAPIKey(t *testing.T) {
 		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
 		TargetLanguage:   "es",
 	})
-	if err == nil || !strings.Contains(err.Error(), "API key is required for streaming translation") {
-		t.Fatalf("err = %v, want a missing-API-key message", err)
+	var loadErr *providererrors.LoadAPIKeyError
+	if !errors.As(err, &loadErr) {
+		t.Fatalf("err = %v, want LoadAPIKeyError (TS getHeaders loads the key first)", err)
 	}
 }
 
@@ -740,7 +741,7 @@ func TestSpeechTranslationModel_DoStream_HandshakeHeadersAndKey(t *testing.T) {
 	})
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, Headers: map[string]string{"Custom-Header": "custom-value"}})
+	p := New(Config{APIKey: "provider-key", BaseURL: srv.URL, Headers: map[string]string{"Custom-Header": "custom-value"}})
 	model := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")
 	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
 		Headers:          map[string]string{"X-Goog-Api-Key": "case-insensitive-key"},
@@ -810,5 +811,20 @@ func TestSpeechTranslationModel_DoStream_IncludesTurnsAfterAudioEndedEarly(t *te
 	}
 	if finals != 2 {
 		t.Fatalf("output-text-final parts = %d, want 2", finals)
+	}
+}
+
+func TestSpeechTranslationModel_DoStream_RejectsBadOptionTypes(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	m := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")
+	_, err := m.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+		ProviderOptions:  map[string]interface{}{"google": map[string]interface{}{"echoTargetLanguage": "yes"}},
+	})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) {
+		t.Fatalf("err = %v, want InvalidArgumentError", err)
 	}
 }

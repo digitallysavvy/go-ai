@@ -2,8 +2,11 @@ package anthropic
 
 import (
 	"encoding/json"
+	"net/http"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // This file ports anthropicChunkSchema (anthropic-api.ts), the zod schema TS
@@ -92,12 +95,9 @@ var (
 
 	zCodeExecOutputs = zOptional(zArray(typed("code_execution_output", f("file_id", zString))))
 
-	zContentBlockStart = zDisc(map[string]zodlite.Node{
-		"text":     typed("text", f("text", zString)),
-		"thinking": typed("thinking", f("thinking", zString)),
-		"tool_use": typed("tool_use",
-			f("id", zString), f("name", zString), f("input", zOptional(zRecord)),
-			f("caller", zOptional(zCaller)), f("toolset_name", zNullish(zString))),
+	// zSharedBlocks are the content block shapes that streaming
+	// content_block_start and the non-streaming response schema share.
+	zSharedBlocks = map[string]zodlite.Node{
 		"redacted_thinking": typed("redacted_thinking", f("data", zString)),
 		"compaction":        typed("compaction", f("content", zNullish(zString)), f("signature", zNullish(zString))),
 		"server_tool_use": typed("server_tool_use",
@@ -174,7 +174,25 @@ var (
 			}))),
 		"fallback": typed("fallback",
 			f("from", zObject(f("model", zString))), f("to", zObject(f("model", zString)))),
-	})
+	}
+
+	zContentBlockStart = zDisc(withBlocks(zSharedBlocks, map[string]zodlite.Node{
+		"text":     typed("text", f("text", zString)),
+		"thinking": typed("thinking", f("thinking", zString)),
+		"tool_use": typed("tool_use",
+			f("id", zString), f("name", zString), f("input", zOptional(zRecord)),
+			f("caller", zOptional(zCaller)), f("toolset_name", zNullish(zString))),
+	}))
+
+	// zResponseContent is the content block union of anthropicResponseSchema.
+	zResponseContent = zDisc(withBlocks(zSharedBlocks, map[string]zodlite.Node{
+		"text":     typed("text", f("text", zString), f("citations", zOptional(zNullable(zArray(zCitation))))),
+		"thinking": typed("thinking", f("thinking", zString), f("signature", zString)),
+		"tool_use": typed("tool_use",
+			f("id", zString), f("name", zString), f("input", zUnknown),
+			f("caller", zOptional(zCaller)), f("toolset_name", zNullish(zString))),
+		"container_upload": typed("container_upload", f("file_id", zString)),
+	}))
 
 	zContainerIDExpiry = zObject(f("expires_at", zString), f("id", zString))
 
@@ -249,6 +267,18 @@ var (
 	})
 )
 
+// withBlocks merges the shared block variants with the schema specific ones.
+func withBlocks(shared, own map[string]zodlite.Node) map[string]zodlite.Node {
+	out := make(map[string]zodlite.Node, len(shared)+len(own))
+	for k, v := range shared {
+		out[k] = v
+	}
+	for k, v := range own {
+		out[k] = v
+	}
+	return out
+}
+
 // anthropicChunkValidationMessage validates a JSON frame against
 // anthropicChunkSchema. It returns "" when the frame matches, otherwise the
 // TS TypeValidationError message.
@@ -270,3 +300,82 @@ func compactJSON(data string) string { return zodlite.CompactJSON(data) }
 // validationIssueText returns the issue list that follows "Error message: "
 // in a validation message, or the whole message when the marker is absent.
 func validationIssueText(message string) string { return zodlite.IssueText(message) }
+
+// zAnthropicResponse ports anthropicResponseSchema (anthropic-api.ts), the
+// zod schema TS createJsonResponseHandler applies to every non-streaming
+// Messages response.
+var zAnthropicResponse = zObject(
+	f("type", zLiteral("message")),
+	f("id", zNullish(zString)),
+	f("model", zNullish(zString)),
+	f("content", zArray(zResponseContent)),
+	f("stop_reason", zNullish(zString)),
+	f("stop_sequence", zNullish(zString)),
+	f("stop_details", zNullish(zStopDetails)),
+	f("input_transformations", zNullish(zArray(zInputTransformation))),
+	f("safeguard_results", zNullish(zArray(zSafeguardResult))),
+	f("usage", zObject(
+		f("input_tokens", zNumber),
+		f("output_tokens", zNumber),
+		f("output_tokens_details", zNullish(zObject(f("thinking_tokens", zNullish(zNumber))))),
+		f("cache_creation_input_tokens", zNullish(zNumber)),
+		f("cache_read_input_tokens", zNullish(zNumber)),
+		f("iterations", zNullish(zArray(zObject(
+			f("type", zIterationType), f("model", zNullish(zString)),
+			f("input_tokens", zNumber), f("output_tokens", zNumber),
+			f("cache_creation_input_tokens", zNullish(zNumber)), f("cache_read_input_tokens", zNullish(zNumber)))))),
+	)),
+	f("container", zNullish(zObject(
+		f("expires_at", zString), f("id", zString),
+		f("skills", zNullish(zArray(zObject(
+			f("type", zUnion(zLiteral("anthropic"), zLiteral("custom"))),
+			f("skill_id", zString), f("version", zString))))),
+	))),
+	f("context_management", zNullish(zObject(f("applied_edits", zArray(zAppliedEdit))))),
+)
+
+// anthropicResponseValidator is the Request.ValidateResponse hook: a body that
+// does not match anthropicResponseSchema is an APICallError "Invalid JSON
+// response" caused by the TypeValidationError (TS createJsonResponseHandler).
+func anthropicResponseValidator(providerName string) func(int, http.Header, []byte) error {
+	return anthropicSchemaValidator(providerName, zAnthropicResponse)
+}
+
+// anthropicSchemaValidator is anthropicResponseValidator for any schema.
+func anthropicSchemaValidator(providerName string, schema zodlite.Node) func(int, http.Header, []byte) error {
+	return func(statusCode int, headers http.Header, body []byte) error {
+		message := zodlite.ValidationMessage(schema, string(body))
+		if message == "" {
+			return nil
+		}
+		return &providererrors.ProviderError{
+			Provider:        providerName,
+			StatusCode:      statusCode,
+			Message:         "Invalid JSON response",
+			Cause:           providererrors.NewValidationErrorWithContext(compactJSON(string(body)), validationIssueText(message), nil, &providererrors.ValidationContext{}),
+			ResponseHeaders: providerutils.ExtractHeaders(headers),
+			ResponseBody:    string(body),
+		}
+	}
+}
+
+// zSkillResponse ports anthropicSkillResponseSchema and zSkillVersionResponse
+// anthropicSkillVersionResponseSchema (skills/anthropic-skills-api.ts).
+var (
+	zSkillResponse = zObject(
+		f("id", zString),
+		f("display_title", zNullish(zString)),
+		f("name", zNullish(zString)),
+		f("description", zNullish(zString)),
+		f("latest_version", zNullish(zString)),
+		f("source", zString),
+		f("created_at", zString),
+		f("updated_at", zString),
+	)
+	zSkillVersionResponse = zObject(
+		f("type", zString),
+		f("skill_id", zString),
+		f("name", zNullish(zString)),
+		f("description", zNullish(zString)),
+	)
+)

@@ -130,10 +130,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, err
 	}
 	internalReq := internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    m.messagesPath(false),
-		Body:    body,
-		Headers: headers,
+		Method:           http.MethodPost,
+		Path:             m.messagesPath(false),
+		Body:             body,
+		Headers:          headers,
+		ValidateResponse: anthropicResponseValidator(m.provider.Name()),
 	}
 	var response anthropicResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalReq, &response)
@@ -1176,6 +1177,9 @@ func (m *LanguageModel) handleError(err error) error {
 	var loadKeyErr *providererrors.LoadAPIKeyError
 	if errors.As(err, &loadKeyErr) {
 		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure, as is
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
