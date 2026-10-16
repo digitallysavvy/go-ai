@@ -518,12 +518,21 @@ func containsString(list []string, s string) bool {
 // video-synthesis endpoint and returns an opaque operation reference
 // (TS AlibabaVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	// TS buildRequest runs parseProviderOptions first; invalid options throw.
+	if err := validateVideoProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	req := m.buildRequest(&opts.VideoModelV3CallOptions)
 
-	headers := map[string]string{"X-DashScope-Async": "enable"}
+	// TS combineHeaders(config, options.headers, {X-DashScope-Async}): the
+	// async flag wins over caller headers.
+	headers := map[string]string{}
 	for k, v := range opts.Headers {
-		headers[k] = v
+		if !strings.EqualFold(k, "X-DashScope-Async") {
+			headers[k] = v
+		}
 	}
+	headers["X-DashScope-Async"] = "enable"
 
 	var createResp alibabaVideoCreateResponse
 	httpResp, err := m.prov.videoClient.DoJSONResponse(ctx, internalhttp.Request{
