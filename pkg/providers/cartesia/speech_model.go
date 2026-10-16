@@ -166,7 +166,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err
 	}
 	if opts.Voice == "" {
-		return nil, errors.New("cartesia: speech models require a `voice` to be set")
+		return nil, errors.New("Cartesia speech models require a `voice` to be set.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	currentDate := time.Now()
 

@@ -1,6 +1,7 @@
 package cartesia
 
 import (
+	"context"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -31,5 +32,13 @@ func TestR34_SpeechLanguageEmptyStringForwardedOnlyWhenPresent(t *testing.T) {
 	})
 	if _, ok := body["language"]; ok {
 		t.Errorf("null language must be absent: %#v", body["language"])
+	}
+}
+
+func TestR34_SpeechWithoutVoiceErrorTextMatchesTS(t *testing.T) {
+	m := &SpeechModel{modelID: "sonic-3"}
+	_, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hi"})
+	if err == nil || err.Error() != "Cartesia speech models require a `voice` to be set." {
+		t.Fatalf("err = %v", err)
 	}
 }
