@@ -84,6 +84,9 @@ Builds a `*StreamTextResult` from a stream you already have, instead of calling 
 | `OnFinish` | `func(result *StreamTextResult)` | OnFinish/OnEnd are invoked once, after src is fully consumed (whether it ended in success or with an error), mirroring StreamTextOptions' callbacks of the same name. OnEnd takes precedence when both are set. |
 | `OnEnd` | `func(result *StreamTextResult)` |  |
 | `Output` | `interface{}` | Output, when it satisfies the internal outputProcessor interface (any value returned by TextOutput/ObjectOutput/ArrayOutput/ChoiceOutput/ JSONOutput), enables structured-output parsing on the returned result: Output()/OutputErr() resolve once src is fully consumed by parsing the final step's accumulated text, and PartialOutput() updates after every text chunk of that step, deduplicated exactly like StreamTextOptions. Output. A value that does not satisfy outputProcessor is ignored (mirrors StreamTextOptions.Output's `interface{}` + type-assertion contract; see stream.go's own opts.Output handling for the pattern this mirrors). |
+| `RuntimeContext` | `interface{}` | RuntimeContext and ToolsContext are recorded on every step (TS DefaultStepResult `runtimeContext` / `toolsContext`). |
+| `ToolsContext` | `map[string]interface{}` |  |
+| `OnStep` | `func(step types.StepResult)` | OnStep is invoked on the consuming goroutine each time a step closes, after the step was appended to Steps(), with the same StepResult Steps() reports. A caller that must act on the finished step (callbacks, telemetry) can wait for it; it must not block on the result itself. |
 
 {/* /gen:fields */}
 

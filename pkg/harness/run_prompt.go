@@ -716,7 +716,13 @@ func (d *turnDriver) run() {
 	}
 
 	go func() {
-		<-control.Done()
+		select {
+		case <-control.Done():
+		case <-exited:
+			// The driver returned before the control settled (a pause for host
+			// input): nothing reads partsCh any more.
+			return
+		}
 		emitMu.Lock()
 		defer emitMu.Unlock()
 		if err := control.Err(); err != nil {
@@ -745,7 +751,7 @@ func (d *turnDriver) run() {
 		// A harness `error` part already logged itself ("harness stream
 		// error"); the caller's own cancellation is not a malfunction. Every
 		// other failure is "harness turn failed" (TS run-prompt.ts catch).
-		if !d.streamErrorLogged && !(d.ctx.Err() != nil && errors.Is(turnErr, d.ctx.Err())) {
+		if !d.streamErrorLogged && (d.ctx.Err() == nil || !errors.Is(turnErr, d.ctx.Err())) {
 			d.logError("harness turn failed", turnErr)
 		}
 		d.settleFailure(turnErr)

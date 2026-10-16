@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // erroringHarness builds a harness whose turn emits parts and then settles its
@@ -247,8 +248,8 @@ func TestAgent_PerCallCallbacksAreMergedWithSettings(t *testing.T) {
 		AgentGenerateOptions: agent.AgentGenerateOptions{
 			Prompt: "go", HarnessSession: session,
 			OnStart:      func(context.Context, ai.OnStartEvent) { note("call.start") },
-			OnStepFinish: func(context.Context, ai.OnStepFinishEvent) { note("call.stepFinish") },
-			OnFinish:     func(context.Context, ai.OnFinishEvent) { note("call.finish") },
+			OnStepFinish: func(context.Context, ai.OnStepFinishEvent) { note("call.stepFinish") }, //nolint:staticcheck // exercises the deprecated alias
+			OnFinish:     func(context.Context, ai.OnFinishEvent) { note("call.finish") },         //nolint:staticcheck // exercises the deprecated alias
 		},
 	})
 	if err != nil {
@@ -295,7 +296,7 @@ func TestAgent_GenerateResultUsageIsTheTotal(t *testing.T) {
 	if result.FinalStep.Usage.TotalTokens == nil || *result.FinalStep.Usage.TotalTokens != 5 {
 		t.Fatalf("final step usage = %v", result.FinalStep.Usage.TotalTokens)
 	}
-	if result.RawFinishReason != result.FinalStep.RawFinishReason || result.Response.ID != result.FinalStep.Response.ID {
+	if result.RawFinishReason != result.FinalStep.RawFinishReason || result.Response.ID != result.FinalStep.Response.ID { //nolint:staticcheck // checks the deprecated mirror
 		t.Fatalf("result does not mirror the final step: %+v", result)
 	}
 }
@@ -366,4 +367,12 @@ func TestRunPrompt_StepEndAndEndCallbacksCarryTheFullStep(t *testing.T) {
 	if endEvent.Response.ID != endEvent.CallID+"-1" || endEvent.Model.ModelID != "resolved" {
 		t.Fatalf("end response/model = %+v / %+v", endEvent.Response, endEvent.Model)
 	}
+}
+
+// TS wraps the trace tree write in try/catch: a throwing sink never breaks the turn.
+func TestTraceTreeReporter_PanickingWriteDoesNotEscape(t *testing.T) {
+	r := NewTraceTreeReporter(TraceTreeReporterOptions{Write: func(string) { panic("sink broke") }})
+	ctx := context.Background()
+	r.OnStart(ctx, telemetry.TelemetryStartEvent{CallID: "c"})
+	r.OnEnd(ctx, telemetry.TelemetryFinishEvent{CallID: "c"})
 }

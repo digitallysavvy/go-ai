@@ -384,16 +384,10 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 	d.telEnded = true
 	finalStep := steps[len(steps)-1]
 	var toolCalls []types.ToolCall
-	var toolResults []types.ToolResult
 	var files []types.GeneratedFileContent
-	var sources []types.SourceContent
-	var warnings []types.Warning
 	for _, st := range steps {
 		toolCalls = append(toolCalls, st.ToolCalls...)
-		toolResults = append(toolResults, st.ToolResults...)
 		files = append(files, st.Files...)
-		sources = append(sources, st.Sources...)
-		warnings = append(warnings, st.Warnings...)
 	}
 	if d.in.Callbacks.OnEnd != nil {
 		event := ai.OnFinishEvent{

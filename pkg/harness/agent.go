@@ -785,10 +785,10 @@ func (a *Agent) turnCallbacks(opts agent.AgentGenerateOptions, mode string) Call
 	}
 	c.OnStart = mergeCallbacks(c.OnStart, opts.OnStart)
 	c.OnStepStart = mergeCallbacks(c.OnStepStart, opts.OnStepStart)
-	c.OnToolExecutionStart = mergeCallbacks(c.OnToolExecutionStart, firstCallback(opts.OnToolExecutionStart, opts.OnToolCallStart))
-	c.OnToolExecutionEnd = mergeCallbacks(c.OnToolExecutionEnd, firstCallback(opts.OnToolExecutionEnd, opts.OnToolCallFinish))
-	c.OnStepEnd = mergeCallbacks(c.OnStepEnd, firstCallback(opts.OnStepEnd, opts.OnStepFinish))
-	c.OnEnd = mergeCallbacks(c.OnEnd, firstCallback(opts.OnEnd, opts.OnFinish))
+	c.OnToolExecutionStart = mergeCallbacks(c.OnToolExecutionStart, firstCallback(opts.OnToolExecutionStart, opts.OnToolCallStart)) //nolint:staticcheck // the call's deprecated alias still applies
+	c.OnToolExecutionEnd = mergeCallbacks(c.OnToolExecutionEnd, firstCallback(opts.OnToolExecutionEnd, opts.OnToolCallFinish))      //nolint:staticcheck // the call's deprecated alias still applies
+	c.OnStepEnd = mergeCallbacks(c.OnStepEnd, firstCallback(opts.OnStepEnd, opts.OnStepFinish))                                     //nolint:staticcheck // the call's deprecated alias still applies
+	c.OnEnd = mergeCallbacks(c.OnEnd, firstCallback(opts.OnEnd, opts.OnFinish))                                                     //nolint:staticcheck // the call's deprecated alias still applies
 	return c
 }
 
@@ -919,8 +919,8 @@ func streamResultToGenerateResult(r *ai.StreamTextResult) *ai.GenerateTextResult
 		Usage:            r.Usage(),
 		TotalUsage:       r.Usage(), //nolint:staticcheck
 		RawFinishReason:  finalStep.RawFinishReason,
-		Request:          finalStep.Request,
-		Response:         finalStep.Response,
+		Request:          finalStep.Request,          //nolint:staticcheck // mirrors TS HarnessGenerateTextResult.request
+		Response:         finalStep.Response,         //nolint:staticcheck // mirrors TS HarnessGenerateTextResult.response
 		ProviderMetadata: finalStep.ProviderMetadata, //nolint:staticcheck
 		Warnings:         r.Warnings(),
 		Sources:          r.Sources(),
