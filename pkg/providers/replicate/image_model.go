@@ -399,7 +399,7 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, prediction replica
 func (m *ImageModel) handlePollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		return providererrors.NewProviderError("replicate", dlErr.StatusCode, "", string(dlErr.Body), err)
+		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
 	return fmt.Errorf("failed to check status: %w", err)
 }

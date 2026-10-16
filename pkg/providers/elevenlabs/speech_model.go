@@ -93,7 +93,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, internalhttp.StatusProviderError("elevenlabs", resp.StatusCode, resp.Headers, resp.Body)
+		// TS elevenlabsFailedResponseHandler: {"error":{"message","code"}} or
+		// the HTTP status text.
+		return nil, handleTranscriptionError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 	}
 	requestBytes, err := json.Marshal(reqBody)
 	if err != nil {

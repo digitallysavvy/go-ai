@@ -451,18 +451,7 @@ func (m *TranscriptionModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Error struct {
-				Message string `json:"message"`
-				Code    int    `json:"code"`
-			} `json:"error"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
+		message, code := providerutils.NestedErrorMessage(statusErr.StatusCode, statusErr.Body)
 		providerErr := providererrors.NewProviderError("assemblyai", statusErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
 		providerErr.ResponseBody = string(statusErr.Body)
