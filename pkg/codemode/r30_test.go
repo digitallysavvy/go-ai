@@ -156,3 +156,23 @@ func TestR30StripNewTypeArgsFollowTheComparisonRule(t *testing.T) {
 		}
 	}
 }
+
+// ECMAScript whitespace other than space, tab and line breaks (no-break space,
+// form feed, the BOM, ideographic space) separates `import` from `(` like any
+// other whitespace, so the dynamic-import scan must see through it.
+func TestR30DynamicImportScanSeesThroughUnicodeWhitespace(t *testing.T) {
+	for _, src := range []string{
+		rt("await import<a0>('qjs:std');"),
+		rt("await import<3000>('qjs:std');"),
+		rt("await import<feff>('qjs:std');"),
+		rt("await import<c>('qjs:std');"),
+		rt("await import<2028>('qjs:std');"),
+	} {
+		if err := assertNoDynamicImport(src); err == nil {
+			t.Errorf("%q: dynamic import not detected", src)
+		}
+	}
+	if err := assertNoDynamicImport(rt("const <65e5><672c><8a9e>import = 1; return <65e5><672c><8a9e>import;")); err != nil {
+		t.Errorf("a name ending in import is not a dynamic import: %v", err)
+	}
+}
