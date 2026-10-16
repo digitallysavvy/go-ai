@@ -325,7 +325,9 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 		id := stringField(chunk, "toolCallId")
 		rememberToolMeta(toolMeta, id, stringField(chunk, "toolName"), stringField(chunk, "title"))
 		meta := toolMeta[id]
-		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
+		// TS statusForStreamChunk has no case for tool-input-error, so the
+		// status line is left alone (toolInputErrorMarker tells observeStatus).
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, Raw: toolInputErrorMarker{}, ToolResult: &types.ToolResult{
 			ToolCallID: id, ToolName: meta.name, Title: meta.title,
 			Input: mapField(chunk, "input"),
 			Error: errors.New(stringField(chunk, "errorText")),
@@ -395,6 +397,9 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 		return nil, false
 	}
 }
+
+// toolInputErrorMarker tags the chunk made from a tool-input-error UI chunk.
+type toolInputErrorMarker struct{}
 
 func rememberToolMeta(meta map[string]toolCallMeta, id, name, title string) {
 	if id == "" {

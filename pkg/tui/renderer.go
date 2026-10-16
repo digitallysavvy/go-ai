@@ -562,7 +562,9 @@ func (r *TerminalRenderer) observeStatus(chunk *provider.StreamChunk) {
 		r.pendingToolResults = false
 	case provider.ChunkTypeToolResult:
 		// A result that only asks for approval is not a tool output.
-		if chunk.ToolResult == nil || chunk.ToolResult.ApprovalStatus != types.ToolApprovalStatusUserApproval {
+		if _, inputErr := chunk.Raw.(toolInputErrorMarker); inputErr {
+			// TS tool-input-error does not change the status line.
+		} else if chunk.ToolResult == nil || chunk.ToolResult.ApprovalStatus != types.ToolApprovalStatusUserApproval {
 			next = processingToolResultsStatus
 			r.pendingToolResults = true
 		}

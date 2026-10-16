@@ -59,6 +59,11 @@ type WorkflowChatTransportOptions struct {
 	// MaxConsecutiveErrors bounds reconnect attempts. Streams that end without
 	// receiving any UI message chunks count as errors. Defaults to 3.
 	MaxConsecutiveErrors int
+	// MaxConsecutiveErrorsSet makes MaxConsecutiveErrors be used as given,
+	// including 0 (and negative values), matching TS `maxConsecutiveErrors ?? 3`
+	// where an explicit 0 fails on the first reconnect error. When false (the
+	// default) a value <= 0 means "unset" and becomes 3, as in earlier releases.
+	MaxConsecutiveErrorsSet bool
 	// InitialStartIndex is the default startIndex used by ReconnectToStream
 	// when it is called directly (not as part of a SendMessages recovery).
 	// Negative values are tail-relative (e.g. -10 reads the last 10 chunks),
@@ -99,7 +104,7 @@ func NewWorkflowChatTransport(opts WorkflowChatTransportOptions) *WorkflowChatTr
 		client = http.DefaultClient
 	}
 	maxErrs := opts.MaxConsecutiveErrors
-	if maxErrs <= 0 {
+	if maxErrs <= 0 && !opts.MaxConsecutiveErrorsSet {
 		maxErrs = 3
 	}
 	return &WorkflowChatTransport{

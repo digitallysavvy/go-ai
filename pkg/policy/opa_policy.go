@@ -61,9 +61,15 @@ func opaInput(approval types.ToolApprovalOptions, mapper func(types.ToolApproval
 	if messages == nil {
 		messages = []types.Message{}
 	}
+	// A nil map would encode as JSON null; TS passes the parsed input, which is
+	// {} for a tool called without arguments.
+	args := approval.ToolCall.Arguments
+	if args == nil {
+		args = map[string]interface{}{}
+	}
 	return DefaultOPAInput{
 		Tool:           map[string]string{"name": approval.ToolCall.ToolName},
-		Args:           approval.ToolCall.Arguments,
+		Args:           args,
 		Messages:       messages,
 		RuntimeContext: approval.RuntimeContext,
 	}
