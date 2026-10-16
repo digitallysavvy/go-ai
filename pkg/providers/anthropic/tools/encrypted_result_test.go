@@ -12,3 +12,12 @@ func TestUnmarshalCodeExecutionResult_Encrypted(t *testing.T) {
 		t.Fatalf("got %#v", r)
 	}
 }
+
+// TS createProviderExecutedToolFactory(supportsDeferredResults: true): the
+// core only tracks deferred results for tools declared this way.
+func TestCodeExecution20260120_ProviderExecutedDeferred(t *testing.T) {
+	tool := CodeExecution20260120()
+	if !tool.ProviderExecuted || !tool.SupportsDeferredResults {
+		t.Fatalf("ProviderExecuted=%v SupportsDeferredResults=%v", tool.ProviderExecuted, tool.SupportsDeferredResults)
+	}
+}
