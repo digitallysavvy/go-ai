@@ -334,6 +334,7 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 	}
 	depth := 1
 	contentSeen := false
+	sawExtends := false
 	var prev *tsToken
 	j := i + 1
 	for j < len(tokens) {
@@ -341,6 +342,9 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 		if t.kind != "punct" {
 			if t.kind != "space" && t.kind != "comment" {
 				contentSeen = true
+				if depth == 1 && t.kind == "ident" && t.text == "extends" {
+					sawExtends = true
+				}
 				// Two operands in a row (`a < b` newline `y = c > (d)`) are
 				// not a type list: a type cannot be followed by a bare name.
 				if depth == 1 && prev != nil && prev.text != "const" && typeOperandEnds(prev) && !typeContinuesAfterNewline(t) &&
@@ -400,6 +404,11 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 			j++
 		default:
 			if depth == 1 && angleDisallowedAtDepth0[t.text] {
+				return i, false
+			}
+			// A `?` directly inside the list is a conditional type's, which
+			// needs its `extends`; `a < b ? c : d > (e)` compares.
+			if depth == 1 && t.text == "?" && !sawExtends {
 				return i, false
 			}
 			contentSeen = true
@@ -750,14 +759,77 @@ func asiBreaksBefore(tokens []tsToken, j int) bool {
 	return false
 }
 
-// followsConditionalQuestion reports whether the last significant emitted
-// token is the `?` of a conditional expression.
-func followsConditionalQuestion(out []tsToken) bool {
+// inCaseLabel reports whether the emitted tokens end inside a `case` clause's
+// expression: a `case` before the end, at the same bracket level, with no `:`
+// or statement boundary in between. The `:` after such an expression closes
+// the label, so `case (x): y => 1` holds an arrow statement, not a return-typed
+// arrow.
+func inCaseLabel(out []tsToken) bool {
 	for i := len(out) - 1; i >= 0; i-- {
-		if out[i].kind == "space" || out[i].kind == "comment" {
+		t := out[i]
+		switch {
+		case t.kind == "ident" && t.text == "case":
+			return true
+		case t.kind != "punct":
 			continue
 		}
-		return out[i].kind == "punct" && out[i].text == "?"
+		switch t.text {
+		case ")", "]", "}":
+			depth := 1
+			for i--; i >= 0 && depth > 0; i-- {
+				if out[i].kind != "punct" {
+					continue
+				}
+				switch out[i].text {
+				case ")", "]", "}":
+					depth++
+				case "(", "[", "{":
+					depth--
+				}
+			}
+			i++
+		case "(", "[", "{", ";", ":":
+			return false
+		}
+	}
+	return false
+}
+
+// inConditionalTrueBranch reports whether the emitted tokens end inside the
+// true branch of a conditional expression: an unmatched `?` before the end,
+// at the same bracket level and within the same statement.
+func inConditionalTrueBranch(out []tsToken) bool {
+	pending := 0
+	for i := len(out) - 1; i >= 0; i-- {
+		t := out[i]
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case ")", "]", "}":
+			depth := 1
+			for i--; i >= 0 && depth > 0; i-- {
+				if out[i].kind != "punct" {
+					continue
+				}
+				switch out[i].text {
+				case ")", "]", "}":
+					depth++
+				case "(", "[", "{":
+					depth--
+				}
+			}
+			i++
+		case "(", "[", "{", ";":
+			return false
+		case ":":
+			pending++
+		case "?":
+			if pending == 0 {
+				return true
+			}
+			pending--
+		}
 	}
 	return false
 }

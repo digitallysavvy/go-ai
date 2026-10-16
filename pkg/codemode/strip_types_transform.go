@@ -84,7 +84,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 			switch t.text {
 			case "(":
 				closeIdx := matchParen(tokens, i)
-				if closeIdx >= 0 && !followsCallee(*out) && isArrowParamList(tokens, closeIdx) && (!followsConditionalQuestion(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) {
+				if closeIdx >= 0 && !inCaseLabel(*out) && isArrowParamList(tokens, closeIdx) && (!inConditionalTrueBranch(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) {
 					var err error
 					i, err = stripParamList(tokens, i, out, false)
 					if err != nil {
@@ -532,25 +532,6 @@ func endsExpression(out []tsToken) bool {
 			return false
 		}
 		return false
-	}
-	return false
-}
-
-// followsCallee reports whether a `(` that comes next opens call arguments: the
-// last emitted token is an identifier (other than a keyword that takes an
-// operand, and `async`, which makes `async (a) => b` an arrow), `)` or `]`. An
-// argument list is never an arrow's parameter list, so a `:` after it is the
-// `c ? f(x) : y => z` conditional, not a return type.
-func followsCallee(out []tsToken) bool {
-	last := lastSignificant(out)
-	if last == nil {
-		return false
-	}
-	switch last.kind {
-	case "ident":
-		return last.text != "async" && !isExpressionPrefixKeyword(last.text)
-	case "punct":
-		return last.text == "]" || (last.text == ")" && !closesControlHeader(out))
 	}
 	return false
 }
