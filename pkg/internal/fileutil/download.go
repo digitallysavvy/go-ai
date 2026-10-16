@@ -498,33 +498,37 @@ func decodeDataURL(raw string) ([]byte, error) {
 	}
 	decoded := percentDecode(payload)
 	if isBase64DataURLMeta(meta) {
-		compact := strings.Map(func(r rune) rune {
-			switch r {
-			case ' ', '\t', '\n', '\f', '\r':
-				return -1
-			}
-			return r
-		}, decoded)
-		// forgiving-base64 decode: up to two trailing "=" are dropped when
-		// the length is a multiple of 4; any other "=" or a length of 1 mod 4
-		// is a failure.
-		if len(compact)%4 == 0 {
-			if strings.HasSuffix(compact, "==") {
-				compact = compact[:len(compact)-2]
-			} else if strings.HasSuffix(compact, "=") {
-				compact = compact[:len(compact)-1]
-			}
-		}
-		if strings.Contains(compact, "=") || len(compact)%4 == 1 {
-			return nil, providererrors.NewDownloadError(raw, 0, "", "", base64.CorruptInputError(0))
-		}
-		data, err := base64.RawStdEncoding.DecodeString(compact)
+		data, err := DecodeForgivingBase64(decoded)
 		if err != nil {
 			return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
 		}
 		return data, nil
 	}
 	return []byte(decoded), nil
+}
+
+// DecodeForgivingBase64 is the WHATWG forgiving-base64 decode behind JS atob:
+// ASCII whitespace is ignored, up to two trailing "=" are dropped when the
+// length is a multiple of 4, and any other "=" or a length of 1 mod 4 fails.
+func DecodeForgivingBase64(s string) ([]byte, error) {
+	compact := strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\n', '\f', '\r':
+			return -1
+		}
+		return r
+	}, s)
+	if len(compact)%4 == 0 {
+		if strings.HasSuffix(compact, "==") {
+			compact = compact[:len(compact)-2]
+		} else if strings.HasSuffix(compact, "=") {
+			compact = compact[:len(compact)-1]
+		}
+	}
+	if strings.Contains(compact, "=") || len(compact)%4 == 1 {
+		return nil, base64.CorruptInputError(0)
+	}
+	return base64.RawStdEncoding.DecodeString(compact)
 }
 
 // percentDecode is the URL standard's percent-decode: each valid %XX becomes
