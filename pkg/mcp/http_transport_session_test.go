@@ -338,3 +338,33 @@ func TestHTTPTransportModernProtocolSkipsDeleteOnClose(t *testing.T) {
 		t.Fatalf("DELETE requests = %d, want 0 for the modern protocol era", len(sse.deleteRequests))
 	}
 }
+
+// TS builds the session DELETE with commonHeaders: the configured headers and
+// the bearer token go with it, or an authenticating server refuses to end the
+// session.
+func TestHTTPTransportSessionDeleteCarriesHeadersAndBearer(t *testing.T) {
+	sse := &sessionSSEClient{}
+	provider := newFakeOAuthProvider()
+	provider.tokens = &OAuthTokens{AccessToken: "tok-1"}
+	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
+		URL:              "http://localhost:9999/mcp",
+		SSEClient:        sse,
+		InitialSessionID: "session-abc",
+		Config:           TransportConfig{Headers: map[string]string{"x-api-key": "k1"}},
+		AuthProvider:     provider,
+	})
+	transport.connected = true
+
+	if err := transport.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+	sse.mu.Lock()
+	defer sse.mu.Unlock()
+	if len(sse.deleteRequests) != 1 {
+		t.Fatalf("DELETE requests = %d, want 1", len(sse.deleteRequests))
+	}
+	h := sse.deleteRequests[0].Header
+	if h.Get("x-api-key") != "k1" || h.Get("Authorization") != "Bearer tok-1" || h.Get("mcp-session-id") != "session-abc" {
+		t.Fatalf("DELETE headers = %v", h)
+	}
+}
