@@ -293,6 +293,13 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	if err != nil {
 		return OAuthProtectedResourceMetadata{}, err
 	}
+	var prmFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &prmFields); err != nil {
+		return OAuthProtectedResourceMetadata{}, err
+	}
+	if err := checkOAuthOptionalFields(prmFields, oauthPRMFieldRules); err != nil {
+		return OAuthProtectedResourceMetadata{}, fmt.Errorf("invalid OAuth protected resource metadata: %w", err)
+	}
 	var metadata OAuthProtectedResourceMetadata
 	if err := json.Unmarshal(rawBody, &metadata); err != nil {
 		return OAuthProtectedResourceMetadata{}, err
@@ -379,6 +386,17 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		resp.Body.Close() //nolint:errcheck
 		if bodyErr != nil {
 			return nil, bodyErr
+		}
+		var asFields map[string]json.RawMessage
+		if err := json.Unmarshal(rawBody, &asFields); err != nil {
+			return nil, err
+		}
+		typeRules := oauthASOAuthFieldRules
+		if candidate.Type == "oidc" {
+			typeRules = oauthASOIDCFieldRules
+		}
+		if err := checkOAuthOptionalFields(asFields, oauthASCommonFieldRules, typeRules); err != nil {
+			return nil, fmt.Errorf("invalid authorization server metadata: %w", err)
 		}
 		var metadata OAuthAuthorizationServerMetadata
 		if err := json.Unmarshal(rawBody, &metadata); err != nil {

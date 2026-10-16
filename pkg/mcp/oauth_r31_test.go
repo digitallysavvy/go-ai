@@ -95,3 +95,53 @@ func TestRegisterOAuthClientSendsOnlyContentType(t *testing.T) {
 		t.Fatalf("registration sent Accept %q; TS sends Content-Type only", accept)
 	}
 }
+
+// Zod validates every declared field of the PRM / AS metadata schemas; a
+// malformed optional field (or a JSON null, which .optional() rejects) fails
+// the whole parse.
+func TestOAuthMetadataSchemasRejectMalformedOptionalFields(t *testing.T) {
+	prm := func(extra string) error {
+		client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"resource":"https://mcp.example.com",`+extra+`}`), nil
+		})
+		_, err := DiscoverOAuthProtectedResourceMetadata(context.Background(), "https://mcp.example.com", OAuthDiscoveryOptions{HTTPClient: client})
+		return err
+	}
+	if err := prm(`"authorization_servers":["https://a.example.com"],"resource_name":"x"`); err != nil {
+		t.Fatalf("valid PRM: %v", err)
+	}
+	for _, bad := range []string{
+		`"jwks_uri":"not a url"`,
+		`"resource_policy_uri":5`,
+		`"resource_name":null`,
+		`"scopes_supported":null`,
+		`"bearer_methods_supported":[1]`,
+		`"dpop_bound_access_tokens_required":"yes"`,
+		`"authorization_servers":null`,
+	} {
+		if err := prm(bad); err == nil {
+			t.Errorf("PRM with %s was accepted", bad)
+		}
+	}
+
+	as := func(candidate, extra string) error {
+		client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"issuer":"https://auth.example.com","authorization_endpoint":"https://auth.example.com/a","token_endpoint":"https://auth.example.com/t","response_types_supported":["code"],"jwks_uri":"https://auth.example.com/j","subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],`+extra+`}`), nil
+		})
+		_, err := DiscoverAuthorizationServerMetadata(context.Background(), "https://auth.example.com", OAuthDiscoveryOptions{HTTPClient: client})
+		return err
+	}
+	if err := as("", `"scopes_supported":["a"]`); err != nil {
+		t.Fatalf("valid AS: %v", err)
+	}
+	for _, bad := range []string{
+		`"scopes_supported":null`,
+		`"grant_types_supported":"authorization_code"`,
+		`"token_endpoint_auth_signing_alg_values_supported":[1]`,
+		`"authorization_response_iss_parameter_supported":null`,
+	} {
+		if err := as("", bad); err == nil {
+			t.Errorf("AS metadata with %s was accepted", bad)
+		}
+	}
+}
