@@ -17,13 +17,17 @@ const (
 // no-break space and the other Unicode spaces).
 const jsSpaceClass = `[\s\x{000b}\x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
 
+// jsDot is JavaScript's `.` (no flags): it excludes every line terminator,
+// not only \n (RE2's `.` matches \r, U+2028 and U+2029).
+const jsDot = `[^\n\r\x{2028}\x{2029}]`
+
 var (
 	inlineCodePattern       = regexp.MustCompile("`([^`]+)`")
 	boldAsteriskPattern     = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
 	boldUnderscorePattern   = regexp.MustCompile(`__([^_\n]+)__`)
 	italicAsteriskPattern   = regexp.MustCompile(`\*([^*\n]+)\*`)
 	italicUnderscorePattern = regexp.MustCompile(`_([^_\n]+)_`)
-	unorderedListPattern    = regexp.MustCompile(`^(` + jsSpaceClass + `*)[-+*]` + jsSpaceClass + `+(.*)$`)
+	unorderedListPattern    = regexp.MustCompile(`^(` + jsSpaceClass + `*)[-+*]` + jsSpaceClass + `+(` + jsDot + `*)$`)
 	numberedListPattern     = regexp.MustCompile(`^(\d+)\. (.*)$`)
 )
 
