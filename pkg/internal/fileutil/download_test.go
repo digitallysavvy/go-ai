@@ -851,8 +851,16 @@ func TestDownloadDataURLFetchSemantics(t *testing.T) {
 		url, data, mediaType string
 	}{
 		{"data:text/plain,a+b%20c", "a+b c", "text/plain"},
-		{"data:,hi", "hi", "text/plain"},
+		// fetch gives an absent or unparseable type text/plain;charset=US-ASCII.
+		{"data:,hi", "hi", "text/plain;charset=US-ASCII"},
+		{"data:;base64,aGk=", "hi", "text/plain;charset=US-ASCII"},
+		{"data:foo,hi", "hi", "text/plain;charset=US-ASCII"},
+		{"data:/x,y", "y", "text/plain;charset=US-ASCII"},
 		{"data:;charset=utf-8,hi", "hi", "text/plain;charset=utf-8"},
+		{"data:TEXT/Plain;Charset=UTF-8,hi", "hi", "text/plain;charset=UTF-8"},
+		{"data:text/plain ; base64 ,aGk=", "hi", "text/plain"},
+		{`data:text/plain;charset="a b",x`, "x", `text/plain;charset="a b"`},
+		{`data:text/plain;a=b;a=c;d="",x`, "x", `text/plain;a=b;d=""`},
 		{"data:text/plain;charset=utf-8;base64,aGVs bG8", "hello", "text/plain;charset=utf-8"},
 		{"data:image/png;base64,AQI", "\x01\x02", "image/png"},
 	}
