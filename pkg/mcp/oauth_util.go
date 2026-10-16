@@ -47,16 +47,52 @@ func checkOAuthResourceAllowed(requestedResource, configuredResource string) (bo
 	if origin(requested) != origin(configured) {
 		return false, nil
 	}
-	if len(requested.Path) < len(configured.Path) {
+	requestedPath := normalizedURLPathname(requested)
+	configuredPath := normalizedURLPathname(configured)
+	if len(requestedPath) < len(configuredPath) {
 		return false, nil
 	}
-	requestedPath := requested.Path
 	if !strings.HasSuffix(requestedPath, "/") {
 		requestedPath += "/"
 	}
-	configuredPath := configured.Path
 	if !strings.HasSuffix(configuredPath, "/") {
 		configuredPath += "/"
 	}
 	return strings.HasPrefix(requestedPath, configuredPath), nil
+}
+
+// normalizedURLPathname mirrors the WHATWG URL `pathname` the TS check
+// compares: the still-percent-encoded path with "." / ".." segments
+// (including %2e forms) resolved, and "/" for an empty path. Comparing the
+// decoded, un-normalized Go Path would let "/api/../admin" or "/api%2f.."
+// appear to sit below "/api".
+func normalizedURLPathname(u *url.URL) string {
+	p := u.EscapedPath()
+	if p == "" {
+		return "/"
+	}
+	segments := strings.Split(p, "/")
+	out := make([]string, 0, len(segments))
+	for i, seg := range segments {
+		switch strings.ToLower(seg) {
+		case ".", "%2e":
+			if i == len(segments)-1 {
+				out = append(out, "")
+			}
+		case "..", ".%2e", "%2e.", "%2e%2e":
+			if len(out) > 1 {
+				out = out[:len(out)-1]
+			}
+			if i == len(segments)-1 {
+				out = append(out, "")
+			}
+		default:
+			out = append(out, seg)
+		}
+	}
+	res := strings.Join(out, "/")
+	if !strings.HasPrefix(res, "/") {
+		res = "/" + res
+	}
+	return res
 }
