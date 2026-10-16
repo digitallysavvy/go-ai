@@ -38,6 +38,34 @@ func consumeTypeExpr(tokens []tsToken, i int, stopAtBrace bool) int {
 //     it (`|`, `&`, `.`, `extends`, ...), because TypeScript ends a type
 //     there (`let x: number` newline `let y = 2`).
 func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
+	end, _ := consumeTypeExprScan(tokens, i, stopAtBrace, false)
+	return end
+}
+
+// splitAsType is consumeTypeExpr for the type after `as`/`satisfies`. When
+// the type's closing `>` is merged into a longer operator token (`y as
+// A<B>>1`, `>=`, `>>=`), TypeScript re-lexes it: the type ends inside the
+// token and the rest (`>1`, `=`) is an operator again. The token is replaced
+// by that rest so the caller keeps it; the rest of the token is blanked with
+// the type. It mutates tokens, so only a non-speculative caller may use it.
+func splitAsType(tokens []tsToken, i int) (int, bool) {
+	end, split := consumeTypeExprScan(tokens, i, false, true)
+	if split.idx >= 0 {
+		t := tokens[split.idx]
+		tokens[split.idx] = tsToken{kind: "punct", text: t.text[split.take:], pos: t.pos + split.take}
+		end = split.idx
+	}
+	unterminated := split.idx < 0 && typeSpanUnterminated(tokens[i:end])
+	for end > i && (tokens[end-1].kind == "space" || tokens[end-1].kind == "comment") {
+		end--
+	}
+	return end, unterminated
+}
+
+type typeSplit struct{ idx, take int }
+
+func consumeTypeExprScan(tokens []tsToken, i int, stopAtBrace, allowSplit bool) (int, typeSplit) {
+	noSplit := typeSplit{idx: -1}
 	depth := 0
 	cond := 0
 	operandStart := true
@@ -56,11 +84,11 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 			continue
 		}
 		if depth == 0 && sawNewline && prev != nil && typeOperandEnds(prev) && !typeContinuesAfterNewline(t) {
-			return i
+			return i, noSplit
 		}
 		sawNewline = false
 		if depth == 0 && prev != nil && typeOperandEnds(prev) && endsTypeBeforeOperator(t, prev, extendsOpen) {
-			return i
+			return i, noSplit
 		}
 		if depth == 0 && t.kind == "ident" && t.text == "extends" {
 			extendsOpen++
@@ -74,7 +102,7 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 				depth++
 			case ")", "]":
 				if depth == 0 {
-					return i
+					return i, noSplit
 				}
 				depth--
 				if depth == 0 && t.text == ")" && fnCandidate {
@@ -90,12 +118,12 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 				}
 			case "{":
 				if stopAtBrace && depth == 0 && !operandStart {
-					return i
+					return i, noSplit
 				}
 				depth++
 			case "}":
 				if depth == 0 {
-					return i
+					return i, noSplit
 				}
 				depth--
 			case "<":
@@ -107,16 +135,25 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 				if depth > 0 {
 					depth--
 				}
-			case ">>":
-				if depth >= 2 {
-					depth -= 2
-				} else {
-					depth = 0
-				}
-			case ">>>":
-				if depth >= 3 {
-					depth -= 3
-				} else {
+			case ">>", ">>>", ">=", ">>=", ">>>=":
+				if !allowSplit {
+					switch t.text {
+					case ">>":
+						depth = max(depth-2, 0)
+					case ">>>":
+						depth = max(depth-3, 0)
+					}
+				} else if depth > 0 {
+					k := len(t.text) - len(strings.TrimLeft(t.text, ">"))
+					if depth < k || (depth == k && k < len(t.text)) {
+						return i, typeSplit{idx: i, take: depth}
+					}
+					if depth == k {
+						depth = 0
+					} else {
+						depth -= k
+					}
+				} else if t.text == ">>" || t.text == ">>>" {
 					depth = 0
 				}
 			case "?":
@@ -129,13 +166,13 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 			case ":":
 				if depth == 0 {
 					if cond == 0 {
-						return i
+						return i, noSplit
 					}
 					cond--
 				}
 			case ";", ",", "=", "=>":
 				if depth == 0 {
-					return i
+					return i, noSplit
 				}
 			}
 		}
@@ -145,7 +182,7 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 		prev = &tokens[i]
 		i++
 	}
-	return i
+	return i, noSplit
 }
 
 // binaryOperatorTokens are the operators that can follow a complete type at
