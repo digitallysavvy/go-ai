@@ -19,7 +19,7 @@ func TestCompatStructuredOutputsDefaultsFalse(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(raw, &body)
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}]}`))
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}]}`))
 		}))
 		defer srv.Close()
 		p := New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: true, Name: "host", ChatProviderName: "host.chat", SupportsStructuredOutputs: structured})

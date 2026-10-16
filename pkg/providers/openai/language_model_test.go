@@ -257,6 +257,7 @@ func TestPromptCacheRetentionModels(t *testing.T) {
 					}{
 						{
 							Message: openAIMessage{
+								Role:    "assistant",
 								Content: "Response",
 							},
 							FinishReason: "stop",

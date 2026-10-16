@@ -21,6 +21,9 @@ import (
 func TestOtherProtocolsToolCallsKeepRawArguments(t *testing.T) {
 	const args = `{"zeta":1,"alpha":{"yy":1,"bb":2}}`
 	const escaped = `{\"zeta\":1,\"alpha\":{\"yy\":1,\"bb\":2}}`
+	// huggingfaceResponsesResponseSchema also requires error, instructions,
+	// max_output_tokens, metadata, tool_choice, tools, temperature and top_p.
+	huggingfaceBody := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","error":null,"instructions":null,"max_output_tokens":null,"metadata":null,"tool_choice":"auto","tools":[],"temperature":1,"top_p":1,"output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"t","arguments":"{\"zeta\":1,\"alpha\":{\"yy\":1,\"bb\":2}}","status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
 	responsesBody := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"t","arguments":"` + escaped + `","status":"completed"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
 	cohereBody := `{"id":"c","finish_reason":"TOOL_CALL","message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"t","arguments":"` + escaped + `"}}]},"usage":{"tokens":{"input_tokens":1,"output_tokens":1}}}`
 	ollamaBody := `{"id":"c","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"t","arguments":"` + escaped + `"}}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`
@@ -44,7 +47,7 @@ func TestOtherProtocolsToolCallsKeepRawArguments(t *testing.T) {
 		{"xai-responses", responsesBody, func(u string) provider.LanguageModel {
 			return lm(xai.New(xai.Config{APIKey: "k", BaseURL: u}).LanguageModel("grok-4"))
 		}},
-		{"huggingface", responsesBody, func(u string) provider.LanguageModel {
+		{"huggingface", huggingfaceBody, func(u string) provider.LanguageModel {
 			return lm(huggingface.New(huggingface.Config{APIKey: "k", BaseURL: u}).LanguageModel("m"))
 		}},
 		{"cohere", cohereBody, func(u string) provider.LanguageModel {

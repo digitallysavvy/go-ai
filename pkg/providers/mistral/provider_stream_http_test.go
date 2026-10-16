@@ -67,6 +67,7 @@ data: [DONE]
 				StatusCode: 200,
 				Header:     http.Header{"X-Request-Id": []string{"req1"}},
 				Body: io.NopCloser(strings.NewReader(`{
+					"object":"chat.completion",
 					"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"ok","tool_calls":[{"id":"tc1","type":"function","function":{"name":"lookup","arguments":"{\"x\":1}"}}]}}],
 					"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}
 				}`)),

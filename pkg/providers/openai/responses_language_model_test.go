@@ -20,12 +20,11 @@ import (
 
 // mockResponsesResponse returns a minimal valid Responses API response body.
 func mockResponsesResponse(id, text string) responses.ResponsesAPIResponse {
-	content, _ := json.Marshal(responses.AssistantMessageItem{
-		Type: "message",
-		Role: "assistant",
-		Content: []responses.AssistantMessageContent{
-			{Type: "output_text", Text: text},
-		},
+	// The wire shape TS openaiResponsesResponseSchema requires: message id and
+	// an annotations array on every output_text part.
+	content, _ := json.Marshal(map[string]interface{}{
+		"type": "message", "role": "assistant", "id": "msg_" + id,
+		"content": []interface{}{map[string]interface{}{"type": "output_text", "text": text, "annotations": []interface{}{}}},
 	})
 	return responses.ResponsesAPIResponse{
 		ID:     id,

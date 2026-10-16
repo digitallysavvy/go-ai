@@ -21,7 +21,7 @@ func TestChatCompatReadsProviderNamedOptions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 	p := New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: true, Name: "my-host", ChatProviderName: "my-host.chat"})
@@ -54,7 +54,7 @@ func TestChatCompatDoesNotConvertUnmodeledOptions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(raw, &body)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 	p := New(Config{APIKey: "k", BaseURL: srv.URL, OpenAICompatible: true, Name: "my-host", ChatProviderName: "my-host.chat"})
@@ -156,7 +156,7 @@ func TestChatUsageNullAndCompatAccounting(t *testing.T) {
 			_, _ = w.Write([]byte(body))
 		}))
 	}
-	noUsage := serve(`{"choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`)
+	noUsage := serve(`{"choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}]}`)
 	defer noUsage.Close()
 	m, _ := New(Config{APIKey: "k", BaseURL: noUsage.URL}).ChatModel("gpt-4o")
 	res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: chatTestPrompt()})
@@ -167,7 +167,7 @@ func TestChatUsageNullAndCompatAccounting(t *testing.T) {
 		t.Fatalf("usage = %+v, want null usage", res.Usage)
 	}
 
-	withUsage := serve(`{"choices":[{"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":20},"extra":1}}`)
+	withUsage := serve(`{"choices":[{"index":0,"message":{"role":"assistant","content":"x"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":10,"cache_write_tokens":20},"extra":1}}`)
 	defer withUsage.Close()
 	for _, compat := range []bool{false, true} {
 		cfg := Config{APIKey: "k", BaseURL: withUsage.URL}
