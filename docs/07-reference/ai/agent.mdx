@@ -157,6 +157,7 @@ These tables are generated from the `agent.AgentGenerateOptions` and `agent.Agen
 | `Include` | `*ai.IncludeOptions` |  |
 | `ToolApproval` | `types.ToolApprovalConfig` |  |
 | `Internal` | `*ai.InternalOptions` |  |
+| `Timeout` | `*ai.TimeoutConfig` | Timeout overrides AgentConfig.Timeout for this call (TS `timeout ?? preparedCall.timeout` in ToolLoopAgent.generate/stream). |
 | `ExperimentalSandbox` | `interface{}` |  |
 | `ExperimentalRefineToolInput` | `map[string]ai.ToolInputRefiner` |  |
 | `ExperimentalDownload` | `ai.DownloadFunction` |  |
