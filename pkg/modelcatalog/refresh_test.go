@@ -38,3 +38,14 @@ func TestConstNameFromModelID(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderModelIDsGoDisambiguatesCollidingConstNames(t *testing.T) {
+	src, err := RenderModelIDsGo("openai", "", []ModelID{{ID: "gpt-4.1"}, {ID: "gpt-4-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(src)
+	if strings.Count(out, "ModelGpt41 ") != 1 || !strings.Contains(out, "ModelGpt412 ") {
+		t.Fatalf("colliding constant names were not disambiguated:\n%s", out)
+	}
+}
