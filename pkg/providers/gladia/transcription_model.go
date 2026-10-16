@@ -286,7 +286,7 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		}
 		if time.Since(start) > pollTimeout {
 			// TS AISDKError TranscriptionJobPollingTimedOut.
-			return nil, nil, providererrors.NewProviderError("gladia", 0, "", "Transcription job polling timed out", nil)
+			return nil, nil, providererrors.NewProviderError("gladia", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
 		}
 
 		result, err := fileutil.DownloadWithMetadata(ctx, resultURL, pollOpts)

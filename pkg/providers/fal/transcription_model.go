@@ -21,7 +21,8 @@ import (
 // matching fal-transcription-model.ts's failedResponseHandler check.
 const falTranscriptionStillInProgress = "Request is still in progress"
 
-const falTranscriptionPollTimeout = 60 * time.Second
+// falTranscriptionPollTimeout is a var so in-package tests can shorten it.
+var falTranscriptionPollTimeout = 60 * time.Second
 
 // falTranscriptionPollInterval is a var (not const) so in-package tests can
 // speed it up; production code never reassigns it.
@@ -298,7 +299,7 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			if detail.Detail == falTranscriptionStillInProgress {
 				if time.Now().After(deadline) {
 					return nil, nil, nil, providererrors.NewProviderError(
-						m.Provider(), 0, "", "Transcription request timed out after 60 seconds", nil,
+						m.Provider(), 0, "TranscriptionRequestTimedOut", "Transcription request timed out after 60 seconds", nil,
 					)
 				}
 				select {

@@ -156,7 +156,7 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, he
 		}
 		if time.Since(start) > pollTimeout {
 			// TS AISDKError TranscriptionJobPollingTimedOut.
-			return nil, providererrors.NewProviderError("revai", 0, "", "Transcription job polling timed out", nil)
+			return nil, providererrors.NewProviderError("revai", 0, "TranscriptionJobPollingTimedOut", "Transcription job polling timed out", nil)
 		}
 
 		download, err := fileutil.DownloadWithMetadata(ctx, pollURL, pollOpts)
