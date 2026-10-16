@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -323,7 +322,7 @@ func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Cli
 		return nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := harnessutil.ReadBoundedResponse(resp.Body)
 	if err != nil {
 		return nil, err
 	}

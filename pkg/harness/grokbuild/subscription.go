@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -258,7 +257,7 @@ func discoverTokenEndpoint(ctx context.Context, issuer string, client *http.Clie
 		return "", err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	body, err := io.ReadAll(resp.Body)
+	body, err := harnessutil.ReadBoundedResponse(resp.Body)
 	if err != nil {
 		return "", err
 	}
