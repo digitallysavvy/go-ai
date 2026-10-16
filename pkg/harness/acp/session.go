@@ -97,6 +97,21 @@ func newSession(p sessionParams) *session {
 			s.mu.Unlock()
 		}
 	})
+	// Mirrors TS `markTurnFinished`: outside a resumed in-flight continuation
+	// (whose replayed events are consumed by wireTurn), a terminal event
+	// clears the in-flight flag even when no wireTurn is subscribed any more,
+	// e.g. a turn that settled early on a callback error and then finished on
+	// the bridge after its abort.
+	if !p.turnInFlight {
+		markTurnFinished := func() {
+			s.mu.Lock()
+			s.turnInFlight = false
+			s.mu.Unlock()
+		}
+		s.p.channel.On(harness.PartTypeFinish, func(bridge.Event) { markTurnFinished() })
+		s.p.channel.On(harness.PartTypeError, func(bridge.Event) { markTurnFinished() })
+		s.p.channel.OnClose(func(int, string) { markTurnFinished() })
+	}
 	return s
 }
 
