@@ -1146,6 +1146,15 @@ type prepareCallContext struct {
 	// win over a PrepareCall override.
 	toolCallConcurrency *int
 	callConcurrencySet  bool
+
+	// baseHeaders are the call's headers before the WorkflowAgent
+	// user-agent suffix: the hook sees and returns these, and the suffix is
+	// added after it (TS appends it to the merged settings).
+	baseHeaders map[string]string
+	// reapplyCall puts the per-call generation settings back over a
+	// PrepareCall result: TS merges `{...prepared, ...options}`, so a
+	// setting given on the call wins over prepareCall's.
+	reapplyCall func(*LanguageModelCallOptions)
 }
 
 // resolveInstructionChange decides which instructions a hook left behind. The
@@ -1246,7 +1255,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		opts := LanguageModelCallOptions{
 			StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
 			Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
-			Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
+			Headers: pctx.baseHeaders, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
 			RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
 			PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData,
 			StopWhen: pctx.stopWhen, ActiveTools: pctx.activeTools, ExperimentalDownload: pctx.download,
@@ -1284,6 +1293,9 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 					return failStep(err)
 				}
 				opts = mutated
+				if pctx.reapplyCall != nil {
+					pctx.reapplyCall(&opts)
+				}
 				if !pctx.callConcurrencySet {
 					if _, err := resolveToolCallConcurrency(opts.ToolCallConcurrency); err != nil {
 						st.mu.Unlock()
@@ -1318,7 +1330,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		}
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
-		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = opts.Headers, opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
+		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = version.WithUserAgentSuffix(opts.Headers, "ai-sdk-agent/workflow"), opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
 		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
 		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = withFinishReasonStop(opts.StopWhen), opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
 		if w.FilterActiveTools != nil {
@@ -1622,6 +1634,48 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		instructionMessages: instructionMessages,
 		toolCallConcurrency: hookToolCallConcurrency,
 		callConcurrencySet:  callConcurrencySet,
+		baseHeaders:         callMap(ovr.Headers, govr.Headers, w.Headers),
+		reapplyCall: func(o *LanguageModelCallOptions) {
+			if v := callSetting(ovr.Temperature, govr.Temperature); v != nil {
+				o.Temperature = v
+			}
+			if v := callSetting(ovr.MaxTokens, govr.MaxTokens); v != nil {
+				o.MaxTokens = v
+			}
+			if v := callSetting(ovr.TopP, govr.TopP); v != nil {
+				o.TopP = v
+			}
+			if v := callSetting(ovr.TopK, govr.TopK); v != nil {
+				o.TopK = v
+			}
+			if v := callSetting(ovr.FrequencyPenalty, govr.FrequencyPenalty); v != nil {
+				o.FrequencyPenalty = v
+			}
+			if v := callSetting(ovr.PresencePenalty, govr.PresencePenalty); v != nil {
+				o.PresencePenalty = v
+			}
+			if v := callSlice(ovr.StopSequences, govr.StopSequences); v != nil {
+				o.StopSequences = v
+			}
+			if v := callSetting(ovr.Seed, govr.Seed); v != nil {
+				o.Seed = v
+			}
+			if v := callSetting(ovr.MaxRetries, govr.MaxRetries); v != nil {
+				o.MaxRetries = v
+			}
+			if v := callSetting(ovr.Timeout, govr.Timeout); v != nil {
+				o.Timeout = v
+			}
+			if v := callSetting(ovr.Reasoning, govr.Reasoning); v != nil {
+				o.Reasoning = v
+			}
+			if v := callMap(ovr.Headers, govr.Headers); v != nil {
+				o.Headers = v
+			}
+			if v := callMap(ovr.ProviderOptions, govr.ProviderOptions); v != nil {
+				o.ProviderOptions = v
+			}
+		},
 	}
 	var stepAdapter func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions
 	if streaming {

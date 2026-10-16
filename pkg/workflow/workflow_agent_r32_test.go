@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -322,6 +323,53 @@ func TestWorkflowPrepareCallOnceWithApprovalResume(t *testing.T) {
 			}
 			if calls.Load() != 1 {
 				t.Errorf("PrepareCall ran %d times, want 1", calls.Load())
+			}
+		})
+	}
+}
+
+// TS merges generation settings as `{...prepareCall result, ...call options}`:
+// a setting passed on the call wins over what prepareCall returns, and the
+// WorkflowAgent user-agent suffix is added after prepareCall.
+func TestWorkflowCallSettingsWinOverPrepareCall(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "generate"
+		if stream {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			model := &wfMockModel{}
+			hookTemp, hookSeed, callTemp := 0.9, 7, 0.2
+			var sawHeaders map[string]string
+			w, err := NewWorkflowAgent(WorkflowAgent{
+				Model: model,
+				PrepareCall: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					sawHeaders = o.Headers
+					o.Temperature, o.Seed = &hookTemp, &hookSeed
+					o.Headers = map[string]string{"x-from-hook": "1"}
+					return o, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runWorkflow(t, w, stream,
+				WorkflowGenerateOptions{Prompt: "hi", Temperature: &callTemp},
+				WorkflowStreamOptions{Prompt: "hi", Temperature: &callTemp}); err != nil {
+				t.Fatal(err)
+			}
+			if len(sawHeaders) != 0 {
+				t.Errorf("hook saw headers %v, want the call's own (none), without the workflow suffix", sawHeaders)
+			}
+			got := model.opts[0]
+			if got.Temperature == nil || *got.Temperature != callTemp {
+				t.Errorf("temperature = %v, want the call's 0.2", got.Temperature)
+			}
+			if got.Seed == nil || *got.Seed != hookSeed {
+				t.Errorf("seed = %v, want prepareCall's 7 (not set on the call)", got.Seed)
+			}
+			if got.Headers["x-from-hook"] != "1" || !strings.Contains(got.Headers["user-agent"], "ai-sdk-agent/workflow") {
+				t.Errorf("headers = %v, want hook header plus the workflow user-agent suffix", got.Headers)
 			}
 		})
 	}
