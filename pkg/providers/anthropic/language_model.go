@@ -2870,9 +2870,12 @@ func convertWebSearchToolResult(raw json.RawMessage, generateID func() string) (
 		m := map[string]interface{}{
 			"type":             r.Type,
 			"url":              r.URL,
-			"title":            r.Title,
 			"pageAge":          nil,
 			"encryptedContent": r.EncryptedContent,
+		}
+		// TS: ...(result.title != null ? { title: result.title } : {}).
+		if r.Title != nil {
+			m["title"] = *r.Title
 		}
 		if r.PageAge != nil {
 			m["pageAge"] = *r.PageAge
@@ -2905,9 +2908,9 @@ func convertWebSearchToolResult(raw json.RawMessage, generateID func() string) (
 
 // webFetchResultWire is the snake_case wire format of a web_fetch_result object.
 type webFetchResultWire struct {
-	Type        string `json:"type"`
-	URL         string `json:"url"`
-	RetrievedAt string `json:"retrieved_at"`
+	Type        string  `json:"type"`
+	URL         string  `json:"url"`
+	RetrievedAt *string `json:"retrieved_at"`
 	Content     struct {
 		Type      string      `json:"type"`
 		Title     *string     `json:"title"`
@@ -2942,20 +2945,29 @@ func convertWebFetchToolResult(raw json.RawMessage) interface{} {
 	if wire.Content.Title != nil {
 		title = *wire.Content.Title
 	}
+	// TS: retrievedAt: part.content.retrieved_at (null stays null).
+	var retrievedAt interface{}
+	if wire.RetrievedAt != nil {
+		retrievedAt = *wire.RetrievedAt
+	}
+	content := map[string]interface{}{
+		"type":  wire.Content.Type,
+		"title": title,
+		"source": map[string]interface{}{
+			"type":      wire.Content.Source.Type,
+			"mediaType": wire.Content.Source.MediaType,
+			"data":      wire.Content.Source.Data,
+		},
+	}
+	// TS passes `citations` through as-is, so an absent value is left out.
+	if wire.Content.Citations != nil {
+		content["citations"] = wire.Content.Citations
+	}
 	return map[string]interface{}{
 		"type":        wire.Type,
 		"url":         wire.URL,
-		"retrievedAt": wire.RetrievedAt,
-		"content": map[string]interface{}{
-			"type":      wire.Content.Type,
-			"title":     title,
-			"citations": wire.Content.Citations,
-			"source": map[string]interface{}{
-				"type":      wire.Content.Source.Type,
-				"mediaType": wire.Content.Source.MediaType,
-				"data":      wire.Content.Source.Data,
-			},
-		},
+		"retrievedAt": retrievedAt,
+		"content":     content,
 	}
 }
 
