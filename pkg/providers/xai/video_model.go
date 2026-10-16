@@ -259,7 +259,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		}, nil
 	}
 
-	if status.Status == "done" || (status.Status == "" && status.Video != nil && resolveVideoURL(status.Video) != "") {
+	// TS completes a status-less response only on video.url (not file_output.public_url).
+	if status.Status == "done" || (status.Status == "" && status.Video != nil && status.Video.URL != "") {
 		// Terminal outcomes (moderation rejection, missing URL) are reported
 		// as an error status rather than a thrown Go error, so they surface
 		// the same way as any other job failure.
@@ -494,7 +495,7 @@ func (m *VideoModel) checkVideoStatus(ctx context.Context, requestID string, hea
 		if err := json.Unmarshal(limited, &status); err != nil {
 			return &xaiVideoStatusResponse{Status: "pending"}, respHeaders, nil
 		}
-		if status.Status == "" && (status.Video == nil || resolveVideoURL(status.Video) == "") {
+		if status.Status == "" && (status.Video == nil || status.Video.URL == "") {
 			status.Status = "pending"
 		}
 		return &status, respHeaders, nil
