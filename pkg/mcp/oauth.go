@@ -226,7 +226,7 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 
 	var out WWWAuthenticateParams
 	if resourceMetadataURL := extractQuotedChallengeParam(header, "resource_metadata"); resourceMetadataURL != "" {
-		if parsed, err := url.Parse(resourceMetadataURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if parsed, ok := parseOAuthURL(resourceMetadataURL); ok {
 			out.ResourceMetadataURL = parsed
 		}
 	}
@@ -593,20 +593,41 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 	return nil
 }
 
+// oauthURLCleanup mirrors the WHATWG URL parser's input cleanup: leading and
+// trailing C0 controls and spaces are stripped and tabs/newlines removed.
+var oauthURLCleanup = strings.NewReplacer("\t", "", "\n", "", "\r", "")
+
+func parseOAuthURL(raw string) (*url.URL, bool) {
+	cleaned := oauthURLCleanup.Replace(strings.Trim(raw, "\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\x0c\r\x0e\x0f\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f "))
+	parsed, err := url.Parse(cleaned)
+	if err != nil || parsed.Scheme == "" {
+		return nil, false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "ws", "wss", "ftp":
+		// Special schemes need a host; Go keeps "http:host" as an opaque URL
+		// that WHATWG reads as http://host/.
+		if parsed.Host == "" && parsed.Opaque == "" {
+			return nil, false
+		}
+	}
+	return parsed, true
+}
+
+// isAbsoluteOAuthURL is TS z.string().url(): anything `new URL(value)`
+// accepts, so a host-less custom scheme such as com.example.app:/callback (an
+// RFC 8252 native redirect URI) is valid.
 func isAbsoluteOAuthURL(raw string) bool {
-	parsed, err := url.Parse(raw)
-	return err == nil && parsed.Scheme != "" && parsed.Host != ""
+	_, ok := parseOAuthURL(raw)
+	return ok
 }
 
 // isSafeOAuthURL is TS SafeUrlSchema: a parseable absolute URL that does not
 // use the javascript:, data: or vbscript: scheme (javascript://host/%0a... has
 // a host and would otherwise pass).
 func isSafeOAuthURL(raw string) bool {
-	if !isAbsoluteOAuthURL(raw) {
-		return false
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
+	parsed, ok := parseOAuthURL(raw)
+	if !ok {
 		return false
 	}
 	switch strings.ToLower(parsed.Scheme) {
