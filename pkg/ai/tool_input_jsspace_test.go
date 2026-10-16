@@ -7,7 +7,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
-// TS parseToolCall checks toolCall.input.trim() === '' with JS whitespace.
+// TS parseToolCall checks toolCall.input.trim() === ” with JS whitespace.
 func TestToolCallInputArgumentsJSWhitespace(t *testing.T) {
 	got, err := toolCallInputArguments(types.ToolCall{RawArguments: "\ufeff\u00a0"})
 	if err != nil || len(got) != 0 {
