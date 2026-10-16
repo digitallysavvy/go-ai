@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -174,7 +173,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	queuePath := fmt.Sprintf("%s/fal-ai/%s", m.prov.queueHost, m.normalizedModelID())
 	submitURL := queuePath
 	if opts.WebhookURL != "" {
-		submitURL = queuePath + "?fal_webhook=" + url.QueryEscape(opts.WebhookURL)
+		submitURL = queuePath + "?fal_webhook=" + providerutils.EncodeURIComponent(opts.WebhookURL)
 	}
 
 	var queueResp falVideoQueueResponse
@@ -205,6 +204,15 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 			Headers:   convertHTTPHeaders(httpResp.Headers),
 		},
 	}, nil
+}
+
+// falStatusFallback is the message for a status poll failure whose body does
+// not match the fal error schema: TS uses the HTTP status text.
+func falStatusFallback(dlErr *providererrors.DownloadError) string {
+	if text := http.StatusText(dlErr.StatusCode); text != "" {
+		return text
+	}
+	return dlErr.Message
 }
 
 // falStillInProgressDetail is the special "not an error" body the fal.ai
@@ -263,7 +271,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			}
 			return &provider.VideoModelV3OperationStatusResult{
 				Status: provider.VideoOperationStatusError,
-				Error:  parseFalErrorMessage(dlErr.Body, dlErr.Message),
+				Error:  parseFalErrorMessage(dlErr.Body, falStatusFallback(dlErr)),
 				Response: provider.VideoModelV3ResponseInfo{
 					Timestamp: currentDate,
 					ModelID:   m.modelID,
