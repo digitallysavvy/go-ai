@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"reflect"
 	"strings"
@@ -34,10 +32,14 @@ func WithTelemetryCallID(ctx context.Context, callID string) context.Context {
 	return context.WithValue(ctx, telemetryCallIDKey{}, callID)
 }
 
+// newTelemetryCallID returns "call-" plus 24 random alphanumerics, the TS
+// callId shape (createIdGenerator({prefix: 'call', size: 24})).
 func newTelemetryCallID() string {
-	b := make([]byte, 8)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
+	gen, err := ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{Prefix: "call", Size: 24})
+	if err != nil {
+		return "call-" + ai.GenerateID()
+	}
+	return gen()
 }
 
 // loopTelemetry carries the per-run telemetry state of the legacy loop.
@@ -237,9 +239,6 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 	s.closed = true
 	var reasoning strings.Builder
 	for _, r := range step.Reasoning {
-		if reasoning.Len() > 0 {
-			reasoning.WriteByte('\n')
-		}
 		reasoning.WriteString(r.Text)
 	}
 	telemetry.FireOnStepEnd(s.stepCtx, telemetry.TelemetryStepEndEvent{

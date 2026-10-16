@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -94,5 +95,32 @@ func TestLegacyLoopToolExecutionErrorHasNoStepPrefix(t *testing.T) {
 	_, err := a.Execute(ctx, "q")
 	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "at step") {
 		t.Fatalf("err = %v, want an unprefixed context.Canceled", err)
+	}
+}
+
+// Multiple reasoning parts concatenate with no separator (TS asReasoningText
+// joins with ”).
+func TestLegacyLoopReasoningTextConcatenatesWithoutSeparator(t *testing.T) {
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text: "hi",
+		Content: []types.ContentPart{
+			types.ReasoningContent{Text: "a"},
+			types.ReasoningContent{Text: "b"},
+		},
+		FinishReason: types.FinishReasonStop,
+	}}}
+	a := NewToolLoopAgent(AgentConfig{Model: model})
+	res, err := a.Execute(context.Background(), "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Steps[0].ReasoningText; got != "ab" {
+		t.Fatalf("ReasoningText = %q, want %q", got, "ab")
+	}
+}
+
+func TestNewTelemetryCallIDShape(t *testing.T) {
+	if id := newTelemetryCallID(); !regexp.MustCompile(`^call-[0-9A-Za-z]{24}$`).MatchString(id) {
+		t.Fatalf("newTelemetryCallID() = %q", id)
 	}
 }

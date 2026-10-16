@@ -1669,7 +1669,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Text:             genResult.Text,
 		Content:          contentFromGenerateResult(genResult, toolCalls),
 		Reasoning:        stepReasoning,
-		ReasoningText:    strings.Join(stepReasoningTexts, "\n"),
+		ReasoningText:    strings.Join(stepReasoningTexts, ""),
 		Files:            stepFiles,
 		Sources:          stepSources,
 		ToolCalls:        toolCalls,

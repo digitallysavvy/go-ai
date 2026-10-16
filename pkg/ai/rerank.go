@@ -265,6 +265,21 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 		} else if opts.ExperimentalOnStart != nil {
 			safeInvoke(func() { opts.ExperimentalOnStart(emptyStartEvent) })
 		}
+		// TS notifies telemetryDispatcher.onStart/onEnd on this path too, so
+		// registered integrations still see the (empty) operation.
+		emptyMaxRetries := preparedMaxRetries(opts.MaxRetries)
+		ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+			CallID:         callID,
+			OperationType:  "ai.rerank",
+			ModelProvider:  opts.Model.Provider(),
+			ModelID:        opts.Model.ModelID(),
+			Settings:       opts.ExperimentalTelemetry,
+			Documents:      opts.Documents,
+			Headers:        opts.Headers,
+			MaxRetries:     &emptyMaxRetries,
+			RuntimeContext: telemetryRuntimeContext(opts.ExperimentalTelemetry, opts.RuntimeContext),
+			ToolsContext:   map[string]interface{}{},
+		})
 
 		emptyResponse := types.RerankResponse{
 			ModelID:   opts.Model.ModelID(),
@@ -309,6 +324,15 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 				safeInvoke(func() { opts.ExperimentalOnFinish(emptyFinishEvent) })
 			}
 		}
+		telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+			CallID:        callID,
+			OperationType: "ai.rerank",
+			Settings:      opts.ExperimentalTelemetry,
+			FinishReason:  string(types.FinishReasonStop),
+			ModelProvider: opts.Model.Provider(),
+			ModelID:       opts.Model.ModelID(),
+			Usage:         telemetry.TelemetryUsage{},
+		})
 		return emptyResult, nil
 	}
 

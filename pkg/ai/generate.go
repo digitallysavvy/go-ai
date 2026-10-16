@@ -1739,9 +1739,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 					stepTelFiles = append(stepTelFiles, v)
 				case types.ReasoningContent:
 					if v.Text != "" {
-						if stepTelReasoning.Len() > 0 {
-							stepTelReasoning.WriteByte('\n')
-						}
 						stepTelReasoning.WriteString(v.Text)
 					}
 				}
@@ -2611,9 +2608,6 @@ func buildReasoningText(parts []types.ReasoningContent) string {
 	var sb strings.Builder
 	for _, p := range parts {
 		if p.Text != "" {
-			if sb.Len() > 0 {
-				sb.WriteByte('\n')
-			}
 			sb.WriteString(p.Text)
 		}
 	}
