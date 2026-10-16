@@ -397,7 +397,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		if resumeData.ImplementationIdentity != implementationIdentity {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured implementation.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
-		if resumeData.AuthenticationProfile == nil || resumeData.AuthenticationProfile.Digest != authProfile.Digest {
+		if resumeData.AuthenticationProfile == nil || !authProfile.matchesDigest(resumeData.AuthenticationProfile.Digest) {
 			return nil, fmt.Errorf("ACP lifecycle state is incompatible with the configured authentication profile.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if coords := resumeData.Bridge; coords != nil && coords.SandboxID != "" && sandboxID != "" && coords.SandboxID != sandboxID {

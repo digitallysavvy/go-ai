@@ -77,6 +77,16 @@ type authenticationProfileIdentity struct {
 	ProviderKind            string `json:"providerKind"`
 	ProviderMode            string `json:"providerMode,omitempty"`
 	GatewayCredentialSource string `json:"gatewayCredentialSource,omitempty"`
+
+	// legacyDigest is the v0.5.2-format digest of the same profile, accepted
+	// when matching a persisted state (see legacy_digest.go). Never persisted.
+	legacyDigest string
+}
+
+// matchesDigest reports whether a persisted digest is this profile's digest in
+// the TS format or in the v0.5.2 format.
+func (a authenticationProfileIdentity) matchesDigest(persisted string) bool {
+	return persisted == a.Digest || (a.legacyDigest != "" && persisted == a.legacyDigest)
 }
 
 // createAuthenticationProfileIdentity mirrors TS
@@ -95,7 +105,10 @@ func createAuthenticationProfileIdentity(authentication *Authentication, compat 
 		payload["providerAuthentication"] = compat
 	}
 	sum := sha256.Sum256([]byte(stableStringifyCodeUnit(payload)))
-	id := authenticationProfileIdentity{Digest: hex.EncodeToString(sum[:]), ProviderKind: providerKind}
+	id := authenticationProfileIdentity{
+		Digest: hex.EncodeToString(sum[:]), ProviderKind: providerKind,
+		legacyDigest: legacyAuthenticationDigest(authentication, compat),
+	}
 	if authentication != nil {
 		id.ACPMethodID = authentication.MethodID
 	}
