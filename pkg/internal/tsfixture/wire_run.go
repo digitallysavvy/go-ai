@@ -477,7 +477,7 @@ func wireAlignInvalidBase64(want, got interface{}) {
 			if gv, ok := g[k]; ok {
 				if ws, isStr := wv.(string); isStr {
 					if gs, ok := gv.(string); ok && gs != ws {
-						if _, err := base64.StdEncoding.DecodeString(ws); err != nil && (k == "data" || k == "images") {
+						if _, err := base64.StdEncoding.DecodeString(ws); err != nil && (k == "data" || k == "images" || k == "audio") {
 							g[k] = ws
 						}
 					}
