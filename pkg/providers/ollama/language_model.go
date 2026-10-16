@@ -120,9 +120,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		"stream": stream,
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content"})
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content"})
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true})
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})

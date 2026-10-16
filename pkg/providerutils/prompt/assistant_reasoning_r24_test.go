@@ -42,3 +42,42 @@ func TestAssistantTextJoinedAndReasoningReplayed(t *testing.T) {
 		t.Fatalf("tool-call message = %#v", tc)
 	}
 }
+
+// TS getOpenAIMetadata: providerOptions.openaiCompatible of messages, parts,
+// tool calls and tool results are spread into the wire objects.
+func TestSpreadCompatMetadata(t *testing.T) {
+	meta := func(k string) map[string]interface{} {
+		return map[string]interface{}{"openaiCompatible": map[string]interface{}{k: true}}
+	}
+	msgs := []types.Message{
+		{Role: types.RoleSystem, ProviderOptions: meta("sys"), Content: []types.ContentPart{types.TextContent{Text: "s"}}},
+		{Role: types.RoleUser, ProviderOptions: meta("msg"), Content: []types.ContentPart{types.TextContent{Text: "u", ProviderOptions: meta("part")}}},
+		{Role: types.RoleAssistant, ProviderOptions: meta("asst"), Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "1", ToolName: "t", ProviderOptions: meta("call")},
+		}},
+		{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolResultContent{ToolCallID: "1", ToolName: "t", Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "r"}, ProviderOptions: meta("res")},
+		}},
+	}
+	out := ToOpenAIMessages(msgs, ToOpenAIMessagesOptions{SpreadCompatMetadata: true})
+	if out[0]["sys"] != true || out[0]["msg"] != nil {
+		t.Fatalf("system: %#v", out[0])
+	}
+	if out[1]["part"] != true || out[1]["msg"] != nil {
+		t.Fatalf("lone user text uses the part's metadata: %#v", out[1])
+	}
+	if out[2]["asst"] != true {
+		t.Fatalf("assistant: %#v", out[2])
+	}
+	calls := out[2]["tool_calls"].([]map[string]interface{})
+	if calls[0]["call"] != true {
+		t.Fatalf("tool call: %#v", calls[0])
+	}
+	if out[3]["res"] != true {
+		t.Fatalf("tool result: %#v", out[3])
+	}
+	plain := ToOpenAIMessages(msgs)
+	if plain[0]["sys"] != nil || plain[3]["res"] != nil {
+		t.Fatal("metadata must not be spread without the option")
+	}
+}

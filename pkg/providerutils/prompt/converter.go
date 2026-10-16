@@ -46,6 +46,12 @@ type ToOpenAIMessagesOptions struct {
 	// and Azure's chat-completions models must leave this false.
 	IncludePromptCacheBreakpoint bool
 
+	// SpreadCompatMetadata merges providerOptions.openaiCompatible of each
+	// message, content part, tool call and tool result into the emitted wire
+	// object, as @ai-sdk/openai-compatible's getOpenAIMetadata does. Only
+	// OpenAI-compatible callers set it.
+	SpreadCompatMetadata bool
+
 	// ReasoningKey, when set, replays assistant reasoning parts as a
 	// top-level string field of that name on the assistant message:
 	// "reasoning_content" for @ai-sdk/openai-compatible (TS #12049) and
@@ -237,6 +243,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					if opt.SupportsMultiPartToolContent {
 						if parts, ok := openAIToolResultContentParts(p, refs); ok {
 							toolMsg["content"] = parts
+							spreadCompatMetadata(toolMsg, p.ProviderOptions, opt.SpreadCompatMetadata)
 							result = append(result, toolMsg)
 							continue
 						}
@@ -247,11 +254,13 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 							toolMsg["content"] = []map[string]interface{}{
 								{"type": "text", "text": text, "prompt_cache_breakpoint": bp},
 							}
+							spreadCompatMetadata(toolMsg, p.ProviderOptions, opt.SpreadCompatMetadata)
 							result = append(result, toolMsg)
 							continue
 						}
 					}
 					toolMsg["content"] = text
+					spreadCompatMetadata(toolMsg, p.ProviderOptions, opt.SpreadCompatMetadata)
 					result = append(result, toolMsg)
 				}
 			}
@@ -309,6 +318,17 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 		}
 		if msg.Role == types.RoleAssistant && len(msg.ToolCalls) > 0 {
 			toolCalls := openAIToolCalls(msg.ToolCalls, opt.SanitizeReplayedToolCallArguments)
+			if opt.SpreadCompatMetadata {
+				for _, part := range msg.Content {
+					if tc, ok := part.(types.ToolCallContent); ok {
+						for _, c := range toolCalls {
+							if id, _ := c["id"].(string); id == tc.ToolCallID {
+								spreadCompatMetadata(c, tc.ProviderOptions, true)
+							}
+						}
+					}
+				}
+			}
 			if opt.ThoughtSignatureKey != "" {
 				applyThoughtSignatures(toolCalls, msg, opt.ThoughtSignatureKey)
 			}
@@ -322,6 +342,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					if msg.Name != "" {
 						openAIMsg["name"] = msg.Name
 					}
+					spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 					result = append(result, openAIMsg)
 					continue
 				}
@@ -342,6 +363,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			if msg.Name != "" {
 				openAIMsg["name"] = msg.Name
 			}
+			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 			result = append(result, openAIMsg)
 			continue
 		}
@@ -366,6 +388,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			if msg.Name != "" {
 				openAIMsg["name"] = msg.Name
 			}
+			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 			result = append(result, openAIMsg)
 			continue
 		}
@@ -382,9 +405,15 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 				}
 			}
 		}
+		singleTextMetadata := false
 		if useSingleTextShortcut {
 			if textContent, ok := msg.Content[0].(types.TextContent); ok {
 				openAIMsg["content"] = textContent.Text
+				// TS spreads the lone text part's metadata, not the message's.
+				if msg.Role == types.RoleUser {
+					spreadCompatMetadata(openAIMsg, textContent.ProviderOptions, opt.SpreadCompatMetadata)
+					singleTextMetadata = true
+				}
 			}
 		} else if len(msg.Content) > 0 {
 			contentParts := make([]map[string]interface{}, 0, len(msg.Content))
@@ -395,6 +424,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 						"type": "text",
 						"text": p.Text,
 					}
+					spreadCompatMetadata(textPart, p.ProviderOptions, opt.SpreadCompatMetadata)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							textPart["prompt_cache_breakpoint"] = bp
@@ -419,6 +449,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 						"type":      "image_url",
 						"image_url": imageURL,
 					}
+					spreadCompatMetadata(imagePart, p.ProviderOptions, opt.SpreadCompatMetadata)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							imagePart["prompt_cache_breakpoint"] = bp
@@ -427,6 +458,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					contentParts = append(contentParts, imagePart)
 				case types.FileContent:
 					filePart := openAIFileContentPartResolving(p, opt.AllowVideo, refs)
+					spreadCompatMetadata(filePart, p.ProviderOptions, opt.SpreadCompatMetadata)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
 							filePart["prompt_cache_breakpoint"] = bp
@@ -457,6 +489,9 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 
 		if msg.Name != "" {
 			openAIMsg["name"] = msg.Name
+		}
+		if !singleTextMetadata {
+			spreadCompatMetadata(openAIMsg, msg.ProviderOptions, opt.SpreadCompatMetadata)
 		}
 
 		result = append(result, openAIMsg)
@@ -500,6 +535,18 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 		})
 	}
 	return result
+}
+
+// spreadCompatMetadata merges providerOptions.openaiCompatible into dst (TS
+// `...getOpenAIMetadata(x)`): metadata keys overwrite earlier wire keys.
+func spreadCompatMetadata(dst map[string]interface{}, providerOptions map[string]interface{}, enabled bool) {
+	if !enabled {
+		return
+	}
+	meta, _ := providerOptions["openaiCompatible"].(map[string]interface{})
+	for k, v := range meta {
+		dst[k] = v
+	}
 }
 
 func assistantTextContent(content []types.ContentPart) string {

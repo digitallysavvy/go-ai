@@ -364,6 +364,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{ThoughtSignatureKey: m.thoughtSignatureKey(), SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo || m.provider.config.OpenAICompatible, SupportsMultiPartToolContent: m.provider.config.SupportsMultiPartToolContent, Provider: m.fileReferenceProvider()}
 	if !native {
 		toOpenAIMessagesOpts.ReasoningKey = "reasoning_content"
+		toOpenAIMessagesOpts.SpreadCompatMetadata = true
 	}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
