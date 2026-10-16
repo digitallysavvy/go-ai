@@ -408,6 +408,8 @@ func (w gatewayBatchItemResultLine) toItemResult() *provider.BatchV4ItemResult {
 	return item
 }
 
+var gatewayBatchItemSchema = providerutils.MediaSchemaParser(providerutils.SchemaGatewayBatchItem)
+
 // gatewayBatchResultsStream implements provider.BatchV4ItemResultStream over
 // the NDJSON body returned by `/batch/results`.
 type gatewayBatchResultsStream struct {
@@ -439,6 +441,14 @@ func (s *gatewayBatchResultsStream) Next() (*provider.BatchV4ItemResult, error) 
 		line := bytes.TrimSpace(s.scanner.Bytes())
 		if len(line) == 0 {
 			continue
+		}
+		// TS createJsonLinesResponseHandler(gatewayBatchItemResultLineSchema):
+		// a line that is not JSON (JSONParseError) or lacks a text type, a
+		// string id or a known status (TypeValidationError) fails the stream.
+		if err := gatewayBatchItemSchema(0, nil, line); err != nil {
+			s.err = err
+			_ = s.body.Close()
+			return nil, err
 		}
 		var wire gatewayBatchItemResultLine
 		if err := json.Unmarshal(line, &wire); err != nil {

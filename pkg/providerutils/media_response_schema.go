@@ -115,6 +115,9 @@ const (
 	SchemaDeepSeekFile      MediaResponseSchema = "deepseek-file"
 	SchemaGatewayBatchStart MediaResponseSchema = "gateway-batch-start"
 	SchemaGatewayBatchState MediaResponseSchema = "gateway-batch-status"
+	// SchemaGatewayBatchItem is one /batch/results NDJSON line
+	// (gatewayBatchItemResultLineSchema: type text, id, status; extra keys pass).
+	SchemaGatewayBatchItem MediaResponseSchema = "gateway-batch-item"
 	// SchemaMistralSpeech and SchemaXAISpeechTimestamps are the JSON speech
 	// bodies (mistralSpeechResponseSchema, xaiSpeechTimestampsResponseSchema).
 	SchemaMistralSpeech       MediaResponseSchema = "mistral-speech"
@@ -432,7 +435,9 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		SchemaGatewayBatchStart: zObj(append(append([]zFld{}, gatewayBatchStatus...), fl("batchId", zStr),
 			fl("warnings", zNullish(zArr(zObj(fl("requestId", nStr), fl("warning", zAny))))))...),
 		SchemaGatewayBatchState: zObj(gatewayBatchStatus...),
-		SchemaMistralSpeech:     zObj(fl("audio_data", zStr)),
+		SchemaGatewayBatchItem: zObj(fl("type", zodlite.Literal("text")), fl("id", zStr),
+			fl("status", zodlite.Enum("cancelled", "expired", "failed", "succeeded"))),
+		SchemaMistralSpeech: zObj(fl("audio_data", zStr)),
 		SchemaXAISpeechTimestamps: zObj(fl("audio", nStr), fl("content_type", nStr), fl("duration", nNum),
 			fl("audio_timestamps", zNullish(zObj(fl("graph_chars", zArr(zStr)),
 				fl("graph_times", zArr(zTuple2Num)))))),
