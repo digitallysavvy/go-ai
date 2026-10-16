@@ -481,6 +481,11 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 			query["tag"] = strings.Join(parts, ",")
 		case []string:
 			query["tag"] = strings.Join(tag, ",")
+		case string:
+			// TS `if (deepgramOptions.tag)`: an empty string is falsy.
+			if tag != "" {
+				query["tag"] = tag
+			}
 		default:
 			query["tag"] = fmt.Sprint(tag)
 		}
