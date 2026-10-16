@@ -81,3 +81,30 @@ func TestSpreadCompatMetadata(t *testing.T) {
 		t.Fatal("metadata must not be spread without the option")
 	}
 }
+
+// TS chat converters send a PDF as {filename, file_data: data URI}; the
+// default filename is part-<index>.pdf for OpenAI and document.pdf for
+// OpenAI-compatible.
+func TestPDFFilePartUsesDataURI(t *testing.T) {
+	msgs := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{
+		types.TextContent{Text: "x"},
+		types.FileContent{Data: []byte("%PDF"), MediaType: "application/pdf"},
+		types.FileContent{Data: []byte("%PDF"), MediaType: "application/pdf", Filename: "a.pdf"},
+	}}}
+	for _, tc := range []struct {
+		opt  ToOpenAIMessagesOptions
+		name string
+	}{
+		{ToOpenAIMessagesOptions{}, "part-1.pdf"},
+		{ToOpenAIMessagesOptions{SpreadCompatMetadata: true}, "document.pdf"},
+	} {
+		parts := ToOpenAIMessages(msgs, tc.opt)[0]["content"].([]map[string]interface{})
+		f := parts[1]["file"].(map[string]interface{})
+		if f["file_data"] != "data:application/pdf;base64,JVBERg==" || f["filename"] != tc.name || f["media_type"] != nil {
+			t.Fatalf("%s: %#v", tc.name, f)
+		}
+		if parts[2]["file"].(map[string]interface{})["filename"] != "a.pdf" {
+			t.Fatalf("explicit filename lost: %#v", parts[2])
+		}
+	}
+}

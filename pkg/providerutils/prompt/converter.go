@@ -417,7 +417,7 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 			}
 		} else if len(msg.Content) > 0 {
 			contentParts := make([]map[string]interface{}, 0, len(msg.Content))
-			for _, part := range msg.Content {
+			for partIndex, part := range msg.Content {
 				switch p := part.(type) {
 				case types.TextContent:
 					textPart := map[string]interface{}{
@@ -458,6 +458,11 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 					contentParts = append(contentParts, imagePart)
 				case types.FileContent:
 					filePart := openAIFileContentPartResolving(p, opt.AllowVideo, refs)
+					if opt.SpreadCompatMetadata {
+						withDefaultPDFFilename(filePart, "document.pdf")
+					} else {
+						withDefaultPDFFilename(filePart, fmt.Sprintf("part-%d.pdf", partIndex))
+					}
 					spreadCompatMetadata(filePart, p.ProviderOptions, opt.SpreadCompatMetadata)
 					if opt.IncludePromptCacheBreakpoint {
 						if bp, ok := openAIPromptCacheBreakpoint(p.ProviderOptions); ok {
@@ -784,7 +789,9 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *
 		if !b.FileData.IsZero() {
 			fc.FileData = b.FileData
 		}
-		return openAIFileContentPartResolving(fc, true, refs), true
+		part := openAIFileContentPartResolving(fc, true, refs)
+		withDefaultPDFFilename(part, "document.pdf")
+		return part, true
 	case types.ImageContentBlock:
 		return openAIFileContentPartResolving(types.FileContent{
 			MediaType:       b.MediaType,
@@ -900,6 +907,19 @@ func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, ref
 		}
 	}
 
+	// PDFs use the Chat Completions shape of both TS converters: a filename
+	// and file_data as a data URI. The filename default (part-<index>.pdf for
+	// OpenAI, document.pdf for OpenAI-compatible) is applied by the caller.
+	if len(file.Data) > 0 && file.Reference == "" && file.URL == "" && file.Text == "" && mediaType == "application/pdf" {
+		fileObject := map[string]interface{}{
+			"file_data": "data:application/pdf;base64," + base64.StdEncoding.EncodeToString(file.Data),
+		}
+		if file.Filename != "" {
+			fileObject["filename"] = file.Filename
+		}
+		return map[string]interface{}{"type": "file", "file": fileObject}
+	}
+
 	fileObject := map[string]interface{}{}
 	if file.Filename != "" {
 		fileObject["filename"] = file.Filename
@@ -920,6 +940,21 @@ func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, ref
 	return map[string]interface{}{
 		"type": "file",
 		"file": fileObject,
+	}
+}
+
+// withDefaultPDFFilename names a data-URI PDF file part that carries no
+// filename (TS `part.filename ?? name`).
+func withDefaultPDFFilename(part map[string]interface{}, name string) {
+	file, ok := part["file"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	if data, _ := file["file_data"].(string); !strings.HasPrefix(data, "data:application/pdf;base64,") {
+		return
+	}
+	if _, has := file["filename"]; !has {
+		file["filename"] = name
 	}
 }
 
