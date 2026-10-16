@@ -77,7 +77,7 @@ func (m *EmbeddingModel) modelFamily() EmbeddingModelFamily {
 
 func detectBedrockEmbeddingModelFamily(modelID string) EmbeddingModelFamily {
 	switch {
-	case strings.HasPrefix(modelID, "amazon.nova-") && strings.Contains(modelID, "embed"):
+	case strings.Contains(modelID, "amazon.nova-") && strings.Contains(modelID, "embed"):
 		return EmbeddingModelFamilyNova
 	case bedrockIsCohereEmbeddingModel(modelID):
 		return EmbeddingModelFamilyCohere
@@ -430,11 +430,9 @@ func intOption(value interface{}) (int, bool) {
 }
 
 func bedrockIsCohereEmbeddingModel(modelID string) bool {
-	if strings.HasPrefix(modelID, "cohere.embed-") {
-		return true
-	}
-	parts := strings.SplitN(modelID, ".", 2)
-	return len(parts) == 2 && strings.HasPrefix(parts[1], "cohere.embed-")
+	// TS modelId.includes('cohere.embed-'): cross-region inference profile ids
+	// (us.cohere.embed-v4:0, global.cohere.embed-v4:0) are detected too.
+	return strings.Contains(modelID, "cohere.embed-")
 }
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
