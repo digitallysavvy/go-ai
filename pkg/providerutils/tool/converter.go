@@ -195,7 +195,9 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 	}
 
 	if desc := anthropicConstraintDescription(schema); desc != "" {
-		if existing, ok := out["description"].(string); ok && existing != "" {
+		// TS: result.description == null ? desc : `${description}\n${desc}`,
+		// so an empty description still gets the newline.
+		if existing, ok := out["description"].(string); ok {
 			out["description"] = existing + "\n" + desc
 		} else {
 			out["description"] = desc
