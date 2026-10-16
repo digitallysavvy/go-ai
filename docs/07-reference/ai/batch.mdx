@@ -115,6 +115,7 @@ An image request inside a batch.
 | `Status` | `provider.BatchItemStatus` |  |
 | `Text` | `*types.GenerateResult` | Text is populated when Type is text and Status is succeeded. |
 | `Image` | `*types.ImageResult` | Image is populated when Type is image and Status is succeeded. |
+| `Images` | `[]types.GeneratedFile` | Images are the generated images of a succeeded image result as generated files with detected media types and per-image provider metadata (TS convertImageResult -&gt; DefaultGeneratedFile). |
 | `Error` | `*provider.BatchError` |  |
 | `ProviderMetadata` | `map[string]interface{}` |  |
 
