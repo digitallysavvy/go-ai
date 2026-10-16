@@ -71,41 +71,47 @@ func TestRerank_NilModel(t *testing.T) {
 	}
 }
 
-func TestRerank_NilDocuments(t *testing.T) {
+// TS rerank() has no query/documents guard: nil documents behave like zero
+// documents (no provider call) and an empty query reaches the provider.
+func TestRerank_NilDocumentsShortCircuit(t *testing.T) {
 	t.Parallel()
 
-	model := &testutil.MockRerankingModel{}
-
-	_, err := Rerank(context.Background(), RerankOptions{
-		Model:     model,
-		Documents: nil,
-		Query:     "query",
-	})
-
-	if err == nil {
-		t.Fatal("expected error for nil documents")
+	model := &testutil.MockRerankingModel{
+		DoRerankFunc: func(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+			t.Error("provider must not be called for zero documents")
+			return nil, nil
+		},
 	}
-	if err.Error() != "documents are required" {
-		t.Errorf("unexpected error message: %v", err)
+	res, err := Rerank(context.Background(), RerankOptions{Model: model, Query: "query"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Ranking) != 0 {
+		t.Errorf("ranking = %v", res.Ranking)
 	}
 }
 
-func TestRerank_EmptyQuery(t *testing.T) {
+func TestRerank_EmptyQueryReachesProvider(t *testing.T) {
 	t.Parallel()
 
-	model := &testutil.MockRerankingModel{}
-
-	_, err := Rerank(context.Background(), RerankOptions{
-		Model:     model,
-		Documents: []string{"doc1"},
-		Query:     "",
-	})
-
-	if err == nil {
-		t.Fatal("expected error for empty query")
+	called := 0
+	model := &testutil.MockRerankingModel{
+		DoRerankFunc: func(ctx context.Context, opts *provider.RerankOptions) (*types.RerankResult, error) {
+			called++
+			if opts.Query != "" {
+				t.Errorf("query = %q", opts.Query)
+			}
+			return &types.RerankResult{
+				Ranking: []types.RerankItem{{Index: 0, RelevanceScore: 0.5}},
+			}, nil
+		},
 	}
-	if err.Error() != "query is required" {
-		t.Errorf("unexpected error message: %v", err)
+	res, err := Rerank(context.Background(), RerankOptions{Model: model, Documents: []string{"doc1"}, Query: ""})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if called != 1 || len(res.Ranking) != 1 {
+		t.Errorf("called=%d ranking=%v", called, res.Ranking)
 	}
 }
 

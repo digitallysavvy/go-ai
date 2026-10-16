@@ -201,9 +201,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if opts.Input == "" {
-		return nil, fmt.Errorf("input is required")
-	}
+	// TS embed() does not reject an empty value; it reaches the provider.
 	if err := validateEmbeddingDimensions(opts.Dimensions); err != nil {
 		return nil, err
 	}
