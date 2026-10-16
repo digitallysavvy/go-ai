@@ -1,7 +1,10 @@
 package alibaba
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -32,5 +35,23 @@ func TestAlibabaIsVideoURLMatchesTSRegex(t *testing.T) {
 		if got := alibabaIsVideoURL(url); got != want {
 			t.Errorf("alibabaIsVideoURL(%q) = %v, want %v", url, got, want)
 		}
+	}
+}
+
+// TS keeps an empty sparse_embedding array ("== null" is the only skip).
+func TestEmbeddingEmptySparseEmbeddingIsKept(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"output":{"embeddings":[{"embedding":[0.1],"text_index":0,"sparse_embedding":[]}]}}`))
+	}))
+	defer server.Close()
+	model, _ := New(Config{APIKey: "k", EmbeddingBaseURL: server.URL}).EmbeddingModel(AlibabaEmbeddingTextV4)
+	res, err := model.DoEmbedMany(context.Background(), []string{"a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := res.ProviderMetadata["alibaba"].(map[string]interface{})
+	sparse, _ := meta["sparseEmbeddings"].([]map[string]interface{})
+	if len(sparse) != 1 {
+		t.Fatalf("providerMetadata = %#v", res.ProviderMetadata)
 	}
 }
