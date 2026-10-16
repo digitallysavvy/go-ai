@@ -23,3 +23,33 @@ func TestExtractWWWAuthenticateParamsBoundaryAndCase(t *testing.T) {
 		t.Errorf("suffix match accepted: %+v", got)
 	}
 }
+
+// TS SafeUrlSchema rejects javascript:, data: and vbscript: URLs; a
+// javascript:// URL has a host, so a scheme-and-host check alone accepts it.
+func TestOAuthMetadataRejectsUnsafeURLSchemes(t *testing.T) {
+	good := OAuthAuthorizationServerMetadata{
+		Issuer:                 "https://as.example",
+		AuthorizationEndpoint:  "https://as.example/authorize",
+		TokenEndpoint:          "https://as.example/token",
+		ResponseTypesSupported: []string{"code"},
+	}
+	if err := validateOAuthAuthorizationServerMetadata(good, "oauth"); err != nil {
+		t.Fatalf("good metadata rejected: %v", err)
+	}
+	for _, bad := range []string{"javascript://as.example/%0aalert(1)", "JavaScript://as.example/x", "vbscript://as.example/x", "data://as.example/x"} {
+		m := good
+		m.AuthorizationEndpoint = bad
+		if err := validateOAuthAuthorizationServerMetadata(m, "oauth"); err == nil {
+			t.Errorf("authorization_endpoint %q accepted", bad)
+		}
+		m = good
+		m.TokenEndpoint = bad
+		if err := validateOAuthAuthorizationServerMetadata(m, "oauth"); err == nil {
+			t.Errorf("token_endpoint %q accepted", bad)
+		}
+		prm := OAuthProtectedResourceMetadata{Resource: "https://r.example", AuthorizationServers: []string{bad}}
+		if err := validateOAuthProtectedResourceMetadata(prm); err == nil {
+			t.Errorf("authorization server %q accepted", bad)
+		}
+	}
+}
