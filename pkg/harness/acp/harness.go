@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -152,6 +153,41 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 		for _, key := range []string{"port", "token", "lastSeenEventId"} {
 			if _, ok := bridgeProbe[key]; !ok {
 				return fmt.Errorf("ACP lifecycle state data: bridge.%s is required.", key) //nolint:staticcheck // mirrors the TS zod requirement
+			}
+		}
+	}
+	if rawProfile, ok := probe["authenticationProfile"]; ok {
+		var profile map[string]json.RawMessage
+		if err := json.Unmarshal(rawProfile, &profile); err != nil || profile == nil {
+			return fmt.Errorf("ACP lifecycle state data: authenticationProfile must be an object.") //nolint:staticcheck // mirrors the TS zod object
+		}
+		if _, ok := profile["digest"]; !ok {
+			return fmt.Errorf("ACP lifecycle state data: authenticationProfile.digest is required.") //nolint:staticcheck // mirrors the TS zod requirement
+		}
+		enums := []struct {
+			key      string
+			required bool
+			nullable bool
+			allowed  []string
+		}{
+			{"providerKind", true, false, []string{"implementation-default", "direct", "ai-gateway"}},
+			{"providerMode", false, false, []string{"auto", "direct", "ai-gateway"}},
+			{"gatewayCredentialSource", false, true, []string{"AI_GATEWAY_API_KEY", "VERCEL_OIDC_TOKEN"}},
+		}
+		for _, e := range enums {
+			raw, present := profile[e.key]
+			if !present {
+				if e.required {
+					return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s is required.", e.key) //nolint:staticcheck // mirrors the TS zod requirement
+				}
+				continue
+			}
+			if e.nullable && string(bytes.TrimSpace(raw)) == "null" {
+				continue
+			}
+			var value string
+			if json.Unmarshal(raw, &value) != nil || !slices.Contains(e.allowed, value) {
+				return fmt.Errorf("ACP lifecycle state data: authenticationProfile.%s must be one of %s.", e.key, strings.Join(e.allowed, ", ")) //nolint:staticcheck // mirrors the TS zod enum
 			}
 		}
 	}
