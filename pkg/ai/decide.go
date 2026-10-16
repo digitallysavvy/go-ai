@@ -130,7 +130,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 	for _, t := range model.SupportedQuestionTypes() {
 		supported[t] = struct{}{}
 	}
-	for id, q := range opts.Questions {
+	for _, id := range sortedQuestionIDs(opts.Questions) {
+		q := opts.Questions[id]
 		if _, ok := supported[q.Type]; !ok {
 			return nil, &providererrors.DecisionUnsupportedQuestionTypeError{
 				QuestionID:   id,
@@ -477,7 +478,8 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 		return invalidDecisionInput("questions", "must be a nonempty question map")
 	}
 
-	for id, q := range questions {
+	for _, id := range sortedQuestionIDs(questions) {
+		q := questions[id]
 		field := fmt.Sprintf("questions.%s", id)
 		if !isDecisionInput(q.Instructions) {
 			return invalidDecisionInput(field, "instructions must be a JSON-compatible string, object, or array")
@@ -591,7 +593,8 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 		}
 	}
 
-	for id, q := range questions {
+	for _, id := range sortedQuestionIDs(questions) {
+		q := questions[id]
 		answer := answers[id]
 		if answer.Type == "refusal" {
 			continue
@@ -654,6 +657,18 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 		}
 	}
 	return nil
+}
+
+// sortedQuestionIDs returns the question IDs in sorted order so the first
+// failing question is reported deterministically (TS reports the first in
+// insertion order; Go maps have no order).
+func sortedQuestionIDs(questions map[string]provider.DecisionQuestion) []string {
+	ids := make([]string, 0, len(questions))
+	for id := range questions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func isFiniteFloat(v float64) bool {
