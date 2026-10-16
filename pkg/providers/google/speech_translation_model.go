@@ -87,15 +87,31 @@ type speechTranslationModelOptions struct {
 }
 
 func parseSpeechTranslationModelOptions(providerOptions map[string]interface{}) speechTranslationModelOptions {
-	var out speechTranslationModelOptions
-	google, _ := providerOptions["google"].(map[string]interface{})
-	if google == nil {
-		return out
-	}
-	if v, ok := google["echoTargetLanguage"].(bool); ok {
-		out.EchoTargetLanguage = &v
-	}
+	out, _ := parseSpeechTranslationModelOptionsChecked(providerOptions)
 	return out
+}
+
+// parseSpeechTranslationModelOptionsChecked mirrors TS parseProviderOptions
+// with googleSpeechTranslationModelOptions: a present value of the wrong type
+// fails with an InvalidArgumentError.
+func parseSpeechTranslationModelOptionsChecked(providerOptions map[string]interface{}) (speechTranslationModelOptions, error) {
+	var out speechTranslationModelOptions
+	raw, ok := providerOptions["google"]
+	if !ok || raw == nil {
+		return out, nil
+	}
+	google, isMap := raw.(map[string]interface{})
+	if !isMap {
+		return out, invalidGoogleFilesOptions(fmt.Errorf("google: expected object, received %T", raw))
+	}
+	if v, present := google["echoTargetLanguage"]; present && v != nil {
+		b, isBool := v.(bool)
+		if !isBool {
+			return out, invalidGoogleFilesOptions(fmt.Errorf("echoTargetLanguage: expected boolean, received %T", v))
+		}
+		out.EchoTargetLanguage = &b
+	}
+	return out, nil
 }
 
 // validateSpeechTranslationInputAudioFormat mirrors TS
@@ -166,7 +182,10 @@ func (m *SpeechTranslationModel) DoStream(ctx context.Context, opts *provider.Sp
 		}
 	}
 
-	translationOpts := parseSpeechTranslationModelOptions(opts.ProviderOptions)
+	translationOpts, err := parseSpeechTranslationModelOptionsChecked(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	var warnings []types.Warning
 

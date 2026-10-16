@@ -813,3 +813,18 @@ func TestSpeechTranslationModel_DoStream_IncludesTurnsAfterAudioEndedEarly(t *te
 		t.Fatalf("output-text-final parts = %d, want 2", finals)
 	}
 }
+
+func TestSpeechTranslationModel_DoStream_RejectsBadOptionTypes(t *testing.T) {
+	p := New(Config{APIKey: "k"})
+	m := NewSpeechTranslationModel(p, "gemini-3.5-live-translate-preview")
+	_, err := m.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream(),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+		ProviderOptions:  map[string]interface{}{"google": map[string]interface{}{"echoTargetLanguage": "yes"}},
+	})
+	var ia *providererrors.InvalidArgumentError
+	if !errors.As(err, &ia) {
+		t.Fatalf("err = %v, want InvalidArgumentError", err)
+	}
+}
