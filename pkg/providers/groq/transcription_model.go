@@ -41,9 +41,9 @@ func (m *TranscriptionModel) ModelID() string { return m.modelID }
 
 // groqTranscriptionOptions mirrors groqTranscriptionModelOptions in TS.
 type groqTranscriptionOptions struct {
-	Language               string
-	Prompt                 string
-	ResponseFormat         string
+	Language               *string
+	Prompt                 *string
+	ResponseFormat         *string
 	Temperature            *float64
 	TimestampGranularities []string
 }
@@ -55,13 +55,13 @@ func resolveGroqTranscriptionOptions(providerOptions map[string]interface{}) gro
 		return opts
 	}
 	if v, ok := raw["language"].(string); ok {
-		opts.Language = v
+		opts.Language = &v
 	}
 	if v, ok := raw["prompt"].(string); ok {
-		opts.Prompt = v
+		opts.Prompt = &v
 	}
 	if v, ok := raw["responseFormat"].(string); ok {
-		opts.ResponseFormat = v
+		opts.ResponseFormat = &v
 	}
 	switch v := raw["temperature"].(type) {
 	case float64:
@@ -121,7 +121,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	// A plain-text response (responseFormat: "text") is not JSON; only try
 	// the JSON path when the response doesn't look like bare text.
-	if groqOpts.ResponseFormat == "text" {
+	if groqOpts.ResponseFormat != nil && *groqOpts.ResponseFormat == "text" {
 		text := string(resp.Body)
 		return &types.TranscriptionResult{
 			Text: text,
@@ -212,18 +212,20 @@ func (m *TranscriptionModel) buildMultipartBody(audio []byte, mediaType string, 
 		return nil, "", err
 	}
 
-	if opts.Language != "" {
-		if err := writer.WriteField("language", opts.Language); err != nil {
+	// TS appends every defined option, including an empty string.
+	if opts.Language != nil {
+		if err := writer.WriteField("language", *opts.Language); err != nil {
 			return nil, "", err
 		}
 	}
-	if opts.Prompt != "" {
-		if err := writer.WriteField("prompt", opts.Prompt); err != nil {
+	// TS appends every defined option, including an empty string.
+	if opts.Prompt != nil {
+		if err := writer.WriteField("prompt", *opts.Prompt); err != nil {
 			return nil, "", err
 		}
 	}
-	if opts.ResponseFormat != "" {
-		if err := writer.WriteField("response_format", opts.ResponseFormat); err != nil {
+	if opts.ResponseFormat != nil {
+		if err := writer.WriteField("response_format", *opts.ResponseFormat); err != nil {
 			return nil, "", err
 		}
 	}
