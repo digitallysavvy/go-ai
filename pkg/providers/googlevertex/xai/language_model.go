@@ -192,6 +192,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// reasoningEffort, textVerbosity, strictJsonSchema) plus, as in TS
 	// getArgs, every other key spread straight into the request body.
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("googleVertex", opts.ProviderOptions)
+	warnings = append(warnings, applyDeprecatedXaiOptions(compatibleOptions, opts.ProviderOptions)...)
 	// topK is warned about in checkUnsupportedOptions.
 	_ = providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, nil, "googleVertex", opts.ProviderOptions)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
@@ -216,6 +217,39 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	}
 
 	return stripReasoningEffort(body), warnings
+}
+
+// deprecatedXaiOptionKeys are the chat option fields that v0.5.2 read from
+// providerOptions["xai"].
+var deprecatedXaiOptionKeys = []string{
+	"user", "reasoningEffort", "reasoning_effort", "reasoning-effort",
+	"textVerbosity", "text_verbosity", "text-verbosity",
+}
+
+// applyDeprecatedXaiOptions keeps the Go-only providerOptions["xai"] key
+// working for v0.5.2 callers. TS reads only googleVertex (and openaiCompatible),
+// so the key is deprecated: its chat option fields fill in what those keys
+// leave unset, other keys are not spread into the body, and a deprecated
+// warning is returned.
+func applyDeprecatedXaiOptions(compatibleOptions map[string]interface{}, providerOptions map[string]interface{}) []types.Warning {
+	xaiOptions, ok := providerOptions["xai"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	for _, key := range deprecatedXaiOptionKeys {
+		if v, present := xaiOptions[key]; present {
+			if _, set := compatibleOptions[key]; !set {
+				compatibleOptions[key] = v
+			}
+		}
+	}
+	return []types.Warning{{
+		Type:    "deprecated",
+		Setting: "providerOptions key 'xai'",
+		Feature: "providerOptions key 'xai'",
+		Details: "Use 'googleVertex' instead.",
+		Message: "Use 'googleVertex' instead.",
+	}}
 }
 
 // reasoningEffortFromTopLevel maps the shared opts.Reasoning level to the

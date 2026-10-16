@@ -269,8 +269,9 @@ func TestLanguageModel_DoGenerate_InvalidResponseSchema(t *testing.T) {
 }
 
 // TS openai-compatible getArgs: strict defaults to true, unknown
-// providerOptions[googleVertex] keys are spread into the body, an "xai" key
-// is not read, and reasoning_effort is stripped by transformRequestBody.
+// providerOptions[googleVertex] keys are spread into the body, extra keys
+// under the deprecated "xai" key are not spread, and reasoning_effort is
+// stripped by transformRequestBody.
 func TestLanguageModel_ProviderOptionsLikeTS(t *testing.T) {
 	prov, err := New(Config{Project: "p", AccessToken: "t", BaseURL: "http://unused"})
 	require.NoError(t, err)
@@ -292,4 +293,48 @@ func TestLanguageModel_ProviderOptionsLikeTS(t *testing.T) {
 	rf := body["response_format"].(map[string]interface{})
 	js := rf["json_schema"].(map[string]interface{})
 	assert.Equal(t, true, js["strict"])
+}
+
+// The Go-only "xai" options key read by v0.5.2 still fills the chat option
+// fields (googleVertex wins) and returns a deprecated warning.
+func TestLanguageModel_DeprecatedXaiOptionsKey(t *testing.T) {
+	prov, err := New(Config{Project: "p", AccessToken: "t", BaseURL: "http://unused"})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	lm := model.(*LanguageModel)
+
+	body, warnings := lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"xai": map[string]interface{}{"user": "legacy", "textVerbosity": "low", "otherFlag": 1},
+		},
+	}, false)
+	assert.Equal(t, "legacy", body["user"])
+	assert.Equal(t, "low", body["verbosity"])
+	assert.NotContains(t, body, "otherFlag")
+	found := false
+	for _, w := range warnings {
+		if w.Type == "deprecated" && w.Setting == "providerOptions key 'xai'" {
+			found = true
+		}
+	}
+	assert.True(t, found, "deprecated warning for the xai key, got %#v", warnings)
+
+	body, _ = lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"user": "new"},
+			"xai":          map[string]interface{}{"user": "legacy"},
+		},
+	}, false)
+	assert.Equal(t, "new", body["user"])
+
+	_, warnings = lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt:          types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"googleVertex": map[string]interface{}{"user": "new"}},
+	}, false)
+	for _, w := range warnings {
+		assert.NotEqual(t, "providerOptions key 'xai'", w.Setting)
+	}
 }
