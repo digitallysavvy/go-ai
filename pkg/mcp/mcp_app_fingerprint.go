@@ -25,6 +25,17 @@ func FingerprintMCPAppResource(resource MCPAppResource) string {
 		csp = resource.Meta["csp"]
 		permissions = resource.Meta["permissions"]
 	}
+	if cspMap, ok := csp.(map[string]interface{}); ok && len(resource.cspUndefined) > 0 {
+		// A malformed csp field stays on the Zod-parsed object as undefined,
+		// which canonicalJSON hashes as null.
+		withUndefined := copyMap(cspMap)
+		for _, key := range resource.cspUndefined {
+			if _, kept := withUndefined[key]; !kept {
+				withUndefined[key] = nil
+			}
+		}
+		csp = withUndefined
+	}
 	canonical := canonicalMCPAppJSON(map[string]interface{}{
 		"html":        resource.HTML,
 		"csp":         csp,
