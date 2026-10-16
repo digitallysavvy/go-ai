@@ -78,10 +78,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var submission revaiJobResponse
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/speechtotext/v1/jobs",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaRevAIJob),
+		Method:           http.MethodPost,
+		Path:             "/speechtotext/v1/jobs",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &submission)
 	if err != nil {
 		return nil, handleError(err)
@@ -97,9 +98,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var transcript revaiTranscriptResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", submission.ID),
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaRevAITranscript),
+		Method:           http.MethodGet,
+		Path:             fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", submission.ID),
+		Headers:          opts.Headers,
 	}, &transcript)
 	if err != nil {
 		return nil, handleError(err)

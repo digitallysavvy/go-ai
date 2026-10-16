@@ -135,6 +135,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		}, nil
 	}
 
+	if err := providerutils.MediaResponseValidator("groq", providerutils.SchemaGroqTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
+
 	var response groqTranscriptionResponse
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("groq: failed to decode transcription response: %w", err)

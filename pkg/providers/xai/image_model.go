@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for XAI
@@ -161,6 +162,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	if httpResp.StatusCode >= 400 {
 		return nil, newXAIProviderError("xai.image", httpResp.StatusCode, httpResp.Body)
+	}
+	if err := providerutils.MediaResponseValidator("xai.image", providerutils.SchemaXAIImage)(httpResp.StatusCode, httpResp.Headers, httpResp.Body); err != nil {
+		return nil, err
 	}
 	if err := json.Unmarshal(httpResp.Body, &resp); err != nil {
 		return nil, providererrors.NewProviderError("xai.image", 0, "",

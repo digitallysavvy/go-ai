@@ -60,10 +60,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 
 	var response gatewaySpeechResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/speech-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewaySpeech),
+		Method:           http.MethodPost,
+		Path:             "/speech-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleErrorWithContext(ctx, err)

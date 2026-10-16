@@ -195,10 +195,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var submitResp falTranscriptionQueueResponse
 	_, err = m.provider.absClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    submitPath,
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalJob),
+		Method:           http.MethodPost,
+		Path:             submitPath,
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &submitResp)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -314,6 +315,9 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 			})
 		}
 
+		if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalTranscr)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return nil, nil, nil, err
+		}
 		var result falTranscriptionResultResponse
 		if err := json.Unmarshal(resp.Body, &result); err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to decode fal transcription response: %w", err)

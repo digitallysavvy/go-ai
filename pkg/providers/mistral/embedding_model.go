@@ -106,10 +106,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	var response mistralEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/embeddings",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/v1/embeddings",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("mistral", 0, "", err.Error(), err)

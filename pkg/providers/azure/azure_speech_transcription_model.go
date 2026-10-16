@@ -197,6 +197,9 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, false)
 	}
 
+	if err := providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAzureSpeechTr)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	var parsed azureSpeechTranscribeResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, providererrors.NewProviderError(m.Provider(), resp.StatusCode, "", "failed to parse Azure Speech transcription response: "+err.Error(), err)

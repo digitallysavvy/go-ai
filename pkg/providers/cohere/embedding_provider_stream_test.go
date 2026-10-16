@@ -49,7 +49,7 @@ func TestCohereEmbeddingModelDoEmbedMany(t *testing.T) {
 		return &http.Response{
 			StatusCode: 200,
 			Header:     http.Header{"X-Request-Id": []string{"req1"}},
-			Body:       io.NopCloser(strings.NewReader(`{"embeddings":[[1,2],[3,4]],"meta":{"billed_units":{"input_tokens":7}}}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"embeddings":{"float":[[1,2],[3,4]]},"meta":{"billed_units":{"input_tokens":7}}}`)),
 		}, nil
 	})
 	d := Dimension1024

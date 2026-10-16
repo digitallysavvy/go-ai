@@ -56,10 +56,11 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		} `json:"data"`
 	}
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/rerank",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaVoyageRerank),
+		Method:           http.MethodPost,
+		Path:             "/rerank",
+		Body:             reqBody,
+		Headers:          opts.Headers,
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("voyage", 0, "", err.Error(), err)

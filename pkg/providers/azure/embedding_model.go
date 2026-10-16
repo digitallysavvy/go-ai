@@ -75,10 +75,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -123,10 +124,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response azureEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaOpenAIEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)

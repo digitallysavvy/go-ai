@@ -137,6 +137,10 @@ func IsProviderError(err error) bool {
 	return errors.As(err, &providerErr)
 }
 
+// InvalidJSONResponseMessage is the TS createJsonResponseHandler failure
+// message (an APICallError for a successful body that fails its schema).
+const InvalidJSONResponseMessage = "Invalid JSON response"
+
 // HTTPStatusDetails is implemented by errors that carry a non-2xx HTTP
 // response (internal/http.HTTPStatusError). NewProviderError uses it to
 // populate the status code, response headers and body, mirroring the data TS
@@ -155,6 +159,13 @@ type HTTPStatusDetails interface {
 // retryability honest: a 401 must not be classified as a retryable
 // no-status error.
 func NewProviderError(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
+	// A body that failed its response schema (TS createJsonResponseHandler)
+	// is already the final APICallError "Invalid JSON response"; it is not
+	// re-wrapped.
+	var inner *ProviderError
+	if errors.As(cause, &inner) && inner.Message == InvalidJSONResponseMessage {
+		return inner
+	}
 	e := &ProviderError{
 		Provider:   provider,
 		StatusCode: statusCode,

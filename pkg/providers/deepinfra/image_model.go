@@ -130,6 +130,9 @@ func (m *ImageModel) doGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if resp.StatusCode >= 400 {
 		return nil, m.parseGenerateError(resp)
 	}
+	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraImage)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 
 	var decoded struct {
 		Images []string `json:"images"`
@@ -208,6 +211,9 @@ func (m *ImageModel) doEdit(ctx context.Context, opts *provider.ImageGenerateOpt
 	}
 	if resp.StatusCode >= 400 {
 		return nil, m.parseEditError(resp)
+	}
+	if err := providerutils.MediaResponseValidator("deepinfra", providerutils.SchemaDeepInfraEdit)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
 	}
 
 	var decoded struct {

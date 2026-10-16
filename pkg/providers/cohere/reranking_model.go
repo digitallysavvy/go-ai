@@ -54,7 +54,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts)
 
 	var response cohereRerankResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{Method: http.MethodPost, Path: "/rerank", Body: reqBody, Headers: opts.Headers}, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{Method: http.MethodPost, Path: "/rerank", Body: reqBody, Headers: opts.Headers, ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCohereRerank)}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}

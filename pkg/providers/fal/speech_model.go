@@ -118,10 +118,11 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 
 	var jsonResp falSpeechResponse
 	httpResp, err := m.provider.absClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    requestPath,
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaFalSpeech),
+		Method:           http.MethodPost,
+		Path:             requestPath,
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &jsonResp)
 	if err != nil {
 		return nil, m.handleError(err)

@@ -97,10 +97,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response alibabaTextEmbeddingResponse
 	httpResp, err := m.provider.embeddingClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/services/embeddings/text-embedding/text-embedding",
-		Body:    body,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAlibabaEmbedding),
+		Method:           http.MethodPost,
+		Path:             "/services/embeddings/text-embedding/text-embedding",
+		Body:             body,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)

@@ -3,15 +3,13 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"net/http"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
-	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ImageModel implements the provider.ImageModel interface for AI Gateway
@@ -96,10 +94,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// Make API request
 	var response gatewayImageResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/image-model",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayImage),
+		Method:           http.MethodPost,
+		Path:             "/image-model",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
@@ -233,32 +232,5 @@ func (m *ImageModel) handleError(err error) error {
 }
 
 func (m *ImageModel) handleErrorWithContext(ctx context.Context, err error) error {
-	if err == nil {
-		return nil
-	}
-
-	// Check if it's a timeout error and convert to GatewayTimeoutError
-	if gatewayerrors.IsTimeoutError(err) {
-		return gatewayerrors.ConvertToGatewayTimeoutError(err, "gateway")
-	}
-
-	if gatewayerrors.IsGatewayError(err) {
-		return err
-	}
-
-	// Check if it's already a provider error
-	if providererrors.IsProviderError(err) {
-		return err
-	}
-
-	var httpStatusErr *internalhttp.HTTPStatusError
-	if errors.As(err, &httpStatusErr) {
-		return m.provider.gatewayAPIErrorWithContext(ctx, &internalhttp.Response{
-			StatusCode: httpStatusErr.StatusCode,
-			Headers:    httpStatusErr.Headers,
-			Body:       httpStatusErr.Body,
-		})
-	}
-
-	return m.provider.gatewayUnknownError(err)
+	return m.provider.handleErrorWithContext(ctx, err)
 }

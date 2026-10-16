@@ -148,10 +148,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response cohereEmbedResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/embed",
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: providerutils.CohereEmbeddingResponseValidator(m.Provider(), string(embeddingType)),
+		Method:           http.MethodPost,
+		Path:             "/embed",
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
@@ -199,14 +200,6 @@ type cohereEmbedResponse struct {
 // other formats present in the response.
 func (r cohereEmbedResponse) embeddingsFor(t EmbeddingType) ([][]float64, error) {
 	raw := bytes.TrimSpace(r.Embeddings)
-	if len(raw) > 0 && raw[0] == '[' && t == EmbeddingTypeFloat {
-		// Legacy plain float array response.
-		var out [][]float64
-		if err := json.Unmarshal(raw, &out); err != nil {
-			return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)
-		}
-		return out, nil
-	}
 	var byType map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &byType); err != nil {
 		return nil, fmt.Errorf("invalid cohere embeddings response: %w", err)

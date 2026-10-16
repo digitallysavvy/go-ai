@@ -1,0 +1,272 @@
+package providerutils
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"net/http"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
+)
+
+// This file ports the zod response schemas the TS embedding, reranking,
+// image and transcription models apply to every successful body through
+// createJsonResponseHandler. A body that does not match is an APICallError
+// "Invalid JSON response" whose cause is the TypeValidationError.
+
+// MediaResponseSchema names a TS response schema.
+type MediaResponseSchema string
+
+// Embedding, reranking, image and transcription response schemas.
+const (
+	// SchemaOpenAIEmbedding is openaiTextEmbeddingResponseSchema (also mistral).
+	SchemaOpenAIEmbedding MediaResponseSchema = "openai-embedding"
+	// SchemaCompatEmbedding is the openai-compatible embedding schema.
+	SchemaCompatEmbedding MediaResponseSchema = "compat-embedding"
+	// SchemaVoyageEmbedding is voyageEmbeddingResponseSchema.
+	SchemaVoyageEmbedding MediaResponseSchema = "voyage-embedding"
+	// SchemaPerplexityEmbedding is perplexityEmbeddingResponseSchema.
+	SchemaPerplexityEmbedding MediaResponseSchema = "perplexity-embedding"
+	// SchemaAlibabaEmbedding is alibabaTextEmbeddingResponseSchema.
+	SchemaAlibabaEmbedding MediaResponseSchema = "alibaba-embedding"
+	// SchemaCohereRerank is cohereRerankingResponseSchema.
+	SchemaCohereRerank MediaResponseSchema = "cohere-rerank"
+	// SchemaVoyageRerank is voyageRerankingResponseSchema.
+	SchemaVoyageRerank MediaResponseSchema = "voyage-rerank"
+	// SchemaTogetherRerank is togetheraiRerankingResponseSchema.
+	SchemaTogetherRerank MediaResponseSchema = "together-rerank"
+
+	SchemaOpenAIImage     MediaResponseSchema = "openai-image"
+	SchemaCompatImage     MediaResponseSchema = "compat-image"
+	SchemaTogetherImage   MediaResponseSchema = "together-image"
+	SchemaDeepInfraImage  MediaResponseSchema = "deepinfra-image"
+	SchemaDeepInfraEdit   MediaResponseSchema = "deepinfra-edit"
+	SchemaXAIImage        MediaResponseSchema = "xai-image"
+	SchemaByteDanceImage  MediaResponseSchema = "bytedance-image"
+	SchemaQuiverSVG       MediaResponseSchema = "quiverai-svg"
+	SchemaTopazSubmit     MediaResponseSchema = "topaz-submit"
+	SchemaTopazStatus     MediaResponseSchema = "topaz-status"
+	SchemaTopazDownload   MediaResponseSchema = "topaz-download"
+	SchemaAzureMAIImage   MediaResponseSchema = "azure-mai-image"
+	SchemaOpenAITranscr   MediaResponseSchema = "openai-transcription"
+	SchemaGroqTranscr     MediaResponseSchema = "groq-transcription"
+	SchemaMistralTranscr  MediaResponseSchema = "mistral-transcription"
+	SchemaElevenLabsTr    MediaResponseSchema = "elevenlabs-transcription"
+	SchemaFishAudioTr     MediaResponseSchema = "fishaudio-transcription"
+	SchemaRevAIJob        MediaResponseSchema = "revai-job"
+	SchemaRevAITranscript MediaResponseSchema = "revai-transcript"
+	SchemaXAITranscr      MediaResponseSchema = "xai-transcription"
+	SchemaAzureSpeechTr   MediaResponseSchema = "azure-speech-transcription"
+	// SchemaFalImage is falImageResponseSchema.
+	SchemaFalImage MediaResponseSchema = "fal-image"
+	// Gateway embedding, image, reranking, speech and transcription schemas.
+	SchemaGatewayEmbedding     MediaResponseSchema = "gateway-embedding"
+	SchemaGatewayImage         MediaResponseSchema = "gateway-image"
+	SchemaGatewayReranking     MediaResponseSchema = "gateway-reranking"
+	SchemaGatewaySpeech        MediaResponseSchema = "gateway-speech"
+	SchemaGatewayTranscription MediaResponseSchema = "gateway-transcription"
+	// SchemaFalSpeech is falSpeechResponseSchema.
+	SchemaFalSpeech  MediaResponseSchema = "fal-speech"
+	SchemaFalJob     MediaResponseSchema = "fal-job"
+	SchemaFalTranscr MediaResponseSchema = "fal-transcription"
+)
+
+// zIntNonneg is z.number().int().nonnegative().
+func zIntNonneg(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+	f, ok := v.(float64)
+	if !ok {
+		return zodlite.Invalid("number", v, present, path)
+	}
+	if f != math.Trunc(f) {
+		return &zodlite.Issue{Path: path, Code: "invalid_type", Expected: "int", Message: "Invalid input: expected int, received number"}
+	}
+	if f < 0 {
+		return &zodlite.Issue{Path: path, Code: "too_small", Message: "Too small: expected number to be >=0"}
+	}
+	return nil
+}
+
+// zNonEmptyStr is z.string().min(1).
+func zNonEmptyStr(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+	s, ok := v.(string)
+	if !ok {
+		return zodlite.Invalid("string", v, present, path)
+	}
+	if s == "" {
+		return &zodlite.Issue{Path: path, Code: "too_small", Message: "Too small: expected string to have >=1 characters"}
+	}
+	return nil
+}
+
+// zNonEmptyArr is z.array(n).min(1).
+func zNonEmptyArr(n zNode) zNode {
+	arr := zArr(n)
+	return func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+		if bad := arr(v, present, path); bad != nil {
+			return bad
+		}
+		if len(v.([]interface{})) == 0 {
+			return &zodlite.Issue{Path: path, Code: "too_small", Message: "Too small: expected array to have >=1 items"}
+		}
+		return nil
+	}
+}
+
+func zNumVec() zNode { return zArr(zNum) }
+
+var mediaSchemas = func() map[MediaResponseSchema]zNode {
+	openaiEmb := zObj(fl("data", zArr(zObj(fl("embedding", zNumVec())))), fl("usage", zNullish(zObj(fl("prompt_tokens", zNum)))))
+	rerankRow := zObj(fl("index", zNum), fl("relevance_score", zNum))
+	segmentOpenAI := zObj(fl("id", zNum), fl("seek", zNum), fl("start", zNum), fl("end", zNum), fl("text", zStr),
+		fl("tokens", zArr(zNum)), fl("temperature", zNum), fl("avg_logprob", zNum), fl("compression_ratio", zNum), fl("no_speech_prob", zNum))
+	details := zOptional(zStr)
+	gatewayWarning := zDiscType(map[string]zNode{
+		"unsupported":   zodlite.Typed("unsupported", fl("feature", zStr), fl("details", details)),
+		"compatibility": zodlite.Typed("compatibility", fl("feature", zStr), fl("details", details)),
+		"deprecated":    zodlite.Typed("deprecated", fl("setting", zStr), fl("message", zStr)),
+		"other":         zodlite.Typed("other", fl("message", zStr)),
+	})
+	word := zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum))
+	b64Data := zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))))
+	return map[MediaResponseSchema]zNode{
+		SchemaOpenAIEmbedding: openaiEmb,
+		SchemaCompatEmbedding: zObj(fl("data", zArr(zObj(fl("embedding", zNumVec())))), fl("usage", zNullish(zObj(fl("prompt_tokens", zNum)))),
+			fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
+		SchemaVoyageEmbedding: zObj(fl("data", zArr(zObj(fl("embedding", zNumVec()), fl("index", zNum)))), fl("model", zStr),
+			fl("usage", zNullish(zObj(fl("total_tokens", zNum))))),
+		SchemaPerplexityEmbedding: zObj(fl("data", zArr(zObj(fl("embedding", zStr)))),
+			fl("usage", zNullish(zObj(fl("prompt_tokens", zNum),
+				fl("cost", zNullish(zObj(fl("input_cost", nNum), fl("total_cost", nNum), fl("currency", nStr)))))))),
+		SchemaAlibabaEmbedding: zObj(fl("output", zObj(fl("embeddings", zArr(zObj(fl("embedding", zNumVec()), fl("text_index", zNum),
+			fl("sparse_embedding", zNullish(zArr(zObj(fl("index", zNum), fl("value", zNum), fl("token", nStr)))))))))),
+			fl("usage", zNullish(zObj(fl("total_tokens", zNum))))),
+		SchemaCohereRerank:   zObj(fl("id", nStr), fl("results", zArr(rerankRow)), fl("meta", zAny)),
+		SchemaVoyageRerank:   zObj(fl("data", zArr(rerankRow))),
+		SchemaTogetherRerank: zObj(fl("id", nStr), fl("model", nStr), fl("results", zArr(rerankRow)), fl("usage", zObj(fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum)))),
+
+		SchemaOpenAIImage: zObj(fl("created", nNum),
+			fl("data", zArr(zObj(fl("b64_json", zStr), fl("revised_prompt", nStr)))),
+			fl("background", nStr), fl("output_format", nStr), fl("size", nStr), fl("quality", nStr),
+			fl("usage", zNullish(zObj(fl("input_tokens", nNum), fl("output_tokens", nNum), fl("total_tokens", nNum),
+				fl("input_tokens_details", zNullish(zObj(fl("image_tokens", nNum), fl("text_tokens", nNum)))))))),
+		SchemaCompatImage: zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))),
+			fl("usage", zNullish(zObj(fl("input_tokens", nNum), fl("output_tokens", nNum), fl("total_tokens", nNum))))),
+		SchemaTogetherImage:  b64Data,
+		SchemaDeepInfraImage: zObj(fl("images", zArr(zStr))),
+		SchemaDeepInfraEdit:  b64Data,
+		SchemaXAIImage: zObj(fl("data", zArr(zObj(fl("url", nStr), fl("b64_json", nStr), fl("revised_prompt", nStr), fl("respect_moderation", zNullish(zodlite.Boolean))))),
+			fl("usage", zNullish(zObj(fl("cost_in_usd_ticks", nNum))))),
+		SchemaByteDanceImage: zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))),
+			fl("usage", zNullish(zObj(fl("output_tokens", nNum), fl("total_tokens", nNum))))),
+		SchemaQuiverSVG: zObj(fl("id", zNonEmptyStr), fl("created", zIntNonneg),
+			fl("data", zNonEmptyArr(zObj(fl("svg", zNonEmptyStr), fl("mime_type", zodlite.Literal("image/svg+xml")),
+				fl("loop_period_ms", zNullish(zIntNonneg)), fl("opening_animation_ms", zNullish(zIntNonneg))))),
+			fl("usage", zNullish(zObj(fl("total_tokens", zIntNonneg), fl("input_tokens", zIntNonneg), fl("output_tokens", zIntNonneg)))),
+			fl("credits", zNullish(zIntNonneg))),
+		SchemaTopazSubmit:   zObj(fl("process_id", nStr)),
+		SchemaTopazStatus:   zObj(fl("status", nStr), fl("credits", nNum), fl("output_width", nNum), fl("output_height", nNum), fl("output_format", nStr)),
+		SchemaTopazDownload: zObj(fl("download_url", nStr)),
+		SchemaAzureMAIImage: zObj(fl("created", nNum), fl("size", nStr),
+			fl("usage", zNullish(zObj(fl("num_input_text_tokens", nNum), fl("num_input_image_tokens", nNum), fl("num_output_tokens", nNum)))),
+			fl("data", zArr(zObj(fl("b64_json", zStr))))),
+
+		SchemaOpenAITranscr: zObj(fl("text", zStr), fl("language", nStr), fl("duration", nNum),
+			fl("words", zNullish(zArr(word))),
+			fl("segments", zNullish(zArr(zUnionOf(segmentOpenAI, zObj(fl("type", zodlite.Literal("transcript.text.segment")),
+				fl("id", zStr), fl("start", zNum), fl("end", zNum), fl("text", zStr), fl("speaker", zStr)))))),
+			fl("usage", zNullish(zRec(zAny)))),
+		SchemaGroqTranscr: zObj(fl("text", zStr), fl("x_groq", zObj(fl("id", zStr))), fl("task", nStr), fl("language", nStr), fl("duration", nNum),
+			fl("segments", zNullish(zArr(segmentOpenAI))), fl("words", zNullish(zArr(word)))),
+		SchemaMistralTranscr: zObj(fl("model", zStr), fl("text", zStr), fl("language", nStr),
+			fl("segments", zNullish(zArr(zObj(fl("type", zNullish(zodlite.Literal("transcription_segment"))), fl("text", zStr),
+				fl("start", zNum), fl("end", zNum), fl("score", nNum), fl("speaker_id", nStr))))),
+			fl("usage", zNullish(zObj(fl("prompt_tokens", nNum), fl("completion_tokens", nNum), fl("total_tokens", nNum),
+				fl("prompt_audio_seconds", nNum), fl("request_count", nNum))))),
+		SchemaElevenLabsTr: zObj(fl("language_code", zStr), fl("language_probability", zNum), fl("text", zStr),
+			fl("words", zNullish(zArr(zObj(fl("text", zStr), fl("type", zodlite.Enum("word", "spacing", "audio_event")),
+				fl("start", nNum), fl("end", nNum), fl("speaker_id", nStr),
+				fl("characters", zNullish(zArr(zObj(fl("text", zStr), fl("start", nNum), fl("end", nNum)))))))))),
+		SchemaFishAudioTr: zObj(fl("text", zStr), fl("language", nStr), fl("language_code", nStr), fl("duration", nNum),
+			fl("segments", zNullish(zArr(zObj(fl("text", zStr), fl("start", zNum), fl("end", zNum)))))),
+		SchemaRevAIJob: zObj(fl("id", nStr), fl("status", nStr), fl("language", nStr)),
+		SchemaRevAITranscript: zObj(fl("monologues", zNullish(zArr(zObj(fl("elements", zNullish(zArr(zObj(
+			fl("type", nStr), fl("value", nStr), fl("ts", nNum), fl("end_ts", nNum)))))))))),
+		SchemaXAITranscr: zObj(fl("text", zStr), fl("language", nStr), fl("duration", nNum),
+			fl("words", zNullish(zArr(zObj(fl("text", zStr), fl("start", zNum), fl("end", zNum), fl("speaker", nNum)))))),
+		SchemaAzureSpeechTr: zObj(fl("combinedPhrases", zArr(zObj(fl("text", zStr)))), fl("durationMilliseconds", nNum),
+			fl("phrases", zNullish(zArr(zObj(fl("text", zStr), fl("offsetMilliseconds", nNum), fl("durationMilliseconds", nNum),
+				fl("locale", nStr), fl("speaker", nNum), fl("confidence", nNum),
+				fl("words", zNullish(zArr(zObj(fl("text", zStr), fl("offsetMilliseconds", nNum), fl("durationMilliseconds", nNum)))))))))),
+		SchemaFalImage: func() zNode {
+			falImage := zObj(fl("url", zStr), fl("width", nNum), fl("height", nNum), fl("content_type", nStr), fl("file_name", nStr),
+				fl("file_data", zOptional(zStr)), fl("file_size", nNum))
+			lora := zObj(fl("url", zStr), fl("content_type", zOptional(zStr)), fl("file_name", zOptional(zNullable(zStr))),
+				fl("file_data", zOptional(zStr)), fl("file_size", zOptional(zNullable(zNum))))
+			common := []zFld{
+				fl("timings", zOptional(zObj(fl("inference", zOptional(zNum))))), fl("seed", zOptional(zNum)),
+				fl("has_nsfw_concepts", zOptional(zArr(zodlite.Boolean))), fl("prompt", zOptional(zStr)),
+				fl("nsfw_content_detected", zOptional(zArr(zodlite.Boolean))), fl("num_inference_steps", zOptional(zNum)),
+				fl("debug_latents", zOptional(lora)), fl("debug_per_pass_latents", zOptional(lora)),
+			}
+			return zUnionOf(
+				zObj(append(append([]zFld{}, common...), fl("images", zArr(falImage)))...),
+				zObj(append(append([]zFld{}, common...), fl("image", falImage))...),
+			)
+		}(),
+		SchemaGatewayEmbedding: zObj(fl("embeddings", zArr(zNumVec())), fl("usage", zNullish(zObj(fl("tokens", zNum)))),
+			fl("warnings", zOptional(zArr(gatewayWarning))), fl("providerMetadata", zOptional(zRec(zRec(zAny))))),
+		SchemaGatewayImage: zObj(fl("images", zArr(zStr)), fl("isRetryable", zOptional(zodlite.Boolean)),
+			fl("warnings", zOptional(zArr(gatewayWarning))),
+			fl("providerMetadata", zOptional(zRec(zObj(fl("images", zOptional(zArr(zAny))))))),
+			fl("usage", zOptional(zObj(fl("inputTokens", nNum), fl("outputTokens", nNum), fl("totalTokens", nNum))))),
+		SchemaGatewayReranking: zObj(fl("ranking", zArr(zObj(fl("index", zNum), fl("relevanceScore", zNum)))),
+			fl("warnings", zOptional(zArr(gatewayWarning))), fl("providerMetadata", zOptional(zRec(zRec(zAny))))),
+		SchemaGatewaySpeech: zObj(fl("audio", zStr), fl("warnings", zOptional(zArr(gatewayWarning))),
+			fl("usage", zOptional(zRec(zAny))), fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
+		SchemaGatewayTranscription: zObj(fl("text", zStr),
+			fl("segments", zOptional(zArr(zObj(fl("text", zStr), fl("startSecond", zNum), fl("endSecond", zNum))))),
+			fl("language", nStr), fl("durationInSeconds", nNum), fl("warnings", zOptional(zArr(gatewayWarning))),
+			fl("usage", zOptional(zRec(zAny))), fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
+		SchemaFalSpeech: zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
+		SchemaFalJob:    zObj(fl("request_id", nStr)),
+		SchemaFalTranscr: zObj(fl("text", zStr),
+			fl("chunks", zNullish(zArr(zObj(fl("text", zStr), fl("timestamp", zNullish(zArr(zNum))))))),
+			fl("inferred_languages", zNullish(zArr(zStr)))),
+	}
+}()
+
+// CohereEmbeddingNode is cohereTextEmbeddingResponseSchema(embeddingType).
+func cohereEmbeddingNode(embeddingType string) zNode {
+	return zObj(fl("embeddings", zObj(fl(embeddingType, zArr(zNumVec())))),
+		fl("meta", zObj(fl("billed_units", zObj(fl("input_tokens", zNum))))))
+}
+
+// NodeResponseValidator is the http.Request.ValidateResponse check for an
+// already-built schema node (TS createJsonResponseHandler(schema)).
+func NodeResponseValidator(providerName string, node zodlite.Node) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error {
+		var value interface{}
+		if err := json.Unmarshal(body, &value); err != nil {
+			return err
+		}
+		if bad := node(value, true, nil); bad != nil {
+			return bad
+		}
+		return nil
+	})
+}
+
+// MediaResponseValidator is the ValidateResponse check for a named TS schema.
+func MediaResponseValidator(providerName string, schema MediaResponseSchema) func(statusCode int, headers http.Header, body []byte) error {
+	node, ok := mediaSchemas[schema]
+	if !ok {
+		panic(fmt.Sprintf("providerutils: unknown media response schema %q", schema))
+	}
+	return NodeResponseValidator(providerName, node)
+}
+
+// CohereEmbeddingResponseValidator is cohereTextEmbeddingResponseSchema for
+// the requested embedding type ("float", "int8", ...).
+func CohereEmbeddingResponseValidator(providerName, embeddingType string) func(statusCode int, headers http.Header, body []byte) error {
+	return NodeResponseValidator(providerName, cohereEmbeddingNode(embeddingType))
+}

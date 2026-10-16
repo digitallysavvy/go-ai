@@ -167,7 +167,7 @@ type Request struct {
 	Query   map[string]string
 
 	// ValidateResponse, when set, checks a successful (non-error status) body
-	// in DoJSONResponse before it is decoded: TS createJsonResponseHandler
+	// in DoJSON and DoJSONResponse before it is decoded: TS createJsonResponseHandler
 	// (response schema). Its error is returned as is.
 	ValidateResponse func(statusCode int, headers http.Header, body []byte) error
 }
@@ -367,6 +367,12 @@ func (c *Client) DoJSON(ctx context.Context, req Request, result interface{}) er
 			StatusCode: resp.StatusCode,
 			Headers:    resp.Headers,
 			Body:       resp.Body,
+		}
+	}
+
+	if req.ValidateResponse != nil {
+		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return err
 		}
 	}
 
