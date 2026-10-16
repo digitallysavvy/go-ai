@@ -423,11 +423,8 @@ func mergeImageProviderMetadata(dst map[string]interface{}, src map[string]inter
 			current = map[string]interface{}{"images": []interface{}{}}
 			dst[providerName] = current
 		}
-		for key, value := range metadata {
-			if key != "images" {
-				current[key] = value
-			}
-		}
+		// TS keeps only `images` for non-gateway providers; extra keys are
+		// dropped (generate-image.ts).
 		current["images"] = appendImageMetadata(current["images"], metadata["images"])
 	}
 }
