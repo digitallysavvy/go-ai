@@ -89,6 +89,61 @@ func (s *chunkChannelStream) pushAsync(ctx context.Context, c provider.StreamChu
 	}
 }
 
+// stepResultTimeout bounds how long completeStep waits for the result's
+// consuming goroutine to report a closed step before falling back to the
+// driver's own view of it.
+const stepResultTimeout = 10 * time.Second
+
+// stepFinishEvent builds the OnStepEnd callback event from a finished step.
+func stepFinishEvent(callID string, step types.StepResult) ai.OnStepFinishEvent {
+	return ai.OnStepFinishEvent{
+		CallID: callID, StepNumber: step.StepNumber, Model: step.Model,
+		ModelProvider: step.Model.Provider, ModelID: step.Model.ModelID,
+		Text: step.Text, Reasoning: step.Reasoning, ReasoningText: step.ReasoningText,
+		ToolCalls: step.ToolCalls, StaticToolCalls: step.StaticToolCalls, DynamicToolCalls: step.DynamicToolCalls,
+		ToolResults: step.ToolResults, StaticToolResults: step.StaticToolResults, DynamicToolResults: step.DynamicToolResults,
+		FinishReason: step.FinishReason, RawFinishReason: step.RawFinishReason, Usage: step.Usage,
+		Warnings: step.Warnings, Sources: step.Sources, Files: step.Files,
+		ProviderMetadata: step.ProviderMetadata,
+		ResponseHeaders:  step.Response.Headers,
+		Request:          ai.GenerateStepRequest{Body: step.Request.Body},
+		Response: ai.GenerateStepResponse{
+			ID: step.Response.ID, Timestamp: step.Response.Timestamp, ModelID: step.Response.ModelID,
+			Headers: step.Response.Headers, Messages: step.Response.Messages, Body: step.Response.Body,
+		},
+		RuntimeContext: step.RuntimeContext, ToolsContext: step.ToolsContext,
+	}
+}
+
+// stepSink carries steps closed by the result's consuming goroutine back to the
+// driver: completeStep registers a waiter, pushes the finish-step chunk, and
+// receives the finished StepResult the result itself built (the one Steps()
+// reports), as TS `result.finishStep()` returns it to `lifecycle.stepEnd`.
+type stepSink struct {
+	mu      sync.Mutex
+	waiting chan types.StepResult
+}
+
+// expect registers a waiter for the next closed step.
+func (s *stepSink) expect() <-chan types.StepResult {
+	ch := make(chan types.StepResult, 1)
+	s.mu.Lock()
+	s.waiting = ch
+	s.mu.Unlock()
+	return ch
+}
+
+// deliver is ExternalStreamOptions.OnStep.
+func (s *stepSink) deliver(step types.StepResult) {
+	s.mu.Lock()
+	ch := s.waiting
+	s.waiting = nil
+	s.mu.Unlock()
+	if ch != nil {
+		ch <- step
+	}
+}
+
 // suspending reports whether the host is suspending this turn (see
 // runPromptInput.IsTurnSuspending).
 func (d *turnDriver) suspending() bool {
@@ -297,16 +352,20 @@ func runPrompt(ctx context.Context, in runPromptInput) *runPromptOutput {
 	// session's turn state is settled before Err()/Text() return, and that
 	// the channel is always drained, so the driver never blocks on push after
 	// the caller cancels.
+	steps := &stepSink{}
 	result := ai.NewStreamTextResultFromParts(context.WithoutCancel(ctx), stream, ai.ExternalStreamOptions{
-		CallID:   callID,
-		Provider: "harness:" + in.Harness.HarnessID(),
-		ModelID:  in.Model,
-		Output:   in.Output,
+		CallID:         callID,
+		Provider:       "harness:" + in.Harness.HarnessID(),
+		ModelID:        in.Model,
+		Output:         in.Output,
+		RuntimeContext: in.RuntimeContext,
+		ToolsContext:   in.ToolsContext,
+		OnStep:         steps.deliver,
 	})
 
 	done := make(chan struct{})
 	in.Callbacks = in.Callbacks.panicSafe()
-	d := &turnDriver{ctx: ctx, in: in, stream: stream, telCallID: callID}
+	d := &turnDriver{ctx: ctx, in: in, stream: stream, telCallID: callID, steps: steps}
 	go func() {
 		defer close(done)
 		d.run()
@@ -322,6 +381,10 @@ type turnDriver struct {
 	ctx    context.Context
 	in     runPromptInput
 	stream *chunkChannelStream
+
+	// steps hands the driver the StepResult the result built for each
+	// finish-step chunk it pushed (see completeStep).
+	steps *stepSink
 
 	control        PromptControl
 	activeToolSet  map[string]struct{}
@@ -1564,7 +1627,8 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metada
 	d.languageModelCallEnd(finishReason, usage, metadata)
 	d.flushBufferedResultChunks()
 
-	step := types.StepResult{
+	// The local view of the step, used if the result does not report one.
+	local := types.StepResult{
 		CallID:          d.telCallID,
 		StepNumber:      d.stepNumber,
 		Model:           types.StepModel{Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.respModelID},
@@ -1577,21 +1641,12 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metada
 		Usage:           harnessUsageToTypesUsageValue(usage),
 	}
 	if len(metadata) > 0 {
-		step.ProviderMetadata = convertProviderMetadata(ProviderMetadata(metadata))
+		local.ProviderMetadata = convertProviderMetadata(ProviderMetadata(metadata))
 	}
-	if d.in.Callbacks.OnStepEnd != nil {
-		d.in.Callbacks.OnStepEnd(d.ctx, ai.OnStepFinishEvent{
-			CallID: d.telCallID, StepNumber: step.StepNumber, Model: step.Model,
-			Text:          step.Text,
-			ReasoningText: step.ReasoningText,
-			ToolCalls:     step.ToolCalls, ToolResults: step.ToolResults,
-			FinishReason: step.FinishReason, RawFinishReason: step.RawFinishReason, Usage: step.Usage,
-			ProviderMetadata: step.ProviderMetadata,
-			RuntimeContext:   d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
-		})
-	}
-	d.telStepEnd(step.StepNumber, step)
 
+	// TS: `result.finishStep()` enqueues the finish-step part and returns the
+	// step; `lifecycle.stepEnd(step)` then reports that step.
+	waiting := d.steps.expect()
 	d.stream.push(provider.StreamChunk{
 		Type:             provider.ChunkTypeFinishStep,
 		FinishReason:     unifiedFinishReason(finishReason),
@@ -1599,6 +1654,18 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metada
 		Usage:            harnessUsageToTypesUsage(usage),
 		ProviderMetadata: marshalMetadata(metadata),
 	})
+	step := local
+	timer := time.NewTimer(stepResultTimeout)
+	select {
+	case step = <-waiting:
+	case <-timer.C:
+	}
+	timer.Stop()
+
+	if d.in.Callbacks.OnStepEnd != nil {
+		d.in.Callbacks.OnStepEnd(d.ctx, stepFinishEvent(d.telCallID, step))
+	}
+	d.telStepEnd(step.StepNumber, step)
 
 	d.completedSteps = append(d.completedSteps, step)
 	d.stepNumber++

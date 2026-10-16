@@ -299,3 +299,71 @@ func TestAgent_GenerateResultUsageIsTheTotal(t *testing.T) {
 		t.Fatalf("result does not mirror the final step: %+v", result)
 	}
 }
+
+// TS reports the result's own StepResult to onStepEnd, and onEnd carries the
+// flattened content, response messages and final step.
+func TestRunPrompt_StepEndAndEndCallbacksCarryTheFullStep(t *testing.T) {
+	var mu sync.Mutex
+	var stepEvents []ai.OnStepFinishEvent
+	var endEvent ai.OnFinishEvent
+	var ended bool
+	toolCalls := FinishReason{Unified: FinishReasonToolCalls}
+	stop := FinishReason{Unified: FinishReasonStop}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{ModelID: "resolved", Warnings: []CallWarning{{Type: "other", Message: "careful"}}},
+				&ReasoningStartPart{ID: "r"}, &ReasoningDeltaPart{ID: "r", Delta: "thinking"}, &ReasoningEndPart{ID: "r"},
+				&TextStartPart{ID: "a"}, &TextDeltaPart{ID: "a", Delta: "one"}, &TextEndPart{ID: "a"},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "Bash", Input: `{"cmd":"ls"}`, ProviderExecuted: true},
+				&ToolResultPart{ToolCallID: "c1", ToolName: "Bash", Result: "ok"},
+				&FinishStepPart{FinishReason: toolCalls, Usage: stringUsage(1, 1)},
+				&TextStartPart{ID: "b"}, &TextDeltaPart{ID: "b", Delta: "two"}, &TextEndPart{ID: "b"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(2, 3)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(3, 4)},
+			}
+		},
+	})
+	a, session := newTestAgent(t, mock, nil, Callbacks{
+		OnStepEnd: func(_ context.Context, e ai.OnStepFinishEvent) {
+			mu.Lock()
+			stepEvents = append(stepEvents, e)
+			mu.Unlock()
+		},
+		OnEnd: func(_ context.Context, e ai.OnFinishEvent) {
+			mu.Lock()
+			endEvent, ended = e, true
+			mu.Unlock()
+		},
+	}, nil)
+	res, err := a.Stream(context.Background(), agent.AgentStreamOptions{
+		AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "go", HarnessSession: session},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.Err(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(stepEvents) != 2 {
+		t.Fatalf("step events = %d", len(stepEvents))
+	}
+	first := stepEvents[0]
+	if len(first.Reasoning) != 1 || first.ReasoningText != "thinking" {
+		t.Fatalf("reasoning = %+v / %q", first.Reasoning, first.ReasoningText)
+	}
+	if len(first.Warnings) != 1 || len(first.ToolCalls) != 1 || len(first.StaticToolCalls)+len(first.DynamicToolCalls) != 1 {
+		t.Fatalf("warnings=%v static=%v dynamic=%v calls=%v", first.Warnings, first.StaticToolCalls, first.DynamicToolCalls, first.ToolCalls)
+	}
+	if first.Response.ID != first.CallID+"-0" || first.Response.ModelID != "resolved" || len(first.Response.Messages) == 0 {
+		t.Fatalf("response = %+v", first.Response)
+	}
+	if !ended || len(endEvent.Content) == 0 || endEvent.FinalStep.Text != "two" || len(endEvent.ResponseMessages) == 0 {
+		t.Fatalf("end event = %+v", endEvent)
+	}
+	if endEvent.Response.ID != endEvent.CallID+"-1" || endEvent.Model.ModelID != "resolved" {
+		t.Fatalf("end response/model = %+v / %+v", endEvent.Response, endEvent.Model)
+	}
+}

@@ -396,16 +396,28 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 		warnings = append(warnings, st.Warnings...)
 	}
 	if d.in.Callbacks.OnEnd != nil {
-		d.in.Callbacks.OnEnd(d.ctx, ai.OnFinishEvent{
+		event := ai.OnFinishEvent{
 			CallID: d.telCallID, StepNumber: finalStep.StepNumber, Model: finalStep.Model,
+			ModelProvider: finalStep.Model.Provider, ModelID: finalStep.Model.ModelID,
 			Text: finalStep.Text, Reasoning: finalStep.Reasoning, ReasoningText: finalStep.ReasoningText,
-			ToolCalls: toolCalls, ToolResults: toolResults,
 			FinishReason: finalStep.FinishReason, RawFinishReason: finalStep.RawFinishReason,
 			Usage: totalUsage, TotalUsage: totalUsage, Steps: steps,
-			Sources: sources, Files: files, Warnings: warnings,
 			ProviderMetadata: finalStep.ProviderMetadata,
-			RuntimeContext:   d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
-		})
+			ResponseHeaders:  finalStep.Response.Headers,
+			Request:          ai.GenerateStepRequest{Body: finalStep.Request.Body},
+			Response: ai.GenerateStepResponse{
+				ID: finalStep.Response.ID, Timestamp: finalStep.Response.Timestamp, ModelID: finalStep.Response.ModelID,
+				Headers: finalStep.Response.Headers, Messages: finalStep.Response.Messages, Body: finalStep.Response.Body,
+			},
+			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
+		}
+		var responseMessages []types.Message
+		for _, st := range steps {
+			responseMessages = append(responseMessages, st.Response.Messages...)
+		}
+		event.SetAggregatesFromSteps(steps, responseMessages)
+		event.Usage = totalUsage
+		d.in.Callbacks.OnEnd(d.ctx, event)
 	}
 	if d.telCtx == nil {
 		return
