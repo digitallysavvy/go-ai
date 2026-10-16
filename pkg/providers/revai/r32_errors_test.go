@@ -38,3 +38,15 @@ func TestDownloadErrorsKeepEmptyMessageAndStatuslessFailures(t *testing.T) {
 		t.Fatalf("statusless download error was wrapped: %v", got)
 	}
 }
+
+// JS trim keeps U+0085 and strips NBSP/BOM, unlike Go's TrimSpace.
+func TestSegmentTextTrimFollowsJSWhitespace(t *testing.T) {
+	val := func(s string) revaiNullableString { return revaiNullableString{Str: s, Set: true} }
+	ts, end := 0.0, 1.0
+	_, segments, _ := convertRevaiTranscript(revaiTranscriptResponse{Monologues: []revaiTranscriptMonologue{{
+		Elements: []revaiTranscriptElement{{Type: "text", Value: val("\u0085hi\u00a0\ufeff"), TS: &ts, EndTS: &end}},
+	}}})
+	if len(segments) != 1 || segments[0].Text != "\u0085hi" {
+		t.Fatalf("segments = %+v", segments)
+	}
+}
