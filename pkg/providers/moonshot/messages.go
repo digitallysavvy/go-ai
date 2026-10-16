@@ -366,6 +366,15 @@ func convertMoonshotFilePart(fc types.FileContent) (map[string]interface{}, erro
 // (e.g. an unresolved "image/*" wildcard from supportedUrls negotiation).
 func formatMoonshotMediaURL(fd types.FileData, supportedMediaTypes []string, topLevelMediaType string) (string, error) {
 	mediaType := fd.MediaType
+	if fd.Type == types.FileDataTypeData {
+		// TS resolveFullMediaType: a bare or wildcard type on inline bytes
+		// is sniffed from the bytes.
+		resolved, err := prompt.ResolveFullMediaType(mediaType, fd.Data, true)
+		if err != nil {
+			return "", err
+		}
+		mediaType = resolved
+	}
 	allowed := containsMoonshotMediaType(supportedMediaTypes, mediaType)
 	if !allowed && fd.Type == types.FileDataTypeURL && (mediaType == topLevelMediaType || mediaType == topLevelMediaType+"/*") {
 		allowed = true
