@@ -252,17 +252,17 @@ func (m *ImageModel) statusError(status int, headers http.Header, body []byte) e
 // "loc.joined: msg" lines) and {message:string}; any other body gives the
 // HTTP status text.
 func falImageErrorMessage(status int, body []byte) string {
-	var parsed struct {
-		Detail  *[]json.RawMessage `json:"detail"`
-		Message *string            `json:"message"`
-	}
-	if json.Unmarshal(body, &parsed) != nil {
+	// Decode field by field: a mistyped `detail` (a string) must not hide a
+	// valid `message`, which the second union branch still accepts.
+	var top map[string]json.RawMessage
+	if json.Unmarshal(body, &top) != nil || top == nil {
 		return http.StatusText(status)
 	}
-	if parsed.Detail != nil {
-		lines := make([]string, 0, len(*parsed.Detail))
+	var detail []json.RawMessage
+	if raw, ok := top["detail"]; ok && json.Unmarshal(raw, &detail) == nil && detail != nil {
+		lines := make([]string, 0, len(detail))
 		valid := true
-		for _, raw := range *parsed.Detail {
+		for _, raw := range detail {
 			var d struct {
 				Loc  *[]string `json:"loc"`
 				Msg  *string   `json:"msg"`
@@ -278,8 +278,9 @@ func falImageErrorMessage(status int, body []byte) string {
 			return strings.Join(lines, "\n")
 		}
 	}
-	if parsed.Message != nil {
-		return *parsed.Message
+	var message *string
+	if raw, ok := top["message"]; ok && json.Unmarshal(raw, &message) == nil && message != nil {
+		return *message
 	}
 	return http.StatusText(status)
 }
