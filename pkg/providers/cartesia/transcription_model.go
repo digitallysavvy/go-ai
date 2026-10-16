@@ -77,10 +77,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 	var response cartesiaTranscriptionResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/stt",
-		Body:    body,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCartesiaTranscription),
+		Method:           http.MethodPost,
+		Path:             "/stt",
+		Body:             body,
+		Headers:          internalhttp.MergeHeaders(opts.Headers, map[string]string{"Content-Type": contentType}),
 	}, &response)
 	if err != nil {
 		return nil, handleError(err)

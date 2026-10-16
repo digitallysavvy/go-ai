@@ -266,9 +266,10 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		UploadURL string `json:"upload_url"`
 	}
 	_, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   "/upload",
-		Body:   opts.Audio,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAIUpload),
+		Method:           http.MethodPost,
+		Path:             "/upload",
+		Body:             opts.Audio,
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
 			"Content-Type": "application/octet-stream",
 		}),
@@ -289,10 +290,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Status string `json:"status"`
 	}
 	_, err = m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/transcript",
-		Body:    body,
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaAssemblyAISubmit),
+		Method:           http.MethodPost,
+		Path:             "/transcript",
+		Body:             body,
+		Headers:          opts.Headers,
 	}, &submitResult)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -320,9 +322,12 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 
 		var raw map[string]interface{}
 		resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodGet,
-			Path:    "/transcript/" + transcriptID,
-			Headers: headers,
+			// TS parses the polled transcript with schema.parse: a mismatch is
+			// the validation error itself, not "Invalid JSON response".
+			ValidateResponse: providerutils.MediaSchemaParser(providerutils.SchemaAssemblyAITranscript),
+			Method:           http.MethodGet,
+			Path:             "/transcript/" + transcriptID,
+			Headers:          headers,
 		}, &raw)
 		if err != nil {
 			return nil, nil, m.handleError(err)
@@ -337,7 +342,7 @@ func (m *TranscriptionModel) waitForCompletion(ctx context.Context, transcriptID
 			if errMsg == "" {
 				errMsg = "Unknown error"
 			}
-			return nil, nil, fmt.Errorf("assemblyai: transcription failed: %s", errMsg)
+			return nil, nil, fmt.Errorf("Transcription failed: %s", errMsg) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 
 		select {
@@ -462,6 +467,10 @@ func (m *TranscriptionModel) handleError(err error) error {
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
 		providerErr.ResponseBody = string(statusErr.Body)
 		return providerErr
+	}
+	var validationErr *providererrors.ValidationError
+	if errors.As(err, &validationErr) {
+		return err // TS throws the schema.parse failure itself
 	}
 	return providererrors.NewProviderError("assemblyai", 0, "", err.Error(), err)
 }

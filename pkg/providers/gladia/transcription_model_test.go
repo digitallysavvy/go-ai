@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func TestTranscriptionModel_DoTranscribe(t *testing.T) {
@@ -192,7 +193,7 @@ func TestTranscriptionModel_JobFailure(t *testing.T) {
 		Audio:    []byte("a"),
 		MimeType: "audio/mpeg",
 	})
-	if err == nil || !strings.Contains(err.Error(), "transcription job failed") {
+	if err == nil || !strings.Contains(err.Error(), "Transcription job failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -325,5 +326,47 @@ func TestTranscriptionModel_ModelInfo(t *testing.T) {
 
 	if tm.SpecificationVersion() != "v4" {
 		t.Errorf("Expected specification version 'v4', got '%s'", tm.SpecificationVersion())
+	}
+}
+
+// TS createJsonResponseHandler on the upload, init and result bodies: a body
+// that does not match is "Invalid JSON response"; a done job without a result
+// is the TranscriptionResultEmpty error.
+func TestTranscriptionModel_ResponseSchemasAndEmptyResult(t *testing.T) {
+	run := func(t *testing.T, handler http.HandlerFunc) error {
+		t.Helper()
+		server := httptest.NewServer(handler)
+		defer server.Close()
+		model, _ := New(Config{APIKey: "k", BaseURL: server.URL + "/v2"}).TranscriptionModel("default")
+		_, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/mpeg"})
+		return err
+	}
+	handler := func(upload, init, result string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case strings.HasSuffix(r.URL.Path, "/upload"):
+				_, _ = w.Write([]byte(upload))
+			case strings.HasSuffix(r.URL.Path, "/pre-recorded"):
+				_, _ = w.Write([]byte(strings.ReplaceAll(init, "BASE", "http://"+r.Host)))
+			default:
+				_, _ = w.Write([]byte(result))
+			}
+		}
+	}
+	okUpload, okInit := `{"audio_url":"u"}`, `{"result_url":"BASE/v2/pre-recorded/1"}`
+
+	for name, h := range map[string]http.HandlerFunc{
+		"upload": handler(`{}`, okInit, `{}`),
+		"init":   handler(okUpload, `{"result_url":1}`, `{}`),
+		"result": handler(okUpload, okInit, `{"status":"finished"}`),
+	} {
+		err := run(t, h)
+		if !providerutils.IsInvalidJSONResponse(err) {
+			t.Errorf("%s: error = %v, want Invalid JSON response", name, err)
+		}
+	}
+	err := run(t, handler(okUpload, okInit, `{"status":"done","result":null}`))
+	if err == nil || !strings.Contains(err.Error(), "Transcription result is empty") {
+		t.Errorf("empty result: error = %v", err)
 	}
 }

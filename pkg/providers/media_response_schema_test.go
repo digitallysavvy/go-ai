@@ -11,6 +11,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providers/alibaba"
 	"github.com/digitallysavvy/go-ai/pkg/providers/azure"
+	"github.com/digitallysavvy/go-ai/pkg/providers/cartesia"
 	"github.com/digitallysavvy/go-ai/pkg/providers/cohere"
 	"github.com/digitallysavvy/go-ai/pkg/providers/deepinfra"
 	"github.com/digitallysavvy/go-ai/pkg/providers/elevenlabs"
@@ -157,6 +158,23 @@ func TestMediaModelResponseSchemaValidation(t *testing.T) {
 		}},
 		{"revai/transcription", `{"id":1}`, func(u string) func() error {
 			return transcribeCall(revai.New(revai.Config{BaseURL: u, APIKey: "k"}).TranscriptionModel("m"))
+		}},
+		{"cartesia/transcription", "", func(u string) func() error {
+			return transcribeCall(cartesia.New(cartesia.Config{BaseURL: u, APIKey: "k"}).TranscriptionModel("ink-whisper"))
+		}},
+		{"cartesia/streaming-token", `{"token":""}`, func(u string) func() error {
+			return func() error {
+				m, err := cartesia.New(cartesia.Config{BaseURL: u, APIKey: "k"}).TranscriptionModel("ink-2")
+				if err != nil {
+					return err
+				}
+				rate := 16000
+				_, err = m.(interface {
+					DoStream(context.Context, *provider.TranscriptionStreamOptions) (*provider.TranscriptionStreamResult, error)
+				}).DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+					Audio: silentAudio{}, InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: &rate}})
+				return err
+			}
 		}},
 		{"quiverai/image", "", func(u string) func() error {
 			return imageCall(quiverai.New(quiverai.Config{BaseURL: u, APIKey: "k"}).ImageModel("m"))

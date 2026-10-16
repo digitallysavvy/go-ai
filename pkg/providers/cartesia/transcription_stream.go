@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -101,16 +102,13 @@ func (m *TranscriptionModel) createStreamingAccessToken(ctx context.Context, hea
 		Token string `json:"token"`
 	}
 	if err := m.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/access-token",
-		Body:    map[string]interface{}{"grants": map[string]interface{}{"stt": true}},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaCartesiaAccessToken),
+		Method:           http.MethodPost,
+		Path:             "/access-token",
+		Body:             map[string]interface{}{"grants": map[string]interface{}{"stt": true}},
+		Headers:          headers,
 	}, &resp); err != nil {
 		return "", handleError(err)
-	}
-	// TS validates the response with z.object({token: z.string().min(1)}).
-	if resp.Token == "" {
-		return "", providererrors.NewInvalidResponseDataError(resp, "Invalid JSON response: token must be a non-empty string")
 	}
 	return resp.Token, nil
 }

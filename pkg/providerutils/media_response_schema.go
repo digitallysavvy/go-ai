@@ -65,6 +65,18 @@ const (
 	SchemaGatewayReranking     MediaResponseSchema = "gateway-reranking"
 	SchemaGatewaySpeech        MediaResponseSchema = "gateway-speech"
 	SchemaGatewayTranscription MediaResponseSchema = "gateway-transcription"
+	// AssemblyAI upload/submit (createJsonResponseHandler) and transcript
+	// (a bare schema.parse) bodies; Gladia upload, init and result bodies.
+	SchemaAssemblyAIUpload     MediaResponseSchema = "assemblyai-upload"
+	SchemaAssemblyAISubmit     MediaResponseSchema = "assemblyai-submit"
+	SchemaAssemblyAITranscript MediaResponseSchema = "assemblyai-transcript"
+	SchemaGladiaUpload         MediaResponseSchema = "gladia-upload"
+	SchemaGladiaInit           MediaResponseSchema = "gladia-init"
+	SchemaGladiaResult         MediaResponseSchema = "gladia-result"
+	// SchemaCartesiaTranscription and SchemaCartesiaAccessToken are
+	// cartesiaTranscriptionResponseSchema and cartesiaAccessTokenResponseSchema.
+	SchemaCartesiaTranscription MediaResponseSchema = "cartesia-transcription"
+	SchemaCartesiaAccessToken   MediaResponseSchema = "cartesia-access-token"
 	// SchemaFalSpeech is falSpeechResponseSchema.
 	SchemaFalSpeech  MediaResponseSchema = "fal-speech"
 	SchemaFalJob     MediaResponseSchema = "fal-job"
@@ -126,6 +138,8 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		"deprecated":    zodlite.Typed("deprecated", fl("setting", zStr), fl("message", zStr)),
 		"other":         zodlite.Typed("other", fl("message", zStr)),
 	})
+	assemblyStatus := zodlite.Enum("queued", "processing", "completed", "error")
+	assemblyWord := zObj(fl("start", zNum), fl("end", zNum), fl("text", zStr), fl("confidence", nNum), fl("speaker", nStr), fl("channel", nStr))
 	word := zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum))
 	b64Data := zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))))
 	return map[MediaResponseSchema]zNode{
@@ -227,8 +241,31 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("segments", zOptional(zArr(zObj(fl("text", zStr), fl("startSecond", zNum), fl("endSecond", zNum))))),
 			fl("language", nStr), fl("durationInSeconds", nNum), fl("warnings", zOptional(zArr(gatewayWarning))),
 			fl("usage", zOptional(zRec(zAny))), fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
-		SchemaFalSpeech: zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
-		SchemaFalJob:    zObj(fl("request_id", nStr)),
+		SchemaAssemblyAIUpload: zObj(fl("upload_url", zStr)),
+		SchemaAssemblyAISubmit: zObj(fl("id", zStr), fl("status", assemblyStatus)),
+		SchemaAssemblyAITranscript: zObj(fl("id", zStr), fl("status", assemblyStatus), fl("text", nStr), fl("language_code", nStr),
+			fl("speech_model_used", nStr), fl("words", zNullish(zArr(assemblyWord))),
+			fl("utterances", zNullish(zArr(zObj(fl("start", zNum), fl("end", zNum), fl("text", zStr), fl("confidence", nNum),
+				fl("speaker", nStr), fl("channel", nStr), fl("words", zNullish(zArr(assemblyWord))))))),
+			fl("sentiment_analysis_results", zNullish(zArr(zObj(fl("text", zStr), fl("start", nNum), fl("end", nNum),
+				fl("sentiment", zStr), fl("confidence", nNum), fl("speaker", nStr))))),
+			fl("entities", zNullish(zArr(zObj(fl("entity_type", zStr), fl("text", zStr), fl("start", nNum), fl("end", nNum))))),
+			fl("content_safety_labels", zNullish(zRec(zAny))), fl("iab_categories_result", zNullish(zRec(zAny))),
+			fl("auto_highlights_result", zNullish(zRec(zAny))), fl("audio_duration", nNum), fl("error", nStr)),
+		SchemaGladiaUpload: zObj(fl("audio_url", zStr)),
+		SchemaGladiaInit:   zObj(fl("result_url", zStr)),
+		SchemaGladiaResult: zObj(fl("status", zodlite.Enum("queued", "processing", "done", "error")),
+			fl("result", zNullish(zObj(
+				fl("metadata", zObj(fl("audio_duration", zNum))),
+				fl("transcription", zObj(fl("full_transcript", zStr), fl("languages", zArr(zStr)),
+					fl("utterances", zArr(zObj(fl("start", zNum), fl("end", zNum), fl("text", zStr),
+						fl("speaker", zNullish(zUnionOf(zStr, zNum))), fl("confidence", nNum), fl("language", nStr),
+						fl("words", zNullish(zArr(zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum), fl("confidence", nNum)))))))))))))),
+		SchemaCartesiaTranscription: zObj(fl("text", zStr), fl("language", nStr), fl("duration", nNum),
+			fl("words", zNullish(zArr(zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum)))))),
+		SchemaCartesiaAccessToken: zObj(fl("token", zNonEmptyStr)),
+		SchemaFalSpeech:           zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
+		SchemaFalJob:              zObj(fl("request_id", nStr)),
 		SchemaFalTranscr: zObj(fl("text", zStr),
 			fl("chunks", zNullish(zArr(zObj(fl("text", zStr), fl("timestamp", zNullish(zArr(zNum))))))),
 			fl("inferred_languages", zNullish(zArr(zStr)))),
@@ -263,6 +300,31 @@ func MediaResponseValidator(providerName string, schema MediaResponseSchema) fun
 		panic(fmt.Sprintf("providerutils: unknown media response schema %q", schema))
 	}
 	return NodeResponseValidator(providerName, node)
+}
+
+// MediaSchemaParser is the check for a body parsed with a bare schema.parse
+// (TS throws the TypeValidationError / ZodError itself, not an APICallError
+// "Invalid JSON response"): the failure is the typed validation (or JSON
+// parse) error.
+func MediaSchemaParser(schema MediaResponseSchema) func(statusCode int, headers http.Header, body []byte) error {
+	node, ok := mediaSchemas[schema]
+	if !ok {
+		panic(fmt.Sprintf("providerutils: unknown media response schema %q", schema))
+	}
+	return func(_ int, _ http.Header, body []byte) error {
+		var value interface{}
+		cause := json.Unmarshal(body, &value)
+		if cause == nil {
+			if bad := node(value, true, nil); bad != nil {
+				cause = bad
+			}
+		}
+		if cause == nil {
+			return nil
+		}
+		_, typed := ChunkParseFailure(string(body), cause)
+		return typed
+	}
 }
 
 // CohereEmbeddingResponseValidator is cohereTextEmbeddingResponseSchema for
