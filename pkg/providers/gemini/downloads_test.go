@@ -280,3 +280,41 @@ func TestBuildRequest_VertexGemini3GCSToolResultSkipsDownload(t *testing.T) {
 		t.Error("unsupported gs:// URL must not reach the downloader")
 	}
 }
+
+// TS detectMediaType({topLevelType:'image'}) needs full signatures (GIF87a/
+// GIF89a, BMP with zero reserved bytes, avif/heic ftyp brands) and the Blob
+// type keeps the lowercased Content-Type with its parameters.
+func TestDownloadToolResultFiles_TSMediaTypeDetectionAndBlobType(t *testing.T) {
+	run := func(data []byte, contentType, mediaType string) string {
+		m := &LanguageModel{cfg: Config{
+			ToolResultDownload: func(context.Context, string, int64) ([]byte, string, error) {
+				return data, contentType, nil
+			},
+		}}
+		out, err := m.downloadToolResultFiles(context.Background(), []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "c", ToolName: "t",
+				Output: &types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: []types.ToolResultContentBlock{
+					types.FileContentBlock{URL: "https://example.com/f", MediaType: mediaType},
+				}},
+			}},
+		}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out[0].Content[0].(types.ToolResultContent).Output.Content[0].(types.FileContentBlock).MediaType
+	}
+	if got := run([]byte("GIF-not-a-gif"), "", "image/*"); got != "image/*" {
+		t.Errorf("bare GIF prefix detected as %q", got)
+	}
+	if got := run([]byte("BM plain text"), "", "image/*"); got != "image/*" {
+		t.Errorf("bare BM prefix detected as %q", got)
+	}
+	if got := run([]byte("GIF89a...."), "", "image/*"); got != "image/gif" {
+		t.Errorf("GIF89a detected as %q", got)
+	}
+	if got := run([]byte("not an image"), "Text/Plain; Charset=UTF-8", "text/*"); got != "text/plain; charset=utf-8" {
+		t.Errorf("blob type = %q, want lowercased with parameters", got)
+	}
+}
