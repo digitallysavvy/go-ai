@@ -35,3 +35,14 @@ func TestResponsesUnknownProviderToolIsDroppedWithoutWarning(t *testing.T) {
 		}
 	}
 }
+
+// TS lists programmatic_tool_calling among the provider tool names a
+// toolChoice of type 'tool' maps to {type: <name>}.
+func TestResponsesToolChoiceProgrammaticToolCalling(t *testing.T) {
+	tools := []types.Tool{{Name: "openai.programmatic_tool_calling", ProviderID: "openai.programmatic_tool_calling", Type: "provider"}}
+	got := convertResponsesToolChoice(types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "openai.programmatic_tool_calling"}, tools)
+	m, ok := got.(map[string]interface{})
+	if !ok || m["type"] != "programmatic_tool_calling" || len(m) != 1 {
+		t.Fatalf("tool choice = %#v", got)
+	}
+}
