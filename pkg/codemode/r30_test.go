@@ -23,3 +23,26 @@ func TestR30StripUnterminatedTypeArgsInsideBlockIsRejected(t *testing.T) {
 		t.Errorf("valid type args stripped to %q", got)
 	}
 }
+
+// Expected values are the output of Node 24.20 stripTypeScriptTypes on
+// `async function __runUser__(){\n<src>\n}`. With an accessibility/readonly/
+// override modifier erased, a member that would now start with `*` or `[`
+// gets a `;` over the first erased character, so it cannot continue the
+// previous member's initializer.
+func TestR30StripGuardsMembersStartingWithStarOrBracket(t *testing.T) {
+	for _, tc := range [][2]string{
+		{"class A { x = 1\n  private *m(){} } return A;", "class A { x = 1\n  ;       *m(){} } return A;"},
+		{"class A { x = 1\n  public [Symbol.iterator]() {} } return A;", "class A { x = 1\n  ;      [Symbol.iterator]() {} } return A;"},
+		{"class A { readonly [k] = 1 } return A;", "class A { ;        [k] = 1 } return A;"},
+		{"class A { private async *m(){} } return A;", "class A { ;       async *m(){} } return A;"},
+		{"class A { private async m(){} } return A;", "class A {         async m(){} } return A;"},
+		{"class A { public static *m(){} } return A;", "class A {        static *m(){} } return A;"},
+		// An anonymous class: `extends` is the heritage clause, not the name.
+		{"const x = class extends B<T> {}; return x;", "const x = class extends B    {}; return x;"},
+	} {
+		got, err := stripTypeScriptAnnotations(tc[0])
+		if err != nil || got != tc[1] {
+			t.Errorf("%q\n got  %q (err %v)\n want %q", tc[0], got, err, tc[1])
+		}
+	}
+}
