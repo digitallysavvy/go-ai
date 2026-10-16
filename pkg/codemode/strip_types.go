@@ -3,6 +3,7 @@ package codemode
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // stripTypeScriptAnnotations removes type-only TypeScript syntax from
@@ -129,10 +130,11 @@ func blankDropped(src string, kept []tsToken) string {
 	end := 0
 	blank := func(from, to int) {
 		for _, r := range runes[from:to] {
-			switch r {
-			case '\n', '\r', '\u2028', '\u2029':
+			// Only visible characters become spaces; whitespace (tabs
+			// included) and line breaks stay, like Node.
+			if unicode.IsSpace(r) || r == '\uFEFF' {
 				b.WriteRune(r)
-			default:
+			} else {
 				b.WriteByte(' ')
 			}
 		}

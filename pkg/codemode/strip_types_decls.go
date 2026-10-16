@@ -1,6 +1,9 @@
 package codemode
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // skipInterfaceDecl returns the index just past a balanced
 // `interface ... { ... }` block starting at tokens[i] (the "interface"
@@ -74,10 +77,83 @@ func skipTypeAlias(tokens []tsToken, i int) int {
 	// The aliased type ends where the type grammar ends (a line break can end
 	// it), not at the next `;`.
 	end := consumeTypeExpr(tokens, eq+1, false)
+	// Node takes a `;` on a later line as the alias's terminator too
+	// (`type T = {...}` newline `;(async () => 1)()` erases both).
 	if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
 		return semi + 1
 	}
 	return end
+}
+
+// consumeOptionalSemicolon returns the index past a `;` that ends the
+// statement on the same line as tokens[end-1]; a `;` on a later line is a
+// separate empty statement and stays.
+func consumeOptionalSemicolon(tokens []tsToken, end int) int {
+	for k := end; k < len(tokens); k++ {
+		switch tokens[k].kind {
+		case "space", "comment":
+			if strings.ContainsAny(tokens[k].text, "\n\r") {
+				return end
+			}
+		case "punct":
+			if tokens[k].text == ";" {
+				return k + 1
+			}
+			return end
+		default:
+			return end
+		}
+	}
+	return end
+}
+
+// declareVarEnd returns the end of an ambient `declare var/let/const a: T, b:
+// U` statement, which a line break ends when no `;` follows.
+func declareVarEnd(tokens []tsToken, i int) int {
+	for {
+		name := nextSignificant(tokens, i)
+		if name < 0 || tokens[name].kind != "ident" {
+			return scanToStatementEnd(tokens, i)
+		}
+		i = name + 1
+		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
+			i = consumeTypeExpr(tokens, c+1, false)
+		}
+		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == "," {
+			i = c + 1
+			continue
+		}
+		return consumeOptionalSemicolon(tokens, i)
+	}
+}
+
+// declareFunctionEnd returns the end of an ambient `declare function f<T>(a:
+// A): R` statement.
+func declareFunctionEnd(tokens []tsToken, i int) int {
+	if s := nextSignificant(tokens, i); s >= 0 && tokens[s].kind == "punct" && tokens[s].text == "*" {
+		i = s + 1
+	}
+	if n := nextSignificant(tokens, i); n >= 0 && tokens[n].kind == "ident" {
+		i = n + 1
+	}
+	if lt := nextSignificant(tokens, i); lt >= 0 && tokens[lt].kind == "punct" && tokens[lt].text == "<" {
+		if end, ok := consumeAngleTypeArgsBalanced(tokens, lt); ok {
+			i = end
+		}
+	}
+	open := nextSignificant(tokens, i)
+	if open < 0 || tokens[open].kind != "punct" || tokens[open].text != "(" {
+		return scanToStatementEnd(tokens, i)
+	}
+	closeIdx := matchParen(tokens, open)
+	if closeIdx < 0 {
+		return scanToStatementEnd(tokens, i)
+	}
+	i = closeIdx + 1
+	if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
+		i = consumeTypeExpr(tokens, c+1, false)
+	}
+	return consumeOptionalSemicolon(tokens, i)
 }
 
 // scanToStatementEnd returns the index just past the next top-level (at
@@ -130,8 +206,10 @@ func handleDeclare(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		return i + 1, nil
 	}
 	switch tokens[next].text {
-	case "var", "let", "const", "function":
-		return scanToStatementEnd(tokens, next+1), nil
+	case "var", "let", "const":
+		return declareVarEnd(tokens, next+1), nil
+	case "function":
+		return declareFunctionEnd(tokens, next+1), nil
 	case "class", "interface", "namespace", "module", "enum", "global":
 		idx := findBraceOrSemi(tokens, next+1)
 		if idx < len(tokens) && tokens[idx].kind == "punct" && tokens[idx].text == "{" {

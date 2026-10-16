@@ -329,9 +329,7 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		// A bodyless signature (an overload or abstract method) ends with
 		// its return type, or with a `;` after it.
 		end := i
-		if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
-			end = semi + 1
-		}
+		end = consumeOptionalSemicolon(tokens, end)
 		*out = (*out)[:memberStart]
 		return end, nil
 	}
@@ -343,9 +341,7 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
 			end = consumeTypeExpr(tokens, c+1, false)
 		}
-		if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
-			end = semi + 1
-		}
+		end = consumeOptionalSemicolon(tokens, end)
 		*out = (*out)[:memberStart]
 		return end, nil
 	}

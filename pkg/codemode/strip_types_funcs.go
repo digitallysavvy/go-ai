@@ -302,6 +302,15 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 		}
 		i = j + 1
 	}
+	// Variance modifiers (`<in T>`) are only valid on classes, interfaces
+	// and type aliases; Node rejects them on a function.
+	if lt := nextSignificant(tokens, i); lt >= 0 && tokens[lt].kind == "punct" && tokens[lt].text == "<" {
+		if v := nextSignificant(tokens, lt+1); v >= 0 && tokens[v].kind == "ident" && (tokens[v].text == "in" || tokens[v].text == "out") {
+			if n := nextSignificant(tokens, v+1); n >= 0 && tokens[n].kind == "ident" {
+				return v, errUnsupportedTSSyntax("variance modifier on a function")
+			}
+		}
+	}
 	i = stripOptionalTypeParams(tokens, i, out)
 
 	open := nextSignificant(tokens, i)

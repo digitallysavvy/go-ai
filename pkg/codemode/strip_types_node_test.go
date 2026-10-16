@@ -1,6 +1,7 @@
 package codemode
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"os"
 	"testing"
@@ -15,11 +16,18 @@ import (
 // annotations, function types, ASI without semicolons, class members, object
 // methods, template interpolations, generics and `!`.
 //
-// Known leniencies are left out of the file: a line break before `as`
-// (`a as T\nas U`) and variance modifiers on a function (`f<in T>`), which Node
-// rejects and this stripper reads anyway.
+// The cases are the base snippets plus variants (no semicolons, CRLF, tab
+// indentation, wrapped in a block, doubled spaces). Known leniencies are left
+// out: a line break before `as` (`a as T` newline `as U`), which Node rejects
+// and this stripper reads anyway, and Node's habit of moving a `;` to the start
+// of an erased type alias when `;` newline `(` follows it.
 func TestStripTypeScriptAnnotationsMatchesNode(t *testing.T) {
-	raw, err := os.ReadFile("testdata/strip_node_cases.json")
+	f, err := os.Open("testdata/strip_node_cases.json.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	zr, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,10 +36,10 @@ func TestStripTypeScriptAnnotationsMatchesNode(t *testing.T) {
 		Out string `json:"out"`
 		OK  bool   `json:"ok"`
 	}
-	if err := json.Unmarshal(raw, &cases); err != nil {
+	if err := json.NewDecoder(zr).Decode(&cases); err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) < 250 {
+	if len(cases) < 1500 {
 		t.Fatalf("fixture has %d cases", len(cases))
 	}
 	for _, c := range cases {

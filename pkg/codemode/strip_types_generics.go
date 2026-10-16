@@ -228,16 +228,25 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 	}
 	depth := 1
 	contentSeen := false
+	var prev *tsToken
 	j := i + 1
 	for j < len(tokens) {
 		t := tokens[j]
 		if t.kind != "punct" {
 			if t.kind != "space" && t.kind != "comment" {
 				contentSeen = true
+				// Two operands in a row (`a < b` newline `y = c > (d)`) are
+				// not a type list: a type cannot be followed by a bare name.
+				if depth == 1 && prev != nil && prev.text != "const" && typeOperandEnds(prev) && !typeContinuesAfterNewline(t) &&
+					(t.kind == "ident" || t.kind == "string" || t.kind == "number") && !typeOperandStarts(t) {
+					return i, false
+				}
+				prev = &tokens[j]
 			}
 			j++
 			continue
 		}
+		prev = &tokens[j]
 		switch t.text {
 		case "<":
 			depth++

@@ -387,13 +387,17 @@ func isStatementStart(out []tsToken) bool {
 		return true
 	}
 	if out[i].kind != "punct" {
-		return false
+		// A line break after a complete statement starts the next one
+		// (automatic semicolon insertion): `const a = b` newline `type T = ...`.
+		return endsWithLineBreak(out) && endsExpression(out)
 	}
 	switch out[i].text {
 	case ";", "}":
 		return true
 	case "{":
 		return looksLikeBlockOpen(out[:i])
+	case ")", "]":
+		return endsWithLineBreak(out)
 	}
 	return false
 }
