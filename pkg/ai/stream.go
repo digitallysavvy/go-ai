@@ -2840,7 +2840,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				FinishReason:   string(r.finishReason),
 				Usage:          stepTelUsage,
 				Text:           stepText,
-				Reasoning:      stepResult.ReasoningText,
+				Reasoning:      telemetry.JoinReasoning(stepResult.Reasoning),
 				ToolCalls:      stepResult.ToolCalls,
 				ToolResults:    publicStepToolResults,
 				Files:          stepFiles,
@@ -3391,7 +3391,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	streamToolCalls := r.toolCalls
 	var streamReasoningText string
 	if len(allSteps) > 0 {
-		streamReasoningText = allSteps[len(allSteps)-1].ReasoningText
+		streamReasoningText = telemetry.JoinReasoning(allSteps[len(allSteps)-1].Reasoning)
 	}
 	var streamProviderMeta map[string]interface{}
 	if len(r.providerMetadata) > 0 {
@@ -4444,7 +4444,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		ModelProvider:    r.cbModelProvider,
 		ModelID:          r.cbModelID,
 		Text:             r.text,
-		Reasoning:        step.ReasoningText,
+		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		ReasoningParts:   step.Reasoning,

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -343,8 +344,9 @@ type TelemetryStepFinishEvent struct {
 	// Integrations should check Settings.RecordOutputs before recording.
 	Text string
 
-	// Reasoning is the joined reasoning/thinking text for this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Reasoning is the reasoning/thinking text of this step with the parts
+	// joined by "\n" (see JoinReasoning), the legacy ai.response.reasoning
+	// value. Integrations should check Settings.RecordOutputs before recording.
 	Reasoning string
 
 	// ToolCalls made by the model in this step.
@@ -416,8 +418,8 @@ type TelemetryFinishEvent struct {
 	// Text is the full generated text. Integrations should check
 	// Settings.RecordOutputs before recording this value.
 	Text string
-	// Reasoning is the joined reasoning/thinking text for the final step,
-	// emitted as ai.response.reasoning (output-gated) for ai.generateText/
+	// Reasoning is the reasoning/thinking text of the final step with the
+	// parts joined by "\n" (see JoinReasoning), emitted as ai.response.reasoning (output-gated) for ai.generateText/
 	// ai.streamText, mirroring TS onGenerateEnd's
 	// `event.finalStep.reasoning`.
 	Reasoning string
@@ -2249,6 +2251,18 @@ func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e Teleme
 			span.SetAttributes(attribute.String("ai.response.providerMetadata", string(b)))
 		}
 	}
+}
+
+// JoinReasoning is the value of the legacy ai.response.reasoning attribute:
+// the reasoning parts' text joined with "\n" (TS legacy-open-telemetry.ts),
+// unlike StepResult.ReasoningText, which concatenates with no separator
+// (asReasoningText). Empty for no parts.
+func JoinReasoning(parts []types.ReasoningContent) string {
+	texts := make([]string, len(parts))
+	for i, part := range parts {
+		texts[i] = part.Text
+	}
+	return strings.Join(texts, "\n")
 }
 
 // legacyOnGenerateEnd mirrors TS's onGenerateEnd (generateText/streamText).

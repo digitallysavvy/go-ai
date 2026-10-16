@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -182,6 +181,7 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 		ModelProvider:    a.config.Model.Provider(),
 		ModelID:          a.config.Model.ModelID(),
 		Text:             result.Text,
+		Reasoning:        telemetry.JoinReasoning(last.Reasoning),
 		ToolCalls:        allToolCalls,
 		ToolResults:      allToolResults,
 		ReasoningParts:   last.Reasoning,
@@ -237,10 +237,6 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		return
 	}
 	s.closed = true
-	var reasoning strings.Builder
-	for _, r := range step.Reasoning {
-		reasoning.WriteString(r.Text)
-	}
 	telemetry.FireOnStepEnd(s.stepCtx, telemetry.TelemetryStepEndEvent{
 		CallID:           s.lt.callID,
 		OperationType:    "ai.generateText",
@@ -248,7 +244,7 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		FinishReason:     string(step.FinishReason),
 		Usage:            telemetryUsage(step.Usage),
 		Text:             step.Text,
-		Reasoning:        reasoning.String(),
+		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		ProviderMetadata: step.ProviderMetadata,

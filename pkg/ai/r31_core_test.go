@@ -3,11 +3,13 @@ package ai
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -161,5 +163,57 @@ func TestExperimentalStartBatch_ImageRequestDefaultsNToOne(t *testing.T) {
 	}
 	if got == nil || *got != 1 {
 		t.Fatalf("N = %v, want 1", got)
+	}
+}
+
+type r31ReasoningRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu   sync.Mutex
+	step []string
+	end  []string
+}
+
+func (r *r31ReasoningRecorder) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.step = append(r.step, e.Reasoning)
+}
+
+func (r *r31ReasoningRecorder) OnFinish(_ context.Context, e telemetry.TelemetryFinishEvent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.end = append(r.end, e.Reasoning)
+}
+
+// TS legacy-open-telemetry.ts joins reasoning parts with "\n" for
+// ai.response.reasoning, while reasoningText has no separator.
+func TestGenerateText_TelemetryReasoningIsNewlineJoined(t *testing.T) {
+	rec := &r31ReasoningRecorder{}
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         "hi",
+				Content:      []types.ContentPart{types.ReasoningContent{Text: "a"}, types.ReasoningContent{Text: "b"}, types.TextContent{Text: "hi"}},
+				FinishReason: types.FinishReasonStop,
+			}, nil
+		},
+	}
+	res, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model: model, Prompt: "p",
+		Telemetry: &TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ReasoningText != "ab" {
+		t.Fatalf("ReasoningText = %q", res.ReasoningText)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.step) != 1 || rec.step[0] != "a\nb" {
+		t.Fatalf("step reasoning = %q", rec.step)
+	}
+	if len(rec.end) != 1 || rec.end[0] != "a\nb" {
+		t.Fatalf("end reasoning = %q", rec.end)
 	}
 }
