@@ -163,10 +163,21 @@ func blankDropped(src string, kept []tsToken) string {
 		for _, r := range runes[from:to] {
 			// Only visible characters become spaces; whitespace (tabs
 			// included) and line breaks stay, like Node.
-			if unicode.IsSpace(r) || r == '\uFEFF' {
+			switch {
+			case unicode.IsSpace(r) || r == 0xFEFF:
 				b.WriteRune(r)
-			} else {
+			case r < 0x80:
 				b.WriteByte(' ')
+			case r < 0x800:
+				// Node keeps the UTF-8 length of every erased character: a
+				// two-byte character becomes a no-break space, a three-byte
+				// one an en space, a four-byte one a space and a BOM.
+				b.WriteRune(0x00A0)
+			case r < 0x10000:
+				b.WriteRune(0x2002)
+			default:
+				b.WriteByte(' ')
+				b.WriteRune(0xFEFF)
 			}
 		}
 	}
@@ -268,9 +279,9 @@ func tokenizeTS(src string) []tsToken {
 			tokens = append(tokens, tsToken{"ident", string(runes[i:j]), i})
 			i = j
 
-		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+		case isTSWhitespace(c):
 			j := i
-			for j < n && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\r' || runes[j] == '\n') {
+			for j < n && isTSWhitespace(runes[j]) {
 				j++
 			}
 			tokens = append(tokens, tsToken{"space", string(runes[i:j]), i})
@@ -645,10 +656,32 @@ func matchTSOperator(remaining []rune) string {
 	return ""
 }
 
+// isTSIdentStart reports whether c can start an identifier: ASCII letters,
+// `_` and `$`, and any Unicode letter or letter number (ID_Start), so names
+// like `café`, `π` or `変数` lex as one identifier.
 func isTSIdentStart(c rune) bool {
-	return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	if c < 0x80 {
+		return c == '_' || c == '$' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	}
+	return unicode.IsLetter(c) || unicode.Is(unicode.Nl, c)
 }
 
+// isTSIdentPart reports whether c can continue an identifier (ID_Continue plus
+// the zero-width joiners ECMAScript allows).
 func isTSIdentPart(c rune) bool {
-	return isTSIdentStart(c) || (c >= '0' && c <= '9')
+	if c < 0x80 {
+		return isTSIdentStart(c) || (c >= '0' && c <= '9')
+	}
+	return isTSIdentStart(c) || unicode.In(c, unicode.Mn, unicode.Mc, unicode.Nd, unicode.Pc) || c == 0x200c || c == 0x200d
+}
+
+// isTSWhitespace reports whether c is ECMAScript whitespace or a line
+// terminator: tab, vertical tab, form feed, space, no-break space, BOM, any
+// other Zs character, and CR, LF, U+2028 and U+2029.
+func isTSWhitespace(c rune) bool {
+	switch c {
+	case ' ', '\t', '\v', '\f', '\r', '\n', 0x00a0, 0xfeff, 0x2028, 0x2029:
+		return true
+	}
+	return c > 0x7f && unicode.Is(unicode.Zs, c)
 }
