@@ -200,7 +200,7 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) (map[
 			// provider sees the prompt.
 		default:
 			// TS: throw new Error(`Unsupported content type in assistant message: ${part.type}`)
-			return nil, fmt.Errorf("Unsupported content type in assistant message: %s", part.ContentType())
+			return nil, fmt.Errorf("Unsupported content type in assistant message: %s", part.ContentType()) //nolint:staticcheck // mirrors TS error text
 		}
 	}
 
