@@ -1193,8 +1193,10 @@ func pendingKey(id interface{}) interface{} {
 
 // handleNotification handles notifications from the server
 func (c *MCPClient) handleNotification(msg *MCPMessage) {
-	// Handle server notifications
-	// For now, just log them
+	// TS transport.onmessage: a message with a method and no id is not
+	// supported and is reported through onError (the notification itself is
+	// otherwise ignored).
+	c.reportError(NewMCPClientError(0, "Unsupported message type", nil))
 	if c.config.EnableLogging {
 		fmt.Printf("MCP notification: %s\n", msg.Method)
 	}
@@ -1365,16 +1367,18 @@ func (c *MCPClient) prepareRequestParams(method string, params interface{}) (int
 // multi-round-trip requests are not yet supported. Matches TS's generic
 // response handler (mcp-client.ts, hash e6a9927).
 func (c *MCPClient) validateModernResult(method string, rawResult json.RawMessage) error {
-	if c.protocolEra != "modern" {
-		return nil
-	}
 	var probe struct {
 		ResultType *string `json:"resultType"`
 	}
 	if len(rawResult) > 0 {
 		_ = json.Unmarshal(rawResult, &probe)
 	}
+	// TS checks `input_required` in every era, the missing resultType only in
+	// the modern one.
 	if probe.ResultType == nil {
+		if c.protocolEra != "modern" {
+			return nil
+		}
 		return NewMCPClientError(0, "Modern MCP result is missing resultType", nil)
 	}
 	if *probe.ResultType == "input_required" {
