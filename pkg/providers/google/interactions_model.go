@@ -193,7 +193,7 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 			return nil, m.handleError(err)
 		}
 		if response.ID == "" {
-			return nil, fmt.Errorf("google.interactions: background POST response did not include an interaction id; cannot stream the result.")
+			return nil, fmt.Errorf("google.interactions: background POST response did not include an interaction id; cannot stream the result.") //nolint:staticcheck // matches TS SDK exact error text
 		}
 		if isTerminalInteractionStatus(response.Status) {
 			synth := newSynthesizedInteractionsStream(m, response, warnings, resp.Headers, opts.IncludeRawChunks)
@@ -500,7 +500,7 @@ func (m *InteractionsLanguageModel) convertResponse(response interactionsRespons
 
 func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, interactionID string, headers map[string]string, timeoutMs int) (interactionsResponse, *internalhttp.Response, error) {
 	if interactionID == "" {
-		return interactionsResponse{}, nil, fmt.Errorf("google.interactions: cannot poll a background interaction without an id. The POST response did not include an interaction id.")
+		return interactionsResponse{}, nil, fmt.Errorf("google.interactions: cannot poll a background interaction without an id. The POST response did not include an interaction id.") //nolint:staticcheck // matches TS SDK exact error text
 	}
 	timeout := defaultInteractionsPollTimeout
 	if timeoutMs > 0 {
