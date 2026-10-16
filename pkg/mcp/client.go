@@ -626,19 +626,49 @@ func (c *MCPClient) toolCallHeaders(method string, params interface{}) (map[stri
 // when the server paginates tools/list.
 func (c *MCPClient) ListAllTools(ctx context.Context) ([]MCPTool, error) {
 	var allTools []MCPTool
-	cursor := ""
+	var cursor *string
 	for {
-		result, err := c.ListToolsWithCursor(ctx, cursor)
+		result, next, err := c.listToolsPage(ctx, cursor)
 		if err != nil {
 			return nil, err
 		}
 		allTools = append(allTools, result.Tools...)
-		if result.NextCursor == "" {
+		// TS loops while nextCursor != null, so an empty-string cursor
+		// continues (and is sent back as cursor: "").
+		if next == nil {
 			break
 		}
-		cursor = result.NextCursor
+		cursor = next
 	}
 	return allTools, nil
+}
+
+// listToolsPage lists one page of tools. A nil cursor omits the param (TS
+// params undefined); a non-nil cursor, even "", is sent. It returns the
+// decoded nextCursor with presence (nil when absent or null).
+func (c *MCPClient) listToolsPage(ctx context.Context, cursor *string) (*ListToolsResult, *string, error) {
+	if !c.initialized {
+		return nil, nil, fmt.Errorf("client not initialized")
+	}
+	var params interface{} = ListToolsParams{}
+	if cursor != nil {
+		params = struct {
+			Cursor string `json:"cursor"`
+		}{*cursor}
+	}
+	var page struct {
+		ListToolsResult
+		NextCursor *string `json:"nextCursor"`
+	}
+	if err := c.call(ctx, "tools/list", params, &page); err != nil {
+		return nil, nil, fmt.Errorf("failed to list tools: %w", err)
+	}
+	result := page.ListToolsResult
+	if page.NextCursor != nil {
+		result.NextCursor = *page.NextCursor
+	}
+	c.prepareToolDefinitions(&result, cursor == nil)
+	return &result, page.NextCursor, nil
 }
 
 // GetSerializableTools returns tool definitions in a format that can be stored or transmitted.

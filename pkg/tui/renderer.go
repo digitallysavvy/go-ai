@@ -998,7 +998,13 @@ func (m *renderModel) apply(chunk provider.StreamChunk) {
 	case provider.ChunkTypeToolResult:
 		if chunk.ToolResult != nil {
 			tool := m.ensureTool(chunk.ToolResult.ToolCallID, chunk.ToolResult.ToolName, chunk.ToolResult.Title)
-			tool.input = chunk.ToolResult.Input
+			// A result that carries no input (an approval request or an
+			// output chunk from a ChatTransport) keeps the input the call
+			// already had, like TS where the part retains its input.
+			if chunk.ToolResult.Input != nil {
+				tool.input = chunk.ToolResult.Input
+			}
+			tool.inputComplete = true
 			tool.output = chunk.ToolResult.Result
 			tool.status = "done"
 			if chunk.ToolResult.Error != nil {

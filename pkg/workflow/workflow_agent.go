@@ -622,7 +622,11 @@ func workflowToolByName(tools []types.Tool, name string) *types.Tool {
 	return nil
 }
 
-func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types.ToolCall, messages []types.Message, toolsContext map[string]interface{}) bool {
+// workflowToolDeclaresApproval is the TS `!tool.needsApproval` guard on resume:
+// only whether the tool declares an approval setting matters, a function
+// setting is truthy without being called (the policy itself is re-evaluated by
+// ValidateApprovedToolApprovals).
+func workflowToolDeclaresApproval(tool *types.Tool) bool {
 	if tool == nil {
 		return false
 	}
@@ -638,14 +642,8 @@ func workflowToolNeedsApproval(ctx context.Context, tool *types.Tool, call types
 	case string:
 		status := types.ToolApprovalStatus(v)
 		return status == types.ToolApprovalStatusUserApproval || status == types.ToolApprovalStatusApproved || status == types.ToolApprovalStatusDenied
-	case types.ToolNeedsApprovalFunc:
-		var toolContext interface{}
-		if toolsContext != nil {
-			toolContext = toolsContext[call.ToolName]
-		}
-		return v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{ToolCallID: call.ID, Messages: messages, Context: toolContext})
-	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		return v(ctx, call.Arguments)
+	case types.ToolNeedsApprovalFunc, types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
+		return true
 	default:
 		return false
 	}
@@ -731,7 +729,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 		if tool == nil || tool.Execute == nil {
 			return approvedOutcome{}
 		}
-		if !workflowToolNeedsApproval(ctx, tool, call, messages, opts.toolsContext) {
+		if !workflowToolDeclaresApproval(tool) {
 			return approvedOutcome{result: errorTextResult(call, fmt.Sprintf("Tool %q does not require approval", call.ToolName))}
 		}
 
@@ -764,7 +762,9 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 
 		result, execErr := executeWorkflowApprovedTool(ctx, tool, call, opts)
 		if execErr != nil {
-			// Failed executions stream as tool errors, not tool results.
+			// TS writeApprovalToolResults writes a plain tool-result whose output
+			// is the error text (rawOutput), not a tool-error, so the UI stream
+			// carries tool-output-available.
 			return approvedOutcome{
 				result: errorTextResult(call, execErr.Error()),
 				chunk: &provider.StreamChunk{
@@ -773,7 +773,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 						ToolCallID: call.ID,
 						ToolName:   call.ToolName,
 						Input:      call.Arguments,
-						Error:      execErr,
+						Result:     execErr.Error(),
 						Dynamic:    call.Dynamic,
 					},
 				},
@@ -1868,6 +1868,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
+		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
+		return nil, err
+	}
+	// TS stream() awaits convertToLanguageModelPrompt before returning, so a
+	// history with unresolved tool calls rejects stream() itself.
+	if err := validateWorkflowToolResults(opts.Messages, effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{})); err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}

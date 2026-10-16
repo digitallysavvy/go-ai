@@ -320,14 +320,15 @@ func uiMessageChunkToProviderChunk(chunk ai.UIMessageChunk, toolMeta map[string]
 			Dynamic:          boolField(chunk, "dynamic"),
 		}}, true
 	case "tool-input-error":
+		// TS readUIMessageStream moves the part to output-error with the input
+		// and errorText, which the renderer shows as a tool error section.
 		id := stringField(chunk, "toolCallId")
-		name := stringField(chunk, "toolName")
-		rememberToolMeta(toolMeta, id, name, stringField(chunk, "title"))
-		return &provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
-			ID: id, ToolName: name,
-			Arguments: mapField(chunk, "input"),
-			Invalid:   true,
-			Error:     errors.New(stringField(chunk, "errorText")),
+		rememberToolMeta(toolMeta, id, stringField(chunk, "toolName"), stringField(chunk, "title"))
+		meta := toolMeta[id]
+		return &provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{
+			ToolCallID: id, ToolName: meta.name, Title: meta.title,
+			Input: mapField(chunk, "input"),
+			Error: errors.New(stringField(chunk, "errorText")),
 		}}, true
 
 	case "tool-output-available":
