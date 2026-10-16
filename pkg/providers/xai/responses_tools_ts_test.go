@@ -73,3 +73,38 @@ func TestXAIResponsesToolChoiceResolution(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// TS fileSearchArgsSchema / mcpServerArgsSchema validate arg types, not only
+// presence: wrong-typed args fail before the request is built.
+func TestXAIResponsesFileSearchAndMCPArgTypeValidation(t *testing.T) {
+	fs := func(args map[string]interface{}) error {
+		return validateXAIResponsesToolArgs([]types.Tool{{Name: "fs", Type: "provider", ProviderID: "xai.file_search", ProviderArgs: args}})
+	}
+	mcp := func(args map[string]interface{}) error {
+		return validateXAIResponsesToolArgs([]types.Tool{{Name: "m", Type: "provider", ProviderID: "xai.mcp", ProviderArgs: args}})
+	}
+	bad := []struct {
+		name string
+		err  error
+	}{
+		{"fs non-string store id", fs(map[string]interface{}{"vectorStoreIds": []interface{}{"vs", 3.0}})},
+		{"fs store ids not array", fs(map[string]interface{}{"vectorStoreIds": "vs"})},
+		{"fs maxNumResults string", fs(map[string]interface{}{"vectorStoreIds": []interface{}{}, "maxNumResults": "3"})},
+		{"mcp missing serverUrl", mcp(map[string]interface{}{})},
+		{"mcp serverUrl number", mcp(map[string]interface{}{"serverUrl": 1.0})},
+		{"mcp allowedTools non-string", mcp(map[string]interface{}{"serverUrl": "u", "allowedTools": []interface{}{1.0}})},
+		{"mcp headers non-string", mcp(map[string]interface{}{"serverUrl": "u", "headers": map[string]interface{}{"a": 1.0}})},
+		{"mcp authorization bool", mcp(map[string]interface{}{"serverUrl": "u", "authorization": true})},
+	}
+	for _, b := range bad {
+		if b.err == nil {
+			t.Errorf("%s: expected a validation error", b.name)
+		}
+	}
+	if err := mcp(map[string]interface{}{"serverUrl": "u", "serverLabel": "l", "allowedTools": []interface{}{"a"}, "headers": map[string]interface{}{"h": "v"}, "authorization": "t"}); err != nil {
+		t.Fatalf("valid mcp args rejected: %v", err)
+	}
+	if err := validateXAIResponsesToolArgs([]types.Tool{MCPServer(MCPServerConfig{ServerURL: "https://x"})}); err != nil {
+		t.Fatalf("typed mcp rejected: %v", err)
+	}
+}

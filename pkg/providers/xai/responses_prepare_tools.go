@@ -48,11 +48,34 @@ func validateXAIResponsesToolArgs(tools []types.Tool) error {
 					fmt.Sprintf("Type validation failed for %s: action: Invalid option: expected one of \"auto\"|\"generate\"|\"edit\"", t.Name), nil)
 			}
 		case "xai.file_search":
-			// fileSearchArgsSchema: vectorStoreIds is a required array (an
-			// empty array is valid).
-			if xaiFileSearchArgs(t).VectorStoreIDs == nil {
+			// fileSearchArgsSchema: vectorStoreIds is a required array of
+			// strings (an empty array is valid); maxNumResults an optional
+			// number.
+			if msg := validateXAIArgs(t, []xaiArgRule{
+				{key: "vectorStoreIds", kind: xaiArgStringArray, required: true},
+				{key: "maxNumResults", kind: xaiArgNumber},
+			}); msg != "" {
+				return providererrors.NewValidationError("tools",
+					fmt.Sprintf("Type validation failed for %s: %s", t.Name, msg), nil)
+			}
+			if _, typed := xaiTypedFileSearch(t); typed && xaiFileSearchArgs(t).VectorStoreIDs == nil {
 				return providererrors.NewValidationError("tools",
 					fmt.Sprintf("Type validation failed for %s: vectorStoreIds: Invalid input: expected array, received undefined", t.Name), nil)
+			}
+		case "xai.mcp":
+			// mcpServerArgsSchema: serverUrl is a required string; the other
+			// fields are optional strings, a string array and a string
+			// record.
+			if msg := validateXAIArgs(t, []xaiArgRule{
+				{key: "serverUrl", kind: xaiArgString, required: true},
+				{key: "serverLabel", kind: xaiArgString},
+				{key: "serverDescription", kind: xaiArgString},
+				{key: "allowedTools", kind: xaiArgStringArray},
+				{key: "headers", kind: xaiArgStringRecord},
+				{key: "authorization", kind: xaiArgString},
+			}); msg != "" {
+				return providererrors.NewValidationError("tools",
+					fmt.Sprintf("Type validation failed for %s: %s", t.Name, msg), nil)
 			}
 		}
 	}
@@ -364,4 +387,122 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		}
 		return m
 	}
+}
+
+type xaiArgKind int
+
+const (
+	xaiArgString xaiArgKind = iota
+	xaiArgNumber
+	xaiArgStringArray
+	xaiArgStringRecord
+)
+
+type xaiArgRule struct {
+	key      string
+	kind     xaiArgKind
+	required bool
+}
+
+// xaiTypedFileSearch reports whether the tool carries a typed Go config.
+func xaiTypedFileSearch(t types.Tool) (FileSearchOptions, bool) {
+	switch cfg := t.ProviderOptions.(type) {
+	case FileSearchOptions:
+		return cfg, true
+	case FileSearchConfig:
+		return FileSearchOptions(cfg), true
+	}
+	return FileSearchOptions{}, false
+}
+
+// validateXAIArgs applies zod-style type checks to the TS-shaped ProviderArgs
+// of a provider tool (typed Go configs are already well-typed and skip this).
+// It returns the first failure as `<path>: Invalid input: expected X,
+// received Y`, or "" when the args are valid.
+func validateXAIArgs(t types.Tool, rules []xaiArgRule) string {
+	switch t.ProviderOptions.(type) {
+	case FileSearchOptions, FileSearchConfig, MCPServerOptions, MCPServerConfig:
+		return ""
+	}
+	for _, r := range rules {
+		v, present := t.ProviderArgs[r.key]
+		if !present || v == nil {
+			if r.required {
+				want := "string"
+				switch r.kind {
+				case xaiArgStringArray:
+					want = "array"
+				case xaiArgNumber:
+					want = "number"
+				case xaiArgStringRecord:
+					want = "record"
+				}
+				recv := "undefined"
+				if present {
+					recv = "null"
+				}
+				return fmt.Sprintf("%s: Invalid input: expected %s, received %s", r.key, want, recv)
+			}
+			if present {
+				return fmt.Sprintf("%s: Invalid input: received null", r.key)
+			}
+			continue
+		}
+		switch r.kind {
+		case xaiArgString:
+			if _, ok := v.(string); !ok {
+				return fmt.Sprintf("%s: Invalid input: expected string, received %s", r.key, xaiJSType(v))
+			}
+		case xaiArgNumber:
+			switch v.(type) {
+			case int, int32, int64, float32, float64:
+			default:
+				return fmt.Sprintf("%s: Invalid input: expected number, received %s", r.key, xaiJSType(v))
+			}
+		case xaiArgStringArray:
+			switch arr := v.(type) {
+			case []string:
+			case []interface{}:
+				for i, e := range arr {
+					if _, ok := e.(string); !ok {
+						return fmt.Sprintf("%s[%d]: Invalid input: expected string, received %s", r.key, i, xaiJSType(e))
+					}
+				}
+			default:
+				return fmt.Sprintf("%s: Invalid input: expected array, received %s", r.key, xaiJSType(v))
+			}
+		case xaiArgStringRecord:
+			switch m := v.(type) {
+			case map[string]string:
+			case map[string]interface{}:
+				for k, e := range m {
+					if _, ok := e.(string); !ok {
+						return fmt.Sprintf("%s.%s: Invalid input: expected string, received %s", r.key, k, xaiJSType(e))
+					}
+				}
+			default:
+				return fmt.Sprintf("%s: Invalid input: expected record, received %s", r.key, xaiJSType(v))
+			}
+		}
+	}
+	return ""
+}
+
+// xaiJSType names a Go value the way zod names the JS value it would be.
+func xaiJSType(v interface{}) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case int, int32, int64, float32, float64:
+		return "number"
+	case []interface{}, []string:
+		return "array"
+	case map[string]interface{}, map[string]string:
+		return "object"
+	}
+	return fmt.Sprintf("%T", v)
 }
