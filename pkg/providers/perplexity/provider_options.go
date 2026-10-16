@@ -21,7 +21,7 @@ import (
 // parsePerplexityAgentOptions's extras return value).
 type perplexityLanguageModelOptions struct {
 	// Instructions are top-level Agent API instructions.
-	Instructions string
+	Instructions *string
 
 	// Tools are native Agent API tools (web_search, fetch_url, people_search,
 	// finance_search, sandbox, mcp, connector). AI SDK function tools are
@@ -39,13 +39,13 @@ type perplexityLanguageModelOptions struct {
 	MaxToolCalls *int64
 
 	// PreviousResponseID continues a conversation from an earlier Agent API response.
-	PreviousResponseID string
+	PreviousResponseID *string
 
 	// Store controls whether the response can be retrieved later.
 	Store *bool
 
 	// LanguagePreference is the preferred response language (ISO 639-1).
-	LanguagePreference string
+	LanguagePreference *string
 
 	// Reasoning is the Agent API reasoning configuration
 	// ({"effort": "minimal"|"low"|"medium"|"high"|"xhigh"}), kept as a loose
@@ -98,7 +98,7 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	opts := &perplexityLanguageModelOptions{}
 	var err error
 
-	if opts.Instructions, err = perplexityAgentStringField(raw, "instructions"); err != nil {
+	if opts.Instructions, err = perplexityAgentStringPtrField(raw, "instructions"); err != nil {
 		return nil, nil, err
 	}
 	if opts.Tools, err = perplexityAgentObjectArrayField(raw, "tools"); err != nil {
@@ -118,13 +118,13 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	if opts.MaxToolCalls, err = perplexityAgentNonnegativeIntField(raw, "max_tool_calls"); err != nil {
 		return nil, nil, err
 	}
-	if opts.PreviousResponseID, err = perplexityAgentStringField(raw, "previous_response_id"); err != nil {
+	if opts.PreviousResponseID, err = perplexityAgentStringPtrField(raw, "previous_response_id"); err != nil {
 		return nil, nil, err
 	}
 	if opts.Store, err = perplexityAgentBoolField(raw, "store"); err != nil {
 		return nil, nil, err
 	}
-	if opts.LanguagePreference, err = perplexityAgentStringField(raw, "language_preference"); err != nil {
+	if opts.LanguagePreference, err = perplexityAgentStringPtrField(raw, "language_preference"); err != nil {
 		return nil, nil, err
 	}
 	if opts.Reasoning, err = perplexityAgentReasoningField(raw); err != nil {
@@ -162,6 +162,20 @@ func perplexityAgentStringField(raw map[string]interface{}, field string) (strin
 		return "", invalidPerplexityProviderOptions(field, fmt.Sprintf("must be a string, got %T", v))
 	}
 	return s, nil
+}
+
+// perplexityAgentStringPtrField is perplexityAgentStringField keeping the
+// distinction between an absent option and an empty string (TS spreads
+// agentOptions, so "" is sent).
+func perplexityAgentStringPtrField(raw map[string]interface{}, field string) (*string, error) {
+	if v, ok := raw[field]; !ok || v == nil {
+		return nil, nil
+	}
+	s, err := perplexityAgentStringField(raw, field)
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 func perplexityAgentBoolField(raw map[string]interface{}, field string) (*bool, error) {
@@ -385,8 +399,8 @@ func (o *perplexityLanguageModelOptions) toBodyMap() map[string]interface{} {
 		return nil
 	}
 	body := map[string]interface{}{}
-	if o.Instructions != "" {
-		body["instructions"] = o.Instructions
+	if o.Instructions != nil {
+		body["instructions"] = *o.Instructions
 	}
 	if o.Models != nil {
 		body["models"] = o.Models
@@ -397,14 +411,14 @@ func (o *perplexityLanguageModelOptions) toBodyMap() map[string]interface{} {
 	if o.MaxToolCalls != nil {
 		body["max_tool_calls"] = *o.MaxToolCalls
 	}
-	if o.PreviousResponseID != "" {
-		body["previous_response_id"] = o.PreviousResponseID
+	if o.PreviousResponseID != nil {
+		body["previous_response_id"] = *o.PreviousResponseID
 	}
 	if o.Store != nil {
 		body["store"] = *o.Store
 	}
-	if o.LanguagePreference != "" {
-		body["language_preference"] = o.LanguagePreference
+	if o.LanguagePreference != nil {
+		body["language_preference"] = *o.LanguagePreference
 	}
 	if o.Skills != nil {
 		body["skills"] = o.Skills

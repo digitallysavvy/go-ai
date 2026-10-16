@@ -496,7 +496,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if v, ok := openaiOpts["parallelToolCalls"].(bool); ok {
 		body["parallel_tool_calls"] = v
 	}
-	if v, ok := openaiOpts["user"].(string); ok && v != "" {
+	if v, ok := openaiOpts["user"].(string); ok { // z.string(): "" is forwarded like TS
 		body["user"] = v
 	}
 	if v, ok := openaiOpts["metadata"]; ok && v != nil {
@@ -505,10 +505,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if v, ok := openaiOpts["prediction"]; ok && v != nil {
 		body["prediction"] = v
 	}
-	if v, ok := openaiOpts["safetyIdentifier"].(string); ok && v != "" {
+	if v, ok := openaiOpts["safetyIdentifier"].(string); ok { // z.string(): "" is forwarded like TS
 		body["safety_identifier"] = v
 	}
-	if v, ok := openaiOpts["promptCacheKey"].(string); ok && v != "" {
+	if v, ok := openaiOpts["promptCacheKey"].(string); ok { // z.string(): "" is forwarded like TS
 		body["prompt_cache_key"] = v
 	}
 

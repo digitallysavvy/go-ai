@@ -207,7 +207,10 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 			}
 			input = append(input, userMessage)
 		case types.RoleAssistant:
-			items, itemWarnings := convertAssistantItems(msg, opts)
+			items, itemWarnings, err := convertAssistantItems(msg, opts)
+			if err != nil {
+				return nil, warnings, err
+			}
 			input = append(input, items...)
 			warnings = append(warnings, itemWarnings...)
 		case types.RoleTool:
@@ -563,7 +566,7 @@ func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFile
 
 // convertAssistantItems maps assistant-role content parts and ToolCalls to
 // Responses API input items.
-func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{}, []types.Warning) {
+func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{}, []types.Warning, error) {
 	items := make([]interface{}, 0, 1+len(msg.ToolCalls))
 	var warnings []types.Warning
 	providerName := openAIProviderOptionsName(opts)
@@ -589,25 +592,41 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 			warnings = append(warnings, w...)
 		case types.ToolCallContent:
 			toolCallContentIDs[p.ToolCallID] = true
-			if item := convertAssistantToolCallContentItem(p, opts); item != nil {
+			item, err := convertAssistantToolCallContentItem(p, opts)
+			if err != nil {
+				return nil, nil, err
+			}
+			if item != nil {
 				items = append(items, item)
 			}
 		case *types.ToolCallContent:
 			if p != nil {
 				toolCallContentIDs[p.ToolCallID] = true
-				if item := convertAssistantToolCallContentItem(*p, opts); item != nil {
+				item, err := convertAssistantToolCallContentItem(*p, opts)
+				if err != nil {
+					return nil, nil, err
+				}
+				if item != nil {
 					items = append(items, item)
 				}
 			}
 		case types.ToolResultContent:
-			if item := convertAssistantToolResultItem(p, opts); item != nil {
+			item, err := convertAssistantToolResultItem(p, opts)
+			if err != nil {
+				return nil, nil, err
+			}
+			if item != nil {
 				items = append(items, item)
 			} else if w := droppedToolResultWarning(p, opts); w != nil {
 				warnings = append(warnings, *w)
 			}
 		case *types.ToolResultContent:
 			if p != nil {
-				if item := convertAssistantToolResultItem(*p, opts); item != nil {
+				item, err := convertAssistantToolResultItem(*p, opts)
+				if err != nil {
+					return nil, nil, err
+				}
+				if item != nil {
 					items = append(items, item)
 				} else if w := droppedToolResultWarning(*p, opts); w != nil {
 					warnings = append(warnings, *w)
@@ -634,7 +653,11 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		if opts.HasConversation && itemID != "" {
 			continue
 		}
-		if item, handled := convertAssistantToolCallItem(tc, itemID, opts); handled {
+		item, handled, err := convertAssistantToolCallItem(tc, itemID, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		if handled {
 			if item != nil {
 				items = append(items, item)
 			}
@@ -670,15 +693,15 @@ func convertAssistantItems(msg types.Message, opts ConvertOptions) ([]interface{
 		})
 	}
 
-	return items, warnings
+	return items, warnings, nil
 }
 
-func convertAssistantToolCallContentItem(part types.ToolCallContent, opts ConvertOptions) interface{} {
+func convertAssistantToolCallContentItem(part types.ToolCallContent, opts ConvertOptions) (interface{}, error) {
 	providerName := openAIProviderOptionsName(opts)
 	metadata := toolCallContentProviderMetadata(part)
 	itemID := openAIItemID(metadata, providerName)
 	if opts.HasConversation && itemID != "" {
-		return nil
+		return nil, nil
 	}
 	arguments, genericArguments := toolCallContentArguments(part)
 	tc := types.ToolCall{
@@ -689,8 +712,8 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 		ProviderExecuted: part.ProviderExecuted,
 		ProviderMetadata: metadata,
 	}
-	if item, handled := convertAssistantToolCallItem(tc, itemID, opts); handled {
-		return item
+	if item, handled, err := convertAssistantToolCallItem(tc, itemID, opts); handled || err != nil {
+		return item, err
 	}
 	// Plain client-executed function calls must always be resent in full (see
 	// the comment in convertAssistantItems).
@@ -712,7 +735,7 @@ func convertAssistantToolCallContentItem(part types.ToolCallContent, opts Conver
 		Async:     async,
 		Caller:    toolCallCallerFromMetadata(tc.ProviderMetadata, providerName),
 		Arguments: genericArguments,
-	}
+	}, nil
 }
 
 // toolCallCallerFromMetadata extracts the caller (direct vs. a
@@ -786,7 +809,15 @@ func toolCallContentArguments(part types.ToolCallContent) (map[string]interface{
 	return map[string]interface{}{}, string(argsJSON)
 }
 
-func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts ConvertOptions) (interface{}, bool) {
+func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts ConvertOptions) (interface{}, bool, error) {
+	// Validated payloads (shell, computer, tool_search, ...) are read from the
+	// parsed input; recover it from the wire text when only that was set.
+	if tc.Arguments == nil && strings.TrimSpace(tc.RawArguments) != "" {
+		var parsed map[string]interface{}
+		if json.Unmarshal([]byte(tc.RawArguments), &parsed) == nil {
+			tc.Arguments = parsed
+		}
+	}
 	// Row 6be0f51: a tool call expanded from an internal "parallel" wrapper
 	// replays as the ORIGINAL wrapper's single function_call (only once, and
 	// only when the server doesn't already remember it via conversation
@@ -794,36 +825,43 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 	if metadata, ok := GetParallelToolCallMetadata(tc.ProviderMetadata, openAIProviderOptionsName(opts)); ok {
 		if group, exists := opts.parallelToolResultGroups[metadata.ToolCallID]; exists && sameParallelToolCall(group.metadata, metadata) {
 			if opts.emittedParallelToolCalls[group.metadata.ToolCallID] {
-				return nil, true
+				return nil, true, nil
 			}
 			opts.emittedParallelToolCalls[group.metadata.ToolCallID] = true
 			if opts.HasConversation {
 				// Conversations already contain the original wrapper item.
-				return nil, true
+				return nil, true, nil
 			}
 			return FunctionCallItem{
 				Type:      "function_call",
 				CallID:    group.metadata.ToolCallID,
 				Name:      group.metadata.ToolName,
 				Arguments: group.metadata.Input,
-			}, true
+			}, true, nil
 		}
 	}
 	toolName := opts.providerToolName(tc.ToolName)
 	if tc.ToolName == opts.toolSearchName() {
 		if opts.Store && itemID != "" {
-			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
+			return map[string]interface{}{"type": "item_reference", "id": itemID}, true, nil
+		}
+		if err := validateToolPayload(toolSearchInputNode, tc.Arguments); err != nil {
+			return nil, true, err
 		}
 		arguments := tc.Arguments
-		rawArguments, _ := jsonstr.Marshal(arguments)
 		var callID *string
 		execution := "server"
-		if rawCallID, ok := arguments["call_id"].(string); ok && rawCallID != "" {
+		// TS: `parsedInput.call_id != null ? 'client' : 'server'` -- an empty
+		// string call_id is still a client call.
+		if rawCallID, ok := arguments["call_id"].(string); ok {
 			callID = &rawCallID
 			execution = "client"
 		}
+		// TS: `arguments: parsedInput.arguments` (omitted when absent).
+		var rawArguments json.RawMessage
 		if nested, ok := arguments["arguments"]; ok {
-			rawArguments, _ = jsonstr.Marshal(nested)
+			encoded, _ := jsonstr.Marshal(nested)
+			rawArguments = encoded
 		}
 		// TS: `id: id ?? part.toolCallId` -- unlike local_shell_call/
 		// shell_call/apply_patch_call/computer_call (which use a bare `id!`
@@ -840,18 +878,21 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			Execution: execution,
 			CallID:    callID,
 			Arguments: rawArguments,
-		}, true
+		}, true, nil
 	}
 	if opts.providerToolName(tc.ToolName) == "programmatic_tool_calling" {
 		// Row 1f6dd3a: checked before the generic ProviderExecuted branch
 		// below, mirroring TS placing its 'programmatic_tool_calling' check
 		// ahead of the generic providerExecuted branch.
 		if opts.Store && itemID != "" {
-			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
+			return map[string]interface{}{"type": "item_reference", "id": itemID}, true, nil
 		}
 		id := itemID
 		if id == "" {
 			id = tc.ID
+		}
+		if err := validateToolPayload(programInputNode, tc.Arguments); err != nil {
+			return nil, true, err
 		}
 		code, _ := tc.Arguments["code"].(string)
 		fingerprint, _ := tc.Arguments["fingerprint"].(string)
@@ -861,65 +902,78 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			CallID:      tc.ID,
 			Code:        code,
 			Fingerprint: fingerprint,
-		}, true
+		}, true, nil
 	}
 	if tc.ProviderExecuted {
 		if opts.Store && itemID != "" {
-			return map[string]interface{}{"type": "item_reference", "id": itemID}, true
+			return map[string]interface{}{"type": "item_reference", "id": itemID}, true, nil
 		}
 		// Without response storage, shell calls must be reconstructed together
 		// with their matching shell_call_output; every other provider-executed
 		// call type is simply omitted when not stored.
 		if opts.Store || !opts.HasShellTool || toolName != "shell" {
-			return nil, true
+			return nil, true, nil
 		}
 		// fall through to the shell reconstruction branch below.
 	}
 	if opts.Store && itemID != "" && isProviderDefinedResponsesTool(toolName, tc.ToolName, opts) {
 		if opts.HasPreviousResponseID {
-			return nil, true
+			return nil, true, nil
 		}
-		return map[string]interface{}{"type": "item_reference", "id": itemID}, true
+		return map[string]interface{}{"type": "item_reference", "id": itemID}, true, nil
 	}
 	if opts.HasLocalShellTool && toolName == "local_shell" {
-		action := localShellActionFromArgs(tc.Arguments)
+		action, err := localShellActionFromArgs(tc.Arguments)
+		if err != nil {
+			return nil, true, err
+		}
 		return LocalShellCall{
 			Type:   "local_shell_call",
 			ID:     itemID,
 			CallID: tc.ID,
 			Action: action,
-		}, true
+		}, true, nil
 	}
 	if opts.HasShellTool && toolName == "shell" {
+		action, err := shellActionFromArgs(tc.Arguments)
+		if err != nil {
+			return nil, true, err
+		}
 		return ShellCall{
 			Type:   "shell_call",
 			ID:     itemID,
 			CallID: tc.ID,
 			Status: "completed",
-			Action: shellActionFromArgs(tc.Arguments),
-		}, true
+			Action: action,
+		}, true, nil
 	}
 	if opts.HasApplyPatchTool && toolName == "apply_patch" {
-		callID := stringArg(tc.Arguments, "callId")
-		operation := applyPatchOperationFromArgs(tc.Arguments)
+		callID, operation, err := applyPatchFromArgs(tc.Arguments)
+		if err != nil {
+			return nil, true, err
+		}
 		return ApplyPatchCall{
 			Type:      "apply_patch_call",
 			ID:        stringPtr(itemID),
 			CallID:    callID,
 			Status:    "completed",
 			Operation: operation,
-		}, true
+		}, true, nil
 	}
 	if opts.HasComputerTool && toolName == "computer" {
 		callID := tc.ID
+		status, actions, checks, err := computerCallFromArgs(tc.Arguments)
+		if err != nil {
+			return nil, true, err
+		}
 		return ComputerCall{
 			Type:                "computer_call",
 			ID:                  stringPtr(itemID),
 			CallID:              &callID,
-			Status:              stringArgDefault(tc.Arguments, "status", "completed"),
-			Actions:             computerActionsFromArgs(tc.Arguments),
-			PendingSafetyChecks: computerSafetyChecksFromArgs(tc.Arguments, "pendingSafetyChecks"),
-		}, true
+			Status:              status,
+			Actions:             actions,
+			PendingSafetyChecks: checks,
+		}, true, nil
 	}
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
 		input := tc.RawArguments
@@ -940,9 +994,9 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 			Name:   toolName,
 			Async:  async,
 			Input:  input,
-		}, true
+		}, true, nil
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 func isProviderDefinedResponsesTool(normalizedToolName, originalToolName string, opts ConvertOptions) bool {
@@ -1113,12 +1167,12 @@ func droppedToolResultWarning(part types.ToolResultContent, opts ConvertOptions)
 	}
 }
 
-func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOptions) interface{} {
+func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOptions) (interface{}, error) {
 	if isExecutionDeniedOutput(part.Output) {
-		return nil
+		return nil, nil
 	}
 	if opts.HasConversation {
-		return nil
+		return nil, nil
 	}
 	toolName := opts.providerToolName(part.ToolName)
 	if isWebSearchToolName(part.ToolName, opts) {
@@ -1126,10 +1180,10 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 		// search context survives across steps.
 		itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
 		if opts.Store {
-			return map[string]interface{}{"type": "item_reference", "id": itemID}
+			return map[string]interface{}{"type": "item_reference", "id": itemID}, nil
 		}
 		if call := convertWebSearchToolResultOutput(part, itemID); call != nil {
-			return call
+			return call, nil
 		}
 	}
 	if part.ToolName == opts.toolSearchName() {
@@ -1138,18 +1192,20 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 			return map[string]interface{}{
 				"type": "item_reference",
 				"id":   itemID,
-			}
+			}, nil
 		}
 		if part.Output != nil && part.Output.Type == types.ToolResultOutputJSON {
-			if item := convertToolSearchOutput(part, "server"); item != nil {
-				if output, ok := item.(ToolSearchOutputItem); ok {
-					output.ID = itemID
-					output.CallID = nil
-					return output
-				}
+			item, err := convertToolSearchOutput(part, "server")
+			if err != nil {
+				return nil, err
+			}
+			if output, ok := item.(ToolSearchOutputItem); ok {
+				output.ID = itemID
+				output.CallID = nil
+				return output, nil
 			}
 		}
-		return nil
+		return nil, nil
 	}
 	if opts.providerToolName(part.ToolName) == "programmatic_tool_calling" {
 		// Row 1f6dd3a: the result of a hosted program's execution, mirroring
@@ -1159,39 +1215,40 @@ func convertAssistantToolResultItem(part types.ToolResultContent, opts ConvertOp
 			return map[string]interface{}{
 				"type": "item_reference",
 				"id":   itemID,
-			}
+			}, nil
 		}
 		if part.Output != nil && part.Output.Type == types.ToolResultOutputJSON {
 			var parsed struct {
 				Result string `json:"result"`
 				Status string `json:"status"`
 			}
-			if decodeToolOutputJSON(part.Output.Value, &parsed) {
-				return ProgramOutputItem{
-					Type:   "program_output",
-					ID:     itemID,
-					CallID: part.ToolCallID,
-					Result: parsed.Result,
-					Status: parsed.Status,
-				}
+			if err := decodeStrict(programOutputNode, part.Output.Value, &parsed); err != nil {
+				return nil, err
 			}
+			return ProgramOutputItem{
+				Type:   "program_output",
+				ID:     itemID,
+				CallID: part.ToolCallID,
+				Result: parsed.Result,
+				Status: parsed.Status,
+			}, nil
 		}
-		return nil
+		return nil, nil
 	}
 	if opts.HasShellTool && toolName == "shell" {
 		if part.Output != nil && part.Output.Type == types.ToolResultOutputJSON {
 			return convertShellOutput(part)
 		}
-		return nil
+		return nil, nil
 	}
 	itemID := firstNonEmpty(openAIToolResultItemID(part, openAIProviderOptionsName(opts)), part.ToolCallID)
 	if opts.Store && itemID != "" {
 		return map[string]interface{}{
 			"type": "item_reference",
 			"id":   itemID,
-		}
+		}, nil
 	}
-	return nil
+	return nil, nil
 }
 
 func convertAssistantCustomItem(part types.CustomContent, opts ConvertOptions) interface{} {
@@ -1446,7 +1503,11 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 			if shouldSkipApprovalDeniedOutput(p) {
 				continue
 			}
-			if item := convertSpecialToolOutput(p, opts); item != nil {
+			item, err := convertSpecialToolOutput(p, opts)
+			if err != nil {
+				return nil, err
+			}
+			if item != nil {
 				items = append(items, item)
 				continue
 			}
@@ -1480,7 +1541,11 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				if shouldSkipApprovalDeniedOutput(*p) {
 					continue
 				}
-				if item := convertSpecialToolOutput(*p, opts); item != nil {
+				item, err := convertSpecialToolOutput(*p, opts)
+				if err != nil {
+					return nil, err
+				}
+				if item != nil {
 					items = append(items, item)
 					continue
 				}
@@ -1736,9 +1801,9 @@ func buildParallelFunctionCallOutput(group parallelToolResultGroup, opts Convert
 	}
 }
 
-func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions) interface{} {
+func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions) (interface{}, error) {
 	if part.Output == nil || part.Output.Type != types.ToolResultOutputJSON {
-		return nil
+		return nil, nil
 	}
 	if part.ToolName == opts.toolSearchName() {
 		return convertToolSearchOutput(part, "client")
@@ -1747,35 +1812,35 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 	switch toolName {
 	case "local_shell":
 		if !opts.HasLocalShellTool {
-			return nil
+			return nil, nil
 		}
 		return convertLocalShellOutput(part)
 	case "shell":
 		if !opts.HasShellTool {
-			return nil
+			return nil, nil
 		}
 		return convertShellOutput(part)
 	case "apply_patch":
 		if !opts.HasApplyPatchTool {
-			return nil
+			return nil, nil
 		}
 		return convertApplyPatchOutput(part)
 	case "computer":
 		if !opts.HasComputerTool {
-			return nil
+			return nil, nil
 		}
 		return convertComputerOutput(part)
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
-func convertToolSearchOutput(part types.ToolResultContent, execution string) interface{} {
+func convertToolSearchOutput(part types.ToolResultContent, execution string) (interface{}, error) {
 	var parsed struct {
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
-		return nil
+	if err := decodeStrict(toolSearchOutputNode, part.Output.Value, &parsed); err != nil {
+		return nil, err
 	}
 	var callID *string
 	if execution == "client" {
@@ -1791,61 +1856,53 @@ func convertToolSearchOutput(part types.ToolResultContent, execution string) int
 		CallID:    callID,
 		Status:    "completed",
 		Tools:     parsed.Tools,
-	}
+	}, nil
 }
 
-func convertLocalShellOutput(part types.ToolResultContent) interface{} {
+func convertLocalShellOutput(part types.ToolResultContent) (interface{}, error) {
 	var parsed struct {
 		Output string `json:"output"`
 	}
-	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
-		return nil
+	if err := decodeStrict(localShellOutputNode, part.Output.Value, &parsed); err != nil {
+		return nil, err
 	}
 	return LocalShellCallOutput{
 		Type:   "local_shell_call_output",
 		CallID: part.ToolCallID,
 		Output: parsed.Output,
-	}
+	}, nil
 }
 
-func convertShellOutput(part types.ToolResultContent) interface{} {
+func convertShellOutput(part types.ToolResultContent) (interface{}, error) {
 	var parsed struct {
 		Output []struct {
 			Stdout  string `json:"stdout"`
 			Stderr  string `json:"stderr"`
 			Outcome struct {
-				Type          string `json:"type"`
-				ExitCode      *int   `json:"exitCode"`
-				ExitCodeSnake *int   `json:"exit_code"`
+				Type     string `json:"type"`
+				ExitCode *int   `json:"exitCode"`
 			} `json:"outcome"`
 		} `json:"output"`
 	}
-	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
-		return nil
+	if err := decodeStrict(shellOutputNode, part.Output.Value, &parsed); err != nil {
+		return nil, err
 	}
 	output := make([]ShellCallOutputEntry, 0, len(parsed.Output))
 	for _, entry := range parsed.Output {
-		exitCode := entry.Outcome.ExitCode
-		if exitCode == nil {
-			exitCode = entry.Outcome.ExitCodeSnake
+		outcome := ShellOutcome{Type: entry.Outcome.Type}
+		if entry.Outcome.Type == "exit" {
+			outcome.ExitCode = entry.Outcome.ExitCode
 		}
-		output = append(output, ShellCallOutputEntry{
-			Stdout: entry.Stdout,
-			Stderr: entry.Stderr,
-			Outcome: ShellOutcome{
-				Type:     entry.Outcome.Type,
-				ExitCode: exitCode,
-			},
-		})
+		output = append(output, ShellCallOutputEntry{Stdout: entry.Stdout, Stderr: entry.Stderr, Outcome: outcome})
 	}
 	return ShellCallOutput{
 		Type:   "shell_call_output",
 		CallID: part.ToolCallID,
 		Output: output,
-	}
+	}, nil
 }
 
-func convertComputerOutput(part types.ToolResultContent) interface{} {
+func convertComputerOutput(part types.ToolResultContent) (interface{}, error) {
 	var parsed struct {
 		Output struct {
 			ImageURL string `json:"imageUrl"`
@@ -1858,8 +1915,8 @@ func convertComputerOutput(part types.ToolResultContent) interface{} {
 			Message string `json:"message"`
 		} `json:"acknowledgedSafetyChecks"`
 	}
-	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
-		return nil
+	if err := decodeStrict(computerOutputNode, part.Output.Value, &parsed); err != nil {
+		return nil, err
 	}
 	checks := make([]ComputerSafetyCheck, 0, len(parsed.AcknowledgedSafetyChecks))
 	for _, c := range parsed.AcknowledgedSafetyChecks {
@@ -1875,23 +1932,23 @@ func convertComputerOutput(part types.ToolResultContent) interface{} {
 			Detail:   parsed.Output.Detail,
 		},
 		AcknowledgedSafetyChecks: checks,
-	}
+	}, nil
 }
 
-func convertApplyPatchOutput(part types.ToolResultContent) interface{} {
+func convertApplyPatchOutput(part types.ToolResultContent) (interface{}, error) {
 	var parsed struct {
 		Status string  `json:"status"`
 		Output *string `json:"output"`
 	}
-	if !decodeToolOutputJSON(part.Output.Value, &parsed) {
-		return nil
+	if err := decodeStrict(applyPatchOutputNode, part.Output.Value, &parsed); err != nil {
+		return nil, err
 	}
 	return ApplyPatchCallOutput{
 		Type:   "apply_patch_call_output",
 		CallID: part.ToolCallID,
 		Status: parsed.Status,
 		Output: parsed.Output,
-	}
+	}, nil
 }
 
 // providerToolName resolves an SDK tool name to the bare OpenAI provider tool
@@ -1914,77 +1971,96 @@ func isOpenAICustomToolName(name string, customToolNames map[string]bool) bool {
 	return customToolNames[name] || customToolNames[normalizeOpenAIToolName(name)]
 }
 
-func localShellActionFromArgs(args map[string]interface{}) LocalShellAction {
-	action, _ := args["action"].(map[string]interface{})
+func localShellActionFromArgs(args map[string]interface{}) (LocalShellAction, error) {
+	var parsed struct {
+		Action struct {
+			Command          []string          `json:"command"`
+			TimeoutMs        *int              `json:"timeoutMs"`
+			User             *string           `json:"user"`
+			WorkingDirectory *string           `json:"workingDirectory"`
+			Env              map[string]string `json:"env"`
+		} `json:"action"`
+	}
+	if err := decodeStrict(localShellInputNode, args, &parsed); err != nil {
+		return LocalShellAction{}, err
+	}
+	a := parsed.Action
 	return LocalShellAction{
 		Type:             "exec",
-		Command:          stringSliceArg(action, "command"),
-		TimeoutMs:        intPtrArg(action, "timeoutMs"),
-		User:             stringPtrArg(action, "user"),
-		WorkingDirectory: stringPtrArg(action, "workingDirectory"),
-		Env:              stringMapArg(action, "env"),
-	}
+		Command:          a.Command,
+		TimeoutMs:        a.TimeoutMs,
+		User:             a.User,
+		WorkingDirectory: a.WorkingDirectory,
+		Env:              a.Env,
+	}, nil
 }
 
-func shellActionFromArgs(args map[string]interface{}) ShellCallAction {
-	action, _ := args["action"].(map[string]interface{})
+func shellActionFromArgs(args map[string]interface{}) (ShellCallAction, error) {
+	var parsed struct {
+		Action struct {
+			Commands        []string `json:"commands"`
+			TimeoutMs       *int     `json:"timeoutMs"`
+			MaxOutputLength *int     `json:"maxOutputLength"`
+		} `json:"action"`
+	}
+	if err := decodeStrict(shellInputNode, args, &parsed); err != nil {
+		return ShellCallAction{}, err
+	}
 	return ShellCallAction{
-		Commands:        stringSliceArg(action, "commands"),
-		TimeoutMs:       intPtrArg(action, "timeoutMs"),
-		MaxOutputLength: intPtrArg(action, "maxOutputLength"),
-	}
+		Commands:        parsed.Action.Commands,
+		TimeoutMs:       parsed.Action.TimeoutMs,
+		MaxOutputLength: parsed.Action.MaxOutputLength,
+	}, nil
 }
 
-// computerActionsFromArgs extracts the "actions" array from a computer tool
-// call's arguments and translates each action's field names to the wire
-// format (row 0063c2d).
-func computerActionsFromArgs(args map[string]interface{}) []map[string]interface{} {
-	raw, ok := args["actions"].([]interface{})
-	if !ok {
-		return nil
+// computerCallFromArgs validates a computer tool call's input and returns its
+// status, actions (field names translated to the wire format, row 0063c2d;
+// keys zod strips are dropped) and pending safety checks.
+func computerCallFromArgs(args map[string]interface{}) (string, []map[string]interface{}, []ComputerSafetyCheck, error) {
+	if err := validateToolPayload(computerInputNode, args); err != nil {
+		return "", nil, nil, err
 	}
-	actions := make([]map[string]interface{}, 0, len(raw))
-	for _, item := range raw {
-		if m, ok := item.(map[string]interface{}); ok {
-			actions = append(actions, MapComputerActionToWire(m))
+	status, _ := args["status"].(string)
+	rawActions, _ := args["actions"].([]interface{})
+	actions := make([]map[string]interface{}, 0, len(rawActions))
+	for _, item := range rawActions {
+		m, _ := item.(map[string]interface{})
+		typ, _ := m["type"].(string)
+		kept := make(map[string]interface{}, len(m))
+		for _, k := range computerActionFields[typ] {
+			if v, ok := m[k]; ok {
+				kept[k] = v
+			}
 		}
+		actions = append(actions, MapComputerActionToWire(kept))
 	}
-	return actions
-}
-
-func computerSafetyChecksFromArgs(args map[string]interface{}, key string) []ComputerSafetyCheck {
-	raw, _ := args[key].([]interface{})
-	// TS always sends pending_safety_checks (an empty array when none).
-	checks := make([]ComputerSafetyCheck, 0, len(raw))
-	for _, item := range raw {
-		m, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	rawChecks, _ := args["pendingSafetyChecks"].([]interface{})
+	checks := make([]ComputerSafetyCheck, 0, len(rawChecks))
+	for _, item := range rawChecks {
+		m, _ := item.(map[string]interface{})
 		checks = append(checks, ComputerSafetyCheck{
 			ID:      stringArg(m, "id"),
 			Code:    stringArg(m, "code"),
 			Message: stringArg(m, "message"),
 		})
 	}
-	return checks
+	return status, actions, checks, nil
 }
 
-func stringArgDefault(values map[string]interface{}, key, fallback string) string {
-	if v := stringArg(values, key); v != "" {
-		return v
+func applyPatchFromArgs(args map[string]interface{}) (string, ApplyPatchOperation, error) {
+	var parsed struct {
+		CallID    string `json:"callId"`
+		Operation struct {
+			Type string  `json:"type"`
+			Path string  `json:"path"`
+			Diff *string `json:"diff"`
+		} `json:"operation"`
 	}
-	return fallback
-}
-
-func applyPatchOperationFromArgs(args map[string]interface{}) ApplyPatchOperation {
-	operation, _ := args["operation"].(map[string]interface{})
-	diff := stringPtrArg(operation, "diff")
-	return ApplyPatchOperation{
-		Type: stringArg(operation, "type"),
-		Path: stringArg(operation, "path"),
-		Diff: diff,
+	if err := decodeStrict(applyPatchInputNode, args, &parsed); err != nil {
+		return "", ApplyPatchOperation{}, err
 	}
+	op := parsed.Operation
+	return parsed.CallID, ApplyPatchOperation{Type: op.Type, Path: op.Path, Diff: op.Diff}, nil
 }
 
 func stringArg(values map[string]interface{}, key string) string {
@@ -2000,68 +2076,6 @@ func stringPtr(value string) *string {
 		return nil
 	}
 	return &value
-}
-
-func stringPtrArg(values map[string]interface{}, key string) *string {
-	return stringPtr(stringArg(values, key))
-}
-
-func intPtrArg(values map[string]interface{}, key string) *int {
-	if values == nil {
-		return nil
-	}
-	switch value := values[key].(type) {
-	case int:
-		return &value
-	case int64:
-		v := int(value)
-		return &v
-	case float64:
-		v := int(value)
-		return &v
-	default:
-		return nil
-	}
-}
-
-func stringSliceArg(values map[string]interface{}, key string) []string {
-	if values == nil {
-		return nil
-	}
-	switch raw := values[key].(type) {
-	case []string:
-		return raw
-	case []interface{}:
-		out := make([]string, 0, len(raw))
-		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func stringMapArg(values map[string]interface{}, key string) map[string]string {
-	if values == nil {
-		return nil
-	}
-	switch raw := values[key].(type) {
-	case map[string]string:
-		return raw
-	case map[string]interface{}:
-		out := make(map[string]string, len(raw))
-		for k, v := range raw {
-			if s, ok := v.(string); ok {
-				out[k] = s
-			}
-		}
-		return out
-	default:
-		return nil
-	}
 }
 
 func decodeToolOutputJSON(value interface{}, target interface{}) bool {

@@ -73,10 +73,13 @@ func TestXAIToolResultUnknownTypeSendsEmptyString(t *testing.T) {
 // TS tool_search_output always carries `tools`, even when the search loaded
 // nothing; the API rejects the item without it.
 func TestToolSearchOutputEmptyToolsStillSent(t *testing.T) {
-	out := convertToolSearchOutput(types.ToolResultContent{
+	out, convErr := convertToolSearchOutput(types.ToolResultContent{
 		ToolCallID: "c1", ToolName: "openai.tool_search",
 		Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"tools": []interface{}{}}},
 	}, "client")
+	if convErr != nil {
+		t.Fatal(convErr)
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		t.Fatal(err)

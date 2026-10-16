@@ -213,7 +213,7 @@ func (m *LanguageModel) convertResponse(response togetherResponse) *types.Genera
 		Text:            choice.Message.Content,
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertTogetherUsage(response.Usage),
+		Usage:           convertTogetherUsagePtr(response.Usage),
 		RawResponse:     response,
 	}
 	if len(choice.Message.ToolCalls) > 0 {
@@ -252,6 +252,16 @@ func (m *LanguageModel) handleError(err error) error {
 
 // convertTogetherUsage converts Together AI usage to detailed Usage struct
 // Implements v6.0 detailed token tracking (OpenAI-compatible format)
+// convertTogetherUsagePtr is TS convert usage of a possibly missing wire usage: an
+// absent or null usage object yields the null usage (unknown token counts),
+// not zero tokens.
+func convertTogetherUsagePtr(usage *togetherUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertTogetherUsage(*usage)
+}
+
 func convertTogetherUsage(usage togetherUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
@@ -351,7 +361,7 @@ type togetherResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage togetherUsage `json:"usage"`
+	Usage *togetherUsage `json:"usage"`
 }
 
 // togetherUsage represents Together AI usage information with detailed token tracking

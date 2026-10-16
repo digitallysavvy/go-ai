@@ -24,7 +24,7 @@ func TestStreamIncludeRawChunks(t *testing.T) {
 		}
 		got = append(got, string(chunk.Type))
 	}
-	want := []string{"raw", "raw", "text", "finish"}
+	want := []string{"raw", "text-start", "raw", "text", "finish"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("chunks = %v, want %v", got, want)
 	}

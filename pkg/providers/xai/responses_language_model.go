@@ -222,12 +222,20 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 
 	// Extract XAI-specific provider options.
 	var xaiOpts XAIResponsesProviderOptions
+	var rawXAIOpts map[string]interface{}
 	if opts.ProviderOptions != nil {
 		if raw, ok := opts.ProviderOptions["xai"]; ok {
 			if jsonData, err := json.Marshal(raw); err == nil {
-				json.Unmarshal(jsonData, &xaiOpts) //nolint:errcheck
+				json.Unmarshal(jsonData, &xaiOpts)    //nolint:errcheck
+				json.Unmarshal(jsonData, &rawXAIOpts) //nolint:errcheck
 			}
 		}
+	}
+	// TS forwards every string option that is not undefined, so an empty
+	// string is sent; the typed struct cannot tell "" from absent.
+	xaiString := func(key string) (string, bool) {
+		v, ok := rawXAIOpts[key].(string)
+		return v, ok
 	}
 
 	// TS convertToXaiResponsesInput: a converter of its own (xAI item ids,
@@ -273,14 +281,14 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	if xaiOpts.ParallelToolCalls != nil {
 		body["parallel_tool_calls"] = *xaiOpts.ParallelToolCalls
 	}
-	if xaiOpts.PromptCacheKey != "" {
-		body["prompt_cache_key"] = xaiOpts.PromptCacheKey
+	if v, ok := xaiString("promptCacheKey"); ok {
+		body["prompt_cache_key"] = v
 	}
-	if xaiOpts.SafetyIdentifier != "" {
-		body["safety_identifier"] = xaiOpts.SafetyIdentifier
+	if v, ok := xaiString("safetyIdentifier"); ok {
+		body["safety_identifier"] = v
 	}
-	if xaiOpts.User != "" {
-		body["user"] = xaiOpts.User
+	if v, ok := xaiString("user"); ok {
+		body["user"] = v
 	}
 
 	// Row 484293f: serviceTier ("default" or "priority"), surfaced back in
@@ -317,13 +325,15 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 			include = append(include, "reasoning.encrypted_content")
 		}
 	}
-	if len(include) > 0 {
+	// TS: `options.include ? [...options.include] : undefined` -- an empty
+	// array is truthy, so `include: []` is sent when the option is present.
+	if _, includePresent := rawXAIOpts["include"].([]interface{}); len(include) > 0 || includePresent {
 		body["include"] = include
 	}
 
 	// Previous response ID for stateful multi-turn conversations.
-	if xaiOpts.PreviousResponseID != "" {
-		body["previous_response_id"] = xaiOpts.PreviousResponseID
+	if v, ok := xaiString("previousResponseId"); ok {
+		body["previous_response_id"] = v
 	}
 
 	// Response format (JSON schema / structured output).
@@ -1061,6 +1071,10 @@ type xaiResponsesStream struct {
 	rawFinishReason string
 	finishUsage     *types.Usage
 	finishMeta      json.RawMessage
+	// usageMeta is the usage-derived metadata (costInUsdTicks, cost). TS only
+	// replaces it when a terminal event carries usage, so a later event
+	// without usage keeps the earlier value.
+	usageMeta map[string]interface{}
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -1631,19 +1645,25 @@ func (s *xaiResponsesStream) recordUsage(u *responses.ResponsesAPIUsage) {
 }
 
 func (s *xaiResponsesStream) recordMetadata(u *responses.ResponsesAPIUsage, serviceTier, promptCacheKey, safetyIdentifier string) {
-	xaiMeta := map[string]interface{}{}
-	if u != nil && u.CostInUsdTicks != nil {
-		xaiMeta["costInUsdTicks"] = *u.CostInUsdTicks
+	if u != nil {
+		s.usageMeta = map[string]interface{}{}
+		if u.CostInUsdTicks != nil {
+			s.usageMeta["costInUsdTicks"] = *u.CostInUsdTicks
+		}
+		if u.InputTokensCost != nil || u.OutputTokensCost != nil {
+			cost := map[string]interface{}{}
+			if u.InputTokensCost != nil {
+				cost["inputTokensCost"] = *u.InputTokensCost
+			}
+			if u.OutputTokensCost != nil {
+				cost["outputTokensCost"] = *u.OutputTokensCost
+			}
+			s.usageMeta["cost"] = cost
+		}
 	}
-	if u != nil && (u.InputTokensCost != nil || u.OutputTokensCost != nil) {
-		cost := map[string]interface{}{}
-		if u.InputTokensCost != nil {
-			cost["inputTokensCost"] = *u.InputTokensCost
-		}
-		if u.OutputTokensCost != nil {
-			cost["outputTokensCost"] = *u.OutputTokensCost
-		}
-		xaiMeta["cost"] = cost
+	xaiMeta := map[string]interface{}{}
+	for k, v := range s.usageMeta {
+		xaiMeta[k] = v
 	}
 	if serviceTier != "" {
 		xaiMeta["serviceTier"] = serviceTier
@@ -1765,9 +1785,8 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
-		if item.ID == "" && item.EncryptedContent == "" {
-			return nil, false
-		}
+		// TS emits reasoning-start/-end for every done reasoning item, even
+		// one without an id or encrypted content.
 		meta := map[string]interface{}{}
 		if item.ID != "" {
 			meta["itemId"] = item.ID
@@ -1781,7 +1800,11 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		// If no reasoning-start was emitted yet (encrypted reasoning path where
 		// reasoning_summary_part.added events are not sent), emit one now.
 		if _, started := s.activeReasoning[item.ID]; !started {
-			startMeta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": item.ID}})
+			startXAI := map[string]interface{}{}
+			if item.ID != "" {
+				startXAI["itemId"] = item.ID
+			}
+			startMeta, _ := json.Marshal(map[string]interface{}{"xai": startXAI})
 			s.flushQueue = append(s.flushQueue,
 				&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: blockID, ProviderMetadata: startMeta},
 				&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: blockID, ProviderMetadata: providerMeta},

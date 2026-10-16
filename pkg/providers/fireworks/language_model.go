@@ -301,7 +301,7 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 		Text:            choice.Message.Content,
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertFireworksUsage(response.Usage),
+		Usage:           convertFireworksUsagePtr(response.Usage),
 		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
@@ -354,6 +354,16 @@ func (m *LanguageModel) handleError(err error) error {
 }
 
 // convertFireworksUsage converts Fireworks usage to detailed Usage struct
+// convertFireworksUsagePtr is TS convert usage of a possibly missing wire usage: an
+// absent or null usage object yields the null usage (unknown token counts),
+// not zero tokens.
+func convertFireworksUsagePtr(usage *fireworksUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertFireworksUsage(*usage)
+}
+
 func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
@@ -439,7 +449,7 @@ type fireworksResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage fireworksUsage `json:"usage"`
+	Usage *fireworksUsage `json:"usage"`
 }
 
 // fireworksUsage represents Fireworks usage information with detailed token tracking

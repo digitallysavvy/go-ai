@@ -289,7 +289,7 @@ func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateRes
 		Text:            choice.Message.Content,
 		FinishReason:    mapZaiFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertZaiUsage(response.Usage),
+		Usage:           convertZaiUsagePtr(response.Usage),
 		RawResponse:     response,
 	}
 	if choice.Message.ReasoningContent != "" {
@@ -363,6 +363,16 @@ func mapZaiFinishReason(raw string) types.FinishReason {
 	}
 }
 
+// convertZaiUsagePtr is TS convert usage of a possibly missing wire usage: an
+// absent or null usage object yields the null usage (unknown token counts),
+// not zero tokens.
+func convertZaiUsagePtr(usage *zaiUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertZaiUsage(*usage)
+}
+
 func convertZaiUsage(usage zaiUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
@@ -427,7 +437,7 @@ type zaiResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage zaiUsage `json:"usage"`
+	Usage *zaiUsage `json:"usage"`
 }
 
 type zaiUsage struct {

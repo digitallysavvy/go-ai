@@ -336,7 +336,7 @@ func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateR
 		Text:            choice.Message.Content,
 		FinishReason:    providerutils.MapOpenAIFinishReason(choice.FinishReason),
 		RawFinishReason: choice.FinishReason,
-		Usage:           convertGroqUsage(response.Usage),
+		Usage:           convertGroqUsagePtr(response.Usage),
 		RawResponse:     response,
 	}
 	if choice.Message.Reasoning != "" {
@@ -366,6 +366,16 @@ func (m *LanguageModel) convertResponse(response groqResponse) (*types.GenerateR
 		}
 	}
 	return result, nil
+}
+
+// convertGroqUsagePtr is TS convert usage of a possibly missing wire usage: an
+// absent or null usage object yields the null usage (unknown token counts),
+// not zero tokens.
+func convertGroqUsagePtr(usage *groqUsage) types.Usage {
+	if usage == nil {
+		return types.Usage{}
+	}
+	return convertGroqUsage(*usage)
 }
 
 func convertGroqUsage(usage groqUsage) types.Usage {
@@ -483,7 +493,7 @@ type groqResponse struct {
 			} `json:"tool_calls"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage groqUsage `json:"usage"`
+	Usage *groqUsage `json:"usage"`
 }
 
 type groqUsage struct {

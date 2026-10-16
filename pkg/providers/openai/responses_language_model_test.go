@@ -3108,8 +3108,9 @@ func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
 		ID:       "call_1",
 		ToolName: "openai.computer",
 		Arguments: map[string]interface{}{
-			"status":  "completed",
-			"actions": []interface{}{map[string]interface{}{"type": "click", "button": "left", "x": 1, "y": 2}},
+			"status":              "completed",
+			"pendingSafetyChecks": []interface{}{},
+			"actions":             []interface{}{map[string]interface{}{"type": "click", "button": "left", "x": 1, "y": 2}},
 		},
 	}
 	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
@@ -3135,7 +3136,7 @@ func TestResponsesLanguageModel_ComputerToolInputReplay(t *testing.T) {
 				Output: &types.ToolResultOutput{
 					Type: types.ToolResultOutputJSON,
 					Value: map[string]interface{}{
-						"output": map[string]interface{}{"imageUrl": "https://example.com/shot.png"},
+						"output": map[string]interface{}{"type": "computer_screenshot", "imageUrl": "https://example.com/shot.png"},
 					},
 				},
 			}},
