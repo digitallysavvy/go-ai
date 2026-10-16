@@ -143,3 +143,23 @@ func TestStreamObject_UsageIsNotSummedAcrossParts(t *testing.T) {
 		t.Fatalf("total tokens = %d, want 7", got)
 	}
 }
+
+// TS startBatch sends `n: request.n ?? 1` for image requests.
+func TestExperimentalStartBatch_ImageRequestDefaultsNToOne(t *testing.T) {
+	t.Parallel()
+	var got *int
+	mock := &mockBatchV4{providerName: "mock.batch", startFn: func(_ context.Context, opts provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
+		got = opts.Requests[0].Image.Options.N
+		return &provider.BatchV4StartResult{BatchID: "b1"}, nil
+	}}
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: mock,
+		Requests: []BatchRequest{{Image: &BatchImageRequest{ID: "i1", Model: "m", Prompt: "cat"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || *got != 1 {
+		t.Fatalf("N = %v, want 1", got)
+	}
+}

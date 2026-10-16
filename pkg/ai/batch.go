@@ -739,9 +739,14 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		}, nil
 	case req.Image != nil:
 		i := req.Image
+		// TS: `n: request.n ?? 1`.
+		n := 1
+		if i.N != nil {
+			n = *i.N
+		}
 		imgOpts := provider.ImageGenerateOptions{
 			Prompt:          i.Prompt,
-			N:               i.N,
+			N:               &n,
 			Size:            i.Size,
 			AspectRatio:     i.AspectRatio,
 			Seed:            i.Seed,
