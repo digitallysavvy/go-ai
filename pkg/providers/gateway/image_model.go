@@ -147,7 +147,7 @@ func (m *ImageModel) convertResponse(response gatewayImageResponse, headers http
 		// The wire format is always base64; Images carries the decoded bytes
 		// (Base64Images keeps the strings). Undecodable payloads are passed
 		// through unchanged rather than dropped.
-		if decoded, err := base64.StdEncoding.DecodeString(image); err == nil {
+		if decoded, err := types.DecodeFileDataString(image); err == nil {
 			images = append(images, decoded)
 		} else {
 			images = append(images, []byte(image))

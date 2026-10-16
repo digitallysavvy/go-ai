@@ -6,7 +6,7 @@
 package revai
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
@@ -72,22 +72,22 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by Rev.ai).
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("revai does not provide language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: "unknown", ModelType: "languageModel", Message: "Rev.ai does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model (not supported by Rev.ai).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("revai does not provide embedding models")
+	return nil, &providererrors.NoSuchModelError{ModelID: "unknown", ModelType: "embeddingModel", Message: "Rev.ai does not provide text embedding models"}
 }
 
 // ImageModel returns an image model (not supported by Rev.ai).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("revai does not provide image models")
+	return nil, &providererrors.NoSuchModelError{ModelID: "unknown", ModelType: "imageModel", Message: "Rev.ai does not provide image models"}
 }
 
 // SpeechModel returns a speech model (not supported by Rev.ai).
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("revai does not provide speech synthesis models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model.
@@ -97,5 +97,5 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model (not supported by Rev.ai).
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("revai does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

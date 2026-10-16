@@ -620,3 +620,41 @@ func TestBuildRequest_FutureWanProtocols(t *testing.T) {
 		}
 	}
 }
+
+// TS parseProviderOptions(alibabaVideoModelOptionsSchema) rejects mistyped
+// options instead of ignoring them, and the X-DashScope-Async flag cannot be
+// overridden by caller headers.
+func TestVideoModelDoStartValidatesOptionsAndPinsAsyncHeader(t *testing.T) {
+	var asyncHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asyncHeader = r.Header.Get("X-DashScope-Async")
+		_, _ = w.Write([]byte(`{"output":{"task_id":"t1","task_status":"PENDING"}}`))
+	}))
+	defer server.Close()
+	model := NewVideoModel(New(Config{APIKey: "k", VideoBaseURL: server.URL}), "wan2.6-t2v")
+
+	for name, opts := range map[string]map[string]interface{}{
+		"shotType enum":   {"shotType": "triple"},
+		"promptExtend":    {"promptExtend": "yes"},
+		"media item type": {"media": []interface{}{map[string]interface{}{"type": "bogus", "url": "u"}}},
+		"ratio enum":      {"ratio": "5:4"},
+		"pollInterval<=0": {"pollIntervalMs": 0},
+	} {
+		_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+			Prompt: "x", PromptSet: true, ProviderOptions: map[string]interface{}{"alibaba": opts},
+		}})
+		if err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{
+		Prompt: "x", PromptSet: true, Headers: map[string]string{"X-DashScope-Async": "disable"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asyncHeader != "enable" {
+		t.Errorf("X-DashScope-Async = %q, want enable", asyncHeader)
+	}
+}

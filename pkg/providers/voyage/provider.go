@@ -2,6 +2,7 @@ package voyage
 
 import (
 	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"net/http"
 	"os"
@@ -55,7 +56,7 @@ func CreateVoyage(cfg Config) *Provider { return New(cfg) }
 func (p *Provider) Name() string        { return "voyage" }
 
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("voyage does not support language models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "languageModel")
 }
 
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
@@ -78,15 +79,15 @@ func (p *Provider) TextEmbeddingModel(modelID string) (provider.EmbeddingModel, 
 }
 
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("voyage does not support image models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("voyage does not support speech models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("voyage does not support transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {

@@ -660,7 +660,7 @@ func (p *Provider) Transcription(modelID string) (provider.TranscriptionModel, e
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Azure OpenAI doesn't provide reranking models
-	return nil, fmt.Errorf("azure OpenAI does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

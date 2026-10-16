@@ -4,7 +4,7 @@
 package fishaudio
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
@@ -70,17 +70,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by Fish Audio).
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide language models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "languageModel", Message: "Fish Audio does not provide language models"}
 }
 
 // EmbeddingModel returns an embedding model (not supported by Fish Audio).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide embedding models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Fish Audio does not provide embedding models"}
 }
 
 // ImageModel returns an image model (not supported by Fish Audio).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide image models")
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Fish Audio does not provide image models"}
 }
 
 // SpeechModel returns a text-to-speech model.
@@ -100,5 +100,5 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model (not supported by Fish Audio).
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("fish-audio does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

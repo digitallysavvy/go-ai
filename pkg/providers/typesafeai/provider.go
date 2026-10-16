@@ -5,7 +5,7 @@
 package typesafeai
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
 	"os"
@@ -98,32 +98,32 @@ func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error)
 
 // LanguageModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("typesafe: no such languageModel: %s", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "languageModel")
 }
 
 // EmbeddingModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("typesafe: no such embeddingModel: %s", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("typesafe: no such imageModel: %s", modelID)
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("typesafe does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("typesafe does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel is unsupported; TypeSafe AI only implements DecisionModel.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("typesafe does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // EvaluationModel is the deprecated form of DecisionModel.

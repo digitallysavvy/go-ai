@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -206,6 +207,11 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = os.Getenv("OPENAI_BASE_URL")
 	}
+	// TS validateBaseURL(loadOptionalSetting(...)): a whitespace-only base
+	// URL (option or OPENAI_BASE_URL) is an InvalidArgumentError. TS throws
+	// from the constructor; New keeps returning a provider (v0.5.2 accepted
+	// these values) and every request fails with that error instead.
+	baseURLErr := providerutils.ValidateBaseURL(baseURL)
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -264,6 +270,9 @@ func New(cfg Config) *Provider {
 		clientCfg.HeadersFunc = func() (map[string]string, error) {
 			return providerutils.RequestAuthHeader(userHeaders, userKey, apiKeyEnv, apiKeyDescription, "Authorization", "Bearer ")
 		}
+	}
+	if baseURLErr != nil {
+		clientCfg.HeadersFunc = func() (map[string]string, error) { return nil, baseURLErr }
 	}
 	client := http.NewClient(clientCfg)
 
@@ -435,7 +444,7 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// OpenAI doesn't provide reranking models
-	return nil, fmt.Errorf("OpenAI does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // ResponsesModel returns a language model that uses the OpenAI Responses API

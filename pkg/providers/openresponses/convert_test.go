@@ -423,15 +423,22 @@ func TestConvertToOpenResponsesInput_ClientAndProviderExecutedToolCalls(t *testi
 		t.Fatalf("ConvertToOpenResponsesInputForProvider() error = %v", err)
 	}
 
+	// TS has no providerExecuted check on the plain function_call path: a
+	// provider-executed call that is not a registered extension replays as a
+	// function_call like any other.
 	items := input.([]interface{})
-	if len(items) != 2 {
-		t.Fatalf("items = %#v, want client function_call plus output", items)
+	if len(items) != 3 {
+		t.Fatalf("items = %#v, want two function_calls plus output", items)
 	}
-	call := items[0].(FunctionCallItem)
+	prov := items[0].(FunctionCallItem)
+	if prov.CallID != "call_provider" || prov.Name != "server_tool" {
+		t.Fatalf("provider call = %#v", prov)
+	}
+	call := items[1].(FunctionCallItem)
 	if call.CallID != "call_client" || call.Name != "client_tool" {
 		t.Fatalf("call = %#v", call)
 	}
-	output := items[1].(FunctionCallOutputItem)
+	output := items[2].(FunctionCallOutputItem)
 	if output.CallID != "call_client" || output.Output != "ok" {
 		t.Fatalf("output = %#v", output)
 	}

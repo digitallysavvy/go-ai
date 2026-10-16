@@ -36,8 +36,13 @@ type ToolSearchArgs struct {
 // Stored in types.Tool.ProviderOptions so that PrepareTools can produce the
 // correct ToolSearchToolDef wire format.
 type ToolSearchOptions struct {
-	// Execution is "server" or "client".
+	// Execution is "server" or "client" (defaults to "server").
 	Execution string
+
+	// ExecutionSet reports that the caller passed Execution explicitly. TS
+	// sends `execution` on the wire only when the caller set it, so an
+	// explicit "server" is sent while the default is omitted.
+	ExecutionSet bool
 }
 
 // ToolSearch creates a provider tool for the OpenAI Responses API tool_search feature.
@@ -87,7 +92,8 @@ func ToolSearch(args ToolSearchArgs) types.Tool {
 		Parameters:       args.Parameters,
 		ProviderExecuted: execution == "server",
 		ProviderOptions: ToolSearchOptions{
-			Execution: execution,
+			Execution:    execution,
+			ExecutionSet: args.Execution != "",
 		},
 		Execute: execute,
 	}

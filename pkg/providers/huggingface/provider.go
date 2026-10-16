@@ -8,7 +8,7 @@
 package huggingface
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
 	"os"
@@ -115,32 +115,32 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 // support text embeddings (TS createHuggingFace throws NoSuchModelError with
 // this exact message for embeddingModel/textEmbeddingModel).
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("Hugging Face Responses API does not support text embeddings. Use the Hugging Face Inference API directly for embeddings.") //nolint:staticcheck // matches TS SDK's exact error text
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "embeddingModel", Message: "Hugging Face Responses API does not support text embeddings. Use the Hugging Face Inference API directly for embeddings."}
 }
 
 // ImageModel returns an error: the Hugging Face Responses API does not
 // support image generation (TS createHuggingFace throws NoSuchModelError
 // with this exact message for imageModel).
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("Hugging Face Responses API does not support image generation. Use the Hugging Face Inference API directly for image models.") //nolint:staticcheck // matches TS SDK's exact error text
+	return nil, &providererrors.NoSuchModelError{ModelID: modelID, ModelType: "imageModel", Message: "Hugging Face Responses API does not support image generation. Use the Hugging Face Inference API directly for image models."}
 }
 
 // SpeechModel returns an error: Hugging Face does not provide a unified
 // speech synthesis API through the Responses model.
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("huggingface provider does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns an error: Hugging Face does not provide a
 // unified transcription API through the Responses model.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("huggingface provider does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns an error: Hugging Face does not support reranking
 // through this interface.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("huggingface provider does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client used for API requests.

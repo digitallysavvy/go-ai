@@ -293,3 +293,14 @@ func TestGatewayImageModelOmitsEmptyPromptForImageOnlyEdit(t *testing.T) {
 		t.Fatalf("image-only edit must omit prompt: %#v", seenBody)
 	}
 }
+
+// Unpadded / base64url image payloads decode like TS atob-based decoding
+// instead of being passed through as text.
+func TestGatewayImageConvertResponseLenientBase64(t *testing.T) {
+	raw := []byte{0xfb, 0xff, 0xfe, 0x01}
+	m := &ImageModel{}
+	res := m.convertResponse(gatewayImageResponse{Images: []string{base64.RawURLEncoding.EncodeToString(raw)}}, http.Header{})
+	if len(res.Images) != 1 || string(res.Images[0]) != string(raw) {
+		t.Fatalf("Images = %v, want %v", res.Images, raw)
+	}
+}

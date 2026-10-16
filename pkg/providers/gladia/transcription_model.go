@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // pollTimeout and pollInterval mirror GladiaTranscriptionModel.doGenerate's
@@ -108,12 +109,34 @@ func buildRequestBody(gOpts *TranscriptionModelOptions) map[string]interface{} {
 	setOptional(body, "punctuation_enhanced", gOpts.PunctuationEnhanced)
 
 	if gOpts.CustomVocabularyConfig != nil {
-		cfg := map[string]interface{}{"vocabulary": gOpts.CustomVocabularyConfig.Vocabulary}
+		// TS maps each entry: strings pass through; objects are rebuilt as
+		// {value, intensity, pronunciations, language} so unknown keys are
+		// dropped and null fields become undefined (omitted).
+		vocabulary := make([]interface{}, 0, len(gOpts.CustomVocabularyConfig.Vocabulary))
+		for _, item := range gOpts.CustomVocabularyConfig.Vocabulary {
+			obj, isObj := item.(map[string]interface{})
+			if !isObj {
+				vocabulary = append(vocabulary, item)
+				continue
+			}
+			entry := map[string]interface{}{"value": obj["value"]}
+			for _, k := range []string{"intensity", "pronunciations", "language"} {
+				if v, ok := obj[k]; ok && v != nil {
+					entry[k] = v
+				}
+			}
+			vocabulary = append(vocabulary, entry)
+		}
+		cfg := map[string]interface{}{"vocabulary": vocabulary}
 		setOptional(cfg, "default_intensity", gOpts.CustomVocabularyConfig.DefaultIntensity)
 		body["custom_vocabulary_config"] = cfg
 	}
 	if gOpts.CodeSwitchingConfig != nil {
-		body["code_switching_config"] = map[string]interface{}{"languages": gOpts.CodeSwitchingConfig.Languages}
+		cfg := map[string]interface{}{}
+		if gOpts.CodeSwitchingConfig.Languages != nil {
+			cfg["languages"] = gOpts.CodeSwitchingConfig.Languages
+		}
+		body["code_switching_config"] = cfg
 	}
 	if gOpts.CallbackConfig != nil {
 		cfg := map[string]interface{}{"url": gOpts.CallbackConfig.URL}
@@ -251,11 +274,20 @@ func buildUploadMultipart(opts *provider.TranscriptionOptions) (*bytes.Buffer, s
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
+	audio := opts.Audio
+	if len(audio) == 0 && opts.AudioBase64 != "" {
+		decoded, err := types.DecodeFileDataString(opts.AudioBase64)
+		if err != nil {
+			return nil, "", fmt.Errorf("gladia: failed to decode base64 audio: %w", err)
+		}
+		audio = decoded
+	}
+
 	part, err := providerutils.CreateTypedFormFile(writer, "audio", "audio."+gladiaAudioExtension(opts.MimeType), opts.MimeType)
 	if err != nil {
 		return nil, "", err
 	}
-	if _, err := part.Write(opts.Audio); err != nil {
+	if _, err := part.Write(audio); err != nil {
 		return nil, "", err
 	}
 	if err := writer.Close(); err != nil {
@@ -275,7 +307,7 @@ func gladiaAudioExtension(mimeType string) string {
 func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers)
+	pollOpts.Headers = version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("gladia"))
 
 	start := time.Now()
 	for {

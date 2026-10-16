@@ -3,7 +3,7 @@
 package lmnt
 
 import (
-	"fmt"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -40,17 +40,17 @@ func (p *Provider) Name() string {
 
 // LanguageModel returns a language model (not supported by LMNT)
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
-	return nil, fmt.Errorf("lmnt does not provide language models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "languageModel")
 }
 
 // EmbeddingModel returns an embedding model (not supported by LMNT)
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("lmnt does not provide embedding models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image model (not supported by LMNT)
 func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
-	return nil, fmt.Errorf("lmnt does not provide image models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "imageModel")
 }
 
 // SpeechModel returns a text-to-speech model
@@ -63,10 +63,10 @@ func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 
 // TranscriptionModel returns a speech-to-text model (not supported by LMNT)
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("lmnt does not provide transcription models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model (not supported by LMNT)
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("lmnt does not provide reranking models")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }

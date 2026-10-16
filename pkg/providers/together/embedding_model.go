@@ -91,6 +91,8 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	reqBody := map[string]interface{}{
 		"input": inputs,
 		"model": m.modelID,
+		// TS OpenAICompatibleEmbeddingModel always sends encoding_format.
+		"encoding_format": "float",
 	}
 	applyEmbeddingDimensions(reqBody, opts)
 	var response togetherEmbedResponse

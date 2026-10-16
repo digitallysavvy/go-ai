@@ -9,7 +9,6 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
-	"github.com/digitallysavvy/go-ai/pkg/internal/media"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -163,7 +162,12 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	mimeType := contentType
 	if mimeType == "" || mimeType == "application/octet-stream" {
-		mimeType = media.DetectImageMediaType(imageData)
+		// TS signature tables (also bmp/tiff/avif/heic); undetected bytes
+		// fall through to the image/png default below, as in TS.
+		mimeType = ""
+		if detected, ok := fileutil.DetectMediaTypeSignature(imageData, "image"); ok {
+			mimeType = detected
+		}
 	}
 	if mimeType == "" {
 		mimeType = "image/png"

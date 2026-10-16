@@ -37,6 +37,9 @@ func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 	result := make([]interface{}, 0, len(tools))
 	namespaces := map[string]*NamespaceToolDef{}
 	for _, t := range tools {
+		if err := validateMCPToolArgs(t); err != nil {
+			return nil, err
+		}
 		def := convertTool(t)
 		if def != nil {
 			if functionDef, ok := def.(FunctionToolDef); ok {
@@ -67,6 +70,24 @@ func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
 		}
 	}
 	return result, nil
+}
+
+// validateMCPToolArgs mirrors the mcpArgsSchema refinement TS applies with
+// validateTypes: an openai.mcp tool needs a serverUrl or a connectorId.
+func validateMCPToolArgs(t types.Tool) error {
+	toolID := t.ProviderID
+	if toolID == "" {
+		toolID = t.Name
+	}
+	if toolID != "openai.mcp" {
+		return nil
+	}
+	cfg, ok := t.ProviderOptions.(openaitool.MCPConfig)
+	if !ok || cfg.ServerURL != "" || cfg.ConnectorID != "" {
+		return nil
+	}
+	return providererrors.NewValidationError("tools",
+		fmt.Sprintf("Type validation failed for %s: One of serverUrl or connectorId must be provided.", t.Name), nil)
 }
 
 // convertTool converts a single types.Tool to its Responses API representation.
@@ -243,12 +264,14 @@ func convertImageGenerationTool(t types.Tool) map[string]interface{} {
 func convertWebSearchTool(t types.Tool) WebSearchToolDef {
 	def := WebSearchToolDef{Type: "web_search"}
 	cfg, _ := t.ProviderOptions.(openaitool.WebSearchConfig)
-	if cfg.Filters != nil && (len(cfg.Filters.AllowedDomains) > 0 || len(cfg.Filters.BlockedDomains) > 0) {
+	// TS: `filters != null ? {allowed_domains, blocked_domains} : undefined`,
+	// so a present filters object is sent (undefined members dropped).
+	if cfg.Filters != nil {
 		filters := map[string]interface{}{}
-		if len(cfg.Filters.AllowedDomains) > 0 {
+		if cfg.Filters.AllowedDomains != nil {
 			filters["allowed_domains"] = cfg.Filters.AllowedDomains
 		}
-		if len(cfg.Filters.BlockedDomains) > 0 {
+		if cfg.Filters.BlockedDomains != nil {
 			filters["blocked_domains"] = cfg.Filters.BlockedDomains
 		}
 		def.Filters = filters
@@ -374,7 +397,9 @@ func convertToolSearchTool(t types.Tool) ToolSearchToolDef {
 	def := ToolSearchToolDef{Type: "tool_search"}
 
 	opts, ok := t.ProviderOptions.(openaitool.ToolSearchOptions)
-	if ok && opts.Execution != "" && opts.Execution != "server" {
+	// TS: `...(args.execution != null ? { execution: args.execution } : {})`,
+	// so an explicit "server" is sent too.
+	if ok && opts.Execution != "" && (opts.ExecutionSet || opts.Execution != "server") {
 		def.Execution = opts.Execution
 	}
 
