@@ -84,3 +84,11 @@ func TestVideoResponseTimestampIsTakenBeforeTheRequest(t *testing.T) {
 		t.Fatalf("DoStatus timestamp %v, err %v", status.Response.Timestamp, err)
 	}
 }
+
+// TS lets a transport failure propagate unchanged.
+func TestChatTransportFailureIsNotWrapped(t *testing.T) {
+	sentinel := errors.New("Cannot connect to API: boom")
+	if got := (&LanguageModel{}).handleError(sentinel); got != sentinel {
+		t.Fatalf("handleError wrapped: %v", got)
+	}
+}

@@ -8,7 +8,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // humeErrorPayload documents Hume's error envelope: {"error":{"message","code"}}.
@@ -28,12 +27,11 @@ func handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
-		providerErr := providererrors.NewProviderError("hume", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		return providererrors.NewProviderErrorFromResponse("hume", 0, code, message, err)
 	}
-	return providererrors.NewProviderError("hume", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // errorMessageAndCode mirrors the TS humeFailedResponseHandler: a body matching

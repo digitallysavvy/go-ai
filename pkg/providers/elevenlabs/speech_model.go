@@ -8,7 +8,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -88,7 +87,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		Headers: opts.Headers,
 	})
 	if err != nil {
-		return nil, providererrors.NewProviderError("elevenlabs", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

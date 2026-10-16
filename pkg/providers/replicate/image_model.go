@@ -215,7 +215,9 @@ func (m *ImageModel) handleError(err error) error {
 	if errors.As(err, &statusErr) {
 		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 	}
-	return providererrors.NewProviderError("replicate", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // replicateErrorMessage mirrors TS replicateFailedResponseHandler: the

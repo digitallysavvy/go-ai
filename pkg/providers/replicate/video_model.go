@@ -381,7 +381,9 @@ func (m *VideoModel) handleError(err error) error {
 	if errors.As(err, &statusErr) {
 		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)
 	}
-	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError

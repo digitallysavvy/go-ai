@@ -12,7 +12,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -137,7 +136,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; image/png"}, opts.Headers),
 	})
 	if err != nil {
-		return nil, providererrors.NewProviderError("prodia", 0, "", err.Error(), err)
+		return nil, err // TS postToApi lets a transport failure propagate unchanged
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -8,7 +8,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // fishAudioErrorPayload documents Fish Audio's error envelope for documented
@@ -45,10 +44,9 @@ func handleError(err error) error {
 				message = "Unknown Fish Audio error"
 			}
 		}
-		providerErr := providererrors.NewProviderError("fish-audio", statusErr.StatusCode, "", message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		return providererrors.NewProviderErrorFromResponse("fish-audio", 0, "", message, err)
 	}
-	return providererrors.NewProviderError("fish-audio", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }

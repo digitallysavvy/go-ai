@@ -475,7 +475,9 @@ func (m *LanguageModel) handleError(err error) error {
 	if converted, ok := asChatStatusError(err); ok {
 		return converted
 	}
-	return providererrors.NewProviderError("alibaba", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // alibabaResponse represents the response from Alibaba chat API

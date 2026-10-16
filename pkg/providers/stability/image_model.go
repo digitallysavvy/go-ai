@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -54,7 +53,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	var response stabilityImageResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{Method: "POST", Path: path, Body: reqBody, Headers: opts.Headers}, &response)
 	if err != nil {
-		return nil, providererrors.NewProviderError("stability", 0, "", err.Error(), err)
+		return nil, err
 	}
 
 	result, err := m.convertResponse(response)

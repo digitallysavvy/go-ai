@@ -7,7 +7,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // cartesiaErrorPayload documents Cartesia's error envelope:
@@ -44,12 +43,11 @@ func handleError(err error) error {
 		if payload.ErrorCode != nil {
 			errorCode = *payload.ErrorCode
 		}
-		providerErr := providererrors.NewProviderError("cartesia", statusErr.StatusCode, errorCode, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		return providererrors.NewProviderErrorFromResponse("cartesia", 0, errorCode, message, err)
 	}
-	return providererrors.NewProviderError("cartesia", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // docURLMatchesSchema is `doc_url: z.string().optional()`: absent or a string;

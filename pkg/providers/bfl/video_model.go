@@ -484,7 +484,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	resp, err := m.provider.client.Do(ctx, bflInternalRequest(http.MethodPost, "/"+m.modelID, body, opts.Headers))
 	if err != nil {
-		return nil, providererrors.NewProviderError("bfl", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bflStatusError(resp.StatusCode, resp.Headers, resp.Body)

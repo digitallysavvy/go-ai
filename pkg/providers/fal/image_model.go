@@ -215,7 +215,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	path := fmt.Sprintf("/%s", m.modelID)
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: path, Body: reqBody, Headers: opts.Headers})
 	if err != nil {
-		return nil, providererrors.NewProviderError("fal", 0, "", err.Error(), err)
+		return nil, err // TS postJsonToApi lets a transport failure propagate unchanged
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

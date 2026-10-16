@@ -9,7 +9,6 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // revaiErrorPayload documents Rev.ai's error envelope: {"error":{"message","code"}}.
@@ -29,25 +28,24 @@ func handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
-		providerErr := providererrors.NewProviderError("revai", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		return providererrors.NewProviderErrorFromResponse("revai", 0, code, message, err)
 	}
 
 	var downloadErr *providererrors.DownloadError
-	if errors.As(err, &downloadErr) {
+	if errors.As(err, &downloadErr) && downloadErr.StatusCode != 0 {
+		// A handler message is final, an empty one included (TS APICallError
+		// keeps ""). A download failure with no status never reached an HTTP
+		// response and propagates unchanged below.
 		message, code := errorMessageAndCode(downloadErr.StatusCode, downloadErr.Body)
-		if message == "" {
-			message = downloadErr.Error()
-		}
 		providerErr := providererrors.NewProviderError("revai", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
 		providerErr.ResponseBody = string(downloadErr.Body)
 		return providerErr
 	}
 
-	return providererrors.NewProviderError("revai", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // flattenHeaders joins multi-value HTTP headers into single strings, matching

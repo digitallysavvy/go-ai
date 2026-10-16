@@ -458,15 +458,15 @@ func handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := parseGladiaErrorBody(statusErr.StatusCode, statusErr.Body)
-		return providererrors.NewProviderError("gladia", statusErr.StatusCode, code, message, err)
+		return providererrors.NewProviderErrorFromResponse("gladia", 0, code, message, err)
 	}
 
 	var downloadErr *providererrors.DownloadError
-	if errors.As(err, &downloadErr) {
+	if errors.As(err, &downloadErr) && downloadErr.StatusCode != 0 {
+		// A handler message is final, an empty one included (TS APICallError
+		// keeps ""). A download failure with no status never reached an HTTP
+		// response and propagates unchanged below.
 		message, code := parseGladiaErrorBody(downloadErr.StatusCode, downloadErr.Body)
-		if message == "" {
-			message = downloadErr.Error()
-		}
 		providerErr := providererrors.NewProviderError("gladia", downloadErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = flattenHeaders(downloadErr.Headers)
 		if len(downloadErr.Body) > 0 {
@@ -475,7 +475,9 @@ func handleError(err error) error {
 		return providerErr
 	}
 
-	return providererrors.NewProviderError("gladia", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }
 
 // parseGladiaErrorBody mirrors TS gladiaFailedResponseHandler: a body that

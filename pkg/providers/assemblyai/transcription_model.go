@@ -452,14 +452,13 @@ func (m *TranscriptionModel) handleError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := providerutils.NestedErrorMessage(statusErr.StatusCode, statusErr.Body)
-		providerErr := providererrors.NewProviderError("assemblyai", statusErr.StatusCode, code, message, err)
-		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
-		providerErr.ResponseBody = string(statusErr.Body)
-		return providerErr
+		return providererrors.NewProviderErrorFromResponse("assemblyai", 0, code, message, err)
 	}
 	var validationErr *providererrors.ValidationError
 	if errors.As(err, &validationErr) {
 		return err // TS throws the schema.parse failure itself
 	}
-	return providererrors.NewProviderError("assemblyai", 0, "", err.Error(), err)
+	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
+	// connect to API") propagate unchanged.
+	return err
 }

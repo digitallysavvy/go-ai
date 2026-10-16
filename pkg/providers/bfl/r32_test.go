@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -50,5 +51,17 @@ func TestVideoDoStatusTransportFailureIsNotWrapped(t *testing.T) {
 	_, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: op})
 	if err == nil || strings.Contains(err.Error(), "failed to check status") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS postJsonToApi lets a transport failure propagate unchanged.
+func TestImageSubmitTransportFailureIsNotWrapped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "flux-pro-1.1")
+	server.Close()
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p"})
+	var perr *providererrors.ProviderError
+	if err == nil || errors.As(err, &perr) || !strings.HasPrefix(err.Error(), "Cannot connect to API") {
+		t.Fatalf("err = %#v", err)
 	}
 }
