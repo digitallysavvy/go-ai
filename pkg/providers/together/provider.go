@@ -61,6 +61,7 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = "https://api.together.xyz"
 	}
+	baseURL = trimBaseURL(baseURL)
 
 	apiKey := getAPIKey(cfg.APIKey)
 
@@ -106,7 +107,7 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		APIKey:            getAPIKey(p.config.APIKey),
 		APIKeyEnvVar:      "TOGETHER_API_KEY",
 		APIKeyDescription: "TogetherAI",
-		BaseURL:           strings.TrimRight(baseURL, "/") + "/v1",
+		BaseURL:           trimBaseURL(baseURL) + "/v1",
 		Headers:           p.config.Headers,
 		Name:              "togetherai",
 		OpenAICompatible:  true,
@@ -164,4 +165,11 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 // Client returns the HTTP client for making API requests
 func (p *Provider) Client() *http.Client {
 	return p.client
+}
+
+// trimBaseURL mirrors TS withoutTrailingSlash and also accepts TS-style base
+// URLs that already carry the "/v1" segment: every request path in this
+// package starts with "/v1/", so ".../v1" must not double it.
+func trimBaseURL(baseURL string) string {
+	return strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
 }

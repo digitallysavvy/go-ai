@@ -56,7 +56,11 @@ func ConvertToMistralChatMessagesWithError(messages []types.Message) ([]map[stri
 			}
 			result = append(result, converted)
 		case types.RoleAssistant:
-			result = append(result, convertMistralAssistantMessage(msg, isLastMessage))
+			converted, err := convertMistralAssistantMessage(msg, isLastMessage)
+			if err != nil {
+				return result, err
+			}
+			result = append(result, converted)
 		case types.RoleTool:
 			result = append(result, convertMistralToolMessages(msg)...)
 		}
@@ -171,13 +175,13 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 // reasoning, in which case content becomes an ordered array mixing
 // {"type":"text",...} and {"type":"thinking",...} blocks (mirrors TS exactly:
 // `content: hasReasoning ? contentParts : text`).
-func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[string]interface{} {
+func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) (map[string]interface{}, error) {
 	var text strings.Builder
 	hasReasoning := false
 	var contentParts []map[string]interface{}
 
 	for _, part := range msg.Content {
-		switch p := part.(type) {
+		switch p := derefMistralPart(part).(type) {
 		case types.TextContent:
 			text.WriteString(p.Text)
 			contentParts = append(contentParts, map[string]interface{}{"type": "text", "text": p.Text})
@@ -190,6 +194,13 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[s
 				},
 				"closed": true,
 			})
+		case types.ToolCallContent, types.SourceContent, types.ToolApprovalRequestContent, types.ToolErrorContent:
+			// Tool calls are collected below. Sources, approval requests and
+			// tool errors are SDK-side parts that TS strips before the
+			// provider sees the prompt.
+		default:
+			// TS: throw new Error(`Unsupported content type in assistant message: ${part.type}`)
+			return nil, fmt.Errorf("Unsupported content type in assistant message: %s", part.ContentType()) //nolint:staticcheck // mirrors TS error text
 		}
 	}
 
@@ -207,7 +218,7 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[s
 	toolCalls := msg.ToolCalls
 	if len(toolCalls) == 0 {
 		for _, part := range msg.Content {
-			if tc, ok := part.(types.ToolCallContent); ok {
+			if tc, ok := derefMistralPart(part).(types.ToolCallContent); ok {
 				toolCalls = append(toolCalls, types.ToolCall{ID: tc.ToolCallID, ToolName: tc.ToolName, Arguments: tc.Arguments, RawArguments: tc.Input})
 			}
 		}
@@ -215,7 +226,7 @@ func convertMistralAssistantMessage(msg types.Message, isLastMessage bool) map[s
 	if len(toolCalls) > 0 {
 		result["tool_calls"] = mistralToolCalls(toolCalls)
 	}
-	return result
+	return result, nil
 }
 
 // mistralToolCalls builds the OpenAI-shaped tool_calls array Mistral expects
@@ -273,4 +284,36 @@ func convertMistralToolMessages(msg types.Message) []map[string]interface{} {
 // is unset.
 func mistralToolResultText(tr types.ToolResultContent) string {
 	return prompt.ToolResultText(tr)
+}
+
+// derefMistralPart unwraps pointer content parts so they match the value
+// cases of the assistant part switch.
+func derefMistralPart(part types.ContentPart) types.ContentPart {
+	switch p := part.(type) {
+	case *types.TextContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ReasoningContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ToolCallContent:
+		if p != nil {
+			return *p
+		}
+	case *types.SourceContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ToolApprovalRequestContent:
+		if p != nil {
+			return *p
+		}
+	case *types.ToolErrorContent:
+		if p != nil {
+			return *p
+		}
+	}
+	return part
 }

@@ -112,6 +112,27 @@ type ConvertOptions struct {
 	parallelToolResultGroups   map[string]parallelToolResultGroup
 	emittedParallelToolCalls   map[string]bool
 	emittedParallelToolResults map[string]bool
+
+	// toolOutputWarnings collects the "unsupported tool content part type"
+	// warnings TS pushes while converting tool-result content outputs.
+	// Populated by ConvertPromptToInputWithOptions; do not set directly.
+	toolOutputWarnings *[]types.Warning
+
+	// customToolOutput is set while converting a custom_tool_call_output,
+	// whose TS converter has its own (narrower) content handling: provider
+	// references are unsupported and warnings say "custom tool content part".
+	customToolOutput bool
+}
+
+// warnToolOutput records a TS `{type: 'other', message}` warning raised while
+// converting a tool-result content output.
+func (o ConvertOptions) warnToolOutput(message string) {
+	if o.toolOutputWarnings != nil {
+		if o.customToolOutput {
+			message = strings.Replace(message, "unsupported tool content part", "unsupported custom tool content part", 1)
+		}
+		*o.toolOutputWarnings = append(*o.toolOutputWarnings, types.Warning{Type: "other", Message: message})
+	}
 }
 
 // parallelToolResultGroup is a complete set of child results for one
@@ -151,6 +172,8 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	}
 	opts.emittedParallelToolCalls = map[string]bool{}
 	opts.emittedParallelToolResults = map[string]bool{}
+	var toolOutputWarnings []types.Warning
+	opts.toolOutputWarnings = &toolOutputWarnings
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
@@ -193,6 +216,8 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 				return nil, warnings, err
 			}
 			input = append(input, items...)
+			warnings = append(warnings, toolOutputWarnings...)
+			toolOutputWarnings = toolOutputWarnings[:0]
 		}
 	}
 
@@ -392,9 +417,7 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 						Detail:   openAIResponsesImageDetail(p.ProviderOptions, providerName),
 					})
 				} else {
-					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles, providerName); err != nil {
-						return UserMessage{}, err
-					}
+					// TS returns a URL file part before any media type check.
 					parts = append(parts, UserFilePart{Type: "input_file", FileURL: fileURL})
 				}
 			case types.FileDataTypeReference:
@@ -419,7 +442,7 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 					parts = append(parts, map[string]interface{}{"type": "input_file", "file_id": reference})
 				}
 			case types.FileDataTypeText:
-				return UserMessage{}, fmt.Errorf("openai.responses: text file parts are not supported")
+				return UserMessage{}, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
 			case types.FileDataTypeData:
 				if fileID := openAIFileIDFromDataString(p, opts.FileIDPrefixes); fileID != "" {
 					if isImageMediaType(mediaType) {
@@ -530,14 +553,12 @@ func isImageMediaType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "image/") || mediaType == "image"
 }
 
-func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFiles bool, providerName string) error {
+func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFiles bool, _ string) error {
 	if passThroughUnsupportedFiles || mediaType == "" || mediaType == "application/pdf" {
 		return nil
 	}
-	if providerName == "" {
-		providerName = "openai"
-	}
-	return fmt.Errorf("openai.responses: unsupported file media type %q; set providerOptions.%s.passThroughUnsupportedFiles to true to pass it through", mediaType, providerName)
+	// TS: throw new UnsupportedFunctionalityError({ functionality: `file part media type ${fullMediaType}` })
+	return &providererrors.UnsupportedFunctionalityError{Functionality: "file part media type " + mediaType}
 }
 
 // convertAssistantItems maps assistant-role content parts and ToolCalls to
@@ -1430,10 +1451,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				continue
 			}
 			if isOpenAICustomToolName(p.ToolName, opts.CustomToolNames) {
+				customOpts := opts
+				customOpts.customToolOutput = true
 				items = append(items, CustomToolCallOutput{
 					Type:   "custom_tool_call_output",
 					CallID: p.ToolCallID,
-					Output: toolResultOutputWithOptions(p, opts),
+					Output: toolResultOutputWithOptions(p, customOpts),
 				})
 				continue
 			}
@@ -1444,6 +1467,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				Type:   "function_call_output",
 				CallID: p.ToolCallID,
 				Output: toolResultOutputWithOptions(p, opts),
+				Caller: toolResultCaller(p, openAIProviderOptionsName(opts)),
 			})
 		case *types.ToolResultContent:
 			if p != nil {
@@ -1461,10 +1485,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 					continue
 				}
 				if isOpenAICustomToolName(p.ToolName, opts.CustomToolNames) {
+					customOpts := opts
+					customOpts.customToolOutput = true
 					items = append(items, CustomToolCallOutput{
 						Type:   "custom_tool_call_output",
 						CallID: p.ToolCallID,
-						Output: toolResultOutputWithOptions(*p, opts),
+						Output: toolResultOutputWithOptions(*p, customOpts),
 					})
 					continue
 				}
@@ -1475,6 +1501,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 					Type:   "function_call_output",
 					CallID: p.ToolCallID,
 					Output: toolResultOutputWithOptions(*p, opts),
+					Caller: toolResultCaller(*p, openAIProviderOptionsName(opts)),
 				})
 			}
 		}
@@ -2208,6 +2235,11 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 					}
 					switch fileDataType {
 					case types.FileDataTypeReference:
+						if opts.customToolOutput {
+							// TS custom tool outputs have no reference branch.
+							opts.warnToolOutput("unsupported tool content part type: file with data type: reference")
+							continue
+						}
 						reference := firstNonEmpty(providerReferenceString(b.FileData.Reference, providerName), b.Reference)
 						if reference == "" {
 							continue
@@ -2269,15 +2301,21 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 								FileData: fileData,
 							})
 						}
+					default:
+						if fileDataType != "" {
+							opts.warnToolOutput(fmt.Sprintf("unsupported tool content part type: file with data type: %s", fileDataType))
+						}
 					}
+				default:
+					opts.warnToolOutput(fmt.Sprintf("unsupported tool content part type: %s", block.ToolResultContentType()))
 				}
 				if blockBP != nil && len(parts) > partsBefore {
 					parts[partsBefore].PromptCacheBreakpoint = blockBP
 				}
 			}
-			if len(parts) > 0 {
-				return parts
-			}
+			// TS maps and filters the content array, so an output whose parts
+			// were all dropped is sent as an empty array.
+			return parts
 		}
 	}
 	if s, ok := tr.Result.(string); ok {
