@@ -463,7 +463,8 @@ func (e *ValidationError) Error() string {
 		// Format the full error message
 		msg := contextPrefix
 		if e.Value != nil {
-			msg += "\nValue: " + validationValueText(e.Value) + "."
+			// TS: `${contextPrefix}: Value: ${JSON.stringify(value)}.\n...`
+			msg += " Value: " + validationValueText(e.Value) + "."
 		}
 		if e.Message != "" {
 			msg += fmt.Sprintf("\nError message: %s", e.Message)
