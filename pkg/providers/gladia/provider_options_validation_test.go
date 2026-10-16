@@ -37,3 +37,26 @@ func TestGladiaOptionsAreValidated(t *testing.T) {
 		t.Fatalf("valid options rejected: %v", err)
 	}
 }
+
+func TestParseGladiaErrorBodyFollowsTSHandler(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		wantMsg  string
+		wantCode string
+	}{
+		{"schema match", 429, `{"error":{"message":"slow down","code":429}}`, "slow down", "429"},
+		{"empty message is kept", 400, `{"error":{"message":"","code":1}}`, "", "1"},
+		{"missing code is off schema", 400, `{"error":{"message":"m"}}`, "Bad Request", ""},
+		{"plain text", 502, `upstream failed`, "Bad Gateway", ""},
+		{"empty body", 503, ``, "Service Unavailable", ""},
+		{"flat message is off schema", 400, `{"message":"flat"}`, "Bad Request", ""},
+	}
+	for _, c := range cases {
+		msg, code := parseGladiaErrorBody(c.status, []byte(c.body))
+		if msg != c.wantMsg || code != c.wantCode {
+			t.Errorf("%s: got (%q, %q), want (%q, %q)", c.name, msg, code, c.wantMsg, c.wantCode)
+		}
+	}
+}
