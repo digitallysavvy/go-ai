@@ -37,12 +37,23 @@ func TestStripTypeScriptAnnotationsOperatorAfterType(t *testing.T) {
 		{"class A { declare x: number }", "class A {                   }"},
 		{"class A { declare x: number\n y = 1 }", "class A {                  \n y = 1 }"},
 		{"class A { declare static x: number; y = 1 }", "class A {                           y = 1 }"},
-		// `override` in a class without a base class is rejected: unmodified.
-		{"class A { override m() {} }", "class A { override m() {} }"},
 	} {
 		got, err := stripTypeScriptAnnotations(c.src)
 		if err != nil || got != c.want {
 			t.Errorf("%q\n got  %q (%v)\n want %q", c.src, got, err, c.want)
 		}
+	}
+}
+
+// Node rejects an `override` member in a class with no base class, so the
+// snippet comes back unmodified (with the error the caller discards).
+func TestStripTypeScriptAnnotationsOverrideNeedsExtends(t *testing.T) {
+	src := "class A { override m() {} }"
+	got, err := stripTypeScriptAnnotations(src)
+	if err == nil || got != src {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if got, err := stripTypeScriptAnnotations("class A extends B { override m() {} }"); err != nil || got != "class A extends B {          m() {} }" {
+		t.Fatalf("with extends: %q, %v", got, err)
 	}
 }
