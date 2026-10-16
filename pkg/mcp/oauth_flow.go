@@ -830,6 +830,15 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	if err := json.Unmarshal(rawBody, &full); err != nil {
 		return nil, fmt.Errorf("failed to decode dynamic client registration response: %w", err)
 	}
+	// TS schemas use SafeUrlSchema for these fields.
+	if key, ok := unsafeOAuthURLField(regFields, "issuer", "authorization_server", "token_endpoint", "client_uri", "logo_uri", "tos_uri", "jwks_uri"); ok {
+		return nil, fmt.Errorf("failed to decode dynamic client registration response: %s must be a safe URL", key)
+	}
+	for _, uri := range full.RedirectURIs {
+		if !isSafeOAuthURL(uri) {
+			return nil, fmt.Errorf("failed to decode dynamic client registration response: redirect_uris must be safe URLs")
+		}
+	}
 	return &full, nil
 }
 
@@ -940,7 +949,28 @@ func decodeOAuthTokenResponse(resp *http.Response) (*OAuthTokens, error) {
 	if err := json.Unmarshal(rawBody, &tokens); err != nil {
 		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
+	// TS OAuthTokensSchema validates issuer/authorization_server/
+	// token_endpoint with SafeUrlSchema.
+	if key, ok := unsafeOAuthURLField(fields, "issuer", "authorization_server", "token_endpoint"); ok {
+		return nil, fmt.Errorf("failed to decode OAuth token response: %s must be a safe URL", key)
+	}
 	return &tokens, nil
+}
+
+// unsafeOAuthURLField returns the first of keys whose JSON value is present
+// but is not a string holding a TS SafeUrlSchema-valid URL.
+func unsafeOAuthURLField(fields map[string]json.RawMessage, keys ...string) (string, bool) {
+	for _, key := range keys {
+		raw, present := fields[key]
+		if !present {
+			continue
+		}
+		var v string
+		if !isJSONString(raw) || json.Unmarshal(raw, &v) != nil || !isSafeOAuthURL(v) {
+			return key, true
+		}
+	}
+	return "", false
 }
 
 // getStoredOAuthAuthorizationServerInformation resolves the pinned AS info
