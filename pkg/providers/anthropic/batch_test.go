@@ -866,7 +866,7 @@ func TestBatch_WebFetchToolResultNeverGrowsCitationDocuments(t *testing.T) {
 		`"content":[` +
 		`{"type":"web_fetch_tool_result","tool_use_id":"toolu_1","content":` + webFetchResultContent("Fetched Report", "application/pdf") + `},` +
 		`{"type":"text","text":"The report shows growth.","citations":[` +
-		`{"type":"page_location","cited_text":"growth","document_index":0,"start_page_number":1,"end_page_number":2}` +
+		`{"type":"page_location","cited_text":"growth","document_index":0,"document_title":null,"start_page_number":1,"end_page_number":2}` +
 		`]}` +
 		`],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0}}`
 	resultsBody := `{"custom_id":"web-fetch-citation","result":{"type":"succeeded","message":` + message + `}}`
@@ -1292,5 +1292,53 @@ func TestBatchResult_ErroredAcceptsEmptyStrings(t *testing.T) {
 	}
 	if got := s.convertResult(missing); got.Error == nil || got.Error.Code != "invalid_response" {
 		t.Fatalf("missing message must be invalid: %+v", got)
+	}
+}
+
+// TS parseAnthropicBatchResponse validates every content block against
+// anthropicResponseSchema: a known block type that fails its schema makes the
+// item invalid even when its required top-level fields are present, while an
+// unknown block type is dropped.
+func TestBatch_InvalidKnownBlockFailsItemUnknownBlockDropped(t *testing.T) {
+	invalid := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":[{"type":"web_search_tool_result","content":[]},{"type":"text","text":"hi"}],` +
+		`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	unknown := `{"id":"msg_2","type":"message","role":"assistant","model":"claude-opus-5",` +
+		`"content":[{"type":"future_block","x":1},{"type":"text","text":"hi"}],` +
+		`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	resultsBody := `{"custom_id":"bad","result":{"type":"succeeded","message":` + invalid + `}}` + "\n" +
+		`{"custom_id":"future","result":{"type":"succeeded","message":` + unknown + `}}`
+	srv := anthropicBatchResultsServer(t, resultsBody)
+	defer srv.Close()
+
+	b := New(Config{APIKey: "k", BaseURL: srv.URL}).ExperimentalBatch()
+	stream, err := b.DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatalf("DoGetBatchResults: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	items := drainAnthropicBatchResults(t, stream)
+	if got := items["bad"]; got == nil || got.Status != provider.BatchItemFailed || got.Error == nil || got.Error.Code != "invalid_response" {
+		t.Fatalf("bad = %+v", got)
+	}
+	if got := items["future"]; got == nil || got.Status != provider.BatchItemSucceeded || got.TextResult == nil {
+		t.Fatalf("future = %+v", got)
+	}
+}
+
+// The custom providerOptions key is the first segment of the provider name
+// (TS provider.split('.')[0]), as for the language model.
+func TestAnthropicBatchProviderBetasUsesFirstNameSegment(t *testing.T) {
+	opts := map[string]interface{}{
+		"anthropic": map[string]interface{}{"anthropicBeta": []interface{}{"a"}},
+		"custom":    map[string]interface{}{"anthropicBeta": []interface{}{"b"}},
+	}
+	got := anthropicBatchProviderBetas("custom.messages", opts)
+	if len(got) != 1 || got[0] != "b" {
+		t.Fatalf("betas = %v, want [b]", got)
+	}
+	got = anthropicBatchProviderBetas("anthropic.messages", opts)
+	if len(got) != 1 || got[0] != "a" {
+		t.Fatalf("betas = %v, want [a]", got)
 	}
 }
