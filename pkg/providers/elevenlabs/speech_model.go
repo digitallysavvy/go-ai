@@ -3,7 +3,6 @@ package elevenlabs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -376,114 +375,50 @@ func numberAsFloat(value interface{}) (float64, bool) {
 	}
 }
 
-// validateSpeechProviderOptions mirrors TS parseProviderOptions with
-// elevenLabsSpeechModelOptionsSchema for the map form of
-// providerOptions.elevenlabs: a violation is an InvalidArgumentError.
+// elevenLabsSpeechOptionsSchema is elevenLabsSpeechModelOptionsSchema
+// (elevenlabs-speech-model-options.ts): every member is .optional(), so an
+// explicit null fails.
+var elevenLabsSpeechOptionsSchema = func() providerutils.OptionSchema {
+	unit := providerutils.OptRange(0, 1)
+	three := func(item providerutils.OptionCheck) providerutils.OptionCheck {
+		return providerutils.OptArray(item, 0, 3)
+	}
+	return providerutils.OptionSchema{
+		"languageCode": providerutils.OptString,
+		"voiceSettings": providerutils.OptObject(providerutils.OptionSchema{
+			"stability": unit, "similarityBoost": unit, "style": unit,
+			"useSpeakerBoost": providerutils.OptBool,
+		}),
+		"pronunciationDictionaryLocators": func(path string, v interface{}) error {
+			locator := providerutils.OptObjectWith(providerutils.OptionSchema{
+				"pronunciationDictionaryId": providerutils.OptString, "versionId": providerutils.OptString,
+			}, "pronunciationDictionaryId")
+			// Typed locators are valid by construction; only their count is checked.
+			return three(func(p string, item interface{}) error {
+				if _, typed := item.(PronunciationDictionaryLocator); typed {
+					return nil
+				}
+				return locator(p, item)
+			})(path, v)
+		},
+		"seed":                           providerutils.OptRange(0, 4294967295),
+		"previousText":                   providerutils.OptString,
+		"nextText":                       providerutils.OptString,
+		"previousRequestIds":             three(providerutils.OptString),
+		"nextRequestIds":                 three(providerutils.OptString),
+		"applyTextNormalization":         providerutils.OptEnum("auto", "on", "off"),
+		"applyLanguageTextNormalization": providerutils.OptBool,
+		"enableLogging":                  providerutils.OptBool,
+	}
+}()
+
+// validateSpeechProviderOptions is TS parseProviderOptions with
+// elevenLabsSpeechModelOptionsSchema; typed option structs are valid by
+// construction.
 func validateSpeechProviderOptions(providerOptions map[string]interface{}) error {
-	raw, ok := providerOptions["elevenlabs"].(map[string]interface{})
-	if !ok {
+	if _, ok := providerOptions["elevenlabs"].(map[string]interface{}); !ok {
 		return nil
 	}
-	fail := func(msg string) error {
-		return &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid elevenlabs provider options",
-			Cause:   errors.New(msg),
-		}
-	}
-	str := func(key string) error {
-		if v, ok := raw[key]; ok && v != nil {
-			if _, isString := v.(string); !isString {
-				return fail("Invalid input: expected string at " + key)
-			}
-		}
-		return nil
-	}
-	for _, key := range []string{"languageCode", "previousText", "nextText"} {
-		if err := str(key); err != nil {
-			return err
-		}
-	}
-	unit := func(path string, v interface{}) error {
-		if v == nil {
-			return nil
-		}
-		n, ok := numberAsFloat(v)
-		if !ok || n < 0 || n > 1 {
-			return fail("Invalid input: expected number between 0 and 1 at " + path)
-		}
-		return nil
-	}
-	if v, ok := raw["voiceSettings"]; ok && v != nil {
-		vs, ok := v.(map[string]interface{})
-		if !ok {
-			return fail("Invalid input: expected object at voiceSettings")
-		}
-		for _, key := range []string{"stability", "similarityBoost", "style"} {
-			if err := unit("voiceSettings."+key, vs[key]); err != nil {
-				return err
-			}
-		}
-		if b, ok := vs["useSpeakerBoost"]; ok && b != nil {
-			if _, isBool := b.(bool); !isBool {
-				return fail("Invalid input: expected boolean at voiceSettings.useSpeakerBoost")
-			}
-		}
-	}
-	if v, ok := raw["seed"]; ok && v != nil {
-		n, ok := numberAsFloat(v)
-		if !ok || n < 0 || n > 4294967295 {
-			return fail("Invalid input: expected number between 0 and 4294967295 at seed")
-		}
-	}
-	for _, key := range []string{"previousRequestIds", "nextRequestIds"} {
-		if v, ok := raw[key]; ok && v != nil {
-			list, ok := stringSlice(v)
-			if !ok || len(list) > 3 {
-				return fail("Invalid input: expected array of at most 3 strings at " + key)
-			}
-		}
-	}
-	if v, ok := raw["pronunciationDictionaryLocators"]; ok && v != nil {
-		switch list := v.(type) {
-		case []PronunciationDictionaryLocator:
-			if len(list) > 3 {
-				return fail("Too big: expected array to have <=3 items at pronunciationDictionaryLocators")
-			}
-		case []interface{}:
-			if len(list) > 3 {
-				return fail("Too big: expected array to have <=3 items at pronunciationDictionaryLocators")
-			}
-			for _, item := range list {
-				m, ok := item.(map[string]interface{})
-				if !ok {
-					return fail("Invalid input: expected object at pronunciationDictionaryLocators")
-				}
-				if _, ok := m["pronunciationDictionaryId"].(string); !ok {
-					return fail("Invalid input: expected string at pronunciationDictionaryLocators.pronunciationDictionaryId")
-				}
-				if id, ok := m["versionId"]; ok && id != nil {
-					if _, isString := id.(string); !isString {
-						return fail("Invalid input: expected string at pronunciationDictionaryLocators.versionId")
-					}
-				}
-			}
-		default:
-			return fail("Invalid input: expected array at pronunciationDictionaryLocators")
-		}
-	}
-	if v, ok := raw["applyTextNormalization"]; ok && v != nil {
-		s, _ := v.(string)
-		if s != "auto" && s != "on" && s != "off" {
-			return fail(`Invalid option: expected one of "auto"|"on"|"off" at applyTextNormalization`)
-		}
-	}
-	for _, key := range []string{"applyLanguageTextNormalization", "enableLogging"} {
-		if v, ok := raw[key]; ok && v != nil {
-			if _, isBool := v.(bool); !isBool {
-				return fail("Invalid input: expected boolean at " + key)
-			}
-		}
-	}
-	return nil
+	_, err := providerutils.ParseProviderOptions("elevenlabs", providerOptions, elevenLabsSpeechOptionsSchema)
+	return err
 }

@@ -59,6 +59,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	var warnings []types.Warning
 

@@ -87,6 +87,9 @@ func boolPtr(b bool) *bool {
 // DoGenerate performs image generation, routing flux-kontext-* models through
 // the async submission and polling path.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if m.isAsyncModel() {
 		return m.doGenerateAsync(ctx, opts)
 	}

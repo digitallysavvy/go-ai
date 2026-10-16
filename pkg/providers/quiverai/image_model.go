@@ -76,6 +76,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	quiverOpts, err := parseQuiverAIImageModelOptions(quiverRawOptions(opts.ProviderOptions))
 	if err != nil {
 		return nil, err

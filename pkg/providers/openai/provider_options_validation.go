@@ -35,26 +35,12 @@ var openAIChatOptionsSchema = providerutils.OptionSchema{
 	"forceReasoning":       providerutils.OptBool,
 }
 
-var openAICompatChatOptionsSchema = providerutils.OptionSchema{
-	"user":             providerutils.OptString,
-	"reasoningEffort":  providerutils.OptString,
-	"textVerbosity":    providerutils.OptString,
-	"strictJsonSchema": providerutils.OptBool,
-}
-
 var openAICompletionOptionsSchema = providerutils.OptionSchema{
 	"echo":      providerutils.OptBool,
 	"logitBias": providerutils.OptRecord(nil, providerutils.OptNumber),
 	"suffix":    providerutils.OptString,
 	"user":      providerutils.OptString,
 	"logprobs":  providerutils.OptBoolOrNumber,
-}
-
-var openAICompatCompletionOptionsSchema = providerutils.OptionSchema{
-	"echo":      providerutils.OptBool,
-	"logitBias": providerutils.OptRecord(nil, providerutils.OptNumber),
-	"suffix":    providerutils.OptString,
-	"user":      providerutils.OptString,
 }
 
 var openAIEmbeddingOptionsSchema = providerutils.OptionSchema{
@@ -86,8 +72,7 @@ func (m *LanguageModel) validateChatProviderOptions(providerOptions map[string]i
 		return validateProviderOptionKeys(providerOptions, openAIChatOptionsSchema, "openai")
 	}
 	name := m.fileReferenceProvider()
-	return validateProviderOptionKeys(providerOptions, openAICompatChatOptionsSchema,
-		"openai-compatible", "openaiCompatible", name, providerutils.ToOpenAICompatibleCamelCase(name))
+	return providerutils.ValidateOpenAICompatibleChatOptions(providerOptions, name)
 }
 
 // validateCompletionProviderOptions mirrors OpenAICompletionLanguageModel
@@ -98,8 +83,7 @@ func (m *CompletionModel) validateCompletionProviderOptions(providerOptions map[
 	if !m.provider.config.OpenAICompatible {
 		return validateProviderOptionKeys(providerOptions, openAICompletionOptionsSchema, "openai", name)
 	}
-	return validateProviderOptionKeys(providerOptions, openAICompatCompletionOptionsSchema,
-		name, providerutils.ToOpenAICompatibleCamelCase(name))
+	return providerutils.ValidateOpenAICompatibleCompletionOptions(providerOptions, name)
 }
 
 // validateEmbeddingProviderOptions mirrors OpenAIEmbeddingModel (key
@@ -110,6 +94,5 @@ func (m *EmbeddingModel) validateEmbeddingProviderOptions(providerOptions map[st
 		return validateProviderOptionKeys(providerOptions, openAIEmbeddingOptionsSchema, "openai")
 	}
 	name, _, _ := strings.Cut(m.provider.Name(), ".")
-	return validateProviderOptionKeys(providerOptions, openAIEmbeddingOptionsSchema,
-		"openai-compatible", "openaiCompatible", name)
+	return providerutils.ValidateOpenAICompatibleEmbeddingOptions(providerOptions, name)
 }

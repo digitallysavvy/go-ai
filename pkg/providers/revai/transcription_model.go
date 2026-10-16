@@ -69,6 +69,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 
 	body, contentType, err := m.buildMultipartBody(opts)

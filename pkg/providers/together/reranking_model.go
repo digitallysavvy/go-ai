@@ -75,6 +75,9 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, providererrors.NewProviderError("together", 0, "", "rerank options cannot be nil", nil)
 	}
 
+	if err := validateRerankingOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	rerankOpts := extractTogetherRerankingOptions(opts.ProviderOptions)
 
 	reqBody := map[string]interface{}{

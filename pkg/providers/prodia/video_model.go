@@ -79,6 +79,9 @@ func extractVideoProviderOptions(opts *provider.VideoModelV3CallOptions) *Prodia
 // When opts.Image is non-nil, an image-to-video request is sent as
 // multipart/form-data.
 func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3CallOptions) (*provider.VideoModelV3Response, error) {
+	if err := validateVideoOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	provOpts := extractVideoProviderOptions(opts)
 
 	jobConfig := map[string]interface{}{}

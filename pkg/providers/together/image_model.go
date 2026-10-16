@@ -50,6 +50,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, fmt.Errorf("together AI does not support mask-based image editing")
 	}
 
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
+
 	reqBody := m.buildRequestBody(opts)
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{Method: "POST", Path: "/v1/images/generations", Body: reqBody, Headers: opts.Headers})

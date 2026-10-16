@@ -44,6 +44,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	requestBody, warnings := m.buildRequestBody(opts)
 

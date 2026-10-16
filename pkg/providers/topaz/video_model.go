@@ -123,6 +123,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if opts == nil {
 		opts = &provider.VideoModelV3StartOptions{}
 	}
+	if err := validateVideoOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	currentDate := time.Now()
 	var warnings []types.Warning
 

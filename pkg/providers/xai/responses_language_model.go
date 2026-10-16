@@ -215,6 +215,10 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
 
+	if err := validateResponsesOptions(opts.ProviderOptions); err != nil {
+		return nil, warnings, err
+	}
+
 	// Extract XAI-specific provider options.
 	var xaiOpts XAIResponsesProviderOptions
 	if opts.ProviderOptions != nil {

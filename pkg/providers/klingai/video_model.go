@@ -74,6 +74,9 @@ type klingaiOperation struct {
 // KlingAI endpoint and returns an opaque operation reference
 // (TS KlingAIVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	if err := validateProviderOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	provOpts, err := extractProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
