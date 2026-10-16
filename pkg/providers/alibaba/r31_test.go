@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -53,5 +55,22 @@ func TestEmbeddingEmptySparseEmbeddingIsKept(t *testing.T) {
 	sparse, _ := meta["sparseEmbeddings"].([]map[string]interface{})
 	if len(sparse) != 1 {
 		t.Fatalf("providerMetadata = %#v", res.ProviderMetadata)
+	}
+}
+
+// TS getArgs: parallel_tool_calls only with tools; stream_options follow the
+// includeUsage setting (default true).
+func TestChatParallelToolCallsNeedToolsAndIncludeUsageSetting(t *testing.T) {
+	model := NewLanguageModel(New(Config{APIKey: "k"}), "qwen-plus")
+	opts := &provider.GenerateOptions{ProviderOptions: map[string]interface{}{
+		"alibaba": map[string]interface{}{"parallelToolCalls": true},
+	}}
+	if body := model.buildRequestBody(opts, true); body["parallel_tool_calls"] != nil || body["stream_options"] == nil {
+		t.Fatalf("body = %v", body)
+	}
+	off := false
+	model = NewLanguageModel(New(Config{APIKey: "k", IncludeUsage: &off}), "qwen-plus")
+	if body := model.buildRequestBody(opts, true); body["stream_options"] != nil {
+		t.Fatalf("stream_options sent with includeUsage=false: %v", body["stream_options"])
 	}
 }
