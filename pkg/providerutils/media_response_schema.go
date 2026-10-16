@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 )
@@ -98,15 +100,18 @@ const (
 	SchemaHeyGenVideoCreate MediaResponseSchema = "heygen-video-create"
 	SchemaHeyGenVideoStatus MediaResponseSchema = "heygen-video-status"
 	// Files, skills and batch APIs.
-	SchemaOpenAIFile        MediaResponseSchema = "openai-file"
-	SchemaFileDelete        MediaResponseSchema = "file-delete"
-	SchemaOpenAISkill       MediaResponseSchema = "openai-skill"
-	SchemaOpenAIBatch       MediaResponseSchema = "openai-batch"
-	SchemaOpenAIBatchList   MediaResponseSchema = "openai-batch-list"
-	SchemaXAIFile           MediaResponseSchema = "xai-file"
-	SchemaXAIBatch          MediaResponseSchema = "xai-batch"
-	SchemaXAIBatchList      MediaResponseSchema = "xai-batch-list"
-	SchemaXAIBatchResults   MediaResponseSchema = "xai-batch-results"
+	SchemaOpenAIFile      MediaResponseSchema = "openai-file"
+	SchemaFileDelete      MediaResponseSchema = "file-delete"
+	SchemaOpenAISkill     MediaResponseSchema = "openai-skill"
+	SchemaOpenAIBatch     MediaResponseSchema = "openai-batch"
+	SchemaOpenAIBatchList MediaResponseSchema = "openai-batch-list"
+	SchemaXAIFile         MediaResponseSchema = "xai-file"
+	SchemaXAIBatch        MediaResponseSchema = "xai-batch"
+	SchemaXAIBatchList    MediaResponseSchema = "xai-batch-list"
+	SchemaXAIBatchResults MediaResponseSchema = "xai-batch-results"
+	// SchemaXAIBatchText is xaiBatchTextResponseSchema, applied to one
+	// result's chat_get_completion.
+	SchemaXAIBatchText      MediaResponseSchema = "xai-batch-text"
 	SchemaDeepSeekFile      MediaResponseSchema = "deepseek-file"
 	SchemaGatewayBatchStart MediaResponseSchema = "gateway-batch-start"
 	SchemaGatewayBatchState MediaResponseSchema = "gateway-batch-status"
@@ -135,6 +140,18 @@ func zIntNonneg(v interface{}, present bool, path []interface{}) *zodlite.Issue 
 	}
 	if f < 0 {
 		return &zodlite.Issue{Path: path, Code: "too_small", Message: "Too small: expected number to be >=0"}
+	}
+	return nil
+}
+
+// zURLStr is z.string().url(): a string `new URL()` accepts.
+func zURLStr(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+	str, ok := v.(string)
+	if !ok {
+		return zodlite.Invalid("string", v, present, path)
+	}
+	if u, err := url.Parse(str); err != nil || u.Scheme == "" || (u.Host == "" && u.Opaque == "" && !strings.HasPrefix(str, u.Scheme+":/")) {
+		return &zodlite.Issue{Path: path, Code: "invalid_format", Message: "Invalid URL"}
 	}
 	return nil
 }
@@ -394,6 +411,17 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		SchemaOpenAIBatchList: zObj(fl("data", zArr(openAIBatch)), fl("has_more", zodlite.Boolean), fl("last_id", nStr)),
 		SchemaXAIBatch:        xaiBatch,
 		SchemaXAIBatchList:    zObj(fl("batches", zArr(xaiBatch)), fl("pagination_token", nStr)),
+		SchemaXAIBatchText: zObj(fl("id", nStr), fl("created", nNum), fl("model", nStr),
+			fl("choices", zNullish(zArr(zObj(
+				fl("message", zObj(fl("role", zodlite.Enum("assistant", "tool")), fl("content", nStr), fl("reasoning_content", nStr),
+					fl("tool_calls", zNullish(zArr(zObj(fl("id", zStr), fl("type", zodlite.Literal("function")),
+						fl("function", zObj(fl("name", zStr), fl("arguments", zStr))))))))),
+				fl("index", zNum), fl("finish_reason", nStr))))),
+			fl("usage", zNullish(zObj(fl("prompt_tokens", zNum), fl("completion_tokens", zNum), fl("total_tokens", zNum),
+				fl("cost_in_usd_ticks", nNum),
+				fl("prompt_tokens_details", zNullish(zObj(fl("cached_tokens", nNum)))),
+				fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum))))))),
+			fl("citations", zNullish(zArr(zURLStr))), fl("service_tier", nStr), fl("code", nStr), fl("error", nStr)),
 		SchemaXAIBatchResults: zObj(fl("results", zArr(zObj(fl("batch_request_id", zStr),
 			fl("batch_result", zNullish(zObj(fl("response", zNullish(zObj(fl("chat_get_completion", zAny), fl("image_generation", zAny)))),
 				fl("error", zNullish(zObj(fl("code", zNullish(zUnionOf(zStr, zNum))), fl("message", nStr))))))),

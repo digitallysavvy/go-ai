@@ -1131,3 +1131,57 @@ func TestBatch_DoGetBatchResults_EmptyPaginationTokenKeepsPaging(t *testing.T) {
 		t.Errorf("second page pagination_token = %v, want [\"\"]", got)
 	}
 }
+
+// TS xaiBatchTextResponseSchema: a choice with an unknown role or a message
+// missing entirely makes the item an invalid_response failure.
+func TestBatch_DoGetBatchResults_TextSchemaRejectsBadRoleAndMissingUsageFields(t *testing.T) {
+	bodies := []map[string]interface{}{
+		{"choices": []map[string]interface{}{{"index": 0, "message": map[string]interface{}{"role": "user", "content": "x"}}}},
+		{"choices": []map[string]interface{}{{"index": 0, "message": map[string]interface{}{"role": "assistant", "content": "x"}}},
+			"usage": map[string]interface{}{"prompt_tokens": 1}},
+		{"choices": []map[string]interface{}{{"index": 0, "message": map[string]interface{}{"role": "assistant", "content": "x"}}},
+			"citations": []string{"not a url"}},
+	}
+	for i, body := range bodies {
+		server := newXAIBatchTestServer(t)
+		server.statusBody = xaiBatchResponseBody(nil)
+		server.resultsBody = []map[string]interface{}{{"results": []map[string]interface{}{{
+			"batch_request_id": "r",
+			"batch_result":     map[string]interface{}{"response": map[string]interface{}{"chat_get_completion": body}},
+		}}}}
+		batch := newTestXAIBatchProvider(server.ts.URL)
+		stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		item, err := stream.Next()
+		server.close()
+		if err != nil || item.Status != provider.BatchItemFailed || item.Error == nil || item.Error.Code != "invalid_response" {
+			t.Fatalf("case %d: item=%+v err=%v, want invalid_response failure", i, item, err)
+		}
+	}
+}
+
+// TS decodes b64_json images and downloads only those without it when not
+// every image carries b64_json.
+func TestBatch_DoGetBatchResults_MixedBase64AndMissingURL(t *testing.T) {
+	server := newXAIBatchTestServer(t)
+	defer server.close()
+	server.statusBody = xaiBatchResponseBody(nil)
+	server.resultsBody = []map[string]interface{}{{"results": []map[string]interface{}{{
+		"batch_request_id": "r",
+		"batch_result": map[string]interface{}{"response": map[string]interface{}{"image_generation": map[string]interface{}{
+			"data": []map[string]interface{}{{"b64_json": "aGk="}, {"url": nil}},
+		}}},
+	}}}}
+	batch := newTestXAIBatchProvider(server.ts.URL)
+	stream, err := batch.DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "batch_123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = stream.Next()
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) || invalid.Field != "batchResult" {
+		t.Fatalf("err = %v, want InvalidArgumentError batchResult (the b64 image must not be treated as missing)", err)
+	}
+}
