@@ -25,12 +25,12 @@ func newXAIProviderError(provider string, statusCode int, body []byte) *provider
 		} `json:"error"`
 	}
 
-	message := string(body)
+	// TS xaiErrorDataSchema is a union of three shapes (API error object,
+	// responses {code, error}, speech {error: string}); the message follows
+	// xaiFailedResponseHandler's errorToMessage for whichever matches.
+	message := parseXAIErrorMessage(body)
 	errorCode := ""
 	if err := json.Unmarshal(body, &parsed); err == nil {
-		if parsed.Error.Message != "" {
-			message = parsed.Error.Message
-		}
 		switch code := parsed.Error.Code.(type) {
 		case string:
 			errorCode = code
