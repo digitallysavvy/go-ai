@@ -239,6 +239,7 @@ The hook and callback function types mirror the `ToolLoopAgent` ones.
 | Field | Type | Description |
 | --- | --- | --- |
 | `StepNumber` | `int` |  |
+| `Model` | `provider.LanguageModel` | Model is the language model for the call (TS prepareCall/prepareStep `model`). A hook may set it to run the call (PrepareCall) or the step (PrepareStep) on another model; nil keeps the current one. |
 | `System` | `string` |  |
 | `AllowSystemInMessages` | `bool` |  |
 | `Messages` | `[]types.Message` |  |

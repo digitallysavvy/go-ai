@@ -72,7 +72,11 @@ type FilterActiveToolsHook func(ctx context.Context, stepNumber int, tools []typ
 
 // LanguageModelCallOptions mirrors the per-step call config used by ToolLoopAgent.
 type LanguageModelCallOptions struct {
-	StepNumber            int
+	StepNumber int
+	// Model is the language model for the call (TS prepareCall/prepareStep
+	// `model`). A hook may set it to run the call (PrepareCall) or the step
+	// (PrepareStep) on another model; nil keeps the current one.
+	Model                 provider.LanguageModel
 	System                string
 	AllowSystemInMessages bool
 	Messages              []types.Message
@@ -1146,6 +1150,7 @@ type prepareCallState struct {
 
 func (st *prepareCallState) overlay(opts LanguageModelCallOptions) LanguageModelCallOptions {
 	p := st.prepared
+	opts.Model = p.Model
 	opts.System, opts.AllowSystemInMessages, opts.Tools, opts.ToolChoice, opts.CallOptions = p.System, p.AllowSystemInMessages, p.Tools, p.ToolChoice, p.CallOptions
 	opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK = p.Temperature, p.MaxTokens, p.TopP, p.TopK
 	opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed = p.FrequencyPenalty, p.PresencePenalty, p.StopSequences, p.Seed
@@ -1182,7 +1187,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 	st := &prepareCallState{}
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
 		opts := LanguageModelCallOptions{
-			StepNumber: c.StepNumber, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
+			StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
 			Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
 			Headers: c.Headers, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
 			RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
@@ -1233,6 +1238,9 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			}
 			opts = mutated
 		}
+		if opts.Model != nil {
+			c.Model = opts.Model
+		}
 		c.System, c.AllowSystemInMessages, c.Messages, c.Tools, c.ToolChoice, c.CallOptions = opts.System, opts.AllowSystemInMessages, opts.Messages, opts.Tools, opts.ToolChoice, opts.CallOptions
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
@@ -1270,7 +1278,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			activeTools = pctx.activeTools
 		}
 		opts := LanguageModelCallOptions{
-			StepNumber: o.StepNumber, System: o.System, AllowSystemInMessages: allowSystem, Messages: o.Messages, Tools: o.Tools, ToolChoice: o.ToolChoice,
+			StepNumber: o.StepNumber, Model: o.Model, System: o.System, AllowSystemInMessages: allowSystem, Messages: o.Messages, Tools: o.Tools, ToolChoice: o.ToolChoice,
 			Temperature: o.Temperature, MaxTokens: o.MaxOutputTokens, TopP: o.TopP, TopK: o.TopK, FrequencyPenalty: o.FrequencyPenalty, PresencePenalty: o.PresencePenalty,
 			StopSequences: o.StopSequences, Seed: o.Seed, Reasoning: o.Reasoning, ProviderOptions: o.ProviderOptions,
 			RuntimeContext: o.RuntimeContext, ToolsContext: o.ToolsContext, ExperimentalSandbox: o.ExperimentalSandbox,
@@ -1287,6 +1295,9 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			}
 			o.Model = &hookFailedModel{LanguageModel: base, err: err}
 			return o
+		}
+		if mutated.Model != nil {
+			o.Model = mutated.Model
 		}
 		o.System = mutated.System
 		sys := mutated.System

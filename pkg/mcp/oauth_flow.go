@@ -38,6 +38,10 @@ type AuthOptions struct {
 	// CallbackIssuer is the `iss` parameter from the authorization response,
 	// validated against the pinned issuer when present (hash 1f29230).
 	CallbackIssuer string
+	// HasCallbackIssuer marks the `iss` parameter as present even when its
+	// value is empty (`?iss=`). TS validates `callbackIssuer != null`, so an
+	// empty value is rejected unless it equals the expected issuer.
+	HasCallbackIssuer bool
 
 	// Scope is an explicit scope override, typically extracted from a 401
 	// challenge via ExtractWWWAuthenticateParams (hash 1011e33).
@@ -304,7 +308,7 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 		if expectedIssuer == "" {
 			expectedIssuer = authorizationServerURL
 		}
-		if options.CallbackIssuer != "" && options.CallbackIssuer != expectedIssuer {
+		if (options.HasCallbackIssuer || options.CallbackIssuer != "") && options.CallbackIssuer != expectedIssuer {
 			return "", &MCPClientOAuthError{Message: fmt.Sprintf("OAuth authorization response issuer %s does not match expected issuer %s", options.CallbackIssuer, expectedIssuer)}
 		}
 		if err := AssertOAuthAuthorizationServerInformationMatches(*storedASInfo, currentASInfo); err != nil {
@@ -644,7 +648,7 @@ func StartOAuthAuthorization(authorizationServerURL string, params StartOAuthAut
 	}
 	authURL.RawQuery = query.encode()
 
-	return authURL.String(), codeVerifier, nil
+	return oauthURLHref(authURL), codeVerifier, nil
 }
 
 // ExchangeOAuthAuthorizationParams configures ExchangeOAuthAuthorization.
@@ -805,8 +809,8 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	}
 
 	headers := http.Header{}
+	// TS registerClient sends Content-Type only (no Accept header).
 	headers.Set("Content-Type", "application/json")
-	headers.Set("Accept", "application/json")
 
 	resp, err := doOAuthTokenPOST(ctx, httpClient, registrationURL.String(), allowLoopback, headers, body)
 	if err != nil {
@@ -828,6 +832,9 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	// redirect_uris (array).
 	if !isJSONString(regFields["client_id"]) || !isJSONArray(regFields["redirect_uris"]) {
 		return nil, fmt.Errorf("failed to decode dynamic client registration response: client_id and redirect_uris are required")
+	}
+	if err := checkOAuthOptionalFields(regFields, oauthRegistrationFieldRules); err != nil {
+		return nil, fmt.Errorf("failed to decode dynamic client registration response: %w", err)
 	}
 	var full OAuthClientInformationFull
 	if err := json.Unmarshal(rawBody, &full); err != nil {
@@ -947,6 +954,9 @@ func decodeOAuthTokenResponse(resp *http.Response) (*OAuthTokens, error) {
 		if !isJSONString(fields[key]) {
 			return nil, fmt.Errorf("failed to decode OAuth token response: %s must be a string", key)
 		}
+	}
+	if err := checkOAuthOptionalFields(fields, oauthTokenFieldRules); err != nil {
+		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
 	var tokens OAuthTokens
 	if err := json.Unmarshal(rawBody, &tokens); err != nil {

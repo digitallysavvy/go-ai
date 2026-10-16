@@ -644,6 +644,11 @@ func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
 	depth, pending := 0, 0
 	for ; j < len(tokens); j++ {
 		t := tokens[j]
+		if t.kind == "space" && depth == 0 && strings.ContainsAny(t.text, "\n\r\u2028\u2029") && asiBreaksBefore(tokens, j) {
+			// The line break ends the arrow body (ASI): a `:` further down
+			// belongs to another statement.
+			return false
+		}
 		if t.kind != "punct" {
 			continue
 		}
@@ -671,6 +676,51 @@ func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
 				pending--
 			}
 		}
+	}
+	return false
+}
+
+// asiBreaksBefore reports whether the line break at tokens[j] ends a
+// statement by automatic semicolon insertion: the token before it completes an
+// operand and the next one starts a new operand (an identifier, number or
+// string) rather than continuing the expression with an operator, call, index
+// or template.
+func asiBreaksBefore(tokens []tsToken, j int) bool {
+	prev := -1
+	for k := j - 1; k >= 0; k-- {
+		if tokens[k].kind != "space" && tokens[k].kind != "comment" {
+			prev = k
+			break
+		}
+	}
+	next := nextSignificant(tokens, j+1)
+	if prev < 0 || next < 0 {
+		return false
+	}
+	p, n := tokens[prev], tokens[next]
+	switch p.kind {
+	case "number", "string", "regex":
+	case "ident":
+		switch p.text {
+		case "typeof", "void", "delete", "new", "await", "yield", "in", "of", "instanceof", "as", "satisfies", "extends", "return", "throw", "case", "else", "do":
+			return false
+		}
+	case "punct":
+		if p.text != ")" && p.text != "]" && p.text != "}" && p.text != "++" && p.text != "--" && p.text != "!" {
+			return false
+		}
+	default:
+		return false
+	}
+	switch n.kind {
+	case "number":
+		return true
+	case "ident":
+		switch n.text {
+		case "in", "of", "instanceof", "as", "satisfies", "extends":
+			return false
+		}
+		return true
 	}
 	return false
 }

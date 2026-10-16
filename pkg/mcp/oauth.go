@@ -217,8 +217,10 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 	if header == "" {
 		return WWWAuthenticateParams{}
 	}
-	parts := strings.SplitN(header, " ", 2)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+	// TS: `const [type, scheme] = header.split(' ')`; the second
+	// space-separated token must be non-empty ("Bearer  x" has an empty one).
+	parts := strings.Split(header, " ")
+	if len(parts) < 2 || parts[1] == "" || !strings.EqualFold(parts[0], "bearer") {
 		return WWWAuthenticateParams{}
 	}
 
@@ -290,6 +292,13 @@ func DiscoverOAuthProtectedResourceMetadata(ctx context.Context, serverURL strin
 	rawBody, err := readLimitedOAuthBody(resp)
 	if err != nil {
 		return OAuthProtectedResourceMetadata{}, err
+	}
+	var prmFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &prmFields); err != nil {
+		return OAuthProtectedResourceMetadata{}, err
+	}
+	if err := checkOAuthOptionalFields(prmFields, oauthPRMFieldRules); err != nil {
+		return OAuthProtectedResourceMetadata{}, fmt.Errorf("invalid OAuth protected resource metadata: %w", err)
 	}
 	var metadata OAuthProtectedResourceMetadata
 	if err := json.Unmarshal(rawBody, &metadata); err != nil {
@@ -378,6 +387,17 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 		if bodyErr != nil {
 			return nil, bodyErr
 		}
+		var asFields map[string]json.RawMessage
+		if err := json.Unmarshal(rawBody, &asFields); err != nil {
+			return nil, err
+		}
+		typeRules := oauthASOAuthFieldRules
+		if candidate.Type == "oidc" {
+			typeRules = oauthASOIDCFieldRules
+		}
+		if err := checkOAuthOptionalFields(asFields, oauthASCommonFieldRules, typeRules); err != nil {
+			return nil, fmt.Errorf("invalid authorization server metadata: %w", err)
+		}
 		var metadata OAuthAuthorizationServerMetadata
 		if err := json.Unmarshal(rawBody, &metadata); err != nil {
 			return nil, err
@@ -434,6 +454,11 @@ func oauthIssuerMatches(issuer, expected string) bool {
 }
 
 func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string) bool {
+	// TS shouldAttemptFallback: `!response || (4xx && pathname !== '/')`; a
+	// transport failure is retried at the root even for a root server URL.
+	if resp == nil {
+		return true
+	}
 	server, err := url.Parse(serverURL)
 	if err != nil {
 		return false
@@ -441,7 +466,7 @@ func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string)
 	if server.Path == "" || server.Path == "/" {
 		return false
 	}
-	return resp == nil || (resp.StatusCode >= http.StatusBadRequest && resp.StatusCode < http.StatusInternalServerError)
+	return (resp.StatusCode >= http.StatusBadRequest && resp.StatusCode < http.StatusInternalServerError)
 }
 
 func closeResponse(resp *http.Response) {
@@ -478,13 +503,27 @@ func origin(u *url.URL) string {
 	return scheme + "://" + host
 }
 
+// oauthURLHref approximates the WHATWG URL.href that TS normalizeUrl relies
+// on for hierarchical URLs: an empty path becomes "/" (also before a query or
+// fragment), the host is lower-cased and a default port is dropped.
 func oauthURLHref(u *url.URL) string {
-	if u.Path == "" && u.RawQuery == "" && u.Fragment == "" && u.Host != "" {
-		copy := *u
-		copy.Path = "/"
-		return copy.String()
+	if u.Host == "" {
+		return u.String()
 	}
-	return u.String()
+	c := *u
+	if c.Path == "" {
+		c.Path = "/"
+	}
+	host := strings.ToLower(c.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	scheme, port := strings.ToLower(c.Scheme), c.Port()
+	if port != "" && (scheme != "http" || port != "80") && (scheme != "https" || port != "443") {
+		host += ":" + port
+	}
+	c.Host = host
+	return c.String()
 }
 
 func containsOAuthString(values []string, want string) bool {

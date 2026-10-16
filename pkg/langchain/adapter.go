@@ -2125,6 +2125,9 @@ func toolResultContent(result types.ToolResultContent) string {
 // `{type:'image', data, mimeType}`), matching
 // `convertImageToContentBlock` in the TypeScript adapter.
 func imageContentBlock(part types.ImageContent) map[string]interface{} {
+	if isNonWebURL(part.URL) {
+		return map[string]interface{}{"type": "image", "url": part.URL}
+	}
 	return canonicalImageContentBlock(part.URL, "", part.Image, part.MimeType)
 }
 
@@ -2222,7 +2225,11 @@ func fileContentBlock(part types.FileContent) map[string]interface{} {
 	if mediaType == "" {
 		mediaType = part.MimeType
 	}
+	isURL := part.URL != "" || (part.FileData.Type == types.FileDataTypeURL && part.FileData.URL != "")
 	if strings.HasPrefix(mediaType, "image/") {
+		if isURL && isNonWebURL(fileData(part)) {
+			return map[string]interface{}{"type": "image", "url": fileData(part)}
+		}
 		return canonicalImageBlockFromString(fileData(part), mediaType)
 	}
 	filename := part.Filename
@@ -2230,6 +2237,11 @@ func fileContentBlock(part types.FileContent) map[string]interface{} {
 		filename = defaultFilename(mediaType, "file")
 	}
 	data := fileData(part)
+	if isURL && isNonWebURL(data) {
+		// A URL object whose protocol is not data: becomes a url block
+		// whatever its scheme (TS `data instanceof URL`).
+		return map[string]interface{}{"type": "file", "url": data, "mimeType": mediaType, "filename": filename}
+	}
 	block := func(key, value, mime string) map[string]interface{} {
 		return map[string]interface{}{"type": "file", key: value, "mimeType": mime, "filename": filename}
 	}
@@ -2244,6 +2256,28 @@ func fileContentBlock(part types.FileContent) map[string]interface{} {
 	default:
 		return block("data", data, mediaType)
 	}
+}
+
+// isNonWebURL reports a URL value (a TS URL object, not a bare string) whose
+// scheme is neither http(s) nor data:, such as gs:// or s3://. TS
+// convertImageToContentBlock / convertUserContent send those as `{url}`; only
+// plain strings fall through to the base64 data branch.
+func isNonWebURL(raw string) bool {
+	scheme, _, ok := strings.Cut(raw, ":")
+	if !ok || scheme == "" {
+		return false
+	}
+	for i, r := range scheme {
+		isAlpha := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if !isAlpha && (i == 0 || ((r < '0' || r > '9') && r != '+' && r != '-' && r != '.')) {
+			return false
+		}
+	}
+	switch strings.ToLower(scheme) {
+	case "http", "https", "data":
+		return false
+	}
+	return true
 }
 
 func defaultFilename(mediaType, prefix string) string {
