@@ -75,7 +75,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody, bodyWarnings := m.buildRequestBodyWithWarnings(opts, false)
 	warnings = append(bodyWarnings, warnings...)
 	var response vertexXaiResponse
-	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
+	resp, err := m.provider.mustClient().DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
 		Body:    reqBody,
@@ -110,7 +110,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	warnings := m.checkUnsupportedOptions(opts)
 	reqBody, bodyWarnings := m.buildRequestBodyWithWarnings(opts, true)
 	warnings = append(bodyWarnings, warnings...)
-	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
+	httpResp, err := m.provider.mustClient().DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
 		Body:    reqBody,
