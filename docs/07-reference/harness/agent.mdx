@@ -466,7 +466,7 @@ agent, err := harness.NewAgent(harness.AgentSettings{Harness: h, Telemetry: tel}
 
 Each line is a JSON object with `ts` (epoch ms) and `kind`: `turn-start`, `step-start`, `tool-start`, `tool-end`, `step-finish`, `turn-finish`, `error`, `turn-abort` or `diagnostic`. Records are buffered per turn and written when the turn ends. With `FailOnly`, a turn is written only if it recorded an error-level diagnostic, a failed tool or an `error`; a clean turn is skipped. Diagnostics attach to the most recently started open turn, or are written alone when none is open. `turn-start` carries `input` and `step-finish` carries `output` (text, reasoning, files, tool calls, tool results and tool errors) unless the call's `telemetry.Options` has `RecordInputs` or `RecordOutputs` false. Errors are written as `{name, message}`, where `name` is the Go error type.
 
-The directory is created with mode 0700 and the file with 0600. `FileName` must be a plain file name inside `Dir`. Writes are best-effort and never fail a turn; `reporter.Err()` returns the first write error. `Close` writes any turn still open (not with `FailOnly`) and closes the file, and records after `Close` are dropped.
+The directory is created with mode 0700 and the file with 0600. `FileName` is joined to `Dir` as it is, like TS, so a name the operating system cannot open shows up in `reporter.Err()`. A tool that fails is recorded with `"output": {}`, as TS records a thrown `Error`. Writes are best-effort and never fail a turn; `reporter.Err()` returns the first write error. `Close` writes any turn still open (not with `FailOnly`) and closes the file, and records after `Close` are dropped.
 
 ### Trace tree reporter
 
@@ -478,7 +478,7 @@ The directory is created with mode 0700 and the file with 0600. `FileName` must 
 | --- | --- | --- |
 | `Dir` | `string` | Dir is the directory for the events file (created if absent). Required. |
 | `FailOnly` | `bool` | FailOnly buffers a turn's records in memory and writes them only if the turn produced an error (an error-level diagnostic, a failed tool, or an error finish). Default false (write everything). |
-| `FileName` | `string` | FileName is the file name within Dir. Default "events.jsonl". It must be a plain file name, not a path that leaves Dir. |
+| `FileName` | `string` | FileName is the file name within Dir. Default "events.jsonl". Like TS (`${dir}/${fileName}`) it is not validated; a name the OS cannot open surfaces through Err, never through a turn. |
 
 {/* /gen:fields */}
 
