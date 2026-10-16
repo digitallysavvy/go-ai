@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -90,8 +91,8 @@ func TestConvertPromptToInputWithOptionsUnsupportedFileDefaultAndPassThrough(t *
 	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{}); err == nil {
 		t.Fatal("expected unsupported file media type error")
 	}
-	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ProviderOptionsName: "azure"}); err == nil || !strings.Contains(err.Error(), "providerOptions.azure.passThroughUnsupportedFiles") {
-		t.Fatalf("azure unsupported file error = %v, want azure providerOptions hint", err)
+	if _, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{ProviderOptionsName: "azure"}); !providerrors.IsUnsupportedFunctionalityError(err) || !strings.Contains(err.Error(), "'file part media type text/csv' functionality not supported.") {
+		t.Fatalf("azure unsupported file error = %v, want TS UnsupportedFunctionalityError", err)
 	}
 	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{PassThroughUnsupportedFiles: true})
 	if err != nil {
@@ -237,8 +238,8 @@ func TestConvertPromptToInput_UserFileDataVariants(t *testing.T) {
 			}},
 		}},
 	}, "system", ConvertOptions{})
-	if err == nil {
-		t.Fatal("expected text file parts to be rejected")
+	if !providerrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("err = %v, want UnsupportedFunctionalityError for text file parts", err)
 	}
 }
 
@@ -1759,5 +1760,25 @@ func TestConvertPromptToInput_WrapsToolErrors(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TS returns a URL file part as input_file/file_url before any media type
+// check, so a non-PDF URL is never rejected.
+func TestConvertPromptToInput_NonPDFURLFilePassesThrough(t *testing.T) {
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{
+			MediaType: "text/csv",
+			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://x/a.csv"},
+		}},
+	}}}
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	part := input[0].(UserMessage).Content.([]interface{})[0].(UserFilePart)
+	if part.FileURL != "https://x/a.csv" {
+		t.Fatalf("part = %+v", part)
 	}
 }

@@ -409,9 +409,7 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 						Detail:   openAIResponsesImageDetail(p.ProviderOptions, providerName),
 					})
 				} else {
-					if err := validateResponsesFileMediaType(mediaType, opts.PassThroughUnsupportedFiles, providerName); err != nil {
-						return UserMessage{}, err
-					}
+					// TS returns a URL file part before any media type check.
 					parts = append(parts, UserFilePart{Type: "input_file", FileURL: fileURL})
 				}
 			case types.FileDataTypeReference:
@@ -436,7 +434,7 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 					parts = append(parts, map[string]interface{}{"type": "input_file", "file_id": reference})
 				}
 			case types.FileDataTypeText:
-				return UserMessage{}, fmt.Errorf("openai.responses: text file parts are not supported")
+				return UserMessage{}, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
 			case types.FileDataTypeData:
 				if fileID := openAIFileIDFromDataString(p, opts.FileIDPrefixes); fileID != "" {
 					if isImageMediaType(mediaType) {
@@ -547,14 +545,12 @@ func isImageMediaType(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "image/") || mediaType == "image"
 }
 
-func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFiles bool, providerName string) error {
+func validateResponsesFileMediaType(mediaType string, passThroughUnsupportedFiles bool, _ string) error {
 	if passThroughUnsupportedFiles || mediaType == "" || mediaType == "application/pdf" {
 		return nil
 	}
-	if providerName == "" {
-		providerName = "openai"
-	}
-	return fmt.Errorf("openai.responses: unsupported file media type %q; set providerOptions.%s.passThroughUnsupportedFiles to true to pass it through", mediaType, providerName)
+	// TS: throw new UnsupportedFunctionalityError({ functionality: `file part media type ${fullMediaType}` })
+	return &providererrors.UnsupportedFunctionalityError{Functionality: "file part media type " + mediaType}
 }
 
 // convertAssistantItems maps assistant-role content parts and ToolCalls to
