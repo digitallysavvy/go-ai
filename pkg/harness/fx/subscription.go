@@ -1,7 +1,6 @@
 package fx
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -15,6 +14,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/acp"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
 // Environment variable names used for fx's brokered subscription records.
@@ -203,7 +204,7 @@ func readSubscription(ctx context.Context, provider subscriptionProvider, fxDire
 		return nil, nil
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(text, &parsed); err != nil {
+	if err := securejson.Unmarshal(text, &parsed); err != nil {
 		return nil, nil
 	}
 	cred := readCredential(parsed)
@@ -299,17 +300,14 @@ func persistCredential(path string, cred *Credential) error {
 // refresh_token, expires_at_ms, account_id}) + "\n"`: TS key order and no
 // HTML escaping (a Go map would sort the keys and escape <, > and &).
 func credentialFileContent(accessToken, refreshToken string, expiresAt int64, accountID string) string {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(struct {
+	b, _ := jsstr.Marshal(struct {
 		Version      int    `json:"version"`
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 		ExpiresAtMs  int64  `json:"expires_at_ms"`
 		AccountID    string `json:"account_id"`
 	}{1, accessToken, refreshToken, expiresAt, accountID})
-	return b.String() // Encode appends the newline
+	return string(b) + "\n"
 }
 
 func readCredential(value map[string]any) *Credential {
@@ -361,7 +359,7 @@ func fetchGrokAccountID(ctx context.Context, accessToken string, client *http.Cl
 		return "", fmt.Errorf("fx Grok user info request failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := securejson.Unmarshal(body, &parsed); err != nil {
 		return "", fmt.Errorf("fx Grok user info request returned an invalid account.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	sub, ok := parsed["sub"].(string)

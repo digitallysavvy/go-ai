@@ -2,7 +2,6 @@ package harness
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +9,8 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -1116,7 +1117,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				// Keep the typed error so errors.As works on the result's Err().
 				return false, false, typed
 			}
-			return false, false, ErrorFromValue(ep.Error)
+			return false, false, ep.AsError()
 		}
 
 		if tc, isCall := display.(*ToolCallPart); isCall {
@@ -1415,7 +1416,7 @@ func parseJSONObject(input string) (map[string]interface{}, error) {
 		return map[string]interface{}{}, nil
 	}
 	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(input), &m); err != nil {
+	if err := securejson.Unmarshal([]byte(input), &m); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -1980,7 +1981,7 @@ func executionDeniedOutput(reason string) map[string]interface{} {
 func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (awaiting bool, err error) {
 	call, ok := d.toolCallsByID[part.ToolCallID]
 	if !ok {
-		return false, fmt.Errorf("harness '%s' emitted approval request '%s' for unknown tool call '%s'", d.in.Harness.HarnessID(), part.ApprovalID, part.ToolCallID)
+		return false, fmt.Errorf("Harness '%s' emitted approval request '%s' for unknown tool call '%s'.", d.in.Harness.HarnessID(), part.ApprovalID, part.ToolCallID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	raw := d.execToolCallsByID[part.ToolCallID]
 	toolName := call.ToolName
@@ -1990,7 +1991,7 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 	if !IsBuiltinToolIncluded(toolName, d.in.BuiltinToolFiltering) {
 		submitter, ok := d.control.(ToolApprovalSubmitter)
 		if !ok {
-			return false, fmt.Errorf("harness '%s' emitted a built-in tool approval request but does not support approval responses", d.in.Harness.HarnessID())
+			return false, fmt.Errorf("Harness '%s' emitted a built-in tool approval request but does not support approval responses.", d.in.Harness.HarnessID()) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		// The runtime may report a step boundary while it waits for this
 		// decision; that boundary must not end the step before the denied
@@ -2065,7 +2066,7 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 
 	hostCall := d.validatedHostCallsByID[raw.ToolCallID]
 	if hostCall == nil {
-		return false, fmt.Errorf("harness '%s' could not validate host tool '%s'", d.in.Harness.HarnessID(), raw.ToolName)
+		return false, fmt.Errorf("Harness '%s' could not validate host tool '%s'.", d.in.Harness.HarnessID(), raw.ToolName) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	// Schema-invalid input is rejected here, before any approval decision is
 	// made and without ever calling tool.Execute — mirrors TS's
@@ -2390,7 +2391,7 @@ func (d *turnDriver) submitToolResult(submission ToolResultSubmission) error {
 			if !hasContinuation || !IsCapabilityUnsupportedError(err) {
 				return err
 			}
-			text, mErr := json.Marshal(submission.Output)
+			text, mErr := jsstr.Marshal(submission.Output)
 			if mErr != nil || string(text) == "" {
 				text = []byte("null")
 			}
@@ -2573,7 +2574,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		d.settledBuiltinIDs[approval.ToolCallID] = struct{}{}
 		submitter, ok := d.control.(ToolApprovalSubmitter)
 		if !ok {
-			return turnOutcomeContinue, fmt.Errorf("harness '%s' emitted a built-in tool approval request but does not support approval responses", d.in.Harness.HarnessID())
+			return turnOutcomeContinue, fmt.Errorf("Harness '%s' emitted a built-in tool approval request but does not support approval responses.", d.in.Harness.HarnessID()) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		if err := submitter.SubmitToolApproval(d.ctx, ToolApprovalSubmission{ApprovalID: approval.ApprovalID, Approved: continuation.Approved, Reason: continuation.Reason}); err != nil {
 			return turnOutcomeContinue, err
@@ -2591,7 +2592,7 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	}
 
 	if validatedHostToolCall == nil {
-		return turnOutcomeContinue, fmt.Errorf("harness '%s' could not validate approved host tool '%s'", d.in.Harness.HarnessID(), approval.ToolName)
+		return turnOutcomeContinue, fmt.Errorf("Harness '%s' could not validate approved host tool '%s'.", d.in.Harness.HarnessID(), approval.ToolName) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	// Revalidation rejected the input: settle as a tool-error, exactly like
 	// a first-pass invalid host tool call (rejectInvalidHostToolCall),
@@ -2633,13 +2634,13 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 // hostOutcomeChunk is the consumer-stream tool-result / tool-error part for a
 // host tool outcome produced outside the runtime's echo. Mirrors TS
 // `enqueueHostToolOutcome`: the output is work-dir-stripped like every
-// forwarded result; an error keeps the original value; the part is dynamic
-// only for the invalid-input case TS flags (`dynamic: true` is set there).
+// forwarded result; an error keeps the original value. TS's
+// enqueueHostToolOutcome sets no `dynamic` flag on either part (only the
+// first-pass invalid-input tool-error built in the loop carries it).
 func (d *turnDriver) hostOutcomeChunk(toolCallID, toolName string, call types.ToolCall, o hostToolOutcome) provider.StreamChunk {
 	tr := &types.ToolResult{ToolCallID: toolCallID, ToolName: toolName, Input: call.Arguments}
 	if o.err != nil {
 		tr.Error = o.err
-		tr.Dynamic = o.err.Error() == invalidToolInputMessage
 	} else {
 		tr.Result = o.output
 		if stripped, _ := StripWorkDir(&ToolResultPart{ToolCallID: toolCallID, ToolName: toolName, Result: o.output}, d.in.SessionWorkDir).(*ToolResultPart); stripped != nil {

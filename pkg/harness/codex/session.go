@@ -20,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -201,17 +202,22 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		return nil, err
 	}
 	control := s.wireTurn(ctx, opts.Emit)
+	// TS consumes the recovery flag (and the pending resume thread id) whether
+	// or not the start is still sent: an already-aborted turn settled in
+	// wireTurn and sendStart skips the frame.
 	s.mu.Lock()
-	rerun := s.rerunContinue && ctx.Err() == nil
+	rerun := s.rerunContinue
 	if rerun {
 		s.rerunContinue = false
 	}
 	s.mu.Unlock()
 	if rerun {
 		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat, restartThread, false)
-		if err := s.opts.channel.Send(frame); err != nil {
-			control.settleError(err)
-			return nil, err
+		if ctx.Err() == nil {
+			if err := s.opts.channel.Send(frame); err != nil {
+				control.settleError(err)
+				return nil, err
+			}
 		}
 	}
 	return control, nil
@@ -445,7 +451,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			pc.forward(f.Part)
 			if ep, ok := f.Part.(*harness.ErrorPart); ok && ep.Error != nil {
-				cause = harness.ErrorFromValue(ep.Error)
+				cause = ep.AsError()
 			}
 		}
 		pc.settleError(cause)
@@ -597,6 +603,9 @@ func writeJSCanonicalJSON(buf *bytes.Buffer, v any) {
 		sort.Slice(keys, func(i, j int) bool {
 			return slices.Compare(utf16.Encode([]rune(keys[i])), utf16.Encode([]rune(keys[j]))) < 0
 		})
+		// Object.fromEntries builds a JS object, which enumerates integer-like
+		// keys first in ascending numeric order regardless of insertion order.
+		keys = jsonorder.JSKeyOrder(keys)
 		buf.WriteByte('{')
 		for i, k := range keys {
 			if i > 0 {

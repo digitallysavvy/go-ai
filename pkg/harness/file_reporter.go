@@ -3,7 +3,6 @@ package harness
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
@@ -158,14 +158,14 @@ func (o *orderedRecord) MarshalJSON() ([]byte, error) {
 		if i > 0 {
 			buf.WriteByte(',')
 		}
-		kb, _ := json.Marshal(k)
+		kb, _ := jsstr.Marshal(k)
 		buf.Write(kb)
 		buf.WriteByte(':')
-		vb, err := json.Marshal(o.vals[i])
+		vb, err := jsstr.Marshal(o.vals[i])
 		if err != nil {
 			// Keep the record rather than losing it: replace the one value
 			// that cannot be serialized.
-			vb, _ = json.Marshal(fmt.Sprintf("[unserializable: %v]", err))
+			vb, _ = jsstr.Marshal(fmt.Sprintf("[unserializable: %v]", err))
 		}
 		buf.Write(vb)
 	}
@@ -233,7 +233,7 @@ func (r *FileReporter) turnLocked(callID string) *reporterTurn {
 // record goes to the most recently started, still-open turn; with no open
 // turn it is written standalone, best-effort.
 func (r *FileReporter) record(callID string, useLast bool, rec *orderedRecord) {
-	line, err := json.Marshal(rec)
+	line, err := jsstr.Marshal(rec)
 	if err != nil {
 		return
 	}

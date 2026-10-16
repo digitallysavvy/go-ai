@@ -1,7 +1,6 @@
 package acp
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,7 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -78,12 +79,19 @@ func validateImplementation(impl implementation) error {
 	}
 	forwarded := toSet(impl.ForwardEnv)
 	credential := toSet(impl.CredentialEnv)
-	for k := range credential {
+	// JS iterates the credential Set in configuration order; the conflict named
+	// by the error must not depend on Go's map order.
+	for _, k := range impl.CredentialEnv {
 		if forwarded[k] {
 			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and credentialEnv.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}
+	envKeys := make([]string, 0, len(impl.Env))
 	for k := range impl.Env {
+		envKeys = append(envKeys, k)
+	}
+	sort.Strings(envKeys)
+	for _, k := range envKeys {
 		if forwarded[k] {
 			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and env.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
@@ -376,6 +384,8 @@ func writeSortedJSON(out *strings.Builder, value any) {
 			keys = append(keys, k)
 		}
 		posixpath.SortStrings(keys)
+		// Object.fromEntries hoists integer-like keys, ascending, before the rest.
+		keys = jsonorder.JSKeyOrder(keys)
 		out.WriteByte('{')
 		for i, k := range keys {
 			if i > 0 {
@@ -407,49 +417,23 @@ func writeSortedJSON(out *strings.Builder, value any) {
 }
 
 // jsonString is JSON.stringify for a string: no HTML escaping and U+2028 /
-// U+2029 left literal (Go's encoder always escapes them).
+// U+2029 left literal (jsstr handles both).
 func jsonString(s string) string {
 	encoded, _ := encodeNoEscape(s)
-	if !strings.Contains(encoded, `\u202`) {
-		return encoded
-	}
-	var b strings.Builder
-	for i := 0; i < len(encoded); i++ {
-		if encoded[i] == '\\' && i+1 < len(encoded) {
-			if rest := encoded[i+1:]; strings.HasPrefix(rest, "u2028") {
-				b.WriteString("\u2028")
-				i += 5
-				continue
-			} else if strings.HasPrefix(rest, "u2029") {
-				b.WriteString("\u2029")
-				i += 5
-				continue
-			}
-			b.WriteByte(encoded[i])
-			i++
-		}
-		b.WriteByte(encoded[i])
-	}
-	return b.String()
+	return encoded
 }
 
 // encodeNoEscape is json.Marshal without HTML escaping (`<`, `>`, `&` stay
 // literal, like JSON.stringify), so identity digests can match TS byte for byte.
 func encodeNoEscape(value any) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(value); err != nil {
+	b, err := jsstr.Marshal(value)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSuffix(buf.String(), "\n"), nil
+	return string(b), nil
 }
 
 func marshalIndentNoEscape(value any) string {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(value)
-	return strings.TrimSuffix(buf.String(), "\n")
+	b, _ := jsstr.MarshalIndent(value)
+	return string(b)
 }

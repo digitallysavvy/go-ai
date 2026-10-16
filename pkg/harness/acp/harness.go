@@ -262,6 +262,9 @@ func validateStartConfigShape(raw json.RawMessage, key string, withPrompt bool) 
 			}
 		}
 	}
+	if err := validateStartConfigMembers(cfg, key, !withPrompt); err != nil {
+		return err
+	}
 	if withPrompt {
 		var blocks []struct {
 			Type string  `json:"type"`

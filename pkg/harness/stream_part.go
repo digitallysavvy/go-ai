@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 // StreamPart is one event emitted by a harness adapter during a prompt turn.
@@ -259,6 +261,69 @@ type CompactionPart struct {
 // ErrorPart is the `error` part. Error is an arbitrary JSON value.
 type ErrorPart struct {
 	Error any `json:"error"`
+
+	// errorText is JSON.stringify of the wire error object, with the wire key
+	// order (a Go map would sort the keys). Set only when decoded from JSON.
+	errorText string
+	// errorTextFor is the Error value errorText was computed for; a caller
+	// that replaces Error invalidates the cached text.
+	errorTextFor any
+}
+
+// UnmarshalJSON decodes the part and keeps the wire key order of an object
+// or array error, like the JS value TS rejects with.
+func (p *ErrorPart) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	p.Error, p.errorText, p.errorTextFor = nil, "", nil
+	if len(aux.Error) == 0 {
+		return nil
+	}
+	var v any
+	if err := json.Unmarshal(aux.Error, &v); err != nil {
+		return err
+	}
+	p.Error = v
+	switch v.(type) {
+	case map[string]any, []any:
+		p.errorText = jsonorder.Text(aux.Error, nil)
+		p.errorTextFor = v
+	}
+	return nil
+}
+
+// Message renders the error value like TS getErrorMessage: an object error is
+// JSON.stringify of the wire object, keys in wire order.
+func (p *ErrorPart) Message() string {
+	if p.errorText != "" && sameErrorValue(p.Error, p.errorTextFor) {
+		return p.errorText
+	}
+	return ErrorValueMessage(p.Error)
+}
+
+// AsError converts the part's error value to a Go error: an error passes
+// through, anything else carries Message().
+func (p *ErrorPart) AsError() error {
+	if err, ok := p.Error.(error); ok {
+		return err
+	}
+	return &rawValueError{message: p.Message()}
+}
+
+func sameErrorValue(a, b any) bool {
+	switch x := a.(type) {
+	case map[string]any:
+		y, ok := b.(map[string]any)
+		return ok && reflect.ValueOf(x).Pointer() == reflect.ValueOf(y).Pointer()
+	case []any:
+		y, ok := b.([]any)
+		return ok && len(x) == len(y) && (len(x) == 0 || &x[0] == &y[0])
+	}
+	return false
 }
 
 // RawPart is the `raw` part: adapter-specific passthrough.

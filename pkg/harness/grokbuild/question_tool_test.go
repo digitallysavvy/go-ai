@@ -186,3 +186,14 @@ func TestMatchesNativeRequestDistinguishesNullFromOmitted(t *testing.T) {
 		t.Fatal("multi_select:null must not match an omitted multi_select")
 	}
 }
+
+// TS emits `description` and `preview` even when they are "" and never
+// HTML-escapes the JSON.stringify text.
+func TestFromNativeRequestKeepsEmptyStringsAndRawHTML(t *testing.T) {
+	req := toAny(t, []byte(`{"sessionId":"s","toolCallId":"c","mode":"plan","questions":[{"question":"a<b&c?","options":[{"label":"L","description":"","preview":""}],"multi_select":true}]}`))
+	part := AskUserQuestions.FromNativeRequest(req, nil)
+	want := `{"allowPartialAnswers":true,"questions":[{"id":"question-1","question":"a<b&c?","options":[{"id":"option-1","label":"L","description":"","preview":""}],"allowMultiple":true,"allowFreeForm":true}]}`
+	if part == nil || part.Input != want {
+		t.Fatalf("got %v, want %s", part, want)
+	}
+}

@@ -80,6 +80,16 @@ func CreateBridgeErrorHandler(harnessID, sessionID string) func(*harness.ErrorPa
 		var value any
 		if part != nil {
 			value = part.Error
+			// A wire object without a string `message` is JSON.stringify'd by
+			// formatBridgeError; keep the wire key order.
+			switch m := value.(type) {
+			case map[string]any:
+				if _, hasMessage := m["message"].(string); !hasMessage {
+					value = part.Message()
+				}
+			case []any:
+				value = part.Message()
+			}
 		}
 		LogBridgeError(LogBridgeErrorOptions{
 			HarnessID: harnessID,

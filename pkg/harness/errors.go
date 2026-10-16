@@ -1,9 +1,9 @@
 package harness
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 // Error names, matching the TS `name` property of each error class.
@@ -140,20 +140,27 @@ func IsSandboxAuthenticationError(err error) bool {
 // the harness runtime. Messages from reviewed harness error types are
 // preserved; all other errors are masked. Mirrors TS `getHarnessErrorMessage`.
 func GetHarnessErrorMessage(err error) string {
-	var capability *CapabilityUnsupportedError
-	if errors.As(err, &capability) {
-		return capability.Message
-	}
-	var auth *SandboxAuthenticationError
-	if errors.As(err, &auth) {
-		return auth.Message
-	}
-	var h harnessErr
-	if errors.As(err, &h) {
+	// TS inspects the thrown value itself (isInstance is a marker check on that
+	// value, never on its cause). The nearest harness error in the chain is the
+	// closest Go analogue of "the value", so an unreviewed or base harness
+	// error that wraps a reviewed error as its cause is judged by its own
+	// type and message.
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		h, ok := e.(harnessErr)
+		if !ok {
+			continue
+		}
+		switch typed := h.(type) {
+		case *CapabilityUnsupportedError:
+			return typed.Message
+		case *SandboxAuthenticationError:
+			return typed.Message
+		}
 		base := h.harnessError()
 		if base.ErrorName() == HarnessErrorName {
 			return base.Message
 		}
+		return defaultHarnessClientSafeErrorMessage
 	}
 	return defaultHarnessClientSafeErrorMessage
 }
@@ -171,13 +178,11 @@ func ErrorValueMessage(v any) string {
 	case error:
 		return e.Error()
 	}
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
+	b, err := jsstr.Marshal(v)
+	if err != nil {
 		return "unknown error"
 	}
-	return string(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+	return string(b)
 }
 
 type rawValueError struct{ message string }

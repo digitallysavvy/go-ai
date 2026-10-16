@@ -259,3 +259,14 @@ func TestValidateLifecycleStateDataChecksStartConfigShape(t *testing.T) {
 		t.Error("coldSession without a fingerprint accepted")
 	}
 }
+
+func TestDeserializeBridgePartKeepsWireKeyOrder(t *testing.T) {
+	part, err := harness.DecodeStreamPart([]byte(`{"type":"error","error":{"z":1,"a":2}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := deserializeBridgePart(part.(*harness.ErrorPart), "h").Error()
+	if got != `{"z":1,"a":2}` {
+		t.Fatalf("got %s", got)
+	}
+}

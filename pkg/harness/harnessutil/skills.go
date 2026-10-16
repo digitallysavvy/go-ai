@@ -12,7 +12,9 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -347,11 +349,11 @@ func readSkillsManifest(ctx context.Context, sandbox providerutils.SandboxSessio
 	}
 	invalid := fmt.Errorf("Invalid AI SDK harness skills manifest: %s", manifestPath) //nolint:staticcheck // matches TS SDK's exact error text
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
+	if err := securejson.Unmarshal([]byte(*content), &raw); err != nil || raw == nil {
 		return nil, invalid
 	}
 	var m skillsManifest
-	if err := json.Unmarshal([]byte(*content), &m); err != nil {
+	if err := securejson.Unmarshal([]byte(*content), &m); err != nil {
 		return nil, invalid
 	}
 	if m.Version != skillsManifestVersion || (m.State != "complete" && m.State != "pending") || !isJSONArray(raw["skills"]) {
@@ -378,14 +380,11 @@ func isJSONArray(raw json.RawMessage) bool {
 
 // stringifyJSON mirrors `${JSON.stringify(value, null, 2)}\n`.
 func stringifyJSON(value any) (string, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(value); err != nil {
+	b, err := jsstr.MarshalIndent(value)
+	if err != nil {
 		return "", err
 	}
-	return buf.String(), nil
+	return string(b) + "\n", nil
 }
 
 func writeSkillsManifest(ctx context.Context, sandbox providerutils.SandboxSession, manifestPath string, manifest skillsManifest) error {

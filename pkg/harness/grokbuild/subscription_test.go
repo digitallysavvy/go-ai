@@ -199,3 +199,51 @@ func TestCredentialBrokering_NullishSemantics(t *testing.T) {
 		t.Fatalf("set-but-empty proxy URL must still add the token header: %+v", trs[0].Transform.Headers)
 	}
 }
+
+// TS re-serializes the whole parsed file (JSON.stringify(authRecords, null, 2)),
+// so escapes, number spellings and integer-like key order normalize.
+func TestReadSubscription_RefreshReserializesLikeJSONStringify(t *testing.T) {
+	grokHome := t.TempDir()
+	authPath := filepath.Join(grokHome, "auth.json")
+	exp := time.Now().Add(60 * time.Second).UnixMilli()
+	text := fmt.Sprintf(`{"other":{"e":"<a&b>","n":1.0,"big":1e2},%q:{"key":"k","refresh_token":"r","expires_at":%d,"note":"<","b":1,"2":true}}`, testScope, exp)
+	if err := os.WriteFile(authPath, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/.well-known/openid-configuration" {
+			_, _ = w.Write([]byte(`{"token_endpoint":"https://auth.x.ai/oauth2/token"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}`))
+	}))
+	defer server.Close()
+	if _, err := ReadSubscription(context.Background(), ReadSubscriptionOptions{
+		Env: map[string]string{"GROK_HOME": grokHome}, HTTPClient: rewriteHostClient(t, server.URL),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	persisted, _ := os.ReadFile(authPath)
+	s := string(persisted)
+	for _, want := range []string{`"e": "<a&b>"`, `"n": 1,`, `"big": 100`, `"note": "<"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %s in:\n%s", want, s)
+		}
+	}
+	if strings.Index(s, `"2": true`) > strings.Index(s, `"key"`) {
+		t.Errorf("integer-like key must enumerate first:\n%s", s)
+	}
+}
+
+func TestReadSubscription_RejectsForbiddenPrototypeKey(t *testing.T) {
+	grokHome := t.TempDir()
+	text := fmt.Sprintf(`{%q:{"key":"k","refresh_token":"r","expires_at":%d},"__proto__":{}}`, testScope, time.Now().Add(time.Hour).UnixMilli())
+	if err := os.WriteFile(filepath.Join(grokHome, "auth.json"), []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSubscription(context.Background(), ReadSubscriptionOptions{Env: map[string]string{"GROK_HOME": grokHome}})
+	if err != nil || got != nil {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}

@@ -589,7 +589,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		errPart, _ := f.Part.(*harness.ErrorPart)
 		var err error
 		if errPart != nil {
-			err = deserializeBridgeError(errPart.Error, s.p.harnessID)
+			err = deserializeBridgePart(errPart, s.p.harnessID)
 		} else {
 			err = errors.New("acp: bridge reported an error")
 		}
@@ -644,13 +644,19 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 // special-cases the "bridge capability unsupported" marker; every other
 // error passes through unchanged.
 func deserializeBridgeError(err any, harnessID string) error {
-	if m, ok := err.(map[string]any); ok {
+	return deserializeBridgePart(&harness.ErrorPart{Error: err}, harnessID)
+}
+
+// deserializeBridgePart is deserializeBridgeError for a decoded error part, so
+// an object error keeps its wire key order in the message text.
+func deserializeBridgePart(part *harness.ErrorPart, harnessID string) error {
+	if m, ok := part.Error.(map[string]any); ok {
 		if name, _ := m["name"].(string); name == "AI_HarnessBridgeCapabilityUnsupportedError" {
 			message, _ := m["message"].(string)
 			return unsupported(harnessID, message)
 		}
 	}
-	return harness.ErrorFromValue(err)
+	return part.AsError()
 }
 
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
@@ -1043,7 +1049,7 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 		}
 		var err error
 		if errPart != nil {
-			err = deserializeBridgeError(errPart.Error, harnessID)
+			err = deserializeBridgePart(errPart, harnessID)
 		} else {
 			err = errors.New("acp: bridge reported an error")
 		}

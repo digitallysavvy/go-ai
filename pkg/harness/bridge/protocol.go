@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
 // Outbound transport/control frame discriminators.
@@ -133,6 +134,10 @@ func (s Stop) MarshalJSON() ([]byte, error) {
 // DecodeOutbound parses and validates one bridge->host frame. The optional
 // `seq` cursor is returned separately (zod strips it from the parsed value).
 func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) {
+	// safeParseJSON rejects a __proto__ key: no seq, and the frame fails validation.
+	if err := securejson.Check(data); err != nil {
+		return nil, nil, err
+	}
 	typ, fields, err := harness.ReadTagged(data)
 	if err != nil {
 		return nil, nil, err
@@ -289,7 +294,7 @@ func DecodeReady(line []byte) (*Ready, error) {
 		return nil, err
 	}
 	var r Ready
-	if err := json.Unmarshal(line, &r); err != nil {
+	if err := securejson.Unmarshal(line, &r); err != nil {
 		return nil, err
 	}
 	return &r, nil

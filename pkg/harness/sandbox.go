@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -314,7 +315,7 @@ func ResolveSandboxDefaultWorkingDirectory(ctx context.Context, sandbox provider
 	}
 	cwd := providerutils.JSTrim(result.Stdout)
 	if !posixpath.IsAbs(cwd) {
-		quoted, _ := json.Marshal(cwd)
+		quoted, _ := jsstr.Marshal(cwd)
 		return "", fmt.Errorf("Failed to resolve sandbox default working directory: expected an absolute path, got %s.", quoted) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if cwd == "/" {

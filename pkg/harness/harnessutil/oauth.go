@@ -3,16 +3,18 @@ package harnessutil
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
 // maxTokenResponseBytes caps the OAuth token endpoint response read.
@@ -96,7 +98,7 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 		// Key order matches the TS object literal. Marshal a struct instead
 		// of splicing pre-escaped values between literal quote characters,
 		// so the request body is unambiguously valid JSON.
-		encoded, err := json.Marshal(refreshTokenRequestBody{
+		encoded, err := jsstr.Marshal(refreshTokenRequestBody{
 			GrantType:    "refresh_token",
 			ClientID:     opts.ClientID,
 			RefreshToken: opts.RefreshToken,
@@ -106,7 +108,7 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 		}
 		body = encoded
 	} else {
-		body = []byte("grant_type=refresh_token&client_id=" + url.QueryEscape(opts.ClientID) + "&refresh_token=" + url.QueryEscape(opts.RefreshToken))
+		body = []byte("grant_type=refresh_token&client_id=" + formEscape(opts.ClientID) + "&refresh_token=" + formEscape(opts.RefreshToken))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, opts.TokenURL, bytes.NewReader(body))
 	if err != nil {
@@ -132,7 +134,7 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	}
 
 	var parsed map[string]any
-	if err := json.Unmarshal(responseText, &parsed); err != nil || parsed == nil {
+	if err := securejson.Unmarshal(responseText, &parsed); err != nil || parsed == nil {
 		return nil, errors.New("OAuth access token refresh returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	accessToken, _ := parsed["access_token"].(string)
@@ -160,7 +162,19 @@ func RefreshOAuthAccessToken(ctx context.Context, opts RefreshOAuthAccessTokenOp
 	return result, nil
 }
 
+// formEscape is one URLSearchParams value: like url.QueryEscape, but `*` stays
+// literal and `~` is escaped (the WHATWG application/x-www-form-urlencoded
+// serializer leaves only `*-._` unescaped).
+func formEscape(v string) string {
+	escaped := url.QueryEscape(v)
+	if !strings.ContainsAny(escaped, "~") && !strings.Contains(escaped, "%2A") {
+		return escaped
+	}
+	escaped = strings.ReplaceAll(escaped, "~", "%7E")
+	return strings.ReplaceAll(escaped, "%2A", "*")
+}
+
 func jsonString(s string) string {
-	b, _ := json.Marshal(s)
+	b, _ := jsstr.Marshal(s)
 	return string(b)
 }

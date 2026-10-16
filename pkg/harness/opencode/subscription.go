@@ -3,7 +3,6 @@ package opencode
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -18,6 +17,8 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
 // Native OpenCode subscription auth. Mirrors TS opencode-subscription.ts.
@@ -330,7 +331,7 @@ func requestOpenCodeGitLabDirectAccess(ctx context.Context, httpClient *http.Cli
 		return nil, fmt.Errorf("OpenCode GitLab direct access request failed with status %d.", resp.StatusCode) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
+	if err := securejson.Unmarshal(respBody, &parsed); err != nil {
 		return nil, errors.New("OpenCode GitLab direct access returned invalid JSON.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	token, _ := parsed["token"].(string)
@@ -479,11 +480,8 @@ func createOpenCodeSubscriptionAuthContent(authentication *Subscription, accessT
 	// Built by hand: JSON.stringify keeps insertion order and does not
 	// HTML-escape, which a Go map would not.
 	q := func(s string) string {
-		var b bytes.Buffer
-		enc := json.NewEncoder(&b)
-		enc.SetEscapeHTML(false)
-		_ = enc.Encode(s)
-		return strings.TrimSuffix(b.String(), "\n")
+		b, _ := jsstr.Marshal(s)
+		return string(b)
 	}
 	var value string
 	if authentication.ProviderID == SubscriptionOpenCodeGo {
@@ -640,7 +638,7 @@ type authStore struct {
 func readAuthStore(env map[string]string, homeDirectoryOverride, goosOverride string) (*authStore, error) {
 	if content, ok := env["OPENCODE_AUTH_CONTENT"]; ok {
 		var parsed map[string]any
-		if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		if err := securejson.Unmarshal([]byte(content), &parsed); err != nil {
 			return nil, nil
 		}
 		return &authStore{Value: parsed}, nil
@@ -669,7 +667,7 @@ func readAuthStore(env map[string]string, homeDirectoryOverride, goosOverride st
 		return nil, nil
 	}
 	var parsed map[string]any
-	if err := json.Unmarshal(data, &parsed); err != nil {
+	if err := securejson.Unmarshal(data, &parsed); err != nil {
 		return nil, nil
 	}
 	return &authStore{Value: parsed, Write: func(value map[string]any) error { return writeAuthStore(authPath, value) }}, nil
@@ -683,7 +681,7 @@ func writeAuthStore(authPath string, value map[string]any) error {
 		return err
 	}
 	temporaryPath := fmt.Sprintf("%s.%d.tmp", authPath, os.Getpid())
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := jsstr.MarshalIndent(value)
 	if err != nil {
 		return err
 	}
