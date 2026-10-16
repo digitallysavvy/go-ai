@@ -109,3 +109,33 @@ func TestXAIResponsesStreamCompletedIgnoresIncompleteDetails(t *testing.T) {
 		t.Fatalf("finish = %v raw %q, want other/incomplete", fin.FinishReason, fin.RawFinishReason)
 	}
 }
+
+// TS enqueues reasoning-start, then reasoning-end when an encrypted reasoning
+// item completes without summary events.
+func TestXAIResponsesStreamEncryptedReasoningStartsBeforeEnd(t *testing.T) {
+	chunks := drainXAIResponses(t, `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[],"status":"completed","encrypted_content":"enc"}}
+
+data: {"type":"response.completed","response":{"object":"response","output":[],"status":"completed"}}
+
+`)
+	got := strings.Join(xaiChunkTypes(chunks), ",")
+	if got != "reasoning-start,reasoning-end,finish" {
+		t.Fatalf("chunks = %s", got)
+	}
+}
+
+// TS handles a function_call that only appears on output_item.done.
+func TestXAIResponsesStreamFunctionCallDoneWithoutAdded(t *testing.T) {
+	chunks := drainXAIResponses(t, `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_1","call_id":"c1","name":"f","arguments":"{\"a\":1}"}}
+
+data: {"type":"response.completed","response":{"object":"response","output":[],"status":"completed"}}
+
+`)
+	got := strings.Join(xaiChunkTypes(chunks), ",")
+	if got != "tool-input-end,tool-call,finish" {
+		t.Fatalf("chunks = %s", got)
+	}
+	if chunks[2].FinishReason != types.FinishReasonToolCalls {
+		t.Fatalf("finish = %v, want tool-calls", chunks[2].FinishReason)
+	}
+}

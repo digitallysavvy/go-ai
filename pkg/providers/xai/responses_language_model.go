@@ -1661,13 +1661,18 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		s.queueMessageItem(e.Item)
 		return nil, false
 	}
+	// TS dispatches on the done item's own type, so an item that was never
+	// announced by output_item.added is still handled.
+	if doneType.Type != "" {
+		itemType = doneType.Type
+	}
 
 	switch itemType {
 	case "function_call":
 		s.hasFunctionCall = true
 		accum, ok := s.toolAccum[e.OutputIndex]
 		if !ok {
-			return nil, false
+			accum = &xaiResponsesToolAccum{}
 		}
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
@@ -1744,19 +1749,12 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 		// If no reasoning-start was emitted yet (encrypted reasoning path where
 		// reasoning_summary_part.added events are not sent), emit one now.
 		if _, started := s.activeReasoning[item.ID]; !started {
-			s.activeReasoning[item.ID] = struct{}{}
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:             provider.ChunkTypeReasoningEnd,
-				ID:               blockID,
-				ProviderMetadata: providerMeta,
-			})
-			delete(s.activeReasoning, item.ID)
 			startMeta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": item.ID}})
-			return s.emitParsedChunk(&provider.StreamChunk{
-				Type:             provider.ChunkTypeReasoningStart,
-				ID:               blockID,
-				ProviderMetadata: startMeta,
-			})
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: blockID, ProviderMetadata: startMeta},
+				&provider.StreamChunk{Type: provider.ChunkTypeReasoningEnd, ID: blockID, ProviderMetadata: providerMeta},
+			)
+			return nil, false
 		}
 
 		delete(s.activeReasoning, item.ID)
