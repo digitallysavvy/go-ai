@@ -197,3 +197,37 @@ func TestUpstreamErrorEndsStreamWithErrorChunk(t *testing.T) {
 		t.Fatalf("chunks=%v final=%q seen=%v", typesOf(chunks), finalText, seen)
 	}
 }
+
+// TS regex /^data:([^;]+);base64,(.+)$/ : `.` rejects line terminators, so a
+// base64 payload with a line break stays a plain url block.
+func TestImageDataURLWithLineBreakStaysURL(t *testing.T) {
+	block := canonicalImageBlockFromString("data:image/png;base64,AAAA\nBBBB", "image/png")
+	if block["url"] != "data:image/png;base64,AAAA\nBBBB" || block["data"] != nil {
+		t.Fatalf("block = %v", block)
+	}
+	block = canonicalImageBlockFromString("data:image/png;base64,AAAA", "image/png")
+	if block["data"] != "AAAA" || block["mimeType"] != "image/png" {
+		t.Fatalf("block = %v", block)
+	}
+}
+
+// TS: `actionRequest.args || actionRequest.arguments` and
+// `actionRequests || action_requests` fall through on falsy values.
+func TestInterruptFalsyArgsFallThrough(t *testing.T) {
+	got := run(t, StreamEvent{Mode: "values", Data: map[string]interface{}{
+		"__interrupt__": []interface{}{map[string]interface{}{"value": map[string]interface{}{
+			"actionRequests":  nil,
+			"action_requests": []interface{}{map[string]interface{}{"id": "c1", "name": "t", "args": nil, "arguments": map[string]interface{}{"a": 1.0}}},
+		}}},
+	}})
+	var input interface{}
+	for _, c := range got {
+		if c["type"] == "tool-input-available" {
+			input = c["input"]
+		}
+	}
+	m, ok := input.(map[string]interface{})
+	if !ok || m["a"] != 1.0 {
+		t.Fatalf("chunks = %v", got)
+	}
+}
