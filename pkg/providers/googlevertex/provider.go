@@ -319,7 +319,8 @@ func (p *Provider) loadProject() (string, error) {
 // is cached while the resolved project and location are unchanged.
 func (p *Provider) clients() (*vertexClients, error) {
 	cfg := p.config
-	baseURL := cfg.BaseURL
+	// TS withoutTrailingSlash(options.baseURL): one trailing slash is dropped.
+	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
 	var project, location string
 	var endpointBaseURL string
 
