@@ -294,7 +294,7 @@ func TestFileReporter_FailedToolMarksTurnErrored(t *testing.T) {
 	r.OnToolExecutionEnd(ctx, telemetry.TelemetryToolCallFinishEvent{CallID: "call-1", ToolCallID: "c1", Error: errors.New("exit 1")})
 	r.OnEnd(ctx, telemetry.TelemetryFinishEvent{CallID: "call-1"})
 	lines := readEventLines(t, dir)
-	if lines[2]["isError"] != true || lines[2]["output"].(map[string]any)["message"] != "exit 1" {
+	if lines[2]["isError"] != true || len(lines[2]["output"].(map[string]any)) != 0 {
 		t.Fatalf("tool-end = %v", lines[2])
 	}
 }
@@ -343,9 +343,14 @@ func TestFileReporter_RejectsBadOptions(t *testing.T) {
 	if _, err := NewFileReporter(FileReporterOptions{}); err == nil {
 		t.Fatal("empty Dir accepted")
 	}
+	// TS does not validate fileName (`${dir}/${fileName}`).
 	for _, name := range []string{"../escape.jsonl", "a/b.jsonl", "/abs.jsonl", "..", `a\b.jsonl`} {
-		if _, err := NewFileReporter(FileReporterOptions{Dir: dir, FileName: name}); err == nil {
-			t.Fatalf("FileName %q accepted", name)
+		r, err := NewFileReporter(FileReporterOptions{Dir: dir, FileName: name})
+		if err != nil {
+			t.Fatalf("FileName %q rejected: %v", name, err)
+		}
+		if want := dir + "/" + name; r.Path() != want {
+			t.Fatalf("Path() = %q, want %q", r.Path(), want)
 		}
 	}
 }
@@ -612,7 +617,7 @@ func TestFileReporter_StepFinishOutputIncludesToolResults(t *testing.T) {
 		t.Fatalf("tool-result = %v", res)
 	}
 	te := out[2].(map[string]any)
-	if te["type"] != "tool-error" || te["error"].(map[string]any)["message"] != "exit 1" {
+	if te["type"] != "tool-error" || len(te["error"].(map[string]any)) != 0 {
 		t.Fatalf("tool-error = %v", te)
 	}
 }
