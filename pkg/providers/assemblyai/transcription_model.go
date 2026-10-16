@@ -278,6 +278,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	// Step 2: Submit transcription job.
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, warnings := m.buildRequestBody(opts)
 	body["audio_url"] = uploadResult.UploadURL
 
@@ -438,6 +441,9 @@ func durationValue(duration *float64) float64 {
 // handleError converts an HTTP error into a ProviderError, parsing
 // AssemblyAI's `{"error":{"message","code"}}` error shape when present.
 func (m *TranscriptionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		var payload struct {

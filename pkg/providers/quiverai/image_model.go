@@ -502,6 +502,9 @@ func quiverWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
 }
 
 func (m *ImageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
 		var apiErr quiverAPIError
 		if json.Unmarshal(statusErr.Body, &apiErr) == nil && apiErr.Message != "" {

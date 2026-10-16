@@ -23,6 +23,9 @@ type cartesiaErrorPayload struct {
 // Cartesia's error envelope when present. Matches the TypeScript SDK's
 // `${title}: ${message}` message format.
 func handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		var payload cartesiaErrorPayload

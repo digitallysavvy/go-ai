@@ -37,6 +37,7 @@ func (m *LanguageModel) delegate() *openai.LanguageModel {
 		}
 		chatProvider := openai.New(openai.Config{
 			Name:             "azure",
+			HeadersFunc:      p.openaiHeadersFunc,
 			BaseURL:          p.responsesBaseURL(m.deploymentID),
 			Headers:          p.staticAuthHeaders(),
 			ChatProviderName: "azure.chat",

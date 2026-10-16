@@ -145,6 +145,11 @@ func deepgramQueryStringValue(value interface{}) string {
 
 // DoTranscribe performs speech-to-text transcription
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+	if opts != nil {
+		if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+			return nil, err
+		}
+	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
@@ -158,6 +163,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			"Content-Type": opts.MimeType,
 		}),
 		Query: query,
+		// TS createJsonResponseHandler(deepgramTranscriptionResponseSchema).
+		ValidateResponse: validateTranscriptionResponse,
 	}
 
 	var response deepgramTranscriptionResponse

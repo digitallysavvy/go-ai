@@ -43,6 +43,10 @@ func New(cfg Config) *Provider {
 			"Authorization": cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("assemblyai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ASSEMBLYAI_API_KEY", "AssemblyAI", "Authorization", "")
+		},
 	})
 
 	return &Provider{

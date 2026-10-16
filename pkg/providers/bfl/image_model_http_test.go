@@ -3,6 +3,7 @@ package bfl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func TestBFLImageModel_MetadataAndClient(t *testing.T) {
@@ -361,7 +363,7 @@ func TestBFLImageModel_DoGenerateErrorPaths(t *testing.T) {
 			case "/flux-pro":
 				_, _ = w.Write([]byte(`{"id":"req-2","polling_url":"http://` + r.Host + `/get_result"}`))
 			case "/get_result":
-				_, _ = w.Write([]byte(`{"id":"req-2","status":"Failed","result":{}}`))
+				_, _ = w.Write([]byte(`{"id":"req-2","status":"Failed","result":null}`))
 			default:
 				http.NotFound(w, r)
 			}
@@ -388,7 +390,7 @@ func TestBFLImageModel_SubmitResponseRequiresPollingURL(t *testing.T) {
 	p := New(Config{APIKey: "k", BaseURL: server.URL})
 	m := NewImageModel(p, "flux-pro")
 	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
-	if err == nil || !strings.Contains(err.Error(), "missing polling_url") {
+	if err == nil || !strings.Contains(err.Error(), "Invalid JSON response") || !strings.Contains(err.Error(), "polling_url") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -536,6 +538,36 @@ func TestBFLImageModel_DownloadCredentialPolicy(t *testing.T) {
 			}
 			if !tc.wantCreds && !strings.Contains(got.Get("User-Agent"), "black-forest-labs") {
 				t.Fatalf("expected SDK user agent, got %q", got.Get("User-Agent"))
+			}
+		})
+	}
+}
+
+func TestBFLImageModel_PollBodyIsValidatedLikeBflPollSchema(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, poll string }{
+		{"unknown status", `{"status":"Queued"}`},
+		{"missing status and state", `{"details":{}}`},
+		{"ready sample not a url", `{"status":"Ready","result":{"sample":"not a url"}}`},
+		{"ready without sample", `{"status":"Ready","result":{"seed":1}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/flux-pro":
+					_, _ = w.Write([]byte(`{"id":"req","polling_url":"http://` + r.Host + `/get_result"}`))
+				default:
+					_, _ = w.Write([]byte(tc.poll))
+				}
+			}))
+			defer server.Close()
+
+			p := New(Config{APIKey: "k", BaseURL: server.URL})
+			_, err := NewImageModel(p, "flux-pro").DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+			var pe *providerrors.ProviderError
+			if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" {
+				t.Fatalf("error = %v, want ProviderError \"Invalid JSON response\"", err)
 			}
 		})
 	}

@@ -311,6 +311,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // handleError converts an HTTP-level error into a ProviderError, resolving
 // the Agent API's error envelope when present (see errors.go).
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	if parsed := parsePerplexityHTTPError(err); parsed != nil {
 		if pe, ok := parsed.(*providererrors.ProviderError); ok {
 			return pe

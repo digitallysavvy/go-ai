@@ -2,6 +2,7 @@ package xai
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 	"strings"
 
@@ -61,6 +62,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("xai")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "XAI_API_KEY", "xAI API key", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

@@ -154,6 +154,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if opts == nil {
 		opts = &provider.ImageGenerateOptions{}
 	}
+	if err := validateImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	reqBody, warnings, prefer, err := m.buildRequest(opts)
 	if err != nil {
 		return nil, err
@@ -175,6 +178,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		Path:    path,
 		Body:    reqBody,
 		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"Prefer": prefer}),
+		// TS createJsonResponseHandler(replicateImageResponseSchema).
+		ValidateResponse: validateImagePrediction,
 	}, &initial)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -203,6 +208,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 }
 
 func (m *ImageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
+		return err // TS throws these unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return replicateAPIError(statusErr.StatusCode, statusErr.Headers, statusErr.Body)
@@ -357,9 +365,17 @@ func (m *ImageModel) pollImagePrediction(ctx context.Context, prediction replica
 		}
 		dl := fileutil.TrustedOriginDownloadOptions(m.provider.baseURL(), m.provider.client.HTTPClient().Transport)
 		dl.Headers = m.provider.credentialedHeaders(pollURL, callHeaders)
-		var next replicateImagePrediction
-		if _, err := fileutil.PollJSON(ctx, pollURL, dl, &next); err != nil {
+		polled, err := fileutil.PollJSON(ctx, pollURL, dl, nil)
+		if err != nil {
 			return replicateImagePrediction{}, m.handlePollError(err)
+		}
+		// TS createJsonResponseHandler(replicateImageResponseSchema).
+		if err := validateImagePrediction(http.StatusOK, headersOf(polled.Headers), polled.Data); err != nil {
+			return replicateImagePrediction{}, err
+		}
+		var next replicateImagePrediction
+		if err := json.Unmarshal(polled.Data, &next); err != nil {
+			return replicateImagePrediction{}, fmt.Errorf("failed to decode status response: %w", err)
 		}
 		current = next
 

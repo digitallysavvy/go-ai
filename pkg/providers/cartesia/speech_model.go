@@ -148,6 +148,10 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
+	// TS getArgs parses the provider options before requiring a voice.
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	if opts.Voice == "" {
 		return nil, errors.New("cartesia: speech models require a `voice` to be set")
 	}

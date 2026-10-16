@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -143,7 +144,7 @@ func TestBuildRequestBodyAndConvertErrors(t *testing.T) {
 		t.Fatalf("fill image = %#v", fillBody["image"])
 	}
 
-	if _, err := m.convertResponse(t.Context(), bflResult{}, bflCreateResponse{}, nil, nil); err == nil {
+	if _, err := m.convertResponse(t.Context(), bflResult{}, bflCreateResponse{}, nil, nil, time.Now()); err == nil {
 		t.Fatal("convertResponse should fail on empty sample URL")
 	}
 }

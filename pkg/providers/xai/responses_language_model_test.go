@@ -380,11 +380,14 @@ func TestXAIResponsesReasoningExtractionDoGenerate(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_abc",
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_abc",
 			"output": []interface{}{
 				map[string]interface{}{
-					"type": "reasoning",
-					"id":   "rs_001",
+					"type":   "reasoning",
+					"id":     "rs_001",
+					"status": "completed",
 					"summary": []interface{}{
 						map[string]interface{}{"type": "summary_text", "text": "First reasoning part. "},
 						map[string]interface{}{"type": "summary_text", "text": "Second reasoning part."},
@@ -392,8 +395,10 @@ func TestXAIResponsesReasoningExtractionDoGenerate(t *testing.T) {
 					"encrypted_content": "encrypted-blob-xyz",
 				},
 				map[string]interface{}{
-					"type": "message",
-					"role": "assistant",
+					"type":   "message",
+					"id":     "msg_001",
+					"status": "completed",
+					"role":   "assistant",
 					"content": []interface{}{
 						map[string]interface{}{"type": "output_text", "text": "The answer is 42."},
 					},
@@ -468,6 +473,7 @@ func TestXAIResponsesDoGenerateCostInUsdTicksMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"object": "response",
 			"id":     "resp_cost",
 			"status": "completed",
 			"output": []interface{}{},
@@ -990,6 +996,7 @@ func TestXAIResponsesDoGenerateTokenCostMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"object": "response",
 			"id":     "resp_cost",
 			"status": "completed",
 			"output": []interface{}{},
@@ -1402,7 +1409,9 @@ func TestXAIResponsesServiceTier(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_test", "output": []interface{}{}, "service_tier": "priority",
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_test", "output": []interface{}{}, "service_tier": "priority",
 			"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 3},
 		})
 	}))
@@ -1485,7 +1494,9 @@ func TestXAIResponsesAdditionalRequestOptions(t *testing.T) {
 		json.NewDecoder(r.Body).Decode(&capturedBody) //nolint:errcheck
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_test", "output": []interface{}{},
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_test", "output": []interface{}{},
 			"usage": map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 		})
 	}))
@@ -1538,7 +1549,8 @@ func TestXAIResponsesEchoedRequestIdentifiers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_123", "status": "completed", "output": []interface{}{},
+			"object": "response",
+			"id":     "resp_123", "status": "completed", "output": []interface{}{},
 			"usage":             map[string]interface{}{"input_tokens": 10, "output_tokens": 5},
 			"prompt_cache_key":  "conversation-123",
 			"safety_identifier": "hashed-user-123",
@@ -1616,7 +1628,9 @@ func TestXAIResponsesFullRawUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
-			"id": "resp_test", "output": []interface{}{},
+			"object": "response",
+			"status": "completed",
+			"id":     "resp_test", "output": []interface{}{},
 			"usage": map[string]interface{}{
 				"input_tokens": 5, "output_tokens": 3, "total_tokens": 8,
 				"num_sources_used": 2, "num_server_side_tools_used": 1,

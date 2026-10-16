@@ -2,6 +2,7 @@ package perplexity
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 	"strings"
 
@@ -52,6 +53,10 @@ func New(cfg Config) *Provider {
 			"Content-Type":       "application/json",
 			"X-Pplx-Integration": "vercel-ai-sdk",
 		}, cfg.Headers), version.ProviderUserAgent("perplexity")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "PERPLEXITY_API_KEY", "Perplexity", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

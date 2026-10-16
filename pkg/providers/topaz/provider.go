@@ -13,6 +13,7 @@ package topaz
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -79,6 +80,10 @@ func New(cfg Config) *Provider {
 	client := internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: headers,
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "TOPAZ_API_KEY", "Topaz Labs", "X-API-Key", "")
+		},
 	})
 
 	return &Provider{

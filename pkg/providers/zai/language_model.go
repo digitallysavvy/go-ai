@@ -80,10 +80,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	var response zaiResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  stdhttp.MethodPost,
-		Path:    "/chat/completions",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		Method:           stdhttp.MethodPost,
+		Path:             "/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
 	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -326,6 +327,12 @@ func (m *LanguageModel) convertResponse(response zaiResponse) *types.GenerateRes
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	if parsed := parseZaiProviderError(err); parsed != nil {
 		return parsed
 	}

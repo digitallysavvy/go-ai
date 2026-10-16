@@ -9,6 +9,7 @@ package huggingface
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	stdhttp "net/http"
 	"os"
 
@@ -74,6 +75,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + apiKey,
 		}, cfg.Headers),
 		HTTPClient: cfg.HTTPClient,
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, apiKey, "HUGGINGFACE_API_KEY", "Hugging Face", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

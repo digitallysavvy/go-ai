@@ -122,7 +122,7 @@ func TestChatStreamCompatReasoningAndUsageOptIn(t *testing.T) {
 }
 
 func TestChatGenerateMetadataReasoningSourcesAndToolID(t *testing.T) {
-	respJSON := `{"id":"c1","model":"m","created":1,"choices":[{"message":{"role":"assistant","content":"hi","reasoning_content":"why","annotations":[{"type":"url_citation","url_citation":{"start_index":0,"end_index":2,"url":"https://a.test","title":"A"}}],"tool_calls":[{"type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls","logprobs":{"content":[{"token":"hi"}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"completion_tokens_details":{"accepted_prediction_tokens":4}}}`
+	respJSON := `{"id":"c1","model":"m","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"hi","reasoning_content":"why","annotations":[{"type":"url_citation","url_citation":{"start_index":0,"end_index":2,"url":"https://a.test","title":"A"}}],"tool_calls":[{"type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls","logprobs":{"content":[{"token":"hi","logprob":0,"top_logprobs":[]}]}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"completion_tokens_details":{"accepted_prediction_tokens":4}}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(respJSON))

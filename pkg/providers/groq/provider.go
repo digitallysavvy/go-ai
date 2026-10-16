@@ -42,6 +42,10 @@ func New(cfg Config) *Provider {
 			"Authorization": "Bearer " + cfg.APIKey,
 			"Content-Type":  "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("groq")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "GROQ_API_KEY", "Groq", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

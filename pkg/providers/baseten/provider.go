@@ -81,12 +81,14 @@ func New(cfg Config) *Provider {
 
 	structuredOutputs := true
 	chatProvider := openai.New(openai.Config{
-		APIKey:           apiKey,
-		BaseURL:          chatBaseURL,
-		Headers:          cfg.Headers,
-		HTTPClient:       cfg.HTTPClient,
-		Name:             "baseten",
-		ChatProviderName: "baseten.chat",
+		APIKey:            apiKey,
+		APIKeyEnvVar:      "BASETEN_API_KEY",
+		APIKeyDescription: "Baseten API key",
+		BaseURL:           chatBaseURL,
+		Headers:           cfg.Headers,
+		HTTPClient:        cfg.HTTPClient,
+		Name:              "baseten",
+		ChatProviderName:  "baseten.chat",
 		// TS createChatModel builds an OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:                true,
@@ -103,14 +105,16 @@ func New(cfg Config) *Provider {
 
 	if cfg.ModelURL != "" && strings.Contains(cfg.ModelURL, "/sync") {
 		p.embedding = openai.New(openai.Config{
-			APIKey:           apiKey,
-			BaseURL:          basetenEmbeddingURL(cfg.ModelURL),
-			Headers:          cfg.Headers,
-			HTTPClient:       cfg.HTTPClient,
-			Name:             "baseten",
-			OpenAICompatible: true,
-			IncludeUsage:     true,
-			UserAgentName:    "baseten",
+			APIKey:            apiKey,
+			APIKeyEnvVar:      "BASETEN_API_KEY",
+			APIKeyDescription: "Baseten API key",
+			BaseURL:           basetenEmbeddingURL(cfg.ModelURL),
+			Headers:           cfg.Headers,
+			HTTPClient:        cfg.HTTPClient,
+			Name:              "baseten",
+			OpenAICompatible:  true,
+			IncludeUsage:      true,
+			UserAgentName:     "baseten",
 		})
 	}
 

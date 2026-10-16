@@ -287,6 +287,9 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 // handleError mirrors openaiFailedResponseHandler: an HTTP error keeps its
 // status code (so 408/409/429/5xx retry) and uses the OpenAI error message.
 func (m *DecisionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)

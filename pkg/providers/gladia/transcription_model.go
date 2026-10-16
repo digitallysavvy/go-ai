@@ -208,6 +208,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	}
 
 	// Step 2: start a pre-recorded transcription job.
+	if err := validateOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body := buildRequestBody(extractOptions(opts.ProviderOptions))
 	body["audio_url"] = uploadResult.AudioURL
 
@@ -263,7 +266,7 @@ func gladiaAudioExtension(mimeType string) string {
 func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"x-gladia-key": m.provider.config.APIKey}, m.provider.config.Headers, headers)
+	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"x-gladia-key": providerutils.APIKeyOrEnv(m.provider.config.APIKey, "GLADIA_API_KEY")}, m.provider.config.Headers, headers)
 
 	start := time.Now()
 	for {
@@ -396,6 +399,9 @@ func convertPollResult(raw map[string]interface{}, headers map[string]string, cu
 // gladia-transcription-model.ts uses the same gladiaFailedResponseHandler for
 // both the upload/init requests and the result_url polling GET).
 func handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message, code := parseGladiaErrorBody(statusErr.Body)

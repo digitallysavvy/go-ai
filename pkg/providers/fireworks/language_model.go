@@ -70,10 +70,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
 	var response fireworksResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/chat/completions",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		Method:           http.MethodPost,
+		Path:             "/v1/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindOpenAICompatible),
 	}, &streaming.OpenAICompatChatDecoder{Target: &response})
 	if err != nil {
 		return nil, m.handleError(err)
@@ -325,6 +326,12 @@ func (m *LanguageModel) convertResponse(response fireworksResponse) *types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	if parsed := parseFireworksProviderError(err); parsed != nil {
 		return parsed
 	}

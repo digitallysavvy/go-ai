@@ -210,6 +210,9 @@ func (m *LanguageModel) convertResponse(response ollamaResponse) *types.Generate
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError("ollama", 0, "", err.Error(), err)
 }
 

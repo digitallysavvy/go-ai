@@ -22,6 +22,7 @@ func TestXAIResponsesDoGenerateRawFinishReason(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"object": "response",
 			"id":     "resp_1",
 			"status": "incomplete",
 			"incomplete_details": map[string]interface{}{

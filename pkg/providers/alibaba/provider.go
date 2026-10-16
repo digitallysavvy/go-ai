@@ -2,6 +2,7 @@ package alibaba
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -44,20 +45,28 @@ func New(cfg Config) *Provider {
 		"Content-Type":  "application/json",
 	}, cfg.Headers), version.ProviderUserAgent("alibaba"))
 
+	// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+	headersFunc := func() (map[string]string, error) {
+		return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "ALIBABA_API_KEY", "Alibaba Cloud (DashScope)", "Authorization", "Bearer ")
+	}
+
 	// Create HTTP client for chat API
 	client := http.NewClient(http.Config{
-		BaseURL: baseURL,
-		Headers: headers,
+		BaseURL:     baseURL,
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 
 	// Create HTTP client for video API
 	videoClient := http.NewClient(http.Config{
-		BaseURL: videoBaseURL,
-		Headers: headers,
+		BaseURL:     videoBaseURL,
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 	embeddingClient := http.NewClient(http.Config{
-		BaseURL: embeddingBaseURL,
-		Headers: headers,
+		BaseURL:     embeddingBaseURL,
+		Headers:     headers,
+		HeadersFunc: headersFunc,
 	})
 
 	return &Provider{

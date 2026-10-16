@@ -736,6 +736,9 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 // handleError converts an HTTPStatusError carrying the DashScope error
 // envelope ({code, message, request_id}) into a provider error.
 func (m *VideoModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var httpErr *internalhttp.HTTPStatusError
 	if statusErr, ok := err.(*internalhttp.HTTPStatusError); ok {
 		httpErr = statusErr

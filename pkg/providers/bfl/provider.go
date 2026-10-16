@@ -2,6 +2,7 @@ package bfl
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -51,6 +52,10 @@ func New(cfg Config) *Provider {
 			"X-Key":        cfg.APIKey,
 			"Content-Type": "application/json",
 		}, cfg.Headers), version.ProviderUserAgent("black-forest-labs")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "BFL_API_KEY", "Black Forest Labs", "X-Key", "")
+		},
 	})
 
 	return &Provider{

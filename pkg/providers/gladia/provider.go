@@ -43,6 +43,10 @@ func New(config Config) *Provider {
 		Headers: version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{
 			"x-gladia-key": config.APIKey,
 		}, config.Headers), version.ProviderUserAgent("gladia")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "GLADIA_API_KEY", "Gladia", "x-gladia-key", "")
+		},
 	})
 
 	return &Provider{

@@ -56,12 +56,23 @@ type Config struct {
 
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *stdhttp.Client `json:"-"`
+
+	// NoAPIKey marks a wrapper that authenticates through its own Headers or
+	// HTTP transport (Azure-hosted DeepSeek): no API key is loaded or required
+	// and DEEPSEEK_API_KEY is never forwarded.
+	NoAPIKey bool
+
+	// HeadersFunc, when set on a NoAPIKey wrapper, resolves its credential
+	// headers for every request (Azure api-key). An error fails the request.
+	HeadersFunc func() (map[string]string, error) `json:"-"`
 }
 
 // New creates a new Deepseek provider with the given configuration
 func New(cfg Config) *Provider {
 	// TS loadApiKey: the key defaults to the DEEPSEEK_API_KEY environment variable.
-	cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "DEEPSEEK_API_KEY")
+	if !cfg.NoAPIKey {
+		cfg.APIKey = providerutils.APIKeyOrEnv(cfg.APIKey, "DEEPSEEK_API_KEY")
+	}
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://api.deepseek.com"
@@ -82,11 +93,20 @@ func New(cfg Config) *Provider {
 		mergedHeaders = version.WithUserAgentSuffix(mergedHeaders, version.ProviderUserAgent("deepseek"))
 	}
 
-	client := http.NewClient(http.Config{
+	clientCfg := http.Config{
 		BaseURL:    baseURL,
 		Headers:    mergedHeaders,
 		HTTPClient: cfg.HTTPClient,
-	})
+	}
+	if cfg.NoAPIKey {
+		clientCfg.HeadersFunc = cfg.HeadersFunc
+	} else {
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		clientCfg.HeadersFunc = func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "DEEPSEEK_API_KEY", "DeepSeek API key", "Authorization", "Bearer ")
+		}
+	}
+	client := http.NewClient(clientCfg)
 
 	return &Provider{
 		config:  cfg,

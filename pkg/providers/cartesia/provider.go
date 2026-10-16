@@ -10,6 +10,7 @@ package cartesia
 
 import (
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -63,6 +64,10 @@ func New(config Config) *Provider {
 			"Authorization":    "Bearer " + config.APIKey,
 			"Cartesia-Version": config.APIVersion,
 		}, config.Headers), version.ProviderUserAgent("cartesia")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(config.Headers, config.APIKey, "CARTESIA_API_KEY", "Cartesia", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

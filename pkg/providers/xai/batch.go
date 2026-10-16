@@ -346,6 +346,9 @@ func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[s
 }
 
 func (b *Batch) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return newXAIProviderError(b.Provider(), statusErr.StatusCode, statusErr.Body)

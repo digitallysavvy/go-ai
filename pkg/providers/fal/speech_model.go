@@ -108,6 +108,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	if opts == nil {
 		opts = &provider.SpeechGenerateOptions{}
 	}
+	if err := validateSpeechOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, warnings := m.buildRequestBody(opts)
 	currentDate := time.Now()
 
@@ -161,6 +164,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 }
 
 func (m *SpeechModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))

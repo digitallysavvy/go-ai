@@ -56,9 +56,11 @@ func New(cfg Config) *Provider {
 
 	structuredOutputs := true
 	openaiProvider := openai.New(openai.Config{
-		APIKey:  cfg.APIKey,
-		BaseURL: baseURL,
-		Headers: cfg.Headers,
+		APIKey:            cfg.APIKey,
+		APIKeyEnvVar:      "DEEPINFRA_API_KEY",
+		APIKeyDescription: "DeepInfra's API key",
+		BaseURL:           baseURL,
+		Headers:           cfg.Headers,
 		// TS provider ids deepinfra.chat / .completion / .embedding: the
 		// name keys providerOptions and providerMetadata.
 		Name: "deepinfra",
@@ -128,5 +130,9 @@ func (p *Provider) imageClient(baseURL string) *internalhttp.Client {
 	return internalhttp.NewClient(internalhttp.Config{
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(p.requestHeaders(), version.ProviderUserAgent("deepinfra")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(p.headers, p.apiKey, "DEEPINFRA_API_KEY", "DeepInfra's API key", "Authorization", "Bearer ")
+		},
 	})
 }

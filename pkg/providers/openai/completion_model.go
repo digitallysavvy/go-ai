@@ -47,11 +47,12 @@ func (m *CompletionModel) DoGenerate(ctx context.Context, opts *provider.Generat
 
 	var response openAICompletionResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/completions",
-		Query:   m.provider.completionQuery(),
-		Body:    body,
-		Headers: opts.Headers,
+		Method:           http.MethodPost,
+		Path:             "/completions",
+		Query:            m.provider.completionQuery(),
+		Body:             body,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), m.responseKind()),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -369,6 +370,12 @@ func completionResponseMetadata(id string, created *int64, model string, headers
 }
 
 func (m *CompletionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError(m.Provider(), 0, "", err.Error(), err)
 }
 
@@ -652,3 +659,13 @@ type openAICompletionChunkChoice struct {
 }
 
 var _ provider.LanguageModel = (*CompletionModel)(nil)
+
+// responseKind selects the TS response schema of a non-streaming completion
+// call: openaiCompletionResponseSchema, or
+// openaiCompatibleCompletionResponseSchema for the openai-compatible wrappers.
+func (m *CompletionModel) responseKind() providerutils.ChatResponseKind {
+	if m.provider.config.OpenAICompatible {
+		return providerutils.ResponseKindCompatCompletion
+	}
+	return providerutils.ResponseKindOpenAICompletion
+}

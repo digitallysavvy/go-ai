@@ -155,6 +155,9 @@ func (m *RerankingModel) convertResponse(response cohereRerankResponse) *types.R
 
 // handleError converts various errors to provider errors
 func (m *RerankingModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	return providererrors.NewProviderError("cohere", 0, "", err.Error(), err)
 }
 

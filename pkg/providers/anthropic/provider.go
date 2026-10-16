@@ -150,6 +150,15 @@ type Config struct {
 	// client appends downstream. pkg/providers/googlevertex/anthropic sets
 	// this to match.
 	NoUserAgentTag bool `json:"noUserAgentTag,omitempty"`
+
+	// APIKeyEnvVar makes a wrapper provider (UserAgentName/NoUserAgentTag set)
+	// load its key at request time like TS loadApiKey: APIKey, else this
+	// environment variable, else a LoadAPIKeyError. Empty keeps the wrapper's
+	// own credentials untouched (anthropicaws, Vertex, Bedrock).
+	APIKeyEnvVar string `json:"-"`
+
+	// APIKeyDescription names the wrapper in the LoadAPIKeyError message.
+	APIKeyDescription string `json:"-"`
 }
 
 // DefaultSupportedURLs returns the URL patterns the direct Anthropic API and
@@ -241,15 +250,22 @@ func authHeadersFor(cfg Config) map[string]string {
 // set), AuthToken users and callers that authenticate through explicit
 // Config.Headers (x-api-key or Authorization) keep their own credentials.
 func requestAuthHeaders(cfg Config) (map[string]string, error) {
-	if cfg.AuthToken != "" || cfg.UserAgentName != "" || cfg.NoUserAgentTag {
+	if cfg.AuthToken != "" {
 		return nil, nil
+	}
+	envVar, description := "ANTHROPIC_API_KEY", "Anthropic"
+	if cfg.UserAgentName != "" || cfg.NoUserAgentTag {
+		if cfg.APIKeyEnvVar == "" {
+			return nil, nil
+		}
+		envVar, description = cfg.APIKeyEnvVar, cfg.APIKeyDescription
 	}
 	for k := range cfg.Headers {
 		if strings.EqualFold(k, "x-api-key") || strings.EqualFold(k, "authorization") {
 			return nil, nil
 		}
 	}
-	apiKey, err := providerutils.LoadAPIKey(cfg.APIKey, "ANTHROPIC_API_KEY", "Anthropic")
+	apiKey, err := providerutils.LoadAPIKey(cfg.APIKey, envVar, description)
 	if err != nil {
 		return nil, err
 	}

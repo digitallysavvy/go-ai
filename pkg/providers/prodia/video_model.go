@@ -98,7 +98,10 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	}
 
 	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	apiKey := m.prov.effectiveAPIKey()
+	apiKey, err := m.prov.effectiveAPIKey()
+	if err != nil {
+		return nil, err
+	}
 
 	var (
 		respBodyBytes []byte

@@ -85,10 +85,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	var response deepseekResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    m.provider.chatCompletionsPath(),
-		Body:    reqBody,
-		Headers: opts.Headers,
+		Method:           http.MethodPost,
+		Path:             m.provider.chatCompletionsPath(),
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindDeepSeek),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -535,6 +536,12 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError("deepseek", 0, "", err.Error(), err)
 }
 

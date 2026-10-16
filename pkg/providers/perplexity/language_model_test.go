@@ -140,7 +140,7 @@ func TestPerplexityDoGenerate_PresetRequest(t *testing.T) {
 func TestPerplexityDoGenerate_DirectModelID(t *testing.T) {
 	var captured map[string]interface{}
 	srv, _ := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, &captured))
-	prov := New(Config{BaseURL: srv.URL})
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key"})
 	model := NewLanguageModel(prov, "openai/gpt-5.1")
 
 	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}})
@@ -159,7 +159,7 @@ func TestPerplexityDoGenerate_DirectModelID(t *testing.T) {
 func TestPerplexityDoGenerate_LegacySonarModelIsNotAPreset(t *testing.T) {
 	var captured map[string]interface{}
 	srv, _ := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, &captured))
-	prov := New(Config{BaseURL: srv.URL})
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key"})
 	model := NewLanguageModel(prov, "sonar-pro")
 
 	result, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}})
@@ -631,7 +631,7 @@ func TestPerplexityDoGenerate_HeadersRoundTrip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prov := New(Config{BaseURL: srv.URL, Headers: map[string]string{"Custom-Provider-Header": "provider-value"}})
+	prov := New(Config{BaseURL: srv.URL, APIKey: "test-key", Headers: map[string]string{"Custom-Provider-Header": "provider-value"}})
 	model := NewLanguageModel(prov, "fast")
 
 	result, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{

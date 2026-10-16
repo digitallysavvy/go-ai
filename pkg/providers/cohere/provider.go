@@ -51,6 +51,10 @@ func New(cfg Config) *Provider {
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
 		Headers: version.WithUserAgentSuffix(http.MergeHeaders(headers, cfg.Headers), version.ProviderUserAgent("cohere")),
+		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
+		HeadersFunc: func() (map[string]string, error) {
+			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "COHERE_API_KEY", "Cohere", "Authorization", "Bearer ")
+		},
 	})
 
 	return &Provider{

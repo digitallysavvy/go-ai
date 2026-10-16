@@ -22,7 +22,7 @@ func TestRawSchemaKeepsPropertyOrderOnWire(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		rawBody = string(b)
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})
@@ -67,7 +67,7 @@ func TestOrderedSchemaKeepsPropertyOrderOnWire(t *testing.T) {
 				b, _ := io.ReadAll(r.Body)
 				rawBody = string(b)
 				if kind == "chat" {
-					_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}]}`))
+					_, _ = w.Write([]byte(`{"choices":[{"index":0,"message":{"role":"assistant","content":"{}"},"finish_reason":"stop"}]}`))
 				} else {
 					_, _ = w.Write([]byte(`{"id":"r","output":[],"status":"completed"}`))
 				}

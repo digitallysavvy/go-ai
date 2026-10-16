@@ -165,6 +165,11 @@ type Request struct {
 	Headers map[string]string
 	Body    interface{}
 	Query   map[string]string
+
+	// ValidateResponse, when set, checks a successful (non-error status) body
+	// in DoJSONResponse before it is decoded: TS createJsonResponseHandler
+	// (response schema). Its error is returned as is.
+	ValidateResponse func(statusCode int, headers http.Header, body []byte) error
 }
 
 // Response represents an HTTP response
@@ -216,11 +221,39 @@ func (c *Client) requestDefaults() (string, map[string]string, error) {
 		if err != nil {
 			return "", nil, err
 		}
-		for k, v := range extra {
-			headers[k] = v
-		}
+		overlayHeaders(headers, extra)
 	}
 	return baseURL, headers, nil
+}
+
+// overlayHeaders layers extra over headers. HTTP header names are
+// case-insensitive, so an existing entry that differs only in case (the
+// providers' tagged static headers are lower-cased) takes the new value under
+// its own spelling instead of keeping both, where map order would pick the
+// winner.
+func overlayHeaders(headers, extra map[string]string) {
+	for k, v := range extra {
+		keep := k
+		if _, exact := headers[k]; !exact {
+			// Keep the lexicographically first spelling already present so the
+			// result does not depend on map order.
+			first := ""
+			for existing := range headers {
+				if strings.EqualFold(existing, k) && (first == "" || existing < first) {
+					first = existing
+				}
+			}
+			if first != "" {
+				keep = first
+			}
+		}
+		for existing := range headers {
+			if existing != keep && strings.EqualFold(existing, k) {
+				delete(headers, existing)
+			}
+		}
+		headers[keep] = v
+	}
 }
 
 func (c *Client) snapshot() (string, map[string]string) {
@@ -359,6 +392,11 @@ func (c *Client) DoJSONResponse(ctx context.Context, req Request, result interfa
 			StatusCode: resp.StatusCode,
 			Headers:    resp.Headers,
 			Body:       resp.Body,
+		}
+	}
+	if req.ValidateResponse != nil {
+		if err := req.ValidateResponse(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return nil, err
 		}
 	}
 	if err := json.Unmarshal(resp.Body, result); err != nil {
@@ -508,12 +546,21 @@ func (c *Client) SetHeader(key, value string) {
 // merged in at construction). Used by callers that need to authenticate a
 // non-HTTP connection (e.g. a WebSocket handshake) the same way the client
 // authenticates its own requests.
+//
+// Request-time headers from Config.HeadersFunc (a lazily loaded API key) are
+// layered over the defaults. When that function fails (a missing key) the
+// defaults are returned as configured; Do and DoStream surface the error.
 func (c *Client) Headers() map[string]string {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	out := make(map[string]string, len(c.headers))
 	for k, v := range c.headers {
 		out[k] = v
+	}
+	c.mu.RUnlock()
+	if c.headersFunc != nil {
+		if extra, err := c.headersFunc(); err == nil {
+			overlayHeaders(out, extra)
+		}
 	}
 	return out
 }

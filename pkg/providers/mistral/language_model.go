@@ -136,10 +136,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	reqBody := m.buildRequestBody(opts, false)
 	var response mistralResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/v1/chat/completions",
-		Body:    reqBody,
-		Headers: opts.Headers,
+		Method:           http.MethodPost,
+		Path:             "/v1/chat/completions",
+		Body:             reqBody,
+		Headers:          opts.Headers,
+		ValidateResponse: providerutils.ChatResponseValidator(m.Provider(), providerutils.ResponseKindMistral),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -392,6 +393,12 @@ func (m *LanguageModel) convertResponse(response mistralResponse) *types.Generat
 }
 
 func (m *LanguageModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure
+	}
 	return providererrors.NewProviderError("mistral", 0, "", err.Error(), err)
 }
 

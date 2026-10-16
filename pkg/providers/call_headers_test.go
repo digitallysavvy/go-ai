@@ -118,7 +118,7 @@ func TestLanguageModelsForwardPerCallHeaders(t *testing.T) {
 // TestGenerateResponseMetadataAndHeaders: TS returns response {id, timestamp,
 // modelId, headers} from doGenerate for the Responses-style and Cohere models.
 func TestGenerateResponseMetadataAndHeaders(t *testing.T) {
-	respBody := `{"id":"resp_1","created_at":1700000000,"model":"model-x","status":"completed","output":[],"generation_id":"gen_1","message":{"role":"assistant","content":[]},"finish_reason":"COMPLETE","usage":{}}`
+	respBody := `{"id":"resp_1","object":"response","created_at":1700000000,"model":"model-x","status":"completed","output":[],"generation_id":"gen_1","message":{"role":"assistant","content":[]},"finish_reason":"COMPLETE","usage":{"input_tokens":0,"output_tokens":0,"tokens":{"input_tokens":0,"output_tokens":0}}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Resp", "hdr")

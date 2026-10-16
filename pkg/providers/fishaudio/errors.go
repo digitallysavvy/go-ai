@@ -20,6 +20,9 @@ type fishAudioErrorPayload struct {
 // handleError converts an HTTP error into a ProviderError, parsing Fish
 // Audio's `{"status","message"}` error shape when present.
 func handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		var payload fishAudioErrorPayload

@@ -119,6 +119,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 
 func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOptions) (*bytes.Buffer, string, []types.Warning, error) {
 	warnings := []types.Warning{}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, "", nil, err
+	}
 	cartesiaOpts := extractTranscriptionModelOptions(opts.ProviderOptions)
 
 	if cartesiaOpts != nil && cartesiaOpts.Streaming != nil {

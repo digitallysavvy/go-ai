@@ -562,7 +562,7 @@ func TestResponsesModelMatchesAzureResponsesRequest(t *testing.T) {
 			"id":"resp_123",
 			"model":"test-deployment",
 			"created_at":123,
-			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]}],
 			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
 		}`))
 	}))
@@ -650,7 +650,7 @@ func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"id":"resp_123",
 			"model":"test-deployment",
-			"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],
+			"output":[{"type":"message","id":"msg_123","role":"assistant","content":[{"type":"output_text","text":"done","annotations":[]}]}],
 			"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}
 		}`))
 	}))
@@ -674,3 +674,36 @@ func TestResponsesModelUseDeploymentBasedURLs(t *testing.T) {
 }
 
 var _ = types.Warning{} // keep types import in this test package for parity compile coverage
+
+// Security: the Azure DeepSeek model authenticates with the Azure key only;
+// DEEPSEEK_API_KEY from the environment must never reach Azure.
+func TestDeepSeekModelNeverSendsDeepSeekEnvKey(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+	p := mustNewProvider(t, Config{
+		APIKey:     "azure-key",
+		BaseURL:    "https://test-resource.openai.azure.com/openai",
+		APIVersion: "v1",
+		HTTPClient: &http.Client{Transport: azureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			for name, values := range r.Header {
+				for _, v := range values {
+					if strings.Contains(v, "deepseek-secret") {
+						t.Fatalf("DEEPSEEK_API_KEY leaked in header %s", name)
+					}
+				}
+			}
+			return azureJSONResponse(200, `{
+				"id":"chatcmpl-azure-deepseek",
+				"model":"deepseek-v4-pro",
+				"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],
+				"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+			}`, nil), nil
+		})},
+	})
+	model, err := p.DeepSeekModel("deepseek-v4-pro")
+	if err != nil {
+		t.Fatalf("DeepSeekModel: %v", err)
+	}
+	if _, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "Hello"}}); err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+}

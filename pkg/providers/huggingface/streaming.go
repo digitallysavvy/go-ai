@@ -335,7 +335,7 @@ func createHFStreamError(raw map[string]interface{}, providerName string) *provi
 		return nil
 	}
 	message, ok := details["message"].(string)
-	if !ok || message == "" {
+	if !ok { // TS typeof details.message !== 'string'; an empty message is still an error
 		return nil
 	}
 

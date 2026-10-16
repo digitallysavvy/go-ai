@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"math"
 	"net/http"
 	"net/url"
@@ -190,6 +191,9 @@ func getDraftEnhanceArgs(opts *provider.VideoModelV3CallOptions, bflOpts *VideoM
 // BlackForestLabsVideoModel#getArgs).
 func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, []types.Warning, error) {
 	var warnings []types.Warning
+	if err := validateBFLVideoOptions(opts.ProviderOptions); err != nil {
+		return nil, nil, err
+	}
 	bflOpts := parseVideoModelOptions(opts.ProviderOptions)
 
 	if bflOpts != nil && bflOpts.DraftCache != nil {
@@ -471,6 +475,8 @@ func (m *VideoModel) buildVideoArgs(opts *provider.VideoModelV3CallOptions) (map
 // DoStart submits a FLUX 3 video generation request and returns an opaque
 // operation reference (TS BlackForestLabsVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	// TS: the response timestamp is taken before the request is sent.
+	currentDate := time.Now()
 	body, warnings, err := m.buildVideoArgs(&opts.VideoModelV3CallOptions)
 	if err != nil {
 		return nil, err
@@ -484,15 +490,13 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, resp.Headers, resp.Body)
 	}
 
+	// TS createJsonResponseHandler(bflVideoSubmitSchema).
+	if err := validateBFLSubmitBody(resp.Body); err != nil {
+		return nil, providerutils.InvalidJSONResponseError("bfl", resp.StatusCode, resp.Headers, resp.Body, err)
+	}
 	var submit bflVideoSubmitResponse
 	if err := json.Unmarshal(resp.Body, &submit); err != nil {
 		return nil, fmt.Errorf("failed to decode submit response: %w", err)
-	}
-	if submit.ID == "" || submit.PollingURL == "" {
-		return nil, fmt.Errorf("missing id or polling_url in BFL video submit response")
-	}
-	if parsed, err := url.Parse(submit.PollingURL); err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, fmt.Errorf("invalid polling_url in BFL video submit response")
 	}
 
 	operation, _ := json.Marshal(bflVideoOperation{
@@ -507,7 +511,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHTTPHeader(resp.Headers),
 		},
@@ -564,6 +568,7 @@ func (m *VideoModel) fetchStatusJSON(ctx context.Context, pollURL string, header
 // DoStatus checks the status of an asynchronous FLUX 3 video generation
 // started with DoStart (TS BlackForestLabsVideoModel#doStatus).
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now()
 	var op bflVideoOperation
 	if err := json.Unmarshal(opts.Operation, &op); err != nil {
 		return nil, fmt.Errorf("bfl: invalid operation reference: %w", err)
@@ -583,7 +588,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenHeaderSlice(respHeaders),
 	}
@@ -591,6 +596,12 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	status := pollResp.Status
 	if status == "" {
 		status = pollResp.State
+	}
+	if pollResp.Status == "" && pollResp.State == "" {
+		// TS bflVideoPollSchema refine: Missing status in Black Forest Labs poll response.
+		body, _ := json.Marshal(pollResp)
+		return nil, providerutils.InvalidJSONResponseError("bfl", http.StatusOK, nil, body,
+			&providerutils.ChunkSchemaError{Code: "custom", Message: "Missing status in Black Forest Labs poll response"})
 	}
 	cost := pollResp.Cost
 	if cost == nil {
@@ -603,7 +614,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			return nil, providererrors.NewVideoGenerationError("bfl", m.modelID,
 				fmt.Sprintf("Black Forest Labs reported the video as Ready but returned no result.sample URL. Request id: %s", op.RequestID), nil)
 		}
-		if err := json.Unmarshal(pollResp.Result, &result); err != nil || result.Sample == "" {
+		if err := json.Unmarshal(pollResp.Result, &result); err != nil || bflURLNode(result.Sample, result.Sample != "", nil) != nil {
 			return nil, providererrors.NewVideoGenerationError("bfl", m.modelID,
 				fmt.Sprintf("Black Forest Labs reported the video as Ready but returned no result.sample URL. Request id: %s", op.RequestID), nil)
 		}

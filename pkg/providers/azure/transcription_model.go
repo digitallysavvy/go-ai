@@ -96,7 +96,11 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// token is injected by a custom `fetch` wrapper at REST call time, which
 	// a raw WebSocket dial never goes through either in TS or here), merged
 	// with options.headers via combineHeaders.
-	headers := internalhttp.MergeHeaders(m.provider.staticAuthHeaders(), opts.Headers)
+	keyHeaders, err := m.provider.apiKeyHeaders("openai")
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(m.provider.staticAuthHeaders(), keyHeaders, opts.Headers)
 	sessionUpdate := openai.BuildOpenAIRealtimeTranscriptionSession(m.deploymentID, opts.InputAudioFormat, streamOpts)
 
 	abortCtx := opts.AbortSignal

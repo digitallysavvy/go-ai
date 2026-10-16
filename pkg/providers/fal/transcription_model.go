@@ -175,6 +175,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}
 	}
+	if err := validateTranscriptionOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	body, err := m.buildRequestBody(opts)
 	if err != nil {
 		return nil, err
@@ -320,6 +323,9 @@ func (m *TranscriptionModel) pollForResult(ctx context.Context, resultPath strin
 }
 
 func (m *TranscriptionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))

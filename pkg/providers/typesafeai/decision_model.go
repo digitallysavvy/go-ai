@@ -131,6 +131,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		Path:    "/systemone",
 		Body:    body,
 		Headers: headers,
+		// TS createJsonResponseHandler(typesafeDecisionResponseSchema).
+		ValidateResponse: validateDecisionResponse,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -254,9 +256,12 @@ func toFloatMap(v interface{}) (map[string]float64, bool) {
 // priority order: message ?? (error string or error.message) ??
 // (detail string or JSON.stringify(detail)) ?? error_type ?? fallback.
 func (m *DecisionModel) handleError(err error) error {
+	if providererrors.IsLoadAPIKeyError(err) {
+		return err // TS throws LoadAPIKeyError unwrapped
+	}
 	var httpErr *internalhttp.HTTPStatusError
 	if !errors.As(err, &httpErr) {
-		return err
+		return err // includes the schema failure (Invalid JSON response)
 	}
 
 	var envelope typesafeErrorEnvelope
