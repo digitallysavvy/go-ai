@@ -2630,6 +2630,10 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		return turnOutcomeContinue, nil
 	}
 
+	// TS `await lifecycle.start(input.model)` then `publishToolExecutionStart`
+	// run before maybeExecuteHostTool finds out whether the tool can execute.
+	d.ensureStarted()
+	d.ensureToolExecutionStarted(d.telStepCtx, call)
 	tool, executable := d.in.ActiveTools[approval.ToolName]
 	if !executable || tool.Execute == nil {
 		d.recordPendingResult(&ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input})
