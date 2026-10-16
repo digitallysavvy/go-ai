@@ -187,7 +187,7 @@ func tokenizeTS(src string) []tsToken {
 		switch {
 		case c == '/' && i+1 < n && runes[i+1] == '/':
 			j := i + 2
-			for j < n && runes[j] != '\n' {
+			for j < n && !isLineTerminator(runes[j]) {
 				j++
 			}
 			tokens = append(tokens, tsToken{"comment", string(runes[i:j]), i})
@@ -333,15 +333,20 @@ func scanTemplateLiteral(runes []rune, i int) int {
 func scanBalancedExpr(runes []rune, j int) int {
 	n := len(runes)
 	depth := 0
+	// last is the previous significant rune ('a' after an operand), used to
+	// tell a regular expression literal from a division.
+	var last rune
 	for j < n {
 		c := runes[j]
 		switch {
 		case c == '\'' || c == '"':
 			j = scanStringLiteral(runes, j)
+			last = 'a'
 		case c == '`':
 			j = scanTemplateLiteral(runes, j)
+			last = 'a'
 		case c == '/' && j+1 < n && runes[j+1] == '/':
-			for j < n && runes[j] != '\n' {
+			for j < n && !isLineTerminator(runes[j]) {
 				j++
 			}
 		case c == '/' && j+1 < n && runes[j+1] == '*':
@@ -353,25 +358,60 @@ func scanBalancedExpr(runes []rune, j int) int {
 			if j > n {
 				j = n
 			}
+		case c == '/' && interpolationRegexAllowed(last):
+			// A regular expression literal: its quotes, backticks and
+			// brackets are not code.
+			if end, ok := scanRegexLiteral(runes, j); ok {
+				j = end
+				last = 'a'
+				continue
+			}
+			last = c
+			j++
 		case c == '{' || c == '(' || c == '[':
 			depth++
+			last = c
 			j++
 		case c == '}':
 			if depth == 0 {
 				return j + 1
 			}
 			depth--
+			last = 'a'
 			j++
 		case c == ')' || c == ']':
 			if depth > 0 {
 				depth--
 			}
+			last = 'a'
 			j++
 		default:
+			if c != ' ' && c != '\t' && !isLineTerminator(c) {
+				if isTSIdentPart(c) || ((c == '+' || c == '-') && last == c) {
+					// An operand, or the second `+`/`-` of a postfix `++`/`--`.
+					last = 'a'
+				} else {
+					last = c
+				}
+			}
 			j++
 		}
 	}
 	return j
+}
+
+// interpolationRegexAllowed reports whether a `/` after the significant rune
+// last (0 at the start) begins a regular expression literal rather than a
+// division. A keyword before it (`typeof /x/`) is read as an operand, which
+// only makes the scan skip fewer regex literals.
+func interpolationRegexAllowed(last rune) bool {
+	return last == 0 || strings.ContainsRune("(,=:[!&|?{};+-*%<>~^", last)
+}
+
+// isLineTerminator reports whether r ends a `//` comment: LF, CR, U+2028 and
+// U+2029 are all ECMAScript line terminators.
+func isLineTerminator(r rune) bool {
+	return r == '\n' || r == '\r' || r == '\u2028' || r == '\u2029'
 }
 
 // scanRegexLiteral attempts to scan a regular expression literal starting
