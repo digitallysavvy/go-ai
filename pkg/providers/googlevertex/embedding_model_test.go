@@ -425,3 +425,21 @@ func TestVertexEmbeddingModel_GeminiEmbedding2UsesEmbedContent(t *testing.T) {
 		t.Fatal("expected error for >1 input with gemini-embedding-2")
 	}
 }
+
+// TestValidateVertexEmbeddingOptions_NullAndNonObject: TS parseProviderOptions
+// skips a null entry (trying the next key) and rejects a non-object value.
+func TestValidateVertexEmbeddingOptions_NullAndNonObject(t *testing.T) {
+	err := validateVertexEmbeddingOptions(&provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{
+		"googleVertex": nil,
+		"vertex":       map[string]interface{}{"taskType": "NOPE"},
+	}})
+	if err == nil {
+		t.Error("null googleVertex must fall through to the invalid vertex entry")
+	}
+	err = validateVertexEmbeddingOptions(&provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{
+		"googleVertex": "oops",
+	}})
+	if err == nil {
+		t.Error("non-object googleVertex options must be rejected")
+	}
+}
