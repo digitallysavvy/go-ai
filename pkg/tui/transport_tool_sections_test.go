@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
 func transportSections(t *testing.T, chunks ...ai.UIMessageChunk) []chatSection {
@@ -49,5 +50,21 @@ func TestTransportToolInputErrorRendersToolError(t *testing.T) {
 	if len(sections) != 1 || sections[0].kind != sectionError || sections[0].title != "Tool Error · weather" ||
 		!strings.Contains(sections[0].content, "Error:\nbad input") || !strings.Contains(sections[0].content, `"city": 1`) {
 		t.Fatalf("sections = %+v", sections)
+	}
+}
+
+// TS statusForStreamChunk has no tool-input-error case: the status line and the
+// pending-tool-results flag are untouched.
+func TestTransportToolInputErrorLeavesStatusAlone(t *testing.T) {
+	r := NewTerminalRenderer(TerminalRendererOptions{Output: &recordingWriter{}, Columns: 40, Rows: 10})
+	r.observeStatus(&provider.StreamChunk{Type: provider.ChunkTypeStartStep})
+	before := r.status
+	pc, ok := uiMessageChunkToProviderChunk(ai.UIMessageChunk{"type": "tool-input-error", "toolCallId": "c1", "toolName": "w", "errorText": "bad"}, map[string]toolCallMeta{}, map[string]string{})
+	if !ok {
+		t.Fatal("not converted")
+	}
+	r.observeStatus(pc)
+	if r.status != before || r.pendingToolResults {
+		t.Fatalf("status = %q pending=%v, want unchanged %q", r.status, r.pendingToolResults, before)
 	}
 }
