@@ -1,7 +1,6 @@
 package bytedance
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodjson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -347,13 +347,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			}
 		}
 		if details == "" {
-			// TS JSON.stringify(response) of the parsed body.
-			var compact bytes.Buffer
-			if json.Compact(&compact, result.Data) == nil {
-				details = compact.String()
-			} else {
-				details = mustMarshal(statusResp)
-			}
+			// TS JSON.stringify(statusResponse): the zod-parsed body, so the
+			// schema's keys in schema order and no unknown wire keys.
+			details = zodjson.Stringify(result.Data, bytedanceStatusSpec)
 		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
@@ -665,6 +661,13 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 
 	return &provOpts, nil
 }
+
+// bytedanceStatusSpec is TS byteDanceStatusResponseSchema's shape.
+var bytedanceStatusSpec = zodjson.Obj([]string{"id", "model", "status", "content", "usage", "error"}, map[string]*zodjson.Node{
+	"content": zodjson.Obj([]string{"video_url", "last_frame_url"}, nil),
+	"usage":   zodjson.Obj([]string{"completion_tokens"}, nil),
+	"error":   zodjson.Obj([]string{"code", "message"}, nil),
+})
 
 // mustMarshal marshals a value to JSON string, returning "{}" on error
 func mustMarshal(v interface{}) string {

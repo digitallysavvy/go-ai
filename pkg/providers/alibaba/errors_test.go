@@ -1,10 +1,14 @@
 package alibaba
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -42,5 +46,21 @@ func TestAlibabaErrorSchemas(t *testing.T) {
 	var perr *providererrors.ProviderError
 	if !errors.As(err, &perr) || perr.Message != "slow" || perr.StatusCode != 429 || !perr.IsRetryable() {
 		t.Fatalf("chat handleError = %v", err)
+	}
+}
+
+// "No task_id" embeds TS JSON.stringify(createResponse): the zod-parsed body
+// (schema key order, unknown keys dropped, null kept).
+func TestDoStartMissingTaskIDEmbedsParsedResponse(t *testing.T) {
+	model, server := newAlibabaVideoTestModel(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"request_id":"r1","extra":{"a":1},"output":null}`))
+	})
+	defer server.Close()
+	_, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{
+		VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x", N: 1},
+	})
+	want := `No task_id returned from Alibaba API. Response: {"output":null,"request_id":"r1"}`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want it to contain %q", err, want)
 	}
 }
