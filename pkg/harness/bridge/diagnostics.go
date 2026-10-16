@@ -140,7 +140,7 @@ func LogBridgeError(opts LogBridgeErrorOptions) {
 		message = opts.Context + ": " + message
 	}
 	for _, line := range strings.Split(message, "\n") {
-		if strings.TrimSpace(line) != "" {
+		if providerutils.JSTrim(line) != "" {
 			write(prefix + " " + line + "\n")
 		}
 	}
@@ -318,14 +318,14 @@ func (d *lineDecoder) push(chunk string) []string {
 		}
 		raw := d.buffer[:nl]
 		d.buffer = d.buffer[nl+1:]
-		if line := strings.TrimSpace(strings.TrimSuffix(raw, "\r")); line != "" {
+		if line := providerutils.JSTrim(strings.TrimSuffix(raw, "\r")); line != "" {
 			lines = append(lines, line)
 		}
 	}
 }
 
 func (d *lineDecoder) flush() []string {
-	line := strings.TrimSpace(strings.TrimSuffix(d.buffer, "\r"))
+	line := providerutils.JSTrim(strings.TrimSuffix(d.buffer, "\r"))
 	d.buffer = ""
 	if line == "" {
 		return nil

@@ -156,3 +156,15 @@ func TestInstructionsText(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeAgentHeaders_FirstForbiddenDeterministic(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		_, err := normalizeAgentHeaders(map[string]string{
+			"X-Client-App": "a", "User-Agent": "b", "Authorization": "c", "ok": "d",
+		})
+		want := "HarnessAgent: `headers` must not include the managed header `authorization`."
+		if err == nil || err.Error() != want {
+			t.Fatalf("iteration %d: error = %v, want %q", i, err, want)
+		}
+	}
+}

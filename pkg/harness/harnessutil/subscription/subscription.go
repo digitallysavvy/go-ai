@@ -9,7 +9,6 @@ package subscription
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,6 +16,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ExecFileFunc runs a program with arguments (no shell) and returns stdout.
@@ -43,17 +44,49 @@ func ParseJWTPayload(token string) map[string]any {
 	if len(segments) != 3 {
 		return nil
 	}
-	// Node's base64url decoder tolerates padding and trailing garbage; accept
-	// both padded and unpadded input.
-	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(segments[1], "="))
-	if err != nil {
-		return nil
-	}
+	raw := decodeNodeBase64(segments[1])
 	var payload map[string]any
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return nil
 	}
 	return payload
+}
+
+// decodeNodeBase64 decodes like Node's Buffer.from(text, 'base64url'): both
+// the URL-safe and standard alphabets are accepted, characters outside them
+// (whitespace, junk) are skipped, decoding stops at the first '=' and a
+// dangling final sextet is dropped. Never fails.
+func decodeNodeBase64(text string) []byte {
+	out := make([]byte, 0, len(text)*3/4)
+	var acc uint32
+	bits := 0
+	for i := 0; i < len(text); i++ {
+		var v byte
+		switch c := text[i]; {
+		case c >= 'A' && c <= 'Z':
+			v = c - 'A'
+		case c >= 'a' && c <= 'z':
+			v = c - 'a' + 26
+		case c >= '0' && c <= '9':
+			v = c - '0' + 52
+		case c == '-' || c == '+':
+			v = 62
+		case c == '_' || c == '/':
+			v = 63
+		case c == '=':
+			return out
+		default:
+			continue
+		}
+		acc = acc<<6 | uint32(v)
+		bits += 6
+		if bits >= 8 {
+			bits -= 8
+			out = append(out, byte(acc>>uint(bits)))
+			acc &= 1<<uint(bits) - 1
+		}
+	}
+	return out
 }
 
 // GetJWTExpiresAt returns the `exp` claim converted to epoch milliseconds.
@@ -76,7 +109,7 @@ func ReadMacOSKeychainPassword(ctx context.Context, service, account string) str
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(out)
+	return providerutils.JSTrim(out)
 }
 
 // SecretServiceAttribute is one `secret-tool lookup` attribute/value pair.

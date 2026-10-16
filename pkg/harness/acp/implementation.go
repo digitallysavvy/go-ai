@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 var (
@@ -54,7 +56,7 @@ func validateImplementation(impl implementation) error {
 			return fmt.Errorf("ACP npm package version must be an exact semantic version; received %q.", impl.Source.PackageVersion) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	default:
-		if strings.TrimSpace(impl.Source.Command) == "" {
+		if providerutils.JSTrim(impl.Source.Command) == "" {
 			return fmt.Errorf("ACP source.command must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	}

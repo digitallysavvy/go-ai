@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // OAuth endpoint constants for the Codex native (ChatGPT) subscription.
@@ -254,7 +255,14 @@ func toStoreMode(v string) string {
 	return ""
 }
 
-var storeModeLine = regexp.MustCompile(`^\s*cli_auth_credentials_store\s*=\s*["'](file|keyring|auto|ephemeral)["']\s*(?:#.*)?$`)
+// jsWS is JavaScript's `\s` (Go's is ASCII-only) and jsDot its `.` (excludes
+// all four line terminators), so the TS regex matches the same lines.
+const (
+	jsWS  = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+	jsDot = `[^\n\r\x{2028}\x{2029}]`
+)
+
+var storeModeLine = regexp.MustCompile(`^` + jsWS + `*cli_auth_credentials_store` + jsWS + `*=` + jsWS + `*["'](file|keyring|auto|ephemeral)["']` + jsWS + `*(?:#` + jsDot + `*)?$`)
 
 // readStoreModeFromConfig reads `cli_auth_credentials_store` from the
 // top-level of `$CODEX_HOME/config.toml` (scanning stops at the first table
@@ -265,7 +273,7 @@ func readStoreModeFromConfig(codexHome string) string {
 		return ""
 	}
 	for _, line := range strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "[") {
+		if strings.HasPrefix(providerutils.JSTrimStart(line), "[") {
 			return ""
 		}
 		if m := storeModeLine.FindStringSubmatch(line); m != nil {

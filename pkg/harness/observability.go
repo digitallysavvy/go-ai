@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // This file mirrors TS `agent/observability/types.ts` and
@@ -29,7 +31,7 @@ var envTruthy = map[string]struct{}{"1": {}, "true": {}, "yes": {}, "on": {}}
 func parseEnvList(value string) []string {
 	var out []string
 	for _, item := range strings.Split(value, ",") {
-		if item = strings.TrimSpace(item); item != "" {
+		if item = providerutils.JSTrim(item); item != "" {
 			out = append(out, item)
 		}
 	}

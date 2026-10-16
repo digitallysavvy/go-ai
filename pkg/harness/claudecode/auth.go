@@ -6,10 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // CredentialEnvironmentVariables mirrors TS
@@ -147,7 +147,7 @@ func readAPIKeyHelper() string {
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return providerutils.JSTrim(string(out))
 }
 
 func extractAPIKeyHelperCommand(raw []byte) string {

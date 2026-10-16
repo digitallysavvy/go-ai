@@ -21,6 +21,38 @@ type bridgeConfiguration struct {
 	NonTextContentTypes           []NonTextContentType `json:"nonTextContentTypes,omitempty"`
 }
 
+// MarshalJSON emits sessionMeta, clientCapabilities and nonTextContentTypes
+// whenever they are non-nil, even when empty: TS spreads each one under a
+// `== null` check, so an empty record or array still reaches the bridge (an
+// empty sessionMeta becomes `_meta: {}` on session/new).
+func (c bridgeConfiguration) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Authentication                *Authentication       `json:"authentication,omitempty"`
+		ProviderAuthentication        *bridgeProviderAuth   `json:"providerAuthentication,omitempty"`
+		ProviderEnvironment           *map[string]string    `json:"providerEnvironment,omitempty"`
+		SessionMeta                   *map[string]any       `json:"sessionMeta,omitempty"`
+		ClientCapabilities            *map[string]any       `json:"clientCapabilities,omitempty"`
+		AskUserQuestionsRequestMethod string                `json:"askUserQuestionsRequestMethod,omitempty"`
+		HostToolMCPTransport          HostToolMCPTransport  `json:"hostToolMcpTransport,omitempty"`
+		NonTextContentTypes           *[]NonTextContentType `json:"nonTextContentTypes,omitempty"`
+	}
+	w := wire{
+		Authentication: c.Authentication, ProviderAuthentication: c.ProviderAuthentication,
+		ProviderEnvironment: c.ProviderEnvironment, AskUserQuestionsRequestMethod: c.AskUserQuestionsRequestMethod,
+		HostToolMCPTransport: c.HostToolMCPTransport,
+	}
+	if c.SessionMeta != nil {
+		w.SessionMeta = &c.SessionMeta
+	}
+	if c.ClientCapabilities != nil {
+		w.ClientCapabilities = &c.ClientCapabilities
+	}
+	if c.NonTextContentTypes != nil {
+		w.NonTextContentTypes = &c.NonTextContentTypes
+	}
+	return json.Marshal(w)
+}
+
 // bridgeProviderAuth mirrors TS `ACPResolvedProviderAuthentication`
 // (discriminated union collapsed into one struct for the Go wire encoding).
 type bridgeProviderAuth struct {

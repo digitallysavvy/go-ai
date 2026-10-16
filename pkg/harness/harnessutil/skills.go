@@ -451,14 +451,14 @@ func runSandboxCommand(ctx context.Context, sandbox providerutils.SandboxSession
 // of resolveSkillsRootDir and resolveInstructionsFilePath. It returns the
 // normalized path without trailing slashes.
 func validateHomeRelativePath(homePath, rel, label string, extraInvalid bool) (string, error) {
-	if strings.TrimSpace(homePath) == "" {
+	if providerutils.JSTrim(homePath) == "" {
 		return "", fmt.Errorf("Invalid homePath: expected a non-empty string.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if !posixpath.IsAbs(homePath) {
 		return "", fmt.Errorf("Invalid homePath %s: expected an absolute POSIX path.", jsonString(homePath)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	invalid := fmt.Errorf("Invalid %s %s: expected a relative POSIX path without traversal.", label, jsonString(rel)) //nolint:staticcheck // matches TS SDK's exact error text
-	if strings.TrimSpace(rel) == "" {
+	if providerutils.JSTrim(rel) == "" {
 		return "", invalid
 	}
 	containsTraversal := false
@@ -467,7 +467,7 @@ func validateHomeRelativePath(homePath, rel, label string, extraInvalid bool) (s
 			containsTraversal = true
 		}
 	}
-	normalized := posixpath.Normalize(strings.TrimSpace(rel))
+	normalized := posixpath.Normalize(providerutils.JSTrim(rel))
 	noTrailing := strings.TrimRight(normalized, "/")
 	if strings.Contains(rel, `\`) || posixpath.IsAbs(rel) || posixpath.IsWin32Abs(rel) || containsTraversal || extraInvalid ||
 		noTrailing == "" || noTrailing == "." ||

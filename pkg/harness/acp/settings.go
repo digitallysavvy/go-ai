@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -197,6 +198,25 @@ type Authentication struct {
 	MethodID           string         `json:"methodId"`
 	Meta               map[string]any `json:"meta,omitempty"`
 	ClientCapabilities map[string]any `json:"clientCapabilities,omitempty"`
+}
+
+// MarshalJSON keeps a non-nil empty Meta or ClientCapabilities on the wire:
+// TS emits `_meta` whenever `authentication.meta` is not null, so an empty
+// record is sent as `{}`.
+func (a Authentication) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		MethodID           string          `json:"methodId"`
+		Meta               *map[string]any `json:"meta,omitempty"`
+		ClientCapabilities *map[string]any `json:"clientCapabilities,omitempty"`
+	}
+	w := wire{MethodID: a.MethodID}
+	if a.Meta != nil {
+		w.Meta = &a.Meta
+	}
+	if a.ClientCapabilities != nil {
+		w.ClientCapabilities = &a.ClientCapabilities
+	}
+	return json.Marshal(w)
 }
 
 // CredentialBrokering builds request transformations from resolved

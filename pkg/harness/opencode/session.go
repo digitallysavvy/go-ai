@@ -516,7 +516,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 }
 
 func (s *session) DoCompact(ctx context.Context, customInstructions string) error {
-	if strings.TrimSpace(customInstructions) != "" {
+	if providerutils.JSTrim(customInstructions) != "" {
 		return harness.NewCapabilityUnsupportedError(
 			"Harness 'opencode' supports native manual compaction, but OpenCode does not expose custom compaction instructions through the supported API.", HarnessID, nil)
 	}

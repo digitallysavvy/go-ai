@@ -44,7 +44,7 @@ func WriteInstructions(ctx context.Context, opts WriteInstructionsOptions) (*Wri
 		return nil, err
 	}
 	sandbox := opts.Sandbox
-	trimmed := strings.TrimSpace(opts.Instructions)
+	trimmed := providerutils.JSTrim(opts.Instructions)
 	hasInstructions := trimmed != ""
 
 	currentDisk, err := sandbox.ReadTextFile(ctx, providerutils.SandboxReadTextFileOptions{Path: targetPath})
@@ -59,7 +59,7 @@ func WriteInstructions(ctx context.Context, opts WriteInstructionsOptions) (*Wri
 	if hasInstructions {
 		original := deriveOriginalContent(currentDisk, existing)
 		var target string
-		if original != nil && strings.TrimSpace(*original) != "" {
+		if original != nil && providerutils.JSTrim(*original) != "" {
 			target = trimTrailingNewlines(*original) + "\n\n" + trimmed + "\n"
 		} else {
 			target = trimmed + "\n"
@@ -156,7 +156,7 @@ func deriveRestoredContent(currentDisk *string, meta *instructionsMetadata) *str
 		return nil
 	}
 	if *currentDisk == meta.AppliedContent {
-		if meta.OriginalContent != nil && strings.TrimSpace(*meta.OriginalContent) != "" {
+		if meta.OriginalContent != nil && providerutils.JSTrim(*meta.OriginalContent) != "" {
 			return meta.OriginalContent
 		}
 		return nil
