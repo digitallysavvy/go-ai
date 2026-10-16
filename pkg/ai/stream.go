@@ -2487,6 +2487,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepToolResults []types.ToolResult
 		var toolExecutionMs map[string]int64
 		skipStepTools := stepSawErrorChunk && opts.Internal != nil && opts.Internal.StopOnStreamError
+		workflowBlocked := workflowBlockedToolStep(opts.Internal, r.finishReason, stepContent)
+		skipStepTools = skipStepTools || workflowBlocked
 		if len(stepToolCalls) > 0 && len(stepTools) > 0 && !skipStepTools {
 			toolExecutionMs = map[string]int64{}
 			toolCallbacks := toolCallEventCallbacks{
@@ -2842,9 +2844,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 
 		// Populate ResponseMessages on the step that just completed.
+		responseCalls, responseContent := stepResult.ToolCalls, stepResult.Content
+		if workflowBlocked {
+			responseCalls, responseContent = WorkflowBlockedResponse(responseCalls, responseContent)
+		}
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(
-			stepResult.ToolCalls,
-			stepResult.Content,
+			responseCalls,
+			responseContent,
 			recordedToolResults,
 		)
 		currentMessages = append(currentMessages, stepResponseMsgs...)

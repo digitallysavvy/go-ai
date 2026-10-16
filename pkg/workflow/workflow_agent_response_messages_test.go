@@ -270,3 +270,68 @@ func TestWorkflowLengthStopWithLocalToolCallEndsRun(t *testing.T) {
 		})
 	}
 }
+
+// TS shouldProcessTools is false after a length step without provider results,
+// so the assistant message carries no invalid call and no tool message follows.
+func TestWorkflowBlockedStepAddsNoToolErrorMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      interface{}
+		wantCalls int
+	}{{"unknown", "x", 0}, {"local", 123, 0}, {"local", "ok", 1}} {
+		tc := tc
+		t.Run(tc.name+fmt.Sprint(tc.args), func(t *testing.T) {
+			call := types.ToolCall{ID: "bad", ToolName: tc.name, Arguments: map[string]interface{}{"value": tc.args}}
+			m := &fnModel{
+				gen: func() *types.GenerateResult {
+					return &types.GenerateResult{FinishReason: types.FinishReasonLength, ToolCalls: []types.ToolCall{call}}
+				},
+				chunks: []provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonLength},
+				},
+			}
+			tools := []types.Tool{{
+				Name:       "local",
+				Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"value": map[string]interface{}{"type": "string"}}, "required": []interface{}{"value"}},
+				Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					return "x", nil
+				},
+			}}
+			a, err := NewWorkflowAgent(WorkflowAgent{Model: m, Tools: tools})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := func(label string, msgs []types.Message) {
+				t.Helper()
+				for _, msg := range msgs {
+					if msg.Role == types.RoleTool {
+						t.Fatalf("%s: unexpected tool message %+v", label, msg)
+					}
+					if msg.Role == types.RoleAssistant && len(msg.ToolCalls) != tc.wantCalls {
+						t.Fatalf("%s: assistant tool calls = %d, want %d", label, len(msg.ToolCalls), tc.wantCalls)
+					}
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			st, err := a.StreamWithOptions(ctx, WorkflowStreamOptions{Prompt: "hi"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := st.ReadAll(); err != nil {
+				t.Fatal(err)
+			}
+			var streamMsgs []types.Message
+			for _, step := range st.Steps() {
+				streamMsgs = append(streamMsgs, step.Response.Messages...)
+			}
+			check("stream", streamMsgs)
+			res, err := a.GenerateWithOptions(ctx, WorkflowGenerateOptions{Prompt: "hi"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			check("generate", res.ResponseMessages)
+		})
+	}
+}
