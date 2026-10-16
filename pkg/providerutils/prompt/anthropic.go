@@ -811,8 +811,48 @@ func detectAnthropicMediaType(data []byte, topLevel string) string {
 	return ""
 }
 
-func (c *anthropicConverter) documentMetadata(providerOptions map[string]interface{}, filename string, block map[string]interface{}) {
+// validateAnthropicFilePartOptions mirrors TS parseProviderOptions with
+// anthropicFilePartProviderOptions: containerUpload (boolean), citations
+// ({enabled: boolean}), title and context (strings).
+func validateAnthropicFilePartOptions(opts map[string]interface{}) error {
+	invalid := func(format string, args ...interface{}) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid anthropic provider options",
+			Cause:   fmt.Errorf(format, args...),
+		}
+	}
+	for _, key := range []string{"containerUpload"} {
+		if v, ok := opts[key]; ok && v != nil {
+			if _, isBool := v.(bool); !isBool {
+				return invalid("%s: invalid input, expected boolean", key)
+			}
+		}
+	}
+	for _, key := range []string{"title", "context"} {
+		if v, ok := opts[key]; ok && v != nil {
+			if _, isString := v.(string); !isString {
+				return invalid("%s: invalid input, expected string", key)
+			}
+		}
+	}
+	if v, ok := opts["citations"]; ok && v != nil {
+		citations, isMap := v.(map[string]interface{})
+		if !isMap {
+			return invalid("citations: invalid input, expected object")
+		}
+		if _, isBool := citations["enabled"].(bool); !isBool {
+			return invalid("citations.enabled: invalid input, expected boolean")
+		}
+	}
+	return nil
+}
+
+func (c *anthropicConverter) documentMetadata(providerOptions map[string]interface{}, filename string, block map[string]interface{}) error {
 	opts := anthropicOptions(providerOptions)
+	if err := validateAnthropicFilePartOptions(opts); err != nil {
+		return err
+	}
 	// TS: metadata.title ?? part.filename -- an explicit empty title stays
 	// empty (and is sent), only an absent title falls back to the filename.
 	if title, ok := opts["title"].(string); ok {
@@ -828,6 +868,7 @@ func (c *anthropicConverter) documentMetadata(providerOptions map[string]interfa
 			block["citations"] = map[string]interface{}{"enabled": true}
 		}
 	}
+	return nil
 }
 
 func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl interface{}) (map[string]interface{}, error) {
@@ -844,6 +885,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 			return nil, err
 		}
 		c.addBeta(AnthropicBetaFilesAPI)
+		if err := validateAnthropicFilePartOptions(anthropicOptions(p.ProviderOptions)); err != nil {
+			return nil, err
+		}
 		if containerUpload, _ := anthropicOptions(p.ProviderOptions)["containerUpload"].(bool); containerUpload {
 			return map[string]interface{}{"type": "container_upload", "file_id": fileID}, nil
 		}
@@ -865,7 +909,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				"data":       f.text,
 			},
 		}
-		c.documentMetadata(p.ProviderOptions, f.filename, block)
+		if err := c.documentMetadata(p.ProviderOptions, f.filename, block); err != nil {
+			return nil, err
+		}
 
 	default: // url, data
 		topLevel := topLevelMediaType(f.mediaType)
@@ -901,7 +947,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				}
 			}
 			block = map[string]interface{}{"type": "document", "source": source}
-			c.documentMetadata(p.ProviderOptions, f.filename, block)
+			if err := c.documentMetadata(p.ProviderOptions, f.filename, block); err != nil {
+				return nil, err
+			}
 
 		case f.mediaType == "text/plain":
 			var source map[string]interface{}
@@ -915,7 +963,9 @@ func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl i
 				}
 			}
 			block = map[string]interface{}{"type": "document", "source": source}
-			c.documentMetadata(p.ProviderOptions, f.filename, block)
+			if err := c.documentMetadata(p.ProviderOptions, f.filename, block); err != nil {
+				return nil, err
+			}
 
 		default:
 			return nil, &providererrors.UnsupportedFunctionalityError{

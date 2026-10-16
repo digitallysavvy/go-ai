@@ -1275,3 +1275,29 @@ func TestAnthropicSystemMessageOptionsValidation(t *testing.T) {
 		}
 	}
 }
+
+// TestAnthropicFilePartOptionsValidation: TS parseProviderOptions with
+// anthropicFilePartProviderOptions rejects wrongly typed options.
+func TestAnthropicFilePartOptionsValidation(t *testing.T) {
+	cases := map[string]map[string]interface{}{
+		"title":           {"title": 5},
+		"context":         {"context": true},
+		"citations":       {"citations": "yes"},
+		"citationEnabled": {"citations": map[string]interface{}{"enabled": "yes"}},
+		"citationMissing": {"citations": map[string]interface{}{}},
+	}
+	for name, opts := range cases {
+		_, err := ConvertToAnthropicPrompt([]types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{types.FileContent{
+				Data:            []byte("%PDF-1.4"),
+				MediaType:       "application/pdf",
+				ProviderOptions: map[string]interface{}{"anthropic": opts},
+			}},
+		}}, AnthropicPromptOptions{})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
+		}
+	}
+}
