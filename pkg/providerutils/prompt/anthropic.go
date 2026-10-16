@@ -268,7 +268,9 @@ func ConvertToAnthropicPrompt(messages []types.Message, opts AnthropicPromptOpti
 		isLastBlock := i == len(blocks)-1
 		switch block.role {
 		case types.RoleSystem:
-			c.convertSystemBlock(block, i, &system, &out)
+			if err := c.convertSystemBlock(block, i, &system, &out); err != nil {
+				return nil, err
+			}
 
 		case types.RoleAssistant:
 			content, err := c.convertAssistantBlock(block, isLastBlock, sendReasoning)
@@ -418,12 +420,76 @@ type anthropicSystemMessage struct {
 	toolChangeCount int
 }
 
-func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int, system *[]map[string]interface{}, out *[]map[string]interface{}) {
+// validateAnthropicSystemMessageOptions mirrors TS parseProviderOptions with
+// anthropicSystemMessageProviderOptions: clearAt, effort and toolChanges are
+// schema-checked and a violation is an InvalidArgumentError. It returns the
+// toolChanges normalised to []interface{}.
+func validateAnthropicSystemMessageOptions(sysOpts map[string]interface{}) ([]interface{}, error) {
+	invalid := func(format string, args ...interface{}) error {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid anthropic provider options",
+			Cause:   fmt.Errorf(format, args...),
+		}
+	}
+	if v, ok := sysOpts["clearAt"]; ok && v != nil {
+		if s, isString := v.(string); !isString || s != "next_user_message" {
+			return nil, invalid("clearAt: invalid input, expected \"next_user_message\"")
+		}
+	}
+	if v, ok := sysOpts["effort"]; ok && v != nil {
+		s, isString := v.(string)
+		switch {
+		case !isString:
+			return nil, invalid("effort: invalid input, expected one of low, medium, high, xhigh, max")
+		case s != "low" && s != "medium" && s != "high" && s != "xhigh" && s != "max":
+			return nil, invalid("effort: invalid option %q, expected one of low, medium, high, xhigh, max", s)
+		}
+	}
+	raw, ok := sysOpts["toolChanges"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	toolChanges := interfaceSlice(raw)
+	if toolChanges == nil {
+		// Typed slices (e.g. []map[string]string) normalise through JSON.
+		if encoded, err := json.Marshal(raw); err == nil {
+			_ = json.Unmarshal(encoded, &toolChanges)
+		}
+		if toolChanges == nil {
+			return nil, invalid("toolChanges: invalid input, expected an array")
+		}
+	}
+	for i, change := range toolChanges {
+		m, isMap := change.(map[string]interface{})
+		if !isMap {
+			if encoded, err := json.Marshal(change); err == nil {
+				_ = json.Unmarshal(encoded, &m)
+			}
+			if m == nil {
+				return nil, invalid("toolChanges[%d]: invalid input, expected an object", i)
+			}
+			toolChanges[i] = m
+		}
+		if t, _ := m["type"].(string); t != "tool_addition" && t != "tool_removal" {
+			return nil, invalid("toolChanges[%d].type: invalid option, expected tool_addition or tool_removal", i)
+		}
+		if _, isString := m["toolName"].(string); !isString {
+			return nil, invalid("toolChanges[%d].toolName: invalid input, expected string", i)
+		}
+	}
+	return toolChanges, nil
+}
+
+func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int, system *[]map[string]interface{}, out *[]map[string]interface{}) error {
 	converted := make([]anthropicSystemMessage, 0, len(block.messages))
 	for _, msg := range block.messages {
 		text := messageText(msg)
 		sysOpts := anthropicOptions(msg.ProviderOptions)
-		toolChanges := interfaceSlice(sysOpts["toolChanges"])
+		toolChanges, err := validateAnthropicSystemMessageOptions(sysOpts)
+		if err != nil {
+			return err
+		}
 		clearAt := sysOpts["clearAt"]
 		effort := sysOpts["effort"]
 
@@ -497,7 +563,7 @@ func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int,
 			}
 		}
 		*system = sys
-		return
+		return nil
 	}
 
 	c.addBeta(AnthropicBetaMidConversationSystem)
@@ -520,6 +586,7 @@ func (c *anthropicConverter) convertSystemBlock(block anthropicBlock, index int,
 			c.addBeta(AnthropicBetaMidConversationOutputCfg)
 		}
 	}
+	return nil
 }
 
 func messageText(msg types.Message) string {

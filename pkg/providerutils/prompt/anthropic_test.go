@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -1247,4 +1248,30 @@ func TestConvertToAnthropicPrompt_NullToolInputRecordedAsRawInvalid(t *testing.T
 		t.Fatal(err)
 	}
 	assertJSONEqual(t, "messages", p.Messages, `[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"x","input":{"rawInvalidInput":null}}]}]`)
+}
+
+// TestAnthropicSystemMessageOptionsValidation: TS parseProviderOptions with
+// anthropicSystemMessageProviderOptions rejects a bad clearAt, effort or
+// toolChanges entry with an InvalidArgumentError.
+func TestAnthropicSystemMessageOptionsValidation(t *testing.T) {
+	cases := map[string]map[string]interface{}{
+		"clearAt":         {"clearAt": "always"},
+		"effort":          {"effort": "ultra"},
+		"effortType":      {"effort": 3},
+		"toolChangesType": {"toolChanges": "weather"},
+		"toolChangeType":  {"toolChanges": []interface{}{map[string]interface{}{"type": "tool_swap", "toolName": "w"}}},
+		"toolChangeName":  {"toolChanges": []interface{}{map[string]interface{}{"type": "tool_addition"}}},
+	}
+	for name, opts := range cases {
+		anthropicOptions := map[string]interface{}{"anthropic": opts}
+		_, err := ConvertToAnthropicPrompt([]types.Message{
+			systemText("initial", nil),
+			userText("hi"),
+			systemText("", anthropicOptions),
+		}, AnthropicPromptOptions{})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
+		}
+	}
 }
