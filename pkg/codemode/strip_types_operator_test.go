@@ -33,6 +33,12 @@ func TestStripTypeScriptAnnotationsOperatorAfterType(t *testing.T) {
 		{"interface I {}\n+z", ";             \n+z"},
 		{"function f(): void;\n/z/g", ";                  \n/z/g"},
 		{"type A = B\nz", "          \nz"},
+		// A `declare` field is erased whole (Node 24.20).
+		{"class A { declare x: number }", "class A {                   }"},
+		{"class A { declare x: number\n y = 1 }", "class A {                  \n y = 1 }"},
+		{"class A { declare static x: number; y = 1 }", "class A {                           y = 1 }"},
+		// `override` in a class without a base class is rejected: unmodified.
+		{"class A { override m() {} }", "class A { override m() {} }"},
 	} {
 		got, err := stripTypeScriptAnnotations(c.src)
 		if err != nil || got != c.want {

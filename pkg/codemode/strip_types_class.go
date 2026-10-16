@@ -15,17 +15,25 @@ func handleClassDecl(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		i = j + 1
 	}
 	i = stripOptionalTypeParams(tokens, i, out)
+	heritageStart := i
 	i = handleExtendsImplements(tokens, i, out)
 
 	open := nextSignificant(tokens, i)
 	if open < 0 || tokens[open].kind != "punct" || tokens[open].text != "{" {
 		return i, nil
 	}
+	hasExtends := false
+	for k := heritageStart; k < open; k++ {
+		if tokens[k].kind == "ident" && tokens[k].text == "extends" {
+			hasExtends = true
+			break
+		}
+	}
 	for k := i; k < open; k++ {
 		*out = append(*out, tokens[k])
 	}
 	*out = append(*out, tokens[open])
-	end, err := stripClassBody(tokens, open+1, out)
+	end, err := stripClassBody(tokens, open+1, out, hasExtends)
 	if err != nil {
 		return end, err
 	}
@@ -139,7 +147,7 @@ var classMemberJSModifiers = map[string]bool{
 // stripClassBody strips every member of a class body starting at
 // tokens[i] (right after the opening "{"), stopping at (and not
 // consuming) the matching "}".
-func stripClassBody(tokens []tsToken, i int, out *[]tsToken) (int, error) {
+func stripClassBody(tokens []tsToken, i int, out *[]tsToken, hasExtends bool) (int, error) {
 	for {
 		j := nextSignificant(tokens, i)
 		if j < 0 {
@@ -161,7 +169,7 @@ func stripClassBody(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 			i = j + 1
 			continue
 		}
-		next, err := stripClassMember(tokens, i, out)
+		next, err := stripClassMember(tokens, i, out, hasExtends)
 		if err != nil {
 			return next, err
 		}
@@ -182,7 +190,7 @@ func stripClassBody(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 // an `abstract` method) is erased entirely, matching
 // stripTypeScriptTypes's erasure of a function overload signature (see
 // handleFunctionSignature and strip_types_test.go).
-func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
+func stripClassMember(tokens []tsToken, i int, out *[]tsToken, hasExtends bool) (int, error) {
 	memberStart := len(*out)
 	j := nextSignificant(tokens, i)
 	if j < 0 {
@@ -225,9 +233,15 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 			break
 		}
 		if tokens[k].text == "declare" {
-			// A `declare` field is ambient syntax Node's strip-only mode
-			// rejects.
-			return k, errUnsupportedTSSyntax("declare field")
+			// A `declare` field is ambient: Node (24.20) erases the whole
+			// member, like an abstract one.
+			sawAbstract = true
+			i = k + 1
+			continue
+		}
+		if tokens[k].text == "override" && !hasExtends {
+			// Node rejects an `override` member in a class with no base class.
+			return k, errUnsupportedTSSyntax("override without extends")
 		}
 		if classMemberTSModifiers[tokens[k].text] {
 			i = k + 1
