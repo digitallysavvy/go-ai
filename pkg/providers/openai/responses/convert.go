@@ -112,6 +112,19 @@ type ConvertOptions struct {
 	parallelToolResultGroups   map[string]parallelToolResultGroup
 	emittedParallelToolCalls   map[string]bool
 	emittedParallelToolResults map[string]bool
+
+	// toolOutputWarnings collects the "unsupported tool content part type"
+	// warnings TS pushes while converting tool-result content outputs.
+	// Populated by ConvertPromptToInputWithOptions; do not set directly.
+	toolOutputWarnings *[]types.Warning
+}
+
+// warnToolOutput records a TS `{type: 'other', message}` warning raised while
+// converting a tool-result content output.
+func (o ConvertOptions) warnToolOutput(message string) {
+	if o.toolOutputWarnings != nil {
+		*o.toolOutputWarnings = append(*o.toolOutputWarnings, types.Warning{Type: "other", Message: message})
+	}
 }
 
 // parallelToolResultGroup is a complete set of child results for one
@@ -151,6 +164,8 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	}
 	opts.emittedParallelToolCalls = map[string]bool{}
 	opts.emittedParallelToolResults = map[string]bool{}
+	var toolOutputWarnings []types.Warning
+	opts.toolOutputWarnings = &toolOutputWarnings
 
 	// Prepend system message when present and not suppressed.
 	if prompt.System != "" && systemMessageMode != "remove" {
@@ -193,6 +208,8 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 				return nil, warnings, err
 			}
 			input = append(input, items...)
+			warnings = append(warnings, toolOutputWarnings...)
+			toolOutputWarnings = toolOutputWarnings[:0]
 		}
 	}
 
@@ -2269,15 +2286,21 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 								FileData: fileData,
 							})
 						}
+					default:
+						if fileDataType != "" {
+							opts.warnToolOutput(fmt.Sprintf("unsupported tool content part type: file with data type: %s", fileDataType))
+						}
 					}
+				default:
+					opts.warnToolOutput(fmt.Sprintf("unsupported tool content part type: %s", block.ToolResultContentType()))
 				}
 				if blockBP != nil && len(parts) > partsBefore {
 					parts[partsBefore].PromptCacheBreakpoint = blockBP
 				}
 			}
-			if len(parts) > 0 {
-				return parts
-			}
+			// TS maps and filters the content array, so an output whose parts
+			// were all dropped is sent as an empty array.
+			return parts
 		}
 	}
 	if s, ok := tr.Result.(string); ok {
