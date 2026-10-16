@@ -376,7 +376,7 @@ func stringOption(value interface{}) string {
 
 func numberOption(value interface{}) (interface{}, bool) {
 	switch v := value.(type) {
-	case int, int32, int64, float32, float64, json.Number:
+	case int, int32, int64, uint, uint32, uint64, float32, float64, json.Number:
 		return v, true
 	default:
 		return nil, false

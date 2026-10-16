@@ -947,3 +947,17 @@ func TestBedrockRegionResolvedLazilyFromEnv(t *testing.T) {
 		t.Fatalf("runtimeBaseURL = %q, %v", base, err)
 	}
 }
+
+func TestBedrockImageNumericOptionsAcceptJSONNumber(t *testing.T) {
+	// isNumber (validation) accepts json.Number and unsigned ints, so the
+	// request builder must not drop them silently.
+	opts, err := parseBedrockImageOptions(map[string]interface{}{
+		"amazonBedrock": map[string]interface{}{"cfgScale": json.Number("7.5"), "similarityStrength": uint32(1)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.CfgScaleSet || opts.CfgScale != 7.5 || !opts.SimilarityStrengthSet || opts.SimilarityStrength != 1 {
+		t.Fatalf("options = %+v", opts)
+	}
+}
