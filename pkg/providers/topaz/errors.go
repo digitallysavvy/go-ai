@@ -1,6 +1,7 @@
 package topaz
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -25,13 +26,24 @@ type topazIssue struct {
 	Msg *string `json:"msg"`
 }
 
-// parseTopazErrorData decodes a Topaz error response body. A body that
-// cannot be decoded as JSON is treated as having no structured fields, so
-// the caller falls back to the raw body text.
-func parseTopazErrorData(body []byte) topazErrorData {
-	var data topazErrorData
-	_ = json.Unmarshal(body, &data)
-	return data
+// parseTopazErrorData decodes a Topaz error response body against the TS
+// topazErrorDataSchema. ok is false for a body that does not match it (empty,
+// not a JSON object, a wrongly typed field), in which case TS
+// createJsonErrorResponseHandler uses the HTTP status text as the message.
+func parseTopazErrorData(body []byte) (data topazErrorData, ok bool) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &data) != nil {
+		return topazErrorData{}, false
+	}
+	// detail: string | array of loose objects with a nullish string msg.
+	if len(data.Detail) > 0 && string(bytes.TrimSpace(data.Detail)) != "null" {
+		var asString string
+		var asIssues []topazIssue
+		if json.Unmarshal(data.Detail, &asString) != nil && json.Unmarshal(data.Detail, &asIssues) != nil {
+			return topazErrorData{}, false
+		}
+	}
+	return data, true
 }
 
 // topazErrorToMessage renders a Topaz error response body into a
@@ -90,8 +102,11 @@ func topazBaseErrorMessage(data topazErrorData) string {
 // newTopazAPIError converts a failed Topaz API response into a provider
 // error, mirroring TS topazFailedResponseHandler.
 func newTopazAPIError(statusCode int, body []byte, headers http.Header) error {
-	data := parseTopazErrorData(body)
-	message := topazErrorToMessage(data)
+	data, ok := parseTopazErrorData(body)
+	message := http.StatusText(statusCode)
+	if ok {
+		message = topazErrorToMessage(data)
+	}
 	errorCode := ""
 	if data.ErrorCode != nil {
 		errorCode = *data.ErrorCode
