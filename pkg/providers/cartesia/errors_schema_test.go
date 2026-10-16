@@ -17,6 +17,8 @@ func TestHandleErrorFollowsTSErrorSchema(t *testing.T) {
 	}{
 		{"schema", `{"title":"Bad","message":"nope","request_id":"r"}`, "Bad: nope", 400},
 		{"missing request_id", `{"title":"Bad","message":"nope"}`, "Bad Request", 400},
+		{"doc_url string", `{"title":"Bad","message":"nope","request_id":"r","doc_url":"https://d"}`, "Bad: nope", 400},
+		{"doc_url null is off schema (optional, not nullish)", `{"title":"Bad","message":"nope","request_id":"r","doc_url":null}`, "Bad Request", 400},
 		{"plain text", `oops`, "Bad Gateway", 502},
 		{"empty", ``, "Service Unavailable", 503},
 	} {

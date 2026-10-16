@@ -13,11 +13,11 @@ import (
 // cartesiaErrorPayload documents Cartesia's error envelope:
 // {"error_code","title","message","request_id","doc_url"}.
 type cartesiaErrorPayload struct {
-	ErrorCode *string `json:"error_code"`
-	Title     *string `json:"title"`
-	Message   *string `json:"message"`
-	RequestID *string `json:"request_id"`
-	DocURL    *string `json:"doc_url"`
+	ErrorCode *string         `json:"error_code"`
+	Title     *string         `json:"title"`
+	Message   *string         `json:"message"`
+	RequestID *string         `json:"request_id"`
+	DocURL    json.RawMessage `json:"doc_url"`
 }
 
 // handleError converts an HTTP error into a ProviderError, parsing
@@ -35,7 +35,7 @@ func handleError(err error) error {
 		// text.
 		message := http.StatusText(statusErr.StatusCode)
 		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil &&
-			payload.Title != nil && payload.Message != nil && payload.RequestID != nil {
+			payload.Title != nil && payload.Message != nil && payload.RequestID != nil && docURLMatchesSchema(payload.DocURL) {
 			message = *payload.Title + ": " + *payload.Message
 		} else {
 			payload = cartesiaErrorPayload{}
@@ -50,4 +50,14 @@ func handleError(err error) error {
 		return providerErr
 	}
 	return providererrors.NewProviderError("cartesia", 0, "", err.Error(), err)
+}
+
+// docURLMatchesSchema is `doc_url: z.string().optional()`: absent or a string;
+// an explicit null (or any other type) fails the schema.
+func docURLMatchesSchema(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var s string
+	return json.Unmarshal(raw, &s) == nil
 }
