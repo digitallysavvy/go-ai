@@ -547,3 +547,24 @@ func ValidateMapProviderOptions(provider string, providerOptions map[string]inte
 	_, err = ParseProviderOptions(provider, map[string]interface{}{provider: normalized}, schema)
 	return err
 }
+
+
+// NormalizeOptionsJSON returns options read through their JSON form, so
+// nested Go-typed values ([]string, []map[string]string, ints, typed structs)
+// have the same shape (`[]interface{}`, `map[string]interface{}`, float64) the
+// map-based option readers expect. It is the form ValidateMapProviderOptions
+// validates. The input is returned unchanged when it cannot be encoded.
+func NormalizeOptionsJSON(options map[string]interface{}) map[string]interface{} {
+	if options == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(options)
+	if err != nil {
+		return options
+	}
+	var normalized map[string]interface{}
+	if json.Unmarshal(encoded, &normalized) != nil {
+		return options
+	}
+	return normalized
+}
