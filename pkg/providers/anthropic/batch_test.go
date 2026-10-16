@@ -1365,3 +1365,27 @@ func TestBatch_ResultsLineValidation(t *testing.T) {
 		})
 	}
 }
+
+// TS convertAnthropicBatchResponse emits every server_tool_use block as a
+// provider-executed tool call, even with a name it does not know.
+func TestBatch_UnknownServerToolUseIsEmitted(t *testing.T) {
+	msg := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-haiku-20240307",` +
+		`"content":[{"type":"server_tool_use","id":"srv_1","name":"future_tool","input":{"q":"x"}}],` +
+		`"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	srv := anthropicBatchResultsServer(t, `{"custom_id":"a","result":{"type":"succeeded","message":`+msg+`}}`)
+	defer srv.Close()
+	p := New(Config{APIKey: "k", BaseURL: srv.URL})
+	stream, err := p.ExperimentalBatch().DoGetBatchResults(t.Context(), provider.BatchV4OperationOptions{BatchID: "b1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	item := drainAnthropicBatchResults(t, stream)["a"]
+	if item == nil || item.TextResult == nil || len(item.TextResult.ToolCalls) != 1 {
+		t.Fatalf("item = %+v", item)
+	}
+	tc := item.TextResult.ToolCalls[0]
+	if tc.ToolName != "future_tool" || !tc.ProviderExecuted || tc.RawArguments != `{"q":"x"}` {
+		t.Fatalf("tool call = %+v", tc)
+	}
+}

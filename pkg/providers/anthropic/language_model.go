@@ -605,6 +605,18 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			serverToolProviderNames[content.ID] = content.Name
 			if tc, ok := serverToolUseCall(content, toolNameMap, co.markCodeExecutionDynamic); ok {
 				addToolCall(blockIdx, tc)
+			} else if co.rawBatchCitations {
+				// TS convertAnthropicBatchResponse emits every server_tool_use
+				// (the schema only requires a string name), unlike doGenerate,
+				// which ignores names it does not know.
+				addToolCall(blockIdx, types.ToolCall{
+					ID:               content.ID,
+					ToolName:         content.Name,
+					Arguments:        content.Input,
+					RawArguments:     inputText(content.RawInput, content.Input),
+					ProviderExecuted: true,
+					ProviderMetadata: anthropicCallerMetadata(content.Caller),
+				})
 			}
 		case "mcp_tool_use":
 			// MCP tool calls are executed server-side; surface them as
