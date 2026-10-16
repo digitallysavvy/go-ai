@@ -79,7 +79,7 @@ func (rec *transformRecorder) record(c provider.StreamChunk) {
 	case provider.ChunkTypeText:
 		rec.content = rec.blocks.textDelta(rec.content, c.ID, c.Text, c.ProviderMetadata)
 	case provider.ChunkTypeTextEnd:
-		rec.content = rec.blocks.closeText(rec.content, c.ID, c.Citations)
+		rec.content = rec.blocks.closeText(rec.content, c.ID, c.ProviderMetadata, c.Citations)
 	case provider.ChunkTypeReasoningStart:
 		rec.content = rec.blocks.openReasoning(rec.content, c.ID, c.ProviderMetadata)
 	case provider.ChunkTypeReasoning:

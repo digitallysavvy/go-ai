@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -133,7 +134,8 @@ func ToolSearch(config ...ToolSearchConfig) types.Tool {
 		Type:         types.ToolTypeFunction,
 		IsToolSearch: true,
 		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("toolSearch must be bound by an AI SDK generation")
+			// Trailing period kept: TS message text is "toolSearch must be bound by an AI SDK generation."
+			return nil, errors.New("toolSearch must be bound by an AI SDK generation.") //nolint:staticcheck,revive // exact TS error text
 		},
 	}
 }
