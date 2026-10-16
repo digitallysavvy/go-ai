@@ -53,7 +53,7 @@ func TestComputer20251124_WithoutZoom(t *testing.T) {
 		EnableZoom:      false,
 	})
 
-	// Verify schema does NOT include zoom action
+	// TS's zod schema always lists zoom (and scroll_amount is a number).
 	params, ok := tool.Parameters.(map[string]interface{})
 	require.True(t, ok)
 
@@ -66,7 +66,9 @@ func TestComputer20251124_WithoutZoom(t *testing.T) {
 	actionEnum, ok := action["enum"].([]string)
 	require.True(t, ok)
 
-	assert.NotContains(t, actionEnum, "zoom")
+	assert.Contains(t, actionEnum, "zoom")
+	sa := properties["scroll_amount"].(map[string]interface{})
+	assert.Equal(t, "number", sa["type"])
 }
 
 func TestComputer20251124_WithDisplayNumber(t *testing.T) {

@@ -92,7 +92,7 @@ func TestMissingCredentialsFailBeforeSending(t *testing.T) {
 	}
 	m, _ := p.LanguageModel("claude-sonnet-4-6")
 	_, err = m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
-	if err == nil || !strings.Contains(err.Error(), "AWS SigV4 authentication requires AWS credentials") || hit {
+	if err == nil || !strings.Contains(err.Error(), "AWS SigV4 authentication requires AWS credentials") || !strings.Contains(err.Error(), "\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") || hit {
 		t.Fatalf("err = %v, request sent = %v", err, hit)
 	}
 }

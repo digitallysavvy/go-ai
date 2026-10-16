@@ -49,10 +49,10 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		accessKeyID := firstNonEmpty(t.accessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
 		secretAccessKey := firstNonEmpty(t.secretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
 		if accessKeyID == "" {
-			return nil, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in settings\n3. Use a CredentialProvider function\n4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or APIKey")
+			return nil, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n2. Provide AccessKeyID and SecretAccessKey in settings\n3. Use a CredentialProvider function\n4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or APIKey\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")
 		}
 		if secretAccessKey == "" {
-			return nil, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided")
+			return nil, fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.")
 		}
 		sessionToken := firstNonEmpty(t.sessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 		signer = bedrock.NewAWSSignerForService(accessKeyID, secretAccessKey, sessionToken, region, mantleSigningService)

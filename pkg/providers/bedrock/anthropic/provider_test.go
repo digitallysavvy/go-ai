@@ -254,6 +254,14 @@ func TestSigV4Authentication_MissingCredentialsErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when no credentials are available")
 	}
+	if !strings.Contains(err.Error(), "\nOriginal error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.") {
+		t.Fatalf("missing TS 'Original error' text: %v", err)
+	}
+	t.Setenv("AWS_ACCESS_KEY_ID", "akid")
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hello"}})
+	if err == nil || !strings.Contains(err.Error(), "Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") {
+		t.Fatalf("secret error = %v", err)
+	}
 }
 
 // TestSessionTokenEnvFallback_AlwaysFromEnv: TS bedrock-anthropic always
