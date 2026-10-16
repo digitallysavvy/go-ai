@@ -496,11 +496,7 @@ func decodeDataURL(raw string) ([]byte, error) {
 	if i := strings.IndexByte(payload, '#'); i >= 0 {
 		payload = payload[:i] // a fragment is not part of the data
 	}
-	decoded, err := neturl.PathUnescape(payload)
-	if err != nil {
-		// invalid percent escapes are kept literally, as in the spec
-		decoded = payload
-	}
+	decoded := percentDecode(payload)
 	if isBase64DataURLMeta(meta) {
 		compact := strings.Map(func(r rune) rune {
 			switch r {
@@ -509,7 +505,19 @@ func decodeDataURL(raw string) ([]byte, error) {
 			}
 			return r
 		}, decoded)
-		compact = strings.TrimRight(compact, "=")
+		// forgiving-base64 decode: up to two trailing "=" are dropped when
+		// the length is a multiple of 4; any other "=" or a length of 1 mod 4
+		// is a failure.
+		if len(compact)%4 == 0 {
+			if strings.HasSuffix(compact, "==") {
+				compact = compact[:len(compact)-2]
+			} else if strings.HasSuffix(compact, "=") {
+				compact = compact[:len(compact)-1]
+			}
+		}
+		if strings.Contains(compact, "=") || len(compact)%4 == 1 {
+			return nil, providererrors.NewDownloadError(raw, 0, "", "", base64.CorruptInputError(0))
+		}
 		data, err := base64.RawStdEncoding.DecodeString(compact)
 		if err != nil {
 			return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
@@ -517,6 +525,35 @@ func decodeDataURL(raw string) ([]byte, error) {
 		return data, nil
 	}
 	return []byte(decoded), nil
+}
+
+// percentDecode is the URL standard's percent-decode: each valid %XX becomes
+// its byte and anything else (including a malformed escape) stays literal.
+func percentDecode(s string) string {
+	if !strings.Contains(s, "%") {
+		return s
+	}
+	hex := func(c byte) int {
+		switch {
+		case c >= '0' && c <= '9':
+			return int(c - '0')
+		case c >= 'a' && c <= 'f':
+			return int(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			return int(c-'A') + 10
+		}
+		return -1
+	}
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && hex(s[i+1]) >= 0 && hex(s[i+2]) >= 0 {
+			out = append(out, byte(hex(s[i+1])<<4|hex(s[i+2])))
+			i += 2
+			continue
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
 }
 
 func isBase64DataURLMeta(meta string) bool {
