@@ -137,7 +137,7 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 			flush()
 		case types.RoleTool:
 			for _, part := range msg.Content {
-				if tr, ok := part.(types.ToolResultContent); ok {
+				if tr, ok := derefMistralPart(part).(types.ToolResultContent); ok {
 					appendToolResult(tr)
 				}
 			}

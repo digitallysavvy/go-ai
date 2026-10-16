@@ -28,3 +28,18 @@ func TestConvertMistralPointerPartsAreNotDropped(t *testing.T) {
 		t.Fatalf("tool = %+v", out[1])
 	}
 }
+
+func TestConvertMistralConversationInputsPointerToolResult(t *testing.T) {
+	inputs, _, err := convertToMistralConversationInputs([]types.Message{
+		{Role: types.RoleTool, Content: []types.ContentPart{&types.ToolResultContent{
+			ToolCallID: "c1", ToolName: "t",
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputText, Value: "ok"},
+		}}},
+	}, conversationToolNames{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inputs) != 1 || inputs[0]["tool_call_id"] != "c1" || inputs[0]["result"] != "ok" {
+		t.Fatalf("inputs = %+v", inputs)
+	}
+}

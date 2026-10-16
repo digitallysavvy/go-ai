@@ -322,6 +322,10 @@ func derefMistralPart(part types.ContentPart) types.ContentPart {
 		if p != nil {
 			return *p
 		}
+	case *types.ToolResultContent:
+		if p != nil {
+			return *p
+		}
 	}
 	return part
 }
