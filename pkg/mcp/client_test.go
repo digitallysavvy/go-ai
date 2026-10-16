@@ -1218,3 +1218,48 @@ func TestCallToolRetryExhaustionKeepsLastErrorAsCause(t *testing.T) {
 		t.Fatalf("err = %v, want the last attempt's error as cause", err)
 	}
 }
+
+// emptyCursorTransport answers tools/list with nextCursor "" on the first
+// page; TS continues while nextCursor != null, sending cursor: "" next.
+type emptyCursorTransport struct {
+	*pagedToolsTransport
+	raw []string
+}
+
+func (t *emptyCursorTransport) Send(ctx context.Context, msg *MCPMessage) error {
+	if msg.Method != "tools/list" {
+		return t.pagedToolsTransport.Send(ctx, msg)
+	}
+	t.mu.Lock()
+	t.raw = append(t.raw, string(msg.Params))
+	n := len(t.raw)
+	t.mu.Unlock()
+	body := `{"tools":[{"name":"p1","inputSchema":{"type":"object"}}],"nextCursor":""}`
+	if n > 1 {
+		body = `{"tools":[{"name":"p2","inputSchema":{"type":"object"}}]}`
+	}
+	t.messages <- &MCPMessage{JSONRpc: "2.0", ID: msg.ID, Result: json.RawMessage(body)}
+	return nil
+}
+
+func TestListAllToolsContinuesOnEmptyStringNextCursor(t *testing.T) {
+	transport := &emptyCursorTransport{pagedToolsTransport: newPagedToolsTransport()}
+	client := NewMCPClient(transport, MCPClientConfig{})
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect failed: %v", err)
+	}
+	defer client.Close() //nolint:errcheck
+
+	tools, err := client.ListAllTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 2 || tools[0].Name != "p1" || tools[1].Name != "p2" {
+		t.Fatalf("tools = %#v, want p1,p2", tools)
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	if len(transport.raw) != 2 || !strings.Contains(transport.raw[1], `"cursor":""`) {
+		t.Fatalf("raw params = %v, want second request to carry cursor \"\"", transport.raw)
+	}
+}

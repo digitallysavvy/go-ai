@@ -764,7 +764,9 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 
 		result, execErr := executeWorkflowApprovedTool(ctx, tool, call, opts)
 		if execErr != nil {
-			// Failed executions stream as tool errors, not tool results.
+			// TS writeApprovalToolResults writes a plain tool-result whose output
+			// is the error text (rawOutput), not a tool-error, so the UI stream
+			// carries tool-output-available.
 			return approvedOutcome{
 				result: errorTextResult(call, execErr.Error()),
 				chunk: &provider.StreamChunk{
@@ -773,7 +775,7 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 						ToolCallID: call.ID,
 						ToolName:   call.ToolName,
 						Input:      call.Arguments,
-						Error:      execErr,
+						Result:     execErr.Error(),
 						Dynamic:    call.Dynamic,
 					},
 				},

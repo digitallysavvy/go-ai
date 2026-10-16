@@ -100,7 +100,9 @@ func TestWorkflowResumeRejectsForgedSignedApproval(t *testing.T) {
 	}
 }
 
-// TS 05672ad: failed approved tool executions stream as tool errors.
+// TS writeApprovalToolResults: a failed approved tool streams a plain
+// tool-result whose output is the error text (tool-output-available), not a
+// tool-output-error.
 func TestWorkflowResumeStreamsFailedApprovedToolAsToolError(t *testing.T) {
 	model := &wfMockModel{}
 	agent, err := NewWorkflowAgent(WorkflowAgent{
@@ -131,8 +133,12 @@ func TestWorkflowResumeStreamsFailedApprovedToolAsToolError(t *testing.T) {
 			got = c.ToolResult
 		}
 	}
-	if got == nil || got.Error == nil || got.Error.Error() != "weather service down" || got.Result != nil {
-		t.Fatalf("tool chunk = %+v, want tool error", got)
+	if got == nil || got.Error != nil || got.Result != "weather service down" {
+		t.Fatalf("tool chunk = %+v, want tool result carrying the error text", got)
+	}
+	ui, ok := ToUIMessageChunk(ModelCallStreamPart{Type: provider.ChunkTypeToolResult, ToolResult: got})
+	if !ok || ui["type"] != "tool-output-available" || ui["output"] != "weather service down" {
+		t.Fatalf("ui chunk = %v, want tool-output-available with error text", ui)
 	}
 	tr := lastToolResultInPrompt(t, model, "weather-1")
 	if tr.Output == nil || tr.Output.Type != types.ToolResultOutputErrorText || tr.Output.Value != "weather service down" {
