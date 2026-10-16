@@ -644,6 +644,13 @@ func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
 	depth, pending := 0, 0
 	for ; j < len(tokens); j++ {
 		t := tokens[j]
+		if t.kind == "space" && depth == 0 && strings.ContainsAny(t.text, "\n\r\u2028\u2029") {
+			// A line break followed by a statement keyword ends the arrow
+			// body (ASI): a `:` further down belongs to another statement.
+			if n := nextSignificant(tokens, j+1); n >= 0 && tokens[n].kind == "ident" && statementStartKeywords[tokens[n].text] {
+				return false
+			}
+		}
 		if t.kind != "punct" {
 			continue
 		}
@@ -673,6 +680,16 @@ func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
 		}
 	}
 	return false
+}
+
+// statementStartKeywords are identifiers that begin a statement and can never
+// continue an expression, so a line break before one ends the previous
+// statement.
+var statementStartKeywords = map[string]bool{
+	"const": true, "let": true, "var": true, "function": true, "class": true, "if": true,
+	"for": true, "while": true, "do": true, "switch": true, "try": true, "return": true,
+	"throw": true, "break": true, "continue": true, "import": true, "export": true,
+	"interface": true, "enum": true, "namespace": true, "declare": true, "abstract": true,
 }
 
 // followsConditionalQuestion reports whether the last significant emitted
