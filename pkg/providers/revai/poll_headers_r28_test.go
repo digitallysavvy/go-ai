@@ -51,4 +51,3 @@ func TestRevaiPollCarriesProviderUserAgentAndBase64Audio(t *testing.T) {
 		t.Errorf("poll User-Agent = %q", pollUA)
 	}
 }
-
