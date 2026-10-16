@@ -338,3 +338,32 @@ func TestLanguageModel_DeprecatedXaiOptionsKey(t *testing.T) {
 		assert.NotEqual(t, "providerOptions key 'xai'", w.Setting)
 	}
 }
+
+// TestLanguageModel_GoogleTokenOverridesCallerAuthorization matches the TS
+// node wrapper: the generated bearer token is spread after user headers, so a
+// caller Authorization header (config or per-call) never wins.
+func TestLanguageModel_GoogleTokenOverridesCallerAuthorization(t *testing.T) {
+	var got []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mockChatCompletionsResponse())
+	}))
+	defer server.Close()
+
+	prov, err := New(Config{
+		Project: "p", Location: "global", AccessToken: "google-token", BaseURL: server.URL,
+		Headers: map[string]string{"Authorization": "Bearer config-header"},
+	})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{
+		Prompt:  types.Prompt{Text: "hi"},
+		Headers: map[string]string{"Authorization": "Bearer call-header"},
+	})
+	require.NoError(t, err)
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Bearer google-token", "Bearer google-token"}, got)
+}
