@@ -655,6 +655,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
 		stepIndex := stepNum - 1
 		callConfig := a.prepareStepCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+		// A PrepareCall override of the telemetry settings (TS prepareCall
+		// `telemetry`) applies to this and the following steps' spans.
+		if callConfig.Telemetry != nil && callConfig.Telemetry != a.config.Telemetry {
+			ctx = a.adoptPreparedTelemetry(ctx, lt, callConfig.Telemetry, currentMessages)
+		}
 
 		// Apply deferred tool discovery (ai.ToolSearch / types.Tool.DeferLoading)
 		// and tool-caller routing (ExperimentalToolCallers) before the
@@ -781,7 +786,19 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 					callTools[i] = tool
 				}
 			}
-			toolResults, err := a.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage), timings)
+			// A PrepareCall override of the step's tool-call concurrency (TS
+			// prepareCall toolCallConcurrency) bounds this step's calls.
+			stepAgent := a
+			if callConfig.ToolCallConcurrency != a.config.ToolCallConcurrency {
+				if err := validateToolCallConcurrency(callConfig.ToolCallConcurrency); err != nil {
+					stepTel.fail(err)
+					return nil, err
+				}
+				local := *a
+				local.config.ToolCallConcurrency = callConfig.ToolCallConcurrency
+				stepAgent = &local
+			}
+			toolResults, err := stepAgent.executeTools(stepCtx, stepResult.ToolCalls, callTools, callConfig.Messages, stepIndex, callConfig.RuntimeContext, callConfig.ToolsContext, callConfig.ExperimentalSandbox, callConfig.ToolApproval, cbs, result.Usage.Add(stepResult.Usage), timings)
 			if err != nil {
 				stepTel.fail(err)
 				// Call OnChainError callback
@@ -1543,12 +1560,34 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		stepModel = a.config.Model
 	}
 
+	// Instructions given as system messages take precedence over System and
+	// keep each message's ProviderOptions (TS standardizePrompt: instructions
+	// may be SystemModelMessage[]).
+	promptSystem := callConfig.System
+	if len(callConfig.InstructionMessages) > 0 {
+		for _, m := range callConfig.InstructionMessages {
+			if m.Role != types.RoleSystem {
+				return nil, false, callConfig.CustomData, callConfig.Tools, &providererrors.InvalidArgumentError{
+					Field:   "instructions",
+					Message: "instructions must be a string, SystemModelMessage, or array of SystemModelMessage",
+				}
+			}
+		}
+		promptSystem = ""
+	}
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
 		Messages: callConfig.Messages,
-		System:   callConfig.System,
+		System:   promptSystem,
 	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	if len(callConfig.InstructionMessages) > 0 {
+		withInstructions := make([]types.Message, 0, len(callConfig.InstructionMessages)+len(prompt.Messages))
+		for _, m := range callConfig.InstructionMessages {
+			withInstructions = append(withInstructions, types.Message{Role: types.RoleSystem, Content: m.Content, ProviderOptions: m.ProviderOptions})
+		}
+		prompt.Messages = append(withInstructions, prompt.Messages...)
 	}
 
 	// Reject a prompt that leaves a tool call without a result, as

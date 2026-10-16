@@ -47,6 +47,36 @@ type loopTelemetry struct {
 	callID   string
 	// ownsRoot is true when the loop opened the root span itself.
 	ownsRoot bool
+	// rootCtx is the context carrying the root span when the loop opened it
+	// late, for a PrepareCall telemetry override (see adoptPreparedTelemetry).
+	rootCtx context.Context
+}
+
+// adoptPreparedTelemetry applies a PrepareCall telemetry override (TS
+// prepareCall `telemetry`). Later spans use the new settings. When the caller
+// already opened a root span under the previous settings, the new settings
+// have none, so the loop opens one for them and closes it at the end.
+func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTelemetry, settings *ai.TelemetrySettings, messages []types.Message) context.Context {
+	if lt == nil || settings == nil || settings == lt.settings {
+		return ctx
+	}
+	lt.settings = settings
+	if lt.ownsRoot {
+		return ctx
+	}
+	lt.ownsRoot = true
+	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
+		CallID:         lt.callID,
+		OperationType:  "ai.generateText",
+		ModelProvider:  a.config.Model.Provider(),
+		ModelID:        a.config.Model.ModelID(),
+		Settings:       settings,
+		Messages:       messages,
+		RuntimeContext: telemetryRuntimeContextFor(settings, a.runtimeContext()),
+		ToolsContext:   telemetryToolsContextFor(settings, a.config.ToolsContext),
+	})
+	lt.rootCtx = ctx
+	return ctx
 }
 
 func (a *ToolLoopAgent) loopTelemetrySettings() *ai.TelemetrySettings {
@@ -146,6 +176,9 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types
 func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry, result *AgentResult, err error) {
 	if lt == nil || !lt.ownsRoot {
 		return
+	}
+	if lt.rootCtx != nil {
+		ctx = lt.rootCtx
 	}
 	if err != nil {
 		if isAbort(ctx, err) {
