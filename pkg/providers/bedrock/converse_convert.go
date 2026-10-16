@@ -465,51 +465,95 @@ func bedrockReasoningMetadata(part types.ReasoningContent) (signature string, ha
 
 // ─── Guard content / citations provider options ────────────────────────────
 
-func bedrockTextGuardContentOptions(providerOptions map[string]interface{}) (guard bool, qualifiers []string) {
+// bedrockPartOptions mirrors the TS `parseProviderOptions(amazonBedrock) ??
+// parseProviderOptions(bedrock)` lookup for part-level provider options: the
+// first present (non-null) entry is returned and a non-object entry is an
+// InvalidArgumentError.
+func bedrockPartOptions(providerOptions map[string]interface{}) (map[string]interface{}, string, error) {
 	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(providerOptions, providerName)
-		if raw == nil {
+		raw, present := providerOptions[providerName]
+		if !present || raw == nil {
 			continue
 		}
-		guard, _ = raw["guardContent"].(bool)
-		if qs, ok := raw["guardContentQualifiers"].([]interface{}); ok {
-			for _, q := range qs {
-				if s, ok := q.(string); ok {
-					qualifiers = append(qualifiers, s)
+		m, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, providerName, invalidProviderOptions(providerName, fmt.Errorf("expected object, received %T", raw))
+		}
+		return m, providerName, nil
+	}
+	return nil, "", nil
+}
+
+func bedrockGuardContentFlag(raw map[string]interface{}, providerName string) (bool, error) {
+	v, ok := raw["guardContent"]
+	if !ok || v == nil {
+		return false, nil
+	}
+	b, isBool := v.(bool)
+	if !isBool {
+		return false, invalidProviderOptions(providerName, fmt.Errorf("guardContent: expected boolean, received %T", v))
+	}
+	return b, nil
+}
+
+func bedrockTextGuardContentOptions(providerOptions map[string]interface{}) (guard bool, qualifiers []string, err error) {
+	raw, providerName, err := bedrockPartOptions(providerOptions)
+	if raw == nil || err != nil {
+		return false, nil, err
+	}
+	if guard, err = bedrockGuardContentFlag(raw, providerName); err != nil {
+		return false, nil, err
+	}
+	if v, ok := raw["guardContentQualifiers"]; ok && v != nil {
+		qs, isArray := v.([]interface{})
+		if !isArray {
+			if strs, isStrings := v.([]string); isStrings {
+				for _, q := range strs {
+					qs = append(qs, q)
 				}
+				isArray = true
 			}
 		}
-		return guard, qualifiers
+		if !isArray {
+			return false, nil, invalidProviderOptions(providerName, fmt.Errorf("guardContentQualifiers: expected array, received %T", v))
+		}
+		for _, q := range qs {
+			s, _ := q.(string)
+			if s != "grounding_source" && s != "query" && s != "guard_content" {
+				return false, nil, invalidProviderOptions(providerName, fmt.Errorf("guardContentQualifiers: invalid option %v, expected one of grounding_source, query, guard_content", q))
+			}
+			qualifiers = append(qualifiers, s)
+		}
 	}
-	return false, nil
+	return guard, qualifiers, nil
 }
 
-func bedrockImageGuardContentOptions(providerOptions map[string]interface{}) bool {
-	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(providerOptions, providerName)
-		if raw == nil {
-			continue
-		}
-		guard, _ := raw["guardContent"].(bool)
-		return guard
+func bedrockImageGuardContentOptions(providerOptions map[string]interface{}) (bool, error) {
+	raw, providerName, err := bedrockPartOptions(providerOptions)
+	if raw == nil || err != nil {
+		return false, err
 	}
-	return false
+	return bedrockGuardContentFlag(raw, providerName)
 }
 
-func bedrockCitationsEnabled(providerOptions map[string]interface{}) bool {
-	for _, providerName := range []string{"amazonBedrock", "bedrock"} {
-		raw := bedrockProviderOptionMap(providerOptions, providerName)
-		if raw == nil {
-			continue
-		}
-		citations, ok := raw["citations"].(map[string]interface{})
-		if !ok {
-			return false
-		}
-		enabled, _ := citations["enabled"].(bool)
-		return enabled
+func bedrockCitationsEnabled(providerOptions map[string]interface{}) (bool, error) {
+	raw, providerName, err := bedrockPartOptions(providerOptions)
+	if raw == nil || err != nil {
+		return false, err
 	}
-	return false
+	v, ok := raw["citations"]
+	if !ok || v == nil {
+		return false, nil
+	}
+	citations, isMap := v.(map[string]interface{})
+	if !isMap {
+		return false, invalidProviderOptions(providerName, fmt.Errorf("citations: expected object, received %T", v))
+	}
+	enabled, isBool := citations["enabled"].(bool)
+	if !isBool {
+		return false, invalidProviderOptions(providerName, fmt.Errorf("citations.enabled: expected boolean, received %T", citations["enabled"]))
+	}
+	return enabled, nil
 }
 
 // ─── Message grouping ──────────────────────────────────────────────────────
@@ -606,7 +650,10 @@ func convertToBedrockChatMessages(messages []types.Message, isMistral bool) (sys
 					for _, part := range msg.Content {
 						switch p := part.(type) {
 						case types.TextContent:
-							guard, qualifiers := bedrockTextGuardContentOptions(p.ProviderOptions)
+							guard, qualifiers, err := bedrockTextGuardContentOptions(p.ProviderOptions)
+							if err != nil {
+								return nil, nil, err
+							}
 							if guard {
 								textBlock := map[string]interface{}{"text": p.Text}
 								if len(qualifiers) > 0 {
@@ -831,7 +878,11 @@ func bedrockUserImageBlock(p types.ImageContent) (map[string]interface{}, error)
 		"format": format,
 		"source": map[string]interface{}{"bytes": base64Encode(p.Image)},
 	}
-	if bedrockImageGuardContentOptions(p.ProviderOptions) {
+	guard, err := bedrockImageGuardContentOptions(p.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
+	if guard {
 		return map[string]interface{}{"guardContent": map[string]interface{}{"image": imageBlock}}, nil
 	}
 	return map[string]interface{}{"image": imageBlock}, nil
@@ -890,7 +941,11 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 		}
 		imageBlock := map[string]interface{}{"image": map[string]interface{}{"format": format, "source": mediaSourceBlock(payload)}}
 		// TS: providerOptions.bedrock.guardContent wraps an inline image part.
-		if bedrockImageGuardContentOptions(file.ProviderOptions) {
+		guard, err := bedrockImageGuardContentOptions(file.ProviderOptions)
+		if err != nil {
+			return nil, false, err
+		}
+		if guard {
 			return map[string]interface{}{"guardContent": imageBlock}, true, nil
 		}
 		return imageBlock, true, nil
@@ -911,7 +966,11 @@ func bedrockUserFileBlock(file types.FileContent, getDocumentName func(string) s
 		"name":   getDocumentName(file.Filename),
 		"source": map[string]interface{}{"bytes": payload.bytes},
 	}
-	if bedrockCitationsEnabled(file.ProviderOptions) {
+	citationsEnabled, err := bedrockCitationsEnabled(file.ProviderOptions)
+	if err != nil {
+		return nil, false, err
+	}
+	if citationsEnabled {
 		document["citations"] = map[string]interface{}{"enabled": true}
 	}
 	return map[string]interface{}{"document": document}, true, nil
@@ -995,7 +1054,11 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 						"name":   getDocumentName(b.Filename),
 						"source": map[string]interface{}{"bytes": payload.bytes},
 					}
-					if bedrockCitationsEnabled(b.ProviderOptions) {
+					citationsEnabled, err := bedrockCitationsEnabled(b.ProviderOptions)
+					if err != nil {
+						return nil, err
+					}
+					if citationsEnabled {
 						document["citations"] = map[string]interface{}{"enabled": true}
 					}
 					out = append(out, map[string]interface{}{"document": document})
