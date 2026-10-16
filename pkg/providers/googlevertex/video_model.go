@@ -540,23 +540,23 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 	opts := polling.PollOptions{PollIntervalMs: 5000, PollTimeoutMs: 600000}
 
 	if providerOpts != nil {
-		raw, ok := providerOpts["googleVertex"]
-		if !ok {
-			raw, ok = providerOpts["vertex"]
+		// A null "googleVertex" entry falls through to "vertex", like TS
+		// parseProviderOptions treating null as absent.
+		raw := providerOpts["googleVertex"]
+		if raw == nil {
+			raw = providerOpts["vertex"]
 		}
-		if ok {
-			if vertexOpts, ok := raw.(map[string]interface{}); ok {
-				// CoerceInt (not a bare `.(int)` assertion) because
-				// providerOpts commonly arrives via encoding/json.Unmarshal
-				// (a JSON config file, or a request body forwarded straight
-				// into ProviderOptions), which decodes JSON numbers as
-				// float64, not int.
-				if interval, ok := providerutils.CoerceInt(vertexOpts["pollIntervalMs"]); ok {
-					opts.PollIntervalMs = interval
-				}
-				if timeout, ok := providerutils.CoerceInt(vertexOpts["pollTimeoutMs"]); ok {
-					opts.PollTimeoutMs = timeout
-				}
+		if vertexOpts, ok := raw.(map[string]interface{}); ok {
+			// CoerceInt (not a bare `.(int)` assertion) because
+			// providerOpts commonly arrives via encoding/json.Unmarshal
+			// (a JSON config file, or a request body forwarded straight
+			// into ProviderOptions), which decodes JSON numbers as
+			// float64, not int.
+			if interval, ok := providerutils.CoerceInt(vertexOpts["pollIntervalMs"]); ok {
+				opts.PollIntervalMs = interval
+			}
+			if timeout, ok := providerutils.CoerceInt(vertexOpts["pollTimeoutMs"]); ok {
+				opts.PollTimeoutMs = timeout
 			}
 		}
 	}
