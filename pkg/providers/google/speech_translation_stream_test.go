@@ -828,3 +828,43 @@ func TestSpeechTranslationModel_DoStream_RejectsBadOptionTypes(t *testing.T) {
 		t.Fatalf("err = %v, want InvalidArgumentError", err)
 	}
 }
+
+// TestSpeechTranslationModel_DoStream_CleanCloseRacingAudioEnded: a turn is
+// complete, the clean close wins the select while audio-ended is pending; TS
+// finishes normally.
+func TestSpeechTranslationModel_DoStream_CleanCloseRacingAudioEnded(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newSpeechTranslationTestModel(t, server.ts.URL, 10*time.Second)
+	result, err := model.DoStream(context.Background(), &provider.SpeechTranslationStreamOptions{
+		Audio:            newChanAudioStream([]byte{1, 2, 3}),
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		TargetLanguage:   "es",
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+
+	testHideAudioEnded.Store(true)
+	t.Cleanup(func() { testHideAudioEnded.Store(false) })
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() error = %v", err)
+	}
+	server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"outputTranscription": map[string]interface{}{"text": "Hola"}}}
+	server.toSend <- map[string]interface{}{"serverContent": map[string]interface{}{"turnComplete": true}}
+	time.Sleep(50 * time.Millisecond)
+	server.closeConnection()
+
+	parts, err := drainUntilTranslationFinishOrError(t, result.Stream)
+	if err != nil {
+		t.Fatalf("stream error = %v", err)
+	}
+	if finish := parts[len(parts)-1]; finish.OutputText != "Hola" {
+		t.Fatalf("finish = %+v", finish)
+	}
+}

@@ -287,7 +287,7 @@ func NormalizeBaseURL(baseURL string) (string, error) {
 	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
 		return "", err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = strings.TrimSuffix(baseURL, "/")
 	if baseURL == anthropicAPIURL {
 		return DefaultBaseURL, nil
 	}

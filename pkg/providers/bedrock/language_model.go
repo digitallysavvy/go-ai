@@ -733,11 +733,18 @@ func (e *jsonObjectTextExtractor) process(text string) string {
 // for AWS SigV4 canonicalization. Ports TS getUrl(): encodeURIComponent(id)
 // so ARNs (which may contain '/' and ':') survive as a single path segment.
 func (m *LanguageModel) converseURL(baseURL, suffix string) (*url.URL, string, error) {
+	return bedrockModelURL(baseURL, m.modelID, suffix)
+}
+
+// bedrockModelURL builds `${baseURL}/model/${encodeURIComponent(modelID)}${suffix}`
+// as an opaque URL so the percent-encoding (and any base URL path prefix)
+// reaches the wire and the SigV4 canonicalization exactly like TS.
+func bedrockModelURL(baseURL, modelID, suffix string) (*url.URL, string, error) {
 	base, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, "", err
 	}
-	rawPath := "/model/" + jsEncodeURIComponent(m.modelID) + suffix
+	rawPath := strings.TrimSuffix(base.EscapedPath(), "/") + "/model/" + jsEncodeURIComponent(modelID) + suffix
 	reqURL := &url.URL{Scheme: base.Scheme, Host: base.Host, Opaque: rawPath}
 	return reqURL, rawPath, nil
 }

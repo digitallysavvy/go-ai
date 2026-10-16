@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -195,17 +194,20 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("/model/%s/invoke", url.PathEscape(m.modelID))
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s%s", baseURL, endpoint)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
+	invokeURL, _, err := bedrockModelURL(baseURL, m.modelID, "/invoke")
+	if err != nil {
+		return nil, err
+	}
+	req.URL = invokeURL
+	req.Host = invokeURL.Host
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
@@ -539,17 +541,20 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("/model/%s/invoke", url.PathEscape(m.modelID))
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	reqURL := fmt.Sprintf("%s%s", baseURL, endpoint)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
+	invokeURL, _, err := bedrockModelURL(baseURL, m.modelID, "/invoke")
+	if err != nil {
+		return nil, err
+	}
+	req.URL = invokeURL
+	req.Host = invokeURL.Host
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	requestHeaders := map[string]string{}

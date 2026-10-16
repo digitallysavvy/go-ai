@@ -98,12 +98,19 @@ func (p *BedrockMantleProvider) Name() string { return "bedrock-mantle" }
 // is one Mantle serves through its separate OpenAI-compatible route.
 func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) {
 	if p.settings.BaseURL != "" {
-		return strings.TrimRight(p.settings.BaseURL, "/"), nil
+		return strings.TrimSuffix(p.settings.BaseURL, "/"), nil
 	}
 	// Region is interpolated directly into the request host
 	// (https://bedrock-mantle.{region}.api.aws/...), so only a single DNS
 	// label is accepted; ports TS bedrock-mantle-provider.ts (TS #21842).
-	if !providerutils.IsValidHostnamePart(p.region) {
+	// TS loadSetting reads AWS_REGION lazily on each request URL build, so a
+	// region exported after the provider (or the default instance) was created
+	// is still honored.
+	region := firstNonEmpty(p.settings.Region, os.Getenv("AWS_REGION"))
+	if region == "" {
+		return "", fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable")
+	}
+	if !providerutils.IsValidHostnamePart(region) {
 		return "", &providererrors.InvalidArgumentError{
 			Field:   "region",
 			Message: "Invalid AWS region. Expected a single DNS label (letters, digits, and hyphens). Use `baseURL` for custom endpoints.",
@@ -113,7 +120,7 @@ func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) 
 	if isMantleOpenAIOnlyModel(modelID) {
 		path = "openai/v1"
 	}
-	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s", p.region, path), nil
+	return fmt.Sprintf("https://bedrock-mantle.%s.api.aws/%s", region, path), nil
 }
 
 func (p *BedrockMantleProvider) openaiProviderForModel(modelID string) (*openai.Provider, error) {

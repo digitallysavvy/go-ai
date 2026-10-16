@@ -175,7 +175,7 @@ func (m *VideoModel) getStatus(ctx context.Context, opts *provider.VideoModelV3S
 	}
 	downloadOpts.Headers = statusHeaders
 
-	statusURL := strings.TrimRight(m.prov.videoBaseURL, "/") + "/v2/query/video_generation/" + providerutils.EncodePathSegment(op.TaskID)
+	statusURL := m.prov.videoBaseURL + "/v2/query/video_generation/" + providerutils.EncodePathSegment(op.TaskID)
 
 	result, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
