@@ -127,6 +127,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	}
 	inner := newCohereV2Stream(httpResp.Body)
 	inner.requestBody = reqBody
+	inner.includeRawChunks = opts.IncludeRawChunks
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
@@ -613,6 +614,12 @@ type cohereV2Stream struct {
 	pendingTools      map[string]*cohereV2PendingTool
 	isActiveReasoning bool
 
+	// includeRawChunks emits a raw chunk before each event is processed
+	// (TS: options.includeRawChunks); pendingEvent is the event whose raw
+	// chunk was just returned.
+	includeRawChunks bool
+	pendingEvent     *streaming.SSEEvent
+
 	// The finish part is emitted when the stream ends (TS flush(): reason
 	// "other" until a message-end supplies one).
 	finishRaw     string
@@ -685,20 +692,34 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		if s.err != nil {
 			return nil, s.err
 		}
-		event, err := s.parser.Next()
-		if err != nil {
-			if err == io.EOF && s.queueFinishAtEnd() {
-				continue
+		var event *streaming.SSEEvent
+		if s.pendingEvent != nil {
+			event, s.pendingEvent = s.pendingEvent, nil
+		} else {
+			var err error
+			event, err = s.parser.Next()
+			if err != nil {
+				if err == io.EOF && s.queueFinishAtEnd() {
+					continue
+				}
+				s.err = err
+				return nil, err
 			}
-			s.err = err
-			return nil, err
-		}
-		if streaming.IsStreamDone(event) {
-			if s.queueFinishAtEnd() {
-				continue
+			if streaming.IsStreamDone(event) {
+				if s.queueFinishAtEnd() {
+					continue
+				}
+				s.err = io.EOF
+				return nil, io.EOF
 			}
-			s.err = io.EOF
-			return nil, io.EOF
+			if s.includeRawChunks {
+				s.pendingEvent = event
+				var raw interface{}
+				if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
+					raw = event.Data
+				}
+				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
+			}
 		}
 
 		// Cohere v2 SSE: each event has a type field plus a delta field.
