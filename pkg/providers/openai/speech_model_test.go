@@ -181,3 +181,25 @@ func TestSpeechProviderOptionsValidatedLikeTS(t *testing.T) {
 		t.Fatalf("body=%v err=%v", body, err)
 	}
 }
+
+// TS createBinaryResponseHandler / postToApi treat any 2xx as success.
+func TestSpeechModelAccepts2xxNon200(t *testing.T) {
+	serverURL, closeServer := newOpenAIIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("AUDIO"))
+	}))
+	defer closeServer()
+	m := NewSpeechModel(New(Config{APIKey: "k", BaseURL: serverURL + "/v1"}), "tts-1")
+	out, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "hello"})
+	if err != nil {
+		t.Fatalf("202 must be accepted: %v", err)
+	}
+	if string(out.Audio) != "AUDIO" {
+		t.Fatalf("audio = %q", out.Audio)
+	}
+	// Binary handler: TS reports no response.body for raw audio.
+	if out.Response.Body != nil {
+		t.Fatalf("response body for raw audio must be nil, got %T", out.Response.Body)
+	}
+}

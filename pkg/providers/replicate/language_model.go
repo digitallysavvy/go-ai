@@ -66,7 +66,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, providererrors.NewProviderError("replicate", 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode != 201 && resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, internalhttp.StatusProviderError("replicate", resp.StatusCode, resp.Headers, resp.Body)
 	}
 

@@ -213,6 +213,23 @@ Shell tools allow the model to interact with a sandboxed environment. There are 
 import "github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 ```
 
+### Client-executed tools
+
+Like the TypeScript SDK, `NewComputerTool`, `NewLocalShellTool`, `NewShellTool` and
+`NewApplyPatchTool` are client-executed: `ProviderExecuted` is false and `Execute` is
+nil, so the model's call is returned to you unexecuted. Attach your implementation
+with `responses.WithExecute` (or assign `tool.Execute`):
+
+```go
+tool := responses.WithExecute(responses.NewShellTool(),
+    func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+        return runShell(ctx, input)
+    })
+```
+
+Shell calls made inside a hosted container (`container_auto` / `container_reference`)
+are still provider-executed; that is decided per call from the response, not from the tool.
+
 ### Local Shell Tool
 
 Executes commands in a local (sandboxed) shell. No container configuration needed.

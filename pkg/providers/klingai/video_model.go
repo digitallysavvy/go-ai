@@ -111,7 +111,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	if err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
 	}
-	if submitResp.StatusCode != 200 {
+	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
 		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Body)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -22,7 +24,7 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 		seenURI = r.URL.RequestURI()
 		seenUserAgent = r.Header.Get("User-Agent")
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
-		if _, ok := seenBody["input"].([]interface{}); ok {
+		if in, ok := seenBody["input"].([]interface{}); ok && len(in) == 2 {
 			return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[1,2]},{"index":1,"embedding":[3,4]}],"usage":{"prompt_tokens":7,"total_tokens":9}}`, map[string]string{"X-Req": "r1"}), nil
 		}
 		return azureJSONResponse(200, `{"object":"list","data":[{"index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":3,"total_tokens":4}}`, map[string]string{"X-Req": "r1"}), nil
@@ -33,7 +35,7 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbed error = %v", err)
 	}
-	if !strings.HasPrefix(seenURI, "/v1/embeddings?api-version=2024-10-21") || seenBody["input"] != "hello" || seenBody["model"] != "dep" {
+	if !strings.HasPrefix(seenURI, "/v1/embeddings?api-version=2024-10-21") || fmt.Sprint(seenBody["input"]) != "[hello]" || seenBody["model"] != "dep" {
 		t.Fatalf("request mismatch uri=%q body=%#v", seenURI, seenBody)
 	}
 	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"] != "r1" {
@@ -369,5 +371,22 @@ func azureTextResponse(status int, body string) *http.Response {
 		StatusCode: status,
 		Header:     http.Header{},
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// Azure reuses TS OpenAIEmbeddingModel, which parses providerOptions.openai:
+// a wrongly typed option is an InvalidArgumentError before any request.
+func TestAzureEmbeddingModelValidatesOpenAIOptions(t *testing.T) {
+	p := newAzureProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		t.Fatal("no request expected")
+		return nil, nil
+	})
+	m := NewEmbeddingModel(p, "dep")
+	_, err := m.DoEmbedMany(context.Background(), []string{"a"}, &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"dimensions": "256"}},
+	})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("err = %T %v, want InvalidArgumentError", err, err)
 	}
 }

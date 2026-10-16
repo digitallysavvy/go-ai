@@ -148,3 +148,12 @@ func TestImageModelDoGenerate(t *testing.T) {
 		t.Fatal("expected mask unsupported error")
 	}
 }
+
+func TestImageModelMaskErrorTextMatchesTS(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k"}), "black-forest-labs/FLUX.1-kontext-pro")
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "p", Mask: &provider.ImageFile{Type: "file", Data: []byte{1}}})
+	want := "Together AI does not support mask-based image editing. Use FLUX Kontext models (e.g., black-forest-labs/FLUX.1-kontext-pro) with a reference image and descriptive prompt instead."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}

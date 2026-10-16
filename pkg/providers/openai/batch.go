@@ -127,7 +127,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 			if toolID == "" {
 				toolID = tool.Name
 			}
-			if (tool.Type == types.ToolTypeProviderDefined || tool.ProviderExecuted) && !openAIBatchConvertibleProviderToolIDs[toolID] {
+			if (tool.Type == types.ToolTypeProviderDefined || tool.ProviderExecuted || strings.HasPrefix(toolID, "openai.")) && !openAIBatchConvertibleProviderToolIDs[toolID] {
 				warnings = append(warnings, provider.BatchV4Warning{
 					RequestID: textReq.ID,
 					Warning: types.Warning{

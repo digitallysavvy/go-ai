@@ -235,7 +235,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
@@ -573,7 +573,7 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 

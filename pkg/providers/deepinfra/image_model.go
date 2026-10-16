@@ -88,6 +88,9 @@ func boolPtr(b bool) *bool {
 // DoGenerate performs image generation or, when Files are supplied, image
 // editing via DeepInfra's OpenAI-compatible /images/edits endpoint.
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if err := providerutils.ValidateMapProviderOptions("deepinfra", opts.ProviderOptions, deepInfraImageOptionsSchema); err != nil {
+		return nil, err
+	}
 	if len(opts.Files) > 0 {
 		return m.doEdit(ctx, opts)
 	}
@@ -281,6 +284,9 @@ func (m *ImageModel) buildEditMultipartBody(ctx context.Context, opts *provider.
 				}
 			}
 			for key, value := range deepInfraImageOptions(opts.ProviderOptions) {
+				if value == nil {
+					continue // convertToFormData skips null/undefined values
+				}
 				if err := writer.WriteField(key, fmt.Sprintf("%v", value)); err != nil {
 					return err
 				}
@@ -325,6 +331,19 @@ func writeImageFilePart(ctx context.Context, writer *multipart.Writer, fieldName
 	}
 	_, err = part.Write(file.Data)
 	return err
+}
+
+// deepInfraImageOptionsSchema is deepInfraImageModelOptionsSchema (a loose
+// object: unknown keys pass; null is accepted for every declared key).
+var deepInfraImageOptionsSchema = providerutils.OptionSchema{
+	"negative_prompt":     providerutils.OptNullable(providerutils.OptString),
+	"num_inference_steps": providerutils.OptNullable(providerutils.OptNumber),
+	"guidance_scale":      providerutils.OptNullable(providerutils.OptNumber),
+	"guidance":            providerutils.OptNullable(providerutils.OptNumber),
+	"response_format":     providerutils.OptNullable(providerutils.OptEnum("b64_json")),
+	"quality":             providerutils.OptNullable(providerutils.OptString),
+	"style":               providerutils.OptNullable(providerutils.OptString),
+	"user":                providerutils.OptNullable(providerutils.OptString),
 }
 
 // deepInfraImageOptions returns providerOptions.deepinfra as-is (a loose,

@@ -17,6 +17,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for AI Gateway
@@ -207,10 +208,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	var response gatewayVideoStartResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/video-model/start",
-		Body:    body,
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayVideoStart),
+		Method:           http.MethodPost,
+		Path:             "/video-model/start",
+		Body:             body,
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
@@ -235,10 +237,11 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	var response gatewayVideoStatusResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/video-model/status",
-		Body:    map[string]interface{}{"operation": opts.Operation},
-		Headers: headers,
+		ValidateResponse: providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayVideoStatus),
+		Method:           http.MethodPost,
+		Path:             "/video-model/status",
+		Body:             map[string]interface{}{"operation": opts.Operation},
+		Headers:          headers,
 	}, &response)
 	if err != nil {
 		return nil, m.handleErrorWithContext(ctx, err)
@@ -372,12 +375,13 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 
 		line := scanner.Text()
 
-		// SSE data lines begin with "data: "
-		if !strings.HasPrefix(line, "data: ") {
+		// SSE data field: "data:" followed by an optional single space
+		// (the event-stream spec; TS parseJsonEventStream accepts both).
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
+		data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
 
 		var event SSEVideoEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {

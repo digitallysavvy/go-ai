@@ -74,3 +74,16 @@ func TestEmbeddingModelDoEmbedManyAndDoEmbed(t *testing.T) {
 		t.Fatalf("unexpected single embedding result: %+v", one)
 	}
 }
+
+// An empty data array must be an error from DoEmbed, not an index panic
+// (TS does not check the count; the Go single-value API needs a vector).
+func TestEmbeddingModelDoEmbedEmptyDataDoesNotPanic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"list","data":[],"usage":{"prompt_tokens":0,"total_tokens":0}}`))
+	}))
+	defer server.Close()
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: server.URL}), "embed-model")
+	if _, err := m.DoEmbed(context.Background(), "x", nil); err == nil {
+		t.Fatal("expected an error for an empty data array")
+	}
+}

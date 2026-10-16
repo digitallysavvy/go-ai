@@ -11,9 +11,6 @@
 package responses
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -150,11 +147,7 @@ func MapComputerActionToWire(action map[string]interface{}) map[string]interface
 //	tool := responses.NewComputerTool()
 func NewComputerTool() types.Tool {
 	return types.Tool{
-		Name:             "openai.computer",
-		Description:      "Control a computer's mouse, keyboard, and screen via batched UI actions",
-		ProviderExecuted: true,
-		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("computer tool is executed by the OpenAI API, not locally")
-		},
+		Name:        "openai.computer",
+		Description: "Control a computer's mouse, keyboard, and screen via batched UI actions",
 	}
 }

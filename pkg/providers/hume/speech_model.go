@@ -72,7 +72,6 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: currentDate,
 			ModelID:   "",
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
-			Body:      resp.Body,
 		},
 	}, nil
 }

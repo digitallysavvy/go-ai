@@ -559,3 +559,42 @@ func TestGatewayBatchRejectsUnsupportedTypeBeforeModelMismatch(t *testing.T) {
 		t.Fatalf("want UnsupportedFunctionalityError (all requests are checked as text first), got %T %v", err, err)
 	}
 }
+
+// TS validates each /batch/results line against
+// {type:'text', id:string, status:enum}; an invalid line fails the stream
+// with a JSONParseError / TypeValidationError instead of yielding a bogus item.
+func TestGatewayBatch_DoGetBatchResults_ValidatesLines(t *testing.T) {
+	cases := map[string]string{
+		"wrong type":     `{"type":"image","id":"r","status":"succeeded"}`,
+		"missing id":     `{"type":"text","status":"succeeded"}`,
+		"unknown status": `{"type":"text","id":"r","status":"pending"}`,
+		"not json":       `{"type":"text"`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/x-ndjson")
+				_, _ = w.Write([]byte(line + "\n"))
+			}))
+			defer server.Close()
+			p, err := New(Config{APIKey: "test-key", BaseURL: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := p.ExperimentalBatch().DoGetBatchResults(context.Background(), provider.BatchV4OperationOptions{BatchID: "job"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = stream.Close() }()
+			item, err := stream.Next()
+			if err == nil || item != nil {
+				t.Fatalf("want validation error, got item=%+v err=%v", item, err)
+			}
+			var jp *providererrors.JSONParseError
+			var tv *providererrors.TypeValidationError
+			if !errors.As(err, &jp) && !errors.As(err, &tv) {
+				t.Fatalf("err = %T %v, want JSONParseError or TypeValidationError", err, err)
+			}
+		})
+	}
+}

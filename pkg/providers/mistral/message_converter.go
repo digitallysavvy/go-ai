@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
-	"net/http"
 	"strings"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -129,43 +128,42 @@ func convertMistralFilePart(fc types.FileContent) (map[string]interface{}, error
 		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "text file parts"}
 	}
 	mediaType := n.MediaType
-	formatURL := func() string {
-		if n.FileData.Type == types.FileDataTypeURL {
-			return n.FileData.URL
+	isData := n.FileData.Type == types.FileDataTypeData
+	// TS formatFileUrl: urls pass through; inline bytes embed the media type
+	// resolved by resolveFullMediaType (signature-sniffed, error if unknown).
+	formatURL := func() (string, error) {
+		if !isData {
+			return n.FileData.URL, nil
 		}
-		return fmt.Sprintf("data:%s;base64,%s", mistralFullMediaType(mediaType, n.FileData.Data), base64.StdEncoding.EncodeToString(n.FileData.Data))
+		full, err := prompt.ResolveFullMediaType(mediaType, n.FileData.Data, true)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("data:%s;base64,%s", full, base64.StdEncoding.EncodeToString(n.FileData.Data)), nil
 	}
 	if mediaType == "image" || strings.HasPrefix(mediaType, "image/") {
-		return map[string]interface{}{"type": "image_url", "image_url": formatURL()}, nil
+		u, err := formatURL()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"type": "image_url", "image_url": u}, nil
 	}
 	checked := mediaType
-	if n.FileData.Type == types.FileDataTypeData {
-		checked = mistralFullMediaType(mediaType, n.FileData.Data)
+	if isData {
+		full, err := prompt.ResolveFullMediaType(mediaType, n.FileData.Data, true)
+		if err != nil {
+			return nil, err
+		}
+		checked = full
 	}
 	if checked != "application/pdf" {
 		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "Only images and PDF file parts are supported"}
 	}
-	return map[string]interface{}{"type": "document_url", "document_url": formatURL()}, nil
-}
-
-// mistralFullMediaType resolves a partial media type ("image", "application",
-// "application/*") from the data's content, like TS resolveFullMediaType.
-func mistralFullMediaType(mediaType string, data []byte) string {
-	if strings.Contains(mediaType, "/") && !strings.HasSuffix(mediaType, "/*") {
-		return mediaType
+	u, err := formatURL()
+	if err != nil {
+		return nil, err
 	}
-	detected := http.DetectContentType(data)
-	if i := strings.Index(detected, ";"); i >= 0 {
-		detected = detected[:i]
-	}
-	top := strings.TrimSuffix(mediaType, "/*")
-	if strings.HasPrefix(detected, top+"/") {
-		return detected
-	}
-	if top == "image" {
-		return "image/png"
-	}
-	return mediaType
+	return map[string]interface{}{"type": "document_url", "document_url": u}, nil
 }
 
 // convertMistralAssistantMessage converts an assistant message. content is a

@@ -724,7 +724,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
-		warnings = append(warnings, responses.UnsupportedProviderToolWarnings(opts.Tools)...)
 		toolSchemaWarnings, err := normalizeResponsesToolSchemas(preparedTools, modelCapabilities.SupportsAsyncToolCalling)
 		if err != nil {
 			return nil, false, nil, err
@@ -986,7 +985,7 @@ func convertResponsesToolChoice(tc types.ToolChoice, tools []types.Tool) interfa
 	case types.ToolChoiceTool:
 		name, tool := resolveResponsesToolChoiceName(tc.ToolName, tools)
 		switch name {
-		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch", "computer":
+		case "code_interpreter", "file_search", "image_generation", "web_search_preview", "web_search", "mcp", "apply_patch", "computer", "programmatic_tool_calling":
 			return map[string]interface{}{"type": name}
 		}
 		if tool != nil {
@@ -1071,22 +1070,24 @@ func gateResponsesToolAsync(async **bool, toolName string, supportsAsync bool) [
 
 func resolveResponsesToolChoiceName(name string, tools []types.Tool) (string, *types.Tool) {
 	providerNames := map[string]string{
-		"openai.code_interpreter":   "code_interpreter",
-		"openai.file_search":        "file_search",
-		"openai.image_generation":   "image_generation",
-		"openai.web_search_preview": "web_search_preview",
-		"openai.web_search":         "web_search",
-		"openai.mcp":                "mcp",
-		"openai.apply_patch":        "apply_patch",
-		"openai.computer":           "computer",
-		"code_interpreter":          "code_interpreter",
-		"file_search":               "file_search",
-		"image_generation":          "image_generation",
-		"web_search_preview":        "web_search_preview",
-		"web_search":                "web_search",
-		"mcp":                       "mcp",
-		"apply_patch":               "apply_patch",
-		"computer":                  "computer",
+		"openai.code_interpreter":          "code_interpreter",
+		"openai.file_search":               "file_search",
+		"openai.image_generation":          "image_generation",
+		"openai.web_search_preview":        "web_search_preview",
+		"openai.web_search":                "web_search",
+		"openai.mcp":                       "mcp",
+		"openai.apply_patch":               "apply_patch",
+		"openai.computer":                  "computer",
+		"openai.programmatic_tool_calling": "programmatic_tool_calling",
+		"code_interpreter":                 "code_interpreter",
+		"file_search":                      "file_search",
+		"image_generation":                 "image_generation",
+		"web_search_preview":               "web_search_preview",
+		"web_search":                       "web_search",
+		"mcp":                              "mcp",
+		"apply_patch":                      "apply_patch",
+		"computer":                         "computer",
+		"programmatic_tool_calling":        "programmatic_tool_calling",
 	}
 	if mapped, ok := providerNames[name]; ok {
 		for i := range tools {

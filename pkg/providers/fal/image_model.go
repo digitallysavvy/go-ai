@@ -219,7 +219,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, providererrors.NewProviderError("fal", 0, "", err.Error(), err)
 	}
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, m.statusError(resp.StatusCode, resp.Headers, resp.Body)
 	}
 	if err := providerutils.MediaResponseValidator("fal", providerutils.SchemaFalImage)(resp.StatusCode, resp.Headers, resp.Body); err != nil {

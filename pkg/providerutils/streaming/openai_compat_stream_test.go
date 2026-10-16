@@ -1048,3 +1048,48 @@ func TestOpenAICompatStream_TotalTokensIsInputPlusOutput(t *testing.T) {
 		t.Fatalf("usage = %+v", last.Usage)
 	}
 }
+
+// TS ignores a present-but-blank function name even when no other call exists:
+// the stream finishes normally with no tool calls and no error.
+func TestOpenAICompatStream_OnlyBlankToolCallNameIsIgnored(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"  ","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+	chunks := collectStreamChunks(t, stream)
+	if errs := compatChunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+		t.Fatalf("blank name must not error: %#v", errs)
+	}
+	if tcs := compatChunksOfType(chunks, provider.ChunkTypeToolCall); len(tcs) != 0 {
+		t.Fatalf("unexpected tool calls: %#v", tcs)
+	}
+	if f := compatChunksOfType(chunks, provider.ChunkTypeFinish); len(f) != 1 {
+		t.Fatalf("expected finish, got %#v", chunks)
+	}
+}
+
+// TS throws for a new call with no function.name even when a named call
+// exists in the same stream; it must not be dropped silently.
+func TestOpenAICompatStream_AbsentToolCallNameErrorsDespiteNamedSibling(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"valid_tool","arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"arguments":"{}"}}]},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+	chunks := collectStreamChunks(t, stream)
+	errs := compatChunksOfType(chunks, provider.ChunkTypeError)
+	if len(errs) != 1 || errs[0].Text != "Expected 'function.name' to be a string." {
+		t.Fatalf("want function.name error, got %#v", chunks)
+	}
+}

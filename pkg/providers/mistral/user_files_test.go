@@ -44,3 +44,29 @@ func TestUserFileParts(t *testing.T) {
 		}
 	}
 }
+
+// TS resolveFullMediaType sniffs partial media types with the shared signature
+// tables and throws when the bytes are not recognized (no image/png fallback).
+func TestUserFilePartsPartialMediaTypeSniffing(t *testing.T) {
+	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10}
+	out, err := ConvertToMistralChatMessagesWithError(userFile(types.FileData{Type: types.FileDataTypeData, Data: jpeg}, "image"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := out[0]["content"].([]map[string]interface{})[0]
+	if !strings.HasPrefix(part["image_url"].(string), "data:image/jpeg;base64,") {
+		t.Fatalf("jpeg part = %#v", part)
+	}
+	out, err = ConvertToMistralChatMessagesWithError(userFile(types.FileData{Type: types.FileDataTypeData, Data: []byte("%PDF-1.7 x")}, "application"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	part = out[0]["content"].([]map[string]interface{})[0]
+	if part["type"] != "document_url" || !strings.HasPrefix(part["document_url"].(string), "data:application/pdf;base64,") {
+		t.Fatalf("pdf part = %#v", part)
+	}
+	_, err = ConvertToMistralChatMessagesWithError(userFile(types.FileData{Type: types.FileDataTypeData, Data: []byte{1, 2, 3}}, "image"))
+	if !providererrors.IsUnsupportedFunctionalityError(err) || !strings.Contains(err.Error(), "could not be auto-detected") {
+		t.Fatalf("unknown bytes: err = %v", err)
+	}
+}
