@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strconv"
@@ -38,7 +39,7 @@ func TestEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&seenBody)
 		w.Header().Set("X-Request-ID", "req_1")
 		w.Header().Set("Content-Type", "application/json")
-		if _, ok := seenBody["input"].([]interface{}); ok {
+		if in, ok := seenBody["input"].([]interface{}); ok && len(in) == 2 {
 			_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1,2]},{"object":"embedding","index":1,"embedding":[3,4]}],"usage":{"prompt_tokens":7,"total_tokens":9}}`))
 			return
 		}
@@ -56,7 +57,7 @@ func TestEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 	if seenPath != "/v1/embeddings" || !strings.HasPrefix(seenAuth, "Bearer test-key") || seenHeaders != "yes" {
 		t.Fatalf("request mismatch path=%q auth=%q header=%q", seenPath, seenAuth, seenHeaders)
 	}
-	if seenBody["model"] != "text-embedding-3-small" || seenBody["input"] != "hello" {
+	if seenBody["model"] != "text-embedding-3-small" || fmt.Sprint(seenBody["input"]) != "[hello]" || seenBody["encoding_format"] != "float" {
 		t.Fatalf("request body mismatch: %#v", seenBody)
 	}
 	if len(one.Embedding) != 2 || one.Usage.Tokens != 3 || one.Usage.InputTokens != 3 || one.Usage.TotalTokens != 4 || one.Response.Headers["X-Request-Id"] != "req_1" {
@@ -91,26 +92,17 @@ func TestEmbeddingModelDoEmbedManyValidationPaths(t *testing.T) {
 		t.Fatalf("expected no embedding data error, got %v", err)
 	}
 
-	countServerURL, closeCount := newOpenAIIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[1]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`))
-	}))
-	defer closeCount()
-
-	m2 := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: countServerURL + "/v1"}), "emb")
-	if _, err := m2.DoEmbedMany(context.Background(), []string{"a", "b"}, nil); err == nil || !strings.Contains(err.Error(), "expected 2 embeddings, got 1") {
-		t.Fatalf("expected count mismatch error, got %v", err)
-	}
-
-	indexServerURL, closeIndex := newOpenAIIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// TS maps response.data in order and checks neither the count nor the index.
+	laxServerURL, closeLax := newOpenAIIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":1,"embedding":[1]}],"usage":{"prompt_tokens":1,"total_tokens":1}}`))
 	}))
-	defer closeIndex()
+	defer closeLax()
 
-	m3 := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: indexServerURL + "/v1"}), "emb")
-	if _, err := m3.DoEmbedMany(context.Background(), []string{"a"}, nil); err == nil || !strings.Contains(err.Error(), "embedding index mismatch") {
-		t.Fatalf("expected index mismatch error, got %v", err)
+	m2 := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: laxServerURL + "/v1"}), "emb")
+	lax, err := m2.DoEmbedMany(context.Background(), []string{"a", "b"}, nil)
+	if err != nil || len(lax.Embeddings) != 1 || lax.Embeddings[0][0] != 1 {
+		t.Fatalf("count/index mismatches must pass through like TS, got %#v err=%v", lax, err)
 	}
 }
 

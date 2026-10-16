@@ -61,44 +61,27 @@ func (m *EmbeddingModel) SupportsParallelCalls() bool {
 	return true
 }
 
-// DoEmbed performs embedding for a single input
+// DoEmbed performs embedding for a single input. TS has only doEmbed({values}),
+// so this sends the same wire request as a one-value batch (array input,
+// encoding_format float).
 func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provider.EmbedModelOptions) (*types.EmbeddingResult, error) {
-	if opts != nil {
-		if err := m.validateEmbeddingProviderOptions(opts.ProviderOptions); err != nil {
-			return nil, err
-		}
-	}
-	reqBody := map[string]interface{}{
-		"model": m.modelID,
-		"input": input,
-	}
-	m.applyDimensions(reqBody, opts)
-
-	var response openAIEmbeddingResponse
-	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		ValidateResponse: m.responseValidator(),
-		Method:           http.MethodPost,
-		Path:             "/embeddings",
-		Body:             reqBody,
-		Headers:          optsHeaders(opts),
-	}, &response)
+	many, err := m.DoEmbedMany(ctx, []string{input}, opts)
 	if err != nil {
-		return nil, m.handleError(err)
+		return nil, err
 	}
-
-	if len(response.Data) == 0 {
+	if len(many.Embeddings) == 0 {
 		return nil, fmt.Errorf("no embedding data in response")
 	}
-
-	return &types.EmbeddingResult{
-		Embedding: response.Data[0].Embedding,
-		Usage: types.EmbeddingUsage{
-			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.TotalTokens,
-		},
-		Response: types.EmbeddingResponse{Headers: providerutils.ExtractHeaders(httpResp.Headers), Body: response},
-	}, nil
+	result := &types.EmbeddingResult{
+		Embedding:        many.Embeddings[0],
+		Usage:            many.Usage,
+		Warnings:         many.Warnings,
+		ProviderMetadata: many.ProviderMetadata,
+	}
+	if len(many.Responses) > 0 {
+		result.Response = many.Responses[0]
+	}
+	return result, nil
 }
 
 // DoEmbedMany performs embedding for multiple inputs in a batch
@@ -155,15 +138,10 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		return nil, m.handleError(err)
 	}
 
-	if len(response.Data) != len(inputs) {
-		return nil, fmt.Errorf("expected %d embeddings, got %d", len(inputs), len(response.Data))
-	}
-
+	// TS maps response.data in order and checks neither the count nor the
+	// per-item index.
 	embeddings := make([][]float64, len(response.Data))
 	for i, data := range response.Data {
-		if data.Index != i {
-			return nil, fmt.Errorf("embedding index mismatch: expected %d, got %d", i, data.Index)
-		}
 		embeddings[i] = data.Embedding
 	}
 
