@@ -111,7 +111,7 @@ func buildNativeToolEntry(t types.Tool) map[string]interface{} {
 			ragResources["rag_corpus"] = ragCorpus
 		}
 		ragStoreArgs := map[string]interface{}{"rag_resources": ragResources}
-		if topK, ok := args["topK"]; ok {
+		if topK, ok := args["topK"]; ok && topK != nil {
 			ragStoreArgs["similarity_top_k"] = topK
 		}
 		return map[string]interface{}{

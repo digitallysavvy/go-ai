@@ -176,7 +176,7 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) (map[
 	var args map[string]interface{}
 	if len(opts.Files) > 0 {
 		hasMask := opts.Mask != nil && opts.Mask.Type != ""
-		hasMaskPrompt := options.MaskPrompt != ""
+		hasMaskPrompt := options.MaskPromptSet
 		taskType := options.TaskType
 		if taskType == "" {
 			if hasMask || hasMaskPrompt {
