@@ -18,6 +18,10 @@ type UploadFileOptions struct {
 	MediaType       string
 	Filename        string
 	ProviderOptions map[string]interface{}
+
+	// Headers are additional HTTP headers to send with the upload request.
+	// Only applicable for HTTP-based providers (TS uploadFile headers).
+	Headers map[string]string
 }
 
 func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (result *types.UploadFileResult, err error) {
@@ -63,6 +67,7 @@ func UploadFile(ctx context.Context, api interface{}, opts UploadFileOptions) (r
 		MediaType:       mediaType,
 		Filename:        opts.Filename,
 		ProviderOptions: opts.ProviderOptions,
+		Headers:         opts.Headers,
 	})
 }
 
