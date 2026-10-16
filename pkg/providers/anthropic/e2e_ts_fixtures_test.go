@@ -413,3 +413,99 @@ func TestStreamTruncatedToolInputIsEmittedRaw(t *testing.T) {
 		t.Fatalf("finish = %+v", finish)
 	}
 }
+
+// TS createAnthropicStreamError uses `'data' in error ? error.data : error`,
+// and the first-chunk APICallError reports JSON.stringify(error.data) as the
+// response body: only the keys the event carried, no null-filled extras.
+func TestStreamFirstEventErrorResponseBody(t *testing.T) {
+	cases := map[string]struct{ event, want string }{
+		"plain":     {`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`, `{"type":"overloaded_error","message":"Overloaded"}`},
+		"with code": {`{"type":"error","error":{"type":"api_error","message":"boom","code":7,"statusCode":502}}`, `{"type":"api_error","message":"boom","code":7,"statusCode":502}`},
+		"data key":  {`{"type":"error","error":{"type":"api_error","message":"boom","data":{"a":1}}}`, `{"a":1}`},
+		"null data": {`{"type":"error","error":{"type":"api_error","message":"boom","data":null}}`, `null`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, "event: error\ndata: "+tc.event+"\n\n")
+			})
+			defer closeFn()
+			_, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+			var pe *providererrors.ProviderError
+			if !errors.As(err, &pe) {
+				t.Fatalf("err = %v (%T), want *ProviderError", err, err)
+			}
+			if pe.ResponseBody != tc.want {
+				t.Fatalf("ResponseBody = %s, want %s", pe.ResponseBody, tc.want)
+			}
+		})
+	}
+}
+
+// TS doStream returns `request: {body}` with the args before
+// transformRequestBody, exactly like doGenerate (RawRequest).
+func TestStreamRequestBodyIsBeforeTransform(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(serveChunksFixture("anthropic-text", t)))
+	defer srv.Close()
+	p := New(Config{
+		APIKey: "k", BaseURL: srv.URL,
+		TransformRequestBody: func(body map[string]interface{}, stream bool) map[string]interface{} {
+			out := map[string]interface{}{"transformed": true}
+			for k, v := range body {
+				if k != "model" {
+					out[k] = v
+				}
+			}
+			return out
+		},
+	})
+	model := NewLanguageModel(p, "claude-sonnet-4-5-20250929", nil)
+	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	rb, ok := s.(provider.StreamRequestBody)
+	if !ok {
+		t.Fatal("stream does not expose RequestBody")
+	}
+	body, _ := rb.RequestBody().(map[string]interface{})
+	if body["model"] != "claude-sonnet-4-5-20250929" || body["transformed"] != nil {
+		t.Fatalf("request body = %#v, want the pre-transform args", body)
+	}
+}
+
+// TS message_start ignores usage.iterations (only message_delta sets them), so
+// token accounting must come from the top-level counters here.
+func TestStreamMessageStartIterationsAreIgnored(t *testing.T) {
+	model, closeFn := fixtureModel(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []string{
+			`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"m","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1,"iterations":[{"type":"message","input_tokens":99,"output_tokens":99}]}}}`,
+			`{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}`,
+			`{"type":"message_stop"}`,
+		} {
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", ev)
+		}
+	})
+	defer closeFn()
+	s, err := model.DoStream(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for {
+		chunk, err := s.Next()
+		if err != nil {
+			t.Fatalf("no finish chunk: %v", err)
+		}
+		if chunk.Type != provider.ChunkTypeFinish {
+			continue
+		}
+		if chunk.Usage == nil || chunk.Usage.InputTokens == nil || *chunk.Usage.InputTokens != 10 || *chunk.Usage.OutputTokens != 5 {
+			t.Fatalf("usage = %+v, want input 10 output 5", chunk.Usage)
+		}
+		return
+	}
+}
