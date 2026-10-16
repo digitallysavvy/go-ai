@@ -12,3 +12,18 @@ func TestImageMaxImagesPerCallAndResponseFormat(t *testing.T) {
 		t.Error("hasDefaultResponseFormat must be prefix gpt-image-/chatgpt-image-")
 	}
 }
+
+// TS OpenAICompatibleImageModel: maxImagesPerCall is a constant 10 and
+// file/mask input support is undefined, whatever the model id is.
+func TestCompatImageModelCapabilitiesAreConstant(t *testing.T) {
+	p := New(Config{APIKey: "k", OpenAICompatible: true, Name: "my-host"})
+	for _, id := range []string{"dall-e-3", "flux-1", "gpt-image-1"} {
+		m := NewImageModel(p, id)
+		if got := m.MaxImagesPerCall(); got != 10 {
+			t.Errorf("%s: MaxImagesPerCall = %d, want 10", id, got)
+		}
+		if m.SupportsFileInputs() != nil || m.SupportsMaskInputs() != nil {
+			t.Errorf("%s: compat file/mask support must be unknown (nil)", id)
+		}
+	}
+}

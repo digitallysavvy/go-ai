@@ -111,12 +111,20 @@ func ImageMaxImagesPerCall(modelID string) int {
 // MaxImagesPerCall returns the number of images the model can generate in a
 // single call (TS OpenAIImageModel#maxImagesPerCall).
 func (m *ImageModel) MaxImagesPerCall() int {
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleImageModel#maxImagesPerCall is a constant 10.
+		return 10
+	}
 	return ImageMaxImagesPerCall(m.modelID)
 }
 
 // SupportsFileInputs reports whether the model accepts file inputs for image
 // editing. Returns nil when support is unknown for the model ID.
 func (m *ImageModel) SupportsFileInputs() *bool {
+	if m.provider.config.OpenAICompatible {
+		// TS OpenAICompatibleImageModel#supportsFileInputs is undefined.
+		return nil
+	}
 	if openaiFileInputSupportedModels[m.modelID] {
 		return boolPtr(true)
 	}
