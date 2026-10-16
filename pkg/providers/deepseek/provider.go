@@ -78,7 +78,7 @@ func New(cfg Config) *Provider {
 		baseURL = "https://api.deepseek.com"
 	}
 	// TS withoutTrailingSlash(baseURL).
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 
 	headers := map[string]string{"Content-Type": "application/json"}
 	if cfg.APIKey != "" {

@@ -37,7 +37,7 @@ func New(cfg Config) *Provider {
 		baseURL = "https://api.groq.com/openai"
 	}
 	// TS withoutTrailingSlash(baseURL).
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 	// TS baseURL values include the version segment (".../v1"); every request
 	// path here already starts with "/v1/", so accept both spellings.
 	baseURL = strings.TrimSuffix(baseURL, "/v1")

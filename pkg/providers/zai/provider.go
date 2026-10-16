@@ -6,7 +6,6 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
-	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -45,7 +44,7 @@ func New(cfg Config) *Provider {
 		baseURL = DefaultBaseURL
 	}
 	// TS withoutTrailingSlash(baseURL).
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 
 	apiKey := cfg.APIKey
 	if apiKey == "" {

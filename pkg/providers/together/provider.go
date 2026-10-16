@@ -171,5 +171,5 @@ func (p *Provider) Client() *http.Client {
 // URLs that already carry the "/v1" segment: every request path in this
 // package starts with "/v1/", so ".../v1" must not double it.
 func trimBaseURL(baseURL string) string {
-	return strings.TrimSuffix(strings.TrimRight(baseURL, "/"), "/v1")
+	return strings.TrimSuffix(providerutils.WithoutTrailingSlash(baseURL), "/v1")
 }
