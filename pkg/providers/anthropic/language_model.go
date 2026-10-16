@@ -2050,7 +2050,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// citation can resolve against this fetched document.
 				toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
 				if toolName == "" {
-					toolName = providerToolResultName(start.ContentBlock.Type)
+					toolName = mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
 				}
 				tr := &types.ToolResult{
 					ToolCallID:       start.ContentBlock.ToolUseID,
@@ -2081,7 +2081,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// search result (TS enqueues 'source' parts after the 'tool-result').
 				toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
 				if toolName == "" {
-					toolName = providerToolResultName(start.ContentBlock.Type)
+					toolName = mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
 				}
 				tr := &types.ToolResult{
 					ToolCallID:       start.ContentBlock.ToolUseID,
