@@ -38,10 +38,10 @@ type Config struct {
 // New creates a new Replicate provider with the given configuration
 func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
-	// TS validateBaseURL(options.baseURL): a whitespace-only base URL throws.
-	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
-		panic(err)
-	}
+	// TS validateBaseURL(options.baseURL): a whitespace-only base URL is an
+	// InvalidArgumentError. TS throws from the constructor; New keeps
+	// returning a provider and every request fails with that error instead.
+	baseURLErr := providerutils.ValidateBaseURL(baseURL)
 	if baseURL == "" {
 		baseURL = "https://api.replicate.com/v1"
 	}
@@ -58,6 +58,9 @@ func New(cfg Config) *Provider {
 		}, cfg.Headers), version.ProviderUserAgent("replicate")),
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			if baseURLErr != nil {
+				return nil, baseURLErr
+			}
 			return providerutils.RequestAuthHeader(cfg.Headers, cfg.APIKey, "REPLICATE_API_TOKEN", "Replicate", "Authorization", "Bearer ")
 		},
 	})

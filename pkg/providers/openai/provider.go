@@ -208,11 +208,10 @@ func New(cfg Config) *Provider {
 		baseURL = os.Getenv("OPENAI_BASE_URL")
 	}
 	// TS validateBaseURL(loadOptionalSetting(...)): a whitespace-only base
-	// URL (option or OPENAI_BASE_URL) is an InvalidArgumentError, so New
-	// panics like the TS constructor throws.
-	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
-		panic(err)
-	}
+	// URL (option or OPENAI_BASE_URL) is an InvalidArgumentError. TS throws
+	// from the constructor; New keeps returning a provider (v0.5.2 accepted
+	// these values) and every request fails with that error instead.
+	baseURLErr := providerutils.ValidateBaseURL(baseURL)
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
@@ -271,6 +270,9 @@ func New(cfg Config) *Provider {
 		clientCfg.HeadersFunc = func() (map[string]string, error) {
 			return providerutils.RequestAuthHeader(userHeaders, userKey, apiKeyEnv, apiKeyDescription, "Authorization", "Bearer ")
 		}
+	}
+	if baseURLErr != nil {
+		clientCfg.HeadersFunc = func() (map[string]string, error) { return nil, baseURLErr }
 	}
 	client := http.NewClient(clientCfg)
 
