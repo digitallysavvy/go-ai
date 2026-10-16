@@ -38,6 +38,9 @@ func New(cfg Config) *Provider {
 	}
 	// TS withoutTrailingSlash(baseURL).
 	baseURL = strings.TrimRight(baseURL, "/")
+	// TS baseURL values include the version segment (".../v1"); every request
+	// path here already starts with "/v1/", so accept both spellings.
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
 
 	client := http.NewClient(http.Config{
 		BaseURL: baseURL,
