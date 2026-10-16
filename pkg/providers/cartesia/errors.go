@@ -58,6 +58,9 @@ func docURLMatchesSchema(raw json.RawMessage) bool {
 	if len(raw) == 0 {
 		return true
 	}
+	if string(raw) == "null" {
+		return false
+	}
 	var s string
 	return json.Unmarshal(raw, &s) == nil
 }
