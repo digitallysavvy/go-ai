@@ -2455,12 +2455,13 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 	switch action["type"] {
 	case "search":
 		wireAction["type"] = "search"
-		if v, present, ok := optString(action, "query"); !ok {
+		// zod .optional() rejects null (only .nullish() accepts it).
+		if v, present, ok := optString(action, "query"); !ok || (present && v == nil) {
 			return nil
-		} else if present && v != nil {
+		} else if present {
 			wireAction["query"] = v
 		}
-		if rawQueries, present := action["queries"]; present && rawQueries != nil {
+		if rawQueries, present := action["queries"]; present {
 			list, ok := rawQueries.([]interface{})
 			if !ok {
 				return nil
@@ -2475,7 +2476,7 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 			}
 			wireAction["queries"] = queries
 		}
-		if rawSources, present := parsed["sources"]; present && rawSources != nil {
+		if rawSources, present := parsed["sources"]; present {
 			list, ok := rawSources.([]interface{})
 			if !ok {
 				return nil
