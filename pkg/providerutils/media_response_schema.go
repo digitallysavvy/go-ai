@@ -92,6 +92,11 @@ const (
 	SchemaAlibabaVideoStat MediaResponseSchema = "alibaba-video-status"
 	SchemaTopazVideoCreate MediaResponseSchema = "topaz-video-create"
 	SchemaTopazVideoStatus MediaResponseSchema = "topaz-video-status"
+	// xAI and HeyGen video task bodies.
+	SchemaXAIVideoCreate    MediaResponseSchema = "xai-video-create"
+	SchemaXAIVideoStatus    MediaResponseSchema = "xai-video-status"
+	SchemaHeyGenVideoCreate MediaResponseSchema = "heygen-video-create"
+	SchemaHeyGenVideoStatus MediaResponseSchema = "heygen-video-status"
 	// SchemaFalSpeech is falSpeechResponseSchema.
 	SchemaFalSpeech  MediaResponseSchema = "fal-speech"
 	SchemaFalJob     MediaResponseSchema = "fal-job"
@@ -313,6 +318,18 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("outputSize", zNullish(zUnionOf(zStr, zNum))),
 			fl("estimates", zNullish(zObj(fl("cost", zNullish(zArr(zNum))), fl("time", zNullish(zArr(zNum)))))),
 			fl("download", zNullish(zObj(fl("url", nStr), fl("expiresAt", zNullish(zUnionOf(zStr, zNum))))))),
+		SchemaXAIVideoCreate: zObj(fl("request_id", nStr)),
+		SchemaXAIVideoStatus: zObj(fl("status", nStr),
+			fl("video", zNullish(zObj(fl("url", nStr), fl("duration", nNum), fl("respect_moderation", zNullish(zodlite.Boolean)),
+				fl("file_output", zNullish(zObj(fl("file_id", zStr), fl("filename", zStr), fl("expires_at", nNum),
+					fl("public_url", nStr), fl("public_url_error", nStr), fl("public_url_expires_at", nNum)))),
+				fl("storage_error", nStr)))),
+			fl("model", nStr), fl("usage", zNullish(zObj(fl("cost_in_usd_ticks", nNum)))), fl("progress", nNum),
+			fl("error", zNullish(zObj(fl("code", nStr), fl("message", nStr))))),
+		SchemaHeyGenVideoCreate: zObj(fl("data", zObj(fl("video_id", zNonEmptyStr)))),
+		SchemaHeyGenVideoStatus: zObj(fl("data", zObj(fl("status", zStr), fl("video_url", nStr), fl("duration", nNum),
+			fl("width", nNum), fl("height", nNum), fl("aspect_ratio", nStr), fl("seed", nNum),
+			fl("timings", zNullish(zObj(fl("inference", nNum)))), fl("failure_code", nStr), fl("failure_message", nStr)))),
 		SchemaFalSpeech: zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
 		SchemaFalJob:    zObj(fl("request_id", nStr)),
 		SchemaFalTranscr: zObj(fl("text", zStr),
