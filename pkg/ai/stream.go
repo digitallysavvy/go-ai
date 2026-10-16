@@ -853,6 +853,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
 	normalizedPrompt, normErr := promptutils.NormalizePrompt(prompt, allowSystem)
+	if normErr == nil {
+		normErr = promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
+	}
 	if normErr != nil {
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
 		r.fail(normErr)

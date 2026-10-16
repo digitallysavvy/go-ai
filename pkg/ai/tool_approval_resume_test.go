@@ -825,7 +825,8 @@ func TestGenerateText_DoesNotExecuteToolsOnUnsafeFinishReason(t *testing.T) {
 				},
 			}
 			result, err := GenerateText(context.Background(), GenerateTextOptions{
-				Model: model,
+				Prompt: "hi",
+				Model:  model,
 				Tools: []types.Tool{{
 					Name: "testTool",
 					Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
@@ -1045,7 +1046,8 @@ func TestStreamText_DoesNotExecuteToolsOnUnsafeFinishReason(t *testing.T) {
 		},
 	}
 	result, err := StreamText(context.Background(), StreamTextOptions{
-		Model: model,
+		Prompt: "hi",
+		Model:  model,
 		Tools: []types.Tool{{
 			Name: "testTool",
 			Execute: func(ctx context.Context, in map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {

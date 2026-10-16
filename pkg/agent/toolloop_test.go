@@ -3459,3 +3459,23 @@ func TestValidateAgentCallOptions_IsTypeValidationError(t *testing.T) {
 		t.Fatalf("errors.As(*InvalidArgumentError) failed for %v", err)
 	}
 }
+
+// The agent hands the call to generateText/streamText, so the prompt checks are
+// TS InvalidPromptErrors; the v0.5.2 ValidationError stays reachable.
+func TestValidateAgentPromptOptions_InvalidPromptError(t *testing.T) {
+	err := validateAgentPromptOptions("", nil)
+	var invalid *providererrors.InvalidPromptError
+	if !errors.As(err, &invalid) || err.Error() != "Invalid prompt: prompt or messages must be defined" {
+		t.Fatalf("err = %v", err)
+	}
+	if !providererrors.IsValidationError(err) {
+		t.Fatalf("v0.5.2 ValidationError not reachable from %v", err)
+	}
+	user := []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}
+	if err := validateAgentPromptOptions("p", user); err == nil || err.Error() != "Invalid prompt: prompt and messages cannot be defined at the same time" {
+		t.Fatalf("both: %v", err)
+	}
+	if err := validateAgentPromptOptions("p", nil); err != nil {
+		t.Fatal(err)
+	}
+}

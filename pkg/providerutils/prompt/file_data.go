@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -45,8 +46,31 @@ func (e *ReasoningFileConstraintError) Error() string {
 type UnsupportedSystemMessageError struct{}
 
 func (e *UnsupportedSystemMessageError) Error() string {
-	// TS standardizePrompt's InvalidPromptError message.
-	return "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+	// TS standardizePrompt's InvalidPromptError message ("Invalid prompt: " prefix included).
+	return "Invalid prompt: " + unsupportedSystemMessageText
+}
+
+const unsupportedSystemMessageText = "System messages are not allowed in the prompt or messages fields. Use the instructions option instead."
+
+// Unwrap exposes the TS InvalidPromptError the condition corresponds to, so
+// errors.As matches *InvalidPromptError as well as this type.
+func (e *UnsupportedSystemMessageError) Unwrap() error {
+	return &providererrors.InvalidPromptError{Message: unsupportedSystemMessageText}
+}
+
+// ValidatePromptInput is the first part of TS standardizePrompt: a call must
+// carry a prompt or messages, not both, and the messages must not be empty.
+// (An empty prompt string counts as unset in Go.)
+func ValidatePromptInput(prompt string, messages []types.Message) error {
+	switch {
+	case prompt != "" && len(messages) > 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt and messages cannot be defined at the same time"}
+	case prompt == "" && messages == nil:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "prompt or messages must be defined"}
+	case prompt == "" && len(messages) == 0:
+		return &providererrors.InvalidPromptError{Prompt: prompt, Message: "messages must not be empty"}
+	}
+	return nil
 }
 
 // NormalizePrompt applies the core prompt conversion rules before providers see

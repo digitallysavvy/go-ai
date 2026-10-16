@@ -360,6 +360,26 @@ func IsInvalidArgumentError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// InvalidPromptError signals an invalid prompt (TS AI_InvalidPromptError):
+// the standardizePrompt checks (neither or both of prompt and messages,
+// empty messages, system messages without the opt-in).
+type InvalidPromptError struct {
+	// Prompt is the offending prompt value, when there is one.
+	Prompt  interface{}
+	Message string
+	Cause   error
+}
+
+func (e *InvalidPromptError) Error() string { return "Invalid prompt: " + e.Message }
+
+func (e *InvalidPromptError) Unwrap() error { return e.Cause }
+
+// IsInvalidPromptError checks if an error is an InvalidPromptError.
+func IsInvalidPromptError(err error) bool {
+	var target *InvalidPromptError
+	return errors.As(err, &target)
+}
+
 // LoadAPIKeyError signals that a required API key was neither passed
 // explicitly nor found in its environment variable (TS AI_LoadAPIKeyError).
 type LoadAPIKeyError struct {

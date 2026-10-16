@@ -696,6 +696,9 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		// since batch does not expose an experimental_download option), so
 		// remote file URLs the batch interface can't consume directly are
 		// inlined before the request is sent.
+		if err := promptutils.ValidatePromptInput(t.Prompt, t.Messages); err != nil {
+			return provider.BatchV4Request{}, err
+		}
 		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
 			ctx,
 			buildPrompt(t.Prompt, t.Messages, t.System),

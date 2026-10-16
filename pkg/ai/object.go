@@ -528,6 +528,9 @@ const (
 // handling as GenerateText, TS convertToLanguageModelPrompt) and rejects tool
 // calls without results.
 func prepareObjectPrompt(ctx context.Context, promptText string, messages []types.Message, system string, allowSystem bool, model provider.LanguageModel, download DownloadFunction) (types.Prompt, error) {
+	if err := promptutils.ValidatePromptInput(promptText, messages); err != nil {
+		return types.Prompt{}, err
+	}
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(ctx, buildPrompt(promptText, messages, system), allowSystem, effectiveDownload(download), supportedURLChecker(model))
 	if err != nil {
 		return types.Prompt{}, err

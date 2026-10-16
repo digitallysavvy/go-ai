@@ -1730,6 +1730,7 @@ func TestStreamText_ToolApprovalDeniedSkipsExecution(t *testing.T) {
 	var content []types.ContentPart
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:    model,
+		Prompt:   "hi",
 		Tools:    []types.Tool{tool},
 		MaxSteps: &maxSteps,
 		ToolApproval: map[string]types.ToolApprovalValue{
@@ -1793,6 +1794,7 @@ func TestStreamText_ToolApprovalEmitsTSApprovalChunks(t *testing.T) {
 	var chunks []provider.StreamChunk
 	_, err := StreamText(context.Background(), StreamTextOptions{
 		Model:                          model,
+		Prompt:                         "hi",
 		Tools:                          []types.Tool{tool},
 		MaxSteps:                       &maxSteps,
 		ExperimentalToolApprovalSecret: []byte{},
@@ -3555,6 +3557,7 @@ func TestStreamText_ToolApprovalPauseKeepsModelFinishReasonInUIStream(t *testing
 	}
 
 	result, err := StreamText(context.Background(), StreamTextOptions{
+		Prompt:   "hi",
 		Model:    model,
 		Tools:    []types.Tool{tool},
 		StopWhen: []StopCondition{IsStepCount(5)},

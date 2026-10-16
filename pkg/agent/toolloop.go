@@ -1486,21 +1486,20 @@ func cloneAgentStringAnyMap(in map[string]interface{}) map[string]interface{} {
 }
 
 func validateAgentPromptOptions(prompt string, messages []types.Message) error {
-	if prompt != "" && len(messages) > 0 {
-		return providererrors.NewValidationErrorWithContext(
-			map[string]interface{}{"prompt": prompt, "messages": messages},
-			"agent call requires either prompt or messages, not both",
-			nil,
-			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
-		)
-	}
-	if prompt == "" && len(messages) == 0 {
-		return providererrors.NewValidationErrorWithContext(
-			nil,
-			"agent call requires either prompt or messages",
-			nil,
-			&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
-		)
+	// TS hands the call to generateText/streamText, whose standardizePrompt
+	// throws InvalidPromptError. The cause keeps the *ValidationError that
+	// v0.5.2 returned, so errors.As on either type matches.
+	if err := promptutils.ValidatePromptInput(prompt, messages); err != nil {
+		var invalid *providererrors.InvalidPromptError
+		if errors.As(err, &invalid) {
+			invalid.Cause = providererrors.NewValidationErrorWithContext(
+				map[string]interface{}{"prompt": prompt, "messages": messages},
+				invalid.Message,
+				nil,
+				&providererrors.ValidationContext{Field: "prompt", EntityName: "agentCall"},
+			)
+		}
+		return err
 	}
 	return nil
 }

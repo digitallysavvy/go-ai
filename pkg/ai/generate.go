@@ -811,6 +811,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Standardize the prompt first: TS standardizePrompt throws before any
 	// start event or telemetry is emitted.
 	// Build prompt
+	if err := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
 	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
 	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
 	prompt, err = promptutils.NormalizePrompt(prompt, allowSystem)
