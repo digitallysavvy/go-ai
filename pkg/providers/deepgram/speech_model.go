@@ -3,6 +3,7 @@ package deepgram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -55,7 +56,13 @@ func extractSpeechModelOptions(providerOptions map[string]interface{}) *SpeechMo
 	}
 	var opts SpeechModelOptions
 	if err := json.Unmarshal(b, &opts); err != nil {
-		return nil
+		// A field the Go struct can't hold (TS sampleRate is z.number(), the
+		// struct an int) must not drop every other option: encoding/json
+		// leaves the offending field unset and fills the rest.
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return nil
+		}
 	}
 	return &opts
 }
