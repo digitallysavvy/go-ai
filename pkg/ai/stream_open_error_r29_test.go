@@ -203,3 +203,21 @@ func TestStreamTextLaterStepOpenErrorWithStepTimeout(t *testing.T) {
 		t.Fatalf("OnError called %d times, want 1", onErrors)
 	}
 }
+
+// GenerateObject rethrows the model error as is (TS generateObject has no
+// "generation failed: " message prefix).
+func TestGenerateObjectModelErrorIsNotPrefixed(t *testing.T) {
+	boom := errors.New("boom")
+	model := &testutil.MockLanguageModel{
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, boom
+		},
+	}
+	zero := 0
+	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: zero,
+	})
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("GenerateObject() error = %v, want exactly boom", err)
+	}
+}
