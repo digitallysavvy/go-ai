@@ -712,15 +712,21 @@ func providerToolResultFromResult(p types.ToolResultContent) types.ToolResult {
 
 func providerToolResultFromError(p types.ToolErrorContent) types.ToolResult {
 	var err error
+	var structured interface{}
 	switch e := p.Error.(type) {
 	case error:
 		err = e
 	case string:
 		err = errors.New(e)
 	default:
+		// A structured provider error (TS tool-error.error as an object)
+		// keeps its value in Result next to the Error summary, the shape
+		// toolResultContentFromToolResult replays as error-json.
 		err = fmt.Errorf("%v", e)
+		structured = e
 	}
 	return types.ToolResult{
+		Result:           structured,
 		ToolCallID:       p.ToolCallID,
 		ToolName:         p.ToolName,
 		Title:            p.Title,
