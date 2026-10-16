@@ -1023,3 +1023,19 @@ func TestOpenAICompatStream_EmptyDataEventIsParseError(t *testing.T) {
 		_ = stream.Close()
 	}
 }
+
+// TS openai-compatible records `choice.finish_reason != null`, so an empty
+// string finish_reason is a finish ('other', raw ''), not a missing one.
+func TestOpenAICompatStream_EmptyFinishReasonCountsAsFinish(t *testing.T) {
+	stream := newTestStream("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"\"}]}\n\ndata: [DONE]\n\n")
+	chunks := collectStreamChunks(t, stream)
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeError {
+			t.Fatalf("unexpected missing-finish-reason error chunk: %+v", c)
+		}
+	}
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonOther {
+		t.Fatalf("want finish/other, got %+v", last)
+	}
+}
