@@ -112,3 +112,25 @@ func TestGenAIEmptyTranscriptAndToolErrorStatus(t *testing.T) {
 		t.Errorf("http.response.status_code = %v (ok=%v), want 503", v, ok)
 	}
 }
+
+// TS puts gen_ai.agent.name on the generate/object/audio roots, not on the
+// embed or rerank roots.
+func TestGenAIAgentNameOnlyOnTextObjectAudioRoots(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true), FunctionID: "fn"}
+	for op, want := range map[string]bool{
+		"ai.generateText": true, "ai.streamObject": true, "ai.transcribe": true, "ai.generateSpeech": true,
+		"ai.embed": false, "ai.embedMany": false, "ai.rerank": false,
+	} {
+		before := len(rec.Started())
+		c := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: op, Settings: settings, CallID: "n-" + op, ModelID: "m"})
+		integration.OnEnd(c, TelemetryFinishEvent{CallID: "n-" + op, OperationType: op, Settings: settings})
+		_, ok := attrValue(rec.Started()[before], "gen_ai.agent.name")
+		if ok != want {
+			t.Errorf("%s: gen_ai.agent.name present = %v, want %v", op, ok, want)
+		}
+	}
+}

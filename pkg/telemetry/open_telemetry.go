@@ -211,6 +211,10 @@ func genAIChildTracer(callID string, parent trace.Span) trace.Tracer {
 	return parent.TracerProvider().Tracer("go-ai")
 }
 
+func isAudioOperation(operationType string) bool {
+	return operationType == "ai.generateSpeech" || operationType == "ai.transcribe" || operationType == "ai.streamTranscribe"
+}
+
 // genAIRootSpanKind mirrors the SpanKind TS gives each root span: INTERNAL for
 // generate/stream text and object operations, CLIENT for audio, embed, rerank
 // and decide operations.
@@ -260,7 +264,10 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	if e.Settings != nil && e.Settings.FunctionID != "" {
+	// TS sets gen_ai.agent.name on the generate, object and audio roots only;
+	// the embed and rerank roots carry no function id.
+	if e.Settings != nil && e.Settings.FunctionID != "" &&
+		(genAIRootSpanKind(e.OperationType) == trace.SpanKindInternal || isAudioOperation(e.OperationType)) {
 		span.SetAttributes(attribute.String("gen_ai.agent.name", e.Settings.FunctionID))
 	}
 	// TS onGenerateStart / onObjectOperationStart also put the call-level
