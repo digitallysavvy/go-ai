@@ -175,7 +175,9 @@ func consumeTypeExprScan(tokens []tsToken, i int, stopAtBrace, allowSplit bool) 
 					}
 					cond--
 				}
-			case ";", ",", "=", "=>":
+			case ";", ",", "=", "=>", "!":
+				// A `!` has no place in a type: at the top level the scan has
+				// run into an expression (`c ? (x) : y(y)! satisfies T`).
 				if depth == 0 {
 					return i, noSplit
 				}
@@ -225,6 +227,15 @@ func endsTypeBeforeOperator(t tsToken, prev *tsToken, extendsOpen int) bool {
 		case t.text == "?":
 			return extendsOpen == 0
 		case t.text == "<":
+			// Only a type name takes type arguments: after a literal, a
+			// primitive keyword or the end of a bracketed or generic type
+			// (`as Array<T> < c`, `as { k: T } < c`) the `<` is a comparison.
+			if prev.kind == "punct" {
+				switch prev.text {
+				case ">", ">>", ">>>", "]", "}", ")":
+					return true
+				}
+			}
 			return prev.kind == "string" || prev.kind == "number" || (prev.kind == "ident" && primitiveTypeKeywords[prev.text])
 		}
 	case "ident":
@@ -408,6 +419,12 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 func consumeCallGenerics(tokens []tsToken, i int) (int, bool) {
 	end, ok := consumeAngleTypeArgsBalanced(tokens, i)
 	if !ok {
+		return i, false
+	}
+	// The tokenizer lexes `>=` as `>` and `=`. A `>` directly followed by `=`
+	// is the comparison operator (`a < b >= c`), not the end of a type
+	// argument list.
+	if end < len(tokens) && tokens[end-1].text == ">" && tokens[end].kind == "punct" && tokens[end].text == "=" {
 		return i, false
 	}
 	next := nextSignificant(tokens, end)
@@ -648,6 +665,14 @@ func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
 			// The line break ends the arrow body (ASI): a `:` further down
 			// belongs to another statement.
 			return false
+		}
+		if t.kind == "punct" && t.text == "<" && depth == 0 {
+			// Type arguments (`f<A, B>(x)`, `as Map<K, V>`): their commas are
+			// not the body's.
+			if end, ok := consumeCallGenerics(tokens, j); ok {
+				j = end - 1
+				continue
+			}
 		}
 		if t.kind != "punct" {
 			continue
