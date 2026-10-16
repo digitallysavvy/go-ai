@@ -3625,3 +3625,24 @@ func TestResponsesLanguageModel_ToolResultContentNeverProviderExecuted(t *testin
 		t.Fatalf("saw %d tool-call parts, want 3", sawToolCall)
 	}
 }
+
+// TestResponsesLanguageModel_ComputerCallReplaySendsEmptyPendingSafetyChecks
+// mirrors TS, which always sends pending_safety_checks (an empty array when
+// there are none); the API requires the field.
+func TestResponsesLanguageModel_ComputerCallReplaySendsEmptyPendingSafetyChecks(t *testing.T) {
+	tc := types.ToolCall{ID: "call_1", ToolName: "openai.computer", Arguments: map[string]interface{}{
+		"status":              "completed",
+		"pendingSafetyChecks": []interface{}{},
+		"actions":             []interface{}{map[string]interface{}{"type": "screenshot"}},
+	}}
+	input, _, err := responses.ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{Role: types.RoleAssistant, ToolCalls: []types.ToolCall{tc}}},
+	}, "system", responses.ConvertOptions{HasComputerTool: true})
+	if err != nil || len(input) != 1 {
+		t.Fatalf("input=%#v err=%v", input, err)
+	}
+	raw, _ := json.Marshal(input[0])
+	if !strings.Contains(string(raw), `"pending_safety_checks":[]`) {
+		t.Fatalf("wire = %s, want pending_safety_checks:[]", raw)
+	}
+}

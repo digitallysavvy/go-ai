@@ -1922,10 +1922,8 @@ func computerActionsFromArgs(args map[string]interface{}) []map[string]interface
 }
 
 func computerSafetyChecksFromArgs(args map[string]interface{}, key string) []ComputerSafetyCheck {
-	raw, ok := args[key].([]interface{})
-	if !ok {
-		return nil
-	}
+	raw, _ := args[key].([]interface{})
+	// TS always sends pending_safety_checks (an empty array when none).
 	checks := make([]ComputerSafetyCheck, 0, len(raw))
 	for _, item := range raw {
 		m, ok := item.(map[string]interface{})
