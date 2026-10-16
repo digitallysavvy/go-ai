@@ -345,19 +345,19 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 // SpeechModel returns a speech synthesis model by ID
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
 	// Anthropic doesn't provide speech synthesis models
-	return nil, fmt.Errorf("anthropic does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel returns a speech-to-text model by ID
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
 	// Anthropic doesn't provide transcription models
-	return nil, fmt.Errorf("Anthropic does not support transcription") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
 	// Anthropic doesn't provide reranking models
-	return nil, fmt.Errorf("Anthropic does not support reranking") //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // Client returns the HTTP client for making API requests

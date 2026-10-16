@@ -185,20 +185,20 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 // SpeechModel always errors: not exposed by this sub-provider (TS
 // GoogleVertexXaiProvider has no speech factory).
 func (p *Provider) SpeechModel(modelID string) (provider.SpeechModel, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support speech synthesis")
+	return nil, providererrors.NewNoSuchModelError(modelID, "speechModel")
 }
 
 // TranscriptionModel always errors: not exposed by this sub-provider.
 func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionModel, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support transcription")
+	return nil, providererrors.NewNoSuchModelError(modelID, "transcriptionModel")
 }
 
 // RerankingModel always errors: not exposed by this sub-provider.
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support reranking")
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VideoModel always errors: not exposed by this sub-provider.
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
-	return nil, fmt.Errorf("google-vertex xai does not support video generation")
+	return nil, providererrors.NewNoSuchModelError(modelID, "videoModel")
 }
