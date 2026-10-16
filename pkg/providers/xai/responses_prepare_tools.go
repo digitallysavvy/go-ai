@@ -259,10 +259,10 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 	case "xai.web_search":
 		cfg := xaiWebSearchArgs(t)
 		m := map[string]interface{}{"type": "web_search"}
-		if len(cfg.AllowedDomains) > 0 {
+		if cfg.AllowedDomains != nil {
 			m["allowed_domains"] = cfg.AllowedDomains
 		}
-		if len(cfg.ExcludedDomains) > 0 {
+		if cfg.ExcludedDomains != nil {
 			m["excluded_domains"] = cfg.ExcludedDomains
 		}
 		if cfg.EnableImageSearch != nil {
@@ -276,10 +276,10 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 	case "xai.x_search":
 		cfg := xaiXSearchArgs(t)
 		m := map[string]interface{}{"type": "x_search"}
-		if len(cfg.AllowedXHandles) > 0 {
+		if cfg.AllowedXHandles != nil {
 			m["allowed_x_handles"] = cfg.AllowedXHandles
 		}
-		if len(cfg.ExcludedXHandles) > 0 {
+		if cfg.ExcludedXHandles != nil {
 			m["excluded_x_handles"] = cfg.ExcludedXHandles
 		}
 		if cfg.FromDate != nil {
@@ -309,7 +309,7 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 	case "xai.file_search":
 		cfg := xaiFileSearchArgs(t)
 		m := map[string]interface{}{"type": "file_search"}
-		if len(cfg.VectorStoreIDs) > 0 {
+		if cfg.VectorStoreIDs != nil {
 			m["vector_store_ids"] = cfg.VectorStoreIDs
 		}
 		if cfg.MaxNumResults > 0 {
@@ -334,10 +334,10 @@ func convertXAIResponsesTool(t types.Tool) interface{} {
 		if cfg.ServerDescription != "" {
 			m["server_description"] = cfg.ServerDescription
 		}
-		if len(cfg.AllowedTools) > 0 {
+		if cfg.AllowedTools != nil {
 			m["allowed_tools"] = cfg.AllowedTools
 		}
-		if len(cfg.Headers) > 0 {
+		if cfg.Headers != nil {
 			m["headers"] = cfg.Headers
 		}
 		if cfg.Authorization != "" {

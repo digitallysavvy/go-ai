@@ -57,8 +57,16 @@ type Provider struct {
 	metadataCache    *MetadataResponse
 	metadataMutex    sync.RWMutex
 	lastFetchTime    time.Time
-	pendingMetadata  *sync.Once
+	pendingMetadata  *metadataFetch
 	cacheRefreshTime time.Duration
+	nowFn            func() time.Time
+}
+
+// metadataFetch is an in-flight (or settled) metadata refresh shared by callers.
+type metadataFetch struct {
+	done chan struct{}
+	meta *MetadataResponse
+	err  error
 }
 
 type gatewayAuthResolver func(ctx context.Context) (token string, authMethod string, err error)
@@ -430,7 +438,6 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		headers:          headers,
 		authResolver:     authResolver,
 		cacheRefreshTime: cacheRefreshTime,
-		pendingMetadata:  &sync.Once{},
 	}, nil
 }
 
@@ -537,17 +544,50 @@ func (p *Provider) Reranking(modelID string) (provider.RerankingModel, error) {
 	return p.RerankingModel(modelID)
 }
 
-// GetAvailableModels returns available providers and models from the gateway
+// GetAvailableModels returns available providers and models from the gateway.
+//
+// Mirrors TS getAvailableModels: once the refresh window has elapsed a refresh
+// is started in the background, but an existing (stale) cache is still returned
+// immediately; only the first call waits for the fetch.
 func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, error) {
-	// Check if we have cached metadata and it's still fresh
-	p.metadataMutex.RLock()
-	if p.metadataCache != nil && time.Since(p.lastFetchTime) < p.cacheRefreshTime {
-		cached := p.metadataCache
-		p.metadataMutex.RUnlock()
+	p.metadataMutex.Lock()
+	now := p.now()
+	if p.pendingMetadata == nil || now.Sub(p.lastFetchTime) > p.cacheRefreshTime {
+		p.lastFetchTime = now
+		f := &metadataFetch{done: make(chan struct{})}
+		p.pendingMetadata = f
+		go func() {
+			defer close(f.done)
+			f.meta, f.err = p.fetchMetadata(context.WithoutCancel(ctx))
+			if f.err == nil {
+				p.metadataMutex.Lock()
+				p.metadataCache = f.meta
+				p.metadataMutex.Unlock()
+			}
+		}()
+	}
+	cached := p.metadataCache
+	pending := p.pendingMetadata
+	p.metadataMutex.Unlock()
+	if cached != nil {
 		return cached, nil
 	}
-	p.metadataMutex.RUnlock()
+	select {
+	case <-pending.done:
+		return pending.meta, pending.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
+func (p *Provider) now() time.Time {
+	if p.nowFn != nil {
+		return p.nowFn()
+	}
+	return time.Now()
+}
+
+func (p *Provider) fetchMetadata(ctx context.Context) (*MetadataResponse, error) {
 	// Fetch fresh metadata
 	resp, err := p.client.Get(ctx, "/config")
 	if err != nil {
@@ -593,12 +633,6 @@ func (p *Provider) GetAvailableModels(ctx context.Context) (*MetadataResponse, e
 			ModelType: model.ModelType,
 		})
 	}
-
-	// Update cache
-	p.metadataMutex.Lock()
-	p.metadataCache = &metadata
-	p.lastFetchTime = time.Now()
-	p.metadataMutex.Unlock()
 
 	return &metadata, nil
 }

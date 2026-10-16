@@ -110,7 +110,7 @@ func (f *FilesAPI) UploadFile(ctx context.Context, opts types.UploadFileOptions)
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", deepSeekUploadFilename(opts.Filename))
+	part, err := providerutils.CreateTypedFormFile(writer, "file", deepSeekUploadFilename(opts.Filename), opts.MediaType)
 	if err != nil {
 		return nil, err
 	}
@@ -269,8 +269,8 @@ func validateDeepSeekFileUpload(fileBytes []byte, mediaType string, filename str
 		return &providererrors.InvalidArgumentError{
 			Field: "data",
 			Message: fmt.Sprintf(
-				"DeepSeek file uploads must not exceed 64 MiB (%d bytes). Received %d bytes.",
-				maxDeepSeekFileSizeBytes, len(fileBytes)),
+				"DeepSeek file uploads must not exceed 64 MiB (%s bytes). Received %s bytes.",
+				deepSeekGroupThousands(maxDeepSeekFileSizeBytes), deepSeekGroupThousands(len(fileBytes))),
 		}
 	}
 
@@ -338,6 +338,19 @@ func deepSeekHasSupportedFilenameExtension(filename string) bool {
 	if idx == -1 {
 		return false
 	}
-	ext := strings.ToLower(strings.TrimSpace(filename[idx+1:]))
+	ext := strings.ToLower(filename[idx+1:])
 	return deepSeekSupportedFilenameExtensions[ext]
+}
+
+// deepSeekGroupThousands mirrors Number#toLocaleString('en-US') for integers.
+func deepSeekGroupThousands(n int) string {
+	digits := fmt.Sprintf("%d", n)
+	var b strings.Builder
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

@@ -78,7 +78,21 @@ func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, syst
 			})
 
 		case types.RoleAssistant:
-			input = append(input, convertAssistantContent(msg.Content, providerName, strictResponseInput, extensionOptions)...)
+			items := convertAssistantContent(msg.Content, providerName, strictResponseInput, extensionOptions)
+			// TS compares against the last input item, not just the last item of
+			// this message, so same-id reasoning merges across assistant messages.
+			if len(items) > 0 && len(input) > 0 {
+				if head, ok := items[0].(ReasoningInputItem); ok && head.ID != "" {
+					if prev, ok := input[len(input)-1].(ReasoningInputItem); ok && prev.ID == head.ID {
+						if head.Content != nil {
+							prev.Content = append(prev.Content, head.Content...)
+							input[len(input)-1] = prev
+						}
+						items = items[1:]
+					}
+				}
+			}
+			input = append(input, items...)
 
 		case types.RoleTool:
 			// Convert tool results
