@@ -66,10 +66,15 @@ func convertToMistralConversationInputs(messages []types.Message, names conversa
 				if providerExecuted {
 					wireName := names.providerName(name)
 					if mistralOpts, ok := providerOpts["mistral"].(map[string]interface{}); ok {
-						if fn, ok := mistralOpts["function"].(string); ok {
-							wireName = fn
-						} else if n, ok := mistralOpts["name"].(string); ok {
-							wireName = n
+						// TS: `mistral?.function ?? mistral?.name`, then used only
+						// when that value is a string; a non-string `function`
+						// shadows `name`.
+						chosen, present := mistralOpts["function"]
+						if !present || chosen == nil {
+							chosen = mistralOpts["name"]
+						}
+						if s, ok := chosen.(string); ok {
+							wireName = s
 						}
 					}
 					args := input
