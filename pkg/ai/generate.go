@@ -1358,6 +1358,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			genResult = &resolvedResult
 		}
 
+		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, toolsByName); err != nil {
+			return nil, err
+		}
+
 		responseID := ""
 		responseModelID := stepModel.ModelID()
 		if meta := responseMetadataFromGenerateResultWithID(stepModel, genResult, generateID); meta != nil {
