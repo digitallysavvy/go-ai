@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -77,6 +78,14 @@ type prodiaPrice struct {
 	Dollars *float64 `json:"dollars,omitempty"`
 }
 
+// errMissingJobPart and errMissingBoundary carry the TS multipart handler's
+// error texts (prodia-image-model.ts and siblings).
+var errMissingJobPart = errors.New("Prodia multipart response missing job part") //nolint:staticcheck // matches TS SDK's exact error text
+
+func errMissingBoundary(contentType string) error {
+	return fmt.Errorf("Prodia response missing multipart boundary in content-type: %s", contentType) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
 // parseMultipartResponse parses a multipart/form-data response from the Prodia API.
 // It extracts the "job" JSON metadata part and the "output" binary data part.
 // Returns the job metadata, output bytes, output MIME type, and any error.
@@ -90,12 +99,12 @@ func parseMultipartResponse(contentType string, body []byte) (*prodiaJobResponse
 func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix string) (*prodiaJobResponse, []byte, string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("failed to parse response Content-Type %q: %w", contentType, err)
+		return nil, nil, "", errMissingBoundary(contentType)
 	}
 
 	boundary, ok := params["boundary"]
 	if !ok {
-		return nil, nil, "", fmt.Errorf("multipart response missing boundary in Content-Type %q", contentType)
+		return nil, nil, "", errMissingBoundary(contentType)
 	}
 
 	mr := multipart.NewReader(bytes.NewReader(body), boundary)
@@ -155,7 +164,7 @@ func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix s
 	}
 
 	if jobResp == nil {
-		return nil, nil, "", fmt.Errorf("multipart response missing 'job' part")
+		return nil, nil, "", errMissingJobPart
 	}
 
 	return jobResp, outputData, outputMIME, nil
@@ -298,11 +307,11 @@ type prodiaOutput struct {
 func parseMultipartOutputs(contentType string, body []byte) (*prodiaJobResponse, []prodiaOutput, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse response Content-Type %q: %w", contentType, err)
+		return nil, nil, errMissingBoundary(contentType)
 	}
 	boundary, ok := params["boundary"]
 	if !ok {
-		return nil, nil, fmt.Errorf("multipart response missing boundary in Content-Type %q", contentType)
+		return nil, nil, errMissingBoundary(contentType)
 	}
 	mr := multipart.NewReader(bytes.NewReader(body), boundary)
 	var jobResp *prodiaJobResponse
@@ -337,7 +346,7 @@ func parseMultipartOutputs(contentType string, body []byte) (*prodiaJobResponse,
 		}
 	}
 	if jobResp == nil {
-		return nil, nil, fmt.Errorf("multipart response missing 'job' part")
+		return nil, nil, errMissingJobPart
 	}
 	return jobResp, outputs, nil
 }

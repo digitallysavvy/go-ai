@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -155,17 +156,17 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		var err error
 		respCT, err = detectMultipartContentType(respBodyBytes)
 		if err != nil {
-			return nil, fmt.Errorf("prodia: cannot detect multipart boundary: %w", err)
+			return nil, errMissingBoundary("")
 		}
 	}
 
 	jobResp, videoData, videoMIME, err := parseMultipartResponse(respCT, respBodyBytes)
 	if err != nil {
-		return nil, fmt.Errorf("prodia: %w", err)
+		return nil, err
 	}
 
 	if len(videoData) == 0 {
-		return nil, fmt.Errorf("prodia: multipart response missing output video")
+		return nil, errors.New("Prodia multipart response missing output video") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	// TS keeps the video/mp4 default unless the part's Content-Type is video/*.
 	if !strings.HasPrefix(videoMIME, "video/") {
