@@ -183,6 +183,8 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Path:    submitURL,
 		Body:    body,
 		Headers: callOpts.Headers,
+		// TS createJsonResponseHandler(falJobResponseSchema).
+		ValidateResponse: validateVideoJob,
 	}, &queueResp)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -233,7 +235,16 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	var statusResp falVideoStatusResponse
-	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, &statusResp)
+	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, nil)
+	if err == nil {
+		// TS createJsonResponseHandler(falVideoResponseSchema).
+		if verr := validateVideoStatus(http.StatusOK, headersOf(result.Headers), result.Data); verr != nil {
+			return nil, verr
+		}
+		if uerr := json.Unmarshal(result.Data, &statusResp); uerr != nil {
+			return nil, fmt.Errorf("fal: failed to decode status response: %w", uerr)
+		}
+	}
 	if err != nil {
 		var dlErr *providererrors.DownloadError
 		if errors.As(err, &dlErr) && dlErr.Body != nil {
@@ -461,3 +472,6 @@ type falVideoStatusResponse struct {
 	HasNSFWConcepts []bool `json:"has_nsfw_concepts,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
 }
+
+// headersOf converts fileutil's header map to http.Header.
+func headersOf(h map[string][]string) http.Header { return http.Header(h) }

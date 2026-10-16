@@ -163,6 +163,8 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			"Content-Type": opts.MimeType,
 		}),
 		Query: query,
+		// TS createJsonResponseHandler(deepgramTranscriptionResponseSchema).
+		ValidateResponse: validateTranscriptionResponse,
 	}
 
 	var response deepgramTranscriptionResponse

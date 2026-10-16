@@ -306,7 +306,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, imageURL string, callHea
 	dlOpts := fileutil.TrustedOriginDownloadOptions(baseURL, trustedTransport)
 	if fileutil.IsSameOrigin(imageURL, baseURL) {
 		dlOpts.Headers = internalhttp.MergeHeaders(map[string]string{
-			"Authorization": "Bearer " + m.provider.config.APIKey,
+			"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "FIREWORKS_API_KEY"),
 		}, m.provider.config.Headers)
 		for _, h := range callHeaders {
 			dlOpts.Headers = internalhttp.MergeHeaders(dlOpts.Headers, h)

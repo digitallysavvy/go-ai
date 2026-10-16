@@ -39,3 +39,19 @@ func TestFalOptionsAreValidated(t *testing.T) {
 		[]map[string]interface{}{{"loop": "yes"}, {"motionStrength": 2}, {"resolution": 720}, {"promptOptimizer": 1}},
 		[]map[string]interface{}{{"loop": true, "motionStrength": 0.5, "resolution": "720p", "custom": 1}})
 }
+
+func TestFalVideoBodiesAreValidated(t *testing.T) {
+	for _, body := range []string{`{"request_id":1}`, `<html>`} {
+		if validateVideoJob(200, nil, []byte(body)) == nil {
+			t.Fatalf("job body %q accepted", body)
+		}
+	}
+	for _, body := range []string{`{"video":{"width":1}}`, `{"video":{"url":"u"},"has_nsfw_concepts":["no"]}`, `{"seed":"1"}`} {
+		if validateVideoStatus(200, nil, []byte(body)) == nil {
+			t.Fatalf("status body %q accepted", body)
+		}
+	}
+	if err := validateVideoStatus(200, nil, []byte(`{"video":{"url":"u","width":null},"has_nsfw_concepts":[false],"timings":{"inference":1.5},"prompt":null,"extra":1}`)); err != nil {
+		t.Fatalf("valid status body rejected: %v", err)
+	}
+}

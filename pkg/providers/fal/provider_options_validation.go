@@ -1,8 +1,11 @@
 package fal
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -111,4 +114,52 @@ func validateTranscriptionOptions(providerOptions map[string]interface{}) error 
 }
 func validateVideoOptions(providerOptions map[string]interface{}) error {
 	return parseFalOptions(falVideoOptionsSchema, providerOptions)
+}
+
+// falJobResponseNode / falVideoResponseNode are falJobResponseSchema and
+// falVideoResponseSchema (fal-video-model.ts).
+var (
+	falJobResponseNode = zodlite.Object(
+		zodlite.F("request_id", zodlite.Nullish(zodlite.String)),
+		zodlite.F("response_url", zodlite.Nullish(zodlite.String)),
+	)
+	falVideoResponseNode = func() zodlite.Node {
+		nullishNum := zodlite.Nullish(zodlite.Number)
+		return zodlite.Object(
+			zodlite.F("video", zodlite.Nullish(zodlite.Object(
+				zodlite.F("url", zodlite.String),
+				zodlite.F("width", nullishNum), zodlite.F("height", nullishNum),
+				zodlite.F("duration", nullishNum), zodlite.F("fps", nullishNum),
+				zodlite.F("content_type", zodlite.Nullish(zodlite.String)),
+			))),
+			zodlite.F("seed", nullishNum),
+			zodlite.F("timings", zodlite.Nullish(zodlite.Object(zodlite.F("inference", nullishNum)))),
+			zodlite.F("has_nsfw_concepts", zodlite.Nullish(zodlite.Array(zodlite.Boolean))),
+			zodlite.F("prompt", zodlite.Nullish(zodlite.String)),
+		)
+	}()
+)
+
+// checkFalResponse is createJsonResponseHandler(schema): a body that does not
+// match is an APICallError "Invalid JSON response".
+func checkFalResponse(node zodlite.Node, statusCode int, headers http.Header, body []byte) error {
+	var value interface{}
+	err := json.Unmarshal(body, &value)
+	if err == nil {
+		if bad := node(value, true, nil); bad != nil {
+			err = bad
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	return providerutils.InvalidJSONResponseError("fal", statusCode, headers, body, err)
+}
+
+func validateVideoJob(statusCode int, headers http.Header, body []byte) error {
+	return checkFalResponse(falJobResponseNode, statusCode, headers, body)
+}
+
+func validateVideoStatus(statusCode int, headers http.Header, body []byte) error {
+	return checkFalResponse(falVideoResponseNode, statusCode, headers, body)
 }

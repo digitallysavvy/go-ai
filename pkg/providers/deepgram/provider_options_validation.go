@@ -1,9 +1,12 @@
 package deepgram
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -84,4 +87,37 @@ func validateSpeechOptions(providerOptions map[string]interface{}) error {
 func validateTranscriptionOptions(providerOptions map[string]interface{}) error {
 	_, err := providerutils.ParseProviderOptions("deepgram", providerOptions, deepgramTranscriptionOptionsSchema)
 	return err
+}
+
+// deepgramTranscriptionResponseNode is deepgramTranscriptionResponseSchema.
+var deepgramTranscriptionResponseNode = zodlite.Object(
+	zodlite.F("metadata", zodlite.Nullish(zodlite.Object(zodlite.F("duration", zodlite.Number)))),
+	zodlite.F("results", zodlite.Nullish(zodlite.Object(
+		zodlite.F("channels", zodlite.Array(zodlite.Object(
+			zodlite.F("detected_language", zodlite.Nullish(zodlite.String)),
+			zodlite.F("alternatives", zodlite.Array(zodlite.Object(
+				zodlite.F("transcript", zodlite.String),
+				zodlite.F("words", zodlite.Array(zodlite.Object(
+					zodlite.F("word", zodlite.String), zodlite.F("start", zodlite.Number), zodlite.F("end", zodlite.Number),
+				))),
+			))),
+		))),
+	))),
+)
+
+// validateTranscriptionResponse is createJsonResponseHandler(
+// deepgramTranscriptionResponseSchema): a body that does not match is an
+// APICallError "Invalid JSON response".
+func validateTranscriptionResponse(statusCode int, headers http.Header, body []byte) error {
+	var value interface{}
+	err := json.Unmarshal(body, &value)
+	if err == nil {
+		if bad := deepgramTranscriptionResponseNode(value, true, nil); bad != nil {
+			err = bad
+		}
+	}
+	if err == nil {
+		return nil
+	}
+	return providerutils.InvalidJSONResponseError("deepgram", statusCode, headers, body, err)
 }

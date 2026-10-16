@@ -97,7 +97,7 @@ func optKeyframes(path string, v interface{}) error {
 		for _, item := range list {
 			pair, _ := bflTimedKeyframe(item)
 			if pair <= prev {
-				return fmt.Errorf("Timed keyframes must be in chronological order. (at %s)", path)
+				return fmt.Errorf("timed keyframes must be in chronological order (at %s)", path)
 			}
 			prev = pair
 		}

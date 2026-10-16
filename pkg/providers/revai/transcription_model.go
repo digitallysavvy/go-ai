@@ -132,7 +132,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 // against a compromised or misbehaving redirect hop.
 func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, headers map[string]string) (*revaiJobResponse, error) {
 	pollOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + m.provider.config.APIKey}, m.provider.config.Headers, headers)
+	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "REVAI_API_KEY")}, m.provider.config.Headers, headers)
 
 	pollURL := m.provider.config.BaseURL + "/speechtotext/v1/jobs/" + jobID
 	start := time.Now()

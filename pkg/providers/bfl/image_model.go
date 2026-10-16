@@ -524,7 +524,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 			req.Header.Set(k, v)
 		}
 		if req.Header.Get("X-Key") == "" {
-			req.Header.Set("X-Key", m.provider.config.APIKey)
+			req.Header.Set("X-Key", providerutils.APIKeyOrEnv(m.provider.config.APIKey, "BFL_API_KEY"))
 		}
 	}
 	resp, err := client.Do(req)
@@ -697,7 +697,7 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 			req.Header.Set(k, v)
 		}
 		if req.Header.Get("X-Key") == "" {
-			req.Header.Set("X-Key", m.provider.config.APIKey)
+			req.Header.Set("X-Key", providerutils.APIKeyOrEnv(m.provider.config.APIKey, "BFL_API_KEY"))
 		}
 	} else {
 		// Like TS, only the SDK user agent travels to delivery hosts.
