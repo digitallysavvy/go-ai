@@ -31,6 +31,7 @@ const (
 // Result type discriminator values.
 const (
 	CodeExecutionResultTypeProgrammatic     = "code_execution_result"
+	CodeExecutionResultTypeEncrypted        = "encrypted_code_execution_result"
 	CodeExecutionResultTypeBash             = "bash_code_execution_result"
 	CodeExecutionResultTypeBashError        = "bash_code_execution_tool_result_error"
 	CodeExecutionResultTypeTextEditorError  = "text_editor_code_execution_tool_result_error"
@@ -165,6 +166,22 @@ type ProgrammaticExecutionResult struct {
 func (r *ProgrammaticExecutionResult) codeExecutionResult()  {}
 func (r *ProgrammaticExecutionResult) GetResultType() string { return r.Type }
 
+// EncryptedProgrammaticExecutionResult is returned instead of
+// ProgrammaticExecutionResult when the API encrypts stdout (TS
+// encrypted_code_execution_result).
+//
+// type: "encrypted_code_execution_result"
+type EncryptedProgrammaticExecutionResult struct {
+	Type            string                    `json:"type"` // "encrypted_code_execution_result"
+	EncryptedStdout string                    `json:"encrypted_stdout"`
+	Stderr          string                    `json:"stderr"`
+	ReturnCode      int                       `json:"return_code"`
+	Content         []CodeExecutionOutputItem `json:"content,omitempty"`
+}
+
+func (r *EncryptedProgrammaticExecutionResult) codeExecutionResult()  {}
+func (r *EncryptedProgrammaticExecutionResult) GetResultType() string { return r.Type }
+
 // BashExecutionResult is returned after a bash command execution.
 // Content is always serialized (even if empty) because the Anthropic API schema
 // requires the field — it is not optional in the output schema.
@@ -268,6 +285,13 @@ func UnmarshalCodeExecutionResult(data []byte) (CodeExecutionResult, error) {
 		}
 		return &v, nil
 
+	case CodeExecutionResultTypeEncrypted:
+		var v EncryptedProgrammaticExecutionResult
+		if err := json.Unmarshal(data, &v); err != nil {
+			return nil, fmt.Errorf("code execution result: unmarshal encrypted_code_execution_result: %w", err)
+		}
+		return &v, nil
+
 	case CodeExecutionResultTypeBash:
 		var v BashExecutionResult
 		if err := json.Unmarshal(data, &v); err != nil {
@@ -317,7 +341,7 @@ func UnmarshalCodeExecutionResult(data []byte) (CodeExecutionResult, error) {
 
 // CodeExecution20260120 creates the Anthropic code execution tool (version 2026-01-20).
 //
-// This tool enables the model to request client-side code execution. It supports
+// This is a provider-executed tool (Anthropic runs the code). It supports
 // three execution modes:
 //   - Python programmatic tool calls (type: "programmatic-tool-call")
 //   - Bash command execution (type: "bash_code_execution")
@@ -326,8 +350,8 @@ func UnmarshalCodeExecutionResult(data []byte) (CodeExecutionResult, error) {
 // The beta header "code-execution-20260120" is automatically injected by the Anthropic
 // provider when this tool is present in the tool list.
 //
-// Usage: when the model calls this tool, parse the input with UnmarshalCodeExecutionInput,
-// execute the requested operation locally, then return a CodeExecutionResult as JSON.
+// The tool call input and result can be decoded with UnmarshalCodeExecutionInput and
+// UnmarshalCodeExecutionResult.
 //
 // Supported models: Claude Opus 4.6, Claude Sonnet 4.6
 //
@@ -340,8 +364,13 @@ func CodeExecution20260120() types.Tool {
 		Description: buildCodeExecution20260120Description(),
 		Parameters:  buildCodeExecution20260120Schema(),
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("code execution tool requires client-side execution: parse input with UnmarshalCodeExecutionInput and return a CodeExecutionResult")
+			return nil, fmt.Errorf("code execution tool must be executed by the provider (Anthropic). Set ProviderExecuted: true")
 		},
+		// TS: createProviderExecutedToolFactory(..., { supportsDeferredResults: true }).
+		// Anthropic runs the code; programmatic tool calling can defer the
+		// result until the client-executed tools it triggered are resolved.
+		ProviderExecuted:        true,
+		SupportsDeferredResults: true,
 		// ExperimentalToolCaller lets other tools opt into programmatic
 		// tool calling through code_execution_20260120 via
 		// ai.ExperimentalToolCallers, mirroring the TypeScript SDK's
@@ -406,9 +435,7 @@ func codeExecutionToolCaller(allowedCallerName string) *types.ToolCallerDefiniti
 }
 
 func buildCodeExecution20260120Description() string {
-	return `Code execution tool for client-side Python, Bash, and file operations (version 2026-01-20).
-
-When the model calls this tool, execute the requested operation locally and return the result.
+	return `Code execution tool for Python, Bash, and file operations (version 2026-01-20), executed by the Anthropic API.
 
 Input Types:
 1. Programmatic Tool Calling (type: "programmatic-tool-call")
@@ -434,7 +461,7 @@ Result Types:
 - bash_code_execution_tool_result_error: Bash execution error
 - text_editor_code_execution_tool_result_error: Text editor error
 
-Use UnmarshalCodeExecutionInput to parse inputs and return a CodeExecutionResult as JSON.`
+Use UnmarshalCodeExecutionInput / UnmarshalCodeExecutionResult to decode inputs and results.`
 }
 
 func buildCodeExecution20260120Schema() map[string]interface{} {
