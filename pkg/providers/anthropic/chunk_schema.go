@@ -379,3 +379,26 @@ var (
 		f("description", zNullish(zString)),
 	)
 )
+
+// zBatchResponse, zBatchList and zFileUpload port
+// anthropicBatchResponseZodSchema, anthropicBatchListResponseSchema
+// (anthropic-batch.ts) and anthropicUploadFileResponseSchema
+// (anthropic-files.ts).
+var (
+	zBatchResponse = zObject(
+		f("id", zString), f("type", zLiteral("message_batch")), f("processing_status", zString),
+		f("request_counts", zObject(
+			f("processing", zNumber), f("succeeded", zNumber), f("errored", zNumber),
+			f("canceled", zNumber), f("expired", zNumber))),
+		f("created_at", zString), f("expires_at", zString),
+		f("archived_at", zNullish(zString)), f("cancel_initiated_at", zNullish(zString)),
+		f("ended_at", zNullish(zString)), f("results_url", zNullish(zString)),
+	)
+	zBatchList = zObject(
+		f("data", zArray(zBatchResponse)), f("has_more", zBoolean), f("last_id", zNullish(zString)),
+	)
+	zFileUpload = zObject(
+		f("id", zString), f("type", zLiteral("file")), f("filename", zString), f("mime_type", zString),
+		f("size_bytes", zNumber), f("created_at", zString), f("downloadable", zNullish(zBoolean)),
+	)
+)

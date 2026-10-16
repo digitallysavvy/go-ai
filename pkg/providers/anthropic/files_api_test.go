@@ -18,6 +18,7 @@ func TestFilesAPI_UploadFile(t *testing.T) {
 		beta = r.Header.Get("anthropic-beta")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id":         "file-abc123",
+			"type":       "file",
 			"filename":   "test.pdf",
 			"mime_type":  "application/pdf",
 			"size_bytes": 12345,
@@ -54,7 +55,7 @@ func TestFilesAPI_UploadFile_PartContentTypeAndHeaders(t *testing.T) {
 		if fhs := r.MultipartForm.File["file"]; len(fhs) == 1 {
 			partType = fhs[0].Header.Get("Content-Type")
 		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "f1", "filename": "a.txt", "mime_type": "text/plain", "size_bytes": 1, "created_at": "x"})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "f1", "type": "file", "filename": "a.txt", "mime_type": "text/plain", "size_bytes": 1, "created_at": "x"})
 	}))
 	defer srv.Close()
 	p := New(Config{APIKey: "k", BaseURL: srv.URL})

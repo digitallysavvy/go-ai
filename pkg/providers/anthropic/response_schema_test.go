@@ -49,3 +49,44 @@ func TestDoGenerate_ResponseSchemaMismatchIsInvalidJSONResponse(t *testing.T) {
 		})
 	}
 }
+
+// TS createJsonResponseHandler on the files and batch endpoints
+// (anthropicUploadFileResponseSchema, anthropicBatchResponseZodSchema,
+// anthropicBatchListResponseSchema): a mismatched 2xx body is an APICallError
+// "Invalid JSON response".
+func TestFilesAndBatchBodiesAreSchemaValidated(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		call func(p *Provider) error
+	}{
+		"file missing type": {`{"id":"f","filename":"a","mime_type":"t","size_bytes":1,"created_at":"c"}`, func(p *Provider) error {
+			_, err := p.Files().UploadFile(t.Context(), types.UploadFileOptions{Data: types.FileData{Type: types.FileDataTypeData, Data: []byte{1}}, MediaType: "text/plain"})
+			return err
+		}},
+		"batch counts missing": {`{"id":"b","type":"message_batch","processing_status":"ended","created_at":"c","expires_at":"e"}`, func(p *Provider) error {
+			_, err := p.ExperimentalBatch().DoGetBatchStatus(t.Context(), provider.BatchV4OperationOptions{BatchID: "b"})
+			return err
+		}},
+		"cancel count string": {`{"id":"b","type":"message_batch","processing_status":"ended","request_counts":{"processing":"0","succeeded":0,"errored":0,"canceled":0,"expired":0},"created_at":"c","expires_at":"e"}`, func(p *Provider) error {
+			_, err := p.ExperimentalBatch().(provider.BatchV4Canceller).DoCancelBatch(t.Context(), provider.BatchV4OperationOptions{BatchID: "b"})
+			return err
+		}},
+		"list has_more missing": {`{"data":[]}`, func(p *Provider) error {
+			_, err := p.ExperimentalBatch().(provider.BatchV4Lister).DoListBatches(t.Context(), provider.BatchV4ListOptions{})
+			return err
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, tc.body)
+			}))
+			defer server.Close()
+			err := tc.call(New(Config{APIKey: "k", BaseURL: server.URL}))
+			var perr *providererrors.ProviderError
+			if !errors.As(err, &perr) || perr.Message != "Invalid JSON response" || perr.StatusCode != 200 || !providererrors.IsValidationError(perr.Cause) {
+				t.Fatalf("err = %#v", err)
+			}
+		})
+	}
+}
