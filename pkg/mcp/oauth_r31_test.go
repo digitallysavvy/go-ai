@@ -145,3 +145,25 @@ func TestOAuthMetadataSchemasRejectMalformedOptionalFields(t *testing.T) {
 		}
 	}
 }
+
+// OAuthTokensSchema / OAuthClientInformationFullSchema reject a null or
+// wrongly typed optional field.
+func TestOAuthTokenAndRegistrationResponsesRejectNullOptionalFields(t *testing.T) {
+	for _, bad := range []string{`"refresh_token":null`, `"expires_in":null`, `"scope":5`} {
+		resp := jsonResponse(http.StatusOK, `{"access_token":"a","token_type":"Bearer",`+bad+`}`)
+		if _, err := decodeOAuthTokenResponse(resp); err == nil {
+			t.Errorf("token response with %s was accepted", bad)
+		}
+	}
+	if _, err := decodeOAuthTokenResponse(jsonResponse(http.StatusOK, `{"access_token":"a","token_type":"Bearer","expires_in":3600}`)); err != nil {
+		t.Fatalf("valid token response: %v", err)
+	}
+	for _, bad := range []string{`"client_secret":null`, `"application_type":"desktop"`, `"client_id_issued_at":"1"`, `"contacts":[1]`} {
+		client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
+			return jsonResponse(http.StatusOK, `{"client_id":"c","redirect_uris":["https://app/cb"],`+bad+`}`), nil
+		})
+		if _, err := RegisterOAuthClient(context.Background(), "https://auth.example.com", nil, OAuthClientMetadata{RedirectURIs: []string{"https://app/cb"}}, client); err == nil {
+			t.Errorf("registration response with %s was accepted", bad)
+		}
+	}
+}

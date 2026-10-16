@@ -833,6 +833,9 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	if !isJSONString(regFields["client_id"]) || !isJSONArray(regFields["redirect_uris"]) {
 		return nil, fmt.Errorf("failed to decode dynamic client registration response: client_id and redirect_uris are required")
 	}
+	if err := checkOAuthOptionalFields(regFields, oauthRegistrationFieldRules); err != nil {
+		return nil, fmt.Errorf("failed to decode dynamic client registration response: %w", err)
+	}
 	var full OAuthClientInformationFull
 	if err := json.Unmarshal(rawBody, &full); err != nil {
 		return nil, fmt.Errorf("failed to decode dynamic client registration response: %w", err)
@@ -951,6 +954,9 @@ func decodeOAuthTokenResponse(resp *http.Response) (*OAuthTokens, error) {
 		if !isJSONString(fields[key]) {
 			return nil, fmt.Errorf("failed to decode OAuth token response: %s must be a string", key)
 		}
+	}
+	if err := checkOAuthOptionalFields(fields, oauthTokenFieldRules); err != nil {
+		return nil, fmt.Errorf("failed to decode OAuth token response: %w", err)
 	}
 	var tokens OAuthTokens
 	if err := json.Unmarshal(rawBody, &tokens); err != nil {

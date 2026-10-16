@@ -15,6 +15,8 @@ const (
 	oauthFieldStringArray
 	oauthFieldBool
 	oauthFieldSafeURLArray
+	oauthFieldNumber
+	oauthFieldApplicationType // "native" | "web"
 )
 
 type oauthFieldRule struct {
@@ -27,6 +29,38 @@ type oauthFieldRule struct {
 // Zod's .optional() rejects but encoding/json accepts) and the fields the
 // structs do not carry are validated like TS.
 var (
+	oauthTokenFieldRules = []oauthFieldRule{
+		{"id_token", oauthFieldString},
+		{"expires_in", oauthFieldNumber},
+		{"scope", oauthFieldString},
+		{"refresh_token", oauthFieldString},
+		{"issuer", oauthFieldSafeURL},
+		{"authorization_server", oauthFieldSafeURL},
+		{"token_endpoint", oauthFieldSafeURL},
+	}
+	oauthRegistrationFieldRules = []oauthFieldRule{
+		{"client_secret", oauthFieldString},
+		{"client_id_issued_at", oauthFieldNumber},
+		{"client_secret_expires_at", oauthFieldNumber},
+		{"application_type", oauthFieldApplicationType},
+		{"token_endpoint_auth_method", oauthFieldString},
+		{"grant_types", oauthFieldStringArray},
+		{"response_types", oauthFieldStringArray},
+		{"client_name", oauthFieldString},
+		{"client_uri", oauthFieldSafeURL},
+		{"logo_uri", oauthFieldSafeURL},
+		{"scope", oauthFieldString},
+		{"contacts", oauthFieldStringArray},
+		{"tos_uri", oauthFieldSafeURL},
+		{"policy_uri", oauthFieldString},
+		{"jwks_uri", oauthFieldSafeURL},
+		{"software_id", oauthFieldString},
+		{"software_version", oauthFieldString},
+		{"software_statement", oauthFieldString},
+		{"issuer", oauthFieldSafeURL},
+		{"authorization_server", oauthFieldSafeURL},
+		{"token_endpoint", oauthFieldSafeURL},
+	}
 	oauthPRMFieldRules = []oauthFieldRule{
 		{"authorization_servers", oauthFieldSafeURLArray},
 		{"jwks_uri", oauthFieldURL},
@@ -108,6 +142,11 @@ func oauthFieldMatches(raw json.RawMessage, kind oauthFieldKind) bool {
 			}
 		}
 		return true
+	case oauthFieldNumber:
+		var v float64
+		return json.Unmarshal(raw, &v) == nil && len(raw) > 0 && raw[0] != 'n'
+	case oauthFieldApplicationType:
+		return string(raw) == `"native"` || string(raw) == `"web"`
 	case oauthFieldBool:
 		return string(raw) == "true" || string(raw) == "false"
 	}
