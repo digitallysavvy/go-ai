@@ -172,14 +172,14 @@ func buildVertexAudioTranscriptionConfig(opts vertexGeminiTranscriptionOptions) 
 }
 
 type vertexGeminiTranscriptionWord struct {
-	Word        string `json:"word,omitempty"`
-	StartOffset string `json:"startOffset,omitempty"`
-	EndOffset   string `json:"endOffset,omitempty"`
+	Word        *string `json:"word,omitempty"`
+	StartOffset string  `json:"startOffset,omitempty"`
+	EndOffset   string  `json:"endOffset,omitempty"`
 }
 
 type vertexGeminiAudioTranscription struct {
 	Text         string                          `json:"text,omitempty"`
-	LanguageCode string                          `json:"languageCode,omitempty"`
+	LanguageCode *string                         `json:"languageCode,omitempty"`
 	SpeakerLabel string                          `json:"speakerLabel,omitempty"`
 	Words        []vertexGeminiTranscriptionWord `json:"words,omitempty"`
 }
@@ -265,22 +265,27 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	var plainText, transcriptionText strings.Builder
 	var segments []types.TranscriptionTimestamp
 	var language string
+	languageSet := false
 	if len(response.Candidates) > 0 {
 		for _, part := range response.Candidates[0].Content.Parts {
 			plainText.WriteString(part.Text)
 			if part.AudioTranscription != nil {
 				transcriptionText.WriteString(part.AudioTranscription.Text)
-				if language == "" {
-					language = part.AudioTranscription.LanguageCode
+				// TS `language ??= transcription.languageCode`: the first
+				// non-null code wins, even an empty string.
+				if !languageSet && part.AudioTranscription.LanguageCode != nil {
+					language = *part.AudioTranscription.LanguageCode
+					languageSet = true
 				}
 				for _, word := range part.AudioTranscription.Words {
 					startSecond, ok1 := parseGoogleDuration(word.StartOffset)
 					endSecond, ok2 := parseGoogleDuration(word.EndOffset)
-					if word.Word == "" || !ok1 || !ok2 {
+					// TS skips only a null word; an empty string is kept.
+					if word.Word == nil || !ok1 || !ok2 {
 						continue
 					}
 					segments = append(segments, types.TranscriptionTimestamp{
-						Text:  word.Word,
+						Text:  *word.Word,
 						Start: startSecond,
 						End:   endSecond,
 					})
@@ -298,14 +303,14 @@ func (m *GeminiTranscriptionModel) DoTranscribe(ctx context.Context, opts *provi
 	}
 
 	var providerMetadata map[string]interface{}
-	if len(response.UsageMetadata) > 0 {
+	if response.UsageMetadata != nil {
 		providerMetadata = map[string]interface{}{
 			"google": map[string]interface{}{"usageMetadata": response.UsageMetadata},
 		}
 	}
 
 	var providerUsage map[string]interface{}
-	if len(response.UsageMetadata) > 0 {
+	if response.UsageMetadata != nil {
 		providerUsage = response.UsageMetadata
 	}
 
