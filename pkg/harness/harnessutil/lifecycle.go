@@ -33,6 +33,9 @@ func ValidateLifecycleStateObject(data json.RawMessage, dst any) error {
 			return fmt.Errorf("invalid lifecycle state data: %s must not be null", key)
 		}
 	}
+	if err := RejectNullRecordValues(probe, "sandboxCredentialEnvironment"); err != nil {
+		return err
+	}
 	if raw, ok := probe["bridge"]; ok {
 		var coords map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &coords); err != nil {
@@ -47,6 +50,27 @@ func ValidateLifecycleStateObject(data json.RawMessage, dst any) error {
 		// keys (ACP's stateDir has its own validator) are stripped by z.object.
 		if v, ok := coords["sandboxId"]; ok && string(bytes.TrimSpace(v)) == "null" {
 			return fmt.Errorf("invalid lifecycle state data: bridge.sandboxId must not be null")
+		}
+	}
+	return nil
+}
+
+// RejectNullRecordValues mirrors zod `z.record(z.string(), z.string())`: a
+// null value inside the record at probe[key] is a schema failure, while Go's
+// map[string]string would silently decode it to "". Absent keys and non-object
+// values are left to the caller's typed decode.
+func RejectNullRecordValues(probe map[string]json.RawMessage, key string) error {
+	raw, ok := probe[key]
+	if !ok {
+		return nil
+	}
+	var rec map[string]json.RawMessage
+	if json.Unmarshal(raw, &rec) != nil {
+		return nil
+	}
+	for k, v := range rec {
+		if string(bytes.TrimSpace(v)) == "null" {
+			return fmt.Errorf("invalid lifecycle state data: %s.%s must be a string", key, k)
 		}
 	}
 	return nil
