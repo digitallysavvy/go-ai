@@ -119,7 +119,7 @@ func TestOpenResponsesConvertUserAndFileHelpers(t *testing.T) {
 			MediaType: "application/pdf",
 		},
 	}, &[]types.Warning{}, "open-responses")
-	if err == nil || !strings.Contains(err.Error(), "provider references are not supported") {
+	if err == nil || !strings.Contains(err.Error(), "file parts with provider references") {
 		t.Fatalf("convertUserContent() error = %v, want unsupported provider reference", err)
 	}
 }
