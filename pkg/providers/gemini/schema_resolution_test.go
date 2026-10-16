@@ -61,6 +61,16 @@ func TestVertexRagStoreOmitsUndefinedCorpus(t *testing.T) {
 	}
 }
 
+// TS omits similarity_top_k when topK is undefined; a nil topK (JSON null or an
+// unset pointer) must not be sent as "similarity_top_k":null.
+func TestVertexRagStoreOmitsNilTopK(t *testing.T) {
+	entry := buildNativeToolEntry(types.Tool{Type: "provider", ProviderID: "google.vertex_rag_store", ProviderArgs: map[string]interface{}{"ragCorpus": "c", "topK": nil}})
+	b, _ := json.Marshal(entry)
+	if strings.Contains(string(b), "similarity_top_k") {
+		t.Fatalf("entry = %s, want no similarity_top_k for a nil topK", b)
+	}
+}
+
 // A schema.OrderedSchema keeps its property order for the response schema and
 // for function tools.
 func TestOrderedSchemaKeepsOrderOnTheWire(t *testing.T) {
