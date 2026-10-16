@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -308,8 +309,9 @@ var gatewayServerErrorStatusCodes = map[string]int{
 // TS createErrorFromServerErrorPart; unknown shapes keep the generic message.
 func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
 	m, ok := payload.(map[string]interface{})
+	msg, hasMsg := "", false
 	if ok {
-		msg, hasMsg := m["message"].(string)
+		msg, hasMsg = m["message"].(string)
 		errType, hasType := m["type"].(string)
 		if hasMsg && hasType {
 			if statusCode, known := gatewayServerErrorStatusCodes[errType]; known {
@@ -321,11 +323,24 @@ func gatewayTranscriptionServerError(payload interface{}, authMethod string) err
 				}
 			}
 		}
-		if hasMsg && msg != "" {
-			return fmt.Errorf("AI Gateway transcription stream failed: %s", msg)
+	}
+	// TS getServerErrorMessage: a string message property, else getErrorMessage
+	// (null/undefined -> "unknown error", string as is, others JSON.stringify).
+	if !hasMsg {
+		switch v := payload.(type) {
+		case nil:
+			msg = "unknown error"
+		case string:
+			msg = v
+		default:
+			if b, err := jsonstr.Marshal(v); err == nil {
+				msg = string(b)
+			} else {
+				msg = fmt.Sprint(v)
+			}
 		}
 	}
-	return fmt.Errorf("AI Gateway transcription stream failed: %v", payload)
+	return fmt.Errorf("AI Gateway transcription stream failed: %s", msg)
 }
 
 // pumpAudio reads chunks from audio and forwards them as binary frames (split
@@ -406,7 +421,7 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Delta = delta
@@ -418,9 +433,9 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
-			!isOptionalNumber(raw["durationInSeconds"]) || !isOptionalNumber(raw["channelIndex"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalNumberKey(raw, "startSecond") ||
+			!isOptionalNumberKey(raw, "durationInSeconds") || !isOptionalNumberKey(raw, "channelIndex") ||
+			!isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Text = text
@@ -435,9 +450,9 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["id"]) || !isOptionalNumber(raw["startSecond"]) ||
-			!isOptionalNumber(raw["endSecond"]) || !isOptionalNumber(raw["channelIndex"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "id") || !isOptionalNumberKey(raw, "startSecond") ||
+			!isOptionalNumberKey(raw, "endSecond") || !isOptionalNumberKey(raw, "channelIndex") ||
+			!isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.Text = text
@@ -448,7 +463,7 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
 
 	case provider.TranscriptionStreamPartTypeResponseMetadata:
-		if !isOptionalString(raw["modelId"]) || !isOptionalRecord(raw["headers"]) {
+		if !isOptionalStringKey(raw, "modelId") || !isOptionalRecordKey(raw, "headers") {
 			return nil, false
 		}
 		part.ModelID, _ = raw["modelId"].(string)
@@ -474,14 +489,15 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 		if !ok {
 			return nil, false
 		}
-		if !isOptionalString(raw["language"]) || !isOptionalNumber(raw["durationInSeconds"]) ||
-			!isOptionalRecord(raw["providerMetadata"]) {
+		if !isOptionalStringKey(raw, "language") || !isOptionalNumberKey(raw, "durationInSeconds") ||
+			!isOptionalRecordKey(raw, "usage") || !isOptionalRecordKey(raw, "providerMetadata") {
 			return nil, false
 		}
 		part.FinishText = text
 		part.Language, _ = raw["language"].(string)
 		part.DurationInSeconds = float64PtrFromInterface(raw["durationInSeconds"])
 		part.ProviderMetadata = mapFromInterface(raw["providerMetadata"])
+		part.Usage = mapFromInterface(raw["usage"])
 		part.Segments = segments
 
 	case provider.TranscriptionStreamPartTypeRaw:
@@ -503,28 +519,32 @@ func parseGatewayTranscriptionStreamPart(text string) (*provider.TranscriptionSt
 	return part, true
 }
 
-// isOptionalString mirrors TS isOptional(value, isString): absent (nil) is
-// fine; present-but-non-string is not.
-func isOptionalString(v interface{}) bool {
-	if v == nil {
+// isOptionalStringKey mirrors TS isOptional(value, isString): the key is
+// absent (JS undefined) or holds a string. An explicit JSON null is not
+// undefined, so it fails the check.
+func isOptionalStringKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(string)
 	return ok
 }
 
-// isOptionalNumber mirrors TS isOptional(value, isNumber).
-func isOptionalNumber(v interface{}) bool {
-	if v == nil {
+// isOptionalNumberKey mirrors TS isOptional(value, isNumber).
+func isOptionalNumberKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(float64)
 	return ok
 }
 
-// isOptionalRecord mirrors TS isOptional(value, isRecord).
-func isOptionalRecord(v interface{}) bool {
-	if v == nil {
+// isOptionalRecordKey mirrors TS isOptional(value, isRecord).
+func isOptionalRecordKey(raw map[string]interface{}, key string) bool {
+	v, present := raw[key]
+	if !present {
 		return true
 	}
 	_, ok := v.(map[string]interface{})
