@@ -744,14 +744,16 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		if i.N != nil {
 			n = *i.N
 		}
+		// TS normalizeImagePrompt gives every input image a media type.
+		imageFiles, imageMask := normalizeImageInputs(i.Files, i.Mask)
 		imgOpts := provider.ImageGenerateOptions{
 			Prompt:          i.Prompt,
 			N:               &n,
 			Size:            i.Size,
 			AspectRatio:     i.AspectRatio,
 			Seed:            i.Seed,
-			Files:           i.Files,
-			Mask:            i.Mask,
+			Files:           imageFiles,
+			Mask:            imageMask,
 			ProviderOptions: i.ProviderOptions,
 		}
 		return provider.BatchV4Request{

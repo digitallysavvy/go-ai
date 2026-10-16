@@ -44,3 +44,23 @@ func TestGenerateImageNormalizesInputImageMediaTypes(t *testing.T) {
 		t.Errorf("mask = %+v, want image/png default", got.Mask)
 	}
 }
+
+func TestBatchImageRequestNormalizesInputImageMediaTypes(t *testing.T) {
+	var got provider.BatchV4StartOptions
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: &mockBatchV4{providerName: "mock.batch", startFn: func(_ context.Context, o provider.BatchV4StartOptions) (*provider.BatchV4StartResult, error) {
+			got = o
+			return &provider.BatchV4StartResult{BatchID: "b"}, nil
+		}},
+		Requests: []BatchRequest{{Image: &BatchImageRequest{
+			ID: "i1", Model: "m", Prompt: "edit",
+			Files: []provider.ImageFile{{Type: "file", Data: []byte("zz")}},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mt := got.Requests[0].Image.Options.Files[0].MediaType; mt != "image/png" {
+		t.Fatalf("media type = %q, want image/png", mt)
+	}
+}
