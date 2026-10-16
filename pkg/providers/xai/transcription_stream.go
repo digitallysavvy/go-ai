@@ -187,7 +187,11 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 	// headers, and the `ai-sdk-xai/VERSION` User-Agent tag) instead of
 	// rebuilding an untagged set, mirroring TS xai-transcription-model.ts's
 	// doStream, which reuses `this.config.headers()`.
-	headers := internalhttp.MergeHeaders(m.provider.client.Headers(), opts.Headers)
+	baseHeaders, err := m.provider.client.RequestHeaders()
+	if err != nil {
+		return nil, err
+	}
+	headers := internalhttp.MergeHeaders(baseHeaders, opts.Headers)
 
 	expectedDoneCount := 1
 	if xaiOpts.Multichannel != nil && *xaiOpts.Multichannel && xaiOpts.Channels != nil {

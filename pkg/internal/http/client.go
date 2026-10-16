@@ -571,6 +571,27 @@ func (c *Client) Headers() map[string]string {
 	return out
 }
 
+// RequestHeaders is Headers for a connection that must be authenticated like
+// a request (a WebSocket handshake): when Config.HeadersFunc fails (a missing
+// API key) the error is returned (a LoadAPIKeyError) instead of handing back
+// headers without credentials.
+func (c *Client) RequestHeaders() (map[string]string, error) {
+	c.mu.RLock()
+	out := make(map[string]string, len(c.headers))
+	for k, v := range c.headers {
+		out[k] = v
+	}
+	c.mu.RUnlock()
+	if c.headersFunc != nil {
+		extra, err := c.headersFunc()
+		if err != nil {
+			return nil, err
+		}
+		overlayHeaders(out, extra)
+	}
+	return out, nil
+}
+
 // SetBaseURL updates the base URL
 func (c *Client) SetBaseURL(baseURL string) {
 	c.mu.Lock()
