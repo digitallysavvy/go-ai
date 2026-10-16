@@ -2,7 +2,6 @@ package hume
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -44,10 +43,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		return nil, err
 	}
 	requestBody, warnings := m.buildRequestBody(opts)
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, humeSpeechBodyOrder))
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
@@ -74,6 +70,16 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
 		},
 	}, nil
+}
+
+// humeSpeechBodyOrder is the key order of the TS requestBody (hume-speech-model.ts)
+// and of the zod-parsed context options.
+var humeSpeechBodyOrder = map[string][]string{
+	"":                         {"utterances", "format", "context"},
+	"utterances":               {"text", "speed", "description", "voice"},
+	"utterances.voice":         {"id", "provider"},
+	"context.utterances":       {"text", "description", "speed", "trailing_silence", "voice"},
+	"context.utterances.voice": {"id", "name", "provider"},
 }
 
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {

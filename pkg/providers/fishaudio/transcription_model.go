@@ -136,8 +136,11 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	filename := "audio." + fishAudioExtension(opts.MimeType)
 	header := textproto.MIMEHeader{}
 	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="audio"; filename=%q`, filename))
+	// A File with an empty type is sent as application/octet-stream.
 	if opts.MimeType != "" {
 		header.Set("Content-Type", opts.MimeType)
+	} else {
+		header.Set("Content-Type", "application/octet-stream")
 	}
 	part, err := writer.CreatePart(header)
 	if err != nil {

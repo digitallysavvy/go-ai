@@ -87,7 +87,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	// TS: the response timestamp is taken before the request is sent.
 	startedAt := time.Now()
 	if len(opts.Files) > 10 {
-		return nil, fmt.Errorf("black forest labs supports up to 10 input images")
+		return nil, fmt.Errorf("Black Forest Labs supports up to 10 input images.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if err := validateBFLImageOptions(m.modelID, opts.ProviderOptions); err != nil {
 		return nil, err
@@ -417,12 +417,8 @@ func (m *ImageModel) pollResult(ctx context.Context, createResp bflCreateRespons
 		pollURL = fmt.Sprintf("/get_result?id=%s", createResp.ID)
 	}
 	if strings.HasPrefix(pollURL, "http://") || strings.HasPrefix(pollURL, "https://") {
-		separator := "?"
-		if strings.Contains(pollURL, "?") {
-			separator = "&"
-		}
-		if !strings.Contains(pollURL, "?id=") && !strings.Contains(pollURL, "&id=") {
-			pollURL += separator + "id=" + createResp.ID
+		if withID, err := ensurePollingURLHasID(pollURL, createResp.ID); err == nil {
+			pollURL = withID
 		}
 	}
 

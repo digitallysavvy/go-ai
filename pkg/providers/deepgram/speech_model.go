@@ -107,10 +107,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		})
 	}
 
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("deepgram: failed to marshal speech request metadata: %w", err)
-	}
+	// JSON.stringify leaves <, > and & literal.
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, nil))
 
 	result := &types.SpeechResult{
 		Audio:            resp.Body,
@@ -483,6 +481,11 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 			query["tag"] = strings.Join(parts, ",")
 		case []string:
 			query["tag"] = strings.Join(tag, ",")
+		case string:
+			// TS `if (deepgramOptions.tag)`: an empty string is falsy.
+			if tag != "" {
+				query["tag"] = tag
+			}
 		default:
 			query["tag"] = fmt.Sprint(tag)
 		}

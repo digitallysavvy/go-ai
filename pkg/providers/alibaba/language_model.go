@@ -379,8 +379,9 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, alibabaOpts)
 
-	// Parallel tool calls
-	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok {
+	// Parallel tool calls (TS sends it only when the request carries tools:
+	// alibabaTools != null && parallelToolCalls !== undefined).
+	if parallelToolCalls, ok := providerutils.OpenAICompatibleBoolOption(alibabaOpts, "parallelToolCalls", "parallel_tool_calls", "parallel-tool-calls"); ok && len(opts.Tools) > 0 {
 		body["parallel_tool_calls"] = parallelToolCalls
 	}
 
@@ -392,8 +393,8 @@ func (m *LanguageModel) buildRequestBodyChecked(opts *provider.GenerateOptions, 
 		body["preserve_thinking"] = *preserveThinkingValue
 	}
 
-	// Streaming options
-	if stream {
+	// Streaming options (TS: includeUsage defaults to true)
+	if stream && (m.prov.config.IncludeUsage == nil || *m.prov.config.IncludeUsage) {
 		body["stream_options"] = map[string]interface{}{
 			"include_usage": true,
 		}

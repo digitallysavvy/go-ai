@@ -2,7 +2,6 @@ package elevenlabs
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -97,10 +96,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		// the HTTP status text.
 		return nil, handleTranscriptionError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 	}
-	requestBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal ElevenLabs speech request metadata: %w", err)
-	}
+	requestBytes := []byte(providerutils.StringifyOrdered(reqBody, elevenlabsSpeechBodyOrder))
 
 	return &types.SpeechResult{
 		Audio:    resp.Body,
@@ -114,6 +110,16 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
 		},
 	}, nil
+}
+
+// elevenlabsSpeechBodyOrder is the key order of the TS requestBody
+// (elevenlabs-speech-model.ts); voice_settings is assigned last.
+var elevenlabsSpeechBodyOrder = map[string][]string{
+	"": {"text", "model_id", "language_code", "pronunciation_dictionary_locators", "seed", "previous_text",
+		"next_text", "previous_request_ids", "next_request_ids", "apply_text_normalization",
+		"apply_language_text_normalization", "voice_settings"},
+	"pronunciation_dictionary_locators": {"pronunciation_dictionary_id", "version_id"},
+	"voice_settings":                    {"speed", "stability", "similarity_boost", "style", "use_speaker_boost"},
 }
 
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) map[string]interface{} {

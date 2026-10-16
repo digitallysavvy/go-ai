@@ -9,7 +9,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -197,24 +196,9 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	return &buf, writer.FormDataContentType(), warnings, nil
 }
 
-// elevenLabsAudioExtension mirrors TS provider-utils mediaTypeToExtension.
+// elevenLabsAudioExtension is TS provider-utils mediaTypeToExtension.
 func elevenLabsAudioExtension(mimeType string) string {
-	subtype := ""
-	if parts := strings.SplitN(strings.ToLower(mimeType), "/", 2); len(parts) == 2 {
-		subtype = parts[1]
-	}
-	switch subtype {
-	case "mpeg":
-		return "mp3"
-	case "x-wav":
-		return "wav"
-	case "opus":
-		return "ogg"
-	case "mp4", "x-m4a":
-		return "m4a"
-	default:
-		return subtype
-	}
+	return providerutils.MediaTypeToExtension(mimeType)
 }
 
 func valueOrZero(v *float64) float64 {

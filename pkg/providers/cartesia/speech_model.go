@@ -2,7 +2,6 @@ package cartesia
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -143,6 +142,15 @@ func resolveOutputFormat(outputFormat string, opts *SpeechModelOptions, warnings
 	return map[string]interface{}{"container": container, "encoding": encoding, "sample_rate": sampleRate}
 }
 
+// cartesiaSpeechBodyOrder is the key order of the TS requestBody literal
+// (cartesia-speech-model.ts) and its output_format object, which
+// JSON.stringify keeps.
+var cartesiaSpeechBodyOrder = map[string][]string{
+	"":              {"model_id", "transcript", "voice", "output_format", "language", "generation_config"},
+	"voice":         {"mode", "id"},
+	"output_format": {"container", "encoding", "sample_rate", "bit_rate"},
+}
+
 // DoGenerate performs text-to-speech synthesis.
 func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGenerateOptions) (*types.SpeechResult, error) {
 	if opts == nil {
@@ -158,10 +166,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	currentDate := time.Now()
 
 	requestBody, warnings := m.buildRequestBody(opts)
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, cartesiaSpeechBodyOrder))
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method:  http.MethodPost,

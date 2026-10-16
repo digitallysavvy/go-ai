@@ -190,13 +190,13 @@ func alibabaResolveStartImage(opts *provider.VideoModelV3CallOptions) *provider.
 	return opts.Image
 }
 
+// alibabaVideoURLRe is TS isVideoUrl: /\.(mp4|mov)([?#]|$)/i, unanchored at
+// the start, so ".mp4" followed by "?", "#" or the end anywhere in the URL
+// (a query value such as ?file=a.mp4 included) is a video.
+var alibabaVideoURLRe = regexp.MustCompile(`(?i)\.(mp4|mov)([?#]|$)`)
+
 func alibabaIsVideoURL(url string) bool {
-	lower := strings.ToLower(url)
-	// Strip query/fragment before checking the extension.
-	if idx := strings.IndexAny(lower, "?#"); idx >= 0 {
-		lower = lower[:idx]
-	}
-	return strings.HasSuffix(lower, ".mp4") || strings.HasSuffix(lower, ".mov")
+	return alibabaVideoURLRe.MatchString(url)
 }
 
 // alibabaResolveMedia builds the input.media array (wan2.7 and wan3) from

@@ -119,7 +119,7 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	sparse := make([]map[string]interface{}, 0)
 	for i, item := range response.Output.Embeddings {
 		embeddings[i] = item.Embedding
-		if len(item.SparseEmbedding) > 0 {
+		if item.SparseEmbedding != nil {
 			sparse = append(sparse, map[string]interface{}{
 				"textIndex":       item.TextIndex,
 				"sparseEmbedding": normalizeAlibabaSparseEmbedding(item.SparseEmbedding),

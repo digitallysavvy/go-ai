@@ -243,7 +243,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // message).
 func (m *ImageModel) statusError(status int, headers http.Header, body []byte) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
-	return providererrors.NewProviderError("fal", 0, "", falImageErrorMessage(status, body), cause)
+	return providererrors.NewProviderErrorFromResponse("fal", 0, "", falImageErrorMessage(status, body), cause)
 }
 
 // falImageErrorMessage mirrors the image model's TS falFailedResponseHandler:

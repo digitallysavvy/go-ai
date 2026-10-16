@@ -136,7 +136,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			Headers: internalhttp.MergeHeaders(map[string]string{"Accept": "multipart/form-data; video/mp4"}, opts.Headers),
 		})
 		if err != nil {
-			reqErr = fmt.Errorf("prodia API request failed: %w", err)
+			reqErr = err // TS postToApi lets a transport failure propagate unchanged
 		} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			reqErr = newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 		} else {

@@ -2,7 +2,6 @@ package fishaudio
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -50,10 +49,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	currentDate := time.Now()
 	requestBody, warnings := m.buildRequestBody(opts)
 
-	requestBytes, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
+	requestBytes := []byte(providerutils.StringifyOrdered(requestBody, fishSpeechBodyOrder))
 
 	resp, err := m.provider.client.Do(ctx, internalhttp.Request{
 		Method: http.MethodPost,
@@ -82,6 +78,14 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Headers:   providerutils.ExtractHeaders(resp.Headers),
 		},
 	}, nil
+}
+
+// fishSpeechBodyOrder is the key order of the TS requestBody (fish-audio-speech-model.ts).
+var fishSpeechBodyOrder = map[string][]string{
+	"": {"text", "format", "reference_id", "prosody", "sample_rate", "mp3_bitrate", "opus_bitrate", "latency",
+		"temperature", "top_p", "chunk_length", "min_chunk_length", "normalize", "max_new_tokens",
+		"repetition_penalty", "condition_on_previous_chunks", "early_stop_threshold", "features"},
+	"prosody": {"speed", "volume", "normalize_loudness"},
 }
 
 func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (map[string]interface{}, []types.Warning) {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -89,6 +90,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 	if err := validateLanguageOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
+	currentDate := time.Now()
 	var warnings []types.Warning
 
 	// Warn about features this provider does not support.
@@ -215,7 +217,7 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		ProviderMetadata: map[string]interface{}{
 			"prodia": buildProdiaProviderMetadata(jobResp),
 		},
-		ResponseMetadata: &types.ResponseMetadata{ModelID: m.modelID, Headers: providerutils.ExtractHeaders(respHeaders)},
+		ResponseMetadata: &types.ResponseMetadata{Timestamp: currentDate, ModelID: m.modelID, Headers: providerutils.ExtractHeaders(respHeaders)},
 		ResponseHeaders:  providerutils.ExtractHeaders(respHeaders),
 	}
 
@@ -251,6 +253,18 @@ func (m *ProdiaLanguageModel) DoStream(ctx context.Context, opts *provider.Gener
 		Type:     provider.ChunkTypeStreamStart,
 		Warnings: gr.Warnings,
 	})
+
+	// TS doStream emits response-metadata (modelId, timestamp) right after
+	// stream-start.
+	if gr.ResponseMetadata != nil {
+		chunks = append(chunks, &provider.StreamChunk{
+			Type: provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: &provider.ResponseMetadata{
+				ModelID:   gr.ResponseMetadata.ModelID,
+				Timestamp: gr.ResponseMetadata.Timestamp,
+			},
+		})
+	}
 
 	// Text block.
 	if gr.Text != "" {

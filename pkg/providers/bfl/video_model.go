@@ -526,10 +526,15 @@ func ensurePollingURLHasID(pollingURL, requestID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	q := u.Query()
-	if q.Get("id") == "" {
-		q.Set("id", requestID)
-		u.RawQuery = q.Encode()
+	// searchParams.has('id'): a present-but-empty `id=` counts. The pair is
+	// appended in place; re-encoding the query would sort the keys.
+	if !u.Query().Has("id") {
+		pair := "id=" + url.QueryEscape(requestID)
+		if u.RawQuery == "" {
+			u.RawQuery = pair
+		} else {
+			u.RawQuery += "&" + pair
+		}
 	}
 	return u.String(), nil
 }

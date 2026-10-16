@@ -123,7 +123,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		setOptionalString(body, "boost_param", aaiOpts.BoostParam)
 		setOptional(body, "content_safety", aaiOpts.ContentSafety)
 		setOptional(body, "content_safety_confidence", aaiOpts.ContentSafetyConfidence)
-		if len(aaiOpts.CustomSpelling) > 0 {
+		if aaiOpts.CustomSpelling != nil {
 			body["custom_spelling"] = aaiOpts.CustomSpelling
 		}
 		setOptional(body, "disfluencies", aaiOpts.Disfluencies)
@@ -131,7 +131,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		setOptional(body, "filter_profanity", aaiOpts.FilterProfanity)
 		setOptional(body, "format_text", aaiOpts.FormatText)
 		setOptional(body, "iab_categories", aaiOpts.IabCategories)
-		if len(aaiOpts.KeytermsPrompt) > 0 {
+		if aaiOpts.KeytermsPrompt != nil {
 			body["keyterms_prompt"] = aaiOpts.KeytermsPrompt
 		}
 		if aaiOpts.LanguageCode != "" {
@@ -145,12 +145,12 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		setOptional(body, "redact_pii", aaiOpts.RedactPii)
 		setOptional(body, "redact_pii_audio", aaiOpts.RedactPiiAudio)
 		setOptionalString(body, "redact_pii_audio_quality", aaiOpts.RedactPiiAudioQuality)
-		if len(aaiOpts.RedactPiiPolicies) > 0 {
+		if aaiOpts.RedactPiiPolicies != nil {
 			body["redact_pii_policies"] = aaiOpts.RedactPiiPolicies
 		}
 		setOptional(body, "redact_pii_return_unredacted", aaiOpts.RedactPiiReturnUnredacted)
 		setOptionalString(body, "redact_pii_sub", aaiOpts.RedactPiiSub)
-		if len(aaiOpts.RedactStaticEntities) > 0 {
+		if aaiOpts.RedactStaticEntities != nil {
 			body["redact_static_entities"] = aaiOpts.RedactStaticEntities
 		}
 		setOptionalString(body, "remove_audio_tags", aaiOpts.RemoveAudioTags)
@@ -165,7 +165,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		setOptionalString(body, "webhook_auth_header_name", aaiOpts.WebhookAuthHeaderName)
 		setOptionalString(body, "webhook_auth_header_value", aaiOpts.WebhookAuthHeaderValue)
 		setOptionalString(body, "webhook_url", aaiOpts.WebhookUrl)
-		if len(aaiOpts.WordBoost) > 0 {
+		if aaiOpts.WordBoost != nil {
 			body["word_boost"] = aaiOpts.WordBoost
 		}
 		setOptionalString(body, "domain", aaiOpts.Domain)
@@ -179,7 +179,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 
 		if aaiOpts.LanguageDetectionOptions != nil {
 			ldo := map[string]interface{}{}
-			if len(aaiOpts.LanguageDetectionOptions.ExpectedLanguages) > 0 {
+			if aaiOpts.LanguageDetectionOptions.ExpectedLanguages != nil {
 				ldo["expected_languages"] = aaiOpts.LanguageDetectionOptions.ExpectedLanguages
 			}
 			setOptionalString(ldo, "fallback_language", aaiOpts.LanguageDetectionOptions.FallbackLanguage)
@@ -196,7 +196,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		}
 
 		var deprecatedBoostOptions []string
-		if len(aaiOpts.WordBoost) > 0 {
+		if aaiOpts.WordBoost != nil {
 			deprecatedBoostOptions = append(deprecatedBoostOptions, "wordBoost")
 		}
 		if aaiOpts.BoostParam != "" {
@@ -218,7 +218,7 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 		// option; without it AssemblyAI either rejects the request (400) or
 		// silently ignores the option. Warn rather than mutate user input.
 		redactPiiEnabled := aaiOpts.RedactPii != nil && *aaiOpts.RedactPii
-		if (aaiOpts.RedactPiiReturnUnredacted != nil || len(aaiOpts.RedactStaticEntities) > 0) && !redactPiiEnabled {
+		if (aaiOpts.RedactPiiReturnUnredacted != nil || aaiOpts.RedactStaticEntities != nil) && !redactPiiEnabled {
 			warnings = append(warnings, types.Warning{
 				Type:    "other",
 				Message: "'redactPiiReturnUnredacted' and 'redactStaticEntities' require 'redactPii' to be enabled; AssemblyAI rejects the request otherwise.",

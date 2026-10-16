@@ -108,9 +108,16 @@ func extractTranscriptionOptions(providerOptions map[string]interface{}) (opts *
 	}
 
 	opts = &TranscriptionModelOptions{}
+	// explicitNull: zod `.nullish().default(x)` applies x only to a missing
+	// key; an explicit null stays null, and TS then skips the field.
+	explicitNull := func(string) bool { return false }
 	if rawMap, ok := raw.(map[string]interface{}); ok {
 		if v, ok := rawMap["streaming"]; ok && v != nil {
 			hasStreaming = true
+		}
+		explicitNull = func(key string) bool {
+			v, present := rawMap[key]
+			return present && v == nil
 		}
 	}
 	if raw != nil {
@@ -120,18 +127,18 @@ func extractTranscriptionOptions(providerOptions map[string]interface{}) (opts *
 	}
 
 	// Apply schema defaults (zod .default()), matching TS parseProviderOptions.
-	if opts.TagAudioEvents == nil {
+	if opts.TagAudioEvents == nil && !explicitNull("tagAudioEvents") {
 		tagDefault := true
 		opts.TagAudioEvents = &tagDefault
 	}
-	if opts.TimestampsGranularity == "" {
+	if opts.TimestampsGranularity == "" && !explicitNull("timestampsGranularity") {
 		opts.TimestampsGranularity = "word"
 	}
 	if opts.Diarize == nil {
 		diarizeDefault := true
 		opts.Diarize = &diarizeDefault
 	}
-	if opts.FileFormat == "" {
+	if opts.FileFormat == "" && !explicitNull("fileFormat") {
 		opts.FileFormat = "other"
 	}
 

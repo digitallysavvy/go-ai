@@ -243,7 +243,7 @@ func replicateErrorMessage(status int, body []byte) string {
 // replicateErrorMessage.
 func replicateAPIError(status int, headers http.Header, body []byte) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: status, Headers: headers, Body: body}
-	return providererrors.NewProviderError("replicate", 0, "", replicateErrorMessage(status, body), cause)
+	return providererrors.NewProviderErrorFromResponse("replicate", 0, "", replicateErrorMessage(status, body), cause)
 }
 
 // buildRequest builds the prediction request body, warnings and Prefer header.

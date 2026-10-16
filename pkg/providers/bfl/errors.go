@@ -31,7 +31,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 	}
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &raw) != nil {
-		return providererrors.NewProviderError("bfl", 0, "", http.StatusText(statusCode), cause)
+		return providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(statusCode), cause)
 	}
 
 	taskStatus := ""
@@ -67,7 +67,7 @@ func bflStatusError(statusCode int, headers http.Header, body []byte) error {
 		}
 	}
 
-	perr := providererrors.NewProviderError("bfl", 0, "", message, cause)
+	perr := providererrors.NewProviderErrorFromResponse("bfl", 0, "", message, cause)
 	if bflTerminalTaskStatus(taskStatus) {
 		notRetryable := false
 		perr.Retryable = &notRetryable

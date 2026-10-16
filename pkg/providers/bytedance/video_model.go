@@ -232,7 +232,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Body:    body,
 	})
 	if err != nil {
-		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
+		// TS postJsonToApi lets a transport failure (an abort, or the
+		// "Cannot connect to API" APICallError) propagate unchanged.
+		return nil, err
 	}
 	if submitResp.StatusCode >= 400 {
 		return nil, m.parseAPIError(submitResp.Body, submitResp.StatusCode)
@@ -582,6 +584,9 @@ func (m *VideoModel) handlePollError(err error) error {
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return m.parseAPIError(dlErr.Body, dlErr.StatusCode)
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err // TS lets an abort through unchanged
+	}
 	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
 }
 
@@ -715,7 +720,8 @@ type taskContentField struct {
 
 // taskUsageField holds token usage info
 type taskUsageField struct {
-	CompletionTokens int `json:"completion_tokens"`
+	// CompletionTokens is omitted when the wire omits it (zod nullish).
+	CompletionTokens *int `json:"completion_tokens,omitempty"`
 }
 
 // errorDetail holds the error message and code

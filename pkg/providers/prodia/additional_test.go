@@ -59,11 +59,11 @@ func TestProdiaProvider_ModelRoutingAndMetadata(t *testing.T) {
 		t.Fatalf("image spec version = %q", im.SpecificationVersion())
 	}
 
-	if _, err := p.LanguageModel("bad-model"); err == nil {
-		t.Fatal("LanguageModel should reject unsupported model prefix")
+	if _, err := p.LanguageModel("any-model"); err != nil {
+		t.Fatalf("LanguageModel accepts any id (TS (string & {})): %v", err)
 	}
-	if _, err := p.VideoModel("bad-model"); err == nil {
-		t.Fatal("VideoModel should reject unsupported model prefix")
+	if _, err := p.VideoModel("any-model"); err != nil {
+		t.Fatalf("VideoModel accepts any id (TS (string & {})): %v", err)
 	}
 }
 

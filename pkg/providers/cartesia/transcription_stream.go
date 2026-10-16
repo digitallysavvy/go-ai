@@ -143,7 +143,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		}
 	}
 
-	if cartesiaOpts != nil && len(cartesiaOpts.TimestampGranularities) > 0 {
+	if cartesiaOpts != nil && cartesiaOpts.TimestampGranularities != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "providerOptions.cartesia.timestampGranularities",

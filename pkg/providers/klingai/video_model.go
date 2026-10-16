@@ -109,7 +109,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Headers: mergeKlingAIHeaders(authToken, opts.Headers),
 	})
 	if err != nil {
-		return nil, NewVideoGenerationError(fmt.Sprintf("failed to submit request: %v", err))
+		// TS postJsonToApi lets the transport failure (an abort, or the
+		// "Cannot connect to API" APICallError) propagate unchanged, so
+		// errors.Is(err, context.Canceled) and retry classification keep
+		// working.
+		return nil, err
 	}
 	if submitResp.StatusCode < 200 || submitResp.StatusCode >= 300 {
 		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Body)
@@ -360,7 +364,8 @@ func detectMode(modelID string) (VideoMode, error) {
 	if strings.HasSuffix(modelID, "-motion-control") {
 		return VideoModeMotionControl, nil
 	}
-	return "", fmt.Errorf("unsupported model ID: %s (must end with -t2v, -i2v, or -motion-control)", modelID)
+	// TS detectMode throws NoSuchModelError({ modelId, modelType: 'videoModel' }).
+	return "", providererrors.NewNoSuchModelError(modelID, "videoModel")
 }
 
 // endpointForMode returns the API endpoint path for a (possibly effective,
@@ -624,12 +629,12 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["shot_type"] = *provOpts.ShotType
 	}
 
-	if len(provOpts.MultiPrompt) > 0 {
+	if provOpts.MultiPrompt != nil {
 		body["multi_prompt"] = provOpts.MultiPrompt
 	}
 
 	// v3.0 voice control
-	if len(provOpts.VoiceList) > 0 {
+	if provOpts.VoiceList != nil {
 		body["voice_list"] = provOpts.VoiceList
 	}
 
@@ -708,7 +713,7 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["static_mask"] = *provOpts.StaticMask
 	}
 
-	if len(provOpts.DynamicMasks) > 0 {
+	if provOpts.DynamicMasks != nil {
 		body["dynamic_masks"] = provOpts.DynamicMasks
 	}
 
@@ -725,17 +730,17 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 		body["shot_type"] = *provOpts.ShotType
 	}
 
-	if len(provOpts.MultiPrompt) > 0 {
+	if provOpts.MultiPrompt != nil {
 		body["multi_prompt"] = provOpts.MultiPrompt
 	}
 
 	// v3.0 element control (I2V only)
-	if len(provOpts.ElementList) > 0 {
+	if provOpts.ElementList != nil {
 		body["element_list"] = provOpts.ElementList
 	}
 
 	// v3.0 voice control
-	if len(provOpts.VoiceList) > 0 {
+	if provOpts.VoiceList != nil {
 		body["voice_list"] = provOpts.VoiceList
 	}
 
@@ -882,7 +887,7 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 	}
 
 	// v3.0 element control
-	if len(provOpts.ElementList) > 0 {
+	if provOpts.ElementList != nil {
 		body["element_list"] = provOpts.ElementList
 	}
 
@@ -895,7 +900,7 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 		})
 	}
 
-	if opts.Duration != nil {
+	if opts.Duration != nil && *opts.Duration != 0 {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "duration",

@@ -132,6 +132,8 @@ func TestAlibabaCamelCaseProviderOptions(t *testing.T) {
 	model := NewLanguageModel(prov, "qwen-plus")
 
 	opts := &provider.GenerateOptions{
+		// TS sends parallel_tool_calls only when the request carries tools.
+		Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"}}},
 		ProviderOptions: map[string]interface{}{
 			"alibaba": map[string]interface{}{
 				"enableThinking":    true,
