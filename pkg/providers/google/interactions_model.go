@@ -146,10 +146,11 @@ func (m *InteractionsLanguageModel) DoGenerate(ctx context.Context, opts *provid
 
 	var response interactionsResponse
 	resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/interactions",
-		Body:    args,
-		Headers: requestHeaders(opts),
+		ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
+		Method:           http.MethodPost,
+		Path:             "/interactions",
+		Body:             args,
+		Headers:          requestHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -182,10 +183,11 @@ func (m *InteractionsLanguageModel) DoStream(ctx context.Context, opts *provider
 	if interactionsOpts.Background != nil && *interactionsOpts.Background {
 		var response interactionsResponse
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodPost,
-			Path:    "/interactions",
-			Body:    args,
-			Headers: headers,
+			ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
+			Method:           http.MethodPost,
+			Path:             "/interactions",
+			Body:             args,
+			Headers:          headers,
 		}, &response)
 		if err != nil {
 			return nil, m.handleError(err)
@@ -522,9 +524,10 @@ func (m *InteractionsLanguageModel) pollUntilTerminal(ctx context.Context, inter
 
 		var response interactionsResponse
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
-			Method:  http.MethodGet,
-			Path:    "/interactions/" + url.PathEscape(interactionID),
-			Headers: headers,
+			ValidateResponse: providerutils.NodeResponseValidator(m.Provider(), zGoogleInteractions),
+			Method:           http.MethodGet,
+			Path:             "/interactions/" + url.PathEscape(interactionID),
+			Headers:          headers,
 		}, &response)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -556,6 +559,9 @@ func (m *InteractionsLanguageModel) cancelInteraction(ctx context.Context, inter
 }
 
 func (m *InteractionsLanguageModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		return gemini.GoogleHTTPError(m.Provider(), statusErr.StatusCode, statusErr.Headers, statusErr.Body, err)

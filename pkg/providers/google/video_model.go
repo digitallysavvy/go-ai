@@ -348,10 +348,11 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	var operation googleVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
-		Body:    body,
-		Headers: callOpts.Headers,
+		ValidateResponse: googleValidator(zGoogleOperation),
+		Method:           http.MethodPost,
+		Path:             fmt.Sprintf("/models/%s:predictLongRunning", m.modelID),
+		Body:             body,
+		Headers:          callOpts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -387,9 +388,10 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	var operation googleVideoOperationWire
 	httpResp, err := m.prov.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/" + op.OperationName,
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleOperation),
+		Method:           http.MethodGet,
+		Path:             "/" + op.OperationName,
+		Headers:          opts.Headers,
 	}, &operation)
 	if err != nil {
 		return nil, m.handleError(err)

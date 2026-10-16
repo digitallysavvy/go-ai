@@ -134,10 +134,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 	if len(inlineJSON) < googleBatchInlineCreationMaxBytes {
 		var operation googleBatchOperationWire
 		if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-			Method:  http.MethodPost,
-			Path:    createPath,
-			Body:    requestBody,
-			Headers: opts.Headers,
+			ValidateResponse: googleValidator(zGoogleBatchOperation),
+			Method:           http.MethodPost,
+			Path:             createPath,
+			Body:             requestBody,
+			Headers:          opts.Headers,
 		}, &operation); err != nil {
 			return nil, b.handleError(err)
 		}
@@ -170,10 +171,11 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 
 	var operation googleBatchOperationWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    createPath,
-		Body:    map[string]interface{}{"batch": fileBatchBody},
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleBatchOperation),
+		Method:           http.MethodPost,
+		Path:             createPath,
+		Body:             map[string]interface{}{"batch": fileBatchBody},
+		Headers:          opts.Headers,
 	}, &operation); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -264,7 +266,15 @@ func (b *Batch) uploadBatchInputFile(ctx context.Context, content []byte, displa
 			ExpirationTime string `json:"expirationTime"`
 		} `json:"file"`
 	}
-	if err := json.NewDecoder(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes)).Decode(&result); err != nil {
+	uploadBody, err := io.ReadAll(io.LimitReader(uploadResp.Body, googleFilesMaxResponseBytes))
+	if err != nil {
+		return nil, err
+	}
+	// TS createJsonResponseHandler(googleFileUploadResponseSchema).
+	if err := googleValidator(zGoogleBatchFileUpload)(uploadResp.StatusCode, uploadResp.Header, uploadBody); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(uploadBody, &result); err != nil {
 		return nil, err
 	}
 	return &googleBatchUploadedFile{Name: result.File.Name, ExpirationTime: result.File.ExpirationTime}, nil
@@ -335,10 +345,11 @@ func (b *Batch) DoGetBatchStatus(ctx context.Context, opts provider.BatchV4Opera
 func (b *Batch) DoCancelBatch(ctx context.Context, opts provider.BatchV4OperationOptions) (*provider.BatchV4CancelResult, error) {
 	var response map[string]interface{}
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    "/" + opts.BatchID + ":cancel",
-		Body:    map[string]interface{}{},
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleBatchCancel),
+		Method:           http.MethodPost,
+		Path:             "/" + opts.BatchID + ":cancel",
+		Body:             map[string]interface{}{},
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -360,10 +371,11 @@ func (b *Batch) DoListBatches(ctx context.Context, opts provider.BatchV4ListOpti
 		NextPageToken string                     `json:"nextPageToken"`
 	}
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/batches",
-		Query:   query,
-		Headers: opts.Headers,
+		ValidateResponse: googleValidator(zGoogleBatchList),
+		Method:           http.MethodGet,
+		Path:             "/batches",
+		Query:            query,
+		Headers:          opts.Headers,
 	}, &response); err != nil {
 		return nil, b.handleError(err)
 	}
@@ -450,9 +462,10 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 func (b *Batch) retrieveBatch(ctx context.Context, batchID string, headers map[string]string) (*googleBatchOperationWire, error) {
 	var operation googleBatchOperationWire
 	if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
-		Method:  http.MethodGet,
-		Path:    "/" + batchID,
-		Headers: headers,
+		ValidateResponse: googleValidator(zGoogleBatchOperation),
+		Method:           http.MethodGet,
+		Path:             "/" + batchID,
+		Headers:          headers,
 	}, &operation); err != nil {
 		return nil, b.handleError(err)
 	}

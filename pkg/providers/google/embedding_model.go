@@ -214,10 +214,11 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 
 	var response googleEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: googleValidator(zGoogleSingleEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -290,10 +291,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 
 	var response googleBatchEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  http.MethodPost,
-		Path:    path,
-		Body:    reqBody,
-		Headers: optsHeaders(opts),
+		ValidateResponse: googleValidator(zGoogleBatchEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
+		Headers:          optsHeaders(opts),
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -340,9 +342,10 @@ func (m *EmbeddingModel) DoEmbedParts(ctx context.Context, text string, parts []
 
 	var response googleEmbeddingResponse
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
-		Method: http.MethodPost,
-		Path:   path,
-		Body:   reqBody,
+		ValidateResponse: googleValidator(zGoogleSingleEmbedding),
+		Method:           http.MethodPost,
+		Path:             path,
+		Body:             reqBody,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -640,6 +643,9 @@ func parseEmbeddingContentPart(raw interface{}) (EmbeddingPart, error) {
 
 // handleError converts various errors to provider errors
 func (m *EmbeddingModel) handleError(err error) error {
+	if providerutils.IsInvalidJSONResponse(err) {
+		return err // TS createJsonResponseHandler failure is an APICallError as is
+	}
 	var loadKeyErr *providererrors.LoadAPIKeyError
 	if errors.As(err, &loadKeyErr) {
 		return err // TS throws LoadAPIKeyError unwrapped
