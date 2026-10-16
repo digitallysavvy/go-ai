@@ -3,6 +3,7 @@ package prodia
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -96,6 +97,41 @@ func TestR34_MultipartErrorTextsMatchTS(t *testing.T) {
 			if err == nil || err.Error() != c.want {
 				t.Errorf("%s/%s: err = %v, want %q", c.name, who, err, c.want)
 			}
+		}
+	}
+}
+
+// TS forwards `resolution` when it is not undefined, "" included; an unset
+// option stays absent from the job config.
+func TestR34_VideoResolutionEmptyStringForwardedOnlyWhenPresent(t *testing.T) {
+	respBody, respCT := buildTestMultipartBody(`{"id":"j"}`, []byte("mp4"), "video/mp4")
+	var configs []map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Config map[string]interface{} `json:"config"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		configs = append(configs, body.Config)
+		w.Header().Set("Content-Type", respCT)
+		_, _ = w.Write(respBody)
+	}))
+	defer srv.Close()
+	m := NewVideoModel(New(Config{APIKey: "k", BaseURL: srv.URL}), VideoModelWan22LightningTxt2Vid)
+	for _, po := range []map[string]interface{}{
+		{"prodia": map[string]interface{}{"resolution": ""}},
+		{"prodia": map[string]interface{}{}},
+		nil,
+	} {
+		if _, err := m.DoGenerate(context.Background(), &provider.VideoModelV3CallOptions{Prompt: "p", ProviderOptions: po}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v, ok := configs[0]["resolution"]; !ok || v != "" {
+		t.Errorf("present empty resolution: config = %v", configs[0])
+	}
+	for _, c := range configs[1:] {
+		if _, ok := c["resolution"]; ok {
+			t.Errorf("unset resolution must be absent: %v", c)
 		}
 	}
 }

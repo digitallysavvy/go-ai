@@ -54,6 +54,10 @@ func (m *ProdiaVideoModel) MaxVideosPerCall() *int {
 type ProdiaVideoProviderOptions struct {
 	// Resolution specifies the output video resolution (e.g. "480p", "720p").
 	Resolution string `json:"resolution,omitempty"`
+
+	// resolutionSet records that the option map carried a resolution string,
+	// even "": TS `prodiaOptions?.resolution !== undefined` forwards it.
+	resolutionSet bool
 }
 
 // extractVideoProviderOptions reads Prodia-specific options from the provider
@@ -73,6 +77,12 @@ func extractVideoProviderOptions(opts *provider.VideoModelV3CallOptions) *Prodia
 	var o ProdiaVideoProviderOptions
 	if err := json.Unmarshal(b, &o); err != nil {
 		return nil
+	}
+	var rawMap map[string]interface{}
+	if json.Unmarshal(b, &rawMap) == nil {
+		if _, ok := rawMap["resolution"].(string); ok {
+			o.resolutionSet = true
+		}
 	}
 	return &o
 }
@@ -96,7 +106,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 	if opts.Seed != nil {
 		jobConfig["seed"] = *opts.Seed
 	}
-	if provOpts != nil && provOpts.Resolution != "" {
+	if provOpts != nil && (provOpts.Resolution != "" || provOpts.resolutionSet) {
 		jobConfig["resolution"] = provOpts.Resolution
 	}
 
