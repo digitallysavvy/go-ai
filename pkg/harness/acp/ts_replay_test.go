@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"fmt"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1081,5 +1082,57 @@ func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
 	}
 	if reply["toolResult"] == nil {
 		t.Fatalf("toolResult missing from %v", reply)
+	}
+}
+
+// TS requires `providerExecuted === false` from fromNativeRequest; an
+// undefined flag (ProviderExecutedOmitted in Go) fails the turn.
+func TestTSReplay_QuestionToolCallWithOmittedProviderExecutedIsRejected(t *testing.T) {
+	started := make(chan *bridgetest.Turn, 1)
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+		OnStart: func(turn *bridgetest.Turn, _ map[string]any) { started <- turn }})
+	t.Cleanup(srv.Close)
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return "tok" }
+		s.HarnessID = "test-acp"
+		s.AskUserQuestions = &AskUserQuestionsSettings{
+			RequestMethod: "test/ask",
+			FromNativeRequest: func(any, *ToolCall) *harness.ToolCallPart {
+				return &harness.ToolCallPart{ToolCallID: "q", ToolName: "askUserQuestions", Input: `{}`, ProviderExecutedOmitted: true}
+			},
+			ToNativeResponse: func(any, types.ToolResultContent) any { return nil },
+		}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{SessionID: "s", SandboxSession: newFakeSandbox(srv), SessionWorkDir: "/w"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+	var mu sync.Mutex
+	var errText string
+	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{Prompt: harness.TextPrompt("Ask."), Emit: func(p harness.StreamPart) {
+		if e, ok := p.(*harness.ErrorPart); ok {
+			mu.Lock()
+			errText = fmt.Sprint(e.Error)
+			mu.Unlock()
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn := <-started
+	turn.Emit(map[string]any{"type": "acp-question-request", "requestId": "r1", "nativeRequest": map[string]any{}})
+	select {
+	case <-control.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("turn did not settle")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !strings.Contains(errText, "must return a client-executed askUserQuestions tool call") {
+		t.Fatalf("error part = %q", errText)
 	}
 }
