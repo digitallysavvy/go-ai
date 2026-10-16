@@ -177,7 +177,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 
 	var queueResp falVideoQueueResponse
-	httpResp, err := m.prov.absClient.DoJSONResponse(ctx, internalhttp.Request{
+	_, err = m.prov.absClient.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    submitURL,
 		Body:    body,
@@ -201,7 +201,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Response: provider.VideoModelV3ResponseInfo{
 			Timestamp: currentDate,
 			ModelID:   m.modelID,
-			Headers:   convertHTTPHeaders(httpResp.Headers),
+			// TS doStart: `headers: undefined` (the queue response headers are
+			// not surfaced).
+			Headers: nil,
 		},
 	}, nil
 }
@@ -265,7 +267,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 					Response: provider.VideoModelV3ResponseInfo{
 						Timestamp: currentDate,
 						ModelID:   m.modelID,
-						Headers:   map[string]string{},
+						Headers:   nil, // TS: `headers: undefined`
 					},
 				}, nil
 			}
@@ -456,13 +458,6 @@ func (m *VideoModel) handleError(err error) error {
 	// TS postJsonToApi / getFromApi let a transport failure (an abort, "Cannot
 	// connect to API") propagate unchanged.
 	return err
-}
-
-// convertHTTPHeaders flattens net/http.Header (map[string][]string) into the
-// map[string]string expected by VideoModelV3ResponseInfo.Headers, taking the
-// first value for each header key.
-func convertHTTPHeaders(h http.Header) map[string]string {
-	return flattenFalHTTPHeaders(h)
 }
 
 func flattenFalHTTPHeaders(h map[string][]string) map[string]string {
