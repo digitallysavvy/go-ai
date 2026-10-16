@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -273,4 +274,28 @@ func TestGeminiTranscriptionModel_HeadersForwarded(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "request-header-value", capturedHeader)
+}
+
+// TS zod validation and googleVertexFailedResponseHandler for the unary path.
+func TestGeminiTranscriptionModel_OptionValidationAndHTTPErrors(t *testing.T) {
+	_, err := parseVertexGeminiTranscriptionOptionsChecked(map[string]interface{}{"vertex": map[string]interface{}{"mode": "FAST"}})
+	var ia *providererrors.InvalidArgumentError
+	require.ErrorAs(t, err, &ia)
+
+	opts, err := parseVertexGeminiTranscriptionOptionsChecked(map[string]interface{}{"vertex": map[string]interface{}{"languageCodes": []interface{}{}}})
+	require.NoError(t, err)
+	cfg := buildVertexAudioTranscriptionConfig(opts)
+	assert.Contains(t, cfg, "languageCodes")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":429,"message":"slow down","status":"RESOURCE_EXHAUSTED"}}`))
+	}))
+	defer server.Close()
+	model := NewGeminiTranscriptionModel(newVertexTestProvider(t, server.URL), ModelGemini35Transcribe)
+	_, err = model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	var pe *providererrors.ProviderError
+	require.ErrorAs(t, err, &pe)
+	assert.Equal(t, 429, pe.StatusCode)
+	assert.Contains(t, pe.Message, "slow down")
 }
