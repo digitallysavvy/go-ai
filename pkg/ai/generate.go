@@ -105,6 +105,15 @@ func isGatewayCallRetryable(err error) bool {
 	if errors.As(err, &retryable) {
 		return retryable.IsRetryable()
 	}
+	// A provider error that carries its HTTP response (e.g. KlingAI and
+	// ByteDance API errors) follows the TS APICallError rule: only 408, 409,
+	// 429 and 5xx are retryable.
+	var httpErr providererrors.HTTPStatusDetails
+	if errors.As(err, &httpErr) {
+		if code, _, _ := httpErr.HTTPStatusDetails(); code != 0 {
+			return code == 408 || code == 409 || code == 429 || code >= 500
+		}
+	}
 	return false
 }
 
