@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -166,7 +167,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions, operation string, quiverOpts *QuiverAIImageModelOptions) (map[string]interface{}, error) {
 	if isArrow2Model(m.modelID) && quiverOpts.MaxOutputTokens != nil && *quiverOpts.MaxOutputTokens > maxArrow2OutputTokens {
-		return nil, invalidQuiverArgument("providerOptions.quiverai.maxOutputTokens", fmt.Sprintf("QuiverAI model %q supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
+		return nil, invalidQuiverArgument("maxOutputTokens", fmt.Sprintf("QuiverAI model %q supports at most %d output tokens.", m.modelID, maxArrow2OutputTokens))
 	}
 
 	if operation != OperationEdit {
@@ -291,7 +292,7 @@ func (m *ImageModel) buildEditBody(opts *provider.ImageGenerateOptions, quiverOp
 	if strings.TrimSpace(opts.Prompt) == "" {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI SVG editing requires a non-empty instruction in generateImage prompt.text.")
 	}
-	if len(opts.Prompt) > 4000 {
+	if len(utf16.Encode([]rune(opts.Prompt))) > 4000 {
 		return nil, invalidQuiverArgument("prompt", "QuiverAI SVG editing instructions must contain at most 4000 characters.")
 	}
 	if len(opts.Files) == 0 {

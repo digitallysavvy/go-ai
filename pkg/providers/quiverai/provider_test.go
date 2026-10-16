@@ -1,10 +1,12 @@
 package quiverai
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -521,5 +523,55 @@ func TestParseQuiverAIErrorBodyFullSchema(t *testing.T) {
 	e, ok := parseQuiverAIErrorBody([]byte(`{"status":429,"code":"rate","message":"slow down","request_id":"r1"}`))
 	if !ok || e.Message != "slow down" || e.RequestID != "r1" || e.Status != 429 {
 		t.Fatalf("got %+v %v", e, ok)
+	}
+}
+
+// TS measures the 4000 character edit-instruction limit in UTF-16 code units
+// (String.length), not bytes: 3000 CJK characters are 9000 bytes but valid.
+func TestImageModelEditPromptLimitIsUTF16Length(t *testing.T) {
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:1"}), ModelArrow2)
+	edit := func(prompt string) error {
+		_, err := model.DoGenerate(t.Context(), &provider.ImageGenerateOptions{
+			Prompt: prompt,
+			Files:  []provider.ImageFile{{Data: []byte("<svg></svg>"), MediaType: "image/svg+xml"}},
+			ProviderOptions: map[string]interface{}{
+				"quiverai": map[string]interface{}{"operation": "edit"},
+			},
+		})
+		return err
+	}
+	var argErr *providererrors.InvalidArgumentError
+	// Passes validation (the request then fails to connect, which is not an argument error).
+	if err := edit(strings.Repeat("字", 3000)); errors.As(err, &argErr) {
+		t.Fatalf("3000 CJK characters rejected: %v", err)
+	}
+	if err := edit(strings.Repeat("字", 4001)); !errors.As(err, &argErr) {
+		t.Fatalf("4001 characters accepted: %v", err)
+	}
+	// An astral character counts as two UTF-16 units.
+	if err := edit(strings.Repeat("😀", 2001)); !errors.As(err, &argErr) {
+		t.Fatalf("2001 emoji (4002 units) accepted: %v", err)
+	}
+}
+
+// TS convertBase64ToUint8Array accepts base64url characters, missing padding
+// and ASCII whitespace.
+func TestReferenceBase64DecodesLikeAtob(t *testing.T) {
+	data := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, 0xfb, 0xef, 0xbe, 0xff, 0x01)
+	for name, encoded := range map[string]string{
+		"std padded":    base64.StdEncoding.EncodeToString(data),
+		"url unpadded":  base64.RawURLEncoding.EncodeToString(data),
+		"std unpadded":  base64.RawStdEncoding.EncodeToString(data),
+		"with newlines": base64.StdEncoding.EncodeToString(data)[:8] + "\n" + base64.StdEncoding.EncodeToString(data)[8:],
+	} {
+		if err := validateQuiverAIReferenceBase64(encoded, "x"); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := validateQuiverAIReferenceBase64("A", "x"); err == nil {
+		t.Error("length 1 mod 4 must be rejected")
+	}
+	if err := validateQuiverAIReferenceBase64("AB*D", "x"); err == nil {
+		t.Error("character outside the alphabet must be rejected")
 	}
 }

@@ -2,9 +2,7 @@ package quiverai
 
 import (
 	"encoding/base64"
-	"encoding/xml"
 	"fmt"
-	"io"
 	"net/url"
 	"regexp"
 	"strings"
@@ -12,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 const (
@@ -73,11 +72,35 @@ func validateQuiverAIReferenceBase64(b64, argument string) error {
 	if len(b64) == 0 || len(b64) > maxReferenceBase64Length {
 		return invalidQuiverArgument(argument, fmt.Sprintf("QuiverAI reference images must contain 1-%d base64 characters.", maxReferenceBase64Length))
 	}
-	data, err := base64.StdEncoding.DecodeString(b64)
+	data, err := decodeBase64LikeAtob(b64)
 	if err != nil {
 		return invalidQuiverArgument(argument, "QuiverAI reference image data must be valid base64.")
 	}
 	return validateQuiverAIReferenceBytes(data, argument)
+}
+
+// decodeBase64LikeAtob is TS convertBase64ToUint8Array: base64url characters
+// are mapped to the standard alphabet and the text goes through the forgiving
+// atob decode (ASCII whitespace ignored, padding optional, a length of 1 mod 4
+// or any character outside the alphabet is an error).
+func decodeBase64LikeAtob(s string) ([]byte, error) {
+	s = strings.NewReplacer("-", "+", "_", "/").Replace(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\n', '\f', '\r':
+			continue
+		}
+		b.WriteRune(r)
+	}
+	cleaned := b.String()
+	if len(cleaned)%4 == 0 {
+		cleaned = strings.TrimSuffix(strings.TrimSuffix(cleaned, "="), "=")
+	}
+	if len(cleaned)%4 == 1 {
+		return nil, fmt.Errorf("invalid base64 length")
+	}
+	return base64.RawStdEncoding.DecodeString(cleaned)
 }
 
 // validateQuiverAIReferenceBytes validates decoded reference image bytes,
@@ -144,62 +167,329 @@ func isSVGBytes(data []byte) bool {
 	return svgTailPattern.MatchString(text) || svgSelfClosingPattern.MatchString(text)
 }
 
-// isSvgMarkupWellFormed reports whether svg is a single well-formed XML
-// document whose root element is <svg>. This uses Go's encoding/xml decoder
-// for structural well-formedness (unbalanced/mismatched tags, multiple roots)
-// rather than porting the TS SDK's hand-written XML validator byte-for-byte;
-// it rejects the same class of malformed input (e.g. "<svg><g></svg>").
-//
-// dec.Entity is set to xml.HTMLEntity so named HTML entity references (e.g.
-// "&nbsp;", "&copy;") don't fail decoding as unknown entities. TS's own
-// validator (hasValidXmlReferences in quiverai-image-model.ts) is even more
-// permissive -- it accepts ANY syntactically valid XML Name as a named
-// reference, not just the standard HTML set, plus numeric character
-// references (which Go's decoder already resolves without an Entity map).
+// isSvgMarkupWellFormed is a direct port of the TS isSvgMarkup validator
+// (quiverai-image-model.ts): a hand-written scan, not a full XML parser, so
+// it accepts and rejects exactly what the TS SDK does (any syntactically
+// valid XML Name is an accepted entity reference, duplicate attributes in one
+// tag are rejected, text outside the root must be whitespace, ...). Positions
+// are rune indexes; JS indexes UTF-16 units, and every class used here treats
+// a non-BMP character the same as the surrogate pair that encodes it.
 func isSvgMarkupWellFormed(svg string) bool {
-	dec := xml.NewDecoder(strings.NewReader(svg))
-	dec.Strict = true
-	dec.Entity = xml.HTMLEntity
-
-	var rootName string
-	depth := 0
-	sawRoot := false
-	for {
-		tok, err := dec.Token()
-		if err == io.EOF {
-			break
+	doc := []rune(strings.TrimPrefix(svg, "\uFEFF"))
+	at := func(i int) rune {
+		if i < 0 || i >= len(doc) {
+			return -1
 		}
-		if err != nil {
+		return doc[i]
+	}
+	indexOf := func(needle string, from int) int {
+		n := []rune(needle)
+		for i := from; i+len(n) <= len(doc); i++ {
+			if string(doc[i:i+len(n)]) == needle {
+				return i
+			}
+		}
+		return -1
+	}
+	startsWith := func(needle string, pos int) bool {
+		n := []rune(needle)
+		return pos+len(n) <= len(doc) && string(doc[pos:pos+len(n)]) == needle
+	}
+
+	var elements []string
+	position := 0
+	rootSeen, rootClosed, doctypeSeen := false, false, false
+
+	for position < len(doc) {
+		if doc[position] != '<' {
+			end := indexOf("<", position)
+			if end == -1 {
+				end = len(doc)
+			}
+			text := string(doc[position:end])
+			if (len(elements) == 0 && providerutils.JSTrim(text) != "") || strings.Contains(text, "]]>") || !hasValidXMLReferences(text) {
+				return false
+			}
+			position = end
+			continue
+		}
+
+		if startsWith("<!--", position) {
+			commentEnd := indexOf("-->", position+4)
+			if commentEnd == -1 || strings.Contains(string(doc[position+4:commentEnd]), "--") {
+				return false
+			}
+			position = commentEnd + 3
+			continue
+		}
+
+		if startsWith("<?", position) {
+			instructionEnd := indexOf("?>", position+2)
+			if instructionEnd == -1 {
+				return false
+			}
+			position = instructionEnd + 2
+			continue
+		}
+
+		if startsWith("<![CDATA[", position) {
+			if len(elements) == 0 {
+				return false
+			}
+			cdataEnd := indexOf("]]>", position+9)
+			if cdataEnd == -1 {
+				return false
+			}
+			position = cdataEnd + 3
+			continue
+		}
+
+		if end := min(position+9, len(doc)); strings.ToUpper(string(doc[position:end])) == "<!DOCTYPE" {
+			if c := at(position + 9); rootSeen || doctypeSeen || len(elements) > 0 || !isXMLSpace(c) {
+				return false
+			}
+			name, nameEnd, ok := readXMLName(doc, skipXMLWhitespace(doc, position+9))
+			if !ok || strings.ToLower(name) != "svg" {
+				return false
+			}
+			doctypeEnd := findDoctypeEnd(doc, nameEnd)
+			if doctypeEnd == -1 {
+				return false
+			}
+			doctypeSeen = true
+			position = doctypeEnd
+			continue
+		}
+
+		if startsWith("<!", position) {
 			return false
 		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			if depth == 0 {
-				if sawRoot {
-					// A second top-level element after the root closed.
-					return false
-				}
-				rootName = strings.ToLower(t.Name.Local)
-				if rootName != "svg" {
-					return false
-				}
-			}
-			depth++
-		case xml.EndElement:
-			depth--
-			if depth == 0 {
-				sawRoot = true
-			}
-			if depth < 0 {
+
+		if startsWith("</", position) {
+			name, nameEnd, ok := readXMLName(doc, position+2)
+			if !ok {
 				return false
 			}
-		case xml.CharData:
-			if depth == 0 && len(strings.TrimSpace(string(t))) > 0 {
+			tagEnd := skipXMLWhitespace(doc, nameEnd)
+			if at(tagEnd) != '>' {
+				return false
+			}
+			if len(elements) == 0 {
+				return false
+			}
+			expected := elements[len(elements)-1]
+			elements = elements[:len(elements)-1]
+			if expected != name {
+				return false
+			}
+			tagEnd++
+			if len(elements) == 0 {
+				rootClosed = true
+			}
+			position = tagEnd
+			continue
+		}
+
+		if rootClosed {
+			return false
+		}
+
+		openName, openEnd, ok := readXMLName(doc, position+1)
+		if !ok {
+			return false
+		}
+		if !rootSeen {
+			if strings.ToLower(openName) != "svg" {
+				return false
+			}
+			rootSeen = true
+		}
+
+		attributes := map[string]bool{}
+		tagPosition := openEnd
+		for tagPosition < len(doc) {
+			beforeWhitespace := tagPosition
+			tagPosition = skipXMLWhitespace(doc, tagPosition)
+
+			if startsWith("/>", tagPosition) {
+				tagPosition += 2
+				if len(elements) == 0 {
+					rootClosed = true
+				}
+				position = tagPosition
+				break
+			}
+
+			if at(tagPosition) == '>' {
+				elements = append(elements, openName)
+				position = tagPosition + 1
+				break
+			}
+
+			if tagPosition == beforeWhitespace {
+				return false
+			}
+
+			attrName, attrEnd, ok := readXMLName(doc, tagPosition)
+			if !ok || attributes[attrName] {
+				return false
+			}
+			attributes[attrName] = true
+
+			tagPosition = skipXMLWhitespace(doc, attrEnd)
+			if at(tagPosition) != '=' {
+				return false
+			}
+			tagPosition = skipXMLWhitespace(doc, tagPosition+1)
+
+			quote := at(tagPosition)
+			if quote != '"' && quote != '\'' {
+				return false
+			}
+			valueEnd := -1
+			for i := tagPosition + 1; i < len(doc); i++ {
+				if doc[i] == quote {
+					valueEnd = i
+					break
+				}
+			}
+			if valueEnd == -1 {
+				return false
+			}
+			value := string(doc[tagPosition+1 : valueEnd])
+			if strings.Contains(value, "<") || !hasValidXMLReferences(value) {
+				return false
+			}
+			tagPosition = valueEnd + 1
+		}
+
+		if tagPosition >= len(doc) && position != len(doc) {
+			return false
+		}
+	}
+
+	return rootSeen && rootClosed && len(elements) == 0
+}
+
+func isXMLSpace(r rune) bool { return r == '\t' || r == '\n' || r == '\r' || r == ' ' }
+
+func isXMLNameStart(r rune) bool {
+	return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r == '_' || r == ':' || r >= 0x80
+}
+
+func isXMLNameChar(r rune) bool {
+	return isXMLNameStart(r) || r == '-' || r == '.' || r >= '0' && r <= '9' || r == 0xB7
+}
+
+func readXMLName(doc []rune, position int) (name string, end int, ok bool) {
+	if position < 0 || position >= len(doc) || !isXMLNameStart(doc[position]) {
+		return "", 0, false
+	}
+	start := position
+	position++
+	for position < len(doc) && isXMLNameChar(doc[position]) {
+		position++
+	}
+	return string(doc[start:position]), position, true
+}
+
+func skipXMLWhitespace(doc []rune, position int) int {
+	for position >= 0 && position < len(doc) && isXMLSpace(doc[position]) {
+		position++
+	}
+	return position
+}
+
+func hasValidXMLReferences(value string) bool {
+	runes := []rune(value)
+	find := func(r rune, from int) int {
+		for i := from; i < len(runes); i++ {
+			if runes[i] == r {
+				return i
+			}
+		}
+		return -1
+	}
+	position := find('&', 0)
+	for position != -1 {
+		end := find(';', position+1)
+		if end == -1 {
+			return false
+		}
+		if !isValidXMLReference(runes[position+1 : end]) {
+			return false
+		}
+		position = find('&', end+1)
+	}
+	return true
+}
+
+// isValidXMLReference matches the TS reference classes: decimal (#\d+),
+// hex (#x[\dA-Fa-f]+) or a bare XML Name.
+func isValidXMLReference(ref []rune) bool {
+	if len(ref) == 0 {
+		return false
+	}
+	if ref[0] == '#' {
+		digits := ref[1:]
+		if len(digits) > 0 && digits[0] == 'x' {
+			hex := digits[1:]
+			if len(hex) == 0 {
+				return false
+			}
+			for _, r := range hex {
+				if !(r >= '0' && r <= '9' || r >= 'A' && r <= 'F' || r >= 'a' && r <= 'f') {
+					return false
+				}
+			}
+			return true
+		}
+		if len(digits) == 0 {
+			return false
+		}
+		for _, r := range digits {
+			if r < '0' || r > '9' {
 				return false
 			}
 		}
+		return true
 	}
-	return sawRoot && depth == 0 && rootName == "svg"
+	if !isXMLNameStart(ref[0]) {
+		return false
+	}
+	for _, r := range ref[1:] {
+		if !isXMLNameChar(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func findDoctypeEnd(doc []rune, position int) int {
+	subsetDepth := 0
+	var quote rune
+	for position < len(doc) {
+		c := doc[position]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '[':
+			subsetDepth++
+		case c == ']':
+			if subsetDepth == 0 {
+				return -1
+			}
+			subsetDepth--
+		case c == '>' && subsetDepth == 0:
+			return position + 1
+		}
+		position++
+	}
+	return -1
 }
 
 // toQuiverAIImageReference converts an ImageFile into the JSON-safe reference
