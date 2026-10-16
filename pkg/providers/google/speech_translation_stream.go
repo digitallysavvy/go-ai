@@ -349,6 +349,10 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 	}
 
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
 			fail(context.Cause(s.Context()))
@@ -359,7 +363,7 @@ func (s *googleLiveSpeechTranslationStream) run(cfg googleLiveSpeechTranslationS
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil // consumed once; a nil channel blocks forever in future selects
 			if sawTurnComplete && !openTurn {

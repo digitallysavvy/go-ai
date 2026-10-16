@@ -454,6 +454,10 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	}
 
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
 			// TS onAbort: finishWithError(abortSignal.reason) -- surface the
@@ -466,7 +470,7 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil // consumed once; a nil channel blocks forever in future selects
 			schedulePendingFinish()

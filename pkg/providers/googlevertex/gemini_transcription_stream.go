@@ -402,6 +402,10 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	}
 
 	for {
+		audioEndedSel := audioEndedCh
+		if testHideAudioEnded.Load() {
+			audioEndedSel = nil
+		}
 		select {
 		case <-s.Context().Done():
 			// TS onAbort: finishWithError(abortSignal.reason).
@@ -413,7 +417,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 			finish()
 			return
 
-		case <-audioEndedCh:
+		case <-audioEndedSel:
 			audioEnded = true
 			audioEndedCh = nil
 			schedulePendingFinish()
