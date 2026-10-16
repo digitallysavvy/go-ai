@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -85,17 +84,20 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("/model/%s/invoke", url.PathEscape(m.modelID))
 	baseURL, err := m.provider.runtimeBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	url := fmt.Sprintf("%s%s", baseURL, endpoint)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
+	invokeURL, _, err := bedrockModelURL(baseURL, m.modelID, "/invoke")
+	if err != nil {
+		return nil, err
+	}
+	req.URL = invokeURL
+	req.Host = invokeURL.Host
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")

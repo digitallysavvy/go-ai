@@ -245,7 +245,7 @@ func TestBedrockEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 		Headers: map[string]string{"Content-Type": "application/json"},
 		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
 			body, _ := io.ReadAll(req.Body)
-			if strings.Contains(req.URL.Path, "cohere.embed") {
+			if strings.Contains(req.URL.RequestURI(), "cohere.embed") {
 				var payload map[string]interface{}
 				if err := json.Unmarshal(body, &payload); err != nil {
 					t.Fatalf("decode cohere request: %v", err)
@@ -259,7 +259,7 @@ func TestBedrockEmbeddingModelDoEmbedAndDoEmbedMany(t *testing.T) {
 					Body:       io.NopCloser(strings.NewReader(`{"embeddings":[[1,2,3]]}`)),
 				}, nil
 			}
-			if strings.Contains(req.URL.Path, "amazon.nova") {
+			if strings.Contains(req.URL.RequestURI(), "amazon.nova") {
 				var payload map[string]interface{}
 				if err := json.Unmarshal(body, &payload); err != nil {
 					t.Fatalf("decode nova request: %v", err)
@@ -378,8 +378,8 @@ func TestBedrockEmbeddingCohereInferenceProfileUsesCohereShape(t *testing.T) {
 			if err := json.Unmarshal(body, &requestBody); err != nil {
 				t.Fatalf("decode cohere request: %v", err)
 			}
-			if !strings.Contains(req.URL.Path, "us.cohere.embed-v4:0") {
-				t.Fatalf("path = %q, want inference profile model ID", req.URL.Path)
+			if !strings.Contains(req.URL.RequestURI(), "us.cohere.embed-v4%3A0") {
+				t.Fatalf("path = %q, want inference profile model ID", req.URL.RequestURI())
 			}
 			return &http.Response{
 				StatusCode: 200,
@@ -469,10 +469,10 @@ func TestBedrockEmbeddingProviderOptionsMatchTS(t *testing.T) {
 			}
 			bodies = append(bodies, payload)
 			response := `{"embedding":[0.1,0.2],"inputTextTokenCount":1}`
-			if strings.Contains(req.URL.Path, "cohere.embed") {
+			if strings.Contains(req.URL.RequestURI(), "cohere.embed") {
 				response = `{"embeddings":[[0.1,0.2]]}`
 			}
-			if strings.Contains(req.URL.Path, "amazon.nova") {
+			if strings.Contains(req.URL.RequestURI(), "amazon.nova") {
 				response = `{"embeddings":[{"embeddingType":"FLOAT","embedding":[0.1,0.2]}],"inputTokenCount":1}`
 			}
 			return &http.Response{
@@ -738,7 +738,7 @@ func TestBedrockImageAndLanguageDoGenerateAndStream(t *testing.T) {
 		BaseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
 		Headers: map[string]string{"Content-Type": "application/json"},
 		HTTPClient: &http.Client{Transport: bedrockRoundTripper(func(req *http.Request) (*http.Response, error) {
-			if strings.Contains(req.URL.Path, "/model/amazon.nova-canvas-v1:0/invoke") {
+			if strings.Contains(req.URL.RequestURI(), "/model/amazon.nova-canvas-v1%3A0/invoke") {
 				return &http.Response{
 					StatusCode: 200,
 					Header:     http.Header{"X-Req": []string{"img"}},
