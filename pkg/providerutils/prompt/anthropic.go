@@ -2157,13 +2157,6 @@ func withoutKey(m map[string]interface{}, key string) map[string]interface{} {
 	return out
 }
 
-func sliceOrEmpty(v interface{}) interface{} {
-	if v == nil {
-		return []interface{}{}
-	}
-	return v
-}
-
 func stringValue(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s

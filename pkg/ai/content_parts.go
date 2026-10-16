@@ -886,7 +886,7 @@ func validateToolResultParts(content []types.ContentPart, calls []types.ToolCall
 		if t := tools[name]; t != nil && t.ProviderExecuted && t.SupportsDeferredResults {
 			continue
 		}
-		return fmt.Errorf("Tool call %s not found.", id)
+		return fmt.Errorf("Tool call %s not found.", id) //nolint:staticcheck // matches the TS SDK's exact error text
 	}
 	return nil
 }
