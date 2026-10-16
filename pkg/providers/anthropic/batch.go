@@ -39,7 +39,7 @@ func (p *Provider) ExperimentalBatch() provider.BatchV4 { return NewBatch(p) }
 func (b *Batch) SpecificationVersion() string { return "v4" }
 
 // Provider returns the batch interface's provider ID, e.g. "anthropic.batch".
-func (b *Batch) Provider() string { return b.provider.Name() + ".batch" }
+func (b *Batch) Provider() string { return b.provider.baseName() + ".batch" }
 
 // SupportedURLs returns the same URL patterns the underlying language model
 // accepts directly, matching TS `supportedUrls: () => supportedUrls` shared

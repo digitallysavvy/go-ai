@@ -310,6 +310,13 @@ func (p *Provider) Name() string {
 	return "anthropic"
 }
 
+// baseName is the provider name without a trailing ".messages" (TS strips it
+// from providerName), the prefix of the batch, skills and decision provider
+// ids.
+func (p *Provider) baseName() string {
+	return strings.TrimSuffix(p.Name(), ".messages")
+}
+
 // LanguageModel returns a language model by ID
 func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error) {
 	// Validate model ID
@@ -385,7 +392,7 @@ func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error)
 	}
 	return ai.NewDecisionLanguageModel(ai.DecisionLanguageModelOptions{
 		Model:    model,
-		Provider: p.Name() + ".decision",
+		Provider: p.baseName() + ".decision",
 	})
 }
 
