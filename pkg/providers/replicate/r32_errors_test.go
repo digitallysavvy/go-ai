@@ -33,3 +33,14 @@ func TestTransportFailuresAreNotWrapped(t *testing.T) {
 		t.Fatalf("language err = %#v", err)
 	}
 }
+
+// TS getFromApi lets a poll transport failure propagate unchanged.
+func TestPollTransportFailureIsNotWrapped(t *testing.T) {
+	sentinel := errors.New("Cannot connect to API: boom")
+	if got := (&ImageModel{}).handlePollError(sentinel); got != sentinel {
+		t.Errorf("image handlePollError wrapped: %v", got)
+	}
+	if got := (&VideoModel{}).handlePollError(sentinel); got != sentinel {
+		t.Errorf("video handlePollError wrapped: %v", got)
+	}
+}

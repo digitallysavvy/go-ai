@@ -403,7 +403,9 @@ func (m *ImageModel) handlePollError(err error) error {
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return replicateAPIError(dlErr.StatusCode, http.Header(dlErr.Headers), dlErr.Body)
 	}
-	return fmt.Errorf("failed to check status: %w", err)
+	// TS getFromApi lets any other failure (an abort, "Cannot connect to
+	// API", a URL rejected by validateUrl) propagate unchanged.
+	return err
 }
 
 // completedImagePrediction mirrors TS getCompletedPrediction.
