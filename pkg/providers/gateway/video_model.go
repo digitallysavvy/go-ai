@@ -61,7 +61,11 @@ func (m *VideoModel) MaxVideosPerCall() *int {
 func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions) (map[string]interface{}, error) {
 	body := map[string]interface{}{}
 
-	body["prompt"] = opts.Prompt
+	// TS drops an undefined prompt (image-only generation); PromptSet carries
+	// the distinction between prompt: "" and an omitted prompt.
+	if opts.PromptSet || opts.Prompt != "" {
+		body["prompt"] = opts.Prompt
+	}
 	body["n"] = opts.N
 
 	if opts.AspectRatio != "" {
