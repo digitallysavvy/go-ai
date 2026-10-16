@@ -63,3 +63,57 @@ func TestStreamTextFirstStepOpenErrorWithStepTimeoutIsNotTimeout(t *testing.T) {
 		t.Fatalf("OnError = %v, want boom", onErr)
 	}
 }
+
+// PrepareStepOptions.InitialInstructions is the instructions the call started
+// with on every step, not the previous step's (possibly overridden) ones.
+func TestStreamTextPrepareStepInitialInstructionsStayFixed(t *testing.T) {
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			if calls == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	var initial []string
+	maxSteps := 3
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:    model,
+		Prompt:   "hi",
+		System:   "original",
+		MaxSteps: &maxSteps,
+		Tools: []types.Tool{{
+			Name:       "t",
+			Parameters: map[string]interface{}{"type": "object"},
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			},
+		}},
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			if step.InitialInstructions == nil {
+				initial = append(initial, "<nil>")
+			} else {
+				initial = append(initial, *step.InitialInstructions)
+			}
+			override := "override"
+			step.Instructions = &override
+			return step
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if len(initial) != 2 || initial[0] != "original" || initial[1] != "original" {
+		t.Fatalf("InitialInstructions per step = %v, want [original original]", initial)
+	}
+}

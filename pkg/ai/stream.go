@@ -634,6 +634,9 @@ type StreamTextResult struct {
 	cbInitialMessages []types.Message
 	cbTools           []types.Tool
 	cbSystem          string
+	// cbInitialSystem is the instructions the call started with, fixed for the
+	// call (PrepareStepOptions.InitialInstructions on every step).
+	cbInitialSystem string
 
 	// cbExecutionTools is the tool set actually invoked when a tool call
 	// arrives (bound local tool callers), as opposed to cbTools (the
@@ -1356,6 +1359,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.cbTools = stepTools
 	r.cbExecutionTools = stepExecutionTools
 	r.cbSystem = stepSystem
+	r.cbInitialSystem = system
 	r.cbInstructionMessages = stepInstructionMessages
 	r.cbInitialInstructionMessages = cloneInstructionMessages(instructionMessages)
 	r.cbExperimentalSandbox = stepSandbox
@@ -2973,11 +2977,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextSeed := opts.Seed
 		nextReasoningLevel := opts.Reasoning
 		if opts.PrepareStep != nil {
+			initialSystem := r.cbInitialSystem
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 				Model:                      nextModel,
 				System:                     nextSystem,
 				Instructions:               &nextSystem,
-				InitialInstructions:        &r.cbSystem,
+				InitialInstructions:        &initialSystem,
 				InstructionMessages:        cloneInstructionMessages(nextInstructionMessages),
 				InitialInstructionMessages: cloneInstructionMessages(r.cbInitialInstructionMessages),
 				Messages:                   append([]types.Message(nil), nextMessages...),
