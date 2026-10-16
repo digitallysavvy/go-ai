@@ -84,3 +84,13 @@ func TestJSONStringKeepsLiteralBackslashU2028(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// stableStringify sorts with localeCompare but then builds a JS object
+// (Object.fromEntries), which enumerates integer-like keys first, ascending.
+func TestStableStringifyHoistsIntegerLikeKeys(t *testing.T) {
+	got := stableStringify(map[string]any{"b": 1, "10": 2, "9": 3, "a": map[string]any{"z": 1, "2": 2}})
+	want := `{"9":3,"10":2,"a":{"2":2,"z":1},"b":1}`
+	if got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+}

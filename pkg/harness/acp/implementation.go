@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -383,6 +384,8 @@ func writeSortedJSON(out *strings.Builder, value any) {
 			keys = append(keys, k)
 		}
 		posixpath.SortStrings(keys)
+		// Object.fromEntries hoists integer-like keys, ascending, before the rest.
+		keys = jsonorder.JSKeyOrder(keys)
 		out.WriteByte('{')
 		for i, k := range keys {
 			if i > 0 {

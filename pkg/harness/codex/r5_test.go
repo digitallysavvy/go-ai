@@ -94,3 +94,45 @@ func TestDoPromptTurn_ForwardsDebugConfig(t *testing.T) {
 		t.Fatalf("start.debug = %v", dbg)
 	}
 }
+
+// TS consumes `rerunContinue` inside `doContinueTurn` even when the turn's
+// signal was already aborted (sendStart then skips the frame), so a later
+// continuation does not re-send the recovery start.
+func TestDoContinueTurn_AbortedRerunConsumesRecoveryStart(t *testing.T) {
+	var starts int32
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
+		OnFrame: func(ft string) {
+			if ft == bridge.TypeStart {
+				atomic.AddInt32(&starts, 1)
+			}
+		}})
+	t.Cleanup(srv.Close)
+	sandbox := newTestSandbox(srv)
+	wireSpawn(sandbox)
+	h := codex.New(codex.Settings{StartupTimeout: 2 * time.Second, MintBridgeToken: func(string) string { return "tok" }})
+	state, _ := harness.NewResumeSessionState(codex.HarnessID, map[string]any{"threadId": "th"})
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s1", SandboxSession: sandbox, SessionWorkDir: "/workdir", ResumeFrom: state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
+
+	aborted, cancel := context.WithCancel(context.Background())
+	cancel()
+	c1, err := sess.DoContinueTurn(aborted, harness.ContinueTurnOptions{Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-c1.Done()
+	c2, err := sess.DoContinueTurn(context.Background(), harness.ContinueTurnOptions{Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := atomic.LoadInt32(&starts); got != 0 {
+		t.Fatalf("start frames = %d, want 0 (recovery start was consumed by the aborted call)", got)
+	}
+	_ = c2
+}
