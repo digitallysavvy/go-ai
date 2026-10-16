@@ -2036,7 +2036,13 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 		if err != nil {
 			return false, err
 		}
-		return outcome == turnOutcomeAwaitingToolResult, nil
+		if outcome == turnOutcomeAwaitingToolResult {
+			return true, nil
+		}
+		// TS: `closingResumedStep = true` after a continued approval, so the
+		// finish-step closing the resumed step is discarded.
+		d.closingResumedStep = true
+		return false, nil
 	}
 
 	if d.in.OnPendingToolApproval != nil {
@@ -2120,7 +2126,11 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			if err != nil {
 				return false, err
 			}
-			return outcome == turnOutcomeAwaitingToolResult, nil
+			if outcome == turnOutcomeAwaitingToolResult {
+				return true, nil
+			}
+			d.closingResumedStep = true
+			return false, nil
 		}
 		if d.in.OnPendingToolApproval != nil {
 			d.in.OnPendingToolApproval(*pending)
