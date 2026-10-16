@@ -172,6 +172,11 @@ func (d *turnDriver) fail(err error) {
 func (d *turnDriver) abort(err error) {
 	reason := ""
 	if ctxErr := d.ctx.Err(); ctxErr != nil {
+		// TS reports getErrorMessage(abortSignal.reason): the caller's own
+		// cancellation cause when one was given.
+		if cause := context.Cause(d.ctx); cause != nil {
+			ctxErr = cause
+		}
 		reason = ctxErr.Error()
 	} else if err != nil {
 		reason = err.Error()
@@ -1101,7 +1106,13 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// mirroring TS `settleFailure`/`result.fail()` adapted to Go's
 			// Err()-based error surface (see pkg/ai/stream_external_test.go
 			// TestNewStreamTextResultFromParts_ErrorChunkPreservesPartialStep).
-			_ = d.joinOutstandingExecutions()
+			// A failed host tool execution is rethrown here, masking the
+			// harness error, exactly like TS (`await
+			// waitForOutstandingHostToolExecutions()` throws into the turn's
+			// catch, which settles with the join error).
+			if err := d.joinOutstandingExecutions(); err != nil {
+				return false, false, err
+			}
 			// Stderr diagnostics keep the raw error (absolute paths help
 			// debugging); a turn the caller itself cancelled ends with an
 			// error-shaped part by construction and is not diagnosed.
@@ -1742,19 +1753,14 @@ func (d *turnDriver) joinOutstandingExecutions() error {
 // deliberately isn't finished; AgentSession's turn-state (awaiting-approval /
 // awaiting-tool-result) is what actually tracks the unfinished turn, and
 // ContinueGenerate/ContinueStream resume it. Mirrors TS
-// `finishForHostInputPause`. completeCurrentStep is derived from whether any
-// content has been seen since the last real step boundary (d.stepOpen),
-// which serves the same purpose as TS's per-call-site flag: closing a step
-// only when there is one to close, instead of manufacturing an empty one.
+// `finishForHostInputPause` exactly: it never closes the open step (TS calls
+// finishForHostInputPause directly at this call site); the step-closing pause
+// is pauseAtHostInputBoundary.
 func (d *turnDriver) pauseForHostInput() error {
 	if err := d.joinOutstandingExecutions(); err != nil {
 		return err
 	}
-	if d.stepOpen {
-		d.completeStep(FinishReason{Unified: FinishReasonToolCalls}, Usage{}, nil)
-	} else {
-		d.flushBufferedResultChunks()
-	}
+	d.flushBufferedResultChunks()
 	return d.finishForHostInputPause()
 }
 

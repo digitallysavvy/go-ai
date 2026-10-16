@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
@@ -359,6 +361,22 @@ func sortedUnique(values []string) []string {
 // "B"). The digests built from it are compared across hosts, so the output must
 // match TS byte for byte.
 func stableStringify(value any) string {
+	return stableStringifySorted(value, posixpath.SortStrings)
+}
+
+// stableStringifyCodeUnit is stableStringify with keys ordered by UTF-16 code
+// units (`left < right`), which TS uses for the turn start configuration
+// fingerprint and the authentication profile digest (only the implementation
+// identity uses localeCompare).
+func stableStringifyCodeUnit(value any) string {
+	return stableStringifySorted(value, func(keys []string) {
+		sort.SliceStable(keys, func(i, j int) bool {
+			return slices.Compare(utf16.Encode([]rune(keys[i])), utf16.Encode([]rune(keys[j]))) < 0
+		})
+	})
+}
+
+func stableStringifySorted(value any, sortKeys func([]string)) string {
 	raw, err := encodeNoEscape(value)
 	if err != nil {
 		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
@@ -372,18 +390,18 @@ func stableStringify(value any) string {
 		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
 	}
 	var out strings.Builder
-	writeSortedJSON(&out, generic)
+	writeSortedJSON(&out, generic, sortKeys)
 	return out.String()
 }
 
-func writeSortedJSON(out *strings.Builder, value any) {
+func writeSortedJSON(out *strings.Builder, value any, sortKeys func([]string)) {
 	switch v := value.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(v))
 		for k := range v {
 			keys = append(keys, k)
 		}
-		posixpath.SortStrings(keys)
+		sortKeys(keys)
 		// Object.fromEntries hoists integer-like keys, ascending, before the rest.
 		keys = jsonorder.JSKeyOrder(keys)
 		out.WriteByte('{')
@@ -393,7 +411,7 @@ func writeSortedJSON(out *strings.Builder, value any) {
 			}
 			out.WriteString(jsonString(k))
 			out.WriteByte(':')
-			writeSortedJSON(out, v[k])
+			writeSortedJSON(out, v[k], sortKeys)
 		}
 		out.WriteByte('}')
 	case []any:
@@ -402,7 +420,7 @@ func writeSortedJSON(out *strings.Builder, value any) {
 			if i > 0 {
 				out.WriteByte(',')
 			}
-			writeSortedJSON(out, item)
+			writeSortedJSON(out, item, sortKeys)
 		}
 		out.WriteByte(']')
 	case string:

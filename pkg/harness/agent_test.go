@@ -39,6 +39,7 @@ type mockPromptControl struct {
 	toolResults    *[]recordedToolResult
 	toolApprovals  *[]recordedApproval
 	onSubmitResult func(ToolResultSubmission)
+	submitErr      error
 	done           chan struct{}
 	err            error
 
@@ -85,7 +86,7 @@ func (c *mockPromptControl) SubmitToolResult(_ context.Context, r ToolResultSubm
 	c.mu.Lock()
 	*c.toolResults = append(*c.toolResults, recordedToolResult(r))
 	c.mu.Unlock()
-	return nil
+	return c.submitErr
 }
 
 func (c *mockPromptControl) SubmitToolApproval(_ context.Context, a ToolApprovalSubmission) error {
@@ -121,6 +122,7 @@ type mockHarnessOptions struct {
 	continueScript   func(submit func(toolCallID string, output interface{})) []StreamPart
 	builtinTools     map[string]BuiltinTool
 	onSubmitResult   func(ToolResultSubmission)
+	submitErr        error
 	supportsApproval bool
 	supportsSteering bool
 	// promptDone, when set, is called once per DoPromptTurn/DoContinueTurn
@@ -175,7 +177,7 @@ func newMockHarness(opts mockHarnessOptions) *mockHarnessResult {
 	newControl := func() (PromptControl, *mockPromptControl) {
 		base := &mockPromptControl{
 			toolResults: &res.toolResults, toolApprovals: &res.toolApprovals,
-			onSubmitResult: opts.onSubmitResult, done: make(chan struct{}), onPin: opts.onPin,
+			onSubmitResult: opts.onSubmitResult, submitErr: opts.submitErr, done: make(chan struct{}), onPin: opts.onPin,
 		}
 		if opts.onControl != nil {
 			opts.onControl(base)

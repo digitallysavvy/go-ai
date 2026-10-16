@@ -178,14 +178,17 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	}
 
 	control := s.wireTurn(ctx, opts.Emit)
-	if ctx.Err() != nil {
-		return control, nil
-	}
+	// TS builds the start message (consuming the pending resume thread id) and
+	// clears the recovery flag whether or not the start is still sent: an
+	// already-aborted turn settled in wireTurn and sendStart skips the frame.
 	frame := s.buildStartFrame(text, opts.TurnSettings, opts.ResponseFormat, restartThread, true)
 	// Recovery starts a native turn once. Later continuations attach to it.
 	s.mu.Lock()
 	s.rerunContinue = false
 	s.mu.Unlock()
+	if ctx.Err() != nil {
+		return control, nil
+	}
 	if err := s.opts.channel.Send(frame); err != nil {
 		control.settleError(err)
 		return nil, err

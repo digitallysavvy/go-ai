@@ -3,7 +3,6 @@ package fx
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -381,7 +380,8 @@ func extractChatGPTAccountID(accessToken string) (string, error) {
 
 func createChatGPTSandboxAccessToken(credential, accountID string) string {
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payloadJSON, _ := json.Marshal(map[string]any{
+	// JSON.stringify: no HTML escaping of `<`, `>`, `&` or U+2028/9.
+	payloadJSON, _ := jsstr.Marshal(map[string]any{
 		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": accountID},
 	})
 	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
