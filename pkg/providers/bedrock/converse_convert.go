@@ -1074,7 +1074,12 @@ func bedrockToolResultContent(part types.ToolResultContent, getDocumentName func
 		// passthrough, no JSON encoding. ToolResultOutputError has no TS
 		// equivalent; it is a Go-only generic error shape, treated the same as
 		// error-text (a message string) rather than JSON-encoded.
-		return []map[string]interface{}{{"text": fmt.Sprint(part.Output.Value)}}, nil
+		if str, ok := part.Output.Value.(string); ok {
+			return []map[string]interface{}{{"text": str}}, nil
+		}
+		// A non-string value (only reachable through the Go-only generic
+		// error shape) is JSON.stringify(value), never Go's %v map rendering.
+		return []map[string]interface{}{{"text": jsonStringify(part.Output.Value)}}, nil
 	case types.ToolResultOutputExecutionDenied:
 		reason := part.Output.Reason
 		if reason == "" {
