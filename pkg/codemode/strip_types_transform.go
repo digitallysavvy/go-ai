@@ -779,23 +779,51 @@ func lastSignificant(out []tsToken) *tsToken {
 // never closes (`x as T < y;`, where `<` starts type arguments that run to
 // the end of the source). Node rejects that source, so it is not stripped.
 func typeSpanUnterminated(span []tsToken) bool {
-	depth := 0
+	// Brackets must nest: a closer that does not match the innermost opener
+	// (the `}` of the block around `x as T < y;`, swallowed into the span) means
+	// the type arguments never close.
+	var stack []byte
+	pop := func(open byte) bool {
+		if len(stack) == 0 || stack[len(stack)-1] != open {
+			return false
+		}
+		stack = stack[:len(stack)-1]
+		return true
+	}
 	for _, t := range span {
 		if t.kind != "punct" {
 			continue
 		}
 		switch t.text {
 		case "(", "[", "{", "<":
-			depth++
-		case ")", "]", "}", ">":
-			depth--
+			stack = append(stack, t.text[0])
+		case ")":
+			if !pop('(') {
+				return true
+			}
+		case "]":
+			if !pop('[') {
+				return true
+			}
+		case "}":
+			if !pop('{') {
+				return true
+			}
+		case ">":
+			if !pop('<') {
+				return true
+			}
 		case ">>":
-			depth -= 2
+			if !pop('<') || !pop('<') {
+				return true
+			}
 		case ">>>":
-			depth -= 3
+			if !pop('<') || !pop('<') || !pop('<') {
+				return true
+			}
 		}
 	}
-	return depth > 0
+	return len(stack) > 0
 }
 
 // keepsTypeArgsBeforeOptionalCall reports whether Node 24 leaves the `<T>` of
