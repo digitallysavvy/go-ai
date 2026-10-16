@@ -1313,9 +1313,6 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			if e.Delta == "" {
-				continue
-			}
 			blockID := "reasoning-" + e.ItemID
 			meta, _ := json.Marshal(map[string]interface{}{"xai": map[string]interface{}{"itemId": e.ItemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -1337,9 +1334,6 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				Delta  string `json:"delta"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
-				continue
-			}
-			if e.Delta == "" {
 				continue
 			}
 			blockID := "reasoning-" + e.ItemID

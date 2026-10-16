@@ -799,7 +799,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			}
 			if raw, ok := delta.Message.Content["thinking"]; ok {
 				var thinking string
-				if json.Unmarshal(raw, &thinking) == nil && thinking != "" {
+				if json.Unmarshal(raw, &thinking) == nil {
 					return &provider.StreamChunk{
 						Type:      provider.ChunkTypeReasoning,
 						Reasoning: thinking,
