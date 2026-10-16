@@ -396,3 +396,47 @@ func ResponsesResponseValidator(providerName string) func(statusCode int, header
 		return nil
 	})
 }
+
+var zHuggingFaceResponse = zObj(
+	fl("id", zStr), fl("model", zStr), fl("object", zStr), fl("created_at", zNum), fl("status", zStr),
+	fl("error", zNullable(zAny)), fl("instructions", zNullable(zAny)), fl("max_output_tokens", zNullable(zAny)),
+	fl("metadata", zNullable(zAny)), fl("tool_choice", zAny),
+	fl("tools", zArr(zAny)), fl("temperature", zNum), fl("top_p", zNum),
+	fl("incomplete_details", zOptional(zNullable(zObj(fl("reason", zStr))))),
+	fl("usage", zOptional(zNullable(zObj(
+		fl("input_tokens", zNum),
+		fl("input_tokens_details", zOptional(zObj(fl("cached_tokens", zNum)))),
+		fl("output_tokens", zNum),
+		fl("output_tokens_details", zOptional(zObj(fl("reasoning_tokens", zNum)))),
+		fl("total_tokens", zNum),
+	)))),
+	fl("output", zArr(zDiscType(map[string]zNode{
+		"message": zObj(fl("type", zLit("message")), fl("id", zStr), fl("role", zOptional(zStr)), fl("status", zOptional(zStr)),
+			fl("content", zArr(zObj(fl("type", zLit("output_text")), fl("text", zStr), fl("annotations", zOptional(zArr(zAny))))))),
+		"reasoning": zObj(fl("type", zLit("reasoning")), fl("id", zStr), fl("status", zOptional(zStr)),
+			fl("content", zArr(zObj(fl("type", zLit("reasoning_text")), fl("text", zStr)))),
+			fl("summary", zOptional(zArr(zOptional(zObj(fl("type", zLit("reasoning_summary")), fl("text", zStr))))))),
+		"function_call": zObj(fl("type", zLit("function_call")), fl("id", zStr), fl("call_id", zStr), fl("name", zStr), fl("arguments", zStr),
+			fl("output", zOptional(zStr)), fl("status", zOptional(zStr))),
+		"mcp_call": zObj(fl("type", zLit("mcp_call")), fl("id", zStr), fl("name", zStr), fl("arguments", zStr),
+			fl("output", zOptional(zStr)), fl("status", zOptional(zStr))),
+		"mcp_list_tools": zObj(fl("type", zLit("mcp_list_tools")), fl("id", zStr), fl("server_label", zStr),
+			fl("tools", zOptional(zArr(zAny))), fl("status", zOptional(zStr))),
+	}))),
+	fl("output_text", zOptional(zNullable(zStr))),
+)
+
+// HuggingFaceResponsesResponseValidator is ChatResponseValidator for the
+// Hugging Face Responses API (huggingfaceResponsesResponseSchema).
+func HuggingFaceResponsesResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error {
+		var value interface{}
+		if err := json.Unmarshal(body, &value); err != nil {
+			return err
+		}
+		if bad := zHuggingFaceResponse(value, true, nil); bad != nil {
+			return bad
+		}
+		return nil
+	})
+}

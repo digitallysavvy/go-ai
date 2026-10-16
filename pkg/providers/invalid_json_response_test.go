@@ -30,7 +30,7 @@ func TestNonStreamingResponseSchemaValidation(t *testing.T) {
 	for _, c := range keyCases() {
 		for _, b := range bodies {
 			t.Run(c.name+"/"+b.name, func(t *testing.T) {
-				if c.name == "perplexity" || c.name == "huggingface" || c.name == "xai" {
+				if c.name == "perplexity" || c.name == "huggingface" {
 					t.Skip("schema not ported for this provider's chat API")
 				}
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

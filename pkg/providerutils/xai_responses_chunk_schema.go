@@ -1,6 +1,9 @@
 package providerutils
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 // Port of xaiResponsesChunkSchema (xai/src/responses/xai-responses-api.ts): a
 // closed union, so an unlisted event type, or a listed one whose members do
@@ -151,4 +154,19 @@ func CheckXAIResponsesChunk(data string) (string, error) {
 		err = nil
 	}
 	return ChunkParseFailure(data, err)
+}
+
+// XAIResponsesResponseValidator is ChatResponseValidator for the xAI
+// Responses API (xaiResponsesResponseSchema).
+func XAIResponsesResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error {
+		var value interface{}
+		if err := json.Unmarshal(body, &value); err != nil {
+			return err
+		}
+		if bad := zXaiResponseFields(false)(value, true, nil); bad != nil {
+			return bad
+		}
+		return nil
+	})
 }

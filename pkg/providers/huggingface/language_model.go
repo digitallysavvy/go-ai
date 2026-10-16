@@ -188,8 +188,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		Path:    "/responses",
 		Body:    body,
 		Headers: opts.Headers,
+		// TS createJsonResponseHandler(huggingfaceResponsesResponseSchema).
+		ValidateResponse: providerutils.HuggingFaceResponsesResponseValidator("huggingface"),
 	}, &resp)
 	if err != nil {
+		if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
+			return nil, err
+		}
 		if converted := parseHuggingFaceError(err); converted != nil {
 			return nil, converted
 		}
