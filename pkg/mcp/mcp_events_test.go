@@ -933,3 +933,22 @@ func TestMCPEventWebhookUnauthenticatedRequestsHaveNoSideEffects(t *testing.T) {
 		t.Fatalf("side effects: events=%d gaps=%d terms=%d errs=%d sub=%v", h.events, len(h.gaps), len(h.terms), h.errs, s)
 	}
 }
+
+// TS paginates while nextCursor != null, so an empty-string nextCursor is
+// followed (as cursor: "") and a repeat of it is a repeated cursor.
+func TestMCPEventsCatalogFollowsEmptyStringNextCursor(t *testing.T) {
+	tr := newEventsTransport()
+	client := connectEventsClient(t, tr, &MCPEventsConfig{Store: newMemEventStore()})
+	tr.listPages = map[string]map[string]interface{}{"": {"events": []interface{}{}, "nextCursor": ""}}
+	_, err := client.ExperimentalEvents().Subscribe(context.Background(), subOpts)
+	if err == nil || !strings.Contains(err.Error(), "Repeated MCP events pagination cursor") {
+		t.Fatalf("err = %v, want repeated cursor", err)
+	}
+	if tr.count("events/list") != 2 {
+		t.Fatalf("list calls = %d, want 2", tr.count("events/list"))
+	}
+	p := tr.last("events/list")
+	if c, ok := p["cursor"]; !ok || c != "" {
+		t.Fatalf("second list params = %v, want cursor \"\"", p)
+	}
+}

@@ -90,9 +90,19 @@ func (e *MCPEvents) subscribe(ctx context.Context, sub MCPEventSubscription) (*S
 // List lists the event catalog from the server (`events/list`). It does not
 // require a store.
 func (e *MCPEvents) List(ctx context.Context, options ListEventsOptions) (*ListEventsResult, error) {
-	params := map[string]interface{}{}
+	var cursor *string
 	if options.Cursor != "" {
-		params["cursor"] = options.Cursor
+		cursor = &options.Cursor
+	}
+	return e.listPage(ctx, cursor)
+}
+
+// listPage lists one page; a non-nil cursor, even "", is sent (TS
+// params: { cursor: pageCursor } with pageCursor !== undefined).
+func (e *MCPEvents) listPage(ctx context.Context, cursor *string) (*ListEventsResult, error) {
+	params := map[string]interface{}{}
+	if cursor != nil {
+		params["cursor"] = *cursor
 	}
 	var result ListEventsResult
 	if err := e.call(ctx, "events/list", params, &result); err != nil {
@@ -136,10 +146,10 @@ func (e *MCPEvents) Subscribe(ctx context.Context, options SubscribeEventOptions
 	}
 
 	var definition *MCPEventDefinition
-	pageCursor := ""
+	var pageCursor *string
 	visited := map[string]bool{}
 	for {
-		page, err := e.List(ctx, ListEventsOptions{Cursor: pageCursor})
+		page, err := e.listPage(ctx, pageCursor)
 		if err != nil {
 			return nil, err
 		}
@@ -152,17 +162,15 @@ func (e *MCPEvents) Subscribe(ctx context.Context, options SubscribeEventOptions
 		if definition != nil {
 			break
 		}
-		pageCursor = ""
-		if page.NextCursor != nil {
-			pageCursor = *page.NextCursor
-		}
-		if pageCursor == "" {
+		// TS loops while nextCursor != null: an empty-string cursor continues.
+		pageCursor = page.NextCursor
+		if pageCursor == nil {
 			break
 		}
-		if visited[pageCursor] {
+		if visited[*pageCursor] {
 			return nil, NewMCPClientError(0, "Repeated MCP events pagination cursor", nil)
 		}
-		visited[pageCursor] = true
+		visited[*pageCursor] = true
 	}
 	if definition == nil {
 		return nil, NewMCPClientError(0, fmt.Sprintf("Unknown MCP event: %s", options.Name), nil)
