@@ -220,6 +220,7 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken, hasExtends bool) 
 	}
 
 	sawAbstract := false
+modifiers:
 	for {
 		k := nextSignificant(tokens, i)
 		if k < 0 || tokens[k].kind != "ident" {
@@ -229,7 +230,18 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken, hasExtends bool) 
 		// member's own name (e.g. a method literally named `get` or
 		// `static`), not a modifier -- stop here and let copyMemberName
 		// treat it as the name.
-		if after := nextSignificant(tokens, k+1); after >= 0 && tokens[after].kind == "punct" && tokens[after].text == "(" {
+		// Likewise when it is followed by a token that ends or continues a
+		// member name (`readonly = 1`, `static: number`, `declare;`,
+		// `get<T>()`, `type?: x`): the word is the field's name.
+		if after := nextSignificant(tokens, k+1); after >= 0 && tokens[after].kind == "punct" {
+			switch tokens[after].text {
+			case "(", "=", ";", "}", ":", "?", "!", "<":
+				break modifiers
+			}
+		}
+		// A TypeScript modifier cannot be followed by a line break: the word
+		// is then a field of its own (`readonly` newline `x = 1`).
+		if (classMemberTSModifiers[tokens[k].text]) && !nextOnSameLine(tokens, k) {
 			break
 		}
 		if tokens[k].text == "declare" {

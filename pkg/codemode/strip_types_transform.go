@@ -153,6 +153,16 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				// both; a line break before `!` also makes it a prefix.
 				if endsExpression(*out) && !endsWithLineBreak(*out) && !closesControlHeader(*out) {
 					i++
+					// `a!<T>(x)`: the type arguments after a non-null assertion
+					// go with it.
+					if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "<" {
+						if end, ok := consumeCallGenerics(tokens, p); ok {
+							for k := i; k < p; k++ {
+								*out = append(*out, tokens[k])
+							}
+							i = end
+						}
+					}
 					continue
 				}
 				*out = append(*out, t)
@@ -175,6 +185,27 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 						}
 						i = stripOptionalReturnType(tokens, i, out)
 						continue
+					}
+				}
+				if last := lastSignificant(*out); last != nil {
+					switch {
+					case last.kind == "punct" && last.text == "?.":
+						// `a?.<T>(x)`: type arguments of an optional call.
+						if end, ok := consumeAngleTypeArgsBalanced(tokens, i); ok {
+							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || (tokens[n].kind == "string" && strings.HasPrefix(tokens[n].text, "`"))) {
+								i = end
+								continue
+							}
+						}
+					case last.kind == "punct" && (last.text == ")" || last.text == "]") && !closesControlHeader(*out):
+						// `f(a)<T>(b)`, `a[0]<T>(b)`: type arguments of a call
+						// on a call/index result.
+						if end, ok := consumeCallGenerics(tokens, i); ok {
+							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || tokens[n].kind == "string") {
+								i = end
+								continue
+							}
+						}
 					}
 				}
 				if !endsExpression(*out) {
@@ -223,7 +254,11 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 						*out = (*out)[:n-1]
 					}
 					tokStart := i + 1
-					i = consumeTypeExpr(tokens, i+1, false)
+					var unterminated bool
+					i, unterminated = splitAsType(tokens, i+1)
+					if unterminated {
+						return i, errUnsupportedTSSyntax("unterminated type")
+					}
 					if typeStart := nextSignificant(tokens, tokStart); typeStart < 0 || tokens[typeStart].text != "const" {
 						// `as const` keeps the following line as is.
 						asiGuard(tokens, i, out, t.pos, false)
@@ -242,7 +277,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 				// `abstract class C { ... }`: the class-level modifier
 				// (distinct from an `abstract` member inside a class
 				// body, handled by stripClassMember).
-				if nextIdentIs(tokens, i+1, "class") {
+				if nextIdentIs(tokens, i+1, "class") && nextOnSameLine(tokens, i) {
 					i = nextSignificant(tokens, i+1)
 					continue
 				}
@@ -600,6 +635,16 @@ func isMethodParamList(tokens []tsToken, closeIdx int, out []tsToken) bool {
 		if out[k].text != "]" {
 			return false
 		}
+	case "string", "number":
+		// A quoted or numeric method name starts an object member:
+		// `{ 'a-b'(x: number) {} }`.
+		p := k - 1
+		for p >= 0 && (out[p].kind == "space" || out[p].kind == "comment") {
+			p--
+		}
+		if p < 0 || out[p].kind != "punct" || (out[p].text != "{" && out[p].text != ",") {
+			return false
+		}
 	default:
 		return false
 	}
@@ -712,4 +757,38 @@ func precededByNew(out []tsToken) bool {
 		return out[i].kind == "ident" && out[i].text == "new"
 	}
 	return false
+}
+
+// lastSignificant returns the last emitted token that is not whitespace or a
+// comment, or nil.
+func lastSignificant(out []tsToken) *tsToken {
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].kind != "space" && out[i].kind != "comment" {
+			return &out[i]
+		}
+	}
+	return nil
+}
+
+// typeSpanUnterminated reports whether a scanned type span opens a bracket it
+// never closes (`x as T < y;`, where `<` starts type arguments that run to
+// the end of the source). Node rejects that source, so it is not stripped.
+func typeSpanUnterminated(span []tsToken) bool {
+	depth := 0
+	for _, t := range span {
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case "(", "[", "{", "<":
+			depth++
+		case ")", "]", "}", ">":
+			depth--
+		case ">>":
+			depth -= 2
+		case ">>>":
+			depth -= 3
+		}
+	}
+	return depth > 0
 }

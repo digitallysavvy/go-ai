@@ -206,8 +206,25 @@ func handleDeclare(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		return i + 1, nil
 	}
 	switch tokens[next].text {
-	case "var", "let", "const":
+	case "const":
+		if nextIdentIs(tokens, next+1, "enum") {
+			// `declare const enum E { ... }`: ambient, erased like `declare enum`.
+			idx := findBraceOrSemi(tokens, next+1)
+			if idx < len(tokens) && tokens[idx].kind == "punct" && tokens[idx].text == "{" {
+				return skipBalancedBraces(tokens, idx), nil
+			}
+			return scanToStatementEnd(tokens, idx), nil
+		}
 		return declareVarEnd(tokens, next+1), nil
+	case "var", "let":
+		return declareVarEnd(tokens, next+1), nil
+	case "type":
+		// `declare type X = ...;`: an alias, erased whole.
+		if looksLikeTypeAlias(tokens, next) {
+			return skipTypeAlias(tokens, next), nil
+		}
+		*out = append(*out, tokens[i])
+		return i + 1, nil
 	case "function":
 		return declareFunctionEnd(tokens, next+1), nil
 	case "class", "interface", "namespace", "module", "enum", "global":

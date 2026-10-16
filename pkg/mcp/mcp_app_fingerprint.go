@@ -4,8 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"sort"
+	"slices"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
@@ -68,7 +69,11 @@ func canonicalizeNormalizedJSON(value interface{}) string {
 		for k := range v {
 			keys = append(keys, k)
 		}
-		sort.Strings(keys)
+		// JS sorts keys by UTF-16 code unit, which orders astral characters
+		// before U+E000..U+FFFF; byte order does not.
+		slices.SortFunc(keys, func(a, b string) int {
+			return slices.Compare(utf16.Encode([]rune(a)), utf16.Encode([]rune(b)))
+		})
 		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
 			keyJSON, _ := jsonstr.Marshal(k)
