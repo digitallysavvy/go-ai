@@ -198,4 +198,8 @@ func TestSpeechModelAccepts2xxNon200(t *testing.T) {
 	if string(out.Audio) != "AUDIO" {
 		t.Fatalf("audio = %q", out.Audio)
 	}
+	// Binary handler: TS reports no response.body for raw audio.
+	if out.Response.Body != nil {
+		t.Fatalf("response body for raw audio must be nil, got %T", out.Response.Body)
+	}
 }

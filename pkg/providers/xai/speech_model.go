@@ -142,9 +142,13 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			}
 		}
 	}
-	var providerMetadata map[string]interface{}
-	if len(xaiMetadata) > 0 {
-		providerMetadata = map[string]interface{}{"xai": xaiMetadata}
+	// TS always returns providerMetadata.xai, even when empty.
+	providerMetadata := map[string]interface{}{"xai": xaiMetadata}
+	// createBinaryResponseHandler yields no raw value: the response body is
+	// only reported for the JSON envelope returned with `with_timestamps`.
+	var responseBody interface{}
+	if envelope != nil {
+		responseBody = providerutils.RawJSONBody(resp.Body)
 	}
 
 	return &types.SpeechResult{
@@ -158,7 +162,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(resp.Headers),
-			Body:      providerutils.RawJSONBody(resp.Body),
+			Body:      responseBody,
 		},
 	}, nil
 }
