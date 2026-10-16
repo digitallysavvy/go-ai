@@ -1820,7 +1820,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		// FireOnError call below, which only closes the root span (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
-		return nil, fmt.Errorf("stream error: %w", err)
+		// TS streamObject surfaces the model error as is (no "stream error: "
+		// message prefix).
+		return nil, err
 	}
 	defer stream.Close() //nolint:errcheck
 
@@ -2017,7 +2019,8 @@ streamLoop:
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
-		return nil, fmt.Errorf("stream error: %w", streamErr)
+		// TS streamObject surfaces the stream error as is (no message prefix).
+		return nil, streamErr
 	}
 
 	// Fire OnStepFinish after stream ends, BEFORE JSON parsing.

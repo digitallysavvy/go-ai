@@ -221,3 +221,39 @@ func TestGenerateObjectModelErrorIsNotPrefixed(t *testing.T) {
 		t.Fatalf("GenerateObject() error = %v, want exactly boom", err)
 	}
 }
+
+// StreamObject returns the model's open error and a mid-stream error as is
+// (TS streamObject has no "stream error: " message prefix); errors.As still
+// reaches the typed error.
+func TestStreamObjectErrorsAreNotPrefixed(t *testing.T) {
+	zero := 0
+	t.Run("open", func(t *testing.T) {
+		boom := &providererrors.ProviderError{Provider: "p", StatusCode: 400, Message: "boom"}
+		model := &testutil.MockLanguageModel{
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return nil, boom
+			},
+		}
+		_, err := StreamObject(context.Background(), StreamObjectOptions{
+			Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: zero,
+		})
+		var pe *providererrors.ProviderError
+		if err == nil || err.Error() != boom.Error() || !errors.As(err, &pe) {
+			t.Fatalf("StreamObject() error = %v, want exactly %v", err, boom)
+		}
+	})
+	t.Run("mid-stream", func(t *testing.T) {
+		boom := errors.New("boom")
+		model := &testutil.MockLanguageModel{
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStreamWithError(boom), nil
+			},
+		}
+		_, err := StreamObject(context.Background(), StreamObjectOptions{
+			Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: zero,
+		})
+		if err == nil || err.Error() != "boom" || !errors.Is(err, boom) {
+			t.Fatalf("StreamObject() error = %v, want exactly boom", err)
+		}
+	})
+}
