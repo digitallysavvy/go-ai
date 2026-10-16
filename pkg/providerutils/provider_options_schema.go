@@ -3,6 +3,7 @@ package providerutils
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"reflect"
 	"regexp"
 	"sort"
@@ -413,4 +414,86 @@ func OptTrue(path string, v interface{}) error {
 		return nil
 	}
 	return fmt.Errorf("invalid input: expected true (at %s)", path)
+}
+
+// optFloat returns the numeric value of a number option (checked by OptNumber).
+func optFloat(v interface{}) float64 {
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return rv.Float()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return float64(rv.Int())
+	}
+	return float64(rv.Uint())
+}
+
+// OptRange is z.number().min(min).max(max) (use math.Inf for an open side).
+func OptRange(min, max float64) OptionCheck {
+	return func(path string, v interface{}) error {
+		if err := OptNumber(path, v); err != nil {
+			return err
+		}
+		f := optFloat(v)
+		if f < min {
+			return fmt.Errorf("too small: expected number to be >=%v (at %s)", min, path)
+		}
+		if f > max {
+			return fmt.Errorf("too big: expected number to be <=%v (at %s)", max, path)
+		}
+		return nil
+	}
+}
+
+// OptArray is z.array(item) with optional length bounds (max < 0: unbounded).
+func OptArray(item OptionCheck, min, max int) OptionCheck {
+	return func(path string, v interface{}) error {
+		var items []interface{}
+		switch list := v.(type) {
+		case []interface{}:
+			items = list
+		default:
+			rv := reflect.ValueOf(v)
+			if v == nil || rv.Kind() != reflect.Slice {
+				return typeIssue(path, "array", v)
+			}
+			items = make([]interface{}, rv.Len())
+			for i := range items {
+				items[i] = rv.Index(i).Interface()
+			}
+		}
+		if len(items) < min {
+			return fmt.Errorf("too small: expected array to have >=%d items (at %s)", min, path)
+		}
+		if max >= 0 && len(items) > max {
+			return fmt.Errorf("too big: expected array to have <=%d items (at %s)", max, path)
+		}
+		if item != nil {
+			for i, it := range items {
+				if err := item(fmt.Sprintf("%s[%d]", path, i), it); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+}
+
+// OptURL is z.url(): a string that parses as an absolute URL. httpsOnly adds
+// z.url().startsWith("https://").
+func OptURL(httpsOnly bool) OptionCheck {
+	return func(path string, v interface{}) error {
+		if err := OptString(path, v); err != nil {
+			return err
+		}
+		s := reflect.ValueOf(v).String()
+		u, err := url.Parse(s)
+		if err != nil || u.Scheme == "" || (u.Host == "" && u.Opaque == "") {
+			return fmt.Errorf("invalid string: expected a valid URL (at %s)", path)
+		}
+		if httpsOnly && !strings.HasPrefix(s, "https://") {
+			return fmt.Errorf("invalid string: expected string to start with \"https://\" (at %s)", path)
+		}
+		return nil
+	}
 }

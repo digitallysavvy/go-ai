@@ -3,6 +3,7 @@ package typesafeai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -332,8 +333,10 @@ func TestDecisionModel_RejectsMalformedSuccessfulResponse(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error")
 	}
-	if !providererrors.IsInvalidResponseDataError(err) {
-		t.Fatalf("err type = %T", err)
+	// TS createJsonResponseHandler(typesafeDecisionResponseSchema).
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.Message != "Invalid JSON response" {
+		t.Fatalf("err = %v, want ProviderError \"Invalid JSON response\"", err)
 	}
 }
 

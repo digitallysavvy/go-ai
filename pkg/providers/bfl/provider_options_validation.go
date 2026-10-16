@@ -18,42 +18,6 @@ import (
 // InvalidArgumentError "invalid blackForestLabs provider options" for a
 // mistyped or out-of-range option instead of ignoring it.
 
-func optRange(min, max float64) providerutils.OptionCheck {
-	return func(path string, v interface{}) error {
-		if err := providerutils.OptNumber(path, v); err != nil {
-			return err
-		}
-		n := reflect.ValueOf(v)
-		var f float64
-		switch n.Kind() {
-		case reflect.Float32, reflect.Float64:
-			f = n.Float()
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			f = float64(n.Int())
-		default:
-			f = float64(n.Uint())
-		}
-		if f < min {
-			return fmt.Errorf("too small: expected number to be >=%v (at %s)", min, path)
-		}
-		if f > max {
-			return fmt.Errorf("too big: expected number to be <=%v (at %s)", max, path)
-		}
-		return nil
-	}
-}
-
-func optURL(path string, v interface{}) error {
-	if err := providerutils.OptString(path, v); err != nil {
-		return err
-	}
-	u, err := url.Parse(reflect.ValueOf(v).String())
-	if err != nil || u.Scheme == "" || (u.Host == "" && u.Opaque == "") {
-		return fmt.Errorf("invalid string: expected a valid URL (at %s)", path)
-	}
-	return nil
-}
-
 func bflImageOptionsSchema(maxSafetyTolerance int) providerutils.OptionSchema {
 	zero, min256, max1920 := 0, 256, 1920
 	schema := providerutils.OptionSchema{
@@ -61,9 +25,9 @@ func bflImageOptionsSchema(maxSafetyTolerance int) providerutils.OptionSchema {
 		"grounding":           providerutils.OptBool,
 		"version":             providerutils.OptLiteral("latest"),
 		"imagePrompt":         providerutils.OptString,
-		"imagePromptStrength": optRange(0, 1),
+		"imagePromptStrength": providerutils.OptRange(0, 1),
 		"steps":               providerutils.OptPositive(true),
-		"guidance":            optRange(0, math.MaxFloat64),
+		"guidance":            providerutils.OptRange(0, math.MaxFloat64),
 		"width":               providerutils.OptInt(&min256, &max1920),
 		"height":              providerutils.OptInt(&min256, &max1920),
 		"outputFormat":        providerutils.OptEnum("jpeg", "png"),
@@ -71,7 +35,7 @@ func bflImageOptionsSchema(maxSafetyTolerance int) providerutils.OptionSchema {
 		"raw":                 providerutils.OptBool,
 		"safetyTolerance":     providerutils.OptInt(&zero, &maxSafetyTolerance),
 		"webhookSecret":       providerutils.OptString,
-		"webhookUrl":          optURL,
+		"webhookUrl":          providerutils.OptURL(false),
 		"pollIntervalMillis":  providerutils.OptPositive(true),
 		"pollTimeoutMillis":   providerutils.OptPositive(true),
 	}

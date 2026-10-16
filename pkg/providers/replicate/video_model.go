@@ -152,6 +152,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	currentDate := time.Now()
 	callOpts := &opts.VideoModelV3CallOptions
 
+	if err := validateVideoOptions(callOpts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	input, err := m.buildInput(callOpts)
 	if err != nil {
 		return nil, err
@@ -179,6 +182,8 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Path:    predictionPath,
 		Body:    body,
 		Headers: callOpts.Headers,
+		// TS createJsonResponseHandler(replicatePredictionSchema).
+		ValidateResponse: validateVideoPrediction,
 	}, &prediction)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -216,10 +221,17 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	// provider credentials (TS credentialedOrigin: baseURL).
 	downloadOpts.Headers = m.prov.credentialedHeaders(op.GetURL, opts.Headers)
 
-	var prediction replicatePredictionWire
-	result, err := fileutil.PollJSON(ctx, op.GetURL, downloadOpts, &prediction)
+	result, err := fileutil.PollJSON(ctx, op.GetURL, downloadOpts, nil)
 	if err != nil {
 		return nil, m.handlePollError(err)
+	}
+	// TS createJsonResponseHandler(replicatePredictionSchema).
+	if err := validateVideoPrediction(http.StatusOK, headersOf(result.Headers), result.Data); err != nil {
+		return nil, err
+	}
+	var prediction replicatePredictionWire
+	if err := json.Unmarshal(result.Data, &prediction); err != nil {
+		return nil, fmt.Errorf("failed to decode status response: %w", err)
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
@@ -361,8 +373,8 @@ func (m *VideoModel) getPollOptions(providerOpts map[string]interface{}) polling
 }
 
 func (m *VideoModel) handleError(err error) error {
-	if providererrors.IsLoadAPIKeyError(err) {
-		return err // TS throws LoadAPIKeyError unwrapped
+	if providererrors.IsLoadAPIKeyError(err) || providerutils.IsInvalidJSONResponse(err) {
+		return err // TS throws these unwrapped
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
@@ -426,3 +438,6 @@ type replicatePredictionWire struct {
 		PredictTime *float64 `json:"predict_time,omitempty"`
 	} `json:"metrics,omitempty"`
 }
+
+// headersOf converts fileutil's header map to http.Header.
+func headersOf(h map[string][]string) http.Header { return http.Header(h) }

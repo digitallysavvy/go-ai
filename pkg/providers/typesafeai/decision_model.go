@@ -131,6 +131,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		Path:    "/systemone",
 		Body:    body,
 		Headers: headers,
+		// TS createJsonResponseHandler(typesafeDecisionResponseSchema).
+		ValidateResponse: validateDecisionResponse,
 	}, &response)
 	if err != nil {
 		return nil, m.handleError(err)
@@ -259,7 +261,7 @@ func (m *DecisionModel) handleError(err error) error {
 	}
 	var httpErr *internalhttp.HTTPStatusError
 	if !errors.As(err, &httpErr) {
-		return err
+		return err // includes the schema failure (Invalid JSON response)
 	}
 
 	var envelope typesafeErrorEnvelope

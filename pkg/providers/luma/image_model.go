@@ -91,6 +91,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		})
 	}
 
+	if err := validateLumaImageOptions(opts.ProviderOptions); err != nil {
+		return nil, err
+	}
 	lumaOpts := parseImageModelOptions(opts.ProviderOptions)
 
 	editingOptions, err := m.getEditingOptions(opts.Files, opts.Mask, lumaOpts)
@@ -128,6 +131,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, m.parseErrorResponse(resp.Body, resp.StatusCode)
 	}
 
+	// TS createJsonResponseHandler(lumaGenerationResponseSchema).
+	if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var genResp lumaGenerationResponse
 	if err := json.Unmarshal(resp.Body, &genResp); err != nil {
 		return nil, fmt.Errorf("luma: failed to decode generation response: %w", err)
@@ -206,6 +213,9 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 			return "", m.parseErrorResponse(resp.Body, resp.StatusCode)
 		}
 
+		if err := validateLumaGeneration(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+			return "", err
+		}
 		var status lumaGenerationResponse
 		if err := json.Unmarshal(resp.Body, &status); err != nil {
 			return "", fmt.Errorf("luma: failed to parse status response: %w", err)

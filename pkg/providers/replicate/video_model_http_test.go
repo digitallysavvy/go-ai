@@ -130,6 +130,7 @@ func TestVideoModel_DoStatus_Succeeded(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id": "pred-1", "status": "succeeded",
 			"output":  "https://replicate.delivery/video.mp4",
+			"urls":    map[string]interface{}{"get": "http://" + r.Host + "/predictions/pred-1"},
 			"metrics": map[string]interface{}{"predict_time": 25.5},
 		})
 	})
@@ -169,7 +170,7 @@ func TestVideoModel_DoStatus_FailedAndCanceled(t *testing.T) {
 	})
 	mux.HandleFunc("/predictions/pred-1", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		body := map[string]interface{}{"id": "pred-1", "status": statusValue}
+		body := map[string]interface{}{"id": "pred-1", "status": statusValue, "urls": map[string]interface{}{"get": "http://" + r.Host + "/predictions/pred-1"}}
 		if statusValue == "failed" {
 			body["error"] = "model exploded"
 		}
@@ -213,7 +214,7 @@ func TestVideoModel_DoStatus_Pending(t *testing.T) {
 	})
 	mux.HandleFunc("/predictions/pred-1", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "pred-1", "status": "processing"})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "pred-1", "status": "processing", "urls": map[string]interface{}{"get": "http://" + r.Host + "/predictions/pred-1"}})
 	})
 	model, _ := newTestVideoModelServer(t, mux)
 
@@ -245,6 +246,7 @@ func TestVideoModel_DoGenerate_EndToEnd(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"id": "pred-1", "status": "succeeded", "output": "https://replicate.delivery/video.mp4",
+			"urls": map[string]interface{}{"get": "http://" + r.Host + "/predictions/pred-1"},
 		})
 	})
 	model, _ := newTestVideoModelServer(t, mux)
