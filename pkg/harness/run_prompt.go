@@ -1235,15 +1235,18 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// accepted as a valid (and wrongly step-boundary-less) finish.
 			// Mirrors TS `HarnessStreamTextResult.finish()`'s
 			// `currentStepContent.length > 0` check.
-			if d.stepOpen {
-				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
-			}
 			usage := harnessUsageToTypesUsage(fp.TotalUsage)
 			// TS's terminal `finish` handler ends the root telemetry span
 			// with the bridge's own totalUsage, the real end-of-turn total
 			// (as opposed to pauseForHostInput's zero usage or
-			// suspendOrFinishNow's last-step usage).
+			// suspendOrFinishNow's last-step usage). TS calls lifecycle.end
+			// when the `finish` arrives, before result.finish() rejects an
+			// unclosed step, so with completed steps the turn ends (OnEnd)
+			// and the later lifecycle.error is a no-op.
 			d.telEnd(d.completedSteps, *usage)
+			if d.stepOpen {
+				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
+			}
 			// Deferred, not pushed here — see turnDriver.pendingFinishChunk's
 			// doc. run() pushes it once OnTurnFinished has been called.
 			d.pendingFinishChunk = &provider.StreamChunk{
