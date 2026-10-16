@@ -132,11 +132,13 @@ func resolveToolApprovalValue(
 		case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 			return normalizeToolApprovalResult(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
 		case map[string]interface{}:
-			if value, ok := v[call.ToolName]; ok {
+			// A nil entry is "not configured" (TS: `!= null`), so the tool's
+			// own approval setting still applies.
+			if value, ok := v[call.ToolName]; ok && value != nil {
 				return normalizePerToolApprovalValue(call, tool, tools, messages, value, runtimeCtx, toolsCtx)
 			}
 		case map[string]types.ToolApprovalValue:
-			if value, ok := v[call.ToolName]; ok {
+			if value, ok := v[call.ToolName]; ok && value != nil {
 				return normalizePerToolApprovalValue(call, tool, tools, messages, value, runtimeCtx, toolsCtx)
 			}
 		default:
