@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -316,9 +317,13 @@ type InboundCommand interface {
 // (`harnessV1BridgeStartBaseSchema`). Adapter start frames embed it and add
 // their runtime-specific fields; encoding/json flattens embedded structs so
 // the wire shape matches the TS `.extend(...)` schema.
+//
+// Every TS adapter sends `tools` as an array (`(opts.tools ?? []).map(...)`),
+// so an empty or nil Tools is sent as `[]`; MarshalInbound turns a nil slice
+// into an empty one.
 type StartBase struct {
 	Prompt               string                        `json:"prompt"`
-	Tools                []harness.ToolSpec            `json:"tools,omitempty"`
+	Tools                []harness.ToolSpec            `json:"tools"`
 	Model                string                        `json:"model,omitempty"`
 	Debug                *harness.DebugConfig          `json:"debug,omitempty"`
 	PermissionMode       harness.PermissionMode        `json:"permissionMode,omitempty"`
@@ -377,7 +382,40 @@ func (StopCommand) FrameType() string                 { return TypeStopCommand }
 // MarshalInbound encodes a host->bridge frame with its `type` first. Adapter
 // start frames (structs embedding StartBase) inherit FrameType "start".
 func MarshalInbound(cmd InboundCommand) ([]byte, error) {
-	return harness.MarshalTagged(cmd.FrameType(), cmd)
+	return harness.MarshalTagged(cmd.FrameType(), withNonNilStartTools(cmd))
+}
+
+// withNonNilStartTools returns cmd with a nil StartBase.Tools replaced by an
+// empty slice (on a copy), so the frame carries `"tools":[]` like TS rather
+// than `null`.
+func withNonNilStartTools(cmd InboundCommand) any {
+	if b, ok := cmd.(StartBase); ok {
+		if b.Tools == nil {
+			b.Tools = []harness.ToolSpec{}
+		}
+		return b
+	}
+	v := reflect.ValueOf(cmd)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return cmd
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return cmd
+	}
+	f, ok := v.Type().FieldByName("StartBase")
+	if !ok || !f.Anonymous || f.Type != reflect.TypeOf(StartBase{}) || len(f.Index) != 1 {
+		return cmd
+	}
+	if !v.FieldByIndex(f.Index).FieldByName("Tools").IsNil() {
+		return cmd
+	}
+	c := reflect.New(v.Type()).Elem()
+	c.Set(v)
+	c.FieldByIndex(f.Index).FieldByName("Tools").Set(reflect.ValueOf([]harness.ToolSpec{}))
+	return c.Interface()
 }
 
 // ValidateExperimentalUserMessage mirrors

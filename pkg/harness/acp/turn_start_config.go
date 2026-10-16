@@ -133,14 +133,17 @@ type validateTurnStartConfigInput struct {
 // no longer matches, since the resumed turn must not silently change tool
 // catalogs, permission mapping, auth, etc.
 func validateTurnStartConfig(turnStartConfig TurnStartConfig, in validateTurnStartConfigInput) error {
-	current := createTurnStartConfig(createTurnStartConfigInput{
+	ci := createTurnStartConfigInput{
 		Prompt: turnStartConfig.Prompt, Tools: turnStartConfig.Tools, BuiltinTools: in.BuiltinTools,
 		PermissionMode: turnStartConfig.PermissionMode, PermissionModeMapping: in.PermissionModeMapping,
 		MCPServers: in.MCPServers, Debug: turnStartConfig.Debug, AuthenticationProfile: in.AuthenticationProfile,
 		SessionMeta: in.SessionMeta, InstructionMapping: in.InstructionMapping, ResponseFormat: turnStartConfig.ResponseFormat,
 		OutputSchemaMapping: in.OutputSchemaMapping, Model: turnStartConfig.Model, ModelMapping: in.ModelMapping,
-	})
-	if current.ConfigurationFingerprint != turnStartConfig.ConfigurationFingerprint {
+	}
+	current := createTurnStartConfig(ci)
+	// A v0.5.2 persisted fingerprint is accepted too (see legacy_digest.go).
+	if current.ConfigurationFingerprint != turnStartConfig.ConfigurationFingerprint &&
+		legacyConfigurationFingerprint(ci) != turnStartConfig.ConfigurationFingerprint {
 		return fmt.Errorf("The persisted ACP turn start configuration is incompatible with the current non-secret start configuration.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
@@ -172,14 +175,17 @@ type validateColdSessionConfigurationInput struct {
 // value — used verbatim as the cold-restore `start` frame's turnStartConfig
 // and as the session's remembered config for a future rerun/cold-restore).
 func validateColdSessionConfiguration(coldSession ColdSessionState, in validateColdSessionConfigurationInput) (TurnStartConfig, error) {
-	current := createTurnStartConfig(createTurnStartConfigInput{
+	ci := createTurnStartConfigInput{
 		Prompt: nil, Tools: coldSession.Tools, BuiltinTools: in.BuiltinTools,
 		PermissionMode: in.PermissionMode, PermissionModeMapping: in.PermissionModeMapping,
 		MCPServers: in.MCPServers, Debug: in.Debug, AuthenticationProfile: in.AuthenticationProfile,
 		SessionMeta: in.SessionMeta, InstructionMapping: in.InstructionMapping, ResponseFormat: coldSession.ResponseFormat,
 		OutputSchemaMapping: in.OutputSchemaMapping, Model: "", ModelMapping: in.ModelMapping,
-	})
-	if current.ConfigurationFingerprint != coldSession.ConfigurationFingerprint || coldSession.PermissionMode != in.PermissionMode {
+	}
+	current := createTurnStartConfig(ci)
+	fingerprintOK := current.ConfigurationFingerprint == coldSession.ConfigurationFingerprint ||
+		legacyConfigurationFingerprint(ci) == coldSession.ConfigurationFingerprint
+	if !fingerprintOK || coldSession.PermissionMode != in.PermissionMode {
 		return TurnStartConfig{}, fmt.Errorf("ACP cold-session state is incompatible with the current non-secret session configuration.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return current, nil

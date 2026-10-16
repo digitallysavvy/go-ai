@@ -2,16 +2,19 @@ package claudecode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil/subscription"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 
 // OAuth endpoint constants for the Claude Code native subscription (a `claude
@@ -32,8 +35,12 @@ var claudeGOOS = runtime.GOOS
 const claudeKeychainService = "Claude Code-credentials"
 
 type claudeCredentialStore struct {
-	value map[string]any
-	write func(map[string]any) error
+	// value is the plain view used to validate the credential; object is the
+	// same document in wire key order, which a rewrite must keep (TS spreads
+	// the parsed object, so key order survives the round trip).
+	value  map[string]any
+	object *jsonorder.Object
+	write  func(*jsonorder.Object) error
 }
 
 func claudeOAuth(value map[string]any) (map[string]any, bool) {
@@ -54,11 +61,33 @@ func claudeOAuth(value map[string]any) (map[string]any, bool) {
 }
 
 func parseClaudeCredentialFile(text string) map[string]any {
-	var value map[string]any
-	if err := securejson.Unmarshal([]byte(text), &value); err != nil || value == nil {
+	obj := parseClaudeCredentialObject(text)
+	if obj == nil {
 		return nil
 	}
-	return value
+	return obj.Map()
+}
+
+// parseClaudeCredentialObject parses a credential document keeping the order
+// of its keys. It returns nil unless the text is a JSON object.
+func parseClaudeCredentialObject(text string) *jsonorder.Object {
+	if err := securejson.Check([]byte(text)); err != nil {
+		return nil
+	}
+	v, ok := jsonorder.Parse([]byte(text))
+	if !ok {
+		return nil
+	}
+	obj, _ := v.(*jsonorder.Object)
+	return obj
+}
+
+func newClaudeCredentialStore(text string, write func(*jsonorder.Object) error) *claudeCredentialStore {
+	obj := parseClaudeCredentialObject(text)
+	if obj == nil {
+		return nil
+	}
+	return &claudeCredentialStore{value: obj.Map(), object: obj, write: write}
 }
 
 // readClaudeCredentialStore mirrors TS `readClaudeCredentialStore`: the
@@ -66,11 +95,11 @@ func parseClaudeCredentialFile(text string) map[string]any {
 // default config dir only) the "Claude Code-credentials" Keychain item.
 func readClaudeCredentialStore(ctx context.Context, home, configDir, credentialPath string) *claudeCredentialStore {
 	if raw, err := os.ReadFile(credentialPath); err == nil {
-		if value := parseClaudeCredentialFile(string(raw)); value != nil {
-			if _, ok := claudeOAuth(value); ok {
-				return &claudeCredentialStore{value: value, write: func(updated map[string]any) error {
-					return writeClaudeCredentialFile(credentialPath, updated)
-				}}
+		if store := newClaudeCredentialStore(string(raw), func(updated *jsonorder.Object) error {
+			return writeClaudeCredentialFile(credentialPath, updated)
+		}); store != nil {
+			if _, ok := claudeOAuth(store.value); ok {
+				return store
 			}
 		}
 	}
@@ -89,17 +118,13 @@ func readClaudeCredentialStore(ctx context.Context, home, configDir, credentialP
 	if text == "" {
 		return nil
 	}
-	value := parseClaudeCredentialFile(text)
-	if value == nil {
-		return nil
-	}
-	return &claudeCredentialStore{value: value, write: func(updated map[string]any) error {
+	return newClaudeCredentialStore(text, func(updated *jsonorder.Object) error {
 		data, err := jsstr.Marshal(updated)
 		if err != nil {
 			return err
 		}
 		return subscription.WriteMacOSKeychainPassword(ctx, claudeKeychainService, account, string(data))
-	}}
+	})
 }
 
 // readClaudeCodeSubscription reads the native Claude Code subscription
@@ -155,13 +180,23 @@ func resolveClaudeCodeSubscription(ctx context.Context) (map[string]string, bool
 			return nil, false, err
 		}
 		accessToken = refreshed.AccessToken
-		oauth["accessToken"] = refreshed.AccessToken
-		oauth["expiresAt"] = float64(refreshed.ExpiresAt)
-		if refreshed.RefreshToken != "" {
-			oauth["refreshToken"] = refreshed.RefreshToken
+		// TS `{ ...stored.value, claudeAiOauth: { ...oauth, accessToken,
+		// refreshToken, expiresAt } }`: every key keeps its position.
+		updatedOAuth := jsonorder.New()
+		if existing, ok := store.object.Get("claudeAiOauth"); ok {
+			if o, ok := existing.(*jsonorder.Object); ok {
+				updatedOAuth = o
+			}
 		}
-		store.value["claudeAiOauth"] = oauth
-		if err := store.write(store.value); err != nil {
+		updatedOAuth.Set("accessToken", refreshed.AccessToken)
+		refreshedRefreshToken := refreshToken
+		if refreshed.RefreshToken != "" {
+			refreshedRefreshToken = refreshed.RefreshToken
+		}
+		updatedOAuth.Set("refreshToken", refreshedRefreshToken)
+		updatedOAuth.Set("expiresAt", json.Number(strconv.FormatInt(refreshed.ExpiresAt, 10)))
+		store.object.Set("claudeAiOauth", updatedOAuth)
+		if err := store.write(store.object); err != nil {
 			return nil, false, err
 		}
 	}
@@ -175,7 +210,7 @@ func resolveClaudeCodeSubscription(ctx context.Context) (map[string]string, bool
 // writeClaudeCredentialFile atomically rewrites the credential file (temp
 // file in the same directory at mode 0600, then rename) after a token
 // refresh. Mirrors TS `writeClaudeCredentialFile`.
-func writeClaudeCredentialFile(path string, value map[string]any) error {
+func writeClaudeCredentialFile(path string, value *jsonorder.Object) error {
 	data, err := jsstr.MarshalIndent(value)
 	if err != nil {
 		return err

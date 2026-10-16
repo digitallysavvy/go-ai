@@ -500,6 +500,12 @@ type turnDriver struct {
 	// step's own telemetry span lifetime. Guarded by execMu like every
 	// other field a host tool execution touches.
 	startedToolExecutions map[string]bool
+	// endedToolExecutions makes publishToolExecutionEnd idempotent per tool
+	// call (TS `execution.endNotification ??= ...`): an automatic denial
+	// publishes its end right after the denial is submitted, and the
+	// runtime's later echo of that result must not publish it again. Guarded
+	// by execMu.
+	endedToolExecutions map[string]bool
 
 	// telToolCtx stores, per ToolCallID, the ctx returned by telemetry's
 	// toolExecutionStart event (see ensureToolExecutionStarted), so the
@@ -631,6 +637,7 @@ func (d *turnDriver) run() {
 	d.toolExecMs = map[string]int64{}
 	d.hostOutcomes = map[string]hostToolOutcome{}
 	d.startedToolExecutions = map[string]bool{}
+	d.endedToolExecutions = map[string]bool{}
 	d.telToolCtx = map[string]context.Context{}
 	d.stripToolInput = NewToolInputWorkDirStripper(d.in.SessionWorkDir)
 	d.modelID = d.in.Model
@@ -1025,8 +1032,17 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 
 		display := StripWorkDir(part, d.in.SessionWorkDir)
 
-		if id, hasID := toolCallIDOf(display); hasID && isReplayable(display) && d.isSettled(id) {
-			continue
+		// TS: a settled host call replays as tool-call, tool-result and
+		// approval-request; a settled built-in approval only as tool-call and
+		// approval-request (the runtime's real tool-result must come through).
+		if id, hasID := toolCallIDOf(display); hasID && isReplayable(display) {
+			if _, isResult := display.(*ToolResultPart); isResult {
+				if d.isSettledHost(id) {
+					continue
+				}
+			} else if d.isSettled(id) {
+				continue
+			}
 		}
 
 		if fs, isFinishStep := display.(*FinishStepPart); isFinishStep {
@@ -1235,15 +1251,18 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// accepted as a valid (and wrongly step-boundary-less) finish.
 			// Mirrors TS `HarnessStreamTextResult.finish()`'s
 			// `currentStepContent.length > 0` check.
-			if d.stepOpen {
-				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
-			}
 			usage := harnessUsageToTypesUsage(fp.TotalUsage)
 			// TS's terminal `finish` handler ends the root telemetry span
 			// with the bridge's own totalUsage, the real end-of-turn total
 			// (as opposed to pauseForHostInput's zero usage or
-			// suspendOrFinishNow's last-step usage).
+			// suspendOrFinishNow's last-step usage). TS calls lifecycle.end
+			// when the `finish` arrives, before result.finish() rejects an
+			// unclosed step, so with completed steps the turn ends (OnEnd)
+			// and the later lifecycle.error is a no-op.
 			d.telEnd(d.completedSteps, *usage)
+			if d.stepOpen {
+				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
+			}
 			// Deferred, not pushed here — see turnDriver.pendingFinishChunk's
 			// doc. run() pushes it once OnTurnFinished has been called.
 			d.pendingFinishChunk = &provider.StreamChunk{
@@ -1267,6 +1286,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			}
 		}
 	}
+}
+
+func (d *turnDriver) isSettledHost(id string) bool {
+	_, ok := d.settledHostIDs[id]
+	return ok
 }
 
 func (d *turnDriver) isSettled(id string) bool {
@@ -1654,6 +1678,11 @@ func hostOutcomeResult(call types.ToolCall, o hostToolOutcome) types.ToolResult 
 func (d *turnDriver) publishToolExecutionEnd(toolCallID, toolName string, call types.ToolCall, toolResult types.ToolResult) {
 	// Host tool goroutines write toolExecMs under execMu.
 	d.execMu.Lock()
+	if d.endedToolExecutions[toolCallID] {
+		d.execMu.Unlock()
+		return
+	}
+	d.endedToolExecutions[toolCallID] = true
 	execMs := d.toolExecMs[toolCallID]
 	d.execMu.Unlock()
 
@@ -2033,7 +2062,13 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 		if err != nil {
 			return false, err
 		}
-		return outcome == turnOutcomeAwaitingToolResult, nil
+		if outcome == turnOutcomeAwaitingToolResult {
+			return true, nil
+		}
+		// TS: `closingResumedStep = true` after a continued approval, so the
+		// finish-step closing the resumed step is discarded.
+		d.closingResumedStep = true
+		return false, nil
 	}
 
 	if d.in.OnPendingToolApproval != nil {
@@ -2086,6 +2121,12 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	if decision.Type == CustomToolApprovalDeny && decision.Reason == "" {
 		decision.Reason = d.in.ToolApprovalReasons[raw.ToolName]
 	}
+	// TS `pendingApprovalsByToolCallId.get(...) ?? (request ? {...} : undefined)`:
+	// a tool call that still has an unanswered pending approval goes through the
+	// approval flow even when the current decision would allow it.
+	if decision.Type == CustomToolApprovalAllow && d.pendingApprovalsByToolCallID[raw.ToolCallID] != nil {
+		decision.Type = CustomToolApprovalRequest
+	}
 	switch decision.Type {
 	case CustomToolApprovalDeny:
 		approvalID := generateApprovalID()
@@ -2096,10 +2137,14 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			ApprovalID: approvalID, ToolCallID: raw.ToolCallID, ToolCall: call, Approved: false, Reason: decision.Reason,
 		}})
 		output := executionDeniedOutput(decision.Reason)
+		// TS publishes the execution start before submitting the denial and
+		// the end right after it, without waiting for the runtime's echo.
+		d.ensureToolExecutionStarted(d.telStepCtx, call)
 		d.markAwaitingEcho(raw.ToolCallID)
 		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
 			return false, err
 		}
+		d.publishToolExecutionEnd(raw.ToolCallID, raw.ToolName, call, hostOutcomeResult(call, hostToolOutcome{output: output}))
 		return false, nil
 
 	case CustomToolApprovalRequest:
@@ -2117,7 +2162,11 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 			if err != nil {
 				return false, err
 			}
-			return outcome == turnOutcomeAwaitingToolResult, nil
+			if outcome == turnOutcomeAwaitingToolResult {
+				return true, nil
+			}
+			d.closingResumedStep = true
+			return false, nil
 		}
 		if d.in.OnPendingToolApproval != nil {
 			d.in.OnPendingToolApproval(*pending)
@@ -2470,7 +2519,7 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 	d.suspendedOutcomes = nil
 	d.execMu.Unlock()
 	for _, tr := range outcomes {
-		if d.isSettled(tr.ToolCallID) {
+		if d.isSettledHost(tr.ToolCallID) {
 			continue
 		}
 		display, _ := StripWorkDir(tr, d.in.SessionWorkDir).(*ToolResultPart)
@@ -2617,6 +2666,10 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		return turnOutcomeContinue, nil
 	}
 
+	// TS `await lifecycle.start(input.model)` then `publishToolExecutionStart`
+	// run before maybeExecuteHostTool finds out whether the tool can execute.
+	d.ensureStarted()
+	d.ensureToolExecutionStarted(d.telStepCtx, call)
 	tool, executable := d.in.ActiveTools[approval.ToolName]
 	if !executable || tool.Execute == nil {
 		d.recordPendingResult(&ToolCallPart{ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input})

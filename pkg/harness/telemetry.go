@@ -377,10 +377,12 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 // (TS a9a22e1) rather than a turn-wide re-accumulation, and the tool calls,
 // tool results and files of every step.
 func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
+	// TS lifecycle.end starts the lifecycle first, then returns without
+	// ending when the turn has no steps.
+	d.ensureStarted()
 	if d.telEnded || len(steps) == 0 {
 		return
 	}
-	d.ensureStarted()
 	d.telEnded = true
 	finalStep := steps[len(steps)-1]
 	var toolCalls []types.ToolCall

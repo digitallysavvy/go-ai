@@ -80,6 +80,12 @@ func TestDecodeStreamPartIgnoresSeqAndRejectsInvalid(t *testing.T) {
 		`{"type":"tool-result","toolCallId":"c","toolName":"n"}`,
 		`{"type":"finish","finishReason":{"unified":"weird"},"totalUsage":{"inputTokens":{},"outputTokens":{}}}`,
 		`{"type":"finish","finishReason":{"unified":"stop"}}`,
+		// harnessV1UsageSchema requires inputTokens and outputTokens objects.
+		`{"type":"finish","finishReason":{"unified":"stop"},"totalUsage":{}}`,
+		`{"type":"finish","finishReason":{"unified":"stop"},"totalUsage":{"inputTokens":{}}}`,
+		`{"type":"finish","finishReason":{"unified":"stop"},"totalUsage":{"inputTokens":null,"outputTokens":{}}}`,
+		`{"type":"finish-step","finishReason":{"unified":"stop"},"usage":{"inputTokens":{},"outputTokens":[]}}`,
+		`{"type":"finish-step","finishReason":{"unified":"stop"},"usage":[]}`,
 		`{"type":"file-change","event":"rename","path":"a"}`,
 		`{"type":"compaction","trigger":"later","summary":"s"}`,
 		`{"type":"nope"}`,

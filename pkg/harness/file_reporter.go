@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -28,8 +27,9 @@ type FileReporterOptions struct {
 	// error finish). Default false (write everything).
 	FailOnly bool
 
-	// FileName is the file name within Dir. Default "events.jsonl". It must
-	// be a plain file name, not a path that leaves Dir.
+	// FileName is the file name within Dir. Default "events.jsonl". Like TS
+	// (`${dir}/${fileName}`) it is not validated; a name the OS cannot open
+	// surfaces through Err, never through a turn.
 	FileName string
 }
 
@@ -73,8 +73,7 @@ type reporterTurn struct {
 	errored bool
 }
 
-// NewFileReporter creates a FileReporter. It returns an error if Dir is empty
-// or FileName would resolve outside Dir.
+// NewFileReporter creates a FileReporter. It returns an error if Dir is empty.
 func NewFileReporter(opts FileReporterOptions) (*FileReporter, error) {
 	if opts.Dir == "" {
 		return nil, errors.New("harness: FileReporterOptions.Dir is required")
@@ -83,12 +82,9 @@ func NewFileReporter(opts FileReporterOptions) (*FileReporter, error) {
 	if name == "" {
 		name = "events.jsonl"
 	}
-	if name != filepath.Base(name) || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
-		return nil, fmt.Errorf("harness: FileReporterOptions.FileName %q must be a plain file name inside Dir", name)
-	}
 	return &FileReporter{
 		dir:      opts.Dir,
-		path:     filepath.Join(opts.Dir, name),
+		path:     opts.Dir + "/" + name,
 		failOnly: opts.FailOnly,
 		turns:    map[string]*reporterTurn{},
 	}, nil
@@ -186,6 +182,15 @@ func serializeReporterError(err error) interface{} {
 	}
 	name := strings.TrimPrefix(reflect.TypeOf(err).String(), "*")
 	return (&orderedRecord{}).set("name", name).set("message", err.Error())
+}
+
+// rawReporterError mirrors a raw (unserialized) JS Error in a JSON record:
+// its properties are not enumerable, so JSON.stringify writes `{}`.
+func rawReporterError(err error) interface{} {
+	if err == nil {
+		return nil
+	}
+	return &orderedRecord{}
 }
 
 func intPtrOpt(o *orderedRecord, key string, v *int64) {
@@ -305,7 +310,7 @@ func (r *FileReporter) ensureFileLocked() error {
 		}
 		r.dirReady = true
 	}
-	f, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // path is Dir joined with a validated plain file name
+	f, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // path is the operator-configured Dir and FileName, as in TS
 	if err != nil {
 		return err
 	}
@@ -380,7 +385,9 @@ func (r *FileReporter) OnToolExecutionEnd(_ context.Context, e telemetry.Telemet
 	}
 	rec := newRecord("tool-end", e.CallID).set("toolCallId", e.ToolCallID).set("isError", isError)
 	if isError {
-		rec.set("output", serializeReporterError(e.Error))
+		// TS writes the raw thrown value (`toolOutput.error`); an Error
+		// instance JSON-stringifies to `{}`.
+		rec.set("output", rawReporterError(e.Error))
 	} else {
 		rec.setOpt("output", e.Result)
 	}
@@ -413,7 +420,7 @@ func reporterStepContent(e telemetry.TelemetryStepEndEvent) []interface{} {
 		if tr.Error != nil {
 			content = append(content, (&orderedRecord{}).set("type", "tool-error").
 				set("toolCallId", tr.ToolCallID).set("toolName", tr.ToolName).
-				set("input", tr.Input).set("error", serializeReporterError(tr.Error)))
+				set("input", tr.Input).set("error", rawReporterError(tr.Error)))
 			continue
 		}
 		content = append(content, (&orderedRecord{}).set("type", "tool-result").
