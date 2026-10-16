@@ -394,8 +394,10 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 			_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: f.RequestID, Output: map[string]any{"type": "unhandled"}})
 			return
 		}
-		if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || toolCall.ProviderExecuted {
-			// ProviderExecuted must be false (client-executed); mirrors TS's
+		if toolCall.ToolName != string(harness.BuiltinToolAskUserQuestions) || toolCall.ProviderExecuted || toolCall.ProviderExecutedOmitted {
+			// ProviderExecuted must be an explicit false (client-executed; TS
+			// checks `providerExecuted !== false`, so an undefined flag is
+			// rejected too, which Go signals with ProviderExecutedOmitted); mirrors TS's
 			// thrown Error for a misconfigured settings.askUserQuestions
 			// (acp-v1-harness.ts), which is caught and settles the turn
 			// with an error part, an abort command, and settle(error).

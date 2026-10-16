@@ -270,7 +270,10 @@ type AskUserQuestionsSettings struct {
 	IsNativeToolCall func(nativeToolCall ToolCall) bool
 	// FromNativeRequest converts one native question request into a
 	// client-executed askUserQuestions tool-call StreamPart, or nil if this
-	// request is not (or no longer) an askUserQuestions request.
+	// request is not (or no longer) an askUserQuestions request. As in TS,
+	// the returned call must carry an explicit client-executed flag: set
+	// ProviderExecutedOmitted to model an undefined `providerExecuted`,
+	// which is rejected.
 	FromNativeRequest func(nativeRequest any, nativeToolCall *ToolCall) *harness.ToolCallPart
 	// ToNativeResponse converts the harness askUserQuestions tool result
 	// back into the implementation's native response shape.
