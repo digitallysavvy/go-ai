@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -344,31 +345,92 @@ func sortedUnique(values []string) []string {
 	return out
 }
 
-// stableStringify mirrors TS `stableStringify`/`sortValue`: a deterministic
-// JSON encoding used only as sha256 input for identity/fingerprint hashes
-// computed and compared entirely on the Go host (never sent to or compared
-// against a TS host), so byte-for-byte parity with TS's stringification is
-// not required — only that the same Go value always encodes the same way.
-// encoding/json already sorts map[string]T keys, which is sufuficient.
+// stableStringify mirrors TS `stableStringify`/`sortValue`: JSON.stringify of
+// the value with every object's keys sorted by `String.prototype.localeCompare`
+// (ICU root collation, not byte order: "A_B" sorts before "AB" and "a" before
+// "B"). The digests built from it are compared across hosts, so the output must
+// match TS byte for byte.
 func stableStringify(value any) string {
 	raw, err := encodeNoEscape(value)
 	if err != nil {
 		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
 	}
-	// Round-trip through a generic value so object keys are sorted at every
-	// level (struct fields otherwise keep declaration order), like TS
-	// `sortValue`.
+	// Round-trip through a generic value so struct fields become sortable
+	// object keys at every level.
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
 	var generic any
 	if err := dec.Decode(&generic); err != nil {
 		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
 	}
-	sorted, err := encodeNoEscape(generic)
-	if err != nil {
-		panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
+	var out strings.Builder
+	writeSortedJSON(&out, generic)
+	return out.String()
+}
+
+func writeSortedJSON(out *strings.Builder, value any) {
+	switch v := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for k := range v {
+			keys = append(keys, k)
+		}
+		posixpath.SortStrings(keys)
+		out.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				out.WriteByte(',')
+			}
+			out.WriteString(jsonString(k))
+			out.WriteByte(':')
+			writeSortedJSON(out, v[k])
+		}
+		out.WriteByte('}')
+	case []any:
+		out.WriteByte('[')
+		for i, item := range v {
+			if i > 0 {
+				out.WriteByte(',')
+			}
+			writeSortedJSON(out, item)
+		}
+		out.WriteByte(']')
+	case string:
+		out.WriteString(jsonString(v))
+	default:
+		encoded, err := encodeNoEscape(v)
+		if err != nil {
+			panic(fmt.Sprintf("acp: value is not JSON-serializable: %v", err))
+		}
+		out.WriteString(encoded)
 	}
-	return sorted
+}
+
+// jsonString is JSON.stringify for a string: no HTML escaping and U+2028 /
+// U+2029 left literal (Go's encoder always escapes them).
+func jsonString(s string) string {
+	encoded, _ := encodeNoEscape(s)
+	if !strings.Contains(encoded, `\u202`) {
+		return encoded
+	}
+	var b strings.Builder
+	for i := 0; i < len(encoded); i++ {
+		if encoded[i] == '\\' && i+1 < len(encoded) {
+			if rest := encoded[i+1:]; strings.HasPrefix(rest, "u2028") {
+				b.WriteString("\u2028")
+				i += 5
+				continue
+			} else if strings.HasPrefix(rest, "u2029") {
+				b.WriteString("\u2029")
+				i += 5
+				continue
+			}
+			b.WriteByte(encoded[i])
+			i++
+		}
+		b.WriteByte(encoded[i])
+	}
+	return b.String()
 }
 
 // encodeNoEscape is json.Marshal without HTML escaping (`<`, `>`, `&` stay
