@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,7 +48,10 @@ func (m *ImageModel) ModelID() string {
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
 	if opts.Mask != nil {
-		return nil, fmt.Errorf("together AI does not support mask-based image editing")
+		// TS throws this exact text.
+		return nil, errors.New("Together AI does not support mask-based image editing. " + //nolint:staticcheck // matches TS SDK's exact error text
+			"Use FLUX Kontext models (e.g., black-forest-labs/FLUX.1-kontext-pro) " +
+			"with a reference image and descriptive prompt instead.")
 	}
 
 	if err := validateImageOptions(opts.ProviderOptions); err != nil {
