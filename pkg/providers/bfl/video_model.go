@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"math"
 	"net/http"
@@ -487,7 +486,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, providererrors.NewProviderError("bfl", 0, "", err.Error(), err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, bflStatusError(resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	// TS createJsonResponseHandler(bflVideoSubmitSchema).
@@ -686,24 +685,7 @@ func describePollDetails(raw json.RawMessage) string {
 func (m *VideoModel) handleVideoPollError(err error) error {
 	var dlErr *providererrors.DownloadError
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
-		var envelope struct {
-			Message string      `json:"message"`
-			Detail  interface{} `json:"detail"`
-		}
-		if jsonErr := json.Unmarshal(dlErr.Body, &envelope); jsonErr == nil {
-			if s, ok := envelope.Detail.(string); ok && s != "" {
-				return fmt.Errorf("Black Forest Labs API error: %s", s) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-			}
-			if envelope.Detail != nil {
-				if b, mErr := json.Marshal(envelope.Detail); mErr == nil {
-					return fmt.Errorf("Black Forest Labs API error: %s", string(b)) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				}
-			}
-			if envelope.Message != "" {
-				return fmt.Errorf("Black Forest Labs API error: %s", envelope.Message) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-			}
-		}
-		return internalhttp.StatusProviderError("bfl", dlErr.StatusCode, dlErr.Headers, dlErr.Body)
+		return bflStatusError(dlErr.StatusCode, dlErr.Headers, dlErr.Body)
 	}
 	return fmt.Errorf("failed to check status: %w", err)
 }

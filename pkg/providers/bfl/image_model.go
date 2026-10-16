@@ -113,7 +113,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, resp.Headers, resp.Body)
+		return nil, bflStatusError(resp.StatusCode, resp.Headers, resp.Body)
 	}
 
 	// TS createJsonResponseHandler(bflSubmitSchema).
@@ -544,27 +544,7 @@ func (m *ImageModel) getPollBody(ctx context.Context, pollURL string, headers ma
 		return nil, fmt.Errorf("BFL poll response exceeded maximum size of %d bytes", limit)
 	}
 	if resp.StatusCode >= 400 {
-		// Failed tasks can be reported as HTTP 503; resubmitting them would
-		// start a new generation, so a terminal task status is not retryable.
-		var errBody struct {
-			Status  string      `json:"status"`
-			State   string      `json:"state"`
-			Detail  interface{} `json:"detail"`
-			Message string      `json:"message"`
-		}
-		if json.Unmarshal(body, &errBody) == nil && errBody.Detail == nil && errBody.Message == "" {
-			status := errBody.Status
-			if status == "" {
-				status = errBody.State
-			}
-			if status != "" {
-				retryable := !bflTerminalTaskStatus(status)
-				perr := providererrors.NewProviderError("bfl", resp.StatusCode, "", fmt.Sprintf("Black Forest Labs generation failed: %s.", status), nil)
-				perr.Retryable = &retryable
-				return nil, perr
-			}
-		}
-		return nil, internalhttp.StatusProviderError("bfl", resp.StatusCode, nil, []byte(body))
+		return nil, bflStatusError(resp.StatusCode, resp.Header, body)
 	}
 	return body, nil
 }
