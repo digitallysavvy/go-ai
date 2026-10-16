@@ -176,3 +176,60 @@ func TestMistralTranscriptionAudioBase64(t *testing.T) {
 		t.Fatalf("file bytes = %q, want hello", seenFileBytes)
 	}
 }
+
+// Go-typed option values ([]string, int) must reach the form like their JSON
+// equivalents instead of being silently dropped; invalid values are rejected
+// like the TS zod schema.
+func TestMistralTranscriptionTypedOptionsAreForwardedAndValidated(t *testing.T) {
+	fields := map[string][]string{}
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			b, _ := io.ReadAll(part)
+			fields[part.FormName()] = append(fields[part.FormName()], string(b))
+		}
+		return mistralJSONResponse(`{"model":"voxtral-mini-latest","text":"hi"}`), nil
+	})
+	m := NewTranscriptionModel(p, "voxtral-mini-latest")
+
+	_, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio: []byte("x"), MimeType: "audio/wav",
+		ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{
+			"timestampGranularities": []string{"word", "segment"},
+			"temperature":            1,
+			"contextBias":            []string{"a_b", "c"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fields["timestamp_granularities"]; len(got) != 2 || got[0] != "word" || got[1] != "segment" {
+		t.Fatalf("timestamp_granularities = %v", got)
+	}
+	if got := fields["temperature"]; len(got) != 1 || got[0] != "1" {
+		t.Fatalf("temperature = %v", got)
+	}
+	if got := fields["context_bias"]; len(got) != 2 {
+		t.Fatalf("context_bias = %v", got)
+	}
+
+	for name, bad := range map[string]map[string]interface{}{
+		"enum":        {"timestampGranularities": []string{"line"}},
+		"whitespace":  {"contextBias": []string{"a b"}},
+		"empty list":  {"timestampGranularities": []string{}},
+		"temperature": {"temperature": "hot"},
+	} {
+		_, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+			Audio: []byte("x"), MimeType: "audio/wav",
+			ProviderOptions: map[string]interface{}{"mistral": bad},
+		})
+		if err == nil {
+			t.Errorf("%s: expected validation error", name)
+		}
+	}
+}

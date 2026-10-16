@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -209,7 +210,25 @@ type mistralTranscriptionOptions struct {
 	ContextBias            []string
 }
 
-// extractMistralTranscriptionOptions reads providerOptions.mistral. Mistral
+// contextBiasItem is z.string().min(1).regex(/^[^\s,]+$/).
+var mistralContextBiasItem = regexp.MustCompile(`^[^\s,]+$`)
+
+// mistralTranscriptionOptionsSchema is mistralTranscriptionModelOptions.
+var mistralTranscriptionOptionsSchema = providerutils.OptionSchema{
+	"language":               providerutils.OptStringLen(1, -1),
+	"temperature":            providerutils.OptNumber,
+	"timestampGranularities": providerutils.OptArray(providerutils.OptEnum("segment", "word"), 1, -1),
+	"diarize":                providerutils.OptBool,
+	"contextBias": providerutils.OptArray(providerutils.OptAnd(
+		providerutils.OptStringLen(1, -1),
+		providerutils.OptMatch(mistralContextBiasItem, "Context bias items must not contain commas or whitespace."),
+	), 0, 100),
+}
+
+// extractMistralTranscriptionOptions reads providerOptions.mistral and
+// validates it like TS parseProviderOptions(mistralTranscriptionModelOptions).
+// The value is normalized through its JSON form first, so Go ints, []string
+// slices and typed structs are read like their JSON equivalents. Mistral
 // documents language and timestampGranularities as mutually exclusive;
 // rejecting the combination locally provides a stable SDK error instead of an
 // API 4xx, matching TS.
@@ -221,9 +240,17 @@ func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*m
 	if !ok || raw == nil {
 		return nil, nil
 	}
-	m, ok := raw.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid mistral provider options: expected object")
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid mistral provider options: %w", err)
+	}
+	var normalized interface{}
+	if err := json.Unmarshal(encoded, &normalized); err != nil {
+		return nil, fmt.Errorf("invalid mistral provider options: %w", err)
+	}
+	m, err := providerutils.ParseProviderOptions("mistral", map[string]interface{}{"mistral": normalized}, mistralTranscriptionOptionsSchema)
+	if err != nil {
+		return nil, err
 	}
 
 	result := &mistralTranscriptionOptions{}
