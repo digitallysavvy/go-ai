@@ -967,26 +967,33 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		c.pendingMu.Unlock()
 	}()
 
-	// Send request, attaching x-mcp-header-derived headers for a modern-era
-	// tools/call when the transport supports per-request headers (hash
-	// 0c60a40).
-	if err := c.sendMessage(ctx, msg, headers); err != nil {
-		return NewTransportError("failed to send request", err)
-	}
-
-	// Wait for response with timeout
+	// The timeout starts before the request is sent and also aborts the send
+	// (TS arms its timer and passes the timeout signal to transport.send), so
+	// a server that holds the POST open cannot outlast it.
 	timeout := time.Duration(c.config.RequestTimeoutMS) * time.Millisecond
 	if opts, ok := requestOptionsFrom(ctx); ok {
 		if t := opts.effectiveTimeout(); t > 0 {
 			timeout = t
 		}
 	}
-	// A nil channel never fires: no timer means no timeout.
-	var timerC <-chan time.Time
+	sendCtx := ctx
 	if timeout > 0 {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		timerC = timer.C
+		var cancelSend context.CancelFunc
+		sendCtx, cancelSend = context.WithTimeoutCause(ctx, timeout, errRequestTimeout)
+		defer cancelSend()
+	}
+	timedOut := func() bool {
+		return timeout > 0 && ctx.Err() == nil && errors.Is(context.Cause(sendCtx), errRequestTimeout)
+	}
+
+	// Send request, attaching x-mcp-header-derived headers for a modern-era
+	// tools/call when the transport supports per-request headers (hash
+	// 0c60a40).
+	if err := c.sendMessage(sendCtx, msg, headers); err != nil {
+		if timedOut() {
+			return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
+		}
+		return NewTransportError("failed to send request", err)
 	}
 
 	select {
@@ -1016,10 +1023,10 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 
 		return nil
 
-	case <-timerC:
-		return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
-
-	case <-ctx.Done():
+	case <-sendCtx.Done():
+		if timedOut() {
+			return &TimeoutError{Operation: method, TimeoutMS: int(timeout / time.Millisecond)}
+		}
 		// TS: "Request was aborted" with the abort reason as cause.
 		return &MCPClientError{Message: "Request was aborted", Cause: ctx.Err()}
 

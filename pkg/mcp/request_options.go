@@ -49,3 +49,7 @@ func (o RequestOptions) effectiveTimeout() time.Duration {
 }
 
 var errInitTimeout = errors.New("mcp initialization timed out")
+
+// errRequestTimeout is the cancellation cause of a request whose timeout
+// elapsed.
+var errRequestTimeout = errors.New("mcp request timed out")
