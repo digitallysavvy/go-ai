@@ -3,11 +3,13 @@ package googlevertex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func newTestVertexVideoModel(t *testing.T, handler http.HandlerFunc) (*VideoModel, *httptest.Server) {
@@ -336,5 +338,39 @@ func TestVideoModel_GetPollOptions_JSONNumbers(t *testing.T) {
 		if got.PollIntervalMs != 111 || got.PollTimeoutMs != 222 {
 			t.Fatalf("[%s] JSON-sourced poll options were dropped: got PollIntervalMs=%d PollTimeoutMs=%d, want 111/222", key, got.PollIntervalMs, got.PollTimeoutMs)
 		}
+	}
+}
+
+// TestVertexVideoModel_ProviderOptionsValidation: TS
+// googleVertexVideoModelOptionsSchema rejects an unknown personGeneration and
+// non-positive poll settings with an InvalidArgumentError.
+func TestVertexVideoModel_ProviderOptionsValidation(t *testing.T) {
+	m := &VideoModel{modelID: "veo-3.0-generate-001"}
+	cases := map[string]map[string]interface{}{
+		"personGeneration": {"personGeneration": "everyone"},
+		"pollIntervalMs":   {"pollIntervalMs": 0},
+		"pollTimeoutMs":    {"pollTimeoutMs": -5},
+		"wrongType":        {"negativePrompt": 5},
+	}
+	for name, vo := range cases {
+		_, _, err := m.buildRequest(&provider.VideoModelV3CallOptions{
+			N:               1,
+			ProviderOptions: map[string]interface{}{"googleVertex": vo},
+		})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
+		}
+	}
+	// A nil googleVertex entry falls back to the legacy vertex key.
+	body, _, err := m.buildRequest(&provider.VideoModelV3CallOptions{
+		N:               1,
+		ProviderOptions: map[string]interface{}{"googleVertex": nil, "vertex": map[string]interface{}{"negativePrompt": "x"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["parameters"].(map[string]interface{})["negativePrompt"] != "x" {
+		t.Errorf("legacy vertex key not used: %v", body["parameters"])
 	}
 }

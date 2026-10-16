@@ -391,8 +391,8 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 	for {
 		select {
 		case <-s.Context().Done():
-			cause := s.Context().Err()
-			fail(cause)
+			// TS onAbort: finishWithError(abortSignal.reason).
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:

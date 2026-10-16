@@ -350,18 +350,20 @@ func validateVertexEmbeddingOptions(opts *provider.EmbedModelOptions) error {
 	}
 	for _, key := range []string{"googleVertex", "vertex", "google"} {
 		v, ok := opts.ProviderOptions[key]
-		if !ok {
+		if !ok || v == nil {
+			// TS parseProviderOptions returns undefined for an absent or
+			// null entry, so the next key is tried.
 			continue
-		}
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return nil
 		}
 		bad := func(field, want string) error {
 			return &providererrors.InvalidArgumentError{
 				Field:   "providerOptions",
 				Message: fmt.Sprintf("invalid %s provider options: %s must be %s", key, field, want),
 			}
+		}
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return bad("value", "an object")
 		}
 		if x, set := m["outputDimensionality"]; set && x != nil && !isNumber(x) {
 			return bad("outputDimensionality", "a number")

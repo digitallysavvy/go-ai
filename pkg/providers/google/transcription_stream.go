@@ -442,8 +442,9 @@ func (s *googleLiveTranscriptionStream) run(cfg googleLiveTranscriptionStreamCon
 	for {
 		select {
 		case <-s.Context().Done():
-			cause := s.Context().Err()
-			fail(cause)
+			// TS onAbort: finishWithError(abortSignal.reason) -- surface the
+			// cancellation cause, not the generic context.Canceled.
+			fail(context.Cause(s.Context()))
 			return
 
 		case <-finishTimerC:

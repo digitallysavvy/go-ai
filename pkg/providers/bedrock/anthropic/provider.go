@@ -267,9 +267,8 @@ func (t *bedrockAnthropicTransport) RoundTrip(req *http.Request) (*http.Response
 
 // resolveCredentials resolves SigV4 credentials: CredentialProvider first,
 // then explicit Config.Credentials, then environment variables. The ambient
-// AWS_SESSION_TOKEN is only used as a fallback when the caller did not
-// explicitly supply both an access key and a secret key (TS row 6732c16;
-// matches pkg/providers/bedrock.Provider's resolveCredentials).
+// AWS_SESSION_TOKEN is always the fallback when Config does not supply a
+// session token (TS amazon-bedrock-anthropic-provider.ts loadOptionalSetting).
 func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSCredentials, error) {
 	if p.config.CredentialProvider != nil {
 		creds, err := p.config.CredentialProvider(ctx)
@@ -291,10 +290,9 @@ func (p *BedrockAnthropicProvider) resolveCredentials(ctx context.Context) (AWSC
 
 	accessKeyID := firstNonEmpty(explicitAccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
 	secretAccessKey := firstNonEmpty(explicitSecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
-	sessionToken := explicitSessionToken
-	if sessionToken == "" && (explicitAccessKeyID == "" || explicitSecretAccessKey == "") {
-		sessionToken = os.Getenv("AWS_SESSION_TOKEN")
-	}
+	// TS (amazon-bedrock-anthropic-provider.ts) always falls back to the
+	// AWS_SESSION_TOKEN environment variable via loadOptionalSetting.
+	sessionToken := firstNonEmpty(explicitSessionToken, os.Getenv("AWS_SESSION_TOKEN"))
 
 	if accessKeyID == "" {
 		return AWSCredentials{}, fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" +

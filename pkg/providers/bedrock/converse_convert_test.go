@@ -1,8 +1,10 @@
 package bedrock
 
 import (
+	"errors"
 	"testing"
 
+	providerrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -167,6 +169,26 @@ func TestSanitizeDocumentNameJSWhitespace(t *testing.T) {
 	} {
 		if got := sanitizeDocumentName(in); got != want {
 			t.Errorf("sanitizeDocumentName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestPartProviderOptionsValidation: TS parseProviderOptions with the
+// amazonBedrock text/image/file part schemas rejects wrongly typed options.
+func TestPartProviderOptionsValidation(t *testing.T) {
+	bad := map[string]types.ContentPart{
+		"qualifier": types.TextContent{Text: "hi", ProviderOptions: map[string]interface{}{
+			"bedrock": map[string]interface{}{"guardContent": true, "guardContentQualifiers": []interface{}{"nope"}}}},
+		"guardContent": types.TextContent{Text: "hi", ProviderOptions: map[string]interface{}{
+			"amazonBedrock": map[string]interface{}{"guardContent": "yes"}}},
+		"citations": types.FileContent{Data: []byte("%PDF-1.4"), MediaType: "application/pdf", ProviderOptions: map[string]interface{}{
+			"bedrock": map[string]interface{}{"citations": map[string]interface{}{"enabled": "yes"}}}},
+	}
+	for name, part := range bad {
+		_, _, err := convertToBedrockChatMessages([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{part}}}, false)
+		var invalid *providerrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
 		}
 	}
 }

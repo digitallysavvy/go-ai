@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -1247,4 +1248,56 @@ func TestConvertToAnthropicPrompt_NullToolInputRecordedAsRawInvalid(t *testing.T
 		t.Fatal(err)
 	}
 	assertJSONEqual(t, "messages", p.Messages, `[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"x","input":{"rawInvalidInput":null}}]}]`)
+}
+
+// TestAnthropicSystemMessageOptionsValidation: TS parseProviderOptions with
+// anthropicSystemMessageProviderOptions rejects a bad clearAt, effort or
+// toolChanges entry with an InvalidArgumentError.
+func TestAnthropicSystemMessageOptionsValidation(t *testing.T) {
+	cases := map[string]map[string]interface{}{
+		"clearAt":         {"clearAt": "always"},
+		"effort":          {"effort": "ultra"},
+		"effortType":      {"effort": 3},
+		"toolChangesType": {"toolChanges": "weather"},
+		"toolChangeType":  {"toolChanges": []interface{}{map[string]interface{}{"type": "tool_swap", "toolName": "w"}}},
+		"toolChangeName":  {"toolChanges": []interface{}{map[string]interface{}{"type": "tool_addition"}}},
+	}
+	for name, opts := range cases {
+		anthropicOptions := map[string]interface{}{"anthropic": opts}
+		_, err := ConvertToAnthropicPrompt([]types.Message{
+			systemText("initial", nil),
+			userText("hi"),
+			systemText("", anthropicOptions),
+		}, AnthropicPromptOptions{})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
+		}
+	}
+}
+
+// TestAnthropicFilePartOptionsValidation: TS parseProviderOptions with
+// anthropicFilePartProviderOptions rejects wrongly typed options.
+func TestAnthropicFilePartOptionsValidation(t *testing.T) {
+	cases := map[string]map[string]interface{}{
+		"title":           {"title": 5},
+		"context":         {"context": true},
+		"citations":       {"citations": "yes"},
+		"citationEnabled": {"citations": map[string]interface{}{"enabled": "yes"}},
+		"citationMissing": {"citations": map[string]interface{}{}},
+	}
+	for name, opts := range cases {
+		_, err := ConvertToAnthropicPrompt([]types.Message{{
+			Role: types.RoleUser,
+			Content: []types.ContentPart{types.FileContent{
+				Data:            []byte("%PDF-1.4"),
+				MediaType:       "application/pdf",
+				ProviderOptions: map[string]interface{}{"anthropic": opts},
+			}},
+		}}, AnthropicPromptOptions{})
+		var invalid *providererrors.InvalidArgumentError
+		if !errors.As(err, &invalid) {
+			t.Errorf("%s: want InvalidArgumentError, got %v", name, err)
+		}
+	}
 }

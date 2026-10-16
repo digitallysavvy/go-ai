@@ -421,3 +421,38 @@ func TestGeminiTranscriptionModel_DoStream_PassesSmartModeIntoLiveSetup(t *testi
 		t.Fatalf("stream error = %v", err)
 	}
 }
+
+// TestGeminiTranscriptionModel_DoStream_AbortSurfacesCause: TS
+// finishWithError receives abortSignal.reason.
+func TestGeminiTranscriptionModel_DoStream_AbortSurfacesCause(t *testing.T) {
+	server := newLiveTranscriptionTestServer(t)
+	defer server.close()
+
+	model := newLiveTestModel(t, server.ts.URL)
+	abortCtx, abort := context.WithCancelCause(context.Background())
+	defer abort(nil)
+	result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+		Audio:            &chanAudioStream{chunks: make(chan []byte)},
+		InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		AbortSignal:      abortCtx,
+	})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer result.Stream.Close() //nolint:errcheck
+	if _, err := result.Stream.Next(); err != nil {
+		t.Fatalf("Stream.Next() (stream-start) error = %v", err)
+	}
+	cause := errors.New("user aborted")
+	abort(cause)
+	for {
+		_, err := result.Stream.Next()
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, cause) {
+			t.Fatalf("stream error = %v, want abort cause", err)
+		}
+		return
+	}
+}
