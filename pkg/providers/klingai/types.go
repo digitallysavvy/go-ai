@@ -179,7 +179,7 @@ type taskStatusResponse struct {
 	Data      *struct {
 		TaskID        string `json:"task_id"`
 		TaskStatus    string `json:"task_status"`
-		TaskStatusMsg string `json:"task_status_msg,omitempty"`
+		TaskStatusMsg *string `json:"task_status_msg,omitempty"`
 		CreatedAt     int64  `json:"created_at,omitempty"`
 		UpdatedAt     int64  `json:"updated_at,omitempty"`
 		TaskResult    *struct {

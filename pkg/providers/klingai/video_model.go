@@ -192,7 +192,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	// TS reads `statusResponse.data?.task_status` only: a non-zero `code` or
 	// a missing `data` is not an error, the task is still pending.
-	taskStatus, taskStatusMsg := "", ""
+	taskStatus := ""
+	var taskStatusMsg *string
 	if statusResp.Data != nil {
 		taskStatus, taskStatusMsg = statusResp.Data.TaskStatus, statusResp.Data.TaskStatusMsg
 	}
@@ -202,9 +203,10 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return m.buildCompletedStatusResult(&statusResp, op.TaskID, responseInfo, result.Data)
 
 	case "failed":
-		msg := taskStatusMsg
-		if msg == "" {
-			msg = "Unknown error"
+		// TS `task_status_msg ?? 'Unknown error'`: only null/absent falls back.
+		msg := "Unknown error"
+		if taskStatusMsg != nil {
+			msg = *taskStatusMsg
 		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
@@ -592,7 +594,7 @@ func (m *VideoModel) buildT2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 	warnings := []types.Warning{}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
@@ -673,7 +675,7 @@ func (m *VideoModel) buildI2VBody(opts *provider.VideoModelV3CallOptions, provOp
 	}
 	warnings := []types.Warning{}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
@@ -791,7 +793,7 @@ func (m *VideoModel) buildMultiImageBody(opts *provider.VideoModelV3CallOptions,
 	}
 	warnings := []types.Warning{}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
@@ -867,7 +869,7 @@ func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptio
 		"mode":                  *provOpts.Mode,
 	}
 
-	if opts.Prompt != "" {
+	if opts.PromptSet || opts.Prompt != "" { // TS `prompt != null`: "" is sent
 		body["prompt"] = opts.Prompt
 	}
 
