@@ -57,7 +57,7 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 		Body:   requestBytes,
 		// Fish Audio selects the TTS model with a `model` HTTP header rather
 		// than a request body field.
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{"model": m.modelID}),
+		Headers: internalhttp.MergeHeaders(map[string]string{"model": m.modelID}, opts.Headers),
 	})
 	if err != nil {
 		return nil, handleError(err)

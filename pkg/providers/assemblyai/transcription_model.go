@@ -297,9 +297,11 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		Method:           http.MethodPost,
 		Path:             "/upload",
 		Body:             opts.Audio,
-		Headers: internalhttp.MergeHeaders(opts.Headers, map[string]string{
+		// TS: { 'Content-Type': ..., ...combineHeaders(config, options.headers) },
+		// so a caller header (any case matches in a map; exact key here) wins.
+		Headers: internalhttp.MergeHeaders(map[string]string{
 			"Content-Type": "application/octet-stream",
-		}),
+		}, opts.Headers),
 	}, &uploadResult)
 	if err != nil {
 		return nil, m.handleError(err)

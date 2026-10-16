@@ -1,6 +1,9 @@
 package assemblyai
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -33,5 +36,22 @@ func TestEmptyStringOptionsAreSent(t *testing.T) {
 	}
 	if !boost || !lang {
 		t.Fatalf("warnings = %+v", warnings)
+	}
+}
+
+// The upload's Content-Type is only a default: caller headers are spread after it in TS.
+func TestR33_UploadContentTypeCanBeOverridden(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/upload" {
+			got = r.Header.Get("Content-Type")
+		}
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer server.Close()
+	m := NewTranscriptionModel(New(Config{APIKey: "k", BaseURL: server.URL}), ModelUniversal2)
+	_, _ = m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), Headers: map[string]string{"Content-Type": "audio/mpeg"}})
+	if got != "audio/mpeg" {
+		t.Fatalf("Content-Type = %q", got)
 	}
 }
