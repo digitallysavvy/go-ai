@@ -224,7 +224,29 @@ func renderToolExampleCall(name string, tool types.Tool) string {
 			input = map[string]interface{}{}
 		}
 	}
-	return fmt.Sprintf("tools%s(%s)", formatPropertyAccess(name), jsonorder.Stringify(input))
+	return fmt.Sprintf("tools%s(%s)", formatPropertyAccess(name), jsonorder.Stringify(jsOrderedExample(input)))
+}
+
+// jsOrderedExample turns the maps of an input example into ordered objects so
+// JSON.stringify's array-index-keys-first enumeration applies; the remaining
+// keys can only be sorted because a Go map keeps no insertion order.
+func jsOrderedExample(v interface{}) interface{} {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		o := jsonorder.FromMap(x)
+		for _, k := range o.Keys() {
+			val, _ := o.Get(k)
+			o.Set(k, jsOrderedExample(val))
+		}
+		return o
+	case []interface{}:
+		out := make([]interface{}, len(x))
+		for i, e := range x {
+			out[i] = jsOrderedExample(e)
+		}
+		return out
+	}
+	return v
 }
 
 func renderToolProjection(variableName string, tool types.Tool) string {

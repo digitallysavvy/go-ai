@@ -52,7 +52,7 @@ func reorder(v, hint interface{}) interface{} {
 			}
 		}
 		sort.Strings(rest)
-		out.keys = append(out.keys, rest...)
+		out.keys = JSKeyOrder(append(out.keys, rest...))
 		for _, k := range out.keys {
 			var ch interface{}
 			if h != nil {
