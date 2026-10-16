@@ -90,7 +90,9 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 					if err != nil {
 						return i, err
 					}
+					afterParen := i
 					i = stripOptionalReturnType(tokens, i, out)
+					relocateArrowCloseParen(tokens, afterParen, i, out)
 					continue
 				}
 				if closeIdx >= 0 && isMethodParamList(tokens, closeIdx, *out) {
@@ -183,7 +185,9 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 						if err != nil {
 							return i, err
 						}
+						afterParen := i
 						i = stripOptionalReturnType(tokens, i, out)
+						relocateArrowCloseParen(tokens, afterParen, i, out)
 						continue
 					}
 				}
@@ -933,4 +937,35 @@ func keepsTypeArgsBeforeOptionalCall(out []tsToken) bool {
 func followedByOptionalChain(tokens []tsToken, i int) bool {
 	n := nextSignificant(tokens, i)
 	return n >= 0 && tokens[n].kind == "punct" && tokens[n].text == "?."
+}
+
+// relocateArrowCloseParen keeps an arrow function's `)` on the `=>` line when an
+// erased return type spans a line break: `(x): Promise<{` newline `a: T }> =>
+// y` would otherwise leave a line break between `)` and `=>`, which JavaScript
+// rejects. Node writes the `)` over the last character of the erased type and
+// blanks the original one. afterParen is the index just past the parameter
+// list's `)`, afterType the index just past the erased return type.
+func relocateArrowCloseParen(tokens []tsToken, afterParen, afterType int, out *[]tsToken) {
+	if afterType <= afterParen || afterParen == 0 {
+		return
+	}
+	broken := false
+	for k := afterParen; k < afterType && !broken; k++ {
+		broken = strings.ContainsAny(tokens[k].text, "\n\r") || strings.ContainsRune(tokens[k].text, 0x2028) || strings.ContainsRune(tokens[k].text, 0x2029)
+	}
+	if !broken {
+		return
+	}
+	closeTok := tokens[afterParen-1]
+	if closeTok.kind != "punct" || closeTok.text != ")" {
+		return
+	}
+	for k := len(*out) - 1; k >= 0; k-- {
+		if (*out)[k].pos == closeTok.pos && (*out)[k].text == ")" {
+			*out = append((*out)[:k], (*out)[k+1:]...)
+			last := tokens[afterType-1]
+			*out = append(*out, tsToken{kind: "punct", text: ")", pos: last.pos + len([]rune(last.text)) - 1})
+			return
+		}
+	}
 }

@@ -118,3 +118,23 @@ func TestR30StripUnicodeIdentifiersAndWhitespace(t *testing.T) {
 		}
 	}
 }
+
+// An erased arrow return type that spans lines must not leave a line break
+// between `)` and `=>` (a JavaScript syntax error). Node 24.20 writes the `)`
+// over the last character of the erased type.
+func TestR30StripArrowReturnTypeSpanningLines(t *testing.T) {
+	for _, tc := range [][2]string{
+		{"const f = async (x: string): Promise<{\n  a: number;\n}> => ({ a: 1 }); return f;", "const f = async (x                    \n            \n ) => ({ a: 1 }); return f;"},
+		{"const f = (x: string): Promise<{\n a: number }> => 1; return f;", "const f = (x                    \n            ) => 1; return f;"},
+		{"const f = (x: string)\n: number => 1; return f;", "const f = (x         \n       ) => 1; return f;"},
+		{"const f = <T>(x: T): Promise<{\n a: T }> => 1; return f;", "const f =    (x               \n       ) => 1; return f;"},
+		// A line break before `)` or in a function (not arrow) leaves it in place.
+		{"const f = (x: string,\n y: number): number => 1; return f;", "const f = (x        ,\n y        )         => 1; return f;"},
+		{"function g(x: number): {\n  a: number;\n} { return { a: x }; } return g;", "function g(x        )   \n            \n  { return { a: x }; } return g;"},
+	} {
+		got, err := stripTypeScriptAnnotations(tc[0])
+		if err != nil || got != tc[1] {
+			t.Errorf("%q\n got  %q (err %v)\n want %q", tc[0], got, err, tc[1])
+		}
+	}
+}
