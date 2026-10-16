@@ -153,7 +153,8 @@ func TestToNativeResponse_EmptyAnswerIsEmptyArray(t *testing.T) {
 // TS positionalIdIndex uses JS Number(), so "option-2.0", "option- 2" and
 // "option-0x2" all resolve to the second option.
 func TestPositionalIDIndex_JSNumberSemantics(t *testing.T) {
-	for id, want := range map[string]int{"option-1": 0, "option-2.0": 1, "option- 2": 1, "option-0x2": 1, "option-1e0": 0, "option-3": 2} {
+	for id, want := range map[string]int{"option-1": 0, "option-2.0": 1, "option- 2": 1, "option-0x2": 1, "option-1e0": 0, "option-3": 2,
+		"option-\u30002": 1, "option-\u20032\u200a": 1} {
 		got, ok := positionalIDIndex(id, "option-")
 		if !ok || got != want {
 			t.Errorf("%q = %d,%v want %d", id, got, ok, want)
