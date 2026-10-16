@@ -1273,9 +1273,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.stepReopenCtx = modelCallCtx
 	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
-		if stepCancel != nil {
-			stepCancel()
-		}
+		// stepCancel runs only after the error is classified below: a cancelled
+		// step context would make every open failure look like a step timeout.
 		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 		} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
@@ -1309,6 +1308,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
 				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: startErr, Text: startErr.Error()})
 			}
+		}
+		if stepCancel != nil {
+			stepCancel()
 		}
 		r.fail(startErr)
 		return
