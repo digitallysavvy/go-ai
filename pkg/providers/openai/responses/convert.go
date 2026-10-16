@@ -117,12 +117,20 @@ type ConvertOptions struct {
 	// warnings TS pushes while converting tool-result content outputs.
 	// Populated by ConvertPromptToInputWithOptions; do not set directly.
 	toolOutputWarnings *[]types.Warning
+
+	// customToolOutput is set while converting a custom_tool_call_output,
+	// whose TS converter has its own (narrower) content handling: provider
+	// references are unsupported and warnings say "custom tool content part".
+	customToolOutput bool
 }
 
 // warnToolOutput records a TS `{type: 'other', message}` warning raised while
 // converting a tool-result content output.
 func (o ConvertOptions) warnToolOutput(message string) {
 	if o.toolOutputWarnings != nil {
+		if o.customToolOutput {
+			message = strings.Replace(message, "unsupported tool content part", "unsupported custom tool content part", 1)
+		}
 		*o.toolOutputWarnings = append(*o.toolOutputWarnings, types.Warning{Type: "other", Message: message})
 	}
 }
@@ -1443,10 +1451,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				continue
 			}
 			if isOpenAICustomToolName(p.ToolName, opts.CustomToolNames) {
+				customOpts := opts
+				customOpts.customToolOutput = true
 				items = append(items, CustomToolCallOutput{
 					Type:   "custom_tool_call_output",
 					CallID: p.ToolCallID,
-					Output: toolResultOutputWithOptions(p, opts),
+					Output: toolResultOutputWithOptions(p, customOpts),
 				})
 				continue
 			}
@@ -1457,6 +1467,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				Type:   "function_call_output",
 				CallID: p.ToolCallID,
 				Output: toolResultOutputWithOptions(p, opts),
+				Caller: toolResultCaller(p, openAIProviderOptionsName(opts)),
 			})
 		case *types.ToolResultContent:
 			if p != nil {
@@ -1474,10 +1485,12 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 					continue
 				}
 				if isOpenAICustomToolName(p.ToolName, opts.CustomToolNames) {
+					customOpts := opts
+					customOpts.customToolOutput = true
 					items = append(items, CustomToolCallOutput{
 						Type:   "custom_tool_call_output",
 						CallID: p.ToolCallID,
-						Output: toolResultOutputWithOptions(*p, opts),
+						Output: toolResultOutputWithOptions(*p, customOpts),
 					})
 					continue
 				}
@@ -1488,6 +1501,7 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 					Type:   "function_call_output",
 					CallID: p.ToolCallID,
 					Output: toolResultOutputWithOptions(*p, opts),
+					Caller: toolResultCaller(*p, openAIProviderOptionsName(opts)),
 				})
 			}
 		}
@@ -2221,6 +2235,11 @@ func toolResultOutputBP(tr types.ToolResultContent, opts ConvertOptions, scalarB
 					}
 					switch fileDataType {
 					case types.FileDataTypeReference:
+						if opts.customToolOutput {
+							// TS custom tool outputs have no reference branch.
+							opts.warnToolOutput("unsupported tool content part type: file with data type: reference")
+							continue
+						}
 						reference := firstNonEmpty(providerReferenceString(b.FileData.Reference, providerName), b.Reference)
 						if reference == "" {
 							continue

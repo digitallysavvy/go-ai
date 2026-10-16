@@ -509,6 +509,9 @@ type FunctionCallOutputItem struct {
 	Type   string      `json:"type"` // "function_call_output"
 	CallID string      `json:"call_id"`
 	Output interface{} `json:"output"` // string or []CustomToolCallOutputPart
+	// Caller echoes the result's caller (providerOptions.<name>.caller) so a
+	// programmatic-tool-calling result stays attributed to its program.
+	Caller *ToolCaller `json:"caller,omitempty"`
 }
 
 // ImageGenerationCallItem represents a hosted image_generation tool call
