@@ -188,3 +188,20 @@ func TestToJSONSchemaResolvesSchemaSchemaParameters(t *testing.T) {
 		t.Fatalf("parameters = %#v, want the JSON Schema of the schema.Schema", params)
 	}
 }
+
+// TS sanitizeSchema checks `!= null`, so JSON null keywords are dropped.
+func TestSanitizeAnthropicSchemaSkipsNullKeywords(t *testing.T) {
+	got := SanitizeAnthropicSchema(map[string]interface{}{
+		"type":        "object",
+		"title":       nil,
+		"description": nil,
+		"enum":        nil,
+		"required":    nil,
+		"properties":  map[string]interface{}{},
+	}).(map[string]interface{})
+	for _, k := range []string{"title", "description", "enum", "required"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s should be omitted, got %v", k, got[k])
+		}
+	}
+}

@@ -149,19 +149,19 @@ func sanitizeAnthropicRawSchema(raw []byte) interface{} {
 }
 
 func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interface{} {
-	if ref, ok := schema["$ref"]; ok {
+	if ref, ok := schema["$ref"]; ok && ref != nil {
 		return map[string]interface{}{"$ref": ref}
 	}
 
 	out := map[string]interface{}{}
-	copyIfPresent(out, schema, "$schema")
-	copyIfPresent(out, schema, "$id")
-	copyIfPresent(out, schema, "title")
-	copyIfPresent(out, schema, "description")
+	copyIfNotNil(out, schema, "$schema")
+	copyIfNotNil(out, schema, "$id")
+	copyIfNotNil(out, schema, "title")
+	copyIfNotNil(out, schema, "description")
 	copyIfPresent(out, schema, "default")
 	copyIfPresent(out, schema, "const")
-	copyIfPresent(out, schema, "enum")
-	copyIfPresent(out, schema, "type")
+	copyIfNotNil(out, schema, "enum")
+	copyIfNotNil(out, schema, "type")
 
 	if anyOf, ok := sanitizeAnthropicSchemaList(schema["anyOf"]); ok {
 		out["anyOf"] = anyOf
@@ -183,7 +183,7 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 			out["properties"] = properties
 		}
 		out["additionalProperties"] = false
-		copyIfPresent(out, schema, "required")
+		copyIfNotNil(out, schema, "required")
 	}
 
 	if items, ok := schema["items"]; ok {
@@ -203,6 +203,13 @@ func sanitizeAnthropicSchemaMap(schema map[string]interface{}) map[string]interf
 	}
 
 	return out
+}
+
+// copyIfNotNil mirrors TS `schema.key != null`: a JSON null is skipped.
+func copyIfNotNil(dst, src map[string]interface{}, key string) {
+	if value, ok := src[key]; ok && value != nil {
+		dst[key] = value
+	}
 }
 
 func copyIfPresent(dst, src map[string]interface{}, key string) {
