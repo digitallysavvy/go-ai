@@ -50,6 +50,10 @@ type Provider struct {
 
 	mu     sync.Mutex
 	cached *vertexClients
+
+	// liveWebSocketOrigin replaces the Gemini Live transcription WebSocket
+	// origin ("wss://{vertexHost}"); tests only.
+	liveWebSocketOrigin string
 }
 
 // vertexClients holds the request clients derived from the resolved project

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"sync"
 	"time"
 
@@ -33,24 +32,20 @@ const defaultGeminiFinishGraceDuration = 3 * time.Second
 
 // geminiLiveWebSocketURL builds the wss:// Vertex Live API URL for streaming
 // transcription, mirroring TS's `wss://${vertexHost(location)}/ws/${liveWebSocketPath}`.
+// Like TS, the host comes from the location only: an explicit baseURL does
+// not move the Live WebSocket, so the OAuth bearer token is never sent to a
+// baseURL proxy host over the socket.
 //
-// When p.config.BaseURL was set explicitly (an httptest server URL in
-// tests; TS instead injects a mock WebSocket constructor via
-// config.webSocket, a DI point Go's wsutil.Dial has no equivalent for), the
-// WS URL is derived from it (scheme swapped to ws/wss, same host) instead of
-// the real vertexHost(location) production host, so tests can point the
-// dial at a local WebSocket test server.
+// p.liveWebSocketOrigin (unexported, tests only) replaces the
+// "wss://{vertexHost}" origin; TS instead injects a mock WebSocket
+// constructor via config.webSocket, a DI point Go's wsutil.Dial has no
+// equivalent for.
 func geminiLiveWebSocketURL(p *Provider, location string) string {
-	if p.config.BaseURL != "" {
-		if u, err := url.Parse(p.config.BaseURL); err == nil && u.Host != "" {
-			scheme := "wss"
-			if u.Scheme == "http" {
-				scheme = "ws"
-			}
-			return fmt.Sprintf("%s://%s/ws/%s", scheme, u.Host, liveGeminiTranscriptionWebSocketPath)
-		}
+	origin := p.liveWebSocketOrigin
+	if origin == "" {
+		origin = "wss://" + vertexHost(location)
 	}
-	return fmt.Sprintf("wss://%s/ws/%s", vertexHost(location), liveGeminiTranscriptionWebSocketPath)
+	return fmt.Sprintf("%s/ws/%s", origin, liveGeminiTranscriptionWebSocketPath)
 }
 
 // vertexModelResourcePath builds the fully-qualified Vertex model resource

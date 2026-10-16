@@ -55,3 +55,16 @@ func TestVertexVideoPollOptionsNullGoogleVertexFallsThroughToVertex(t *testing.T
 		t.Fatalf("PollIntervalMs = %d, want 7", got.PollIntervalMs)
 	}
 }
+
+// TS always dials wss://${vertexHost(location)}/ws/...; an explicit baseURL
+// (a proxy, say) must not receive the Live WebSocket and its bearer token.
+func TestGeminiLiveWebSocketURLIgnoresBaseURL(t *testing.T) {
+	p, err := New(Config{Project: "p", Location: "europe-west4", AccessToken: "t", BaseURL: "https://proxy.example/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "wss://europe-west4-aiplatform.googleapis.com/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
+	if got := geminiLiveWebSocketURL(p, "europe-west4"); got != want {
+		t.Fatalf("url = %q, want %q", got, want)
+	}
+}
