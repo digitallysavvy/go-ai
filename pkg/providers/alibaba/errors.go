@@ -53,7 +53,7 @@ func alibabaNativeErrorMessage(statusCode int, body []byte) (message, code strin
 func chatStatusError(statusCode int, headers http.Header, body []byte) error {
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Headers: headers, Body: body}
 	message, code := alibabaChatErrorMessage(statusCode, body)
-	return providererrors.NewProviderError("alibaba", 0, code, message, cause)
+	return providererrors.NewProviderErrorFromResponse("alibaba", 0, code, message, cause)
 }
 
 // asChatStatusError converts an HTTPStatusError anywhere in err's chain; the

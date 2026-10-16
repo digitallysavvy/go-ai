@@ -66,3 +66,21 @@ func TestNewProviderErrorNonJSONBodyUsesStatusText(t *testing.T) {
 		}
 	}
 }
+
+func TestNewProviderErrorFromResponseKeepsEmptyMessage(t *testing.T) {
+	cause := &stubHTTPStatus{}
+	if got := providererrors.NewProviderError("p", 0, "", "", cause); got.Message != "Bad Request" {
+		t.Fatalf("NewProviderError replaces empty message: %q", got.Message)
+	}
+	got := providererrors.NewProviderErrorFromResponse("p", 0, "", "", cause)
+	if got.Message != "" || got.StatusCode != 400 || got.ResponseBody != `{"detail":""}` {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+type stubHTTPStatus struct{}
+
+func (stubHTTPStatus) Error() string { return "HTTP 400" }
+func (stubHTTPStatus) HTTPStatusDetails() (int, map[string]string, []byte) {
+	return 400, nil, []byte(`{"detail":""}`)
+}

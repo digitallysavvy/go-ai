@@ -20,7 +20,7 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		return providererrors.NewProviderError("voyage", 0, "", voyageErrorMessage(statusErr.StatusCode, statusErr.Body), err)
+		return providererrors.NewProviderErrorFromResponse("voyage", 0, "", voyageErrorMessage(statusErr.StatusCode, statusErr.Body), err)
 	}
 	return providererrors.NewProviderError("voyage", 0, "", err.Error(), err)
 }

@@ -161,6 +161,19 @@ type HTTPStatusDetails interface {
 // retryability honest: a 401 must not be classified as a retryable
 // no-status error.
 func NewProviderError(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
+	return newProviderError(provider, statusCode, errorCode, message, cause, true)
+}
+
+// NewProviderErrorFromResponse is NewProviderError for a caller that has
+// already applied its provider's failed-response handler to the body: the
+// message is final and is kept verbatim, even when it is empty (TS
+// APICallError keeps "" from a body such as {"error":{"message":""}}). The
+// status code, headers and body are still taken from the HTTP cause.
+func NewProviderErrorFromResponse(provider string, statusCode int, errorCode, message string, cause error) *ProviderError {
+	return newProviderError(provider, statusCode, errorCode, message, cause, false)
+}
+
+func newProviderError(provider string, statusCode int, errorCode, message string, cause error, replaceEmpty bool) *ProviderError {
 	// A body that failed its response schema (TS createJsonResponseHandler)
 	// is already the final APICallError "Invalid JSON response"; it is not
 	// re-wrapped.
@@ -195,7 +208,7 @@ func NewProviderError(provider string, statusCode int, errorCode, message string
 			e.Data = data
 		}
 	}
-	if message == "" || message == cause.Error() || message == hs.Error() {
+	if message == cause.Error() || message == hs.Error() || (replaceEmpty && message == "") {
 		if msg := ExtractAPIErrorMessage(body); msg != "" {
 			e.Message = msg
 		} else if text := http.StatusText(code); text != "" {

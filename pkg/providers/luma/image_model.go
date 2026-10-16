@@ -372,7 +372,7 @@ func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
 		msg = *errResp.Detail[0].Msg
 	}
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Body: body}
-	return providererrors.NewProviderError("luma", 0, "", msg, cause)
+	return providererrors.NewProviderErrorFromResponse("luma", 0, "", msg, cause)
 }
 
 func flattenHeaders(headers map[string][]string) map[string]string {
