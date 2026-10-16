@@ -43,10 +43,10 @@ func ValidateLifecycleStateObject(data json.RawMessage, dst any) error {
 				return fmt.Errorf("invalid lifecycle state data: bridge.%s is required", key)
 			}
 		}
-		for _, key := range []string{"sandboxId", "stateDir"} {
-			if v, ok := coords[key]; ok && string(bytes.TrimSpace(v)) == "null" {
-				return fmt.Errorf("invalid lifecycle state data: bridge.%s must not be null", key)
-			}
+		// Only sandboxId is declared by these adapters' bridge schemas; other
+		// keys (ACP's stateDir has its own validator) are stripped by z.object.
+		if v, ok := coords["sandboxId"]; ok && string(bytes.TrimSpace(v)) == "null" {
+			return fmt.Errorf("invalid lifecycle state data: bridge.sandboxId must not be null")
 		}
 	}
 	return nil

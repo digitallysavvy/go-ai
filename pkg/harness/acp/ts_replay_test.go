@@ -1245,3 +1245,33 @@ func TestLifecycleStateAuthenticationProfileValidatedLikeZod(t *testing.T) {
 		}
 	}
 }
+
+// zod rejects an explicit null for required fields and for `.optional()`
+// fields nested inside bridge, authenticationProfile and recovery.
+func TestLifecycleStateNestedNullsRejectedLikeZod(t *testing.T) {
+	h, err := CreateACP(testSettings(func(s *Settings) { s.HarnessID = "nested-null-acp" }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := h.(harness.LifecycleStateValidator)
+	const br = `"bridge":{"port":1,"token":"t","lastSeenEventId":0`
+	if err := v.ValidateLifecycleStateData(json.RawMessage(`{"implementationIdentity":"i",` + br + `}}`)); err != nil {
+		t.Fatalf("valid state rejected: %v", err)
+	}
+	bad := []string{
+		`{"implementationIdentity":"i","bridge":{"port":1,"token":null,"lastSeenEventId":0}}`,
+		`{"implementationIdentity":"i","bridge":{"port":null,"token":"t","lastSeenEventId":0}}`,
+		`{"implementationIdentity":"i","bridge":{"port":1,"token":"t","lastSeenEventId":null}}`,
+		`{"implementationIdentity":"i",` + br + `,"sandboxId":null}}`,
+		`{"implementationIdentity":"i",` + br + `,"stateDir":null}}`,
+		`{"implementationIdentity":"i","authenticationProfile":{"digest":null,"providerKind":"direct"}}`,
+		`{"implementationIdentity":"i","authenticationProfile":{"digest":"d","providerKind":"direct","acpMethodId":null}}`,
+		`{"implementationIdentity":"i","authenticationProfile":{"digest":"d","providerKind":"direct","providerMode":null}}`,
+		`{"implementationIdentity":"i","recovery":{"mode":"disk-replay","reason":null}}`,
+	}
+	for _, b := range bad {
+		if err := v.ValidateLifecycleStateData(json.RawMessage(b)); err == nil {
+			t.Errorf("%s: must be rejected", b)
+		}
+	}
+}

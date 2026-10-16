@@ -14,7 +14,8 @@ func TestValidateLifecycleStateObject(t *testing.T) {
 		Bridge   *coords `json:"bridge,omitempty"`
 	}
 	valid := []string{``, `null`, `{}`, `{"threadId":"t","extra":1}`,
-		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0}}`}
+		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0}}`,
+		`{"bridge":{"port":1,"token":"x","lastSeenEventId":0,"stateDir":null}}`}
 	for _, v := range valid {
 		if err := ValidateLifecycleStateObject(json.RawMessage(v), &state{}); err != nil {
 			t.Errorf("%q: unexpected error %v", v, err)
