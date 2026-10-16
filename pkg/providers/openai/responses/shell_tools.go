@@ -12,9 +12,6 @@
 package responses
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -338,12 +335,8 @@ const (
 //	})
 func NewLocalShellTool() types.Tool {
 	return types.Tool{
-		Name:             "openai.local_shell",
-		Description:      "Run commands in the local shell environment",
-		ProviderExecuted: true,
-		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("local_shell tool is executed by the OpenAI API, not locally")
-		},
+		Name:        "openai.local_shell",
+		Description: "Run commands in the local shell environment",
 	}
 }
 
@@ -381,12 +374,8 @@ func NewShellTool(opts ...ShellToolOption) types.Tool {
 	}
 
 	t := types.Tool{
-		Name:             "openai.shell",
-		Description:      "Run commands in a sandboxed shell container",
-		ProviderExecuted: true,
-		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("shell tool is executed by the OpenAI API, not locally")
-		},
+		Name:        "openai.shell",
+		Description: "Run commands in a sandboxed shell container",
 	}
 
 	if cfg.environment != nil {
@@ -407,11 +396,29 @@ func NewShellTool(opts ...ShellToolOption) types.Tool {
 //	tool := responses.NewApplyPatchTool()
 func NewApplyPatchTool() types.Tool {
 	return types.Tool{
-		Name:             "openai.apply_patch",
-		Description:      "Apply unified diff patches to files",
-		ProviderExecuted: true,
-		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("apply_patch tool is executed by the OpenAI API, not locally")
-		},
+		Name:        "openai.apply_patch",
+		Description: "Apply unified diff patches to files",
 	}
+}
+
+// WithExecute returns a copy of a client-executed OpenAI Responses tool
+// (NewComputerTool, NewLocalShellTool, NewShellTool, NewApplyPatchTool) with
+// the given Execute function.
+//
+// In the TypeScript SDK these are ordinary provider tools whose execute
+// function the caller supplies: the model's call is returned to the caller,
+// who runs it on their own machine. The constructors therefore leave
+// ProviderExecuted false and Execute nil, so a tool call for such a tool is
+// returned unexecuted unless Execute is set, either through WithExecute or by
+// assigning tool.Execute directly.
+//
+// Example:
+//
+//	tool := responses.WithExecute(responses.NewShellTool(),
+//	    func(ctx context.Context, input map[string]interface{}, _ types.ToolExecutionOptions) (interface{}, error) {
+//	        return runShell(ctx, input)
+//	    })
+func WithExecute(tool types.Tool, execute types.ToolExecutor) types.Tool {
+	tool.Execute = execute
+	return tool
 }
