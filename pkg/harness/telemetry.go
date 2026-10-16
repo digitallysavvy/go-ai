@@ -131,9 +131,9 @@ func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]
 	}
 	out := make(map[string]interface{}, len(toolsContext))
 	for toolName, ctxValue := range toolsContext {
-		if filtered := filterIncludedContext(ctxValue, settings.IncludeToolsContext[toolName]); len(filtered) > 0 {
-			out[toolName] = filtered
-		}
+		// TS filterToolsContext keeps one entry per tool, empty when nothing
+		// is included for it.
+		out[toolName] = filterIncludedContext(ctxValue, settings.IncludeToolsContext[toolName])
 	}
 	return out
 }
