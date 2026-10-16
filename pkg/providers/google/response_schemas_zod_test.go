@@ -123,3 +123,22 @@ func TestResponseSchema_FilePoll(t *testing.T) {
 	})
 	assertInvalidJSONResponse(t, err)
 }
+
+// A 2xx body that is not JSON is also createJsonResponseHandler's "Invalid
+// JSON response" (cause: JSONParseError), for the language model too.
+func TestResponseSchema_NonJSONBodyIsInvalidJSONResponse(t *testing.T) {
+	p := serveBody(t, `<html>gateway</html>`)
+	model, err := p.LanguageModel(ModelGemini20Flash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.GenerateOptions{})
+	var perr *providererrors.ProviderError
+	if !errors.As(err, &perr) || perr.Message != "Invalid JSON response" || perr.StatusCode != 200 || perr.ResponseBody != `<html>gateway</html>` {
+		t.Fatalf("err = %#v", err)
+	}
+	_, err = NewEmbeddingModel(p, EmbeddingModelGeminiEmbedding001).DoEmbed(context.Background(), "a", nil)
+	if !errors.As(err, &perr) || perr.Message != "Invalid JSON response" {
+		t.Fatalf("embedding err = %#v", err)
+	}
+}
