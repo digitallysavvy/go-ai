@@ -225,3 +225,37 @@ func TestTurnInFlightClearsWhenBridgeFinishesAfterEarlySettle(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TS parses the persisted turnStartConfig / coldSession with strict zod
+// schemas, so a malformed one is rejected before it can drive recovery.
+func TestValidateLifecycleStateDataChecksStartConfigShape(t *testing.T) {
+	h, err := CreateACP(testSettings())
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := h.(*acpHarness)
+	good := `{"version":1,"configurationFingerprint":"f","prompt":[{"type":"text","text":"hi"}],"permissionMode":"allow-all"}`
+	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","turnStartConfig":` + good + `}`)); err != nil {
+		t.Fatalf("valid state rejected: %v", err)
+	}
+	for name, cfg := range map[string]string{
+		"empty object":        `{}`,
+		"wrong version":       `{"version":2,"configurationFingerprint":"f","prompt":[],"permissionMode":"allow-all"}`,
+		"missing fingerprint": `{"version":1,"prompt":[],"permissionMode":"allow-all"}`,
+		"bad permission mode": `{"version":1,"configurationFingerprint":"f","prompt":[],"permissionMode":"root"}`,
+		"missing prompt":      `{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all"}`,
+		"non-text block":      `{"version":1,"configurationFingerprint":"f","prompt":[{"type":"image"}],"permissionMode":"allow-all"}`,
+		"null tools":          `{"version":1,"configurationFingerprint":"f","prompt":[],"permissionMode":"allow-all","tools":null}`,
+	} {
+		if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","turnStartConfig":` + cfg + `}`)); err == nil {
+			t.Errorf("%s: turnStartConfig accepted", name)
+		}
+	}
+	cold := `{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all"}`
+	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","coldSession":` + cold + `}`)); err != nil {
+		t.Fatalf("valid coldSession rejected: %v", err)
+	}
+	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","coldSession":{"version":1,"permissionMode":"allow-all"}}`)); err == nil {
+		t.Error("coldSession without a fingerprint accepted")
+	}
+}

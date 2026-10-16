@@ -211,11 +211,70 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 			return fmt.Errorf("ACP lifecycle state data: recovery.reason is required.") //nolint:staticcheck // mirrors the TS zod requirement
 		}
 	}
+	// acpTurnStartConfigSchema / acpColdSessionStateSchema: the persisted start
+	// configuration must be well-formed before it is trusted for recovery.
+	if raw, ok := probe["turnStartConfig"]; ok {
+		if err := validateStartConfigShape(raw, "turnStartConfig", true); err != nil {
+			return err
+		}
+	}
+	if raw, ok := probe["coldSession"]; ok {
+		if err := validateStartConfigShape(raw, "coldSession", false); err != nil {
+			return err
+		}
+	}
 	if r := v.Recovery; r != nil && r.Mode != "disk-replay" && r.Mode != "lossy-rerun" {
 		return fmt.Errorf("ACP lifecycle state data: recovery.mode must be 'disk-replay' or 'lossy-rerun'.") //nolint:staticcheck // mirrors the TS zod enum
 	}
 	if r := v.Restoration; r != nil && r.Method != "resume" && r.Method != "load" {
 		return fmt.Errorf("ACP lifecycle state data: restoration.method must be 'resume' or 'load'.") //nolint:staticcheck // mirrors the TS zod enum
+	}
+	return nil
+}
+
+// validateStartConfigShape checks the required, enum and array fields of a
+// persisted turnStartConfig (withPrompt) or coldSession object, mirroring the
+// zod schemas' `version: literal(1)`, `configurationFingerprint: string`,
+// `permissionMode` enum, `prompt` text blocks and `tools`/`builtinTools`
+// arrays (`.default([])` accepts only an absent key, not null).
+func validateStartConfigShape(raw json.RawMessage, key string, withPrompt bool) error {
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &cfg); err != nil || cfg == nil {
+		return fmt.Errorf("ACP lifecycle state data: %s must be an object.", key) //nolint:staticcheck // mirrors the TS zod object
+	}
+	if v, ok := cfg["version"]; !ok || string(bytes.TrimSpace(v)) != "1" {
+		return fmt.Errorf("ACP lifecycle state data: %s.version must be 1.", key) //nolint:staticcheck // mirrors the TS zod literal
+	}
+	var fingerprint string
+	if v, ok := cfg["configurationFingerprint"]; !ok || json.Unmarshal(v, &fingerprint) != nil {
+		return fmt.Errorf("ACP lifecycle state data: %s.configurationFingerprint must be a string.", key) //nolint:staticcheck // mirrors the TS zod string
+	}
+	var mode string
+	if v, ok := cfg["permissionMode"]; !ok || json.Unmarshal(v, &mode) != nil ||
+		(mode != string(harness.PermissionModeAllowReads) && mode != string(harness.PermissionModeAllowEdits) && mode != string(harness.PermissionModeAllowAll)) {
+		return fmt.Errorf("ACP lifecycle state data: %s.permissionMode must be one of allow-reads, allow-edits, allow-all.", key) //nolint:staticcheck // mirrors the TS zod enum
+	}
+	for _, name := range []string{"tools", "builtinTools"} {
+		if v, ok := cfg[name]; ok {
+			var items []json.RawMessage
+			if err := json.Unmarshal(v, &items); err != nil || items == nil {
+				return fmt.Errorf("ACP lifecycle state data: %s.%s must be an array.", key, name) //nolint:staticcheck // mirrors the TS zod array
+			}
+		}
+	}
+	if withPrompt {
+		var blocks []struct {
+			Type string  `json:"type"`
+			Text *string `json:"text"`
+		}
+		if v, ok := cfg["prompt"]; !ok || json.Unmarshal(v, &blocks) != nil || blocks == nil {
+			return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+		}
+		for _, b := range blocks {
+			if b.Type != "text" || b.Text == nil {
+				return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+			}
+		}
 	}
 	return nil
 }
