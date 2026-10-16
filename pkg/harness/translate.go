@@ -194,7 +194,7 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 		}
 
 	case *ErrorPart:
-		chunk := provider.StreamChunk{Type: provider.ChunkTypeError, Text: ErrorValueMessage(p.Error)}
+		chunk := provider.StreamChunk{Type: provider.ChunkTypeError, Text: p.Message()}
 		if err, ok := p.Error.(error); ok {
 			// Keep the typed error so errors.As works on the result's Err().
 			chunk.Err = err

@@ -445,7 +445,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		if f, ok := e.Message.(bridge.StreamPartFrame); ok {
 			pc.forward(f.Part)
 			if ep, ok := f.Part.(*harness.ErrorPart); ok && ep.Error != nil {
-				cause = harness.ErrorFromValue(ep.Error)
+				cause = ep.AsError()
 			}
 		}
 		pc.settleError(cause)

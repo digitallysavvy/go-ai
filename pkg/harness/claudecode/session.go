@@ -431,7 +431,7 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc) *promptCo
 		forward(f.Part)
 		var cause = errors.New("claude-code bridge reported an error")
 		if ep, ok := f.Part.(*harness.ErrorPart); ok && ep.Error != nil {
-			cause = harness.ErrorFromValue(ep.Error)
+			cause = ep.AsError()
 		}
 		pc.settleError(cause)
 	}))
