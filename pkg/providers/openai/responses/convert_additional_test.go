@@ -1416,7 +1416,7 @@ func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 					{
 						ID:        "local-call",
 						ToolName:  "openai.local_shell",
-						Arguments: map[string]interface{}{"action": map[string]interface{}{"command": []interface{}{}}},
+						Arguments: map[string]interface{}{"action": map[string]interface{}{"type": "exec", "command": []interface{}{}}},
 					},
 					{
 						ID:        "shell-call",
@@ -1426,7 +1426,7 @@ func TestConvertPromptToInput_ToolCallsWithoutItemIDDoNotSetID(t *testing.T) {
 					{
 						ID:        "patch-call",
 						ToolName:  "openai.apply_patch",
-						Arguments: map[string]interface{}{"callId": "call-explicit", "operation": map[string]interface{}{}},
+						Arguments: map[string]interface{}{"callId": "call-explicit", "operation": map[string]interface{}{"type": "delete_file", "path": "a.txt"}},
 					},
 					{
 						ID:           "custom-call",
