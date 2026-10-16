@@ -17,6 +17,10 @@ The tables on this page are generated from the Go source. For usage, see the [Op
 | --- | --- | --- |
 | `BatchResultDownloads` | `providerutils.BatchResultDownloads` | BatchResultDownloads configures JSON Lines batch result downloads, e.g. the maximum bytes per result row (TS `batchResultDownloads`). |
 | `APIKey` | `string` | APIKey is the OpenAI API key |
+| `APIKeyEnvVar` | `string` | APIKeyEnvVar is the environment variable read per request when APIKey is empty (TS loadApiKey environmentVariableName). Defaults to OPENAI_API_KEY. Wrapper providers set their own variable so that an OpenAI key is never forwarded to another service. |
+| `APIKeyDescription` | `string` | APIKeyDescription names the provider in the LoadAPIKeyError message (TS loadApiKey description). Defaults to "OpenAI". |
+| `NoAPIKey` | `bool` | NoAPIKey marks a wrapper that authenticates through its own Headers or HTTP transport (Azure, Vertex MaaS): no API key is loaded or required. |
+| `HeadersFunc` | `func() (map[string]string, error)` | HeadersFunc, when set on a NoAPIKey wrapper, resolves its credential headers for every request (Azure api-key). An error fails the request. |
 | `Name` | `string` | Name overrides the provider name returned by Provider.Name(). Defaults to "openai". |
 | `BaseURL` | `string` | BaseURL is the base URL for the OpenAI API (default: https://api.openai.com/v1) |
 | `Organization` | `string` | Organization is the optional organization ID |
