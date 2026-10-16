@@ -66,3 +66,22 @@ func TestR33_PollHeadersWithheldFromForeignOrigin(t *testing.T) {
 		t.Errorf("foreign origin got credentials: %v", foreign)
 	}
 }
+
+// Unset options stay absent (only an explicit "" is forwarded).
+func TestR33_UnsetStringOptionsOmitted(t *testing.T) {
+	provOpts := map[string]interface{}{"gladia": map[string]interface{}{
+		"translationConfig": map[string]interface{}{"targetLanguages": []interface{}{"fr"}},
+	}}
+	body := buildRequestBody(extractOptions(provOpts))
+	keepEmptyStringOptions(body, provOpts)
+	for _, k := range []string{"context_prompt", "language"} {
+		if v, ok := body[k]; ok {
+			t.Errorf("%s = %v sent although the option is unset", k, v)
+		}
+	}
+	if tc, _ := body["translation_config"].(map[string]interface{}); tc != nil {
+		if v, ok := tc["model"]; ok {
+			t.Errorf("translation_config.model = %v sent although unset", v)
+		}
+	}
+}

@@ -55,3 +55,21 @@ func TestR33_UploadContentTypeCanBeOverridden(t *testing.T) {
 		t.Fatalf("Content-Type = %q", got)
 	}
 }
+
+// Unset options stay absent (only an explicit "" is forwarded).
+func TestUnsetStringOptionsAreOmitted(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), ModelUniversal3Pro)
+	body, _ := m.buildRequestBody(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
+		"assemblyai": map[string]interface{}{"languageDetection": true, "languageDetectionOptions": map[string]interface{}{}},
+	}})
+	for _, k := range []string{"prompt", "domain", "webhook_url", "boost_param", "language_code"} {
+		if v, ok := body[k]; ok {
+			t.Errorf("%s = %v sent although the option is unset", k, v)
+		}
+	}
+	if ldo, _ := body["language_detection_options"].(map[string]interface{}); ldo != nil {
+		if v, ok := ldo["fallback_language"]; ok {
+			t.Errorf("fallback_language = %v sent although unset", v)
+		}
+	}
+}
