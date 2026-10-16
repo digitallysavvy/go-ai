@@ -133,6 +133,11 @@ func ExperimentalStartVideo(ctx context.Context, opts StartVideoOptions) (*Start
 		return nil, err
 	}
 
+	// TS prepareRetries rejects an invalid maxRetries before the call.
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+
 	providerOptions := opts.ProviderOptions
 	if providerOptions == nil {
 		providerOptions = map[string]interface{}{}
