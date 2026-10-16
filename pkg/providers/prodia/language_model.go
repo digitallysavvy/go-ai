@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
-	"net/http"
 	"strings"
 	"time"
 
@@ -160,9 +159,10 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 			imageMIME = imageFile.MediaType
 		}
 		if imageMIME == "" || imageMIME == "image" || imageMIME == "image/*" {
-			imageMIME = http.DetectContentType(imageData)
-			if !strings.HasPrefix(imageMIME, "image/") {
-				imageMIME = "image/png"
+			// TS detectMediaType({ data, topLevelType: 'image' }), else image/png.
+			imageMIME = "image/png"
+			if detected, ok := fileutil.DetectMediaTypeSignature(imageData, "image"); ok {
+				imageMIME = detected
 			}
 		}
 	}
@@ -218,14 +218,17 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 
 	// TS content order: the text (the last text part) first, then every image.
 	var files []types.ContentPart
+	hasText := false
 	for _, out := range outputs {
 		if out.isText {
 			result.Text = string(out.data)
+			hasText = true
 			continue
 		}
 		files = append(files, types.GeneratedFileContent{MediaType: out.mediaType, Data: out.data})
 	}
-	if result.Text != "" {
+	// TS `textContent !== undefined`: an empty text part is still a text part.
+	if hasText {
 		result.Content = append(result.Content, types.TextContent{Text: result.Text})
 	}
 	result.Content = append(result.Content, files...)
@@ -359,11 +362,17 @@ func fetchImageURL(ctx context.Context, rawURL string) ([]byte, error) {
 //   - the raw bytes of the first image found in the last user message (nil if none)
 //   - the MIME type of that image (empty if none)
 func extractPromptAndImage(prompt types.Prompt) (string, []byte, string) {
+	// Prompt.System is the system message of a prompt that carries one outside
+	// Messages (TS has it as a system-role message); a system message in
+	// Messages comes later and wins, like TS's last-system-message loop.
 	if prompt.IsSimple() {
+		if prompt.System != "" {
+			return prompt.System + "\n" + prompt.Text, nil, ""
+		}
 		return prompt.Text, nil, ""
 	}
 
-	var systemMsg string
+	systemMsg := prompt.System
 	var userText string
 	var imageData []byte
 	var imageMIME string

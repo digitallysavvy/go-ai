@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 const r33Job = "--b\r\nContent-Disposition: form-data; name=\"job\"\r\nContent-Type: application/json\r\n\r\n{\"id\":\"j\",\"created_at\":\"\"}\r\n"
@@ -67,5 +68,28 @@ func TestR33_VideoMediaTypeDefault(t *testing.T) {
 func TestR33_ErrorDetailIsJSStringified(t *testing.T) {
 	if got := prodiaErrorMessage(400, []byte(`{"detail":{"a":1.0}}`)); got != `{"a":1}` {
 		t.Errorf("got %q", got)
+	}
+}
+
+// A system prompt outside Messages is part of the prompt text (TS has it as a
+// system-role message), and an empty text part is still a text content part.
+func TestR33_PromptSystemAndEmptyTextPart(t *testing.T) {
+	if text, _, _ := extractPromptAndImage(types.Prompt{System: "sys", Text: "draw"}); text != "sys\ndraw" {
+		t.Errorf("simple prompt text = %q", text)
+	}
+	p := types.Prompt{System: "sys", Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "draw"}}}}}
+	if text, _, _ := extractPromptAndImage(p); text != "sys\ndraw" {
+		t.Errorf("messages prompt text = %q", text)
+	}
+
+	srv := multipartServer(t, "--b\r\nContent-Disposition: form-data; name=\"output\"; filename=\"o.txt\"\r\nContent-Type: text/plain\r\n\r\n\r\n")
+	defer srv.Close()
+	m := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), LanguageModelNanoBananaImgToImgV2)
+	res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "p"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Content) != 1 {
+		t.Fatalf("content = %+v", res.Content)
 	}
 }
