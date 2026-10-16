@@ -149,3 +149,63 @@ func contentAnswersProviderCall(content []types.ContentPart, id string) bool {
 	}
 	return false
 }
+
+// workflowBlockedToolStep reports whether TS WorkflowAgent leaves a step's
+// tool calls untouched: modelCallIterator processes tools only when the finish
+// reason is stop or tool-calls (or length with provider-executed results). On
+// any other step the run just ends with the assistant message, which carries
+// neither the invalid calls nor any tool-error message.
+func workflowBlockedToolStep(internal *InternalOptions, reason types.FinishReason, content []types.ContentPart) bool {
+	if internal == nil || !internal.ContinueOnMissingProviderResult || providerResultFinishAllowed(reason) {
+		return false
+	}
+	if reason == types.FinishReasonLength {
+		for _, part := range content {
+			switch p := part.(type) {
+			case types.ToolResultContent:
+				if p.ProviderExecuted {
+					return false
+				}
+			case *types.ToolResultContent:
+				if p != nil && p.ProviderExecuted {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// WorkflowBlockedToolStep is workflowBlockedToolStep for loops outside this
+// package (pkg/agent).
+func WorkflowBlockedToolStep(internal *InternalOptions, reason types.FinishReason, content []types.ContentPart) bool {
+	return workflowBlockedToolStep(internal, reason, content)
+}
+
+// WorkflowBlockedResponse returns the tool calls and content of a blocked
+// workflow step as TS puts them in the assistant message: invalid local calls
+// and their tool-error parts are dropped.
+func WorkflowBlockedResponse(calls []types.ToolCall, content []types.ContentPart) ([]types.ToolCall, []types.ContentPart) {
+	outCalls := make([]types.ToolCall, 0, len(calls))
+	for _, c := range calls {
+		if c.Invalid && !c.ProviderExecuted {
+			continue
+		}
+		outCalls = append(outCalls, c)
+	}
+	outContent := make([]types.ContentPart, 0, len(content))
+	for _, part := range content {
+		switch p := part.(type) {
+		case types.ToolErrorContent:
+			if !p.ProviderExecuted {
+				continue
+			}
+		case *types.ToolErrorContent:
+			if p != nil && !p.ProviderExecuted {
+				continue
+			}
+		}
+		outContent = append(outContent, part)
+	}
+	return outCalls, outContent
+}

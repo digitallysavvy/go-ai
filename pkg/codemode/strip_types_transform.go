@@ -84,7 +84,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 			switch t.text {
 			case "(":
 				closeIdx := matchParen(tokens, i)
-				if closeIdx >= 0 && isArrowParamList(tokens, closeIdx) {
+				if closeIdx >= 0 && isArrowParamList(tokens, closeIdx) && (!followsConditionalQuestion(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) {
 					var err error
 					i, err = stripParamList(tokens, i, out, false)
 					if err != nil {

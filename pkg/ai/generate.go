@@ -1475,7 +1475,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			return nil, err
 		}
 
-		if len(genResult.ToolCalls) > 0 && len(stepTools) > 0 {
+		workflowBlocked := workflowBlockedToolStep(opts.Internal, genResult.FinishReason, stepResult.Content)
+		if len(genResult.ToolCalls) > 0 && len(stepTools) > 0 && !workflowBlocked {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              callID,
@@ -1596,9 +1597,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 
 			// Build response messages for this (final) step.
+			finalCalls, finalContent := genResult.ToolCalls, stepResult.Content
+			if workflowBlocked {
+				finalCalls, finalContent = WorkflowBlockedResponse(finalCalls, finalContent)
+			}
 			finalMsgs := providerutils.ConvertToResponseMessages(
-				genResult.ToolCalls,
-				stepResult.Content,
+				finalCalls,
+				finalContent,
 				nil,
 			)
 			// Same rationale as the tool-calls branch above: TS updates

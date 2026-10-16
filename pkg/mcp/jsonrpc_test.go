@@ -83,8 +83,8 @@ func TestIDGeneratorNextReturnsIncrementingIDs(t *testing.T) {
 		t.Fatalf("second ID type = %T, want uint64", secondRaw)
 	}
 
-	if first != 1 || second != 2 {
-		t.Fatalf("IDs = (%d, %d), want (1, 2)", first, second)
+	if first != 0 || second != 1 {
+		t.Fatalf("IDs = (%d, %d), want (0, 1) (TS requestMessageId starts at 0)", first, second)
 	}
 }
 

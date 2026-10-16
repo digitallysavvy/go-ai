@@ -729,7 +729,14 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 		// If there are tool calls, execute them
 		var stepToolResults []types.ToolResult
-		if len(stepResult.ToolCalls) > 0 {
+		// WorkflowAgent: a step that finished with a reason other than stop or
+		// tool-calls ends the run; its tool calls are neither executed nor
+		// answered (TS modelCallIterator shouldProcessTools).
+		workflowBlocked := ai.WorkflowBlockedToolStep(callConfig.Internal, stepResult.FinishReason, stepResult.Content)
+		if workflowBlocked {
+			shouldContinue = false
+		}
+		if len(stepResult.ToolCalls) > 0 && !workflowBlocked {
 			// Call OnAgentAction callback for each tool call
 			if a.config.OnAgentAction != nil {
 				// Extract run tracking from context
@@ -842,7 +849,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		}
 		// TS stepTimeMs spans the model call and the tool execution.
 		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
-		responseMessages := providerutils.ConvertToResponseMessages(stepResult.ToolCalls, responseContent, stepToolResults)
+		responseCalls := stepResult.ToolCalls
+		if workflowBlocked {
+			responseCalls, responseContent = ai.WorkflowBlockedResponse(responseCalls, responseContent)
+		}
+		responseMessages := providerutils.ConvertToResponseMessages(responseCalls, responseContent, stepToolResults)
 		stepResult.ResponseMessages = responseMessages
 		stepResult.Response.Messages = responseMessages
 		// Use callConfig.Messages (this step's messages after

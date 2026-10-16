@@ -23,7 +23,8 @@ func NewIDGenerator() *IDGenerator {
 
 // Next generates the next ID
 func (g *IDGenerator) Next() interface{} {
-	id := atomic.AddUint64(&g.counter, 1)
+	// TS: messageId starts at 0 (mcp-client.ts `private requestMessageId = 0`).
+	id := atomic.AddUint64(&g.counter, 1) - 1
 	return id
 }
 
