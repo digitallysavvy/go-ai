@@ -529,7 +529,10 @@ func (m *ImageModel) handleError(err error) error {
 		}
 		return providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", http.StatusText(statusErr.StatusCode), err)
 	}
-	return providererrors.NewProviderError("quiverai", http.StatusInternalServerError, "", err.Error(), err)
+	// Not an HTTP response (an abort, "Cannot connect to API", an invalid-JSON
+	// body already typed as an APICallError): TS lets these through unchanged,
+	// and a made-up 500 would make a cancelled call look retryable.
+	return err
 }
 
 type svgGenerationResponse struct {
