@@ -20,14 +20,12 @@ import (
 func quiverAIFailedResponseHandler(statusErr *internalhttp.HTTPStatusError) error {
 	apiErr, ok := parseQuiverAIErrorBody(statusErr.Body)
 	if ok {
-		perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, apiErr.Code, apiErr.Message, nil)
+		perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, apiErr.Code, apiErr.Message, statusErr)
 		perr.Data = apiErr
-		perr.ResponseBody = string(statusErr.Body)
 		perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 		return perr
 	}
-	perr := providererrors.NewProviderError("quiverai", statusErr.StatusCode, "", http.StatusText(statusErr.StatusCode), nil)
-	perr.ResponseBody = string(statusErr.Body)
+	perr := providererrors.NewProviderErrorFromResponse("quiverai", 0, "", http.StatusText(statusErr.StatusCode), statusErr)
 	perr.Retryable = quiverAIRetryable(statusErr.StatusCode)
 	return perr
 }
