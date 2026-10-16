@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -89,7 +90,7 @@ func GetMCPAppToolMeta(tool MCPTool) (*MCPAppToolMeta, error) {
 		resourceURI, ok := resourceValue.(string)
 		if !ok || !strings.HasPrefix(resourceURI, "ui://") {
 			encoded, _ := json.Marshal(resourceValue)
-			return nil, fmt.Errorf("invalid MCP App resource URI: %s", encoded)
+			return nil, mcpAppError("Invalid MCP App resource URI: %s", encoded)
 		}
 		meta.ResourceURI = resourceURI
 		meta.Extra["resourceUri"] = resourceURI
@@ -166,7 +167,7 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 			continue
 		}
 		if content.MimeType != MCPAppMimeType {
-			return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource MIME type: %s", content.MimeType)
+			return MCPAppResource{}, mcpAppError("Unsupported MCP App resource MIME type: %s", content.MimeType)
 		}
 		// TS: a string text wins (even ""), else a string blob is decoded.
 		var html string
@@ -176,11 +177,11 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 		case content.Blob != "" || content.blobPresent:
 			decoded, err := decodeBase64Lenient(content.Blob)
 			if err != nil {
-				return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource content format: %s", uri)
+				return MCPAppResource{}, mcpAppError("Unsupported MCP App resource content format: %s", uri)
 			}
 			html = string(decoded)
 		default:
-			return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource content format: %s", uri)
+			return MCPAppResource{}, mcpAppError("Unsupported MCP App resource content format: %s", uri)
 		}
 		var meta map[string]interface{}
 		if uiMeta := mapFromInterface(content.Meta["ui"]); uiMeta != nil {
@@ -199,7 +200,7 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 // ReadMCPAppResource reads and normalizes a ui:// MCP App resource.
 func ReadMCPAppResource(ctx context.Context, client *MCPClient, uri string) (MCPAppResource, error) {
 	if !strings.HasPrefix(uri, "ui://") {
-		return MCPAppResource{}, fmt.Errorf("Unsupported MCP App resource URI: %s", uri)
+		return MCPAppResource{}, mcpAppError("Unsupported MCP App resource URI: %s", uri)
 	}
 	result, err := client.ReadResource(ctx, uri)
 	if err != nil {
@@ -332,4 +333,12 @@ func decodeBase64Lenient(s string) ([]byte, error) {
 		return r
 	}, s)
 	return base64.RawStdEncoding.DecodeString(strings.TrimRight(s, "="))
+}
+
+// mcpAppError builds a plain error whose text starts with a capital letter,
+// like the TS `new Error(...)` messages (staticcheck ST1005 only inspects
+// literal error constructors).
+func mcpAppError(format string, args ...interface{}) error {
+	msg := fmt.Sprintf(format, args...)
+	return errors.New(msg)
 }

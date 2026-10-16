@@ -61,7 +61,7 @@ func TestGetMCPAppToolMeta(t *testing.T) {
 	_, err = GetMCPAppResourceURI(MCPTool{
 		Meta: map[string]interface{}{"ui": map[string]interface{}{"resourceUri": "https://example.com/app.html"}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "invalid MCP App resource URI") {
+	if err == nil || !strings.Contains(err.Error(), "Invalid MCP App resource URI") {
 		t.Fatalf("expected invalid URI error, got %v", err)
 	}
 }
@@ -350,5 +350,12 @@ func TestMCPAppResourceErrorTextAndEmptyMeta(t *testing.T) {
 	b, _ = json.Marshal(MCPAppResource{URI: "u", MimeType: "m", HTML: "h"})
 	if string(b) != `{"uri":"u","mimeType":"m","html":"h"}` {
 		t.Fatalf("json = %s", b)
+	}
+}
+
+func TestGetMCPAppToolMetaInvalidURIErrorText(t *testing.T) {
+	_, err := GetMCPAppToolMeta(MCPTool{Meta: map[string]interface{}{"ui": map[string]interface{}{"resourceUri": "http://x"}}})
+	if err == nil || err.Error() != `Invalid MCP App resource URI: "http://x"` {
+		t.Fatalf("err = %v", err)
 	}
 }
