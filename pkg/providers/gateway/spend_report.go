@@ -68,6 +68,31 @@ type spendReportRowWire struct {
 	RequestCount             int64   `json:"request_count,omitempty"`
 }
 
+// validateSpendReportRows applies the TS row schema's required and enum
+// members: total_cost must be a number and credential_type, when present,
+// must be "byok" or "system".
+func validateSpendReportRows(body []byte) error {
+	var raw struct {
+		Results []map[string]json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil // reported by the typed decode
+	}
+	for i, row := range raw.Results {
+		cost, ok := row["total_cost"]
+		if !ok || len(cost) == 0 || cost[0] == '"' || string(cost) == "null" {
+			return fmt.Errorf("Invalid JSON response: results[%d].total_cost must be a number", i) //nolint:staticcheck // mirrors TS wording
+		}
+		if ct, ok := row["credential_type"]; ok {
+			var s string
+			if json.Unmarshal(ct, &s) != nil || (s != "byok" && s != "system") {
+				return fmt.Errorf("Invalid JSON response: results[%d].credential_type must be byok or system", i) //nolint:staticcheck // mirrors TS wording
+			}
+		}
+	}
+	return nil
+}
+
 func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams) (*SpendReportResponse, error) {
 	if params.StartDate == "" {
 		return nil, fmt.Errorf("start date is required")
@@ -109,6 +134,10 @@ func (p *Provider) GetSpendReport(ctx context.Context, params SpendReportParams)
 	// TS schema: `results` must be an array.
 	if wire.Results == nil {
 		return nil, p.handleErrorWithContext(ctx, errors.New("Invalid JSON response: results must be an array")) //nolint:staticcheck // mirrors TS wording
+	}
+
+	if err := validateSpendReportRows(body); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
 	}
 
 	response := &SpendReportResponse{Results: make([]SpendReportRow, 0, len(wire.Results))}

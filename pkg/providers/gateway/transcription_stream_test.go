@@ -815,3 +815,40 @@ func TestTranscriptionModel_DoStream_PerCallAuthorizationDrivesSubprotocol(t *te
 		t.Errorf("Sec-WebSocket-Protocol = %q, want the per-call token", protocolHeader)
 	}
 }
+
+// TS isOptional(value, check) is `value === undefined || check(value)`: an
+// explicit JSON null fails the check and rejects the frame.
+func TestParseGatewayTranscriptionStreamPart_ExplicitNullOptionalsAreRejected(t *testing.T) {
+	for _, frame := range []string{
+		`{"type":"transcript-delta","delta":"a","id":null}`,
+		`{"type":"transcript-partial","text":"a","startSecond":null}`,
+		`{"type":"transcript-final","text":"a","providerMetadata":null}`,
+		`{"type":"finish","text":"a","segments":[],"language":null}`,
+		`{"type":"finish","text":"a","segments":[],"usage":"x"}`,
+	} {
+		if _, ok := parseGatewayTranscriptionStreamPart(frame); ok {
+			t.Errorf("%s accepted", frame)
+		}
+	}
+	part, ok := parseGatewayTranscriptionStreamPart(`{"type":"finish","text":"a","segments":[],"usage":{"seconds":3}}`)
+	if !ok || part.Usage["seconds"] != float64(3) {
+		t.Fatalf("finish usage must be kept: %+v ok=%v", part, ok)
+	}
+}
+
+func TestGatewayTranscriptionServerErrorFallbackMessages(t *testing.T) {
+	for payload, want := range map[string]string{
+		`{"code":5}`:         `AI Gateway transcription stream failed: {"code":5}`,
+		`"plain"`:            "AI Gateway transcription stream failed: plain",
+		`null`:               "AI Gateway transcription stream failed: unknown error",
+		`{"message":"boom"}`: "AI Gateway transcription stream failed: boom",
+	} {
+		var v interface{}
+		if err := json.Unmarshal([]byte(payload), &v); err != nil {
+			t.Fatal(err)
+		}
+		if got := gatewayTranscriptionServerError(v, "").Error(); got != want {
+			t.Errorf("%s: got %q, want %q", payload, got, want)
+		}
+	}
+}

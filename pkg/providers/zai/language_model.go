@@ -71,7 +71,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "zai"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "zai"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings, err := m.buildRequestBody(opts, false)
@@ -110,7 +110,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err := validateChatProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "zai"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "zai"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings, err := m.buildRequestBody(opts, true)
@@ -153,7 +153,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// AllowVideo: true -- zai wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "zai", ThoughtSignatureKey: "zai", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, CompatFileValidation: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "zai", ThoughtSignatureKey: "zai", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -366,7 +366,7 @@ func mapZaiFinishReason(raw string) types.FinishReason {
 func convertZaiUsage(usage zaiUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 	result := types.Usage{
 		InputTokens:  &promptTokens,
 		OutputTokens: &completionTokens,

@@ -67,7 +67,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "fireworks"); err != nil {
 		return nil, err
 	}
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "fireworks"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "fireworks"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, false)
@@ -103,7 +103,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if err := providerutils.ValidateOpenAICompatibleChatOptions(opts.ProviderOptions, "fireworks"); err != nil {
 		return nil, err
 	}
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "fireworks"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "fireworks"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBodyWithWarnings(opts, true)
@@ -140,7 +140,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// AllowVideo: true -- Fireworks wraps @ai-sdk/openai-compatible's
 	// OpenAICompatibleChatLanguageModel in TS, which supports video_url
 	// content parts (7dd9ec320c).
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "fireworks", ThoughtSignatureKey: "fireworks", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, CompatFileValidation: true}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "fireworks", ThoughtSignatureKey: "fireworks", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {
@@ -357,7 +357,7 @@ func (m *LanguageModel) handleError(err error) error {
 func convertFireworksUsage(usage fireworksUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 	result := types.Usage{
 		InputTokens:  &promptTokens,
 		OutputTokens: &completionTokens,

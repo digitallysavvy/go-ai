@@ -62,7 +62,7 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "ollama"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "ollama"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBody(opts, false)
@@ -94,7 +94,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 // DoStream performs streaming text generation
 func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
-	if err := prompt.ValidateProviderFileReferences(opts.Prompt.Messages, "ollama"); err != nil {
+	if err := prompt.ValidateOpenAIFileParts(opts.Prompt.Messages, prompt.FilePartsOpenAICompatible, "ollama"); err != nil {
 		return nil, err
 	}
 	reqBody, warnings := m.buildRequestBody(opts, true)
@@ -120,9 +120,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		"stream": stream,
 	}
 	if opts.Prompt.IsMessages() {
-		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, CompatFileValidation: true})
+		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible})
 	} else if opts.Prompt.IsSimple() {
-		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, CompatFileValidation: true})
+		body["messages"] = prompt.ToOpenAIMessages(prompt.SimpleTextToMessages(opts.Prompt.Text), prompt.ToOpenAIMessagesOptions{AllowVideo: true, Provider: "ollama", ThoughtSignatureKey: "ollama", ReasoningKey: "reasoning_content", SpreadCompatMetadata: true, FileParts: prompt.FilePartsOpenAICompatible})
 	}
 	if opts.Prompt.System != "" {
 		messages := body["messages"].([]map[string]interface{})
@@ -219,7 +219,7 @@ func (m *LanguageModel) handleError(err error) error {
 func convertOllamaUsage(usage ollamaUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 	result := types.Usage{
 		InputTokens:  &promptTokens,
 		OutputTokens: &completionTokens,

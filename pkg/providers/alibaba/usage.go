@@ -61,7 +61,7 @@ func (u *AlibabaUsage) UnmarshalJSON(data []byte) error {
 func ConvertAlibabaUsage(usage AlibabaUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 
 	var cacheReadTokens, cacheWriteTokens int64
 	if usage.PromptTokensDetails != nil {

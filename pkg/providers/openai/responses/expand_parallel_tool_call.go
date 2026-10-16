@@ -60,11 +60,27 @@ func GetParallelToolCallMetadata(metadata map[string]interface{}, providerName s
 	if err != nil {
 		return ParallelToolCallMetadata{}, false
 	}
-	var m ParallelToolCallMetadata
-	if err := json.Unmarshal(data, &m); err != nil {
+	// TS isJSONObject + typeof checks: every field must be present with its
+	// exact type (itemId/toolCallId/toolName/input strings, index/count
+	// integers); empty strings are accepted.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil || fields == nil {
 		return ParallelToolCallMetadata{}, false
 	}
-	if m.ToolCallID == "" || m.ToolName == "" || m.Index < 0 || m.Count <= m.Index {
+	var m ParallelToolCallMetadata
+	for key, dst := range map[string]interface{}{"itemId": &m.ItemID, "toolCallId": &m.ToolCallID, "toolName": &m.ToolName, "input": &m.Input} {
+		v, present := fields[key]
+		if !present || json.Unmarshal(v, dst) != nil || len(v) == 0 || v[0] != '"' {
+			return ParallelToolCallMetadata{}, false
+		}
+	}
+	for key, dst := range map[string]*int{"index": &m.Index, "count": &m.Count} {
+		v, present := fields[key]
+		if !present || json.Unmarshal(v, dst) != nil {
+			return ParallelToolCallMetadata{}, false
+		}
+	}
+	if m.Index < 0 || m.Count <= m.Index {
 		return ParallelToolCallMetadata{}, false
 	}
 	return m, true

@@ -414,7 +414,10 @@ func (m *VideoModel) IsImageToVideo() bool {
 // klingaiIsVideoFile reports whether a file's top-level media type is
 // "video" (KlingAI does not accept video as a frame image or reference).
 func klingaiIsVideoFile(f *provider.VideoModelV3File) bool {
-	return f.MediaType != "" && strings.HasPrefix(f.MediaType, "video/")
+	// TS getTopLevelMediaType(mediaType) === 'video': the part before the
+	// first "/", or the whole string when there is none.
+	top, _, _ := strings.Cut(f.MediaType, "/")
+	return f.MediaType != "" && top == "video"
 }
 
 func klingaiGetFirstFrameImage(opts *provider.VideoModelV3CallOptions) *provider.VideoModelV3File {
@@ -832,15 +835,16 @@ func (m *VideoModel) buildMultiImageBody(opts *provider.VideoModelV3CallOptions,
 func (m *VideoModel) buildMotionControlBody(opts *provider.VideoModelV3CallOptions, provOpts *ProviderOptions) (map[string]interface{}, []types.Warning, error) {
 	warnings := []types.Warning{}
 
-	// Validate required options
-	if provOpts.VideoUrl == nil || *provOpts.VideoUrl == "" {
-		return nil, nil, NewMissingVideoOptionsError("videoUrl")
-	}
-	if provOpts.CharacterOrientation == nil || *provOpts.CharacterOrientation == "" {
-		return nil, nil, NewMissingVideoOptionsError("characterOrientation")
-	}
-	if provOpts.Mode == nil || *provOpts.Mode == "" {
-		return nil, nil, NewMissingVideoOptionsError("mode")
+	// Validate required options (TS checks all three at once and throws one
+	// KLINGAI_VIDEO_MISSING_OPTIONS error).
+	if provOpts.VideoUrl == nil || *provOpts.VideoUrl == "" ||
+		provOpts.CharacterOrientation == nil || *provOpts.CharacterOrientation == "" ||
+		provOpts.Mode == nil || *provOpts.Mode == "" {
+		return nil, nil, &Error{
+			Code:      400,
+			ErrorCode: ErrCodeKlingVideoMissingOptions,
+			Message:   "KlingAI Motion Control requires providerOptions.klingai with videoUrl, characterOrientation, and mode.",
+		}
 	}
 
 	body := map[string]interface{}{

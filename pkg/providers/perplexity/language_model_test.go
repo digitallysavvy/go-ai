@@ -1398,3 +1398,10 @@ func TestPerplexityDoStream_IncludeRawChunksNonJSONFrame(t *testing.T) {
 		t.Fatalf("raw/error order = %v, want [raw error]", order)
 	}
 }
+
+func TestConvertPerplexityUsageTotalIsInputPlusOutput(t *testing.T) {
+	u := convertPerplexityUsage(&perplexityUsage{InputTokens: 10, OutputTokens: 5}, nil)
+	if u.TotalTokens == nil || *u.TotalTokens != 15 {
+		t.Fatalf("total = %v, want 15 when total_tokens is absent", u.TotalTokens)
+	}
+}

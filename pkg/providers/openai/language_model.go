@@ -362,10 +362,11 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// carry a concrete message slice for the system-message prepend below.
 	body["messages"] = []map[string]interface{}{}
 	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{ThoughtSignatureKey: m.thoughtSignatureKey(), SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo || m.provider.config.OpenAICompatible, SupportsMultiPartToolContent: m.provider.config.SupportsMultiPartToolContent, Provider: m.fileReferenceProvider()}
+	toOpenAIMessagesOpts.FileParts = prompt.FilePartsOpenAIChat
 	if !native {
 		toOpenAIMessagesOpts.ReasoningKey = "reasoning_content"
 		toOpenAIMessagesOpts.SpreadCompatMetadata = true
-		toOpenAIMessagesOpts.CompatFileValidation = true
+		toOpenAIMessagesOpts.FileParts = prompt.FilePartsOpenAICompatible
 	}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
@@ -935,7 +936,9 @@ func convertOpenAIUsage(usage openAIUsage) types.Usage {
 	}
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	// TS core totalTokens = input total + output total (wire total_tokens is
+	// optional and ignored).
+	totalTokens := promptTokens + completionTokens
 
 	result := types.Usage{
 		InputTokens:  &promptTokens,

@@ -1,8 +1,10 @@
 package prompt
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -194,5 +196,33 @@ func TestToOpenAIMessagesWithError_CompatSniffsBareMediaType(t *testing.T) {
 	var ufe *providererrors.UnsupportedFunctionalityError
 	if !errors.As(err, &ufe) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS convertToolContentPart uses convertToOpenAICompatibleContentPart, so a
+// multi-part tool result follows the same file rules as a user message: an
+// unsupported media type is rejected and a text/* file becomes a text part.
+func TestToOpenAIMessagesWithError_CompatToolResultFileParts(t *testing.T) {
+	opt := ToOpenAIMessagesOptions{CompatFileValidation: true, SupportsMultiPartToolContent: true}
+	toolMsg := func(block types.FileContentBlock) []types.Message {
+		return []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{
+			types.ToolResultContent{ToolName: "t", ToolCallID: "1", Output: &types.ToolResultOutput{
+				Type:    types.ToolResultOutputContent,
+				Content: []types.ToolResultContentBlock{block},
+			}},
+		}}}
+	}
+	_, err := ToOpenAIMessagesWithError(toolMsg(types.FileContentBlock{MediaType: "application/zip", Data: []byte("x")}), opt)
+	var ufe *providererrors.UnsupportedFunctionalityError
+	if !errors.As(err, &ufe) || ufe.Functionality != "file part media type application/zip" {
+		t.Fatalf("err = %v, want unsupported application/zip", err)
+	}
+	got, err := ToOpenAIMessagesWithError(toolMsg(types.FileContentBlock{MediaType: "text/plain", Data: []byte("hello")}), opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(got)
+	if !strings.Contains(string(b), `"text":"hello"`) || strings.Contains(string(b), `"type":"file"`) {
+		t.Fatalf("text/* tool file not sent as text: %s", b)
 	}
 }

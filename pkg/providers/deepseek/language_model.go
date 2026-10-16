@@ -574,7 +574,8 @@ func convertDeepseekUsage(raw json.RawMessage) types.Usage {
 	var usage deepseekUsage
 	_ = json.Unmarshal(raw, &usage)
 
-	p, c, t := int64(usage.PromptTokens), int64(usage.CompletionTokens), int64(usage.TotalTokens)
+	p, c := int64(usage.PromptTokens), int64(usage.CompletionTokens)
+	t := p + c // TS core: input total + output total
 	result := types.Usage{InputTokens: &p, OutputTokens: &c, TotalTokens: &t}
 	// Prefer DeepSeek's native prompt_cache_hit_tokens; fall back to the
 	// OpenAI-compatible prompt_tokens_details.cached_tokens when the native

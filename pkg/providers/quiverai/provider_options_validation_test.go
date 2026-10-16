@@ -34,3 +34,23 @@ func TestImageProviderOptionsValidation(t *testing.T) {
 		}
 	}
 }
+
+// Go-typed nested values read like their JSON form (they were validated in
+// that form, so parsing must not reject or drop them).
+func TestQuiverRawOptionsNormalizesGoTypedValues(t *testing.T) {
+	po := map[string]interface{}{"quiverai": map[string]interface{}{
+		"referenceImages": []map[string]string{{"url": "https://example.com/a.png"}},
+		"maxReviewSteps":  3,
+		"temperature":     float32(0.5),
+	}}
+	if err := validateImageOptions(po); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := parseQuiverAIImageModelOptions(quiverRawOptions(po))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(opts.ReferenceImages) != 1 || opts.ReferenceImages[0].URL != "https://example.com/a.png" || opts.MaxReviewSteps == nil || *opts.MaxReviewSteps != 3 {
+		t.Fatalf("opts = %+v", opts)
+	}
+}

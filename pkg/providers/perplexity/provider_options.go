@@ -5,6 +5,7 @@ import (
 	"math"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // This file mirrors TS perplexity-language-model-options.ts: the Agent API's
@@ -89,6 +90,10 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	if raw == nil {
 		return nil, nil, nil
 	}
+	// Read the options through their JSON form so Go ints and typed slices
+	// ([]map[string]interface{} tools, []string models) validate like the
+	// JSON values the TS schema sees.
+	raw = providerutils.NormalizeOptionsJSON(raw)
 
 	opts := &perplexityLanguageModelOptions{}
 	var err error

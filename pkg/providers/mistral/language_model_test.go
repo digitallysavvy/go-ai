@@ -472,3 +472,17 @@ func TestMistralReasoningEffortModelIDsMatchTypeScript(t *testing.T) {
 		})
 	}
 }
+
+// Go int option values must not be dropped (only float64 was read before).
+func TestMistralIntOptionValuesAreForwarded(t *testing.T) {
+	m := &LanguageModel{modelID: "mistral-large-latest"}
+	body := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{
+			"documentImageLimit": 3, "documentPageLimit": int64(7),
+		}},
+	}, false)
+	if body["document_image_limit"] != float64(3) || body["document_page_limit"] != float64(7) {
+		t.Fatalf("body = %#v", body)
+	}
+}

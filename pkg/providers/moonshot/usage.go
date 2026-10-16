@@ -92,7 +92,7 @@ func ConvertMoonshotUsageRaw(raw json.RawMessage) (types.Usage, error) {
 
 	promptTokens := int64(derefFloat(known.PromptTokens))
 	completionTokens := int64(derefFloat(known.CompletionTokens))
-	totalTokens := int64(derefFloat(known.TotalTokens))
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 
 	result := types.Usage{
 		InputTokens:  &promptTokens,

@@ -1985,3 +1985,21 @@ func TestDoStatus_RejectsPrivateIPRedirect(t *testing.T) {
 		t.Errorf("expected an SSRF validation error, got: %v", err)
 	}
 }
+
+func TestMotionControlMissingOptionsUsesTSMessage(t *testing.T) {
+	prov, _ := New(Config{AccessKey: "ak", SecretKey: "sk"})
+	model := &VideoModel{prov: prov, modelID: "kling-v2.6-motion-control", mode: VideoModeMotionControl}
+	_, _, err := model.buildMotionControlBody(&provider.VideoModelV3CallOptions{}, &ProviderOptions{})
+	if err == nil || !strings.Contains(err.Error(), "KlingAI Motion Control requires providerOptions.klingai with videoUrl, characterOrientation, and mode.") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestKlingaiIsVideoFileBareTopLevelType(t *testing.T) {
+	if !klingaiIsVideoFile(&provider.VideoModelV3File{MediaType: "video"}) || !klingaiIsVideoFile(&provider.VideoModelV3File{MediaType: "video/mp4"}) {
+		t.Fatal("video and video/mp4 must be video")
+	}
+	if klingaiIsVideoFile(&provider.VideoModelV3File{MediaType: "image/png"}) || klingaiIsVideoFile(&provider.VideoModelV3File{}) {
+		t.Fatal("non-video must not match")
+	}
+}

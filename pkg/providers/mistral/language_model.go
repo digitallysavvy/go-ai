@@ -220,10 +220,10 @@ func extractMistralProviderOptions(opts *provider.GenerateOptions) (mistralProvi
 	if value, ok := mistralOpts["safePrompt"].(bool); ok {
 		result.SafePrompt = &value
 	}
-	if value, ok := mistralOpts["documentImageLimit"].(float64); ok {
+	if value, ok := mistralOptionNumber(mistralOpts["documentImageLimit"]); ok {
 		result.DocumentImageLimit = &value
 	}
-	if value, ok := mistralOpts["documentPageLimit"].(float64); ok {
+	if value, ok := mistralOptionNumber(mistralOpts["documentPageLimit"]); ok {
 		result.DocumentPageLimit = &value
 	}
 	if value, ok := mistralOpts["parallelToolCalls"].(bool); ok {
@@ -419,7 +419,7 @@ func convertMistralUsage(raw json.RawMessage) types.Usage {
 
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 
 	result := types.Usage{
 		InputTokens:  &promptTokens,
@@ -911,4 +911,25 @@ func injectMistralJSONInstruction(body map[string]interface{}, schema interface{
 	}
 	instruction := providerutils.InjectJSONInstructionSchema("", schema, providerutils.InjectJSONInstructionOptions{})
 	body["messages"] = append([]map[string]interface{}{{"role": "system", "content": instruction}}, messages...)
+}
+
+// mistralOptionNumber reads a numeric provider option given as any Go numeric
+// type (or json.Number), not only the float64 encoding/json produces.
+func mistralOptionNumber(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
 }

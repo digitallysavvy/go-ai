@@ -1,5 +1,7 @@
 package luma
 
+import "github.com/digitallysavvy/go-ai/pkg/providerutils"
+
 // ImageConfig is per-image configuration for a Luma image reference (TS
 // LumaImageConfig). Each entry corresponds to an image in Files, in order.
 type ImageConfig struct {
@@ -54,6 +56,9 @@ func parseImageModelOptions(providerOptions map[string]interface{}) *ImageModelO
 	if !ok {
 		return nil
 	}
+	// Nested Go-typed values (e.g. []map[string]interface{} images) read like
+	// their JSON form, the form validateLumaImageOptions checked.
+	raw = providerutils.NormalizeOptionsJSON(raw)
 
 	opts := &ImageModelOptions{}
 	if v, ok := raw["referenceType"].(string); ok {
