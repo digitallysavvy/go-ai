@@ -268,7 +268,9 @@ func perplexityToolCallArguments(part types.ToolCallContent) string {
 	} else if part.Input != "" {
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(part.Input), &parsed); err == nil {
-			value = parsed
+			if parsed != nil { // JSON null falls back to {} like `input ?? {}`
+				value = parsed
+			}
 		} else {
 			value = part.Input
 		}
