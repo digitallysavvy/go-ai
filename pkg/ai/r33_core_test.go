@@ -99,3 +99,22 @@ func TestGenerateText_OutputParseErrorIsReturnedAsIs(t *testing.T) {
 		t.Fatalf("err text has a wrapper prefix: %v", err)
 	}
 }
+
+// TS reports a doStream failure as the error itself, not wrapped in text.
+func TestStreamText_StartFailureIsReturnedAsIs(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("boom")
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return nil, boom
+		},
+	}
+	maxRetries := 0
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi", MaxRetries: &maxRetries})
+	if err == nil {
+		_, err = res.ReadAll()
+	}
+	if err == nil || err.Error() != "boom" {
+		t.Fatalf("err = %v, want boom", err)
+	}
+}
