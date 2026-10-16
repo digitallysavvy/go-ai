@@ -180,7 +180,12 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 			continue
 		}
 		if content.MimeType != MCPAppMimeType {
-			return MCPAppResource{}, mcpAppError("Unsupported MCP App resource MIME type: %s", content.MimeType)
+			// A missing mimeType reads as "undefined" in the TS template string.
+			mime := content.MimeType
+			if mime == "" {
+				mime = "undefined"
+			}
+			return MCPAppResource{}, mcpAppError("Unsupported MCP App resource MIME type: %s", mime)
 		}
 		// TS: a string text wins (even ""), else a string blob is decoded.
 		var html string
@@ -190,7 +195,8 @@ func GetMCPAppResourceFromReadResult(uri string, resource ReadResourceResult) (M
 		case content.Blob != "" || content.blobPresent:
 			decoded, err := decodeBase64Lenient(content.Blob)
 			if err != nil {
-				return MCPAppResource{}, mcpAppError("Unsupported MCP App resource content format: %s", uri)
+				// TS: atob throws on malformed base64 before any format check.
+				return MCPAppResource{}, mcpAppError("The string to be decoded is not correctly encoded.")
 			}
 			html = decodeUTF8Lenient(decoded)
 		default:

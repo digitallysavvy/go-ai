@@ -222,14 +222,38 @@ func scanToStatementEnd(tokens []tsToken, i int) int {
 }
 
 // findBraceOrSemi returns the index of the first "{" or ";" token at or
-// after i (a plain forward scan, not bracket-depth aware -- used only to
-// locate the start of an ambient `declare ...` body/terminator, where type
-// parameter lists containing neither are the only thing that could precede
-// it).
+// after i that is not inside (...), [...] or <...> -- used to locate the body
+// or terminator of an ambient `declare ...` statement, whose heritage clause
+// can hold an object type: `declare class C extends B<{ a: 1 }> { ... }`.
 func findBraceOrSemi(tokens []tsToken, i int) int {
+	depth := 0
 	for i < len(tokens) {
-		if tokens[i].kind == "punct" && (tokens[i].text == "{" || tokens[i].text == ";") {
-			return i
+		if tokens[i].kind == "punct" {
+			switch tokens[i].text {
+			case "(", "[", "<":
+				depth++
+			case ")", "]", ">":
+				if depth > 0 {
+					depth--
+				}
+			case ">>":
+				depth = max(depth-2, 0)
+			case ">>>":
+				depth = max(depth-3, 0)
+			case "{":
+				if depth == 0 {
+					return i
+				}
+				depth++
+			case "}":
+				if depth > 0 {
+					depth--
+				}
+			case ";":
+				if depth == 0 {
+					return i
+				}
+			}
 		}
 		i++
 	}

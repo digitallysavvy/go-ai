@@ -213,7 +213,9 @@ func ExtractWWWAuthenticateParams(resp *http.Response) WWWAuthenticateParams {
 	if resp == nil {
 		return WWWAuthenticateParams{}
 	}
-	header := resp.Header.Get("WWW-Authenticate")
+	// Fetch's Headers.get joins repeated header lines with ", "; a challenge
+	// parameter on a later line is found just like one on the first.
+	header := strings.Join(resp.Header.Values("WWW-Authenticate"), ", ")
 	if header == "" {
 		return WWWAuthenticateParams{}
 	}

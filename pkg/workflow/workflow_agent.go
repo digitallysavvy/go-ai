@@ -1240,30 +1240,98 @@ func (w *WorkflowAgent) stepHook(pctx prepareCallContext) PrepareStepHook {
 	return w.PrepareStep
 }
 
+// prepareCallRunner holds the pieces of the agent-level PrepareCall closure
+// that a run needs outside the agent loop: an approval resume runs after
+// PrepareCall (TS prepareInvocation), so the hook is run once up front, before
+// the loop, and the loop's first step then reuses its result.
+type prepareCallRunner struct {
+	w    *WorkflowAgent
+	pctx prepareCallContext
+	st   *prepareCallState
+}
+
+// callOptions builds the options a PrepareCall hook receives for a step.
+func (r *prepareCallRunner) callOptions(c agent.PrepareCallConfig) LanguageModelCallOptions {
+	pctx := r.pctx
+	return LanguageModelCallOptions{
+		StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
+		Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
+		Headers: pctx.baseHeaders, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
+		RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
+		PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData,
+		StopWhen: pctx.stopWhen, ActiveTools: pctx.activeTools, ExperimentalDownload: pctx.download,
+		MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
+		InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
+		InstructionMessages: c.InstructionMessages, InitialInstructionMessages: pctx.instructionMessages,
+		ToolCallConcurrency: pctx.toolCallConcurrency, Telemetry: c.Telemetry,
+	}
+}
+
+// runHook runs the PrepareCall hook for the first step and records its result
+// for later steps. The caller holds st.mu.
+func (r *prepareCallRunner) runHook(ctx context.Context, c agent.PrepareCallConfig, opts LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+	inSystem, inInstructionMessages := c.System, c.InstructionMessages
+	// TS hands prepareCall the resolved messages: a plain prompt is its
+	// single user message.
+	if len(opts.Messages) == 0 && c.Prompt != "" {
+		opts.Messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: c.Prompt}}}}
+	}
+	r.st.baseMessages = len(opts.Messages)
+	mutated, err := r.w.PrepareCall(ctx, opts)
+	if err != nil {
+		return opts, err
+	}
+	opts = mutated
+	if r.pctx.reapplyCall != nil {
+		r.pctx.reapplyCall(&opts)
+	}
+	if !r.pctx.callConcurrencySet {
+		if _, err := resolveToolCallConcurrency(opts.ToolCallConcurrency); err != nil {
+			return opts, err
+		}
+	}
+	opts.System, opts.InstructionMessages, _ = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
+	kept := opts
+	r.st.prepared = &kept
+	return opts, nil
+}
+
+// early runs PrepareCall before the agent loop, on the unresolved call
+// messages, and marks it done so the loop's first step reuses the result. It
+// returns the hook's effective options.
+func (r *prepareCallRunner) early(ctx context.Context, c agent.PrepareCallConfig) (LanguageModelCallOptions, error) {
+	r.st.mu.Lock()
+	defer r.st.mu.Unlock()
+	r.st.started = true
+	return r.runHook(ctx, c, r.callOptions(c))
+}
+
+// resolved records the messages the run starts the loop with once approvals
+// were resolved from the hook's messages: they replace the hook's as the base
+// the loop's own history is appended to.
+func (r *prepareCallRunner) resolved(messages []types.Message) {
+	r.st.mu.Lock()
+	defer r.st.mu.Unlock()
+	if r.st.prepared != nil {
+		r.st.prepared.Messages = messages
+	}
+	r.st.baseMessages = len(messages)
+}
+
 // makePrepareCall builds the agent-level PrepareCall closure. PrepareCall runs
 // once, on the first step, before any PrepareStep hook; its results persist for
 // the whole run. When stepsInline is set (the legacy generate loop calls this
 // closure on every step) the PrepareStep hook also runs here; the streaming
 // path runs it per step through makePrepareStep instead.
-func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline bool) func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
+func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline bool) (func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig, *prepareCallRunner) {
 	stepHook := w.stepHook(pctx)
 	if w.PrepareCall == nil && (stepHook == nil || !stepsInline) && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
-		return nil
+		return nil, nil
 	}
-	st := &prepareCallState{}
+	r := &prepareCallRunner{w: w, pctx: pctx, st: &prepareCallState{}}
+	st := r.st
 	return func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig {
-		opts := LanguageModelCallOptions{
-			StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
-			Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
-			Headers: pctx.baseHeaders, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
-			RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
-			PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData,
-			StopWhen: pctx.stopWhen, ActiveTools: pctx.activeTools, ExperimentalDownload: pctx.download,
-			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
-			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
-			InstructionMessages: c.InstructionMessages, InitialInstructionMessages: pctx.instructionMessages,
-			ToolCallConcurrency: pctx.toolCallConcurrency, Telemetry: c.Telemetry,
-		}
+		opts := r.callOptions(c)
 		inSystem, inInstructionMessages := c.System, c.InstructionMessages
 		// A hook error fails the run (TS prepareStep/prepareCall rejections
 		// propagate): PrepareCallConfig cannot carry an error, so the step's
@@ -1281,30 +1349,12 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		st.started = true
 		if first {
 			if w.PrepareCall != nil {
-				// TS hands prepareCall the resolved messages: a plain prompt
-				// is its single user message.
-				if len(opts.Messages) == 0 && c.Prompt != "" {
-					opts.Messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: c.Prompt}}}}
-				}
-				st.baseMessages = len(opts.Messages)
-				mutated, err := w.PrepareCall(ctx, opts)
+				mutated, err := r.runHook(ctx, c, opts)
 				if err != nil {
 					st.mu.Unlock()
 					return failStep(err)
 				}
 				opts = mutated
-				if pctx.reapplyCall != nil {
-					pctx.reapplyCall(&opts)
-				}
-				if !pctx.callConcurrencySet {
-					if _, err := resolveToolCallConcurrency(opts.ToolCallConcurrency); err != nil {
-						st.mu.Unlock()
-						return failStep(err)
-					}
-				}
-				opts.System, opts.InstructionMessages, _ = resolveInstructionChange(inSystem, inInstructionMessages, opts.System, opts.InstructionMessages)
-				kept := opts
-				st.prepared = &kept
 			}
 		} else if st.prepared != nil {
 			opts = st.overlay(opts)
@@ -1348,7 +1398,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			c.Tools = ai.FilterActiveTools(c.Tools, effectiveActive)
 		}
 		return c
-	}
+	}, r
 }
 
 // makePrepareStep adapts the WorkflowAgent PrepareStep hook to the streaming
@@ -1421,7 +1471,7 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
-func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions, streaming bool) *agent.ToolLoopAgent {
+func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenerateOptions, streaming bool) (*agent.ToolLoopAgent, *earlyPrepare) {
 	system := w.System
 	var instructionMessages []types.Message
 	// useInstructions applies an Instructions value over the current one; a
@@ -1681,10 +1731,11 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if streaming {
 		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages)
 	}
-	return agent.NewToolLoopAgent(agent.AgentConfig{
+	prepareCall, runner := w.makePrepareCall(pctx, !streaming)
+	cfg := agent.AgentConfig{
 		ID: w.ID, Model: w.Model, System: system, InstructionMessages: instructionMessages, Prompt: w.Prompt, Tools: tools, StopWhen: withFinishReasonStop(stopWhen),
 		AllowSystemInMessages: allowSystemInMessages,
-		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: w.makePrepareCall(pctx, !streaming), PrepareStep: stepAdapter,
+		CallOptionsSchema:     w.CallOptionsSchema, CallOptions: w.CallOptions, PrepareCall: prepareCall, PrepareStep: stepAdapter,
 		Temperature: callSetting(ovr.Temperature, govr.Temperature, w.Temperature), MaxTokens: callSetting(ovr.MaxTokens, govr.MaxTokens, w.MaxTokens),
 		TopP: callSetting(ovr.TopP, govr.TopP, w.TopP), TopK: callSetting(ovr.TopK, govr.TopK, w.TopK),
 		FrequencyPenalty: callSetting(ovr.FrequencyPenalty, govr.FrequencyPenalty, w.FrequencyPenalty),
@@ -1711,7 +1762,52 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
 		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
 		OnEndEvent:                     onEnd,
-	})
+	}
+	return agent.NewToolLoopAgent(cfg), &earlyPrepare{cfg: cfg, runner: runner, callConcurrencySet: callConcurrencySet}
+}
+
+// earlyPrepare runs the PrepareCall hook ahead of the agent loop (see
+// prepareCallRunner.early). runner is nil when the agent has no PrepareCall.
+type earlyPrepare struct {
+	cfg                agent.AgentConfig
+	runner             *prepareCallRunner
+	callConcurrencySet bool
+}
+
+// hasApprovalResponses reports whether the messages hold tool approval
+// responses an approval resume would act on.
+func hasApprovalResponses(messages []types.Message) bool {
+	collected, err := ai.CollectToolApprovals(messages)
+	return err == nil && (len(collected.ApprovedToolApprovals) > 0 || len(collected.DeniedToolApprovals) > 0)
+}
+
+// run is the PrepareCall hook over the call's unresolved messages, with the
+// first-step configuration the agent loop would hand it. It returns nil when
+// there is no hook to run.
+func (e *earlyPrepare) run(ctx context.Context, messages []types.Message, prompt string) (*LanguageModelCallOptions, error) {
+	if e == nil || e.runner == nil || e.runner.w.PrepareCall == nil {
+		return nil, nil
+	}
+	cfg := e.cfg
+	runtimeContext := cfg.RuntimeContext
+	if runtimeContext == nil {
+		runtimeContext = cfg.ExperimentalContext
+	}
+	c := agent.PrepareCallConfig{
+		Model: cfg.Model, System: cfg.System, AllowSystemInMessages: cfg.AllowSystemInMessages, Prompt: prompt, Messages: messages,
+		Tools: cfg.Tools, ActiveTools: cfg.ActiveTools, ToolChoice: cfg.ToolChoice, ToolCallConcurrency: cfg.ToolCallConcurrency,
+		Temperature: cfg.Temperature, MaxTokens: cfg.MaxTokens, TopP: cfg.TopP, TopK: cfg.TopK,
+		FrequencyPenalty: cfg.FrequencyPenalty, PresencePenalty: cfg.PresencePenalty, StopSequences: cfg.StopSequences, Seed: cfg.Seed,
+		Headers: cfg.Headers, Reasoning: cfg.Reasoning, SendReasoning: cfg.SendReasoning, ProviderOptions: cfg.ProviderOptions,
+		StopWhen: cfg.StopWhen, Telemetry: cfg.Telemetry, ExperimentalSandbox: cfg.ExperimentalSandbox,
+		InstructionMessages: cfg.InstructionMessages, RuntimeContext: runtimeContext, ToolsContext: cfg.ToolsContext,
+		CallOptions: cfg.CallOptions, MaxRetries: cfg.MaxRetries, Timeout: cfg.Timeout,
+	}
+	opts, err := e.runner.early(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return &opts, nil
 }
 
 // withFinishReasonStop adds the WorkflowAgent rule that a step which ended
@@ -1818,7 +1914,49 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if opts.Telemetry != nil {
 		telemetrySettings = opts.Telemetry
 	}
-	modelProvider, modelID := workflowModelInfo(w.Model)
+	// Collect completed steps so OnAbort can report them (the agent loop
+	// returns no partial result on error).
+	var stepsMu sync.Mutex
+	var completedSteps []types.StepResult
+	prevStepEnd := resolveStepEnd(opts.OnStepEnd, opts.OnStepFinish)
+	opts.OnStepFinish = nil
+	opts.OnStepEnd = func(c context.Context, e ai.OnStepFinishEvent) {
+		stepsMu.Lock()
+		completedSteps = append(completedSteps, stepResultFromFinishEvent(e))
+		stepsMu.Unlock()
+		if prevStepEnd != nil {
+			prevStepEnd(c, e)
+		}
+	}
+	a, early := w.makeAgent(WorkflowStreamOptions{}, opts, false)
+	// TS runs prepareCall before it resolves tool approvals, so the hook sees
+	// the unresolved messages and its overrides reach the resume.
+	var prepared *LanguageModelCallOptions
+	if hasApprovalResponses(opts.Messages) {
+		var err error
+		if prepared, err = early.run(ctx, opts.Messages, opts.Prompt); err != nil {
+			return nil, err
+		}
+	}
+	runtimeContext := firstNonNil(opts.RuntimeContext, w.RuntimeContext)
+	toolsContext := firstNonNilMap(opts.ToolsContext, w.ToolsContext)
+	sandbox := firstNonNil(opts.ExperimentalSandbox, w.ExperimentalSandbox)
+	model := w.Model
+	toolCallConcurrencyOverride := (*int)(nil)
+	if prepared != nil {
+		opts.Messages = prepared.Messages
+		runtimeContext, toolsContext, sandbox = prepared.RuntimeContext, prepared.ToolsContext, prepared.ExperimentalSandbox
+		if prepared.Model != nil {
+			model = prepared.Model
+		}
+		if prepared.Telemetry != nil {
+			telemetrySettings = prepared.Telemetry
+		}
+		if !early.callConcurrencySet {
+			toolCallConcurrencyOverride = prepared.ToolCallConcurrency
+		}
+	}
+	modelProvider, modelID := workflowModelInfo(model)
 	// Start the workflow-level operation span before any pre-step approved
 	// tool execution, mirroring TS WorkflowAgent's telemetryDispatcher.onStart
 	// for 'ai.workflowAgent.generate' (stream-text-iterator.ts). Without this,
@@ -1831,9 +1969,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		ModelProvider:  modelProvider,
 		ModelID:        modelID,
 		Settings:       telemetrySettings,
-		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
 	})
-	toolCallConcurrency, err := resolveToolCallConcurrency(opts.ToolCallConcurrency, w.ToolCallConcurrency)
+	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
@@ -1843,9 +1981,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		initialResponse:     &initialResponseMessages,
 		messages:            opts.Messages,
 		tools:               effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts),
-		runtimeContext:      firstNonNil(opts.RuntimeContext, w.RuntimeContext),
-		toolsContext:        firstNonNilMap(opts.ToolsContext, w.ToolsContext),
-		experimentalSandbox: firstNonNil(opts.ExperimentalSandbox, w.ExperimentalSandbox),
+		runtimeContext:      runtimeContext,
+		toolsContext:        toolsContext,
+		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(WorkflowStreamOptions{}, opts),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
@@ -1855,6 +1993,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
+	}
+	if prepared != nil {
+		early.runner.resolved(opts.Messages)
 	}
 	// TS convertToLanguageModelPrompt rejects a history whose tool calls (or
 	// unresolved approval requests) lack tool results.
@@ -1870,21 +2011,6 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 		return nil, ctx.Err()
 	}
-	// Collect completed steps so OnAbort can report them (the agent loop
-	// returns no partial result on error).
-	var stepsMu sync.Mutex
-	var completedSteps []types.StepResult
-	prevStepEnd := resolveStepEnd(opts.OnStepEnd, opts.OnStepFinish)
-	opts.OnStepFinish = nil
-	opts.OnStepEnd = func(c context.Context, e ai.OnStepFinishEvent) {
-		stepsMu.Lock()
-		completedSteps = append(completedSteps, stepResultFromFinishEvent(e))
-		stepsMu.Unlock()
-		if prevStepEnd != nil {
-			prevStepEnd(c, e)
-		}
-	}
-	a := w.makeAgent(WorkflowStreamOptions{}, opts, false)
 	system := opts.System
 	var instructionMessages []types.Message
 	if opts.Instructions != nil {
@@ -1918,7 +2044,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
 		CallID:         callID,
 		Settings:       telemetrySettings,
-		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
 		FinishReason:   string(result.FinishReason),
 		ModelProvider:  modelProvider,
 		ModelID:        modelID,
@@ -2018,7 +2144,35 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if opts.Telemetry != nil {
 		telemetrySettings = opts.Telemetry
 	}
-	modelProvider, modelID := workflowModelInfo(w.Model)
+	a, early := w.makeAgent(opts, WorkflowGenerateOptions{}, true)
+	// TS runs prepareCall before it resolves tool approvals, so the hook sees
+	// the unresolved messages and its overrides reach the resume.
+	var prepared *LanguageModelCallOptions
+	if hasApprovalResponses(opts.Messages) {
+		var err error
+		if prepared, err = early.run(ctx, opts.Messages, opts.Prompt); err != nil {
+			return nil, err
+		}
+	}
+	runtimeContext := firstNonNil(opts.RuntimeContext, w.RuntimeContext)
+	toolsContext := firstNonNilMap(opts.ToolsContext, w.ToolsContext)
+	sandbox := firstNonNil(opts.ExperimentalSandbox, w.ExperimentalSandbox)
+	model := w.Model
+	toolCallConcurrencyOverride := (*int)(nil)
+	if prepared != nil {
+		opts.Messages = prepared.Messages
+		runtimeContext, toolsContext, sandbox = prepared.RuntimeContext, prepared.ToolsContext, prepared.ExperimentalSandbox
+		if prepared.Model != nil {
+			model = prepared.Model
+		}
+		if prepared.Telemetry != nil {
+			telemetrySettings = prepared.Telemetry
+		}
+		if !early.callConcurrencySet {
+			toolCallConcurrencyOverride = prepared.ToolCallConcurrency
+		}
+	}
+	modelProvider, modelID := workflowModelInfo(model)
 	// Start the workflow-level operation span before any pre-step approved
 	// tool execution, mirroring TS WorkflowAgent's telemetryDispatcher.onStart
 	// for 'ai.workflowAgent.stream' (stream-text-iterator.ts). Without this,
@@ -2032,9 +2186,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		ModelProvider:  modelProvider,
 		ModelID:        modelID,
 		Settings:       telemetrySettings,
-		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
 	})
-	toolCallConcurrency, err := resolveToolCallConcurrency(opts.ToolCallConcurrency, w.ToolCallConcurrency)
+	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
@@ -2043,9 +2197,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	opts.Messages, prefixChunks, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
 		messages:            opts.Messages,
 		tools:               effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{}),
-		runtimeContext:      firstNonNil(opts.RuntimeContext, w.RuntimeContext),
-		toolsContext:        firstNonNilMap(opts.ToolsContext, w.ToolsContext),
-		experimentalSandbox: firstNonNil(opts.ExperimentalSandbox, w.ExperimentalSandbox),
+		runtimeContext:      runtimeContext,
+		toolsContext:        toolsContext,
+		experimentalSandbox: sandbox,
 		toolApprovalSecret:  w.effectiveToolApprovalSecret(opts, WorkflowGenerateOptions{}),
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
@@ -2055,6 +2209,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
+	}
+	if prepared != nil {
+		early.runner.resolved(opts.Messages)
 	}
 	// TS stream() awaits convertToLanguageModelPrompt before returning, so a
 	// history with unresolved tool calls rejects stream() itself.
@@ -2070,7 +2227,6 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 		return nil, ctx.Err()
 	}
-	a := w.makeAgent(opts, WorkflowGenerateOptions{}, true)
 	system := opts.System
 	var instructionMessages []types.Message
 	if opts.Instructions != nil {
@@ -2108,7 +2264,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	}
 	telemetrypkg.FireOnEnd(ctx, telemetrypkg.TelemetryFinishEvent{
 		Settings:       telemetrySettings,
-		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, firstNonNil(opts.RuntimeContext, w.RuntimeContext)),
+		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
 		ModelProvider:  modelProvider,
 		ModelID:        modelID,
 	})

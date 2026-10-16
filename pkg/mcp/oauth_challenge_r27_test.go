@@ -53,3 +53,15 @@ func TestOAuthMetadataRejectsUnsafeURLSchemes(t *testing.T) {
 		}
 	}
 }
+
+// Fetch's Headers.get joins repeated WWW-Authenticate lines, so a scope or
+// resource_metadata parameter on a later Bearer line is honored.
+func TestExtractWWWAuthenticateParamsRepeatedHeaderLines(t *testing.T) {
+	r := &http.Response{Header: http.Header{}}
+	r.Header.Add("WWW-Authenticate", `Bearer error="invalid_token"`)
+	r.Header.Add("WWW-Authenticate", `Bearer scope="a b", resource_metadata="https://x.example/prm"`)
+	got := ExtractWWWAuthenticateParams(r)
+	if got.Scope != "a b" || got.ResourceMetadataURL == nil || got.ResourceMetadataURL.String() != "https://x.example/prm" {
+		t.Fatalf("got %+v", got)
+	}
+}

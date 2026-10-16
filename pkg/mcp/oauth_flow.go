@@ -67,6 +67,11 @@ func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions
 	}
 
 	if IsInvalidClientError(err) || IsUnauthorizedClientError(err) {
+		// TS short-circuits: with an authorization code in flight the original
+		// error is thrown without asking the provider anything.
+		if options.HasAuthorizationCode {
+			return "", err
+		}
 		dynamic := false
 		if reporter, ok := provider.(OAuthDynamicRegistrationReporter); ok {
 			var reporterErr error
@@ -75,7 +80,7 @@ func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions
 				return "", reporterErr
 			}
 		}
-		if options.HasAuthorizationCode || !dynamic {
+		if !dynamic {
 			// Return the original invalid_client/unauthorized_client error
 			// (not the reporter's own nil error) so the caller sees why
 			// authorization failed.
