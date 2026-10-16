@@ -45,3 +45,26 @@ func TestOpenTelemetryEmbedUsageReadsTokensField(t *testing.T) {
 		})
 	}
 }
+
+// JSON.stringify leaves <, > and & literal; the span attributes must not carry
+// Go's HTML escapes (<).
+func TestDecideSpanAttributesAreNotHTMLEscaped(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	integration.OnDecideStart(context.Background(), DecideStartEvent{
+		Settings: settings, CallID: "d1", OperationID: "ai.decide",
+		State: map[string]string{"q": "a<b>&c"},
+	})
+	integration.OnDecideEnd(context.Background(), DecideEndEvent{DecideStartEvent: DecideStartEvent{Settings: settings, CallID: "d1"}})
+	span := findSpan(rec, "ai.decide")
+	if span == nil {
+		t.Fatal("no ai.decide span")
+	}
+	v, ok := attrValue(span, "ai.decision.state")
+	if !ok || v.(string) != `{"q":"a<b>&c"}` {
+		t.Fatalf("ai.decision.state = %v ok=%v", v, ok)
+	}
+}

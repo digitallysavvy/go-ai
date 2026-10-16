@@ -2,10 +2,11 @@ package telemetry
 
 import (
 	"context"
-	"encoding/json"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ func jsonAttr(key string, v interface{}) (attribute.KeyValue, bool) {
 	if v == nil {
 		return attribute.KeyValue{}, false
 	}
-	b, err := json.Marshal(v)
+	b, err := jsonstr.Marshal(v)
 	if err != nil {
 		return attribute.KeyValue{}, false
 	}
