@@ -621,3 +621,51 @@ func TestNewStreamTextResultFromParts_TextIsFinalStepOnly(t *testing.T) {
 		t.Fatalf("Text() = %q, want final step only", got)
 	}
 }
+
+// TS HarnessStreamTextResult records text-end citations on the text part and
+// records an automatic tool-approval-response in the step content, while a
+// continuation response arriving between steps never opens or alters a step.
+func TestNewStreamTextResultFromParts_TextEndCitationsAndApprovalResponses(t *testing.T) {
+	t.Parallel()
+
+	call := types.ToolCall{ID: "call_1", ToolName: "rm", Arguments: map[string]interface{}{}}
+	src := testutil.NewMockTextStream([]provider.StreamChunk{
+		// Continuation response before any step: not part of a step.
+		{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{ApprovalID: "old", ToolCallID: "old_call", Approved: true}},
+		{Type: provider.ChunkTypeStreamStart},
+		{Type: provider.ChunkTypeTextStart, ID: "t1"},
+		{Type: provider.ChunkTypeText, ID: "t1", Text: "See Go."},
+		{Type: provider.ChunkTypeTextEnd, ID: "t1", Citations: testCitations()},
+		{Type: provider.ChunkTypeToolCall, ToolCall: &call},
+		{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &types.ToolApprovalRequestContent{ApprovalID: "a1", ToolCallID: "call_1", ToolCall: call, IsAutomatic: true}},
+		{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{ApprovalID: "a1", ToolCallID: "call_1", ToolCall: call, Approved: false, Reason: "no"}},
+		{Type: provider.ChunkTypeFinishStep, FinishReason: types.FinishReasonToolCalls},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{Provider: "harness", ModelID: "m"})
+	if err := result.Err(); err != nil {
+		t.Fatalf("Err() = %v", err)
+	}
+	steps := result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(steps))
+	}
+	var citations, responses int
+	for _, part := range steps[0].Content {
+		switch p := part.(type) {
+		case types.TextContent:
+			citations += len(p.Citations)
+		case types.ToolApprovalResponseContent:
+			responses++
+			if p.ApprovalID != "a1" {
+				t.Errorf("unexpected approval response %q recorded in step content", p.ApprovalID)
+			}
+		}
+	}
+	if citations != 2 {
+		t.Errorf("text citations = %d, want 2", citations)
+	}
+	if responses != 1 {
+		t.Errorf("approval responses in step content = %d, want 1", responses)
+	}
+}
