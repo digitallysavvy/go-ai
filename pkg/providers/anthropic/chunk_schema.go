@@ -394,7 +394,8 @@ var (
 		f("archived_at", zNullish(zString)), f("cancel_initiated_at", zNullish(zString)),
 		f("ended_at", zNullish(zString)), f("results_url", zNullish(zString)),
 	)
-	zBatchList = zObject(
+	zBatchResultLine = zObject(f("custom_id", zString), f("result", zUnknown))
+	zBatchList       = zObject(
 		f("data", zArray(zBatchResponse)), f("has_more", zBoolean), f("last_id", zNullish(zString)),
 	)
 	zFileUpload = zObject(

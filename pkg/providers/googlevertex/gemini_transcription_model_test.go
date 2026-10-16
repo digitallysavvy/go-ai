@@ -316,3 +316,28 @@ func TestChirpTranscriptionResponseJoinAndOptions(t *testing.T) {
 	var ia *providererrors.InvalidArgumentError
 	require.ErrorAs(t, err, &ia)
 }
+
+// TestGeminiTranscriptionModel_NullishEdgeCases: TS skips only a null word,
+// `language ??=` keeps the first non-null code (even ""), and an empty
+// usageMetadata object is still forwarded.
+func TestGeminiTranscriptionModel_NullishEdgeCases(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[
+			{"audioTranscription":{"text":"a","languageCode":"","words":[
+				{"word":"","startOffset":"0s","endOffset":"1s"},
+				{"word":null,"startOffset":"1s","endOffset":"2s"}]}},
+			{"audioTranscription":{"text":"b","languageCode":"en-US"}}]}}],
+			"usageMetadata":{}}`))
+	}))
+	defer server.Close()
+
+	model := NewGeminiTranscriptionModel(newVertexTestProvider(t, server.URL), ModelGemini35Transcribe)
+	result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	require.NoError(t, err)
+	assert.Equal(t, "", result.Language)
+	require.Len(t, result.Segments, 1)
+	assert.Equal(t, "", result.Segments[0].Text)
+	assert.NotNil(t, result.ProviderUsage)
+	assert.NotNil(t, result.ProviderMetadata["google"])
+}

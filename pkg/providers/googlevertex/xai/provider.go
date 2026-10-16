@@ -160,7 +160,7 @@ func (p *Provider) resolve() (Config, *internalhttp.Client, error) {
 	}
 	authedClient := &http.Client{
 		Timeout:   timeout,
-		Transport: &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken()},
+		Transport: &vertexinternal.AuthTransport{Base: baseTransport, TokenFunc: cfg.resolveAuthToken(), OverrideAuthorization: true},
 	}
 
 	p.client = internalhttp.NewClient(internalhttp.Config{

@@ -644,6 +644,14 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 		if len(line) == 0 {
 			continue
 		}
+		// TS createJsonLinesResponseHandler(anthropicBatchResultLineSchema): a
+		// line that is not JSON (JSONParseError) or lacks a string custom_id
+		// (TypeValidationError) fails the stream.
+		if err := anthropicBatchLineError(line); err != nil {
+			s.err = err
+			_ = s.body.Close()
+			return nil, err
+		}
 		var wire anthropicBatchResultLineWire
 		if err := json.Unmarshal(line, &wire); err != nil {
 			s.err = err
@@ -651,6 +659,19 @@ func (s *anthropicBatchResultsStream) Next() (*provider.BatchV4ItemResult, error
 		}
 		return s.convertResult(wire), nil
 	}
+}
+
+// anthropicBatchLineError validates one results line against
+// anthropicBatchResultLineSchema ({custom_id: string, result: unknown}).
+func anthropicBatchLineError(line []byte) error {
+	if syntax := json.Unmarshal(line, new(interface{})); syntax != nil {
+		return providererrors.NewJSONParseError(string(line), syntax)
+	}
+	message := zodlite.ValidationMessage(zBatchResultLine, string(line))
+	if message == "" {
+		return nil
+	}
+	return providererrors.NewValidationErrorWithContext(compactJSON(string(line)), validationIssueText(message), nil, &providererrors.ValidationContext{})
 }
 
 func (s *anthropicBatchResultsStream) convertResult(wire anthropicBatchResultLineWire) *provider.BatchV4ItemResult {

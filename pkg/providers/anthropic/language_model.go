@@ -197,7 +197,9 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	stream.markCodeExecutionDynamic = req.markCodeExecutionDynamic
 	stream.providerOptionsName = req.providerOptionsName
 	stream.usedCustomProviderKey = req.usedCustomProviderKey
-	stream.requestBody = body
+	// TS doStream reports `request: {body}` with the args before
+	// transformRequestBody, like doGenerate.
+	stream.requestBody = req.body
 	stream.includeRawChunks = opts.IncludeRawChunks
 	stream.citationDocuments = extractCitationDocuments(opts.Prompt.Messages)
 	stream.generateID = m.provider.config.GenerateID
@@ -603,6 +605,18 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 			serverToolProviderNames[content.ID] = content.Name
 			if tc, ok := serverToolUseCall(content, toolNameMap, co.markCodeExecutionDynamic); ok {
 				addToolCall(blockIdx, tc)
+			} else if co.rawBatchCitations {
+				// TS convertAnthropicBatchResponse emits every server_tool_use
+				// (the schema only requires a string name), unlike doGenerate,
+				// which ignores names it does not know.
+				addToolCall(blockIdx, types.ToolCall{
+					ID:               content.ID,
+					ToolName:         content.Name,
+					Arguments:        content.Input,
+					RawArguments:     inputText(content.RawInput, content.Input),
+					ProviderExecuted: true,
+					ProviderMetadata: anthropicCallerMetadata(content.Caller),
+				})
 			}
 		case "mcp_tool_use":
 			// MCP tool calls are executed server-side; surface them as
@@ -1205,10 +1219,18 @@ func (m *LanguageModel) handleError(err error) error {
 		jsonPart := msg[idx+2:]
 		var body anthropicErrorBody
 		if jsonErr := json.Unmarshal([]byte(jsonPart), &body); jsonErr == nil && body.Error.Type != "" {
-			return providererrors.NewProviderError("anthropic", 0, body.Error.Type, body.Error.Message, err)
+			return providererrors.NewProviderError(m.errorProviderName(), 0, body.Error.Type, body.Error.Message, err)
 		}
 	}
-	return providererrors.NewProviderError("anthropic", 0, "", msg, err)
+	return providererrors.NewProviderError(m.errorProviderName(), 0, "", msg, err)
+}
+
+// errorProviderName is the provider name attributed to non-HTTP failures.
+func (m *LanguageModel) errorProviderName() string {
+	if m.provider == nil {
+		return "anthropic"
+	}
+	return m.provider.Name()
 }
 
 // anthropicMaxOutputTokens returns the maximum output tokens for a model.
@@ -2253,9 +2275,8 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// previous message_delta (and is 0 before the first one).
 				s.usage.CacheReadInputTokens = msg.Message.Usage.CacheReadInputTokens
 				s.usage.CacheCreationInputTokens = msg.Message.Usage.CacheCreationInputTokens
-				if len(msg.Message.Usage.Iterations) > 0 {
-					s.usage.Iterations = msg.Message.Usage.Iterations
-				}
+				// TS message_start does not read usage.iterations; only
+				// message_delta sets them.
 
 				// Capture container info (present when container was used/created).
 				// In message_start it contains id and expires_at but no skills.
@@ -2701,7 +2722,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					Code        json.RawMessage `json:"code"`
 					StatusCode  *int            `json:"statusCode"`
 					IsRetryable *bool           `json:"isRetryable"`
-					Data        interface{}     `json:"data"`
+					Data        json.RawMessage `json:"data"`
 				} `json:"error"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &errEvent); err != nil {
@@ -2728,9 +2749,18 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 			if len(errEvent.Error.Code) > 0 {
 				json.Unmarshal(errEvent.Error.Code, &code) //nolint:errcheck
 			}
-			data := errEvent.Error.Data
-			if data == nil {
-				data = errEvent.Error
+			// TS `'data' in error ? error.data : error`: an explicit data key
+			// (even null) is the data; otherwise it is the parsed error object,
+			// which keeps only the keys the event carried.
+			var data interface{}
+			if len(errEvent.Error.Data) > 0 {
+				_ = json.Unmarshal(errEvent.Error.Data, &data)
+			} else {
+				var present map[string]json.RawMessage
+				_ = json.Unmarshal([]byte(event.Data), &struct {
+					Error *map[string]json.RawMessage `json:"error"`
+				}{Error: &present})
+				data = anthropicStreamErrorData(present)
 			}
 			chunkErr := providererrors.NewStreamProviderError(errEvent.Error.Message, "anthropic", errEvent.Error.Type, code, statusCode, isRetryable, data)
 			return &provider.StreamChunk{Type: provider.ChunkTypeError, Text: errEvent.Error.Message, Err: chunkErr}, nil
@@ -2765,6 +2795,23 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 		continue
 
 	}
+}
+
+// anthropicStreamErrorData rebuilds the zod-parsed `error` object of an error
+// event: only the keys the event carried, in schema order.
+func anthropicStreamErrorData(present map[string]json.RawMessage) *orderedStreamErrorData {
+	return &orderedStreamErrorData{
+		Type: present["type"], Message: present["message"], Code: present["code"],
+		StatusCode: present["statusCode"], IsRetryable: present["isRetryable"],
+	}
+}
+
+type orderedStreamErrorData struct {
+	Type        json.RawMessage `json:"type,omitempty"`
+	Message     json.RawMessage `json:"message,omitempty"`
+	Code        json.RawMessage `json:"code,omitempty"`
+	StatusCode  json.RawMessage `json:"statusCode,omitempty"`
+	IsRetryable json.RawMessage `json:"isRetryable,omitempty"`
 }
 
 // issueFinish returns the next chunk of the end-of-stream sequence: any

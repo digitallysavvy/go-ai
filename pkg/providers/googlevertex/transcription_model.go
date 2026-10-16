@@ -21,6 +21,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
+	"golang.org/x/text/language"
 )
 
 type TranscriptionModel struct {
@@ -229,9 +230,9 @@ type vertexTranscriptionResponse struct {
 		Alternatives []struct {
 			Transcript string `json:"transcript"`
 			Words      []struct {
-				Word        string `json:"word"`
-				StartOffset string `json:"startOffset"`
-				EndOffset   string `json:"endOffset"`
+				Word        *string `json:"word"`
+				StartOffset string  `json:"startOffset"`
+				EndOffset   string  `json:"endOffset"`
 			} `json:"words"`
 		} `json:"alternatives"`
 		LanguageCode string `json:"languageCode"`
@@ -261,8 +262,9 @@ func convertVertexTranscriptionResponse(resp vertexTranscriptionResponse, modelI
 		for _, word := range alt.Words {
 			start, okStart := parseGoogleDuration(word.StartOffset)
 			end, okEnd := parseGoogleDuration(word.EndOffset)
-			if word.Word != "" && okStart && okEnd {
-				segments = append(segments, types.TranscriptionTimestamp{Text: word.Word, Start: start, End: end})
+			// TS only skips a null/absent word; an empty string is kept.
+			if word.Word != nil && okStart && okEnd {
+				segments = append(segments, types.TranscriptionTimestamp{Text: *word.Word, Start: start, End: end})
 			}
 		}
 	}
@@ -313,16 +315,29 @@ func parseGoogleDuration(value string) (float64, bool) {
 
 var leadingFloatRE = regexp.MustCompile(`^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?`)
 
+// iso6391 ports TS convertBcp47ToIso6391: new Intl.Locale(value).language,
+// kept only when it is a two-letter code. Intl.Locale canonicalizes the
+// language subtag (case-insensitive, legacy and three-letter aliases such as
+// "eng" -> "en", "iw" -> "he", "cmn" -> "zh") and throws on a malformed tag.
 func iso6391(value string) string {
-	if value == "" {
+	if value == "" || strings.Contains(value, "_") {
 		return ""
 	}
-	if strings.HasPrefix(value, "cmn-") {
-		return "zh"
+	first := strings.ToLower(strings.SplitN(value, "-", 2)[0])
+	if first == "und" || first == "x" || first == "i" {
+		return ""
 	}
-	parts := strings.Split(value, "-")
-	if len(parts[0]) == 2 {
-		return parts[0]
+	tag, err := language.Parse(value)
+	if err != nil {
+		return ""
+	}
+	base, _ := tag.Base()
+	code := base.String()
+	if code == "cmn" {
+		code = "zh"
+	}
+	if len(code) == 2 {
+		return code
 	}
 	return ""
 }
