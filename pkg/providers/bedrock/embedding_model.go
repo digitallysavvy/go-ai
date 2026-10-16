@@ -239,7 +239,7 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
-	if err := validateEmbeddingResponse(respBody); err != nil {
+	if err := bedrockValidator(zbEmbedding)(resp.StatusCode, resp.Header, respBody); err != nil {
 		return nil, err
 	}
 
@@ -579,7 +579,7 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
-	if err := validateEmbeddingResponse(respBody); err != nil {
+	if err := bedrockValidator(zbEmbedding)(resp.StatusCode, resp.Header, respBody); err != nil {
 		return nil, err
 	}
 	var parsed struct {
@@ -625,17 +625,4 @@ func (m *EmbeddingModel) doEmbedCohereBatch(ctx context.Context, inputs []string
 		},
 		Responses: []types.EmbeddingResponse{{Headers: providerutils.ExtractHeaders(resp.Header)}},
 	}, nil
-}
-
-// validateEmbeddingResponse is the schema check TS createJsonResponseHandler
-// runs on the embedding response; a mismatch is an APICallError.
-func validateEmbeddingResponse(body []byte) error {
-	var generic interface{}
-	if err := json.Unmarshal(body, &generic); err != nil {
-		return providererrors.NewProviderError("amazon-bedrock", 0, "", "Invalid JSON response", err)
-	}
-	if verr := checkEmbeddingResponse(generic); verr != nil {
-		return invalidConverseResponseError(verr)
-	}
-	return nil
 }

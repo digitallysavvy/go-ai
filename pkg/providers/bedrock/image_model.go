@@ -127,6 +127,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	// TS createJsonResponseHandler(amazonBedrockImageResponseSchema).
+	if err := bedrockValidator(zbImage)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	return m.convertResponse(respBody, resp.Header, warnings)
 }
 
@@ -277,12 +281,6 @@ func (m *ImageModel) convertResponse(body []byte, headers http.Header, warnings 
 		Details map[string]interface{} `json:"details"`
 	}
 
-	var generic interface{}
-	if json.Unmarshal(body, &generic) == nil {
-		if verr := checkImageResponse(generic); verr != nil {
-			return nil, invalidConverseResponseError(verr)
-		}
-	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}

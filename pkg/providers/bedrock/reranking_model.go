@@ -82,7 +82,7 @@ func (m *RerankingModel) DoRerank(ctx context.Context, opts *provider.RerankOpti
 		return nil, bedrockAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
-	if err := validateRerankResponse(respBody); err != nil {
+	if err := bedrockValidator(zbRerank)(resp.StatusCode, resp.Header, respBody); err != nil {
 		return nil, err
 	}
 	var parsed struct {

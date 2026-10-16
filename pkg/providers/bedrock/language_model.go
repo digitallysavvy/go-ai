@@ -804,6 +804,10 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, bedrockConverseGenerateAPIError(resp.StatusCode, respBody, providerutils.ExtractHeaders(resp.Header))
 	}
 
+	// TS createJsonResponseHandler(AmazonBedrockResponseSchema).
+	if err := bedrockValidator(zbConverse)(resp.StatusCode, resp.Header, respBody); err != nil {
+		return nil, err
+	}
 	result, err := m.convertConverseResponse(respBody, args.UsesJSONInstruction, args.UsesJSONResponseTool)
 	if err != nil {
 		return nil, err
@@ -887,14 +891,6 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("failed to decode Bedrock Converse response: %w", err)
 	}
-	// TS validates the whole body against AmazonBedrockResponseSchema.
-	var generic interface{}
-	if err := json.Unmarshal(body, &generic); err == nil {
-		if verr := validateConverseResponse(generic); verr != nil {
-			return nil, invalidConverseResponseError(verr)
-		}
-	}
-
 	result := &types.GenerateResult{RawResponse: json.RawMessage(body)}
 	isMistral := isMistralModel(m.modelID)
 
