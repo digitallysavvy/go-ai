@@ -267,3 +267,29 @@ func TestLanguageModel_DoGenerate_InvalidResponseSchema(t *testing.T) {
 	assert.Equal(t, "Invalid JSON response", perr.Message)
 	assert.Equal(t, 200, perr.StatusCode)
 }
+
+// TS openai-compatible getArgs: strict defaults to true, unknown
+// providerOptions[googleVertex] keys are spread into the body, an "xai" key
+// is not read, and reasoning_effort is stripped by transformRequestBody.
+func TestLanguageModel_ProviderOptionsLikeTS(t *testing.T) {
+	prov, err := New(Config{Project: "p", AccessToken: "t", BaseURL: "http://unused"})
+	require.NoError(t, err)
+	model, err := prov.LanguageModel(ModelGrok41FastReasoning)
+	require.NoError(t, err)
+	lm := model.(*LanguageModel)
+	body, _ := lm.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt:         types.Prompt{Text: "hi"},
+		ResponseFormat: &provider.ResponseFormat{Type: "json", Schema: map[string]interface{}{"type": "object"}},
+		ProviderOptions: map[string]interface{}{
+			"googleVertex": map[string]interface{}{"customFlag": true, "user": "u1", "reasoningEffort": "low"},
+			"xai":          map[string]interface{}{"otherFlag": 1},
+		},
+	}, false)
+	assert.Equal(t, true, body["customFlag"])
+	assert.Equal(t, "u1", body["user"])
+	assert.NotContains(t, body, "otherFlag")
+	assert.NotContains(t, body, "reasoning_effort")
+	rf := body["response_format"].(map[string]interface{})
+	js := rf["json_schema"].(map[string]interface{})
+	assert.Equal(t, true, js["strict"])
+}

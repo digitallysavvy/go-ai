@@ -72,7 +72,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, err
 	}
 	warnings := m.checkUnsupportedOptions(opts)
-	reqBody := m.buildRequestBody(opts, false)
+	reqBody, bodyWarnings := m.buildRequestBodyWithWarnings(opts, false)
+	warnings = append(bodyWarnings, warnings...)
 	var response vertexXaiResponse
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
@@ -107,7 +108,8 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		return nil, err
 	}
 	warnings := m.checkUnsupportedOptions(opts)
-	reqBody := m.buildRequestBody(opts, true)
+	reqBody, bodyWarnings := m.buildRequestBodyWithWarnings(opts, true)
+	warnings = append(bodyWarnings, warnings...)
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/chat/completions",
@@ -140,6 +142,11 @@ func (m *LanguageModel) checkUnsupportedOptions(opts *provider.GenerateOptions) 
 }
 
 func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream bool) map[string]interface{} {
+	body, _ := m.buildRequestBodyWithWarnings(opts, stream)
+	return body
+}
+
+func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOptions, stream bool) (map[string]interface{}, []types.Warning) {
 	body := map[string]interface{}{
 		"model": m.modelID,
 	}
@@ -171,17 +178,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if opts.TopP != nil {
 		body["top_p"] = *opts.TopP
 	}
-	if opts.FrequencyPenalty != nil {
-		body["frequency_penalty"] = *opts.FrequencyPenalty
-	}
-	if opts.PresencePenalty != nil {
-		body["presence_penalty"] = *opts.PresencePenalty
-	}
 	if len(opts.StopSequences) > 0 {
 		body["stop"] = opts.StopSequences
-	}
-	if opts.Seed != nil {
-		body["seed"] = *opts.Seed
 	}
 	if len(opts.Tools) > 0 {
 		functionTools, _ := tool.DropProviderDefinedTools(opts.Tools, nil)
@@ -190,25 +188,26 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(opts.ToolChoice)
 		}
 	}
+	// providerOptions.googleVertex: the chat option fields (user,
+	// reasoningEffort, textVerbosity, strictJsonSchema) plus, as in TS
+	// getArgs, every other key spread straight into the request body.
+	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("googleVertex", opts.ProviderOptions)
+	// topK is warned about in checkUnsupportedOptions.
+	_ = providerutils.ApplyOpenAICompatibleCallSettings(body, opts.FrequencyPenalty, opts.PresencePenalty, opts.Seed, nil, "googleVertex", opts.ProviderOptions)
+	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
 	responseFormat, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs:         true,
+		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
 		WarnWhenSchemaUnsupported: true,
 	})
 	if responseFormat != nil {
 		body["response_format"] = responseFormat
 	}
 
-	// Generic openai-compatible provider options
-	// (providerOptions.googleVertex / .xai), including reasoning_effort --
-	// which is then unconditionally stripped below, mirroring TS
+	// reasoning_effort is applied here and then stripped below, mirroring TS
 	// transformGoogleVertexXaiRequestBody exactly: Vertex's Grok MaaS
 	// endpoint rejects the field even though xAI's own API and the generic
 	// openai-compatible mapping both support it.
-	compatibleOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("googleVertex", opts.ProviderOptions)
-	xaiOptions, _ := providerutils.ResolveOpenAICompatibleProviderOptions("xai", opts.ProviderOptions)
-	for k, v := range xaiOptions {
-		compatibleOptions[k] = v
-	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	if effort := reasoningEffortFromTopLevel(opts.Reasoning); effort != "" {
 		if _, alreadySet := body["reasoning_effort"]; !alreadySet {
@@ -216,7 +215,7 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 
-	return stripReasoningEffort(body)
+	return stripReasoningEffort(body), warnings
 }
 
 // reasoningEffortFromTopLevel maps the shared opts.Reasoning level to the
