@@ -615,6 +615,9 @@ func (p *Provider) GetCredits(ctx context.Context) (*CreditsInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := providerutils.MediaResponseValidator("gateway", providerutils.SchemaGatewayCredits)(http.StatusOK, http.Header{}, body); err != nil {
+		return nil, p.handleErrorWithContext(ctx, err)
+	}
 	var wire struct {
 		Balance   string `json:"balance"`
 		TotalUsed string `json:"total_used"`

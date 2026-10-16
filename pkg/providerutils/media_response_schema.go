@@ -110,6 +110,14 @@ const (
 	SchemaDeepSeekFile      MediaResponseSchema = "deepseek-file"
 	SchemaGatewayBatchStart MediaResponseSchema = "gateway-batch-start"
 	SchemaGatewayBatchState MediaResponseSchema = "gateway-batch-status"
+	// SchemaMistralSpeech and SchemaXAISpeechTimestamps are the JSON speech
+	// bodies (mistralSpeechResponseSchema, xaiSpeechTimestampsResponseSchema).
+	SchemaMistralSpeech       MediaResponseSchema = "mistral-speech"
+	SchemaXAISpeechTimestamps MediaResponseSchema = "xai-speech-timestamps"
+	// SchemaGatewayCredits and SchemaGatewayGenerationInfo are
+	// gatewayCreditsResponseSchema and gatewayGenerationInfoResponseSchema.
+	SchemaGatewayCredits        MediaResponseSchema = "gateway-credits"
+	SchemaGatewayGenerationInfo MediaResponseSchema = "gateway-generation-info"
 	// SchemaFalSpeech is falSpeechResponseSchema.
 	SchemaFalSpeech  MediaResponseSchema = "fal-speech"
 	SchemaFalJob     MediaResponseSchema = "fal-job"
@@ -155,6 +163,23 @@ func zNonEmptyArr(n zNode) zNode {
 		}
 		return nil
 	}
+}
+
+// zTuple2Num is z.tuple([z.number(), z.number()]).
+func zTuple2Num(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+	a, ok := v.([]interface{})
+	if !ok {
+		return zodlite.Invalid("array", v, present, path)
+	}
+	if len(a) != 2 {
+		return &zodlite.Issue{Path: path, Code: "invalid_type", Message: "Invalid input: expected array of 2 numbers"}
+	}
+	for i, e := range a {
+		if bad := zNum(e, true, append(append([]interface{}{}, path...), i)); bad != nil {
+			return bad
+		}
+	}
+	return nil
 }
 
 func zNumVec() zNode { return zArr(zNum) }
@@ -379,8 +404,18 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		SchemaGatewayBatchStart: zObj(append(append([]zFld{}, gatewayBatchStatus...), fl("batchId", zStr),
 			fl("warnings", zNullish(zArr(zObj(fl("requestId", nStr), fl("warning", zAny))))))...),
 		SchemaGatewayBatchState: zObj(gatewayBatchStatus...),
-		SchemaFalSpeech:         zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
-		SchemaFalJob:            zObj(fl("request_id", nStr)),
+		SchemaMistralSpeech:     zObj(fl("audio_data", zStr)),
+		SchemaXAISpeechTimestamps: zObj(fl("audio", nStr), fl("content_type", nStr), fl("duration", nNum),
+			fl("audio_timestamps", zNullish(zObj(fl("graph_chars", zArr(zStr)),
+				fl("graph_times", zArr(zTuple2Num)))))),
+		SchemaGatewayCredits: zObj(fl("balance", zStr), fl("total_used", zStr)),
+		SchemaGatewayGenerationInfo: zObj(fl("data", zObj(fl("id", zStr), fl("total_cost", zNum), fl("upstream_inference_cost", zNum),
+			fl("usage", zNum), fl("created_at", zStr), fl("model", zStr), fl("is_byok", zodlite.Boolean), fl("provider_name", zStr),
+			fl("streamed", zodlite.Boolean), fl("finish_reason", zStr), fl("latency", zNum), fl("generation_time", zNum),
+			fl("native_tokens_prompt", zNum), fl("native_tokens_completion", zNum), fl("native_tokens_reasoning", zNum),
+			fl("native_tokens_cached", zNum), fl("native_tokens_cache_creation", zNum), fl("billable_web_search_calls", zNum)))),
+		SchemaFalSpeech: zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
+		SchemaFalJob:    zObj(fl("request_id", nStr)),
 		SchemaFalTranscr: zObj(fl("text", zStr),
 			fl("chunks", zNullish(zArr(zObj(fl("text", zStr), fl("timestamp", zNullish(zArr(zNum))))))),
 			fl("inferred_languages", zNullish(zArr(zStr)))),
