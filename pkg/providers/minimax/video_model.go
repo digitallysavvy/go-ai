@@ -309,6 +309,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 
 	var finalStatus *provider.VideoModelV3OperationStatusResult
 	var jobFailureErr error
+	var statusCheckErr error
 
 	checker := func(ctx context.Context) (*polling.JobResult, error) {
 		status, statusErr, err := m.getStatus(ctx, &provider.VideoModelV3StatusOptions{
@@ -316,6 +317,7 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 			Headers:   opts.Headers,
 		})
 		if err != nil {
+			statusCheckErr = err
 			return nil, err
 		}
 		switch status.Status {
@@ -340,6 +342,10 @@ func (m *VideoModel) DoGenerate(ctx context.Context, opts *provider.VideoModelV3
 		}
 		if jobFailureErr != nil {
 			return nil, jobFailureErr
+		}
+		if statusCheckErr != nil && ctx.Err() == nil && !strings.Contains(pollErr.Error(), "polling timeout") {
+			// TS lets the getFromApi / schema error propagate unchanged.
+			return nil, statusCheckErr
 		}
 		if strings.Contains(pollErr.Error(), "polling timeout") || strings.Contains(pollErr.Error(), "max polling attempts") {
 			return nil, NewTimeoutError(fmt.Sprintf("MiniMax video generation timed out after %dms. Task ID: %s", pollTimeoutMs, op.TaskID))
