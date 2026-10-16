@@ -527,8 +527,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 
 	var createResp alibabaVideoCreateResponse
 	httpResp, err := m.prov.videoClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method: "POST",
-		Path:   "/api/v1/services/aigc/video-generation/video-synthesis",
+		ValidateResponse: providerutils.MediaResponseValidator("alibaba", providerutils.SchemaAlibabaVideoTask),
+		Method:           "POST",
+		Path:             "/api/v1/services/aigc/video-generation/video-synthesis",
 		Body: map[string]interface{}{
 			"model":      m.modelID,
 			"input":      req.Input,
@@ -576,9 +577,10 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	var statusResp alibabaVideoStatusResponse
 	httpResp, err := m.prov.videoClient.DoJSONResponse(ctx, internalhttp.Request{
-		Method:  "GET",
-		Path:    "/api/v1/tasks/" + providerutils.EncodePathSegment(operation.TaskID),
-		Headers: opts.Headers,
+		ValidateResponse: providerutils.MediaResponseValidator("alibaba", providerutils.SchemaAlibabaVideoStat),
+		Method:           "GET",
+		Path:             "/api/v1/tasks/" + providerutils.EncodePathSegment(operation.TaskID),
+		Headers:          opts.Headers,
 	}, &statusResp)
 	if err != nil {
 		return nil, m.handleError(err)

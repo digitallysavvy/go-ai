@@ -77,6 +77,21 @@ const (
 	// cartesiaTranscriptionResponseSchema and cartesiaAccessTokenResponseSchema.
 	SchemaCartesiaTranscription MediaResponseSchema = "cartesia-transcription"
 	SchemaCartesiaAccessToken   MediaResponseSchema = "cartesia-access-token"
+	// SchemaKlingAICreate and SchemaKlingAIStatus are klingaiCreateTaskSchema
+	// and klingaiTaskStatusSchema.
+	SchemaKlingAICreate MediaResponseSchema = "klingai-create"
+	SchemaKlingAIStatus MediaResponseSchema = "klingai-status"
+	// SchemaMiniMaxCreate and SchemaMiniMaxStatus are
+	// minimaxCreateVideoResponseSchema and minimaxVideoStatusResponseSchema.
+	SchemaMiniMaxCreate MediaResponseSchema = "minimax-create"
+	SchemaMiniMaxStatus MediaResponseSchema = "minimax-status"
+	// Video task bodies: ByteDance, Alibaba, Topaz.
+	SchemaByteDanceTask    MediaResponseSchema = "bytedance-task"
+	SchemaByteDanceStatus  MediaResponseSchema = "bytedance-status"
+	SchemaAlibabaVideoTask MediaResponseSchema = "alibaba-video-task"
+	SchemaAlibabaVideoStat MediaResponseSchema = "alibaba-video-status"
+	SchemaTopazVideoCreate MediaResponseSchema = "topaz-video-create"
+	SchemaTopazVideoStatus MediaResponseSchema = "topaz-video-status"
 	// SchemaFalSpeech is falSpeechResponseSchema.
 	SchemaFalSpeech  MediaResponseSchema = "fal-speech"
 	SchemaFalJob     MediaResponseSchema = "fal-job"
@@ -264,8 +279,42 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		SchemaCartesiaTranscription: zObj(fl("text", zStr), fl("language", nStr), fl("duration", nNum),
 			fl("words", zNullish(zArr(zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum)))))),
 		SchemaCartesiaAccessToken: zObj(fl("token", zNonEmptyStr)),
-		SchemaFalSpeech:           zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
-		SchemaFalJob:              zObj(fl("request_id", nStr)),
+		SchemaKlingAICreate: zObj(fl("code", zNum), fl("message", zStr), fl("request_id", nStr),
+			fl("data", zNullish(zObj(fl("task_id", zStr), fl("task_status", nStr),
+				fl("task_info", zNullish(zObj(fl("external_task_id", nStr)))), fl("created_at", nNum), fl("updated_at", nNum))))),
+		SchemaKlingAIStatus: zObj(fl("code", zNum), fl("message", zStr), fl("request_id", nStr),
+			fl("data", zNullish(zObj(fl("task_id", zStr), fl("task_status", zStr), fl("task_status_msg", nStr),
+				fl("task_info", zNullish(zObj(fl("external_task_id", nStr)))),
+				fl("watermark_info", zNullish(zObj(fl("enabled", zNullish(zodlite.Boolean))))),
+				fl("final_unit_deduction", nStr), fl("created_at", nNum), fl("updated_at", nNum),
+				fl("task_result", zNullish(zObj(fl("videos", zNullish(zArr(zObj(fl("id", nStr), fl("url", nStr),
+					fl("watermark_url", nStr), fl("duration", nStr)))))))))))),
+		SchemaMiniMaxCreate: zObj(fl("task_id", nStr)),
+		SchemaMiniMaxStatus: zObj(fl("task", zObj(fl("id", nStr), fl("status", nStr),
+			fl("content", zNullish(zObj(fl("url", nStr)))), fl("resolution", nStr), fl("duration", nNum), fl("ratio", nStr),
+			fl("usage", zNullish(zObj(fl("total_seconds", nNum), fl("input_seconds", nNum), fl("output_seconds", nNum)))),
+			fl("error", zNullish(zObj(fl("code", zNullish(zUnionOf(zStr, zNum))), fl("message", nStr))))))),
+		SchemaByteDanceTask: zObj(fl("id", nStr)),
+		SchemaByteDanceStatus: zObj(fl("id", nStr), fl("model", nStr), fl("status", zStr),
+			fl("content", zNullish(zObj(fl("video_url", nStr), fl("last_frame_url", nStr)))),
+			fl("usage", zNullish(zObj(fl("completion_tokens", nNum)))),
+			fl("error", zNullish(zObj(fl("code", nStr), fl("message", nStr))))),
+		SchemaAlibabaVideoTask: zObj(fl("output", zNullish(zObj(fl("task_status", zStr), fl("task_id", zStr)))), fl("request_id", nStr)),
+		SchemaAlibabaVideoStat: zObj(
+			fl("output", zNullish(zObj(fl("task_id", zStr), fl("task_status", zStr), fl("video_url", nStr), fl("submit_time", nStr),
+				fl("scheduled_time", nStr), fl("end_time", nStr), fl("orig_prompt", nStr), fl("actual_prompt", nStr),
+				fl("code", nStr), fl("message", nStr)))),
+			fl("usage", zNullish(zObj(fl("duration", nNum), fl("output_video_duration", nNum), fl("input_video_duration", nNum),
+				fl("fps", nNum), fl("SR", nNum), fl("size", nStr), fl("ratio", nStr)))),
+			fl("request_id", nStr)),
+		SchemaTopazVideoCreate: zObj(fl("requestId", nStr), fl("uploadUrls", zNullish(zArr(zStr))),
+			fl("estimates", zNullish(zObj(fl("cost", zNullish(zArr(zNum))), fl("time", zNullish(zArr(zNum))))))),
+		SchemaTopazVideoStatus: zObj(fl("status", nStr), fl("message", nStr), fl("errorCode", nStr),
+			fl("outputSize", zNullish(zUnionOf(zStr, zNum))),
+			fl("estimates", zNullish(zObj(fl("cost", zNullish(zArr(zNum))), fl("time", zNullish(zArr(zNum)))))),
+			fl("download", zNullish(zObj(fl("url", nStr), fl("expiresAt", zNullish(zUnionOf(zStr, zNum))))))),
+		SchemaFalSpeech: zObj(fl("audio", zObj(fl("url", zStr))), fl("duration_ms", zOptional(zNum)), fl("request_id", zOptional(zStr))),
+		SchemaFalJob:    zObj(fl("request_id", nStr)),
 		SchemaFalTranscr: zObj(fl("text", zStr),
 			fl("chunks", zNullish(zArr(zObj(fl("text", zStr), fl("timestamp", zNullish(zArr(zNum))))))),
 			fl("inferred_languages", zNullish(zArr(zStr)))),

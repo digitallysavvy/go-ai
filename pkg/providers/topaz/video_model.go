@@ -15,6 +15,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -209,6 +210,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazVideoCreate)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var created topazVideoExpressResponse
 	if err := json.Unmarshal(resp.Body, &created); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode video express response: %w", err)
@@ -280,6 +284,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		return nil, newTopazAPIError(resp.StatusCode, resp.Body, resp.Headers)
 	}
 
+	if err := providerutils.MediaResponseValidator("topaz", providerutils.SchemaTopazVideoStatus)(resp.StatusCode, resp.Headers, resp.Body); err != nil {
+		return nil, err
+	}
 	var status topazVideoStatusResponse
 	if err := json.Unmarshal(resp.Body, &status); err != nil {
 		return nil, fmt.Errorf("topaz: failed to decode video status response: %w", err)

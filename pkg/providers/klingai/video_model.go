@@ -17,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for KlingAI
@@ -114,6 +115,9 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		return nil, parseKlingAIErrorBody(submitResp.StatusCode, submitResp.Body)
 	}
 
+	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAICreate)(submitResp.StatusCode, submitResp.Headers, submitResp.Body); err != nil {
+		return nil, err
+	}
 	var createResp createTaskResponse
 	if err := json.Unmarshal(submitResp.Body, &createResp); err != nil {
 		return nil, NewVideoGenerationError(fmt.Sprintf("failed to parse response: %v", err))
@@ -160,11 +164,19 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 
 	statusURL := strings.TrimRight(m.prov.config.BaseURL, "/") + op.EndpointPath + "/" + op.TaskID
 
-	var statusResp taskStatusResponse
-	result, err := fileutil.PollJSON(ctx, statusURL, downloadOpts, &statusResp)
+	downloaded, err := fileutil.DownloadWithMetadata(ctx, statusURL, downloadOpts)
 	if err != nil {
 		return nil, m.handlePollError(err)
 	}
+	// TS createJsonResponseHandler(klingaiTaskStatusSchema).
+	if err := providerutils.MediaResponseValidator("klingai", providerutils.SchemaKlingAIStatus)(http.StatusOK, http.Header(downloaded.Headers), downloaded.Data); err != nil {
+		return nil, err
+	}
+	var statusResp taskStatusResponse
+	if err := json.Unmarshal(downloaded.Data, &statusResp); err != nil {
+		return nil, fmt.Errorf("klingai: failed to decode status response: %w", err)
+	}
+	result := downloaded
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
 		Timestamp: time.Now(),
