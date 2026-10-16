@@ -170,7 +170,7 @@ func TestOTelIntegrationRecordsHTTPStatusOnErrorSpan(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 
 	apiErr := providererrors.NewProviderError("openai", 503, "server_error", "boom", nil)
@@ -179,7 +179,7 @@ func TestOTelIntegrationRecordsHTTPStatusOnErrorSpan(t *testing.T) {
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	integration.OnError(ctx, TelemetryErrorEvent{Settings: settings, Error: retryErr})
 
-	span := findSpan(rec, "ai.generateText")
+	span := rec.Ended()[0]
 	v, ok := attrValue(span, "http.response.status_code")
 	if !ok || v.(int64) != 503 {
 		t.Fatalf("expected http.response.status_code=503 unwrapped from RetryError, got %v ok=%v", v, ok)
@@ -192,14 +192,14 @@ func TestOTelIntegrationDirectProviderErrorRecordsHTTPStatus(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	tracer := tp.Tracer("telemetry-test")
 
-	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings})
 	integration.OnError(ctx, TelemetryErrorEvent{
 		Settings: settings,
 		Error:    providererrors.NewProviderError("anthropic", 429, "rate_limit", "slow down", nil),
 	})
-	span := findSpan(rec, "ai.generateText")
+	span := rec.Ended()[0]
 	v, ok := attrValue(span, "http.response.status_code")
 	if !ok || v.(int64) != 429 {
 		t.Fatalf("expected http.response.status_code=429, got %v ok=%v", v, ok)

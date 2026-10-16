@@ -149,3 +149,70 @@ func TestGenAIAbortEndsDecisionModelCallSpan(t *testing.T) {
 		t.Fatalf("ended spans = %d, want 2 (decision model call + root)", n)
 	}
 }
+
+// The legacy integration also records an empty transcript (TS: 'segments' in event).
+func TestLegacyEmptyTranscriptRecorded(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.transcribe", Settings: settings, CallID: "l", ModelID: "m"})
+	integration.OnEnd(ctx, TelemetryFinishEvent{CallID: "l", OperationType: "ai.transcribe", Settings: settings})
+	if v, ok := attrValue(findSpan(rec, "ai.transcribe"), "ai.response.text"); !ok || v.(string) != "" {
+		t.Errorf("ai.response.text = %v (ok=%v), want empty string", v, ok)
+	}
+}
+
+type orderIntegration struct {
+	NoopTelemetryIntegration
+	name string
+	log  *[]string
+}
+
+func (o orderIntegration) ExecuteTool(ctx context.Context, tool string, args map[string]interface{}, next func(context.Context, map[string]interface{}) (interface{}, error)) (interface{}, error) {
+	*o.log = append(*o.log, o.name+" in")
+	return next(ctx, args)
+}
+
+// TS composes executeTool wrappers in registration order, so the last
+// integration is the outermost wrapper.
+func TestFireExecuteToolLastIntegrationOutermost(t *testing.T) {
+	var log []string
+	settings := &Settings{Integrations: []TelemetryIntegration{
+		orderIntegration{name: "first", log: &log}, orderIntegration{name: "second", log: &log},
+	}}
+	if _, err := FireExecuteToolWithSettings(context.Background(), settings, "t", nil, func(context.Context, map[string]interface{}) (interface{}, error) {
+		log = append(log, "execute")
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := log; len(got) != 3 || got[0] != "second in" || got[1] != "first in" || got[2] != "execute" {
+		t.Fatalf("order = %v, want [second in first in execute]", got)
+	}
+}
+
+// The legacy integration mirrors TS recordSpanError, which records no HTTP
+// status code, and ends an open decision span on abort.
+func TestLegacyErrorNoHTTPStatusAndAbortEndsDecision(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "e"})
+	integration.OnError(ctx, TelemetryErrorEvent{Settings: settings, CallID: "e", Error: providererrors.NewProviderError("p", 500, "", "boom", nil)})
+	if _, ok := attrValue(findSpan(rec, "ai.generateText"), "http.response.status_code"); ok {
+		t.Error("legacy OnError must not record http.response.status_code")
+	}
+
+	dctx := integration.OnDecideStart(context.Background(), DecideStartEvent{Settings: settings, CallID: "d"})
+	integration.OnDecisionModelCallStart(dctx, DecisionModelCallStartEvent{Settings: settings, CallID: "d"})
+	before := len(rec.Ended())
+	integration.OnAbort(dctx, TelemetryAbortEvent{Settings: settings, CallID: "d"})
+	if n := len(rec.Ended()) - before; n != 2 {
+		t.Fatalf("abort ended %d spans, want 2 (decision model call + root)", n)
+	}
+}

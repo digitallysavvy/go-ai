@@ -952,6 +952,18 @@ func settingsFunctionID(settings *Settings) string {
 	return settings.FunctionID
 }
 
+// legacyRecordSpanError mirrors TS recordSpanError in legacy-open-telemetry.ts:
+// an exception event plus an error status carrying the message. Unlike the
+// GenAI integration's recordErrorOnSpan it does not add
+// http.response.status_code.
+func legacyRecordSpanError(span trace.Span, err error) {
+	if err == nil {
+		return
+	}
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
+}
+
 // legacyOperationNameAttrs mirrors TS's assembleOperationName
 // (otel/src/assemble-operation-name.ts): operation.name is "<operationID>
 // <functionID>" when functionID is set, else just operationID; resource.name
@@ -1639,7 +1651,7 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 		return
 	}
 	if e.Error != nil {
-		RecordErrorOnSpan(entry.span, e.Error)
+		legacyRecordSpanError(entry.span, e.Error)
 		entry.span.End()
 		return
 	}
@@ -1732,7 +1744,7 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 		return
 	}
 	if e.Error != nil {
-		RecordErrorOnSpan(entry.span, e.Error)
+		legacyRecordSpanError(entry.span, e.Error)
 		entry.span.End()
 		return
 	}
@@ -1845,8 +1857,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e Telemetry
 	}
 	span.SetAttributes(attribute.Int64("ai.toolCall.durationMs", e.DurationMs))
 	if e.Error != nil {
-		span.RecordError(e.Error)
-		span.SetStatus(codes.Error, e.Error.Error())
+		legacyRecordSpanError(span, e.Error)
 	} else if (e.Settings == nil || e.Settings.RecordOutputs) && e.Result != nil {
 		if b, err := json.Marshal(e.Result); err == nil {
 			span.SetAttributes(attribute.String("ai.toolCall.result", string(b)))
@@ -2149,7 +2160,7 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 		return
 	}
 	if e.Error != nil {
-		RecordErrorOnSpan(stepSpan, e.Error)
+		legacyRecordSpanError(stepSpan, e.Error)
 	}
 	stepSpan.End()
 	if e.CallID != "" {
@@ -2223,7 +2234,9 @@ func (i LegacyOpenTelemetry) legacyOnAudioOperationEnd(span trace.Span, e Teleme
 		}
 	}
 	if recordOutputs {
-		if e.Text != "" {
+		// TS: 'segments' in event ? {output: () => event.text} : undefined, so a
+		// transcription records its text even when empty.
+		if !isSpeech {
 			span.SetAttributes(attribute.String("ai.response.text", e.Text))
 		}
 		if isSpeech {
@@ -2346,7 +2359,7 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				if e.Error != nil {
-					RecordErrorOnSpan(entry.span, e.Error)
+					legacyRecordSpanError(entry.span, e.Error)
 				}
 				entry.span.End()
 			}
@@ -2369,14 +2382,14 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 		st.mu.Unlock()
 		if stepSpan != nil && stepSpan.IsRecording() {
 			if e.Error != nil {
-				RecordErrorOnSpan(stepSpan, e.Error)
+				legacyRecordSpanError(stepSpan, e.Error)
 			}
 			stepSpan.End()
 		}
 		for _, toolSpan := range toolSpans {
 			if toolSpan.IsRecording() {
 				if e.Error != nil {
-					RecordErrorOnSpan(toolSpan, e.Error)
+					legacyRecordSpanError(toolSpan, e.Error)
 				}
 				toolSpan.End()
 			}
@@ -2388,14 +2401,14 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 		for _, embedSpan := range embedSpans {
 			if embedSpan.IsRecording() {
 				if e.Error != nil {
-					RecordErrorOnSpan(embedSpan, e.Error)
+					legacyRecordSpanError(embedSpan, e.Error)
 				}
 				embedSpan.End()
 			}
 		}
 		if rerankSpan != nil && rerankSpan.IsRecording() {
 			if e.Error != nil {
-				RecordErrorOnSpan(rerankSpan, e.Error)
+				legacyRecordSpanError(rerankSpan, e.Error)
 			}
 			rerankSpan.End()
 		}
@@ -2405,7 +2418,7 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 		return
 	}
 	if e.Error != nil {
-		RecordErrorOnSpan(span, e.Error)
+		legacyRecordSpanError(span, e.Error)
 	}
 	span.End()
 	legacyDeleteState(e.CallID)
@@ -2419,6 +2432,14 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 // trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this closes
 // the right spans even when another integration is also registered.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	if e.CallID != "" {
+		// TS onAbort also ends an in-flight decision model-call span.
+		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID)); ok {
+			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
+				entry.span.End()
+			}
+		}
+	}
 	if st := legacyState(e.CallID); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
@@ -2853,9 +2874,10 @@ func FireExecuteToolWithSettings(
 	if len(is) == 0 {
 		return execute(ctx, args)
 	}
-	// Build chain from innermost (execute) outward.
+	// Build chain from the innermost (execute) outward.
 	fn := execute
-	for i := len(is) - 1; i >= 0; i-- {
+	// TS wraps in registration order, so the last integration is outermost.
+	for i := 0; i < len(is); i++ {
 		fn = makeToolFn(is[i], toolName, fn)
 	}
 	return fn(ctx, args)
