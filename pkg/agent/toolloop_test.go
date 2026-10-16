@@ -3563,3 +3563,41 @@ func TestExecuteStep_DownloadsGeneratedFileURLsAndLogsWarnings(t *testing.T) {
 		t.Fatalf("logged warnings = %#v", got)
 	}
 }
+
+// TS continues after client tool calls whatever the finish reason: a "stop"
+// response that carries tool calls runs them and takes another step, while a
+// truncated ("length") one never executes them and ends the run.
+func TestRunLoop_ContinuesAfterToolCallsWithStopFinishReason(t *testing.T) {
+	for _, tc := range []struct {
+		finish    types.FinishReason
+		wantSteps int
+		wantExec  int
+	}{
+		{types.FinishReasonStop, 2, 1},
+		{types.FinishReasonLength, 1, 0},
+	} {
+		t.Run(string(tc.finish), func(t *testing.T) {
+			executed := 0
+			model := &mockLanguageModel{responses: []types.GenerateResult{
+				{Text: "call", FinishReason: tc.finish, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}},
+				{Text: "done", FinishReason: types.FinishReasonStop},
+			}}
+			agent := NewToolLoopAgent(AgentConfig{
+				Model: model,
+				Tools: []types.Tool{{Name: "t", Parameters: map[string]interface{}{"type": "object"},
+					Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+						executed++
+						return "ok", nil
+					}}},
+				MaxSteps: 3,
+			})
+			res, err := agent.Execute(context.Background(), "hi")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Steps) != tc.wantSteps || executed != tc.wantExec {
+				t.Fatalf("steps=%d executed=%d, want %d and %d", len(res.Steps), executed, tc.wantSteps, tc.wantExec)
+			}
+		})
+	}
+}

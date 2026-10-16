@@ -1813,8 +1813,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		Performance:    performance,
 	}
 
-	// Determine if we should continue
-	shouldContinue := genResult.FinishReason == types.FinishReasonToolCalls && len(toolCalls) > 0
+	// Determine if we should continue. TS generateText continues on the
+	// presence of client tool calls whatever the finish reason (a "stop"
+	// response that carries tool calls still runs them); the caller's later
+	// checks stop the loop when a call is left without a result, which is
+	// what happens for the finish reasons that never execute tools.
+	shouldContinue := len(toolCalls) > 0
 
 	return stepResult, shouldContinue, callConfig.CustomData, callConfig.Tools, nil
 }
