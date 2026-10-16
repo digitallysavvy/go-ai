@@ -489,3 +489,12 @@ func TestVideoProviderOptionsValidationAndEmptySamplesMessage(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// An entry with neither a usable bytesBase64Encoded nor gcsUri is passed
+// through as given (TS convertProviderReferenceImage returns the entry).
+func TestVideoModel_ReferenceImageWithoutUsableFieldIsPassedThrough(t *testing.T) {
+	got := convertProviderReferenceImage(googleVideoReferenceImageOpt{BytesBase64Encoded: func() *string { s := ""; return &s }()})
+	if v, ok := got["bytesBase64Encoded"]; !ok || v != "" || len(got) != 1 {
+		t.Fatalf("got %#v, want {bytesBase64Encoded: \"\"}", got)
+	}
+}

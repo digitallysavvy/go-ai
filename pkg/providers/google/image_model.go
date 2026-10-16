@@ -173,8 +173,9 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	// TS: totalTokens = (inputTokens.total ?? 0) + (outputTokens.total ?? 0).
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
+	// TS returns only the image model's own warnings; the inner language-model
+	// call's warnings are dropped.
 	warnings := googleImageWarnings(opts)
-	warnings = append(warnings, lmResult.Warnings...)
 	metadata := googleImageProviderMetadata(lmResult.ProviderMetadata, firstNonEmpty(lmResult.RawFinishReason, rawFinishReason(lmResult.RawResponse)))
 	metadata["images"] = make([]map[string]interface{}, len(out.Images))
 	for i := range out.Images {

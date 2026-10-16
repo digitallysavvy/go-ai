@@ -264,8 +264,6 @@ func (p *Provider) newID() string {
 	return anthropicGenerateID()
 }
 
-func (p *Provider) authHeaders() map[string]string { return authHeadersFor(p.config) }
-
 // NormalizeBaseURL validates and normalizes an Anthropic base URL (TS
 // normalizeBaseURL): whitespace-only values are rejected, a trailing slash is
 // removed and the bare https://api.anthropic.com host gains the /v1 prefix.

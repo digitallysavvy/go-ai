@@ -1025,3 +1025,23 @@ func TestImageModel_ResponseAndTotalTokensMatchTS(t *testing.T) {
 	assert.Equal(t, "yes", result.Response.Headers["X-Test"])
 	assert.Equal(t, 8, result.Usage.TotalTokens)
 }
+
+// TS returns only the image model's own warnings; the inner language-model
+// call's warnings (here the Vertex-only sharedRequestType notice) are dropped.
+func TestImageModel_DoGenerate_DropsLanguageModelWarnings(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"aW5saW5l"}}]},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+
+	model := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "gemini-2.5-flash-image")
+	result, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "x",
+		ProviderOptions: map[string]interface{}{
+			"google": map[string]interface{}{"sharedRequestType": "priority"},
+		},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Warnings)
+}

@@ -69,25 +69,12 @@ func CreateBedrockMantle(settings ProviderSettings) *BedrockMantleProvider {
 	region := firstNonEmpty(settings.Region, os.Getenv("AWS_REGION"))
 	settings.Region = region
 
-	apiKey := firstNonEmpty(settings.APIKey, os.Getenv("AWS_BEARER_TOKEN_BEDROCK"))
-	httpClient := settings.HTTPClient
+	// Credentials (bearer token or SigV4) are resolved per request by the
+	// transport, so AWS_BEARER_TOKEN_BEDROCK / AWS_* set or rotated after the
+	// provider was created are honored (TS loadApiKey semantics).
+	apiKey := settings.APIKey
 	headers := copyHeaders(settings.Headers)
-	if apiKey == "" {
-		if settings.CredentialProvider != nil {
-			httpClient = withCredentialProviderSigV4Transport(httpClient, settings.CredentialProvider, region)
-		} else {
-			accessKeyID := firstNonEmpty(settings.AccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID"))
-			secretAccessKey := firstNonEmpty(settings.SecretAccessKey, os.Getenv("AWS_SECRET_ACCESS_KEY"))
-			sessionToken := firstNonEmpty(settings.SessionToken, os.Getenv("AWS_SESSION_TOKEN"))
-			httpClient = withSigV4Transport(httpClient, bedrock.NewAWSSignerForService(
-				accessKeyID,
-				secretAccessKey,
-				sessionToken,
-				region,
-				mantleSigningService,
-			))
-		}
-	}
+	httpClient := withAuthTransport(settings.HTTPClient, settings, region)
 
 	return &BedrockMantleProvider{
 		settings:   settings,
@@ -242,15 +229,7 @@ func copyHeaders(headers map[string]string) map[string]string {
 	return out
 }
 
-func withSigV4Transport(client *http.Client, signer *bedrock.AWSSigner) *http.Client {
-	return withSigV4TransportConfig(client, signer, nil, "")
-}
-
-func withCredentialProviderSigV4Transport(client *http.Client, credentialProvider bedrock.CredentialProvider, region string) *http.Client {
-	return withSigV4TransportConfig(client, nil, credentialProvider, region)
-}
-
-func withSigV4TransportConfig(client *http.Client, signer *bedrock.AWSSigner, credentialProvider bedrock.CredentialProvider, region string) *http.Client {
+func withAuthTransport(client *http.Client, settings ProviderSettings, region string) *http.Client {
 	if client == nil {
 		client = &http.Client{}
 	} else {
@@ -263,8 +242,11 @@ func withSigV4TransportConfig(client *http.Client, signer *bedrock.AWSSigner, cr
 	}
 	client.Transport = &sigV4Transport{
 		base:               base,
-		signer:             signer,
-		credentialProvider: credentialProvider,
+		apiKey:             settings.APIKey,
+		accessKeyID:        settings.AccessKeyID,
+		secretAccessKey:    settings.SecretAccessKey,
+		sessionToken:       settings.SessionToken,
+		credentialProvider: settings.CredentialProvider,
 		region:             region,
 	}
 	return client

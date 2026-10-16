@@ -36,12 +36,65 @@ func TestCreateBedrockMantleDefaultsAndModels(t *testing.T) {
 	}
 }
 
-func TestBedrockMantleBearerTokenSkipsSigV4Transport(t *testing.T) {
-	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) { return nil, nil })
-	client := &http.Client{Transport: base}
-	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: "bearer", HTTPClient: client})
-	if _, ok := p.httpClient.Transport.(*sigV4Transport); ok {
-		t.Fatal("bearer token auth must not install SigV4 transport")
+func TestBedrockMantleBearerTokenSkipsSigning(t *testing.T) {
+	var got *http.Request
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		got = req
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", APIKey: " bearer \n", HTTPClient: &http.Client{Transport: base}})
+	req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got.Header.Get("Authorization") != "Bearer bearer" || got.Header.Get("X-Amz-Date") != "" {
+		t.Fatalf("headers = %v", got.Header)
+	}
+}
+
+// The bearer token is read at request time, not when the provider is created.
+func TestBedrockMantleBearerTokenFromEnvAtRequestTime(t *testing.T) {
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	var got *http.Request
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		got = req
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", HTTPClient: &http.Client{Transport: base}})
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "late-token")
+	req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got.Header.Get("Authorization") != "Bearer late-token" {
+		t.Fatalf("Authorization = %q", got.Header.Get("Authorization"))
+	}
+}
+
+// A stale Authorization header from the wrapped OpenAI client must not be signed.
+func TestBedrockMantleSigV4DropsStaleAuthorization(t *testing.T) {
+	var got *http.Request
+	base := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		got = req
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	t.Setenv("AWS_BEARER_TOKEN_BEDROCK", "")
+	p := CreateBedrockMantle(ProviderSettings{Region: "us-east-1", AccessKeyID: "akid", SecretAccessKey: "secret", HTTPClient: &http.Client{Transport: base}})
+	req, _ := http.NewRequest(http.MethodPost, "https://bedrock-mantle.us-east-1.api.aws/v1/chat/completions", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer sk-openai")
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	auth := got.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256") || strings.Contains(strings.SplitN(auth, "Signature=", 2)[0], "authorization;") {
+		t.Fatalf("Authorization = %q", auth)
 	}
 }
 

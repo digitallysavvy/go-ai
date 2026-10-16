@@ -92,7 +92,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		}
 
 		lm := NewLanguageModel(b.provider, textReq.ModelID, nil)
-		prepared, err := lm.prepareRequest(&textReq.Options, false)
+		prepared, err := lm.prepareRequestWithBetas(&textReq.Options, false, explicitBatchBetas)
 		if err != nil {
 			return nil, err
 		}
@@ -338,32 +338,23 @@ func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map
 	return out
 }
 
-// rawRequestHeaders builds the authentication headers used for a raw
+// rawRequestHeaders builds the provider headers used for a raw
 // (non-client-relative) request, such as following a results_url returned by
-// the batches API. Duplicates the header construction in New() because
-// *http.Client (returned by Client.HTTPClient()) does not carry the
-// provider's default headers.
+// the batches API: the client's default headers (API version, configured
+// headers, user-agent suffix) with the request-time API key and the call
+// headers on top. *http.Client (returned by Client.HTTPClient()) does not
+// carry them itself.
 func (b *Batch) rawRequestHeaders(extra map[string]string) (map[string]string, error) {
-	headers := map[string]string{}
-	for k, v := range b.provider.authHeaders() {
-		headers[k] = v
-	}
+	// The client's default headers carry the API version, configured headers
+	// and the user-agent suffix (TS getBatchHeaders resolves the same
+	// provider headers).
+	headers := b.provider.client.Headers()
 	// A missing API key fails the request like TS getBatchHeaders/loadApiKey.
 	lazy, err := requestAuthHeaders(b.provider.config)
 	if err != nil {
 		return nil, err
 	}
 	for k, v := range lazy {
-		headers[k] = v
-	}
-	if !b.provider.config.OmitAPIVersionHeader {
-		apiVersion := b.provider.config.APIVersion
-		if apiVersion == "" {
-			apiVersion = DefaultAPIVersion
-		}
-		headers["anthropic-version"] = apiVersion
-	}
-	for k, v := range b.provider.config.Headers {
 		headers[k] = v
 	}
 	for k, v := range extra {

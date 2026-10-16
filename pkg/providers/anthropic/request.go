@@ -103,6 +103,14 @@ type effectiveThinking struct {
 // AnthropicLanguageModel.prepareRequest (anthropic-language-model.ts at
 // ai@7.0.113).
 func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bool) (*preparedRequest, error) {
+	return m.prepareRequestWithBetas(opts, stream, m.userSuppliedBetas(opts))
+}
+
+// prepareRequestWithBetas is prepareRequest with an explicit userSuppliedBetas
+// set: calls take them from the config and call headers, batches only from
+// providerOptions.anthropic.anthropicBeta on startBatch (TS passes
+// userSuppliedBetas: new Set(explicitBatchBetas)).
+func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, stream bool, userBetas []string) (*preparedRequest, error) {
 	if opts == nil {
 		opts = &provider.GenerateOptions{}
 	}
@@ -554,7 +562,7 @@ func (m *LanguageModel) prepareRequest(opts *provider.GenerateOptions, stream bo
 	warnings = append(warnings, validator.Warnings()...)
 
 	betas.add(prepared.betas...)
-	betas.add(m.userSuppliedBetas(opts)...)
+	betas.add(userBetas...)
 	betas.add(o.AnthropicBeta...)
 
 	return &preparedRequest{

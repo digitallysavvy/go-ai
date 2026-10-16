@@ -211,7 +211,16 @@ func convertProviderReferenceImage(ref googleVideoReferenceImageOpt) map[string]
 			"referenceType": "asset",
 		}
 	}
-	return map[string]interface{}{}
+	// TS returns the entry itself when neither field is truthy, so empty
+	// strings are sent as given.
+	out := map[string]interface{}{}
+	if ref.BytesBase64Encoded != nil {
+		out["bytesBase64Encoded"] = *ref.BytesBase64Encoded
+	}
+	if ref.GcsURI != nil {
+		out["gcsUri"] = *ref.GcsURI
+	}
+	return out
 }
 
 // convertInputReferenceImage converts an inputReferences entry into the

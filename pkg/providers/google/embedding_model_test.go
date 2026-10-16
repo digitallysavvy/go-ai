@@ -1,6 +1,7 @@
 package google
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -119,5 +120,20 @@ func TestEmbeddingInvalidProviderOptionsIsInvalidArgumentError(t *testing.T) {
 	var ia *providererrors.InvalidArgumentError
 	if !errors.As(err, &ia) || ia.Message != "invalid google provider options" {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A direct call whose multimodal content length differs from the values fails
+// with the TS error text before any request is sent.
+func TestEmbeddingContentLengthMismatchErrorText(t *testing.T) {
+	m := NewEmbeddingModel(New(Config{APIKey: "k", BaseURL: "http://127.0.0.1:0"}), "gemini-embedding-2")
+	_, err := m.DoEmbedMany(context.Background(), []string{"a", "b"}, &provider.EmbedModelOptions{
+		ProviderOptions: map[string]interface{}{"google": map[string]interface{}{
+			"content": []interface{}{[]interface{}{map[string]interface{}{"text": "x"}}},
+		}},
+	})
+	want := "The number of multimodal content entries (1) must match the number of values (2)."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
