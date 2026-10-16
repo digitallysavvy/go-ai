@@ -150,7 +150,9 @@ func ConvertToGoogleMessages(messages []types.Message, opts GoogleMessagesOption
 						continue
 					}
 				}
-				c.appendFunctionResponse(&parts, p)
+				if err := c.appendFunctionResponse(&parts, p); err != nil {
+					return GooglePrompt{}, err
+				}
 			}
 			contents = append(contents, map[string]interface{}{"role": "user", "parts": parts})
 
@@ -784,15 +786,13 @@ func resolveGoogleToolOutput(p types.ToolResultContent) googleToolOutput {
 	return out
 }
 
-func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}, p types.ToolResultContent) {
+func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}, p types.ToolResultContent) error {
 	out := resolveGoogleToolOutput(p)
 	if out.kind == "content" {
 		if c.opts.SupportsFunctionResponseParts {
-			c.appendToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
-		} else {
-			c.appendLegacyToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
+			return c.appendToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
 		}
-		return
+		return c.appendLegacyToolResultParts(parts, p.ToolName, p.ToolCallID, out.content)
 	}
 	var content interface{}
 	isError := out.kind == "error-text" || out.kind == "error-json" || out.kind == "execution-denied"
@@ -808,6 +808,7 @@ func (c *googleConverter) appendFunctionResponse(parts *[]map[string]interface{}
 	// response.content so the model can tell a failed tool from a result
 	// (TS #22209).
 	*parts = append(*parts, map[string]interface{}{"functionResponse": c.functionResponseWithKey(p.ToolName, p.ToolCallID, content, isError)})
+	return nil
 }
 
 // containsJSONSchemaReference reports whether value (a decoded JSON value:
@@ -888,7 +889,7 @@ func (c *googleConverter) isFunctionResponseURLSupported(mediaType, url string) 
 
 // appendToolResultParts implements the Gemini 3+ multimodal functionResponse
 // format: text goes into response.content, inline files into parts[].
-func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
+func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) error {
 	var textParts []string
 	var responseParts []map[string]interface{}
 
@@ -921,10 +922,10 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 				}
 			case f.hasData():
 				// TS resolveFullMediaType: complete a top-level media type by
-				// sniffing the bytes (best effort here; TS throws on failure).
-				mediaType := f.mediaType
-				if resolved, err := googleResolveFullMediaType(f.mediaType, f.data, true); err == nil {
-					mediaType = resolved
+				// sniffing the bytes; it throws when that fails.
+				mediaType, err := googleResolveFullMediaType(f.mediaType, f.data, true)
+				if err != nil {
+					return err
 				}
 				responseParts = append(responseParts, map[string]interface{}{
 					"inlineData": map[string]interface{}{"mimeType": mediaType, "data": f.base64Data()},
@@ -946,12 +947,13 @@ func (c *googleConverter) appendToolResultParts(parts *[]map[string]interface{},
 		fr["parts"] = responseParts
 	}
 	*parts = append(*parts, map[string]interface{}{"functionResponse": fr})
+	return nil
 }
 
 // appendLegacyToolResultParts implements the pre-Gemini-3 fallback: text
 // becomes a functionResponse; inline files become top-level inlineData parts
 // followed by a descriptive text part.
-func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) {
+func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interface{}, toolName, toolCallID string, blocks []types.ToolResultContentBlock) error {
 	appendInline := func(mediaType, data string) {
 		kind := "file"
 		if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
@@ -973,9 +975,9 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 		case types.FileContentBlock:
 			f := c.resolveFile(fileBlockToContent(b))
 			if f.url == "" && f.reference == "" && !f.hasText && f.hasData() {
-				mediaType := f.mediaType
-				if resolved, err := googleResolveFullMediaType(f.mediaType, f.data, true); err == nil {
-					mediaType = resolved
+				mediaType, err := googleResolveFullMediaType(f.mediaType, f.data, true)
+				if err != nil {
+					return err
 				}
 				appendInline(mediaType, f.base64Data())
 			} else {
@@ -985,6 +987,7 @@ func (c *googleConverter) appendLegacyToolResultParts(parts *[]map[string]interf
 			*parts = append(*parts, map[string]interface{}{"text": googleJSONText(block)})
 		}
 	}
+	return nil
 }
 
 func fileBlockToContent(b types.FileContentBlock) types.FileContent {
