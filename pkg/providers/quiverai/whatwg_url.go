@@ -27,7 +27,7 @@ func whatwgParseURL(input string) (href, scheme string, ok bool) {
 	}
 	for i := 1; i < colon; i++ {
 		c := input[i]
-		if !isASCIIAlpha(c) && !(c >= '0' && c <= '9') && c != '+' && c != '-' && c != '.' {
+		if !isASCIIAlpha(c) && (c < '0' || c > '9') && c != '+' && c != '-' && c != '.' {
 			return "", "", false
 		}
 	}
@@ -86,7 +86,7 @@ func whatwgParseURL(input string) (href, scheme string, ok bool) {
 		if n > 65535 {
 			return "", scheme, false
 		}
-		if !(scheme == "http" && n == 80) && !(scheme == "https" && n == 443) {
+		if (scheme != "http" || n != 80) && (scheme != "https" || n != 443) {
 			port = strconv.Itoa(n)
 		}
 	}
@@ -386,11 +386,12 @@ func whatwgParseIPv6(input string) (string, bool) {
 				}
 				for p < len(input) && input[p] >= '0' && input[p] <= '9' {
 					n := int(input[p] - '0')
-					if v4 == -1 {
+					switch v4 {
+					case -1:
 						v4 = n
-					} else if v4 == 0 {
+					case 0:
 						return "", false
-					} else {
+					default:
 						v4 = v4*10 + n
 					}
 					if v4 > 255 {
