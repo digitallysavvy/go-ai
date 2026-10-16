@@ -146,7 +146,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	for k, v := range settings.Env {
 		claudeEnv[k] = v
 	}
-	if len(opts.Headers) > 0 {
+	if opts.Headers != nil {
 		names := make([]string, 0, len(opts.Headers))
 		for name := range opts.Headers {
 			names = append(names, name)

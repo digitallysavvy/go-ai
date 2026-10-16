@@ -384,9 +384,8 @@ func TestAgent_SimpleTextTurn(t *testing.T) {
 	if len(result.Steps) != 1 {
 		t.Fatalf("Steps = %d, want 1", len(result.Steps))
 	}
-	// Verifies the harness-constructed GenerateTextResult's TotalUsage
-	// (not Usage, which this package sets to only the final step's usage;
-	// see streamResultToGenerateResult) carries the FinishPart's usage.
+	// Verifies the harness-constructed GenerateTextResult's TotalUsage (the
+	// deprecated alias of Usage) carries the FinishPart's usage.
 	if got := *result.TotalUsage.TotalTokens; got != 8 { //nolint:staticcheck
 		t.Fatalf("TotalUsage.TotalTokens = %d, want 8", got)
 	}
@@ -423,9 +422,8 @@ func TestAgent_TotalUsageOverridesLocalSum(t *testing.T) {
 	if len(result.Steps) != 2 {
 		t.Fatalf("Steps = %d, want 2 (no phantom step for the terminal boundary)", len(result.Steps))
 	}
-	// Verifies the harness-constructed GenerateTextResult's TotalUsage
-	// (not Usage, which this package sets to only the final step's usage;
-	// see streamResultToGenerateResult) carries the bridge's override.
+	// Verifies the harness-constructed GenerateTextResult's TotalUsage (the
+	// deprecated alias of Usage) carries the bridge's override.
 	if got := *result.TotalUsage.TotalTokens; got != 100 { //nolint:staticcheck
 		t.Fatalf("TotalUsage.TotalTokens = %d, want 100 (overridden, not summed to 4)", got)
 	}

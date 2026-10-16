@@ -442,6 +442,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	}
 	promptText, err := extractUserText(opts.Prompt)
 	if err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	turnModel := opts.Model
@@ -455,6 +456,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 
 	msg, err := s.startBase(turnModel)
 	if err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	msg.Operation = OperationPrompt
@@ -464,6 +466,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	msg.Instructions = opts.Instructions
 	msg.SkillsChanged = skillResult.Changed
 	if err := s.p.channel.Send(msg); err != nil {
+		control.settleError(err)
 		return nil, err
 	}
 	s.mu.Lock()
@@ -497,6 +500,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 
 		msg, err := s.startBase(turnModel)
 		if err != nil {
+			control.settleError(err)
 			return nil, err
 		}
 		msg.Operation = OperationPrompt
@@ -506,6 +510,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		msg.Instructions = opts.Instructions
 		msg.SkillsChanged = skillResult.Changed
 		if err := s.p.channel.Send(msg); err != nil {
+			control.settleError(err)
 			return nil, err
 		}
 		s.mu.Lock()

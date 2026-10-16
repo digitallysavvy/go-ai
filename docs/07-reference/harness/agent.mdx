@@ -84,6 +84,8 @@ result, err := coder.Generate(ctx, agent.AgentGenerateOptions{
 
 The callbacks reuse the event types from `pkg/ai`, so a harness turn appears in callback-driven tooling like a `StreamText` call. See [Callback events](../ai/callback-events.mdx).
 
+The `OnStepEnd` and `OnEnd` events carry the same step data as `result.Steps()` (content, reasoning, warnings, response id and model, response messages, final step). The callbacks you set on a call (`agent.AgentGenerateOptions.OnStart`, `OnStepStart`, `OnToolExecutionStart`, `OnToolExecutionEnd`, `OnStepEnd`, `OnEnd` and their deprecated aliases) run next to the agent's own on a fresh prompt; a continuation uses the agent's callbacks only.
+
 {/* gen:fields harness.Callbacks */}
 
 | Field | Type | Description |
@@ -443,6 +445,8 @@ agent, err := harness.NewAgent(harness.AgentSettings{
 	OnLog:   func(d harness.Diagnostic) { log.Printf("%s %s", d.Subsystem, d.Message) },
 })
 ```
+
+A failed turn is also written to stderr, one prefixed line per line of the error (`[harness:<id>:error session=<id>] harness turn failed: ...`), unless the caller cancelled it. `harness.LogBridgeError(harness.LogBridgeErrorOptions{HarnessID, SessionID, Context, Error, Write})` writes the same format, and `harness.FormatBridgeError` renders an error value for it.
 
 ### File reporter
 

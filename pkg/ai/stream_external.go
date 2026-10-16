@@ -48,6 +48,17 @@ type ExternalStreamOptions struct {
 	// StreamTextOptions.Output's `interface{}` + type-assertion contract; see
 	// stream.go's own opts.Output handling for the pattern this mirrors).
 	Output interface{}
+
+	// RuntimeContext and ToolsContext are recorded on every step (TS
+	// DefaultStepResult `runtimeContext` / `toolsContext`).
+	RuntimeContext interface{}
+	ToolsContext   map[string]interface{}
+
+	// OnStep is invoked on the consuming goroutine each time a step closes,
+	// after the step was appended to Steps(), with the same StepResult Steps()
+	// reports. A caller that must act on the finished step (callbacks,
+	// telemetry) can wait for it; it must not block on the result itself.
+	OnStep func(step types.StepResult)
 }
 
 // NewStreamTextResultFromParts builds a *StreamTextResult by consuming src, a
@@ -313,25 +324,37 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		// the tool message.
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(step.toolCalls, content, step.toolResults)
 		step.response.Messages = stepResponseMsgs
+		// A chunk-supplied response model (the runtime-resolved one) wins over
+		// the requested one, as TS's step modelId follows the result's.
+		stepModelID := opts.ModelID
+		if step.response.ModelID != "" {
+			stepModelID = step.response.ModelID
+		}
 		result := types.StepResult{
-			CallID:           r.cbCallID,
-			StepNumber:       stepNumber,
-			Model:            types.StepModel{Provider: opts.Provider, ModelID: opts.ModelID},
-			Text:             step.text,
-			Content:          content,
-			Reasoning:        reasoning,
-			ReasoningText:    reasoningText(reasoning),
-			Files:            step.files,
-			ToolCalls:        step.toolCalls,
-			ToolResults:      step.toolResults,
-			FinishReason:     step.finishReason,
-			RawFinishReason:  step.rawFinishReason,
-			Usage:            step.usage,
-			Warnings:         step.warnings,
-			Sources:          step.sources,
-			Response:         step.response,
-			ProviderMetadata: step.providerMetadata,
-			ResponseMessages: stepResponseMsgs,
+			CallID:             r.cbCallID,
+			StepNumber:         stepNumber,
+			Model:              types.StepModel{Provider: opts.Provider, ModelID: stepModelID},
+			Text:               step.text,
+			Content:            content,
+			Reasoning:          reasoning,
+			ReasoningText:      reasoningText(reasoning),
+			Files:              step.files,
+			ToolCalls:          step.toolCalls,
+			ToolResults:        step.toolResults,
+			StaticToolCalls:    filterStaticToolCalls(step.toolCalls),
+			DynamicToolCalls:   filterDynamicToolCalls(step.toolCalls),
+			StaticToolResults:  filterStaticToolResults(step.toolResults),
+			DynamicToolResults: filterDynamicToolResults(step.toolResults),
+			ToolsContext:       opts.ToolsContext,
+			RuntimeContext:     opts.RuntimeContext,
+			FinishReason:       step.finishReason,
+			RawFinishReason:    step.rawFinishReason,
+			Usage:              step.usage,
+			Warnings:           step.warnings,
+			Sources:            step.sources,
+			Response:           step.response,
+			ProviderMetadata:   step.providerMetadata,
+			ResponseMessages:   stepResponseMsgs,
 		}
 
 		accumulatedText = append(accumulatedText, step.text)
@@ -371,6 +394,9 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		stepNumber++
 		step = &externalStepAccum{}
 		stepStarted = false
+		if opts.OnStep != nil {
+			opts.OnStep(result)
+		}
 	}
 
 consumeLoop:

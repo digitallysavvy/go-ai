@@ -160,7 +160,7 @@ func (d *turnDriver) telStart() {
 		OperationType:  "ai.harness",
 		Settings:       d.in.Telemetry,
 		ModelProvider:  "harness:" + d.in.Harness.HarnessID(),
-		ModelID:        d.in.Model,
+		ModelID:        d.modelID,
 		System:         d.in.Instructions,
 		Messages:       promptAsMessages(d.in.Prompt),
 		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
@@ -184,7 +184,7 @@ func (d *turnDriver) telStepStart() {
 		Settings:       d.in.Telemetry,
 		StepNumber:     d.stepNumber,
 		ModelProvider:  provider,
-		ModelID:        d.in.Model,
+		ModelID:        d.modelID,
 		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
 		ToolsContext:   telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
 	})
@@ -203,7 +203,7 @@ func (d *turnDriver) telStepStart() {
 		Settings:      d.in.Telemetry,
 		CallID:        d.telCallID,
 		ModelProvider: provider,
-		ModelID:       d.in.Model,
+		ModelID:       d.modelID,
 		System:        d.in.Instructions,
 		Prompt:        types.Prompt{Messages: promptAsMessages(d.in.Prompt)},
 		Tools:         toolSpecsAsTypesTools(d.in.ToolSpecs),
@@ -278,7 +278,7 @@ func (d *turnDriver) languageModelCallEnd(finishReason FinishReason, usage Usage
 	}
 	if d.in.Callbacks.OnLanguageModelCallEnd != nil {
 		d.in.Callbacks.OnLanguageModelCallEnd(d.ctx, ai.LanguageModelCallEndEvent{
-			CallID: d.telCallID, Provider: provider, ModelID: d.in.Model,
+			CallID: d.telCallID, Provider: provider, ModelID: d.modelID,
 			FinishReason: unifiedFinishReason(finishReason), Usage: typesUsage,
 			Content: content, ResponseID: responseID, ProviderMetadata: providerMetadata,
 			Performance: ai.LanguageModelCallPerformance{ResponseTimeMs: responseTimeMs},
@@ -291,7 +291,7 @@ func (d *turnDriver) languageModelCallEnd(finishReason FinishReason, usage Usage
 		Settings:         d.in.Telemetry,
 		CallID:           d.telCallID,
 		ModelProvider:    provider,
-		ModelID:          d.in.Model,
+		ModelID:          d.modelID,
 		FinishReason:     string(unifiedFinishReason(finishReason)),
 		Usage:            telemetryUsageFromTypesUsage(typesUsage),
 		Content:          content,
@@ -384,28 +384,34 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 	d.telEnded = true
 	finalStep := steps[len(steps)-1]
 	var toolCalls []types.ToolCall
-	var toolResults []types.ToolResult
 	var files []types.GeneratedFileContent
-	var sources []types.SourceContent
-	var warnings []types.Warning
 	for _, st := range steps {
 		toolCalls = append(toolCalls, st.ToolCalls...)
-		toolResults = append(toolResults, st.ToolResults...)
 		files = append(files, st.Files...)
-		sources = append(sources, st.Sources...)
-		warnings = append(warnings, st.Warnings...)
 	}
 	if d.in.Callbacks.OnEnd != nil {
-		d.in.Callbacks.OnEnd(d.ctx, ai.OnFinishEvent{
+		event := ai.OnFinishEvent{
 			CallID: d.telCallID, StepNumber: finalStep.StepNumber, Model: finalStep.Model,
+			ModelProvider: finalStep.Model.Provider, ModelID: finalStep.Model.ModelID,
 			Text: finalStep.Text, Reasoning: finalStep.Reasoning, ReasoningText: finalStep.ReasoningText,
-			ToolCalls: toolCalls, ToolResults: toolResults,
 			FinishReason: finalStep.FinishReason, RawFinishReason: finalStep.RawFinishReason,
 			Usage: totalUsage, TotalUsage: totalUsage, Steps: steps,
-			Sources: sources, Files: files, Warnings: warnings,
 			ProviderMetadata: finalStep.ProviderMetadata,
-			RuntimeContext:   d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
-		})
+			ResponseHeaders:  finalStep.Response.Headers,
+			Request:          ai.GenerateStepRequest{Body: finalStep.Request.Body},
+			Response: ai.GenerateStepResponse{
+				ID: finalStep.Response.ID, Timestamp: finalStep.Response.Timestamp, ModelID: finalStep.Response.ModelID,
+				Headers: finalStep.Response.Headers, Messages: finalStep.Response.Messages, Body: finalStep.Response.Body,
+			},
+			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
+		}
+		var responseMessages []types.Message
+		for _, st := range steps {
+			responseMessages = append(responseMessages, st.Response.Messages...)
+		}
+		event.SetAggregatesFromSteps(steps, responseMessages)
+		event.Usage = totalUsage
+		d.in.Callbacks.OnEnd(d.ctx, event)
 	}
 	if d.telCtx == nil {
 		return
@@ -415,7 +421,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 		FinishReason:     string(finalStep.FinishReason),
 		Usage:            telemetryUsageFromTypesUsage(totalUsage),
 		ModelProvider:    "harness:" + d.in.Harness.HarnessID(),
-		ModelID:          d.in.Model,
+		ModelID:          d.modelID,
 		Text:             finalStep.Text,
 		Reasoning:        finalStep.ReasoningText,
 		ToolCalls:        toolCalls,
