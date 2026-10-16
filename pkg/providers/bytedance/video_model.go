@@ -170,6 +170,8 @@ func bytedanceResolveLastFrameImage(opts *provider.VideoModelV3CallOptions, prov
 // creation endpoint and returns an opaque operation reference
 // (TS ByteDanceVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
+	// TS: the response timestamp is taken before the request is built and sent.
+	currentDate := time.Now()
 	provOpts, err := extractProviderOptions(opts.ProviderOptions)
 	if err != nil {
 		return nil, err
@@ -257,7 +259,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Operation: operation,
 		Warnings:  warnings,
 		Response: provider.VideoModelV3ResponseInfo{
-			Timestamp: time.Now(),
+			Timestamp: currentDate,
 			ModelID:   m.modelID,
 			Headers:   flattenHeaders(submitResp.Headers),
 		},
@@ -273,6 +275,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 // DNS-pinning transport, and credentials are only forwarded on the trusted
 // hop.
 func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3StatusOptions) (*provider.VideoModelV3OperationStatusResult, error) {
+	currentDate := time.Now() // TS: taken before the status request
 	var operation bytedanceOperation
 	if err := json.Unmarshal(opts.Operation, &operation); err != nil {
 		return nil, fmt.Errorf("bytedance: invalid operation reference: %w", err)
@@ -297,7 +300,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	responseInfo := provider.VideoModelV3ResponseInfo{
-		Timestamp: time.Now(),
+		Timestamp: currentDate,
 		ModelID:   m.modelID,
 		Headers:   flattenHeaderSlice(result.Headers),
 	}
@@ -584,10 +587,9 @@ func (m *VideoModel) handlePollError(err error) error {
 	if errors.As(err, &dlErr) && dlErr.Body != nil {
 		return m.parseAPIError(dlErr.Body, dlErr.StatusCode)
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err // TS lets an abort through unchanged
-	}
-	return NewVideoGenerationError(fmt.Sprintf("failed to check status: %v", err))
+	// TS getFromApi lets any other failure (an abort, "Cannot connect to
+	// API", a URL rejected by validateUrl) propagate unchanged.
+	return err
 }
 
 // encodeImage encodes a VideoModelV3File to a URL or data URI
