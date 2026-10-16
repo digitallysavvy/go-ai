@@ -991,7 +991,9 @@ func mapAnthropicStopDetails(stopDetails *anthropicStopDetails) map[string]inter
 }
 
 func mapAnthropicContainerSkills(skills []anthropicContainerSkillResponse) interface{} {
-	if len(skills) == 0 {
+	// TS `skills?.map(...) ?? null`: an absent or null list is null, but an
+	// empty list stays an empty array.
+	if skills == nil {
 		return nil
 	}
 	out := make([]map[string]interface{}, 0, len(skills))
