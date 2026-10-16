@@ -841,3 +841,28 @@ func TestDownloadError_ErrorMessage(t *testing.T) {
 		})
 	}
 }
+
+// A data: URL download follows the fetch data URL processor (TS download is a
+// fetch): '+' in a percent-encoded payload stays '+', base64 tolerates
+// whitespace and missing padding, parameters stay in the media type and an
+// empty type defaults to text/plain.
+func TestDownloadDataURLFetchSemantics(t *testing.T) {
+	cases := []struct {
+		url, data, mediaType string
+	}{
+		{"data:text/plain,a+b%20c", "a+b c", "text/plain"},
+		{"data:,hi", "hi", "text/plain"},
+		{"data:;charset=utf-8,hi", "hi", "text/plain;charset=utf-8"},
+		{"data:text/plain;charset=utf-8;base64,aGVs bG8", "hello", "text/plain;charset=utf-8"},
+		{"data:image/png;base64,AQI", "\x01\x02", "image/png"},
+	}
+	for _, c := range cases {
+		result, err := DownloadWithMetadata(context.Background(), c.url, insecureDownloadOptions())
+		if err != nil {
+			t.Fatalf("%s: %v", c.url, err)
+		}
+		if string(result.Data) != c.data || result.ContentType != c.mediaType {
+			t.Errorf("%s: data=%q mediaType=%q, want %q %q", c.url, result.Data, result.ContentType, c.data, c.mediaType)
+		}
+	}
+}

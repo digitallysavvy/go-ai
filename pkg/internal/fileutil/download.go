@@ -482,6 +482,10 @@ func downloadRequestError(raw string, err error) *providererrors.DownloadError {
 	return providererrors.NewDownloadError(raw, 0, "", "", err)
 }
 
+// decodeDataURL follows the fetch data: URL processor that TS download relies
+// on: the payload is percent-decoded ('+' stays '+'), and a base64 payload is
+// decoded with the forgiving-base64 rules (ASCII whitespace ignored, padding
+// optional).
 func decodeDataURL(raw string) ([]byte, error) {
 	comma := strings.IndexByte(raw, ',')
 	if comma < 0 {
@@ -489,28 +493,51 @@ func decodeDataURL(raw string) ([]byte, error) {
 	}
 	meta := raw[len("data:"):comma]
 	payload := raw[comma+1:]
-	if strings.HasSuffix(strings.ToLower(meta), ";base64") {
-		data, err := base64.StdEncoding.DecodeString(payload)
+	if i := strings.IndexByte(payload, '#'); i >= 0 {
+		payload = payload[:i] // a fragment is not part of the data
+	}
+	decoded, err := neturl.PathUnescape(payload)
+	if err != nil {
+		// invalid percent escapes are kept literally, as in the spec
+		decoded = payload
+	}
+	if isBase64DataURLMeta(meta) {
+		compact := strings.Map(func(r rune) rune {
+			switch r {
+			case ' ', '\t', '\n', '\f', '\r':
+				return -1
+			}
+			return r
+		}, decoded)
+		compact = strings.TrimRight(compact, "=")
+		data, err := base64.RawStdEncoding.DecodeString(compact)
 		if err != nil {
 			return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
 		}
 		return data, nil
 	}
-	data, err := neturl.QueryUnescape(payload)
-	if err != nil {
-		return nil, providererrors.NewDownloadError(raw, 0, "", "", err)
-	}
-	return []byte(data), nil
+	return []byte(decoded), nil
 }
 
+func isBase64DataURLMeta(meta string) bool {
+	meta = strings.TrimRight(meta, " ")
+	return strings.HasSuffix(strings.ToLower(meta), ";base64")
+}
+
+// dataURLMediaType is the Content-Type fetch gives a data: URL response: the
+// mediatype with its parameters (minus the base64 marker), defaulting to
+// text/plain when none is given.
 func dataURLMediaType(raw string) string {
 	comma := strings.IndexByte(raw, ',')
 	if comma < 0 {
 		return ""
 	}
-	meta := raw[len("data:"):comma]
-	if semi := strings.IndexByte(meta, ';'); semi >= 0 {
-		meta = meta[:semi]
+	meta := strings.TrimSpace(raw[len("data:"):comma])
+	if isBase64DataURLMeta(meta) {
+		meta = meta[:len(meta)-len(";base64")]
+	}
+	if meta == "" || strings.HasPrefix(meta, ";") {
+		return "text/plain" + meta
 	}
 	return meta
 }
