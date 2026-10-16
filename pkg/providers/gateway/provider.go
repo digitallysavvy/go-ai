@@ -74,8 +74,15 @@ func (t *gatewayAuthTransport) RoundTrip(req *http.Request) (*http.Response, err
 		return nil, err
 	}
 	clone := req.Clone(req.Context())
-	clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	clone.Header.Set("ai-gateway-auth-method", authMethod)
+	// TS spreads options.headers after the auth headers, so a caller-supplied
+	// Authorization or ai-gateway-auth-method header wins over the resolved
+	// credential.
+	if clone.Header.Get("Authorization") == "" {
+		clone.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
+	}
+	if clone.Header.Get("ai-gateway-auth-method") == "" {
+		clone.Header.Set("ai-gateway-auth-method", authMethod)
+	}
 	return t.base.RoundTrip(clone)
 }
 
@@ -379,6 +386,12 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 		"ai-gateway-protocol-version": AIGatewayProtocolVersion,
 	}
 
+	// TS: the team header precedes options.headers, so a custom header of the
+	// same name wins.
+	if cfg.TeamIDOrSlug != "" {
+		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
+	}
+
 	// Add custom headers
 	for k, v := range cfg.Headers {
 		headers[k] = v
@@ -392,9 +405,6 @@ func New(cfg Config, opts ...func(*Config)) (*Provider, error) {
 	// Inject project ID header when explicitly configured
 	if cfg.ProjectID != nil {
 		headers["ai-o11y-project-id"] = *cfg.ProjectID
-	}
-	if cfg.TeamIDOrSlug != "" {
-		headers["x-vercel-ai-gateway-team"] = cfg.TeamIDOrSlug
 	}
 	headers = version.WithUserAgentSuffix(headers, version.ProviderUserAgent("gateway"))
 

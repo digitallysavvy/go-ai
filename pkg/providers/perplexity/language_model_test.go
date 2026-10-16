@@ -1375,3 +1375,26 @@ func TestPerplexityDoStream_FrameWithoutTypeIsAnError(t *testing.T) {
 		t.Fatalf("sawError=%v finish=%+v, want an error part and finish reason error", sawError, finish)
 	}
 }
+
+// TS enqueues a raw part for every frame, including a non-JSON one
+// (rawValue undefined) that is followed by an error part.
+func TestPerplexityDoStream_IncludeRawChunksNonJSONFrame(t *testing.T) {
+	_, model := newPerplexityTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: not json\n\n")
+	})
+	stream, err := model.DoStream(t.Context(), &provider.GenerateOptions{Prompt: types.Prompt{Messages: testPrompt}, IncludeRawChunks: true})
+	if err != nil {
+		t.Fatalf("DoStream() error = %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	var order []provider.ChunkType
+	for _, c := range collectChunks(t, stream) {
+		if c.Type == provider.ChunkTypeRaw || c.Type == provider.ChunkTypeError {
+			order = append(order, c.Type)
+		}
+	}
+	if len(order) != 2 || order[0] != provider.ChunkTypeRaw || order[1] != provider.ChunkTypeError {
+		t.Fatalf("raw/error order = %v, want [raw error]", order)
+	}
+}

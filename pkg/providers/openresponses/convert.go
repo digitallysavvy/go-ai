@@ -48,6 +48,7 @@ func ConvertToOpenResponsesInputForProviderStrict(messages []types.Message, syst
 	if len(extOpts) > 0 {
 		extensionOptions = extOpts[0]
 	}
+	extensionOptions.Warnings = &warnings
 
 	// Collect system messages
 	if system != "" {
@@ -259,6 +260,10 @@ type openResponsesExtensionOptions struct {
 	// custom_tool_call/custom_tool_call_output instead of
 	// function_call/function_call_output.
 	CustomToolID string
+
+	// Warnings, when set, collects the "provider-defined tool ... history"
+	// warnings emitted when an extension cannot encode a replayed part.
+	Warnings *[]types.Warning
 }
 
 func convertAssistantContent(content []types.ContentPart, providerName string, strictResponseInput bool, extOpts ...openResponsesExtensionOptions) []interface{} {
@@ -390,6 +395,14 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			}
 
 		case types.ToolCallContent:
+			// TS: a tool-call whose provider tool has a registered extension
+			// replays through the extension's encodeInputItem (or warns),
+			// whether or not the provider executed it.
+			if encoded, ok := encodeProviderToolHistory(p, p.ToolName, "tool-call", opts); ok {
+				flush()
+				items = append(items, encoded...)
+				continue
+			}
 			if p.ProviderExecuted {
 				// Row 9a68261 (OR-EXT): a provider-executed call from a
 				// registered extension replays via its preserved raw item
@@ -449,6 +462,11 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 			// Non-extension provider-executed results have no other replay
 			// path in this package and are silently skipped, unchanged from
 			// before this feature existed.
+			if encoded, ok := encodeProviderToolHistory(p, p.ToolName, "tool-result", opts); ok {
+				flush()
+				items = append(items, encoded...)
+				continue
+			}
 			if !p.ProviderExecuted {
 				continue
 			}
@@ -503,6 +521,59 @@ func convertAssistantContent(content []types.ContentPart, providerName string, s
 	flush()
 
 	return items
+}
+
+// encodeProviderToolHistory mirrors the TS branch that replays a tool-call or
+// tool-result of a provider tool owning a registered extension through
+// extension.encodeInputItem; ok is false when the part does not belong to such
+// a tool. A part the extension cannot encode yields an "unsupported" warning
+// and no items.
+func encodeProviderToolHistory(part types.ContentPart, toolName, partType string, opts openResponsesExtensionOptions) ([]interface{}, bool) {
+	if opts.Registry == nil || toolName == "" {
+		return nil, false
+	}
+	tool := findToolByName(opts.Tools, toolName)
+	if tool.Type != "provider" || tool.ProviderID == "" {
+		return nil, false
+	}
+	ext := opts.Registry.ByProviderToolID[tool.ProviderID]
+	if ext == nil {
+		return nil, false
+	}
+	var items []interface{}
+	if ext.EncodeInputItem != nil {
+		if encoded, err := ext.EncodeInputItem(part, tool); err == nil && len(encoded) > 0 {
+			valid := true
+			allowed := ExtensionItemTypes(ext)
+			for _, item := range encoded {
+				if !IsExtensionItem(item) || !containsString(allowed, ExtensionRecord(item).Type()) {
+					valid = false
+					break
+				}
+			}
+			if valid {
+				for _, item := range encoded {
+					items = append(items, map[string]interface{}(item))
+				}
+			}
+		}
+	}
+	if items == nil && opts.Warnings != nil {
+		*opts.Warnings = append(*opts.Warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: fmt.Sprintf("provider-defined tool %s %s history", tool.ProviderID, partType),
+		})
+	}
+	return items, true
+}
+
+func containsString(list []string, value string) bool {
+	for _, v := range list {
+		if v == value {
+			return true
+		}
+	}
+	return false
 }
 
 // customToolCallInputText recovers the raw (un-escaped) text a custom tool
@@ -678,9 +749,6 @@ func openResponsesParseReasoningTextParts(data map[string]interface{}) ([]Reason
 		}
 		out = append(out, ReasoningTextPart{Type: "reasoning_text", Text: text})
 	}
-	if len(out) == 0 {
-		return nil, true
-	}
 	return out, true
 }
 
@@ -753,6 +821,10 @@ func convertToolResults(content []types.ContentPart, warnings *[]types.Warning, 
 	for _, part := range content {
 		if part.ContentType() == "tool-result" {
 			if toolResult, ok := part.(types.ToolResultContent); ok {
+				if encoded, ok := encodeProviderToolHistory(toolResult, toolResult.ToolName, "tool-result", opts); ok {
+					results = append(results, encoded...)
+					continue
+				}
 				output, err := convertToolResultOutput(toolResult, warnings, providerName)
 				if err != nil {
 					return nil, err
@@ -810,7 +882,10 @@ func convertToolResultOutput(toolResult types.ToolResultContent, warnings *[]typ
 
 func convertStructuredToolResultOutput(output types.ToolResultOutput, warnings *[]types.Warning, providerName string) (interface{}, error) {
 	switch output.Type {
-	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText, types.ToolResultOutputErrorJSON:
+	case types.ToolResultOutputErrorJSON:
+		jsonBytes, _ := jsonstr.Marshal(output.Value)
+		return string(jsonBytes), nil
+	case types.ToolResultOutputText, types.ToolResultOutputError, types.ToolResultOutputErrorText:
 		if output.Value == nil {
 			return "", nil
 		}

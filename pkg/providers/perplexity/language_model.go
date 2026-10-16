@@ -656,10 +656,13 @@ func (s *perplexityAgentStream) Close() error {
 
 func (s *perplexityAgentStream) processEvent(data string) {
 	if s.includeRaw {
+		// TS enqueues the raw part for every frame; rawValue is undefined
+		// when the frame is not JSON.
 		var rawValue interface{}
-		if err := json.Unmarshal([]byte(data), &rawValue); err == nil {
-			s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawValue})
+		if err := json.Unmarshal([]byte(data), &rawValue); err != nil {
+			rawValue = nil
 		}
+		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawValue})
 	}
 
 	// TS perplexityAgentChunkSchema: invalid JSON or a mistyped member is an

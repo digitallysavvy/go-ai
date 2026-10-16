@@ -3,6 +3,7 @@ package xai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -586,6 +587,9 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 
 	if isPresentRawJSON(response.ChatGetCompletion) {
 		var textResp xaiBatchTextResponseWire
+		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIBatchText)(0, nil, response.ChatGetCompletion); err != nil {
+			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
+		}
 		if err := json.Unmarshal(response.ChatGetCompletion, &textResp); err != nil {
 			return invalidXAIBatchTextResult(wire.BatchRequestID), nil
 		}
@@ -598,6 +602,9 @@ func (b *Batch) convertBatchResult(ctx context.Context, wire xaiBatchResultWire)
 
 	if isPresentRawJSON(response.ImageGeneration) {
 		var imgResp xaiImageResponse
+		if err := providerutils.MediaSchemaParser(providerutils.SchemaXAIImage)(0, nil, response.ImageGeneration); err != nil {
+			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
+		}
 		if err := json.Unmarshal(response.ImageGeneration, &imgResp); err != nil {
 			return invalidXAIBatchImageResult(wire.BatchRequestID), nil
 		}
@@ -939,9 +946,41 @@ func convertXAIBatchTextResponse(resp xaiBatchTextResponseWire) (*types.Generate
 // ImageModel.buildRequestBody).
 func (b *Batch) convertImageBatchResponse(ctx context.Context, resp xaiImageResponse) (*types.ImageResult, error) {
 	im := NewImageModel(b.provider, "")
-	images, base64Images, err := im.responseImages(ctx, resp.Data)
-	if err != nil {
-		return nil, err
+	// TS: when every image has b64_json they are used as-is; otherwise each
+	// image decodes its b64_json or, lacking it, downloads its url, and one
+	// with neither is an InvalidArgumentError.
+	var images [][]byte
+	var base64Images []string
+	allBase64 := true
+	for _, d := range resp.Data {
+		if d.B64JSON == "" {
+			allBase64 = false
+			break
+		}
+	}
+	for _, d := range resp.Data {
+		switch {
+		case d.B64JSON != "":
+			decoded, err := base64.StdEncoding.DecodeString(d.B64JSON)
+			if err != nil {
+				return nil, err
+			}
+			images = append(images, decoded)
+			if allBase64 {
+				base64Images = append(base64Images, d.B64JSON)
+			}
+		case d.URL == "":
+			return nil, &providererrors.InvalidArgumentError{
+				Field:   "batchResult",
+				Message: "xAI returned an image without data or a URL.",
+			}
+		default:
+			data, err := im.downloadImage(ctx, d.URL)
+			if err != nil {
+				return nil, err
+			}
+			images = append(images, data)
+		}
 	}
 
 	imagesMeta := make([]XAIImageItemMetadata, len(resp.Data))

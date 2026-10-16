@@ -97,6 +97,9 @@ func encodeSubprotocolValue(value string) string {
 }
 
 func decodeSubprotocolValue(value string) (string, error) {
+	// TS maps -/_ to +/ and pads before atob, so standard-alphabet characters
+	// and explicit padding decode as well.
+	value = strings.NewReplacer("+", "-", "/", "_").Replace(strings.TrimRight(value, "="))
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
 		return "", err
