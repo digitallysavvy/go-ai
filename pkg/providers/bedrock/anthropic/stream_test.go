@@ -288,3 +288,34 @@ func (r *slowReader) Read(p []byte) (int, error) {
 	r.pos += n
 	return n, nil
 }
+
+// TS convertBase64ToUint8Array (atob) throws on invalid base64, which errors
+// the stream; the raw payload is not forwarded.
+func TestTransformEventStreamToSSE_InvalidBase64ErrorsStream(t *testing.T) {
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(`{"bytes":"!!!not-base64!!!"}`))
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
+	if err == nil {
+		t.Fatalf("expected stream error, got data %q", data)
+	}
+	if bytes.Contains(data, []byte("not-base64")) {
+		t.Fatalf("raw payload leaked: %q", data)
+	}
+}
+
+// atob accepts unpadded and base64url input.
+func TestTransformEventStreamToSSE_ForgivingBase64(t *testing.T) {
+	// "hello?>" base64url unpadded = aGVsbG8_Pg
+	frame := encodeEventStreamMessage(t, map[string]string{
+		":message-type": "event",
+		":event-type":   "chunk",
+	}, []byte(`{"bytes":"aGVsbG8_Pg"}`))
+	out := transformEventStreamToSSE(io.NopCloser(bytes.NewReader(frame)), http.Header{})
+	data, err := io.ReadAll(out)
+	if err != nil || string(data) != "data: hello?>\n\n" {
+		t.Fatalf("got %q, %v", data, err)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/providers/bedrock/eventstream"
 )
@@ -95,10 +96,11 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 				_, err := fmt.Fprintf(w, "data: %s\n\n", event.Data)
 				return err
 			}
-			decoded, err := base64.StdEncoding.DecodeString(chunkData.Bytes)
+			// TS convertBase64ToUint8Array (atob) throws on invalid base64,
+			// which errors the stream; it does not fall back to the payload.
+			decoded, err := convertBase64ToBytes(chunkData.Bytes)
 			if err != nil {
-				_, ferr := fmt.Fprintf(w, "data: %s\n\n", event.Data)
-				return ferr
+				return fmt.Errorf("invalid base64 in bedrock chunk bytes: %w", err)
 			}
 			_, err = fmt.Fprintf(w, "data: %s\n\n", string(decoded))
 			return err
@@ -149,6 +151,30 @@ func writeSSEEvent(w io.Writer, event *EventStreamEvent) error {
 		return err
 	}
 	return nil
+}
+
+// convertBase64ToBytes ports TS convertBase64ToUint8Array: base64url
+// characters are mapped to the standard alphabet and the result is decoded
+// with the WHATWG forgiving-base64 rules of atob (ASCII whitespace ignored,
+// padding optional, length 1 mod 4 or any non-alphabet byte is an error).
+func convertBase64ToBytes(s string) ([]byte, error) {
+	s = strings.NewReplacer("-", "+", "_", "/").Replace(s)
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\t', '\n', '\f', '\r', ' ':
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	data := b.String()
+	if len(data)%4 == 0 {
+		data = strings.TrimSuffix(strings.TrimSuffix(data, "="), "=")
+	}
+	if len(data)%4 == 1 {
+		return nil, base64.CorruptInputError(len(data))
+	}
+	return base64.RawStdEncoding.DecodeString(data)
 }
 
 // bedrockStreamErrorMetadata ports TS getAmazonBedrockStreamErrorMetadata.
