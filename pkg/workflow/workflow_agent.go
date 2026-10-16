@@ -1592,6 +1592,17 @@ func (w *WorkflowAgent) effectiveToolApprovalSecret(ovr WorkflowStreamOptions, g
 	return w.ExperimentalToolApprovalSecret
 }
 
+// validateCallInstructions rejects an instructions value of an unsupported
+// type instead of silently running without it.
+func validateCallInstructions(values ...interface{}) error {
+	for _, v := range values {
+		if _, err := normalizeInstructions(v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validatePromptMessages(prompt string, messages []types.Message) error {
 	if prompt != "" && len(messages) > 0 {
 		return fmt.Errorf("workflow: use either prompt or messages, not both")
@@ -1640,6 +1651,9 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry
@@ -1833,6 +1847,9 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		return nil, fmt.Errorf("workflow: nil agent")
 	}
 	if err := validatePromptMessages(opts.Prompt, opts.Messages); err != nil {
+		return nil, err
+	}
+	if err := validateCallInstructions(w.Instructions, opts.Instructions); err != nil {
 		return nil, err
 	}
 	telemetrySettings := w.Telemetry

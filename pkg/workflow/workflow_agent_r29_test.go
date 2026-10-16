@@ -31,3 +31,16 @@ func TestPositionalPromptKeptWhenOptionsHaveNone(t *testing.T) {
 	}
 	_ = res.ConsumeStream()
 }
+
+func TestUnsupportedPerCallInstructionsFail(t *testing.T) {
+	a, err := NewWorkflowAgent(WorkflowAgent{Model: &wfMockModel{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GenerateWithOptions(context.Background(), WorkflowGenerateOptions{Prompt: "p", Instructions: 42}); err == nil {
+		t.Fatal("generate: want an error for unsupported instructions")
+	}
+	if _, err := a.StreamWithOptions(context.Background(), WorkflowStreamOptions{Prompt: "p", Instructions: 42}); err == nil {
+		t.Fatal("stream: want an error for unsupported instructions")
+	}
+}
