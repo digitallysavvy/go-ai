@@ -16,7 +16,7 @@ import (
 // jsonFieldNames returns the wire names of the struct type's exported
 // fields (from their json tags).
 func jsonFieldNames(t reflect.Type) map[string]bool {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	names := map[string]bool{}

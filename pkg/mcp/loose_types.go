@@ -168,12 +168,14 @@ type looseCompletionsCapabilityAlias CompletionsCapability
 
 // UnmarshalJSON decodes CompletionsCapability and keeps the keys it does not declare in Extra.
 func (v *CompletionsCapability) UnmarshalJSON(data []byte) error {
-	var a looseCompletionsCapabilityAlias
-	if err := json.Unmarshal(data, &a); err != nil {
+	// The type declares no fields: every key is an extra, and only an
+	// object (or null) is accepted.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*v = CompletionsCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	*v = CompletionsCapability{}
+	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, CompletionsCapability{}))
 	return nil
 }
 
@@ -186,12 +188,14 @@ type looseSamplingCapabilityAlias SamplingCapability
 
 // UnmarshalJSON decodes SamplingCapability and keeps the keys it does not declare in Extra.
 func (v *SamplingCapability) UnmarshalJSON(data []byte) error {
-	var a looseSamplingCapabilityAlias
-	if err := json.Unmarshal(data, &a); err != nil {
+	// The type declares no fields: every key is an extra, and only an
+	// object (or null) is accepted.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*v = SamplingCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	*v = SamplingCapability{}
+	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, SamplingCapability{}))
 	return nil
 }
 
@@ -204,12 +208,14 @@ type looseLoggingCapabilityAlias LoggingCapability
 
 // UnmarshalJSON decodes LoggingCapability and keeps the keys it does not declare in Extra.
 func (v *LoggingCapability) UnmarshalJSON(data []byte) error {
-	var a looseLoggingCapabilityAlias
-	if err := json.Unmarshal(data, &a); err != nil {
+	// The type declares no fields: every key is an extra, and only an
+	// object (or null) is accepted.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	*v = LoggingCapability(a)
-	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, a))
+	*v = LoggingCapability{}
+	v.extraJSON = encodeLooseExtra(decodeLooseExtra(data, LoggingCapability{}))
 	return nil
 }
 
