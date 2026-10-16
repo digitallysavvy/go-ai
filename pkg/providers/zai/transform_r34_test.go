@@ -7,9 +7,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-// TS transformZaiRequestBody drops user and verbosity, and forwards an empty
-// thinking object (`thinking !== undefined`).
-func TestZaiRequestBodyDropsUserVerbosityKeepsEmptyThinking(t *testing.T) {
+// TS transformZaiRequestBody forwards an empty thinking object
+// (`thinking !== undefined`). TS drops user and verbosity, but v0.5.2 sent
+// them, so Go keeps forwarding them (Known difference, compat).
+func TestZaiRequestBodyKeepsUserVerbosityAndEmptyThinking(t *testing.T) {
 	m := NewLanguageModel(New(Config{APIKey: "k"}), "glm-5.3")
 	body, _, err := m.buildRequestBody(&provider.GenerateOptions{
 		Prompt: types.Prompt{Text: "hi"},
@@ -21,10 +22,8 @@ func TestZaiRequestBodyDropsUserVerbosityKeepsEmptyThinking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"user", "verbosity"} {
-		if v, ok := body[k]; ok {
-			t.Errorf("%s = %#v must not be sent", k, v)
-		}
+	if body["user"] != "u-1" || body["verbosity"] != "low" {
+		t.Errorf("user = %#v, verbosity = %#v; want the v0.5.2 forwarding u-1/low", body["user"], body["verbosity"])
 	}
 	if th, ok := body["thinking"].(map[string]interface{}); !ok || len(th) != 0 {
 		t.Errorf("thinking = %#v, want {}", body["thinking"])

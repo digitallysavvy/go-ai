@@ -244,10 +244,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["reasoning_effort"] = string(*opts.Reasoning)
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
-	// TS transformZaiRequestBody drops user and verbosity (and
-	// frequency_penalty / presence_penalty / seed) from the compat args.
-	delete(body, "user")
-	delete(body, "verbosity")
+	// TS transformZaiRequestBody drops user and verbosity. v0.5.2 forwarded
+	// them (providerOptions.zai/openaiCompatible user and textVerbosity), so
+	// they are still sent for existing Go callers (Known difference).
 
 	zaiOpts, err := decodeZaiOptions(compatibleOptions)
 	if err != nil {
