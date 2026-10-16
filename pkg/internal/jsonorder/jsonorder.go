@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"sort"
 	"strings"
 
@@ -172,9 +173,31 @@ func Stringify(v interface{}) string {
 		b.WriteByte(']')
 		return b.String()
 	case json.Number:
-		return x.String()
+		return jsNumberText(x)
 	}
 	return scalar(v)
+}
+
+// jsNumberText is JSON.stringify(JSON.parse(text)) for a JSON number: the
+// value goes through a double, so 1.0 and 1e2 read 1 and 100, -0 reads 0,
+// digits beyond double precision are rounded, and a number outside the double
+// range (Infinity) reads null.
+func jsNumberText(n json.Number) string {
+	f, err := n.Float64()
+	if err != nil && (math.IsInf(f, 0) || math.IsNaN(f)) {
+		return "null"
+	}
+	if err != nil {
+		return n.String()
+	}
+	if f == 0 {
+		return "0"
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		return n.String()
+	}
+	return string(b)
 }
 
 // FromMap builds an ordered object from a map with sorted keys, for
