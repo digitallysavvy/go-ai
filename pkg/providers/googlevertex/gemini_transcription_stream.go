@@ -388,6 +388,19 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 		cfg.audio.Cancel(nil)
 	}
 
+	// drainAudioEnded consumes an audio-ended signal that lost the select
+	// race against a clean close in the same tick (TS orders them).
+	drainAudioEnded := func() bool {
+		select {
+		case <-audioEndedCh:
+			audioEnded = true
+			audioEndedCh = nil
+			schedulePendingFinish()
+		default:
+		}
+		return false
+	}
+
 	for {
 		select {
 		case <-s.Context().Done():
@@ -419,7 +432,7 @@ func (s *geminiLiveTranscriptionStream) run(cfg geminiLiveTranscriptionStreamCon
 				}
 				if !wsutil.IsCleanClose(res.Err) {
 					fail(errors.New("Google Vertex Live transcription error")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue
-				} else if audioEnded {
+				} else if drainAudioEnded() || audioEnded {
 					finish()
 				} else {
 					fail(fmt.Errorf("Google Vertex Live transcription WebSocket closed unexpectedly before finishing")) //nolint:staticcheck // leading proper noun (provider/brand name), not a capitalization issue

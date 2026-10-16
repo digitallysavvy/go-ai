@@ -154,7 +154,7 @@ func (p *MaaSProvider) init() error {
 		return p.initErr
 	}
 
-	baseURL := strings.TrimRight(p.config.BaseURL, "/")
+	baseURL := strings.TrimSuffix(p.config.BaseURL, "/")
 	if baseURL == "" {
 		project := p.config.Project
 		if project == "" {

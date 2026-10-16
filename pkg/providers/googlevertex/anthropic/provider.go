@@ -171,7 +171,7 @@ func (p *GoogleVertexAnthropicProvider) RerankingModel(modelID string) (provider
 
 func (p *GoogleVertexAnthropicProvider) baseURL() (string, error) {
 	if p.options.BaseURL != "" {
-		return strings.TrimRight(p.options.BaseURL, "/"), nil
+		return strings.TrimSuffix(p.options.BaseURL, "/"), nil
 	}
 
 	project := p.options.Project

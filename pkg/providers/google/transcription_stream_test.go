@@ -1014,3 +1014,38 @@ func TestTranscriptionModel_DoStream_AbortSurfacesCause(t *testing.T) {
 		return
 	}
 }
+
+// TestTranscriptionModel_DoStream_CleanCloseRacingAudioEnded closes the
+// socket the instant audioStreamEnd arrives, so the clean close and the
+// audio-ended signal become ready in the same select tick. TS processes them
+// in order and finishes normally; the stream must never report an error.
+func TestTranscriptionModel_DoStream_CleanCloseRacingAudioEnded(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		server := newLiveTranscriptionTestServer(t)
+		model := newLiveTestModel(t, server.ts.URL)
+		result, err := model.DoStream(context.Background(), &provider.TranscriptionStreamOptions{
+			Audio:            newChanAudioStream([]byte{1, 2}),
+			InputAudioFormat: provider.AudioFormat{Type: "audio/pcm", Rate: intPtr(16000)},
+		})
+		if err != nil {
+			t.Fatalf("DoStream() error = %v", err)
+		}
+		server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
+		if _, err := result.Stream.Next(); err != nil {
+			t.Fatalf("Stream.Next() error = %v", err)
+		}
+		server.toSend <- map[string]interface{}{"setupComplete": map[string]interface{}{}}
+		server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), time.Second)
+		server.closeConnection()
+
+		parts, err := drainUntilFinishOrError(t, result.Stream)
+		if err != nil {
+			t.Fatalf("iteration %d: stream error = %v", i, err)
+		}
+		if last := parts[len(parts)-1]; last.Type != provider.TranscriptionStreamPartTypeFinish {
+			t.Fatalf("iteration %d: last part = %+v", i, last)
+		}
+		_ = result.Stream.Close()
+		server.close()
+	}
+}

@@ -60,7 +60,7 @@ func ResolveAmazonBedrockBaseURL(opts ResolveBaseURLOptions) (string, error) {
 		resolved = os.Getenv("AWS_ENDPOINT_URL")
 	}
 	if resolved != "" {
-		return strings.TrimRight(resolved, "/"), nil
+		return strings.TrimSuffix(resolved, "/"), nil
 	}
 
 	// Region is interpolated directly into the request host

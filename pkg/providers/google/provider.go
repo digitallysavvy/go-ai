@@ -53,7 +53,7 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	baseURL = strings.TrimSuffix(baseURL, "/")
 	cfg.BaseURL = baseURL
 
 	apiKey := cfg.APIKey

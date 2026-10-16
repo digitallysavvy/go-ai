@@ -77,7 +77,7 @@ func New(cfg Config) (*Provider, error) {
 		return nil, fmt.Errorf("anthropicaws: workspaceId is required; set Config.WorkspaceID or ANTHROPIC_AWS_WORKSPACE_ID")
 	}
 
-	baseURL := strings.TrimRight(cfg.BaseURL, "/")
+	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = fmt.Sprintf("https://aws-external-anthropic.%s.api.aws/v1", region)
 	}

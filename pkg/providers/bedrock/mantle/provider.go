@@ -98,7 +98,7 @@ func (p *BedrockMantleProvider) Name() string { return "bedrock-mantle" }
 // is one Mantle serves through its separate OpenAI-compatible route.
 func (p *BedrockMantleProvider) baseURLForModel(modelID string) (string, error) {
 	if p.settings.BaseURL != "" {
-		return strings.TrimRight(p.settings.BaseURL, "/"), nil
+		return strings.TrimSuffix(p.settings.BaseURL, "/"), nil
 	}
 	// Region is interpolated directly into the request host
 	// (https://bedrock-mantle.{region}.api.aws/...), so only a single DNS
