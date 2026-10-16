@@ -276,23 +276,20 @@ var perplexityKnownNativeToolTypes = map[string]bool{
 	"finance_search": true, "sandbox": true, "mcp": true, "connector": true,
 }
 
-// validatePerplexityNativeTool mirrors TS's nativeToolSchema union: it checks
-// the required fields and enum values for the recognized native tool types
-// (web_search/fetch_url/people_search/finance_search/sandbox/mcp/connector).
-// Types outside this set are TS-only in the sense that the SDK's own schema
-// doesn't recognize them either (nativeToolSchema is a closed z.union, not a
-// looseObject) -- but since providerOptions.perplexity itself is a
-// z.looseObject and future Agent API tool types are expected, an unrecognized
-// "type" is passed through unchecked here rather than rejected, matching the
-// forward-compatible passthrough documented for the rest of this options
-// object (see parsePerplexityAgentOptions's extras).
+// validatePerplexityNativeTool mirrors TS's nativeToolSchema: a closed
+// z.union of looseObjects keyed by a literal "type", so an unrecognized type
+// fails validation (TS rejects it; so do we). Known types get their field
+// types checked; extra keys pass through (looseObject).
 func validatePerplexityNativeTool(tool map[string]interface{}) error {
 	toolType, _ := tool["type"].(string)
 	if toolType == "" {
 		return invalidPerplexityProviderOptions("tools", "each tool must have a string \"type\"")
 	}
 	if !perplexityKnownNativeToolTypes[toolType] {
-		return nil
+		return invalidPerplexityProviderOptions("tools", fmt.Sprintf("invalid native tool type %q", toolType))
+	}
+	if err := validatePerplexityNativeToolFieldTypes(toolType, tool); err != nil {
+		return err
 	}
 
 	switch toolType {
@@ -413,4 +410,108 @@ func (o *perplexityLanguageModelOptions) toBodyMap() map[string]interface{} {
 		body["skills"] = o.Skills
 	}
 	return body
+}
+
+// validatePerplexityNativeToolFieldTypes checks the optional field types the
+// TS zod schemas declare for each native tool type.
+func validatePerplexityNativeToolFieldTypes(toolType string, tool map[string]interface{}) error {
+	bad := func(path, want string) error {
+		return invalidPerplexityProviderOptions("tools", fmt.Sprintf("%s.%s must be %s", toolType, path, want))
+	}
+	check := func(m map[string]interface{}, key, path, want string, ok func(interface{}) bool) error {
+		if v, present := m[key]; present && v != nil && !ok(v) {
+			return bad(path, want)
+		}
+		return nil
+	}
+	isStr := func(v interface{}) bool { _, ok := v.(string); return ok }
+	isNum := func(v interface{}) bool { _, ok := v.(float64); return ok }
+	isBool := func(v interface{}) bool { _, ok := v.(bool); return ok }
+	isPosInt := func(v interface{}) bool { f, ok := v.(float64); return ok && f > 0 && f == float64(int64(f)) }
+	isStrArr := func(v interface{}) bool {
+		arr, ok := v.([]interface{})
+		if !ok {
+			return false
+		}
+		for _, e := range arr {
+			if !isStr(e) {
+				return false
+			}
+		}
+		return true
+	}
+	isStrMap := func(v interface{}) bool {
+		m, ok := v.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		for _, e := range m {
+			if !isStr(e) {
+				return false
+			}
+		}
+		return true
+	}
+	type rule struct {
+		key, want string
+		ok        func(interface{}) bool
+	}
+	apply := func(m map[string]interface{}, prefix string, rules []rule) error {
+		for _, r := range rules {
+			if err := check(m, r.key, prefix+r.key, r.want, r.ok); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	switch toolType {
+	case "web_search":
+		if err := apply(tool, "", []rule{
+			{"max_results", "a positive integer", isPosInt},
+			{"max_tokens", "a number", isNum},
+			{"max_tokens_per_page", "a number", isNum},
+		}); err != nil {
+			return err
+		}
+		if v, ok := tool["filters"]; ok && v != nil {
+			f, isMap := v.(map[string]interface{})
+			if !isMap {
+				return bad("filters", "an object")
+			}
+			if err := apply(f, "filters.", []rule{
+				{"search_domain_filter", "an array of strings", isStrArr},
+				{"search_after_date_filter", "a string", isStr},
+				{"search_before_date_filter", "a string", isStr},
+				{"last_updated_after_filter", "a string", isStr},
+				{"last_updated_before_filter", "a string", isStr},
+			}); err != nil {
+				return err
+			}
+		}
+		if v, ok := tool["user_location"]; ok && v != nil {
+			l, isMap := v.(map[string]interface{})
+			if !isMap {
+				return bad("user_location", "an object")
+			}
+			return apply(l, "user_location.", []rule{
+				{"latitude", "a number", isNum}, {"longitude", "a number", isNum},
+				{"country", "a string", isStr}, {"city", "a string", isStr}, {"region", "a string", isStr},
+			})
+		}
+	case "fetch_url":
+		return apply(tool, "", []rule{{"max_urls", "a number", isNum}})
+	case "mcp":
+		return apply(tool, "", []rule{
+			{"allowed_tools", "an array of strings", isStrArr},
+			{"authorization", "a string", isStr},
+			{"defer_loading", "a boolean", isBool},
+			{"headers", "a string map", isStrMap},
+		})
+	case "connector":
+		return apply(tool, "", []rule{
+			{"server_description", "a string", isStr},
+			{"allowed_tools", "an array of strings", isStrArr},
+		})
+	}
+	return nil
 }

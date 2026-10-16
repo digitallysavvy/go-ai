@@ -442,23 +442,27 @@ func TestPerplexityDoGenerate_RejectsMalformedNativeTool(t *testing.T) {
 	}
 }
 
-// A future/unrecognized native tool type is forwarded unchecked, matching
-// the forward-compatible passthrough for the rest of providerOptions.perplexity.
-func TestPerplexityDoGenerate_AllowsUnrecognizedNativeToolType(t *testing.T) {
-	var captured map[string]interface{}
-	_, model := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, &captured))
+// TS nativeToolSchema is a closed union: an unrecognized native tool type
+// fails providerOptions validation instead of passing through.
+func TestPerplexityDoGenerate_RejectsUnrecognizedNativeToolType(t *testing.T) {
+	_, model := newPerplexityTestServer(t, jsonResponseHandler(t, createTestResponse(nil), nil, nil))
 	_, err := model.DoGenerate(t.Context(), &provider.GenerateOptions{
 		Prompt: types.Prompt{Messages: testPrompt},
 		ProviderOptions: map[string]interface{}{
 			"perplexity": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"type": "future_tool", "config": "x"}}},
 		},
 	})
-	if err != nil {
-		t.Fatalf("DoGenerate() error = %v, want unrecognized native tool type to pass through", err)
+	if err == nil {
+		t.Fatal("expected error for unrecognized native tool type")
 	}
-	tools, ok := captured["tools"].([]interface{})
-	if !ok || len(tools) != 1 {
-		t.Fatalf("tools = %v", captured["tools"])
+	_, err = model.DoGenerate(t.Context(), &provider.GenerateOptions{
+		Prompt: types.Prompt{Messages: testPrompt},
+		ProviderOptions: map[string]interface{}{
+			"perplexity": map[string]interface{}{"tools": []interface{}{map[string]interface{}{"type": "web_search", "max_results": 0}}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for non-positive web_search.max_results")
 	}
 }
 
