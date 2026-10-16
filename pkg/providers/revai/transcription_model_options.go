@@ -145,23 +145,58 @@ func applyRevaiDefaults(in, out map[string]interface{}) {
 	}
 	def(out, in, "diarization_type", "standard")
 	def(out, in, "language", "en")
-	if sc, ok := out["summarization_config"].(map[string]interface{}); ok {
+	// Nested z.object schemas strip unknown keys and keep explicit nulls
+	// (`.nullish()` fields), and `.default()` only fires for absent keys.
+	pick := func(src map[string]interface{}, keys ...string) map[string]interface{} {
 		cp := map[string]interface{}{}
-		for k, v := range sc {
-			if v != nil {
+		for _, k := range keys {
+			if v, ok := src[k]; ok {
 				cp[k] = v
 			}
 		}
+		return cp
+	}
+	pickEach := func(v interface{}, keys ...string) interface{} {
+		list, ok := v.([]interface{})
+		if !ok {
+			return v
+		}
+		out := make([]interface{}, len(list))
+		for i, item := range list {
+			if m, ok := item.(map[string]interface{}); ok {
+				out[i] = pick(m, keys...)
+			} else {
+				out[i] = item
+			}
+		}
+		return out
+	}
+	if nc, ok := out["notification_config"].(map[string]interface{}); ok {
+		cp := pick(nc, "url", "auth_headers")
+		if ah, ok := cp["auth_headers"].(map[string]interface{}); ok {
+			cp["auth_headers"] = pick(ah, "Authorization")
+		}
+		out["notification_config"] = cp
+	}
+	if v, ok := out["segments_to_transcribe"]; ok {
+		out["segments_to_transcribe"] = pickEach(v, "start", "end")
+	}
+	if v, ok := out["speaker_names"]; ok {
+		out["speaker_names"] = pickEach(v, "display_name")
+	}
+	if v, ok := out["custom_vocabularies"]; ok {
+		out["custom_vocabularies"] = pickEach(v) // z.array(z.object({})) strips every key
+	}
+	if sc, ok := out["summarization_config"].(map[string]interface{}); ok {
+		cp := pick(sc, "model", "type", "prompt")
 		def(cp, sc, "model", "standard")
 		def(cp, sc, "type", "paragraph")
 		out["summarization_config"] = cp
 	}
 	if tc, ok := out["translation_config"].(map[string]interface{}); ok {
-		cp := map[string]interface{}{}
-		for k, v := range tc {
-			if v != nil {
-				cp[k] = v
-			}
+		cp := pick(tc, "target_languages", "model")
+		if v, ok := cp["target_languages"]; ok {
+			cp["target_languages"] = pickEach(v, "language")
 		}
 		def(cp, tc, "model", "standard")
 		out["translation_config"] = cp
