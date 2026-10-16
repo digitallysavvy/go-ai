@@ -102,12 +102,6 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 		"config": jobConfig,
 	}
 
-	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	apiKey, err := m.prov.effectiveAPIKey()
-	if err != nil {
-		return nil, err
-	}
-
 	var (
 		respBodyBytes []byte
 		respHeaders   http.Header
@@ -126,7 +120,7 @@ func (m *ProdiaVideoModel) DoGenerate(ctx context.Context, opts *provider.VideoM
 			return nil, fmt.Errorf("prodia: failed to build multipart request: %w", err)
 		}
 
-		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, reqURL, apiKey, buf, contentType, "multipart/form-data; video/mp4", m.prov.config.Headers, opts.Headers)
+		respBodyBytes, respHeaders, reqErr = postMultipartToProdia(ctx, m.prov.client, buf, contentType, "multipart/form-data; video/mp4", opts.Headers)
 	} else {
 		// txt2vid: JSON request.
 		resp, err := m.prov.client.Do(ctx, internalhttp.Request{

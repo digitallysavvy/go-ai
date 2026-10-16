@@ -210,41 +210,29 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 	return &buf, mw.FormDataContentType(), nil
 }
 
-// postMultipartToProdia sends a multipart/form-data POST to the Prodia API.
+// postMultipartToProdia sends a multipart/form-data POST to /job?price=true
+// through the provider's HTTP client, so it carries the provider headers (the
+// bearer token, custom headers and the "ai-sdk-prodia/<version>" user agent,
+// TS getHeaders) and reports a transport failure like every other call.
 // acceptHeader is the value for the Accept request header (e.g.
 // "multipart/form-data" for the language model, or
 // "multipart/form-data; video/mp4" for the video model).
 // Returns the response body bytes, response headers, and any error.
-func postMultipartToProdia(ctx context.Context, reqURL, apiKey string, body *bytes.Buffer, contentType, acceptHeader string, extra ...map[string]string) ([]byte, http.Header, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", reqURL, body)
+func postMultipartToProdia(ctx context.Context, client *internalhttp.Client, body *bytes.Buffer, contentType, acceptHeader string, callHeaders map[string]string) ([]byte, http.Header, error) {
+	resp, err := client.Do(ctx, internalhttp.Request{
+		Method:  http.MethodPost,
+		Path:    "/job",
+		Query:   map[string]string{"price": "true"},
+		Body:    body,
+		Headers: internalhttp.MergeHeaders(callHeaders, map[string]string{"Content-Type": contentType, "Accept": acceptHeader}),
+	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create multipart request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	// provider-level and per-call headers (TS combineHeaders(config, options))
-	for _, h := range extra {
-		for k, v := range h {
-			req.Header.Set(k, v)
-		}
-	}
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Accept", acceptHeader)
-
-	resp, err := internalhttp.DefaultHTTPClient.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close() //nolint:errcheck
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, nil, newProdiaProviderError(resp.StatusCode, respBody, resp.Header)
+		return nil, nil, newProdiaProviderError(resp.StatusCode, resp.Body, resp.Headers)
 	}
-
-	return respBody, resp.Header, nil
+	return resp.Body, resp.Headers, nil
 }
 
 // mediaTypeToExt returns the canonical file extension for a given MIME type.

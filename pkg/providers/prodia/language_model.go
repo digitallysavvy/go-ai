@@ -186,14 +186,9 @@ func (m *ProdiaLanguageModel) DoGenerate(ctx context.Context, opts *provider.Gen
 		return nil, fmt.Errorf("prodia: failed to build multipart request: %w", err)
 	}
 
-	reqURL := fmt.Sprintf("%s/job?price=true", m.prov.effectiveBaseURL())
-	apiKey, err := m.prov.effectiveAPIKey()
+	respBody, respHeaders, err := postMultipartToProdia(ctx, m.prov.client, buf, contentType, "multipart/form-data", opts.Headers)
 	if err != nil {
-		return nil, err
-	}
-	respBody, respHeaders, err := postMultipartToProdia(ctx, reqURL, apiKey, buf, contentType, "multipart/form-data", m.prov.config.Headers, opts.Headers)
-	if err != nil {
-		return nil, fmt.Errorf("prodia: %w", err)
+		return nil, err // TS postFormDataToApi lets transport and API errors propagate unchanged
 	}
 
 	// Derive the Content-Type with boundary from the response header.
