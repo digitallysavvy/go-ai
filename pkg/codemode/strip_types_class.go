@@ -8,7 +8,8 @@ import "strings"
 func handleClassDecl(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 	*out = append(*out, tokens[i])
 	i++
-	if j := nextSignificant(tokens, i); j >= 0 && tokens[j].kind == "ident" {
+	// `extends` starts the heritage clause of an anonymous class; it is not a name.
+	if j := nextSignificant(tokens, i); j >= 0 && tokens[j].kind == "ident" && tokens[j].text != "extends" {
 		for k := i; k <= j; k++ {
 			*out = append(*out, tokens[k])
 		}
@@ -220,6 +221,10 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken, hasExtends bool) 
 	}
 
 	sawAbstract := false
+	// guardAt is where the first erased accessibility/readonly/override modifier
+	// started in out (-1 when none was erased), guardPos its source offset, and
+	// staticKept whether a `static`/`accessor` modifier stays in front of the member.
+	guardAt, guardPos, staticKept := -1, 0, false
 modifiers:
 	for {
 		k := nextSignificant(tokens, i)
@@ -256,6 +261,9 @@ modifiers:
 			return k, errUnsupportedTSSyntax("override without extends")
 		}
 		if classMemberTSModifiers[tokens[k].text] {
+			if guardAt < 0 {
+				guardAt, guardPos = len(*out), tokens[k].pos
+			}
 			i = k + 1
 			continue
 		}
@@ -265,6 +273,10 @@ modifiers:
 			continue
 		}
 		if classMemberJSModifiers[tokens[k].text] {
+			// `static` and `accessor` keep the member from starting with `*` or `[`.
+			if tokens[k].text == "static" || tokens[k].text == "accessor" {
+				staticKept = true
+			}
 			for m := i; m <= k; m++ {
 				*out = append(*out, tokens[m])
 			}
@@ -274,11 +286,13 @@ modifiers:
 		break
 	}
 
+	generator := false
 	if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "*" {
 		for k := i; k <= p; k++ {
 			*out = append(*out, tokens[k])
 		}
 		i = p + 1
+		generator = true
 	}
 
 	// An index signature (`[key: string]: any;`) has no runtime form and is
@@ -298,6 +312,21 @@ modifiers:
 					return end, nil
 				}
 			}
+		}
+	}
+
+	// With the modifier erased, a member that now starts with `*` or `[` would
+	// continue the previous member's initializer (`x = 1` newline `private
+	// *m() {}`): Node writes a `;` over the first erased character.
+	if guardAt >= 0 && !staticKept {
+		computed := false
+		if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "[" {
+			computed = true
+		}
+		if generator || computed {
+			*out = append(*out, tsToken{})
+			copy((*out)[guardAt+1:], (*out)[guardAt:])
+			(*out)[guardAt] = tsToken{kind: "punct", text: ";", pos: guardPos}
 		}
 	}
 

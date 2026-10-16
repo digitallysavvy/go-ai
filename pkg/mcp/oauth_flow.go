@@ -372,10 +372,13 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 				HTTPClient:              options.HTTPClient,
 			})
 			if refreshErr == nil {
-				if err := provider.SaveTokens(ctx, addOAuthASInfoToTokens(*newTokens, currentASInfo)); err != nil {
-					return "", err
+				// TS saves the refreshed tokens inside the same try block, so a
+				// failing saveTokens is handled like a failed refresh.
+				if saveErr := provider.SaveTokens(ctx, addOAuthASInfoToTokens(*newTokens, currentASInfo)); saveErr != nil {
+					refreshErr = saveErr
+				} else {
+					return AuthResultAuthorized, nil
 				}
-				return AuthResultAuthorized, nil
 			}
 
 			// If this is a ServerError, or an unknown error type, swallow it

@@ -106,7 +106,10 @@ func (t *transportTextStream) Next() (*provider.StreamChunk, error) {
 		case chunk, ok := <-t.chunks:
 			if !ok {
 				t.chunks = nil
-				t.finish(nil)
+				// A transport sends its failure on errs before closing both
+				// channels, so a ready error must not lose to the closed chunk
+				// channel in the select above.
+				t.finish(t.pendingErr())
 				continue
 			}
 			t.mu.Lock()
@@ -126,6 +129,25 @@ func (t *transportTextStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 	}
+}
+
+// pendingErr returns a transport error that is already waiting on errs.
+func (t *transportTextStream) pendingErr() error {
+	for t.errs != nil {
+		select {
+		case err, ok := <-t.errs:
+			if !ok {
+				t.errs = nil
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+		default:
+			return nil
+		}
+	}
+	return nil
 }
 
 func (t *transportTextStream) convert(chunk ai.UIMessageChunk) (*provider.StreamChunk, bool) {

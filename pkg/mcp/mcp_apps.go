@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 const (
@@ -89,7 +91,8 @@ func GetMCPAppToolMeta(tool MCPTool) (*MCPAppToolMeta, error) {
 	if hasResource {
 		resourceURI, ok := resourceValue.(string)
 		if !ok || !strings.HasPrefix(resourceURI, "ui://") {
-			encoded, _ := json.Marshal(resourceValue)
+			// JSON.stringify does not HTML-escape <, > or &.
+			encoded, _ := jsonstr.Marshal(resourceValue)
 			return nil, mcpAppError("Invalid MCP App resource URI: %s", encoded)
 		}
 		meta.ResourceURI = resourceURI

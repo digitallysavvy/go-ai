@@ -90,7 +90,9 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 					if err != nil {
 						return i, err
 					}
+					afterParen := i
 					i = stripOptionalReturnType(tokens, i, out)
+					relocateArrowCloseParen(tokens, afterParen, i, out)
 					continue
 				}
 				if closeIdx >= 0 && isMethodParamList(tokens, closeIdx, *out) {
@@ -183,7 +185,9 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 						if err != nil {
 							return i, err
 						}
+						afterParen := i
 						i = stripOptionalReturnType(tokens, i, out)
+						relocateArrowCloseParen(tokens, afterParen, i, out)
 						continue
 					}
 				}
@@ -366,15 +370,11 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 		// for call-expression generics (`ident<T>(...)`), which can follow
 		// any identifier -- including a property access like
 		// `obj.method<T>(...)`.
-		afterNew := precededByNew(*out)
 		*out = append(*out, t)
 		i++
 		if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "<" {
 			// `new Box<T>;` has type arguments without a call.
 			end, ok := consumeCallGenerics(tokens, p)
-			if !ok && afterNew {
-				end, ok = consumeAngleTypeArgsBalanced(tokens, p)
-			}
 			if ok {
 				if n := nextSignificant(tokens, end); n >= 0 && tokens[n].text == "?." && keepsTypeArgsBeforeOptionalCall(*out) {
 					ok = false
@@ -446,11 +446,19 @@ func isStatementStart(out []tsToken) bool {
 	if out[i].kind != "punct" {
 		// A line break after a complete statement starts the next one
 		// (automatic semicolon insertion): `const a = b` newline `type T = ...`.
+		// `return` and a line break end the statement as well (a restricted
+		// production), so what follows on the next line starts a new one.
+		if out[i].kind == "ident" && out[i].text == "return" {
+			return endsWithLineBreak(out)
+		}
 		return endsWithLineBreak(out) && endsExpression(out)
 	}
 	switch out[i].text {
 	case ";", "}":
 		return true
+	case "++", "--":
+		// A postfix operator ends an expression statement at a line break.
+		return endsWithLineBreak(out) && endsExpression(out)
 	case "{":
 		return looksLikeBlockOpen(out[:i])
 	case ")", "]":
@@ -534,6 +542,9 @@ var expressionPrefixKeywords = map[string]bool{
 	"satisfies": true, "as": true, "enum": true, "namespace": true,
 	"declare": true, "abstract": true, "readonly": true, "public": true,
 	"private": true, "protected": true, "static": true, "instanceof": true,
+	// `await !x` and `for (k of !x)`: what follows is an operand, so a `!` is a
+	// prefix NOT, not a non-null assertion.
+	"await": true, "of": true,
 }
 
 // asiGuard keeps the statement boundary a type-only construct provided. After
@@ -753,17 +764,6 @@ func closesControlHeader(out []tsToken) bool {
 	return false
 }
 
-// precededByNew reports whether the last significant token in out is `new`.
-func precededByNew(out []tsToken) bool {
-	for i := len(out) - 1; i >= 0; i-- {
-		if out[i].kind == "space" || out[i].kind == "comment" {
-			continue
-		}
-		return out[i].kind == "ident" && out[i].text == "new"
-	}
-	return false
-}
-
 // lastSignificant returns the last emitted token that is not whitespace or a
 // comment, or nil.
 func lastSignificant(out []tsToken) *tsToken {
@@ -779,23 +779,49 @@ func lastSignificant(out []tsToken) *tsToken {
 // never closes (`x as T < y;`, where `<` starts type arguments that run to
 // the end of the source). Node rejects that source, so it is not stripped.
 func typeSpanUnterminated(span []tsToken) bool {
-	depth := 0
+	// Brackets must nest: a closer that does not match the innermost opener
+	// (the `}` of the block around `x as T < y;`, swallowed into the span) means
+	// the type arguments never close.
+	var stack []byte
+	pop := func(open byte) bool {
+		if len(stack) == 0 || stack[len(stack)-1] != open {
+			return false
+		}
+		stack = stack[:len(stack)-1]
+		return true
+	}
 	for _, t := range span {
 		if t.kind != "punct" {
 			continue
 		}
 		switch t.text {
 		case "(", "[", "{", "<":
-			depth++
-		case ")", "]", "}", ">":
-			depth--
-		case ">>":
-			depth -= 2
-		case ">>>":
-			depth -= 3
+			stack = append(stack, t.text[0])
+		case ")":
+			if !pop('(') {
+				return true
+			}
+		case "]":
+			if !pop('[') {
+				return true
+			}
+		case "}":
+			if !pop('{') {
+				return true
+			}
+		case ">":
+			if !pop('<') {
+				return true
+			}
+		case ">>", ">>>":
+			for range len(t.text) {
+				if !pop('<') {
+					return true
+				}
+			}
 		}
 	}
-	return depth > 0
+	return len(stack) > 0
 }
 
 // keepsTypeArgsBeforeOptionalCall reports whether Node 24 leaves the `<T>` of
@@ -894,4 +920,35 @@ func keepsTypeArgsBeforeOptionalCall(out []tsToken) bool {
 func followedByOptionalChain(tokens []tsToken, i int) bool {
 	n := nextSignificant(tokens, i)
 	return n >= 0 && tokens[n].kind == "punct" && tokens[n].text == "?."
+}
+
+// relocateArrowCloseParen keeps an arrow function's `)` on the `=>` line when an
+// erased return type spans a line break: `(x): Promise<{` newline `a: T }> =>
+// y` would otherwise leave a line break between `)` and `=>`, which JavaScript
+// rejects. Node writes the `)` over the last character of the erased type and
+// blanks the original one. afterParen is the index just past the parameter
+// list's `)`, afterType the index just past the erased return type.
+func relocateArrowCloseParen(tokens []tsToken, afterParen, afterType int, out *[]tsToken) {
+	if afterType <= afterParen || afterParen == 0 {
+		return
+	}
+	broken := false
+	for k := afterParen; k < afterType && !broken; k++ {
+		broken = strings.ContainsAny(tokens[k].text, "\n\r") || strings.ContainsRune(tokens[k].text, 0x2028) || strings.ContainsRune(tokens[k].text, 0x2029)
+	}
+	if !broken {
+		return
+	}
+	closeTok := tokens[afterParen-1]
+	if closeTok.kind != "punct" || closeTok.text != ")" {
+		return
+	}
+	for k := len(*out) - 1; k >= 0; k-- {
+		if (*out)[k].pos == closeTok.pos && (*out)[k].text == ")" {
+			*out = append((*out)[:k], (*out)[k+1:]...)
+			last := tokens[afterType-1]
+			*out = append(*out, tsToken{kind: "punct", text: ")", pos: last.pos + len([]rune(last.text)) - 1})
+			return
+		}
+	}
 }
