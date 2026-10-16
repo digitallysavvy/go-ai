@@ -2,7 +2,9 @@
 //
 // This package defines the CustomTool type which allows constraining model output
 // with grammar or text format specifications. Custom tools are executed by the
-// OpenAI Responses API, not locally.
+// OpenAI Responses API; the SDK executes the call locally when an Execute
+// function is attached (TS openai.tools.customTool is a provider-defined tool,
+// not provider-executed).
 //
 // Example usage:
 //
@@ -26,9 +28,6 @@
 package tool
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -50,7 +49,9 @@ type CustomToolFormat struct {
 
 // CustomTool defines an OpenAI custom tool for the Responses API.
 // Custom tools constrain model output using grammar or text format specifications.
-// They are executed by the OpenAI API, not locally.
+// Like TS openai.tools.customTool they are client-executed: the model emits a
+// custom_tool_call whose freeform input the caller answers (set Execute on the
+// tool returned by ToTool, or handle the returned tool call yourself).
 //
 // The tool name is not stored in CustomTool itself — it is supplied when calling
 // ToTool("tool-name"), so the name is derived from the caller's context (e.g., the
@@ -137,10 +138,8 @@ func (ct CustomTool) ToTool(name string) types.Tool {
 			}
 			return ""
 		}(),
-		ProviderExecuted: true,
-		ProviderOptions:  ct,
-		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
-			return nil, fmt.Errorf("custom tool %q is executed by the OpenAI API, not locally", name)
-		},
+		// Client-executed (TS createProviderDefinedToolFactory, not
+		// provider-executed): attach Execute to run it locally.
+		ProviderOptions: ct,
 	}
 }
