@@ -107,3 +107,65 @@ func TestToOpenAIMessages_ReferenceWithoutProviderKeepsLegacyShape(t *testing.T)
 		t.Errorf("part = %#v", part)
 	}
 }
+
+func compatUserFile(f types.FileContent) []types.Message {
+	return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{f}}}
+}
+
+func TestToOpenAIMessagesWithError_CompatFileValidation(t *testing.T) {
+	opt := ToOpenAIMessagesOptions{CompatFileValidation: true, SpreadCompatMetadata: true}
+	cases := []struct {
+		name string
+		file types.FileContent
+		want string
+	}{
+		{"audio media type", types.FileContent{MediaType: "audio/ogg", Data: []byte("x")}, "audio media type audio/ogg"},
+		{"audio url", types.FileContent{MediaType: "audio/wav", URL: "https://x/a.wav"}, "audio file parts with URLs"},
+		{"pdf url", types.FileContent{MediaType: "application/pdf", URL: "https://x/a.pdf"}, "PDF file parts with URLs"},
+		{"application type", types.FileContent{MediaType: "application/zip", Data: []byte("x")}, "file part media type application/zip"},
+		{"text file part", types.FileContent{FileData: types.FileData{Type: types.FileDataTypeText, Text: "hi"}, MediaType: "text/plain"}, "text file parts"},
+		{"other top level", types.FileContent{MediaType: "model/gltf", Data: []byte("x")}, "file part media type model/gltf"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ToOpenAIMessagesWithError(compatUserFile(tc.file), opt)
+			var ufe *providererrors.UnsupportedFunctionalityError
+			if !errors.As(err, &ufe) || ufe.Functionality != tc.want {
+				t.Fatalf("err = %v, want unsupported %q", err, tc.want)
+			}
+			// the exported lenient form still returns messages
+			if got := ToOpenAIMessages(compatUserFile(tc.file), opt); len(got) != 1 {
+				t.Fatalf("lenient result = %v", got)
+			}
+		})
+	}
+	// Without the option nothing is rejected.
+	if _, err := ToOpenAIMessagesWithError(compatUserFile(cases[0].file)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestToOpenAIMessagesWithError_CompatTextFile(t *testing.T) {
+	opt := ToOpenAIMessagesOptions{CompatFileValidation: true, SpreadCompatMetadata: true}
+	got, err := ToOpenAIMessagesWithError(compatUserFile(types.FileContent{MediaType: "text/plain", Data: []byte("hello"),
+		ProviderOptions: map[string]interface{}{"openaiCompatible": map[string]interface{}{"k": "v"}}}), opt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := got[0]["content"].([]map[string]interface{})
+	want := map[string]interface{}{"type": "text", "text": "hello", "k": "v"}
+	if !reflect.DeepEqual(parts[0], want) {
+		t.Fatalf("got %v want %v", parts[0], want)
+	}
+	got, _ = ToOpenAIMessagesWithError(compatUserFile(types.FileContent{MediaType: "text/csv", URL: "https://x/a.csv"}), opt)
+	if p := got[0]["content"].([]map[string]interface{})[0]; p["type"] != "text" || p["text"] != "https://x/a.csv" {
+		t.Fatalf("url text part = %v", p)
+	}
+	// valid audio/pdf still convert
+	if _, err := ToOpenAIMessagesWithError(compatUserFile(types.FileContent{MediaType: "audio/mpeg", Data: []byte("x")}), opt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ToOpenAIMessagesWithError(compatUserFile(types.FileContent{MediaType: "application/pdf", Data: []byte("x")}), opt); err != nil {
+		t.Fatal(err)
+	}
+}

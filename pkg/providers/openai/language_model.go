@@ -365,6 +365,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if !native {
 		toOpenAIMessagesOpts.ReasoningKey = "reasoning_content"
 		toOpenAIMessagesOpts.SpreadCompatMetadata = true
+		toOpenAIMessagesOpts.CompatFileValidation = true
 	}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)

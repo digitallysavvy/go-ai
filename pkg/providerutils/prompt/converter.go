@@ -130,13 +130,31 @@ type ToOpenAIMessagesOptions struct {
 	// ToOpenAIMessagesWithError; ToOpenAIMessages cannot return it and falls
 	// back to the legacy shape.
 	Provider string
+
+	// CompatFileValidation applies @ai-sdk/openai-compatible's strict file
+	// handling (convertToOpenAICompatibleContentPart): audio parts need inline
+	// wav/mp3 data, application parts must be inline application/pdf, a text
+	// file part (FileDataTypeText) is unsupported, text/* data or URL parts
+	// become text parts, and any other media type, or a custom tool content
+	// block, is rejected. Violations are reported by ToOpenAIMessagesWithError
+	// as *errors.UnsupportedFunctionalityError; ToOpenAIMessages cannot return
+	// them and keeps the lenient file shape. Only OpenAI-compatible callers
+	// set it (OpenAI's own chat converter has different rules).
+	CompatFileValidation bool
 }
 
 // providerRefResolver resolves provider file references during conversion
-// and records the first resolution error.
+// and records the first conversion error.
 type providerRefResolver struct {
 	provider string
+	strict   bool
 	err      error
+}
+
+func (r *providerRefResolver) fail(err error) {
+	if r != nil && r.err == nil {
+		r.err = err
+	}
 }
 
 // AssistantToolCallContentMode is documented on
@@ -177,8 +195,8 @@ func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessage
 		opt = opts[0]
 	}
 	var refs *providerRefResolver
-	if opt.Provider != "" {
-		refs = &providerRefResolver{provider: opt.Provider}
+	if opt.Provider != "" || opt.CompatFileValidation {
+		refs = &providerRefResolver{provider: opt.Provider, strict: opt.CompatFileValidation}
 	}
 	result := toOpenAIMessages(messages, opt, refs)
 	if refs != nil && refs.err != nil {
@@ -193,7 +211,7 @@ func ToOpenAIMessagesWithError(messages []types.Message, opts ...ToOpenAIMessage
 // providerName. Providers whose request builders cannot return an error call
 // it before building the body.
 func ValidateProviderFileReferences(messages []types.Message, providerName string) error {
-	_, err := ToOpenAIMessagesWithError(messages, ToOpenAIMessagesOptions{Provider: providerName})
+	_, err := ToOpenAIMessagesWithError(messages, ToOpenAIMessagesOptions{Provider: providerName, CompatFileValidation: true})
 	return err
 }
 
@@ -799,8 +817,75 @@ func openAIToolResultContentBlockPart(block types.ToolResultContentBlock, refs *
 			ProviderOptions: b.ProviderOptions,
 		}, true, refs), true
 	default:
+		if refs != nil && refs.strict && block != nil && block.ToolResultContentType() == "custom" {
+			refs.fail(&providererrors.UnsupportedFunctionalityError{Functionality: "custom tool content parts"})
+		}
 		return nil, false
 	}
+}
+
+// compatFilePart mirrors the url/data branch of TS
+// convertToOpenAICompatibleContentPart for file parts. A nil part with a nil
+// error means "not handled here" (images, video and PDFs stay on the shared
+// path).
+func compatFilePart(file types.FileContent, mediaType string) (map[string]interface{}, error) {
+	unsupported := func(f string) error { return &providererrors.UnsupportedFunctionalityError{Functionality: f} }
+	hasData := len(file.Data) > 0
+	if file.FileData.Type == types.FileDataTypeText || (file.Text != "" && !hasData && file.URL == "") {
+		return nil, unsupported("text file parts")
+	}
+	top := mediaType
+	if i := strings.Index(mediaType, "/"); i >= 0 {
+		top = mediaType[:i]
+	}
+	isURL := file.URL != "" && !hasData
+	meta := func(part map[string]interface{}) map[string]interface{} {
+		if m, ok := file.ProviderOptions["openaiCompatible"].(map[string]interface{}); ok {
+			for k, v := range m {
+				part[k] = v
+			}
+		}
+		return part
+	}
+	switch top {
+	case "image", "video":
+		return nil, nil
+	case "audio":
+		if isURL {
+			return nil, unsupported("audio file parts with URLs")
+		}
+		var format string
+		switch mediaType {
+		case "audio/wav":
+			format = "wav"
+		case "audio/mp3", "audio/mpeg":
+			format = "mp3"
+		default:
+			return nil, unsupported("audio media type " + mediaType)
+		}
+		return meta(map[string]interface{}{
+			"type": "input_audio",
+			"input_audio": map[string]interface{}{
+				"data":   base64.StdEncoding.EncodeToString(file.Data),
+				"format": format,
+			},
+		}), nil
+	case "application":
+		if isURL {
+			return nil, unsupported("PDF file parts with URLs")
+		}
+		if mediaType != "application/pdf" {
+			return nil, unsupported("file part media type " + mediaType)
+		}
+		return nil, nil
+	case "text":
+		text := string(file.Data)
+		if isURL {
+			text = file.URL
+		}
+		return meta(map[string]interface{}{"type": "text", "text": text}), nil
+	}
+	return nil, unsupported("file part media type " + mediaType)
 }
 
 // ExtractSystemMessage extracts the system message from a list of messages
@@ -832,7 +917,7 @@ func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, ref
 	// A provider-reference file resolves to the provider's own file ID for
 	// any media type (TS #22466), keeping the part-level
 	// providerOptions.openaiCompatible metadata.
-	if refs != nil && file.FileData.Type == types.FileDataTypeReference {
+	if refs != nil && refs.provider != "" && file.FileData.Type == types.FileDataTypeReference {
 		id, err := providerutils.ResolveProviderReference(file.FileData.Reference, refs.provider)
 		if err == nil {
 			part := map[string]interface{}{
@@ -851,6 +936,13 @@ func openAIFileContentPartResolving(file types.FileContent, allowVideo bool, ref
 		}
 	}
 	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
+	if refs != nil && refs.strict {
+		if part, err := compatFilePart(file, mediaType); err != nil {
+			refs.fail(err)
+		} else if part != nil {
+			return part
+		}
+	}
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 		imageURL := file.URL
 		if imageURL == "" && len(file.Data) > 0 {
