@@ -53,3 +53,31 @@ func TestStepStartNotFiredWhenPromptConversionFails(t *testing.T) {
 		t.Error("StreamText fired OnStepStart before the prompt converted")
 	}
 }
+
+// The streamText step-end event carries the response id and model like the
+// step result (TS onStepEnd event is the step result).
+func TestStreamTextStepEndEventCarriesResponseMetadata(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "resp-9", ModelID: "served"}},
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	var got OnStepFinishEvent
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "x",
+		OnStepEndEvent: func(_ context.Context, e OnStepFinishEvent) { got = e },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if got.Response.ID != "resp-9" || got.Response.ModelID != "served" {
+		t.Fatalf("step-end response = %+v", got.Response)
+	}
+}
