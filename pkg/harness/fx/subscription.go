@@ -1,11 +1,13 @@
 package fx
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -156,14 +158,7 @@ func CreateSubscriptionAuthenticationFiles(env, sandboxEnv map[string]string, cr
 		if provider == providerChatGPT {
 			path = ".fx/chatgpt-auth.json"
 		}
-		content, _ := json.Marshal(map[string]any{
-			"version":       1,
-			"access_token":  accessToken,
-			"refresh_token": sandboxRefreshToken,
-			"expires_at_ms": int64(9007199254740991), // Number.MAX_SAFE_INTEGER
-			"account_id":    accountID,
-		})
-		files = append(files, acp.AuthenticationFile{Path: path, Content: string(content) + "\n"})
+		files = append(files, acp.AuthenticationFile{Path: path, Content: credentialFileContent(accessToken, sandboxRefreshToken, 9007199254740991 /* Number.MAX_SAFE_INTEGER */, accountID)})
 	}
 	return files
 }
@@ -290,17 +285,7 @@ func readSubscription(ctx context.Context, provider subscriptionProvider, fxDire
 }
 
 func persistCredential(path string, cred *Credential) error {
-	data, err := json.Marshal(map[string]any{
-		"version":       1,
-		"access_token":  cred.AccessToken,
-		"refresh_token": cred.RefreshToken,
-		"expires_at_ms": cred.ExpiresAt,
-		"account_id":    cred.AccountID,
-	})
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
+	data := []byte(credentialFileContent(cred.AccessToken, cred.RefreshToken, cred.ExpiresAt, cred.AccountID))
 	tmp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
@@ -309,6 +294,23 @@ func persistCredential(path string, cred *Credential) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// credentialFileContent renders `JSON.stringify({version, access_token,
+// refresh_token, expires_at_ms, account_id}) + "\n"`: TS key order and no
+// HTML escaping (a Go map would sort the keys and escape <, > and &).
+func credentialFileContent(accessToken, refreshToken string, expiresAt int64, accountID string) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(struct {
+		Version      int    `json:"version"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresAtMs  int64  `json:"expires_at_ms"`
+		AccountID    string `json:"account_id"`
+	}{1, accessToken, refreshToken, expiresAt, accountID})
+	return b.String() // Encode appends the newline
 }
 
 func readCredential(value map[string]any) *Credential {
@@ -325,7 +327,8 @@ func readCredential(value map[string]any) *Credential {
 		return nil
 	}
 	expiresAt, ok := value["expires_at_ms"].(float64)
-	if !ok {
+	// Number.isSafeInteger
+	if !ok || expiresAt != math.Trunc(expiresAt) || math.Abs(expiresAt) > 9007199254740991 {
 		return nil
 	}
 	accountID, ok := value["account_id"].(string)
