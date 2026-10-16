@@ -757,12 +757,8 @@ func (m *VideoModel) handleError(err error) error {
 	if httpErr == nil {
 		return providererrors.NewVideoGenerationError("alibaba", m.modelID, err.Error(), err)
 	}
-	var apiErr alibabaVideoAPIError
-	message := string(httpErr.Body)
-	if jsonErr := json.Unmarshal(httpErr.Body, &apiErr); jsonErr == nil && apiErr.Message != "" {
-		message = apiErr.Message
-	}
-	return providererrors.NewProviderError("alibaba", httpErr.StatusCode, apiErr.Code, message, err)
+	message, code := alibabaNativeErrorMessage(httpErr.StatusCode, httpErr.Body)
+	return providererrors.NewProviderError("alibaba", httpErr.StatusCode, code, message, err)
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {
@@ -784,14 +780,6 @@ func mustMarshal(v interface{}) []byte {
 // passed back into DoStatus.
 type alibabaOperation struct {
 	TaskID string `json:"taskId"`
-}
-
-// alibabaVideoAPIError is the DashScope native API error format (different
-// from the OpenAI-compatible chat endpoint).
-type alibabaVideoAPIError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id"`
 }
 
 type alibabaVideoCreateResponse struct {
