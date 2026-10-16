@@ -323,7 +323,7 @@ func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e Dec
 	if !parent.IsRecording() {
 		return
 	}
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := genAIChildTracer(e.CallID, parent)
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), e.OperationID)
 	functionID := ""
 	if e.Settings != nil {
@@ -394,7 +394,7 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	ctx, span := tracer.Start(ctx, spanName)
+	ctx, span := tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,
 		OperationType:  e.OperationID,
@@ -438,6 +438,7 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 		st.mu.Lock()
 		st.rootSpan = span
 		st.baseSupp = baseSupp
+		st.tracer = tracer
 		st.mu.Unlock()
 	}
 	return ctx
@@ -470,12 +471,12 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 	if !parent.IsRecording() {
 		return
 	}
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := genAIChildTracer(e.CallID, parent)
 	spanName := "decide"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
 	}
-	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName)
+	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:      SpanTypeDecision,
 		OperationType: e.OperationID,
