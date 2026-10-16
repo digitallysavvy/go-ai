@@ -418,3 +418,30 @@ func TestDecisionModel_RejectsFileEvidence(t *testing.T) {
 		t.Fatalf("a request was sent: %v", got)
 	}
 }
+
+func TestTypesafeErrorMessageFollowsTSHandler(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"message", 400, `{"message":"bad","detail":"d"}`, "bad"},
+		{"error string", 400, `{"error":"e"}`, "e"},
+		{"error object", 400, `{"error":{"message":"em"}}`, "em"},
+		{"detail string", 422, `{"detail":"ds"}`, "ds"},
+		{"detail array compact", 422, `{"detail": [ {"msg": "x"} ]}`, `[{"msg":"x"}]`},
+		{"detail null is the text null", 422, `{"detail":null}`, "null"},
+		{"error type", 500, `{"error_type":"boom"}`, "boom"},
+		{"nothing", 500, `{}`, "TypeSafe request failed"},
+		{"not json", 502, `<html>`, "Bad Gateway"},
+		{"empty", 503, ``, "Service Unavailable"},
+		{"wrong type is off schema", 400, `{"message":5}`, "Bad Request"},
+		{"error object null message falls through", 400, `{"error":{"message":null},"error_type":"t"}`, "t"},
+	}
+	for _, c := range cases {
+		if got := typesafeErrorMessage(c.status, []byte(c.body)); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
