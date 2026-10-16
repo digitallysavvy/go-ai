@@ -302,6 +302,15 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 		}
 		i = j + 1
 	}
+	// Variance modifiers (`<in T>`) are only valid on classes, interfaces
+	// and type aliases; Node rejects them on a function.
+	if lt := nextSignificant(tokens, i); lt >= 0 && tokens[lt].kind == "punct" && tokens[lt].text == "<" {
+		if v := nextSignificant(tokens, lt+1); v >= 0 && tokens[v].kind == "ident" && (tokens[v].text == "in" || tokens[v].text == "out") {
+			if n := nextSignificant(tokens, v+1); n >= 0 && tokens[n].kind == "ident" {
+				return v, errUnsupportedTSSyntax("variance modifier on a function")
+			}
+		}
+	}
 	i = stripOptionalTypeParams(tokens, i, out)
 
 	open := nextSignificant(tokens, i)
@@ -322,7 +331,12 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 	if next >= 0 && tokens[next].kind == "punct" && tokens[next].text == "{" {
 		return i, nil
 	}
-	end := scanToStatementEnd(tokens, i)
+	// A bodyless signature (an overload) ends with its return type, or with
+	// a `;` after it.
+	end := i
+	if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+		end = semi + 1
+	}
 	*out = (*out)[:memberStart]
 	return end, nil
 }

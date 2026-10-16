@@ -3,6 +3,7 @@ package codemode
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // stripTypeScriptAnnotations removes type-only TypeScript syntax from
@@ -68,7 +69,15 @@ import (
 //   - A function/method's `this` parameter (`function f(this: Window, x:
 //     number)`), erased entirely -- name, type, and the comma that followed
 //     it -- since `this` can never legally be a JavaScript parameter name.
-//   - `import type ...;` / `export type ...;` statements.
+//   - Function types (`let f: (a: number) => void`), `catch (e: unknown)`,
+//     object-literal method signatures, `${x as T}` inside template
+//     literals, abstract members and class index signatures.
+//
+// Type syntax is blanked, not removed: the erased text becomes spaces and
+// keeps its line breaks, as Node does, so line and column numbers in errors
+// still match the source. A static `import`/`export` (type-only forms
+// included) cannot appear in the function body the snippet is wrapped in, so
+// Node rejects it and the snippet runs unmodified; so does `<T>expr`.
 //   - Class member access modifiers (`public`/`private`/`protected`) and
 //     `readonly`/`override`/`declare`, plus bodyless (abstract or overload)
 //     member/function signatures, which are erased entirely.
@@ -108,17 +117,50 @@ func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 	if err != nil {
 		return src, err
 	}
+	return blankDropped(src, kept), nil
+}
+
+// blankDropped writes the kept tokens and replaces every dropped span of src
+// with spaces, keeping line breaks, like Node's stripTypeScriptTypes: the
+// erased type syntax keeps its width, so line and column numbers in errors
+// and stack traces still point at the source the model wrote.
+func blankDropped(src string, kept []tsToken) string {
+	runes := []rune(src)
 	var b strings.Builder
-	for _, t := range kept {
-		b.WriteString(t.text)
+	end := 0
+	blank := func(from, to int) {
+		for _, r := range runes[from:to] {
+			// Only visible characters become spaces; whitespace (tabs
+			// included) and line breaks stay, like Node.
+			if unicode.IsSpace(r) || r == '\uFEFF' {
+				b.WriteRune(r)
+			} else {
+				b.WriteByte(' ')
+			}
+		}
 	}
-	return b.String(), nil
+	for _, t := range kept {
+		if t.pos > end && t.pos <= len(runes) {
+			blank(end, t.pos)
+		}
+		b.WriteString(t.text)
+		if e := t.pos + len([]rune(t.text)); e > end {
+			end = e
+		}
+	}
+	if end < len(runes) {
+		blank(end, len(runes))
+	}
+	return b.String()
 }
 
 // tsToken is one lexical token of (possibly-TypeScript) source.
 type tsToken struct {
 	kind string // "ident", "number", "string", "regex", "punct", "space", "comment"
 	text string
+	// pos is the rune offset of the token in the source, so the output can
+	// blank what was dropped instead of closing the gap.
+	pos int
 }
 
 // tokenizeTS splits src into tokens, correctly skipping over the contents
@@ -143,7 +185,7 @@ func tokenizeTS(src string) []tsToken {
 			for j < n && runes[j] != '\n' {
 				j++
 			}
-			tokens = append(tokens, tsToken{"comment", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"comment", string(runes[i:j]), i})
 			i = j
 
 		case c == '/' && i+1 < n && runes[i+1] == '*':
@@ -155,12 +197,12 @@ func tokenizeTS(src string) []tsToken {
 			if end > n {
 				end = n
 			}
-			tokens = append(tokens, tsToken{"comment", string(runes[i:end])})
+			tokens = append(tokens, tsToken{"comment", string(runes[i:end]), i})
 			i = end
 
 		case c == '/' && regexAllowedAfter(prevSignificant):
 			if end, ok := scanRegexLiteral(runes, i); ok {
-				tokens = append(tokens, tsToken{"regex", string(runes[i:end])})
+				tokens = append(tokens, tsToken{"regex", string(runes[i:end]), i})
 				i = end
 				prevSignificant = &tokens[len(tokens)-1]
 				continue
@@ -169,17 +211,17 @@ func tokenizeTS(src string) []tsToken {
 
 		case c == '"' || c == '\'':
 			j := scanStringLiteral(runes, i)
-			tokens = append(tokens, tsToken{"string", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"string", string(runes[i:j]), i})
 			i = j
 
 		case c == '`':
 			j := scanTemplateLiteral(runes, i)
-			tokens = append(tokens, tsToken{"string", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"string", string(runes[i:j]), i})
 			i = j
 
 		case isDigit(c) || (c == '.' && i+1 < n && isDigit(runes[i+1])):
 			j := scanNumber(runes, i)
-			tokens = append(tokens, tsToken{"number", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"number", string(runes[i:j]), i})
 			i = j
 
 		case isTSIdentStart(c):
@@ -187,7 +229,7 @@ func tokenizeTS(src string) []tsToken {
 			for j < n && isTSIdentPart(runes[j]) {
 				j++
 			}
-			tokens = append(tokens, tsToken{"ident", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"ident", string(runes[i:j]), i})
 			i = j
 
 		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
@@ -195,16 +237,16 @@ func tokenizeTS(src string) []tsToken {
 			for j < n && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\r' || runes[j] == '\n') {
 				j++
 			}
-			tokens = append(tokens, tsToken{"space", string(runes[i:j])})
+			tokens = append(tokens, tsToken{"space", string(runes[i:j]), i})
 			i = j
 
 		default:
 			matched := matchTSOperator(runes[i:])
 			if matched != "" {
-				tokens = append(tokens, tsToken{"punct", matched})
+				tokens = append(tokens, tsToken{"punct", matched, i})
 				i += len([]rune(matched))
 			} else {
-				tokens = append(tokens, tsToken{"punct", string(c)})
+				tokens = append(tokens, tsToken{"punct", string(c), i})
 				i++
 			}
 		}
@@ -430,10 +472,13 @@ func isHexDigit(c rune) bool {
 	return isDigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
+// tsMultiCharOperators omits `>=`, `>>=` and `>>>=`: they lex as `>`, `>>` or
+// `>>>` followed by `=`, because a type can end in `>` right before an
+// assignment (`const x: Array<number>= []`). Joined back, the text is the same.
 var tsMultiCharOperators = []string{
-	">>>=", "===", "!==", "**=", "<<=", ">>=", "&&=", "||=", "??=",
+	"===", "!==", "**=", "<<=", "&&=", "||=", "??=",
 	"=>", "...", "?.", "??", "**", "<<", ">>>", ">>", "&&", "||",
-	"==", "!=", "<=", ">=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
+	"==", "!=", "<=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
 }
 
 func matchTSOperator(remaining []rune) string {

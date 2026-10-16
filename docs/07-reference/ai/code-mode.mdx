@@ -87,15 +87,20 @@ Node `stripTypeScriptTypes` semantics, as TS code-mode does:
 - type annotations, generics (including generic arrow functions such as
   `<T,>(x: T) => x`) and default type parameters
 - `as` and `satisfies` expressions, and non-null assertions (`x!`)
-- `interface` and `type` declarations, `import type` / `export type`
+- `interface` and `type` declarations
 - class modifiers (`public`, `private`, `protected`, `readonly`,
   `override`, `declare`, `abstract`), `declare` statements, and a
   function's `this` parameter
 
-Syntax that has no type-only erasure, such as `enum`, isn't rewritten. If
-stripping fails for any reason, the source runs unchanged, and the
-JavaScript engine reports a syntax error if it isn't valid JavaScript.
-Plain JavaScript is never modified.
+The erased text is replaced with spaces and keeps its line breaks, as in Node,
+so line and column numbers in errors point at the source the model wrote.
+
+Syntax that has no type-only erasure, such as `enum`, isn't rewritten. A
+static `import` or `export` (type-only forms too) and an angle-bracket
+assertion (`<T>x`) can't be stripped either: code-mode wraps the snippet in a
+function body, where Node rejects them. If stripping fails for any reason, the
+source runs unchanged, and the JavaScript engine reports a syntax error if it
+isn't valid JavaScript. Plain JavaScript is never modified.
 
 ## Tool catalog order
 

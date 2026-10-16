@@ -127,19 +127,28 @@ func hasAny(sch map[string]interface{}, keys ...string) bool {
 var (
 	numberKeys = []string{"maximum", "minimum", "exclusiveMaximum", "exclusiveMinimum", "multipleOf"}
 	stringKeys = []string{"maxLength", "minLength", "pattern"}
-	arrayKeys  = []string{"maxItems", "minItems", "uniqueItems", "items", "additionalItems", "prefixItems", "contains"}
+	arrayKeys  = []string{"maxItems", "minItems", "additionalItems", "items", "prefixItems", "contains", "uniqueItems"}
 	objectKeys = []string{"maxProperties", "minProperties", "required", "propertyNames", "additionalProperties", "dependencies", "properties", "patternProperties"}
+	// Keywords only Ajv2020 registers.
+	array2020Keys  = []string{"maxContains", "minContains", "unevaluatedItems"}
+	object2020Keys = []string{"dependentRequired", "dependentSchemas", "unevaluatedProperties"}
 )
 
-func groupKeys(typeName string) []string {
+func groupKeys(typeName string, draft2020 bool) []string {
 	switch typeName {
 	case "number":
 		return numberKeys
 	case "string":
 		return stringKeys
 	case "array":
+		if draft2020 {
+			return append(append([]string{}, arrayKeys...), array2020Keys...)
+		}
 		return arrayKeys
 	case "object":
+		if draft2020 {
+			return append(append([]string{}, objectKeys...), object2020Keys...)
+		}
 		return objectKeys
 	}
 	return nil
@@ -172,7 +181,7 @@ func (w *ajvWalker) errors(value interface{}, sch map[string]interface{}, hint i
 	names := schemaTypeNames(sch)
 	deferred := false
 	if len(names) == 1 {
-		if keys := groupKeys(names[0]); keys != nil && hasAny(sch, keys...) {
+		if keys := groupKeys(names[0], w.draft2020); keys != nil && hasAny(sch, keys...) {
 			deferred = true
 		}
 	}
@@ -218,8 +227,8 @@ func (w *ajvWalker) errors(value interface{}, sch map[string]interface{}, hint i
 			out = append(out, fmt.Sprintf("%s must be one of %s", path, strings.Join(parts, ", ")))
 		}
 	}
-	if not, ok := sch["not"].(map[string]interface{}); ok {
-		if len(w.errors(value, not, hintChild(hint, "not"), path, nil, depth+1)) == 0 {
+	if not, ok := sch["not"]; ok {
+		if len(w.errorsAny(value, not, hintChild(hint, "not"), path, nil, depth+1)) == 0 && isSchema(not) {
 			out = append(out, path+" must NOT be valid")
 		}
 	}
@@ -227,8 +236,7 @@ func (w *ajvWalker) errors(value interface{}, sch map[string]interface{}, hint i
 		var branchErrs []string
 		valid := false
 		for i, b := range anyOf {
-			bm, _ := b.(map[string]interface{})
-			errs := w.errors(value, bm, hintIndex(hintChild(hint, "anyOf"), i), path, nil, depth+1)
+			errs := w.errorsAny(value, b, hintIndex(hintChild(hint, "anyOf"), i), path, nil, depth+1)
 			if len(errs) == 0 {
 				valid = true
 				break
@@ -244,8 +252,7 @@ func (w *ajvWalker) errors(value interface{}, sch map[string]interface{}, hint i
 		var branchErrs []string
 		passing := 0
 		for i, b := range oneOf {
-			bm, _ := b.(map[string]interface{})
-			errs := w.errors(value, bm, hintIndex(hintChild(hint, "oneOf"), i), path, nil, depth+1)
+			errs := w.errorsAny(value, b, hintIndex(hintChild(hint, "oneOf"), i), path, nil, depth+1)
 			if len(errs) == 0 {
 				passing++
 			} else {
@@ -259,18 +266,16 @@ func (w *ajvWalker) errors(value interface{}, sch map[string]interface{}, hint i
 	}
 	if allOf, ok := sch["allOf"].([]interface{}); ok {
 		for i, b := range allOf {
-			if bm, ok := b.(map[string]interface{}); ok {
-				out = w.errors(value, bm, hintIndex(hintChild(hint, "allOf"), i), path, out, depth+1)
-			}
+			out = w.errorsAny(value, b, hintIndex(hintChild(hint, "allOf"), i), path, out, depth+1)
 		}
 	}
-	if cond, ok := sch["if"].(map[string]interface{}); ok {
+	if cond, ok := sch["if"]; ok && isSchema(cond) {
 		branch := "else"
-		if len(w.errors(value, cond, hintChild(hint, "if"), path, nil, depth+1)) == 0 {
+		if len(w.errorsAny(value, cond, hintChild(hint, "if"), path, nil, depth+1)) == 0 {
 			branch = "then"
 		}
-		if bm, ok := sch[branch].(map[string]interface{}); ok {
-			if errs := w.errors(value, bm, hintChild(hint, branch), path, nil, depth+1); len(errs) > 0 {
+		if bm, ok := sch[branch]; ok {
+			if errs := w.errorsAny(value, bm, hintChild(hint, branch), path, nil, depth+1); len(errs) > 0 {
 				out = append(out, errs...)
 				out = append(out, fmt.Sprintf("%s must match %q schema", path, branch))
 			}
@@ -322,8 +327,11 @@ func appendNumberErrors(f float64, sch map[string]interface{}, path string, out 
 	if m, has := schemaBound(sch, "exclusiveMinimum"); has && f <= m {
 		out = append(out, fmt.Sprintf("%s must be > %s", path, formatJSNumber(m)))
 	}
-	if m, has := schemaBound(sch, "multipleOf"); has && m != 0 {
-		if q := f / m; q != math.Trunc(q) {
+	if m, has := schemaBound(sch, "multipleOf"); has {
+		// Ajv: multipleOf 0 never holds, and the quotient must equal
+		// parseInt(quotient), which reads the number's string form: a quotient
+		// of 1e21 or more prints in exponent form and fails.
+		if q := f / m; m == 0 || q != math.Trunc(q) || math.Abs(q) >= 1e21 || math.IsInf(q, 0) {
 			out = append(out, fmt.Sprintf("%s must be multiple of %s", path, formatJSNumber(m)))
 		}
 	}
@@ -340,7 +348,7 @@ func appendStringErrors(str string, sch map[string]interface{}, path string, out
 	}
 	if pat, ok := sch["pattern"].(string); ok {
 		if re, err := regexp.Compile(pat); err == nil && !re.MatchString(str) {
-			out = append(out, fmt.Sprintf("%s must match pattern %q", path, pat))
+			out = append(out, fmt.Sprintf("%s must match pattern \"%s\"", path, pat))
 		}
 	}
 	return out
@@ -353,134 +361,85 @@ func (w *ajvWalker) appendArrayErrors(arr []interface{}, sch map[string]interfac
 	if m, has := schemaBound(sch, "minItems"); has && float64(len(arr)) < m {
 		out = append(out, fmt.Sprintf("%s must NOT have fewer than %s items", path, formatJSNumber(m)))
 	}
-	elem := func(i int, s map[string]interface{}, h interface{}) {
-		out = w.errors(arr[i], s, h, fmt.Sprintf("%s/%d", path, i), out, depth+1)
-	}
-	prefix := 0
+	out = w.appendItemsErrors(arr, sch, hint, path, out, depth)
+	out = w.appendContainsError(arr, sch, hint, path, out, depth)
+	out = appendUniqueItemsError(arr, sch, path, out)
 	if w.draft2020 {
-		if pre, ok := sch["prefixItems"].([]interface{}); ok {
-			for i, p := range pre {
-				if pm, ok := p.(map[string]interface{}); ok && i < len(arr) {
-					elem(i, pm, hintIndex(hintChild(hint, "prefixItems"), i))
+		out = w.appendUnevaluatedItemsErrors(arr, sch, hint, path, out, depth)
+	}
+	return out
+}
+
+// appendUniqueItemsError mirrors Ajv's uniqueItems keyword: one error per
+// array, "must NOT have duplicate items (items ## j and i are identical)".
+// Arrays whose items schema declares only scalar types take Ajv's indexed fast
+// path (scanning from the end, j is the later index); anything else compares
+// pairs (largest i first, j below it).
+func appendUniqueItemsError(arr []interface{}, sch map[string]interface{}, path string, out []string) []string {
+	if u, _ := sch["uniqueItems"].(bool); !u || len(arr) <= 1 {
+		return out
+	}
+	msg := func(i, j int) string {
+		return fmt.Sprintf("%s must NOT have duplicate items (items ## %d and %d are identical)", path, j, i)
+	}
+	var itemTypes []string
+	if items, ok := sch["items"].(map[string]interface{}); ok {
+		switch t := items["type"].(type) {
+		case string:
+			itemTypes = []string{t}
+		case []interface{}:
+			for _, e := range t {
+				if name, ok := e.(string); ok {
+					itemTypes = append(itemTypes, name)
 				}
 			}
-			prefix = len(pre)
 		}
-		if items, ok := sch["items"].(map[string]interface{}); ok {
-			for i := prefix; i < len(arr); i++ {
-				elem(i, items, hintChild(hint, "items"))
+		if n, _ := items["nullable"].(bool); n {
+			itemTypes = append(itemTypes, "null")
+		}
+	}
+	optimize := len(itemTypes) > 0
+	for _, t := range itemTypes {
+		if t == "object" || t == "array" {
+			optimize = false
+		}
+	}
+	if optimize {
+		seen := map[string]int{}
+		for i := len(arr) - 1; i >= 0; i-- {
+			wrong := true
+			for _, t := range itemTypes {
+				if matchesJSONType(arr[i], t) {
+					wrong = false
+					break
+				}
 			}
+			if wrong {
+				continue
+			}
+			key := jsonString(arr[i])
+			if j, dup := seen[key]; dup {
+				return append(out, msg(i, j))
+			}
+			seen[key] = i
 		}
 		return out
 	}
-	// Draft-07 evaluates additionalItems before items.
-	if tuple, ok := sch["items"].([]interface{}); ok {
-		switch add := sch["additionalItems"].(type) {
-		case bool:
-			if !add && len(arr) > len(tuple) {
-				out = append(out, fmt.Sprintf("%s must NOT have more than %d items", path, len(tuple)))
-			}
-		case map[string]interface{}:
-			for i := len(tuple); i < len(arr); i++ {
-				elem(i, add, hintChild(hint, "additionalItems"))
-			}
-		}
-	}
-	switch items := sch["items"].(type) {
-	case map[string]interface{}:
-		for i := range arr {
-			elem(i, items, hintChild(hint, "items"))
-		}
-	case []interface{}:
-		for i, it := range items {
-			if im, ok := it.(map[string]interface{}); ok && i < len(arr) {
-				elem(i, im, hintIndex(hintChild(hint, "items"), i))
+	for i := len(arr) - 1; i >= 0; i-- {
+		for j := i - 1; j >= 0; j-- {
+			if jsonEqual(arr[i], arr[j]) {
+				return append(out, msg(i, j))
 			}
 		}
 	}
 	return out
 }
 
-func (w *ajvWalker) appendObjectErrors(obj map[string]interface{}, sch map[string]interface{}, hint interface{}, path string, out []string, depth int) []string {
-	if m, has := schemaBound(sch, "maxProperties"); has && float64(len(obj)) > m {
-		out = append(out, fmt.Sprintf("%s must NOT have more than %s properties", path, formatJSNumber(m)))
+// isSchema reports whether v is a schema (an object or a boolean).
+func isSchema(v interface{}) bool {
+	switch v.(type) {
+	case bool, map[string]interface{}:
+		return true
 	}
-	if m, has := schemaBound(sch, "minProperties"); has && float64(len(obj)) < m {
-		out = append(out, fmt.Sprintf("%s must NOT have fewer than %s properties", path, formatJSNumber(m)))
-	}
-	if req, ok := sch["required"].([]interface{}); ok {
-		for _, r := range req {
-			if name, ok := r.(string); ok {
-				if _, exists := obj[name]; !exists {
-					out = append(out, fmt.Sprintf("%s is missing required property %s", path, jsonString(name)))
-				}
-			}
-		}
-	}
-	props, _ := sch["properties"].(map[string]interface{})
-	var patterns []*regexp.Regexp
-	patternSchemas, _ := sch["patternProperties"].(map[string]interface{})
-	patternKeys := orderedKeys(patternSchemas, hintChild(hint, "patternProperties"))
-	for _, p := range patternKeys {
-		if re, err := regexp.Compile(p); err == nil {
-			patterns = append(patterns, re)
-		} else {
-			patterns = append(patterns, nil)
-		}
-	}
-	extra := make([]string, 0, len(obj))
-	for k := range obj {
-		if _, declared := props[k]; declared {
-			continue
-		}
-		matched := false
-		for _, re := range patterns {
-			if re != nil && re.MatchString(k) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			extra = append(extra, k)
-		}
-	}
-	sort.Strings(extra)
-	switch add := sch["additionalProperties"].(type) {
-	case bool:
-		if !add {
-			for _, k := range extra {
-				out = append(out, fmt.Sprintf("%s has unexpected property %s", path, jsonString(k)))
-			}
-		}
-	case map[string]interface{}:
-		for _, k := range extra {
-			out = w.errors(obj[k], add, hintChild(hint, "additionalProperties"), path+"/"+escapeInstancePathKey(k), out, depth+1)
-		}
-	}
-	propsHint := hintChild(hint, "properties")
-	for _, k := range orderedKeys(props, propsHint) {
-		child, exists := obj[k]
-		sub, ok := props[k].(map[string]interface{})
-		if exists && ok {
-			out = w.errors(child, sub, hintChild(propsHint, k), path+"/"+escapeInstancePathKey(k), out, depth+1)
-		}
-	}
-	for i, p := range patternKeys {
-		re := patterns[i]
-		sub, ok := patternSchemas[p].(map[string]interface{})
-		if re == nil || !ok {
-			continue
-		}
-		keys := make([]string, 0, len(obj))
-		for k := range obj {
-			if re.MatchString(k) {
-				keys = append(keys, k)
-			}
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			out = w.errors(obj[k], sub, hintChild(hintChild(hint, "patternProperties"), p), path+"/"+escapeInstancePathKey(k), out, depth+1)
-		}
-	}
-	return out
+	return false
 }

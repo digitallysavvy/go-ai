@@ -476,11 +476,27 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 		if err == nil {
+			// TS builds the DELETE with commonHeaders: the configured
+			// headers, the protocol version and session id, and the bearer
+			// token. A server that needs authentication rejects it without
+			// them and the session stays open.
+			for k, v := range t.config.Headers {
+				req.Header.Set(k, v)
+			}
 			req.Header.Set("mcp-session-id", sessionID)
 			if protocolVersion != "" {
 				req.Header.Set("mcp-protocol-version", protocolVersion)
 			}
 			setMCPUserAgent(req.Header)
+			if token, _, ok := t.oauthTokenSnapshot(); ok && token != "" {
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			if authErr := t.auth.setBearer(ctx, req.Header); authErr != nil {
+				// TS skips the DELETE when loading the tokens throws.
+				req = nil
+			}
+		}
+		if err == nil && req != nil {
 			client := SSEClient(httpClient)
 			if sseClient != nil {
 				client = sseClient

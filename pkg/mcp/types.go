@@ -100,6 +100,9 @@ type MCPTool struct {
 	OutputSchema map[string]interface{} `json:"outputSchema,omitempty"`
 	Annotations  map[string]interface{} `json:"annotations,omitempty"`
 	Meta         map[string]interface{} `json:"_meta,omitempty"`
+	// Extra holds keys the schema does not name (TS looseObject passthrough),
+	// e.g. icons or execution.
+	Extra map[string]interface{} `json:"-"`
 
 	titlePresent bool
 	// inputSchemaHint is the inputSchema as the server sent it, with its key
@@ -135,6 +138,7 @@ func (t *MCPTool) UnmarshalJSON(data []byte) error {
 		OutputSchema: out.OutputSchema,
 		Annotations:  out.Annotations,
 		Meta:         out.Meta,
+		Extra:        decodeLooseExtra(data, out),
 	}
 	_, t.titlePresent = raw["title"]
 	if rawSchema, ok := raw["inputSchema"]; ok {
@@ -143,6 +147,13 @@ func (t *MCPTool) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+type mcpToolEncoding MCPTool
+
+// MarshalJSON encodes the tool followed by its Extra keys.
+func (t MCPTool) MarshalJSON() ([]byte, error) {
+	return marshalLoose(mcpToolEncoding(t), t.Extra)
 }
 
 // MCPResource represents a resource exposed via MCP
@@ -155,6 +166,9 @@ type MCPResource struct {
 	Size        *int64                 `json:"size,omitempty"`
 	Metadata    interface{}            `json:"metadata,omitempty"`
 	Meta        map[string]interface{} `json:"_meta,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // MCPPrompt represents a prompt template exposed via MCP
@@ -165,6 +179,9 @@ type MCPPrompt struct {
 	Arguments   []MCPPromptArgument    `json:"arguments,omitempty"`
 	Template    string                 `json:"template,omitempty"`
 	Metadata    map[string]interface{} `json:"metadata,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // MCPPromptArgument represents an argument to a prompt template
@@ -172,6 +189,10 @@ type MCPPromptArgument struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // InitializeParams represents parameters for the initialize request
@@ -196,6 +217,9 @@ type ClientCapabilities struct {
 	Roots        *RootsCapability       `json:"roots,omitempty"`
 	Sampling     *SamplingCapability    `json:"sampling,omitempty"`
 	Elicitation  map[string]interface{} `json:"elicitation,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // ServerCapabilities represents capabilities of the MCP server
@@ -213,47 +237,86 @@ type ServerCapabilities struct {
 	// Elicitation advertises support for elicitation requests (TS
 	// ServerCapabilities.elicitation, e.g. applyDefaults).
 	Elicitation map[string]interface{} `json:"elicitation,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // EventsCapability represents the experimental events capability.
 type EventsCapability struct {
 	ListChanged *bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // CompletionsCapability represents the completions capability.
-type CompletionsCapability struct{}
+type CompletionsCapability struct {
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
+}
 
 // RootsCapability represents the roots capability
 type RootsCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // SamplingCapability represents the sampling capability
-type SamplingCapability struct{}
+type SamplingCapability struct {
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
+}
 
 // LoggingCapability represents the logging capability
-type LoggingCapability struct{}
+type LoggingCapability struct {
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
+}
 
 // PromptsCapability represents the prompts capability
 type PromptsCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ResourcesCapability represents the resources capability
 type ResourcesCapability struct {
 	Subscribe   bool `json:"subscribe,omitempty"`
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ToolsCapability represents the tools capability
 type ToolsCapability struct {
 	ListChanged bool `json:"listChanged,omitempty"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ClientInfo represents information about the MCP client
 type ClientInfo struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ServerInfo represents information about the MCP server
@@ -261,6 +324,10 @@ type ServerInfo struct {
 	Name    string `json:"name"`
 	Title   string `json:"title,omitempty"`
 	Version string `json:"version"`
+
+	// extraJSON holds the JSON of keys the schema does not name (TS
+	// looseObject passthrough); read it with Extra(). A string keeps the type comparable.
+	extraJSON string
 }
 
 // ListToolsParams represents parameters for listing tools
@@ -731,6 +798,8 @@ type ResourceContent struct {
 	Text     string                 `json:"text,omitempty"`
 	Blob     string                 `json:"blob,omitempty"` // base64 encoded
 	Meta     map[string]interface{} `json:"_meta,omitempty"`
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 
 	// textPresent / blobPresent record that the wire object carried the
 	// field as a string, so an empty "text" still wins over a blob the way
@@ -753,6 +822,7 @@ func (r *ResourceContent) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*r = ResourceContent(alias)
+	r.Extra = decodeLooseExtra(data, alias)
 	r.textPresent = isJSONString(raw["text"])
 	r.blobPresent = isJSONString(raw["blob"])
 	return nil
@@ -775,7 +845,7 @@ func (r ResourceContent) MarshalJSON() ([]byte, error) {
 	if r.Blob != "" || r.blobPresent {
 		out.Blob = &r.Blob
 	}
-	return json.Marshal(out)
+	return marshalLoose(out, r.Extra)
 }
 
 // MCPResourceTemplate represents a resource template exposed via MCP
@@ -788,6 +858,9 @@ type MCPResourceTemplate struct {
 	Description string                 `json:"description,omitempty"`
 	MimeType    string                 `json:"mimeType,omitempty"`
 	Meta        map[string]interface{} `json:"_meta,omitempty"`
+
+	// Extra holds keys the schema does not name (TS looseObject passthrough).
+	Extra map[string]interface{} `json:"-"`
 }
 
 // ListResourceTemplatesResult represents the result of listing resource

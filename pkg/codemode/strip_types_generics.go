@@ -1,5 +1,7 @@
 package codemode
 
+import "strings"
+
 // consumeTypeExpr skips a type expression starting at tokens[i] and trims
 // any trailing whitespace/comments off the end of the dropped span, so
 // formatting between the type and whatever follows it (e.g. the space
@@ -18,27 +20,69 @@ func consumeTypeExpr(tokens []tsToken, i int, stopAtBrace bool) int {
 // re-interpreted as closing two/three nested angle brackets at once, the
 // way real TypeScript parsers re-lex them) and stopping at the first
 // top-level `;`, `,`, `)`, `}`, `]`, `=`, or `=>`. When stopAtBrace is true,
-// a top-level `{` also stops the scan without being consumed (used for a
-// function/method/arrow return type, where `{` starts the body rather than
-// an object type literal); when false, `{` opens a nested object type
-// literal to balance instead (used for variable/parameter/field type
-// annotations and `as`/`satisfies` assertions, where `: { a: number }` is
-// valid content).
+// a top-level `{` after a complete type also stops the scan without being
+// consumed (used for a function/method return type, where `{` starts the
+// body); a `{` where an operand is expected is an object type literal in
+// either mode (`(): { a: number } => ...`).
+//
+// The scan follows the TypeScript grammar where it matters for where a type
+// ends:
+//   - A parenthesized (or generic) group at the start of an operand that is
+//     followed by `=>` is a function type, and the `=>` belongs to it
+//     (`let f: (a: number) => void`, `new () => T`); any other top-level
+//     `=>` ends the type (an arrow function's return type).
+//   - `?` at the top level opens a conditional type, whose `:` belongs to
+//     it; any other top-level `:` ends the type (`case x as T: ...`,
+//     `c ? v as T : w`).
+//   - A complete type ends at a line break unless the next token continues
+//     it (`|`, `&`, `.`, `extends`, ...), because TypeScript ends a type
+//     there (`let x: number` newline `let y = 2`).
 func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 	depth := 0
+	cond := 0
+	operandStart := true
+	fnCandidate := false
+	genericCandidate := false
+	var prev *tsToken
+	sawNewline := false
 	for i < len(tokens) {
 		t := tokens[i]
+		if t.kind == "space" || t.kind == "comment" {
+			if t.kind == "space" && strings.Contains(t.text, "\n") {
+				sawNewline = true
+			}
+			i++
+			continue
+		}
+		if depth == 0 && sawNewline && prev != nil && typeOperandEnds(prev) && !typeContinuesAfterNewline(t) {
+			return i
+		}
+		sawNewline = false
 		if t.kind == "punct" {
 			switch t.text {
 			case "(", "[":
+				if depth == 0 && t.text == "(" && (operandStart || genericCandidate) {
+					fnCandidate = true
+				}
 				depth++
 			case ")", "]":
 				if depth == 0 {
 					return i
 				}
 				depth--
+				if depth == 0 && t.text == ")" && fnCandidate {
+					fnCandidate = false
+					genericCandidate = false
+					if n := nextSignificant(tokens, i+1); n >= 0 && tokens[n].kind == "punct" && tokens[n].text == "=>" {
+						// A function type: its `=>` and return type follow.
+						i = n + 1
+						prev = &tokens[n]
+						operandStart = true
+						continue
+					}
+				}
 			case "{":
-				if stopAtBrace && depth == 0 {
+				if stopAtBrace && depth == 0 && !operandStart {
 					return i
 				}
 				depth++
@@ -48,6 +92,9 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 				}
 				depth--
 			case "<":
+				if depth == 0 && operandStart {
+					genericCandidate = true
+				}
 				depth++
 			case ">":
 				if depth > 0 {
@@ -65,15 +112,83 @@ func consumeTypeExprRaw(tokens []tsToken, i int, stopAtBrace bool) int {
 				} else {
 					depth = 0
 				}
+			case "?":
+				if depth == 0 {
+					cond++
+				}
+			case ":":
+				if depth == 0 {
+					if cond == 0 {
+						return i
+					}
+					cond--
+				}
 			case ";", ",", "=", "=>":
 				if depth == 0 {
 					return i
 				}
 			}
 		}
+		if depth == 0 {
+			operandStart = typeOperandStarts(t)
+		}
+		prev = &tokens[i]
 		i++
 	}
 	return i
+}
+
+// typeOperandStarts reports whether a type operand begins right after t at
+// the top level of a type: after an operator that takes a right-hand type,
+// or a keyword that prefixes one.
+func typeOperandStarts(t tsToken) bool {
+	switch t.kind {
+	case "punct":
+		switch t.text {
+		case "|", "&", "?", ":", "=>", "<", "(", "[", ",":
+			return true
+		}
+	case "ident":
+		switch t.text {
+		case "extends", "keyof", "typeof", "readonly", "unique", "infer", "new", "abstract", "asserts", "is", "in", "out":
+			return true
+		}
+	}
+	return false
+}
+
+// typeOperandEnds reports whether a type can end right after t.
+func typeOperandEnds(t *tsToken) bool {
+	switch t.kind {
+	case "ident":
+		return !typeOperandStarts(*t)
+	case "string", "number", "regex":
+		return true
+	case "punct":
+		switch t.text {
+		case ")", "]", ">", ">>", ">>>", "}":
+			return true
+		}
+	}
+	return false
+}
+
+// typeContinuesAfterNewline reports whether t, on a new line after a
+// complete type, still belongs to that type.
+func typeContinuesAfterNewline(t tsToken) bool {
+	switch t.kind {
+	case "punct":
+		switch t.text {
+		case "|", "&", ".", "=>", "?", ":", ")", "]", "}", ",", ";", "=", ">":
+			return true
+		}
+	case "ident":
+		switch t.text {
+		case "extends", "is":
+			return true
+		}
+	}
+	return false
 }
 
 // angleDisallowedAtDepth0 lists operator tokens that can never appear
@@ -113,16 +228,25 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 	}
 	depth := 1
 	contentSeen := false
+	var prev *tsToken
 	j := i + 1
 	for j < len(tokens) {
 		t := tokens[j]
 		if t.kind != "punct" {
 			if t.kind != "space" && t.kind != "comment" {
 				contentSeen = true
+				// Two operands in a row (`a < b` newline `y = c > (d)`) are
+				// not a type list: a type cannot be followed by a bare name.
+				if depth == 1 && prev != nil && prev.text != "const" && typeOperandEnds(prev) && !typeContinuesAfterNewline(t) &&
+					(t.kind == "ident" || t.kind == "string" || t.kind == "number") && !typeOperandStarts(t) {
+					return i, false
+				}
+				prev = &tokens[j]
 			}
 			j++
 			continue
 		}
+		prev = &tokens[j]
 		switch t.text {
 		case "<":
 			depth++
@@ -193,6 +317,10 @@ func consumeCallGenerics(tokens []tsToken, i int) (int, bool) {
 	}
 	next := nextSignificant(tokens, end)
 	if next >= 0 && tokens[next].kind == "punct" && tokens[next].text == "(" {
+		return end, true
+	}
+	// A tagged template with type arguments: tag<T>`text`.
+	if next >= 0 && tokens[next].kind == "string" && strings.HasPrefix(tokens[next].text, "`") {
 		return end, true
 	}
 	return i, false
