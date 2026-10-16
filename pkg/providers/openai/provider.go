@@ -207,6 +207,12 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = os.Getenv("OPENAI_BASE_URL")
 	}
+	// TS validateBaseURL(loadOptionalSetting(...)): a whitespace-only base
+	// URL (option or OPENAI_BASE_URL) is an InvalidArgumentError, so New
+	// panics like the TS constructor throws.
+	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
+		panic(err)
+	}
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}

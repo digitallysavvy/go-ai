@@ -38,6 +38,10 @@ type Config struct {
 // New creates a new Replicate provider with the given configuration
 func New(cfg Config) *Provider {
 	baseURL := cfg.BaseURL
+	// TS validateBaseURL(options.baseURL): a whitespace-only base URL throws.
+	if err := providerutils.ValidateBaseURL(baseURL); err != nil {
+		panic(err)
+	}
 	if baseURL == "" {
 		baseURL = "https://api.replicate.com/v1"
 	}
