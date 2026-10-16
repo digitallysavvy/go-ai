@@ -1392,6 +1392,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 						Type: provider.ChunkTypeSource,
 						SourceContent: &types.SourceContent{
 							SourceType: "url",
+							ID:         streaming.GenerateID(),
 							URL:        ann.URL,
 							Title:      title,
 						},
@@ -1421,6 +1422,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 					Type: provider.ChunkTypeSource,
 					SourceContent: &types.SourceContent{
 						SourceType: "url",
+						ID:         streaming.GenerateID(),
 						URL:        e.Annotation.URL,
 						Title:      title,
 					},
@@ -1587,7 +1589,7 @@ func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 			}
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type:          provider.ChunkTypeSource,
-				SourceContent: &types.SourceContent{SourceType: "url", URL: ann.URL, Title: title},
+				SourceContent: &types.SourceContent{SourceType: "url", ID: streaming.GenerateID(), URL: ann.URL, Title: title},
 			})
 		}
 	}
