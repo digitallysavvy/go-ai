@@ -697,14 +697,16 @@ func NormalizeFileContent(part types.FileContent) (types.FileContent, error) {
 		return types.FileContent{}, err
 	}
 	part.FileData = normalized
-	if data.Type == types.FileDataTypeURL && strings.HasPrefix(data.URL, "data:") && normalized.MediaType != "" {
+	if data.Type == types.FileDataTypeURL && strings.HasPrefix(data.URL, "data:") {
 		// TS: mediaType = dataUrlMediaType ?? part.mediaType, so the media
-		// type embedded in a data: URL wins over the declared one.
+		// type embedded in a data: URL wins over the declared one, even when
+		// it is the empty string of `data:;base64,...`.
 		part.MediaType = normalized.MediaType
 		part.MimeType = normalized.MediaType
+	} else {
+		part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
+		part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
 	}
-	part.MediaType = firstNonEmpty(part.MediaType, normalized.MediaType, part.MimeType)
-	part.MimeType = firstNonEmpty(part.MimeType, part.MediaType)
 	part.Data = nil
 	part.URL = ""
 	part.Reference = ""
@@ -877,10 +879,9 @@ func ParseDataURL(value string) (types.FileData, error) {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: fmt.Errorf("missing comma separator")}
 	}
 	parts := strings.Split(meta, ";")
+	// TS splitDataUrl: `data:;base64,...` has the empty media type "" (not
+	// text/plain), and "" is not nullish so it wins over the declared one.
 	mediaType := parts[0]
-	if mediaType == "" {
-		mediaType = "text/plain"
-	}
 	if err := validateMediaType(mediaType); err != nil {
 		return types.FileData{}, &InvalidInlineDataURLError{Value: value, Cause: err}
 	}
