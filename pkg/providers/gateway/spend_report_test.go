@@ -114,7 +114,7 @@ func TestGetSpendReportDecodeErrorIsGatewayError(t *testing.T) {
 func TestGetSpendReportRejectsRowsTheTSSchemaRejects(t *testing.T) {
 	for name, body := range map[string]string{
 		"missing total_cost": `{"results":[{"day":"2026-05-10"}]}`,
-		"bad credential":     `{"results":[{"total_cost":1,"credential_type":"byok"}]}`,
+		"bad credential":     `{"results":[{"total_cost":1,"credential_type":"other"}]}`,
 	} {
 		serverURL, closeServer := newGatewayIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
