@@ -20,3 +20,18 @@ func TestJSNumber(t *testing.T) {
 		t.Errorf("1e999 = %v, %v", got, ok)
 	}
 }
+
+func TestJSNumberString(t *testing.T) {
+	for f, want := range map[float64]string{
+		0: "0", 1: "1", -1.5: "-1.5", 100: "100", 1e20: "100000000000000000000", 1e21: "1e+21", 1.5e21: "1.5e+21",
+		0.000001: "0.000001", 1e-7: "1e-7", 1.5e-7: "1.5e-7", 123456789012345680000: "123456789012345680000",
+		0.1: "0.1", 22050.5: "22050.5", 5e-324: "5e-324", math.MaxFloat64: "1.7976931348623157e+308",
+	} {
+		if got := JSNumberString(f); got != want {
+			t.Errorf("JSNumberString(%v) = %q, want %q", f, got, want)
+		}
+	}
+	if JSNumberString(math.NaN()) != "NaN" || JSNumberString(math.Inf(-1)) != "-Infinity" {
+		t.Error("non-finite")
+	}
+}

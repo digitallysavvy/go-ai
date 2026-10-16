@@ -182,7 +182,7 @@ func (m *SpeechModel) buildArgs(opts *provider.SpeechGenerateOptions) (map[strin
 	}
 
 	if opts.Speed != nil {
-		query["speed"] = strconv.FormatFloat(*opts.Speed, 'f', -1, 64)
+		query["speed"] = providerutils.JSNumberString(*opts.Speed)
 	}
 
 	if upstreamModelID == m.modelID && opts.Language != "" {
@@ -266,7 +266,7 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 				"flac":     {8000, 16000, 22050, 32000, 48000},
 			}
 			if rates, ok := validRates[firstPart]; ok && inRates(rates, sampleRate) {
-				query["sample_rate"] = jsNumString(sampleRate)
+				query["sample_rate"] = providerutils.JSNumberString(sampleRate)
 			}
 		}
 	case "wav", "ogg":
@@ -278,7 +278,7 @@ func applyOutputFormat(query map[string]string, outputFormat string) {
 			query["encoding"] = "opus"
 		}
 		if sampleRateErr == nil {
-			query["sample_rate"] = jsNumString(sampleRate)
+			query["sample_rate"] = providerutils.JSNumberString(sampleRate)
 		}
 	}
 }
@@ -300,14 +300,6 @@ func jsParseInt(s string) (float64, error) {
 		return 0, fmt.Errorf("not a number: %q", s)
 	}
 	return strconv.ParseFloat(s[:end], 64)
-}
-
-// jsNumString is JS String(number): plain digits below 1e21, "1e+21" above.
-func jsNumString(f float64) string {
-	if math.Abs(f) >= 1e21 {
-		return strconv.FormatFloat(f, 'e', -1, 64)
-	}
-	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 func inRates(rates []float64, v float64) bool {
@@ -404,7 +396,7 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 		encoding := strings.ToLower(query["encoding"])
 		sampleRate := *sampleRatePtr
 		// JS String(number): 22050.5 stays fractional, 48000 has no ".0".
-		rateStr := jsNumString(sampleRate)
+		rateStr := providerutils.JSNumberString(sampleRate)
 		inRates := func(rates ...float64) bool {
 			for _, r := range rates {
 				if r == sampleRate {
@@ -444,7 +436,7 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 
 	if opts.BitRate != nil {
 		encoding := strings.ToLower(query["encoding"])
-		bitRateStr := fmt.Sprint(opts.BitRate)
+		bitRateStr := jsStringOf(opts.BitRate)
 		// TS Number(bitRate): a non-numeric string is NaN, so every range
 		// comparison is false (opus/aac accept it) and mp3's list check fails.
 		bitRateNum, numOK := providerutils.JSNumber(bitRateStr)
@@ -554,4 +546,24 @@ func headerNumber(headers http.Header, name string) interface{} {
 		return int(f)
 	}
 	return f
+}
+
+// jsStringOf is JS String(value) for a decoded JSON scalar (bitRate is
+// number | string).
+func jsStringOf(v interface{}) string {
+	switch n := v.(type) {
+	case float64:
+		return providerutils.JSNumberString(n)
+	case float32:
+		return providerutils.JSNumberString(float64(n))
+	case int:
+		return strconv.Itoa(n)
+	case int64:
+		return strconv.FormatInt(n, 10)
+	case json.Number:
+		if f, err := n.Float64(); err == nil {
+			return providerutils.JSNumberString(f)
+		}
+	}
+	return fmt.Sprint(v)
 }

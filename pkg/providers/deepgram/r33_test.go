@@ -93,3 +93,34 @@ func TestR33_VoiceTrimIsJSTrim(t *testing.T) {
 		t.Errorf("NEL voice: %v %v", q, err)
 	}
 }
+
+// TS `value !== undefined` sends empty strings, and String(number) is the JS
+// number format (1e-7, not 0.0000001).
+func TestR33_TranscriptionQueryEmptyStringsAndJSNumber(t *testing.T) {
+	m := NewTranscriptionModel(New(Config{APIKey: "k"}), "nova-3")
+	q := m.buildQueryParams(&provider.TranscriptionOptions{ProviderOptions: map[string]interface{}{
+		"deepgram": map[string]interface{}{"language": "", "keyterm": "", "search": "", "replace": "", "uttSplit": 1e-7},
+	}})
+	for _, k := range []string{"language", "keyterm", "search", "replace"} {
+		if v, ok := q[k]; !ok || v != "" {
+			t.Errorf("%s = %q (present %v)", k, v, ok)
+		}
+	}
+	if q["utt_split"] != "1e-7" {
+		t.Errorf("utt_split = %q", q["utt_split"])
+	}
+}
+
+func TestR33_BitRateUsesJSNumberFormat(t *testing.T) {
+	if got := jsStringOf(1000000.0); got != "1000000" {
+		t.Fatalf("jsStringOf = %q", got)
+	}
+	// opus accepts 1e6? no: out of range, the warning names the JS-formatted number.
+	m := NewSpeechModel(New(Config{APIKey: "k"}), "aura-2-thalia-en")
+	_, warnings, err := m.buildArgs(&provider.SpeechGenerateOptions{Text: "x", ProviderOptions: map[string]interface{}{
+		"deepgram": map[string]interface{}{"encoding": "opus", "bitRate": 1000000.0},
+	}})
+	if err != nil || len(warnings) != 1 || !strings.Contains(warnings[0].Details, "Bit rate 1000000 was ignored") {
+		t.Fatalf("warnings = %+v, err = %v", warnings, err)
+	}
+}

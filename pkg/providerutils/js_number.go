@@ -54,3 +54,51 @@ func JSNumber(s string) (float64, bool) {
 	}
 	return f, true
 }
+
+// JSNumberString is JavaScript's String(number) (Number::toString, radix 10):
+// the shortest round-trip digits, plain notation for exponents in (-7, 21]
+// and "1e+21" / "1e-7" style otherwise; NaN and the infinities are "NaN",
+// "Infinity" and "-Infinity".
+func JSNumberString(f float64) string {
+	switch {
+	case math.IsNaN(f):
+		return "NaN"
+	case math.IsInf(f, 1):
+		return "Infinity"
+	case math.IsInf(f, -1):
+		return "-Infinity"
+	case f == 0:
+		return "0"
+	}
+	sign := ""
+	if f < 0 {
+		sign, f = "-", -f
+	}
+	// "d.ddde±xx" with the shortest digits that round-trip.
+	exp := strconv.FormatFloat(f, 'e', -1, 64)
+	mant, expText, _ := strings.Cut(exp, "e")
+	digits := strings.Replace(mant, ".", "", 1)
+	e, _ := strconv.Atoi(expText)
+	k := len(digits)
+	n := e + 1 // value = 0.digits * 10^n
+	switch {
+	case k <= n && n <= 21:
+		return sign + digits + strings.Repeat("0", n-k)
+	case 0 < n && n <= 21:
+		return sign + digits[:n] + "." + digits[n:]
+	case -6 < n && n <= 0:
+		return sign + "0." + strings.Repeat("0", -n) + digits
+	}
+	expSign := "+"
+	if n-1 < 0 {
+		expSign = "-"
+	}
+	abs := n - 1
+	if abs < 0 {
+		abs = -abs
+	}
+	if k == 1 {
+		return sign + digits + "e" + expSign + strconv.Itoa(abs)
+	}
+	return sign + digits[:1] + "." + digits[1:] + "e" + expSign + strconv.Itoa(abs)
+}
