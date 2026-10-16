@@ -70,7 +70,7 @@ func withAuthError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, ErrNoCredentials) {
+	if errors.Is(err, ErrNoCredentials) || errors.Is(err, ErrPartialCredentials) {
 		return harness.NewSandboxAuthenticationError(vercelAuthMessage, vercelProviderID, err)
 	}
 	var apiErr *APIError

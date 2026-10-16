@@ -546,7 +546,7 @@ func (s *session) DoCompact(ctx context.Context, customInstructions string) erro
 	s.mu.Lock()
 	msg.ResumeSessionID = s.latestOpenCodeSessionID
 	s.mu.Unlock()
-	return s.runCompactOperation(msg)
+	return s.runCompactOperation(ctx, msg)
 }
 
 func (s *session) currentModel() string {
@@ -555,7 +555,7 @@ func (s *session) currentModel() string {
 	return s.selectedModel
 }
 
-func (s *session) runCompactOperation(msg StartMessage) error {
+func (s *session) runCompactOperation(ctx context.Context, msg StartMessage) error {
 	done := make(chan error, 1)
 	var unsub []func()
 	settle := func(err error) {
@@ -587,7 +587,15 @@ func (s *session) runCompactOperation(msg StartMessage) error {
 	if err := s.p.channel.Send(msg); err != nil {
 		settle(err)
 	}
-	return <-done
+	// TS waits unconditionally; a Go caller needs a way out when the bridge
+	// never answers (the listeners are removed so they cannot leak).
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		settle(nil)
+		return context.Cause(ctx)
+	}
 }
 
 func (s *session) DoSuspendTurn(ctx context.Context) (*harness.ContinueTurnState, error) {
