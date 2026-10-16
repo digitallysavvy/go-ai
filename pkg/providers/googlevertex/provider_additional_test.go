@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -374,5 +375,28 @@ func TestVertexProvider_ModelFactoriesAndUnsupportedMethods(t *testing.T) {
 	}
 	if video.Provider() != "google.vertex.video" || video.ModelID() != "veo-3.0-generate-preview" {
 		t.Fatalf("VideoModel metadata = %s/%s", video.Provider(), video.ModelID())
+	}
+}
+
+// TS withoutTrailingSlash(options.baseURL): a trailing slash on a custom or
+// express-mode baseURL is dropped so request paths do not get a "//".
+func TestVertexBaseURLTrailingSlashDropped(t *testing.T) {
+	for _, apiKey := range []string{"", "key"} {
+		var path string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path = r.URL.Path
+			_, _ = w.Write([]byte("{}"))
+		}))
+		p, err := New(Config{BaseURL: srv.URL + "/v1/", AccessToken: "token", APIKey: apiKey})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if _, err := p.Client().Get(context.Background(), "/models/m"); err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		srv.Close()
+		if path != "/v1/models/m" {
+			t.Fatalf("apiKey=%q request path = %q", apiKey, path)
+		}
 	}
 }

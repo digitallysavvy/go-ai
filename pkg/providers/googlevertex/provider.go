@@ -50,6 +50,10 @@ type Provider struct {
 
 	mu     sync.Mutex
 	cached *vertexClients
+
+	// liveWebSocketOrigin replaces the Gemini Live transcription WebSocket
+	// origin ("wss://{vertexHost}"); tests only.
+	liveWebSocketOrigin string
 }
 
 // vertexClients holds the request clients derived from the resolved project
@@ -319,7 +323,8 @@ func (p *Provider) loadProject() (string, error) {
 // is cached while the resolved project and location are unchanged.
 func (p *Provider) clients() (*vertexClients, error) {
 	cfg := p.config
-	baseURL := cfg.BaseURL
+	// TS withoutTrailingSlash(options.baseURL): one trailing slash is dropped.
+	baseURL := strings.TrimSuffix(cfg.BaseURL, "/")
 	var project, location string
 	var endpointBaseURL string
 

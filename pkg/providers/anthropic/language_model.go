@@ -991,7 +991,9 @@ func mapAnthropicStopDetails(stopDetails *anthropicStopDetails) map[string]inter
 }
 
 func mapAnthropicContainerSkills(skills []anthropicContainerSkillResponse) interface{} {
-	if len(skills) == 0 {
+	// TS `skills?.map(...) ?? null`: an absent or null list is null, but an
+	// empty list stays an empty array.
+	if skills == nil {
 		return nil
 	}
 	out := make([]map[string]interface{}, 0, len(skills))
@@ -2048,7 +2050,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// citation can resolve against this fetched document.
 				toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
 				if toolName == "" {
-					toolName = providerToolResultName(start.ContentBlock.Type)
+					toolName = mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
 				}
 				tr := &types.ToolResult{
 					ToolCallID:       start.ContentBlock.ToolUseID,
@@ -2079,7 +2081,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// search result (TS enqueues 'source' parts after the 'tool-result').
 				toolName := s.serverToolCallNames[start.ContentBlock.ToolUseID]
 				if toolName == "" {
-					toolName = providerToolResultName(start.ContentBlock.Type)
+					toolName = mapAnthropicToolName(providerToolResultName(start.ContentBlock.Type), s.toolNameMap)
 				}
 				tr := &types.ToolResult{
 					ToolCallID:       start.ContentBlock.ToolUseID,
@@ -2258,7 +2260,11 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// Capture container info (present when container was used/created).
 				// In message_start it contains id and expires_at but no skills.
 				if msg.Message.Container != nil {
-					s.container = msg.Message.Container
+					// TS: {expiresAt, id, skills: null} -- message_start never
+					// reports skills.
+					c := *msg.Message.Container
+					c.Skills = nil
+					s.container = &c
 				}
 
 				// Programmatic tool calling: pre-populated tool_use blocks. TS
