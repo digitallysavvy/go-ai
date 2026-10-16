@@ -3,6 +3,7 @@ package xai
 import (
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -106,5 +107,23 @@ func TestXAIResponsesFileSearchAndMCPArgTypeValidation(t *testing.T) {
 	}
 	if err := validateXAIResponsesToolArgs([]types.Tool{MCPServer(MCPServerConfig{ServerURL: "https://x"})}); err != nil {
 		t.Fatalf("typed mcp rejected: %v", err)
+	}
+}
+
+// TS sets `tools` only when at least one tool survives preparation.
+func TestXAIResponsesOmitsToolsWhenAllDropped(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-4")
+	body, warnings, err := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		Tools:  []types.Tool{{Name: "mystery", Type: "provider", ProviderID: "xai.mystery"}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := body["tools"]; ok {
+		t.Fatalf("tools = %#v, want omitted", body["tools"])
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %#v", warnings)
 	}
 }

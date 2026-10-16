@@ -396,7 +396,10 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 		}
 		preparedTools, toolWarnings := prepareXAIResponsesToolsWithWarnings(opts.Tools)
 		warnings = append(warnings, toolWarnings...)
-		body["tools"] = preparedTools
+		// TS sets tools only when at least one tool survived preparation.
+		if len(preparedTools) > 0 {
+			body["tools"] = preparedTools
+		}
 		if opts.ToolChoice.Type != "" {
 			choice, choiceWarnings := resolveXAIResponsesToolChoice(opts.ToolChoice, opts.Tools)
 			warnings = append(warnings, choiceWarnings...)
