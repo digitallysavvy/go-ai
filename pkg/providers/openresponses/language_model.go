@@ -1001,7 +1001,7 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 func convertOpenResponsesUsage(usage *Usage) types.Usage {
 	inputTokens := int64(usage.InputTokens)
 	outputTokens := int64(usage.OutputTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := inputTokens + outputTokens // TS core: input total + output total
 
 	result := types.Usage{
 		InputTokens:  &inputTokens,

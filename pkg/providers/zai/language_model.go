@@ -366,7 +366,7 @@ func mapZaiFinishReason(raw string) types.FinishReason {
 func convertZaiUsage(usage zaiUsage) types.Usage {
 	promptTokens := int64(usage.PromptTokens)
 	completionTokens := int64(usage.CompletionTokens)
-	totalTokens := int64(usage.TotalTokens)
+	totalTokens := promptTokens + completionTokens // TS core: input total + output total
 	result := types.Usage{
 		InputTokens:  &promptTokens,
 		OutputTokens: &completionTokens,

@@ -338,7 +338,7 @@ func convertOpenAICompletionUsage(usage *openAICompletionUsage) types.Usage {
 
 	input := int64(usage.PromptTokens)
 	output := int64(usage.CompletionTokens)
-	total := int64(usage.TotalTokens)
+	total := input + output // TS core: input total + output total
 	return types.Usage{
 		InputTokens:  &input,
 		OutputTokens: &output,
