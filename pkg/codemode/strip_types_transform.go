@@ -201,7 +201,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 						// `f(a)<T>(b)`, `a[0]<T>(b)`: type arguments of a call
 						// on a call/index result.
 						if end, ok := consumeCallGenerics(tokens, i); ok {
-							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || tokens[n].kind == "string") {
+							if n := nextSignificant(tokens, end); n >= 0 && (tokens[n].text == "(" || tokens[n].text == "?." || tokens[n].kind == "string") {
 								i = end
 								continue
 							}

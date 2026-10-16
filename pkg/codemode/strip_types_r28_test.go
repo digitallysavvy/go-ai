@@ -1,0 +1,65 @@
+package codemode
+
+import "testing"
+
+// Expected values below are the output of Node 24.20 stripTypeScriptTypes on
+// `async function __runUser__(){\n<src>\n}` (the wrapper stripSnippetTypes
+// uses); a source Node rejects is expected back unmodified.
+func TestStripTypeScriptAnnotationsR28NodeParity(t *testing.T) {
+	for _, tc := range [][2]string{
+		{"x = (a as T); return x;", "x = (a     ); return x;"},
+		{"x = a as T); return x;", "x = a as T); return x;"},
+		{"f(a as T); return 1;", "f(a     ); return 1;"},
+		{"x = (a as T)) ; return 1;", "x = (a as T)) ; return 1;"},
+		{"a<T>?.(x); return 1;", "a   ?.(x); return 1;"},
+		{"a?.<T>(x); return 1;", "a?.   (x); return 1;"},
+		{"a<T>?.(x)<U>(y); return 1;", "a   ?.(x)   (y); return 1;"},
+		{"a.b<T>?.(x); return 1;", "a.b   ?.(x); return 1;"},
+		{"a<T>?.[x]; return 1;", "a   ?.[x]; return 1;"},
+		{"a<T>?.x; return 1;", "a   ?.x; return 1;"},
+		{"a<T, U>?.(x); return 1;", "a      ?.(x); return 1;"},
+		{"a<T>?.(x)?.y; return 1;", "a   ?.(x)?.y; return 1;"},
+		{"(a)<T>?.(x); return 1;", "(a)   ?.(x); return 1;"},
+		{"f(a<T>?.(x)); return 1;", "f(a   ?.(x)); return 1;"},
+		{"x = a < b > ?.(c); return 1;", "x = a       ?.(c); return 1;"},
+		{"a<T>\n?.(x); return 1;", "a   \n?.(x); return 1;"},
+		{"a<T>?.5:1; return 1;", "a   ?.5:1; return 1;"},
+		{"class A { constructor(@Inject() x: number) {} } return A;", "class A { constructor(@Inject() x        ) {} } return A;"},
+		{"class A { constructor(@Inject() private x: number) {} } return A;", "class A { constructor(@Inject() private x: number) {} } return A;"},
+		{"class A { m(@Inject() x: number) {} } return A;", "class A { m(@Inject() x        ) {} } return A;"},
+		{"class A { constructor(@dec x) {} } return A;", "class A { constructor(@dec x) {} } return A;"},
+		{"class A { constructor(x, @dec y: T) {} } return A;", "class A { constructor(x, @dec y   ) {} } return A;"},
+		{"function f(@dec x) {} return f;", "function f(@dec x) {} return f;"},
+		{"class A { @dec m() {} } return A;", "class A { @dec m() {} } return A;"},
+		{"@dec class A {} return A;", "@dec class A {} return A;"},
+		{"class A { constructor(@a.b() x?: number) {} } return A;", "class A { constructor(@a.b() x         ) {} } return A;"},
+		{"class A { constructor(@(foo()) x) {} } return A;", "class A { constructor(@(foo()) x) {} } return A;"},
+		{"class A { constructor(@dec() public x) {} } return A;", "class A { constructor(@dec() public x) {} } return A;"},
+		{"class A { constructor(@dec readonly x) {} } return A;", "class A { constructor(@dec readonly x) {} } return A;"},
+		{"const f = (@dec x) => x; return f;", "const f = (@dec x) => x; return f;"},
+		{"class A { set v(@dec x: number) {} } return A;", "class A { set v(@dec x        ) {} } return A;"},
+		{"class A { static m(@dec x: number) {} } return A;", "class A { static m(@dec x        ) {} } return A;"},
+		{"const o = { m(@dec x) {} }; return o;", "const o = { m(@dec x) {} }; return o;"},
+		{"} async function g(){ return 1;", "} async function g(){ return 1;"},
+		{"x = [1, 2; return 1;", "x = [1, 2; return 1;"},
+		{"if (a) { return 1;", "if (a) { return 1;"},
+		{"x = a as T]; return 1;", "x = a as T]; return 1;"},
+		{"const s = `a${(b as T)}c`; return s;", "const s = `a${(b     )}c`; return s;"},
+		{"const r = /[)]/; return r;", "const r = /[)]/; return r;"},
+		{"const s = ')' as string; return s;", "const s = ')'          ; return s;"},
+		{"x = {a: 1 as T}; return x;", "x = {a: 1     }; return x;"},
+		{"return (1 as number)) + (2;", "return (1 as number)) + (2;"},
+		{"x = (a as T)\n; return x;", "x = (a     )\n; return x;"},
+		{"} \n return 1; {", "} \n return 1; {"},
+		{"class A { constructor(@Inject() readonly x) {} } return A;", "class A { constructor(@Inject() readonly x) {} } return A;"},
+		{"class A { constructor(@Inject()\n x: number, @Other y: string) {} } return A;", "class A { constructor(@Inject()\n x        , @Other y        ) {} } return A;"},
+		{"function f(@dec() x: number) {} return f;", "function f(@dec() x        ) {} return f;"},
+		{"class A { m(@dec.x y: number) {} } return A;", "class A { m(@dec.x y        ) {} } return A;"},
+		{"const f = (a, @dec b: T) => a; return f;", "const f = (a, @dec b   ) => a; return f;"},
+	} {
+		got, _ := stripTypeScriptAnnotations(tc[0])
+		if got != tc[1] {
+			t.Errorf("strip(%q)\n got  %q\n want %q", tc[0], got, tc[1])
+		}
+	}
+}

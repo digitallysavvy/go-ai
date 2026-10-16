@@ -113,11 +113,42 @@ func stripWithRecover(src string, core func(string) (string, error)) (out string
 // recovery. Only stripTypeScriptAnnotations and tests call it directly.
 func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 	tokens := tokenizeTS(src)
+	if err := checkBracketBalance(tokens); err != nil {
+		return src, err
+	}
 	kept, err := stripTSTokens(tokens)
 	if err != nil {
 		return src, err
 	}
 	return blankDropped(src, kept), nil
+}
+
+// checkBracketBalance rejects a snippet whose ( [ { ) ] } do not pair up, as
+// Node's parser does for the wrapped `async function __runUser__(){ ... }`
+// (so `x = a as T);` is a syntax error, not something to blank). The wrapper's
+// own braces take part: a leading `}` closes the function body and is fine as
+// long as a later `{` reopens one for the wrapper's trailing `}`.
+func checkBracketBalance(tokens []tsToken) error {
+	stack := []string{"{"}
+	for _, t := range tokens {
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case "(", "[", "{":
+			stack = append(stack, t.text)
+		case ")", "]", "}":
+			want := map[string]string{")": "(", "]": "[", "}": "{"}[t.text]
+			if n := len(stack); n == 0 || stack[n-1] != want {
+				return fmt.Errorf("codemode: unbalanced %q in TypeScript source", t.text)
+			}
+			stack = stack[:len(stack)-1]
+		}
+	}
+	if len(stack) != 1 {
+		return fmt.Errorf("codemode: unbalanced %q in TypeScript source", stack[len(stack)-1])
+	}
+	return nil
 }
 
 // blankDropped writes the kept tokens and replaces every dropped span of src
