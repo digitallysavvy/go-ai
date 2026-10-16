@@ -12,9 +12,9 @@ import (
 // TS ToolLoopAgent.generate/stream use `timeout ?? preparedCall.timeout`:
 // a per-call timeout overrides the agent's settings.
 func TestPerCallTimeoutOverridesConfig(t *testing.T) {
-	cfgMs, callMs := 1000*time.Millisecond, 5*time.Millisecond
-	cfg := AgentConfig{Timeout: &ai.TimeoutConfig{ToolMs: &cfgMs}}
-	call := &ai.TimeoutConfig{ToolMs: &callMs}
+	cfgTimeout, callTimeout := 1000*time.Millisecond, 5*time.Millisecond
+	cfg := AgentConfig{Timeout: &ai.TimeoutConfig{ToolMs: &cfgTimeout}}
+	call := &ai.TimeoutConfig{ToolMs: &callTimeout}
 	got := cfg.withGenerateOptions(AgentGenerateOptions{Timeout: call})
 	if got.Timeout != call {
 		t.Fatalf("per-call timeout not applied: %+v", got.Timeout)
