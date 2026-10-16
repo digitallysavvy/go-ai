@@ -319,6 +319,13 @@ func (b *Batch) handleError(err error) error {
 func (b *Batch) startBatchHeaders(betas []string, headers map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range headers {
+		// TS normalizeHeaders lower-cases the caller's keys and the computed
+		// { 'anthropic-beta': undefined } entry then replaces any caller
+		// value, so a caller anthropic-beta never reaches the wire, whatever
+		// its casing and even when no betas are computed.
+		if strings.EqualFold(k, "anthropic-beta") {
+			continue
+		}
 		out[k] = v
 	}
 	if len(betas) > 0 {
