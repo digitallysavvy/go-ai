@@ -3,11 +3,13 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // BUG-T17: models whose IDs begin with recognized prefixes (chatgpt-image, gpt-image-1, etc.)
@@ -205,8 +207,16 @@ func TestImageModel_DoGenerate_InvalidTypedProviderOptions(t *testing.T) {
 			"openai": OpenAIImageProviderOptions{OutputCompression: &compression},
 		},
 	})
-	if err == nil {
-		t.Fatal("DoGenerate should reject invalid outputCompression before making a request")
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("DoGenerate should reject invalid outputCompression with InvalidArgumentError before any request, got %T %v", err, err)
+	}
+	_, err = model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:          "a cat",
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"quality": "bogus"}},
+	})
+	if !errors.As(err, &invalid) {
+		t.Fatalf("invalid quality: want InvalidArgumentError, got %T %v", err, err)
 	}
 }
 

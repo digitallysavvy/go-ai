@@ -408,39 +408,44 @@ func extractOpenAIImageProviderOptions(providerOptions map[string]interface{}) O
 	return opts
 }
 
-func validateOpenAIImageProviderOptions(providerOptions map[string]interface{}, edit bool) error {
-	opts := extractOpenAIImageProviderOptions(providerOptions)
-	if opts.Quality != "" && !oneOf(opts.Quality, "standard", "hd", "low", "medium", "high", "xhigh", "max", "auto") {
-		return fmt.Errorf("openai image provider option quality must be one of standard, hd, low, medium, high, xhigh, max, auto")
+// openAIImageBaseOptionsSchema is baseImageModelOptionsObject in
+// openai-image-model-options.ts; generation adds style/moderation and edit
+// adds inputFidelity (unknown keys pass, like z.object).
+func openAIImageOptionsSchema(edit bool) providerutils.OptionSchema {
+	zero, hundred := 0, 100
+	schema := providerutils.OptionSchema{
+		"quality":           providerutils.OptEnum("standard", "hd", "low", "medium", "high", "xhigh", "max", "auto"),
+		"background":        providerutils.OptEnum("transparent", "opaque", "auto"),
+		"outputFormat":      providerutils.OptEnum("png", "jpeg", "webp"),
+		"outputCompression": providerutils.OptInt(&zero, &hundred),
+		"user":              providerutils.OptString,
 	}
-	if !edit && opts.Style != "" && !oneOf(opts.Style, "vivid", "natural") {
-		return fmt.Errorf("openai image provider option style must be one of vivid, natural")
+	if edit {
+		schema["inputFidelity"] = providerutils.OptEnum("high", "low")
+	} else {
+		schema["style"] = providerutils.OptEnum("vivid", "natural")
+		schema["moderation"] = providerutils.OptEnum("auto", "low")
 	}
-	if opts.Background != "" && !oneOf(opts.Background, "transparent", "opaque", "auto") {
-		return fmt.Errorf("openai image provider option background must be one of transparent, opaque, auto")
-	}
-	if !edit && opts.Moderation != "" && !oneOf(opts.Moderation, "auto", "low") {
-		return fmt.Errorf("openai image provider option moderation must be one of auto, low")
-	}
-	if opts.OutputFormat != "" && !oneOf(opts.OutputFormat, "png", "jpeg", "webp") {
-		return fmt.Errorf("openai image provider option outputFormat must be one of png, jpeg, webp")
-	}
-	if opts.OutputCompression != nil && (*opts.OutputCompression < 0 || *opts.OutputCompression > 100) {
-		return fmt.Errorf("openai image provider option outputCompression must be between 0 and 100")
-	}
-	if edit && opts.InputFidelity != "" && !oneOf(opts.InputFidelity, "high", "low") {
-		return fmt.Errorf("openai image provider option inputFidelity must be one of high, low")
-	}
-	return nil
+	return schema
 }
 
-func oneOf(value string, allowed ...string) bool {
-	for _, candidate := range allowed {
-		if value == candidate {
-			return true
+// validateOpenAIImageProviderOptions is parseProviderOptions with the
+// generation or edit schema: invalid options fail with an InvalidArgumentError.
+func validateOpenAIImageProviderOptions(providerOptions map[string]interface{}, edit bool) error {
+	raw := providerOptions["openai"]
+	if raw == nil {
+		return nil
+	}
+	// Typed option structs (OpenAIImageModelOptions) validate through their
+	// JSON form too: an out-of-range value in a struct is as invalid as in a map.
+	if encoded, err := json.Marshal(raw); err == nil {
+		var normalized interface{}
+		if json.Unmarshal(encoded, &normalized) == nil {
+			raw = normalized
 		}
 	}
-	return false
+	_, err := providerutils.ParseProviderOptions("openai", map[string]interface{}{"openai": raw}, openAIImageOptionsSchema(edit))
+	return err
 }
 
 func firstNonEmpty(values ...string) string {
