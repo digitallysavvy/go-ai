@@ -145,3 +145,30 @@ func TestGenerateAgentStepEndTelemetryCarriesToolResults(t *testing.T) {
 		t.Fatalf("step 0 ToolResults = %+v", trs)
 	}
 }
+
+// The step-end telemetry event's Reasoning concatenates the reasoning parts
+// with no separator (TS asReasoningText joins with an empty string).
+func TestGenerateAgentStepEndTelemetryReasoningHasNoSeparator(t *testing.T) {
+	rec := &stepEndToolResultsRecorder{}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Text: "hi",
+		Content: []types.ContentPart{
+			types.ReasoningContent{Text: "a"},
+			types.ReasoningContent{Text: "b"},
+		},
+		FinishReason: types.FinishReasonStop,
+	}}}
+	a := NewToolLoopAgent(AgentConfig{
+		Model:     model,
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if _, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.steps) != 1 {
+		t.Fatalf("step-end events = %d, want 1", len(rec.steps))
+	}
+	if got := rec.steps[0].Reasoning; got != "ab" {
+		t.Fatalf("step-end Reasoning = %q, want %q", got, "ab")
+	}
+}
