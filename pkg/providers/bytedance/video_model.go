@@ -623,6 +623,9 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 	if !ok {
 		return &ProviderOptions{}, nil
 	}
+	if err := validateByteDanceOptions(opts, byteDanceVideoOptionsSchema); err != nil {
+		return nil, err
+	}
 
 	// Convert to JSON and back to get proper typed struct
 	jsonData, err := json.Marshal(bdOpts)

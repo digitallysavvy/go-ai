@@ -3,6 +3,7 @@ package bytedance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -907,12 +908,51 @@ func TestProviderOptions_PollingValuesMustBePositive(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error")
 			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("expected error to mention %q, got %v", tt.wantErr, err)
+			// The schema error lists failing members in its cause (TS
+			// InvalidArgumentError.cause).
+			full := err.Error()
+			if cause := errors.Unwrap(err); cause != nil {
+				full += " " + cause.Error()
+			}
+			if !strings.Contains(full, tt.wantErr) {
+				t.Fatalf("expected error to mention %q, got %v", tt.wantErr, full)
 			}
 		})
 	}
 }
+
+// TS parseProviderOptions(byteDanceVideoModelOptionsSchema) /
+// (byteDanceImageModelOptionsSchema) reject mistyped options with an
+// InvalidArgumentError.
+func TestProviderOptionsSchemaValidation(t *testing.T) {
+	bad := []map[string]interface{}{
+		{"serviceTier": "turbo"},
+		{"referenceImages": []interface{}{1}},
+		{"watermark": "yes"},
+		{"lastFrameImage": 5},
+	}
+	for _, o := range bad {
+		if _, err := extractProviderOptions(map[string]interface{}{"bytedance": o}); err == nil {
+			t.Errorf("video options %v: expected a validation error", o)
+		}
+	}
+	badImg := []map[string]interface{}{
+		{"outputFormat": "gif"},
+		{"maxImages": 1.5},
+		{"optimizePromptMode": "slow"},
+		{"sequentialImageGeneration": "on"},
+	}
+	for _, o := range badImg {
+		if _, err := extractImageProviderOptions(map[string]interface{}{"bytedance": o}); err == nil {
+			t.Errorf("image options %v: expected a validation error", o)
+		}
+	}
+	if _, err := extractProviderOptions(map[string]interface{}{"bytedance": &ProviderOptions{Watermark: ptrBool(true)}}); err != nil {
+		t.Errorf("typed options rejected: %v", err)
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }
 
 // ─── Image-to-Video Tests ─────────────────────────────────────────────────────
 
