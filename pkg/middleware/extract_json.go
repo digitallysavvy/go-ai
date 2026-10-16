@@ -4,10 +4,10 @@ import (
 	"context"
 	"regexp"
 	"strings"
-	"unicode"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // ExtractJSONOptions configures the JSON extraction middleware
@@ -20,22 +20,28 @@ type ExtractJSONOptions struct {
 // defaultJSONTransform strips markdown code fences from text
 func defaultJSONTransform(text string) string {
 	// Remove opening fence: ```json or ```
-	text = regexp.MustCompile(`^`+"```"+`(?:json)?\s*\n?`).ReplaceAllString(text, "")
+	text = jsonFencePrefixRe.ReplaceAllString(text, "")
 	// Remove closing fence: ```
-	text = regexp.MustCompile(`\n?`+"```"+`\s*$`).ReplaceAllString(text, "")
-	return strings.TrimSpace(text)
+	text = jsonFenceSuffixRe.ReplaceAllString(text, "")
+	return providerutils.JSTrim(text)
 }
 
 // jsonFenceSuffixRe matches a trailing markdown code fence, mirroring TS
 // stripMarkdownCodeFenceSuffix's regex.
-var jsonFenceSuffixRe = regexp.MustCompile(`\n?` + "```" + `\s*$`)
+var jsonFenceSuffixRe = regexp.MustCompile(`\n?` + "```" + jsWS + `*$`)
+
+// jsWS is the character class of JavaScript's regex \s (RE2's \s is ASCII
+// only and omits \v, NBSP, U+FEFF and the Unicode spaces).
+const jsWS = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+
+var jsonFencePrefixRe = regexp.MustCompile(`^` + "```" + `(?:json)?` + jsWS + `*\n?`)
 
 // stripMarkdownCodeFenceSuffix removes a trailing markdown code fence (with
 // an optional leading newline) and trims trailing whitespace only — it must
 // never trim leading whitespace, since earlier text may already have
 // streamed out.
 func stripMarkdownCodeFenceSuffix(text string) string {
-	return strings.TrimRight(jsonFenceSuffixRe.ReplaceAllString(text, ""), " \t\n\r")
+	return providerutils.JSTrimEnd(jsonFenceSuffixRe.ReplaceAllString(text, ""))
 }
 
 // getPotentialSuffixStart returns the byte offset from which text could
@@ -48,7 +54,7 @@ func getPotentialSuffixStart(text string) int {
 	runes := []rune(text)
 	index := len(runes)
 
-	for index > 0 && unicode.IsSpace(runes[index-1]) {
+	for index > 0 && providerutils.IsJSWhiteSpace(runes[index-1]) {
 		index--
 	}
 
@@ -59,7 +65,7 @@ func getPotentialSuffixStart(text string) int {
 	}
 
 	if backtickCount > 0 {
-		for index > 0 && unicode.IsSpace(runes[index-1]) {
+		for index > 0 && providerutils.IsJSWhiteSpace(runes[index-1]) {
 			index--
 		}
 	}
@@ -244,7 +250,7 @@ func (w *streamingExtractJSONWrapper) handleDelta(chunk *provider.StreamChunk) {
 			w.emitStart(b)
 		case strings.HasPrefix(b.buffer, "```"):
 			if strings.Contains(b.buffer, "\n") {
-				re := regexp.MustCompile(`^` + "```" + `(?:json)?\s*\n`)
+				re := regexp.MustCompile(`^` + "```" + `(?:json)?` + jsWS + `*\n`)
 				if loc := re.FindStringIndex(b.buffer); loc != nil {
 					b.buffer = b.buffer[loc[1]:]
 					b.prefixStripped = true

@@ -12,8 +12,10 @@ import (
 // mp3, x-wav -> wav, opus -> ogg and mp4/x-m4a -> m4a. It is used to name
 // audio uploads (some APIs infer the container from the filename).
 func MediaTypeToExtension(mediaType string) string {
+	// TS: const [_type, subtype = ''] = mediaType.toLowerCase().split('/'),
+	// the second segment only ("a/b/c" has subtype "b").
 	subtype := ""
-	if parts := strings.SplitN(strings.ToLower(mediaType), "/", 2); len(parts) == 2 {
+	if parts := strings.SplitN(strings.ToLower(mediaType), "/", 3); len(parts) >= 2 {
 		subtype = parts[1]
 	}
 	switch subtype {

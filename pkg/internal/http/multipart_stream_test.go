@@ -172,3 +172,57 @@ func TestNewMultipartStreamBody_CloseWithoutReadingDoesNotLeakGoroutine(t *testi
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+type closeTrackingReader struct {
+	*io.PipeReader
+	closed chan struct{}
+}
+
+func (c *closeTrackingReader) Close() error { close(c.closed); return c.PipeReader.Close() }
+
+// TS: a filename parameter is always emitted (default "blob"), CR/LF never
+// reach a header, and an abandoned upload releases the file content.
+func TestNewMultipartStreamBody_BlobFilenameAndHeaderSanitizing(t *testing.T) {
+	body, ct, err := NewMultipartStreamBody([]MultipartStreamPart{
+		{Name: "a\r\nX-Evil: 1", Value: "v"},
+		{IsFile: true, Name: "file", MediaType: "text/plain\r\nX: y", Content: strings.NewReader("data")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(body)
+	_ = body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, `name="aX-Evil: 1"`) || !strings.Contains(s, `filename="blob"`) || !strings.Contains(s, "Content-Type: text/plainX: y\r\n") {
+		t.Fatalf("unexpected body: %q", s)
+	}
+	if strings.Contains(s, "\r\nX-Evil") {
+		t.Fatalf("header smuggling: %q", s)
+	}
+	_, params, _ := mime.ParseMediaType(ct)
+	mr := multipart.NewReader(strings.NewReader(s), params["boundary"])
+	for i := 0; i < 2; i++ {
+		if _, err := mr.NextPart(); err != nil {
+			t.Fatalf("part %d: %v", i, err)
+		}
+	}
+}
+
+func TestNewMultipartStreamBody_CloseReleasesUnfinishedContent(t *testing.T) {
+	pr, pw := io.Pipe() // never written: Read blocks until closed
+	defer func() { _ = pw.Close() }()
+	c := &closeTrackingReader{PipeReader: pr, closed: make(chan struct{})}
+	body, _, err := NewMultipartStreamBody([]MultipartStreamPart{{IsFile: true, Name: "f", Content: c}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = body.Close()
+	select {
+	case <-c.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("content was not released on Close")
+	}
+}
