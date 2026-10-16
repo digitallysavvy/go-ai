@@ -284,7 +284,7 @@ func TestStdioSendHonorsContextOnFullPipe(t *testing.T) {
 	if err := tr.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	big := `"` + strings.Repeat("x", 4<<20) + `"`
 	msg := &MCPMessage{JSONRpc: "2.0", ID: 0, Method: "m", Params: []byte(big)}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
