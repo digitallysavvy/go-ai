@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -41,7 +42,7 @@ func FormatBridgeError(value any) string {
 		}
 		return string(v)
 	}
-	raw, err := json.Marshal(value)
+	raw, err := jsstr.Marshal(value)
 	if err != nil {
 		return fmt.Sprint(value)
 	}

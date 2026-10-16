@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -2390,7 +2391,7 @@ func (d *turnDriver) submitToolResult(submission ToolResultSubmission) error {
 			if !hasContinuation || !IsCapabilityUnsupportedError(err) {
 				return err
 			}
-			text, mErr := json.Marshal(submission.Output)
+			text, mErr := jsstr.Marshal(submission.Output)
 			if mErr != nil || string(text) == "" {
 				text = []byte("null")
 			}

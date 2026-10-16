@@ -1,6 +1,10 @@
 package harness
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+)
 
 func TestDecodedErrorPartKeepsWireKeyOrder(t *testing.T) {
 	part, err := DecodeStreamPart([]byte(`{"type":"error","error":{"z":1,"a":{"y":2.0,"b":3},"7":true,"name":"x"}}`))
@@ -24,5 +28,21 @@ func TestDecodedErrorPartKeepsWireKeyOrder(t *testing.T) {
 func TestErrorValueMessageKeepsLineSeparatorsRaw(t *testing.T) {
 	if got := ErrorValueMessage(map[string]any{"a": "x y<"}); got != "{\"a\":\"x y<\"}" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestConvertToolModelOutputJSONIsNotHTMLEscaped(t *testing.T) {
+	content, _, err := ConvertToolModelOutput(types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]any{"a": "<b>& "}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := content[0].Text, "{\"a\":\"<b>& \"}"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestFormatBridgeErrorFallbackIsNotHTMLEscaped(t *testing.T) {
+	if got := FormatBridgeError([]any{"<x>"}); got != `["<x>"]` {
+		t.Fatalf("got %s", got)
 	}
 }

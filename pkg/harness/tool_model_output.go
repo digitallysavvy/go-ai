@@ -2,10 +2,10 @@ package harness
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -131,7 +131,7 @@ func ConvertToolModelOutput(output types.ToolResultOutput) ([]ToolModelOutputCon
 		return fmt.Sprint(v)
 	}
 	jsonOf := func(v interface{}) string {
-		b, err := json.Marshal(v)
+		b, err := jsstr.Marshal(v)
 		if err != nil {
 			return "null"
 		}
