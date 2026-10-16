@@ -183,6 +183,10 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 	if modelID == "" {
 		return nil, fmt.Errorf("model ID is required for AWS Bedrock reranking")
 	}
+	// TS createRerankingModel loads the region when the model is created.
+	if p.Region() == "" {
+		return nil, errRegionMissing()
+	}
 	return NewRerankingModel(p, modelID), nil
 }
 
@@ -219,7 +223,7 @@ func (p *Provider) Region() string {
 
 func (p *Provider) runtimeBaseURL() (string, error) {
 	if p.Region() == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
-		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+		return "", errRegionMissing()
 	}
 	return ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
@@ -231,7 +235,7 @@ func (p *Provider) runtimeBaseURL() (string, error) {
 
 func (p *Provider) agentRuntimeBaseURL() (string, error) {
 	if p.Region() == "" && p.config.BaseURL == "" && os.Getenv("AWS_ENDPOINT_URL_BEDROCK_AGENT_RUNTIME") == "" && os.Getenv("AWS_ENDPOINT_URL") == "" {
-		return "", fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+		return "", errRegionMissing()
 	}
 	return ResolveAmazonBedrockBaseURL(ResolveBaseURLOptions{
 		BaseURL:                              p.config.BaseURL,
@@ -248,13 +252,15 @@ func (p *Provider) authenticateRequest(ctx context.Context, req *stdhttp.Request
 		return nil
 	}
 
+	// TS loads the region first (createSigV4FetchFunction's credentials
+	// callback), then the credentials.
+	region := p.Region()
+	if region == "" {
+		return errRegionMissing()
+	}
 	creds, err := p.resolveCredentials(ctx)
 	if err != nil {
 		return err
-	}
-	region := p.Region()
-	if region == "" {
-		return fmt.Errorf("AWS region is required: set Region or AWS_REGION")
 	}
 
 	signer := NewAWSSigner(
@@ -300,7 +306,7 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 			creds.SessionToken = os.Getenv("AWS_SESSION_TOKEN")
 		}
 		if !creds.valid() {
-			return awsCredentials{}, fmt.Errorf("incomplete AWS credentials in Bedrock config")
+			return awsCredentials{}, missingSigV4CredentialsError(creds.AccessKeyID, creds.SecretAccessKey)
 		}
 		p.creds, p.credsFrom, p.credExp = creds, "config", time.Time{}
 		return creds, nil
@@ -320,7 +326,26 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 		return creds, nil
 	}
 
-	return awsCredentials{}, fmt.Errorf("AWS credentials not found: set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, Bedrock Config credentials, shared credentials file, or an instance role")
+	return awsCredentials{}, missingSigV4CredentialsError(os.Getenv("AWS_ACCESS_KEY_ID"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
+}
+
+// errRegionMissing is TS loadSetting's error for the AWS region.
+func errRegionMissing() error {
+	return fmt.Errorf("AWS region setting is missing. Pass it using the 'region' parameter or the AWS_REGION environment variable.") //nolint:staticcheck // message text matches TS
+}
+
+// missingSigV4CredentialsError mirrors the TS createAmazonBedrock error when
+// the access key ID or the secret access key cannot be loaded.
+func missingSigV4CredentialsError(accessKeyID, secretAccessKey string) error {
+	if accessKeyID == "" {
+		return fmt.Errorf("AWS SigV4 authentication requires AWS credentials. Please provide either:\n" + //nolint:staticcheck // message text matches TS
+			"1. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables\n" +
+			"2. Provide accessKeyId and secretAccessKey in options\n" +
+			"3. Use a credentialProvider function\n" +
+			"4. Use API key authentication with AWS_BEARER_TOKEN_BEDROCK or apiKey option\n" +
+			"Original error: AWS access key ID setting is missing. Pass it using the 'accessKeyId' parameter or the AWS_ACCESS_KEY_ID environment variable.")
+	}
+	return fmt.Errorf("AWS SigV4 authentication requires both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. Please ensure both credentials are provided.\nOriginal error: AWS secret access key setting is missing. Pass it using the 'secretAccessKey' parameter or the AWS_SECRET_ACCESS_KEY environment variable.") //nolint:staticcheck // message text matches TS
 }
 
 func envCredentials() awsCredentials {

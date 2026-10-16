@@ -113,7 +113,7 @@ func (m *RerankingModel) buildRequestBody(opts *provider.RerankOptions) (map[str
 	}
 	region := m.provider.Region()
 	if region == "" {
-		return nil, fmt.Errorf("AWS region is required: set Region or AWS_REGION")
+		return nil, errRegionMissing()
 	}
 	modelConfiguration := map[string]interface{}{
 		"modelArn": fmt.Sprintf("arn:aws:bedrock:%s::foundation-model/%s", region, m.modelID),
