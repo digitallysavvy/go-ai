@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -47,6 +48,10 @@ func (s *ShellSandbox) Description() string {
 	return s.description
 }
 
+// shellSandboxPipeGrace is how long Run waits, after its ctx is done, for the
+// command's output pipes to reach EOF before closing them.
+const shellSandboxPipeGrace = 500 * time.Millisecond
+
 // Run runs command in the configured shell.
 func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (SandboxRunResult, error) {
 	process, err := s.spawn(ctx, opts.Command, opts.WorkingDirectory, opts.Env)
@@ -71,7 +76,31 @@ func (s *ShellSandbox) Run(ctx context.Context, opts SandboxProcessOptions) (San
 	// against io.Copy and can truncate output under load (see
 	// https://pkg.go.dev/os/exec#Cmd.StdoutPipe: "it is incorrect to call
 	// Wait before all reads from the pipe have completed").
+	//
+	// A cancelled ctx kills only the shell; a child it forked (sh -c "a; b")
+	// keeps the pipes open, which would hold this call until that child
+	// exits. After ctx is done the pipes are closed following a short grace
+	// period, so Run returns promptly with whatever output was captured.
+	copied := make(chan struct{})
+	go func() {
+		select {
+		case <-copied:
+			return
+		case <-ctx.Done():
+		}
+		select {
+		case <-copied:
+			return
+		case <-time.After(shellSandboxPipeGrace):
+		}
+		for _, r := range []io.Reader{process.Stdout(), process.Stderr()} {
+			if c, ok := r.(io.Closer); ok {
+				_ = c.Close()
+			}
+		}
+	}()
 	copyWG.Wait()
+	close(copied)
 	waitResult, waitErr := process.Wait()
 	return SandboxRunResult{
 		Stdout:   stdout.String(),
@@ -173,8 +202,10 @@ func (s *ShellSandbox) WriteFile(ctx context.Context, path string, content io.Re
 	if err != nil {
 		return err
 	}
-	defer f.Close() //nolint:errcheck
 	_, err = io.Copy(f, content)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
 	return err
 }
 
