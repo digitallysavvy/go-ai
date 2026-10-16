@@ -42,3 +42,38 @@ data: [DONE]
 		t.Fatalf("sources = %d, unique ids = %d", n, len(ids))
 	}
 }
+
+// TS announces a hosted image_generation call from its progress events, once.
+func TestXAIResponsesStreamImageGenerationProgressEvents(t *testing.T) {
+	sse := `data: {"type":"response.image_generation_call.in_progress","item_id":"ig_1","output_index":0}
+
+data: {"type":"response.image_generation_call.generating","item_id":"ig_1","output_index":0}
+
+data: [DONE]
+
+`
+	stream := newXAIResponsesStream(io.NopCloser(strings.NewReader(sse)))
+	stream.toolNames = map[string]string{"xai.image_generation": "draw"}
+	defer stream.Close() //nolint:errcheck
+	var kinds []provider.ChunkType
+	var call *provider.StreamChunk
+	for {
+		chunk, err := stream.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			continue
+		}
+		kinds = append(kinds, chunk.Type)
+		if chunk.Type == provider.ChunkTypeToolCall {
+			call = chunk
+		}
+	}
+	if len(kinds) != 4 || call == nil || call.ToolCall.ID != "ig_1" || call.ToolCall.ToolName != "draw" || !call.ToolCall.ProviderExecuted {
+		t.Fatalf("kinds = %v call = %+v", kinds, call)
+	}
+}

@@ -1434,6 +1434,36 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 
+		// TS announces a hosted image_generation call from its progress events
+		// when output_item.added has not been seen for the item.
+		case "response.image_generation_call.in_progress", "response.image_generation_call.generating", "response.image_generation_call.completed":
+			var e struct {
+				ItemID string `json:"item_id"`
+			}
+			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
+				continue
+			}
+			if s.seenToolCalls == nil {
+				s.seenToolCalls = map[string]bool{}
+			}
+			if s.seenToolCalls[e.ItemID] {
+				continue
+			}
+			s.seenToolCalls[e.ItemID] = true
+			toolName := s.toolNames["xai.image_generation"]
+			if toolName == "" {
+				toolName = "image_generation"
+			}
+			s.flushQueue = append(s.flushQueue,
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: e.ItemID, ToolName: toolName}},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: e.ItemID, Text: "{}"},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: e.ItemID, ToolCall: &types.ToolCall{ID: e.ItemID, ToolName: toolName}},
+				&provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{
+					ID: e.ItemID, ToolName: toolName, Arguments: map[string]interface{}{}, RawArguments: "{}", ProviderExecuted: true,
+				}},
+			)
+			continue
+
 		case "response.output_item.done":
 			var e responses.OutputItemDoneEvent
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
