@@ -628,3 +628,24 @@ func TestConvertToOpenResponsesInput_CustomToolResultsPreserveTextImagesAndFiles
 		t.Fatalf("data file part = %#v", file)
 	}
 }
+
+// TS always writes `summary` on a reasoning item (empty array when none),
+// writes `content: []` for an explicitly empty reasoningContent, and writes
+// annotations/logprobs arrays (even empty) on strict output text.
+func TestConvertAssistantContent_EmptyArraysOnTheWire(t *testing.T) {
+	content := []types.ContentPart{
+		types.ReasoningContent{Text: "x", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{
+			"itemId": "rs_1", "reasoningContent": []interface{}{},
+		}}},
+		types.TextContent{Text: "hi", ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"itemId": "msg_1"}}},
+	}
+	items := convertAssistantContent(content, "openai", true)
+	b, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"type":"reasoning","summary":[],"id":"rs_1","content":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[],"logprobs":[]}],"id":"msg_1","status":"completed"}]`
+	if string(b) != want {
+		t.Fatalf("got  %s\nwant %s", b, want)
+	}
+}

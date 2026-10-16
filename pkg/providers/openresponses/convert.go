@@ -678,9 +678,6 @@ func openResponsesParseReasoningTextParts(data map[string]interface{}) ([]Reason
 		}
 		out = append(out, ReasoningTextPart{Type: "reasoning_text", Text: text})
 	}
-	if len(out) == 0 {
-		return nil, true
-	}
 	return out, true
 }
 

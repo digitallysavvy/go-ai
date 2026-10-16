@@ -100,6 +100,27 @@ type ReasoningInputItem struct {
 	Content          []ReasoningTextPart `json:"content,omitempty"`
 }
 
+// MarshalJSON mirrors the TS reasoning item literal: summary is always
+// written (an empty array when there is none), content is written whenever it
+// is set, even as an empty array.
+func (r ReasoningInputItem) MarshalJSON() ([]byte, error) {
+	summary := r.Summary
+	if summary == nil {
+		summary = []SummaryPart{}
+	}
+	out := struct {
+		Type             string               `json:"type"`
+		Summary          []SummaryPart        `json:"summary"`
+		ID               string               `json:"id,omitempty"`
+		Content          *[]ReasoningTextPart `json:"content,omitempty"`
+		EncryptedContent string               `json:"encrypted_content,omitempty"`
+	}{Type: r.Type, Summary: summary, ID: r.ID, EncryptedContent: r.EncryptedContent}
+	if r.Content != nil {
+		out.Content = &r.Content
+	}
+	return json.Marshal(out)
+}
+
 // SummaryPart is a single entry in a reasoning item's summary array.
 type SummaryPart struct {
 	Type string `json:"type"`
@@ -153,6 +174,25 @@ type OutputTextContent struct {
 	// output-text item shape.
 	Annotations []Annotation  `json:"annotations,omitempty"`
 	Logprobs    []interface{} `json:"logprobs,omitempty"`
+}
+
+// MarshalJSON writes annotations and logprobs whenever they are set, even as
+// empty arrays (TS: `annotations: part.annotations ?? []` under
+// strictResponseInput, and a parsed empty annotations array otherwise).
+func (o OutputTextContent) MarshalJSON() ([]byte, error) {
+	out := struct {
+		Type        string         `json:"type"`
+		Text        string         `json:"text"`
+		Annotations *[]Annotation  `json:"annotations,omitempty"`
+		Logprobs    *[]interface{} `json:"logprobs,omitempty"`
+	}{Type: o.Type, Text: o.Text}
+	if o.Annotations != nil {
+		out.Annotations = &o.Annotations
+	}
+	if o.Logprobs != nil {
+		out.Logprobs = &o.Logprobs
+	}
+	return json.Marshal(out)
 }
 
 // FunctionCallItem represents a function call
