@@ -466,3 +466,17 @@ func TestCredentialBrokeringErrSurfacesInvalidGatewayURL(t *testing.T) {
 		t.Fatalf("valid url: %v %v", got, err)
 	}
 }
+
+// TS `env.AI_GATEWAY_BASE_URL ?? DEFAULT`: an explicitly empty value is kept
+// and fails URL parsing instead of silently using the default.
+func TestCredentialBrokeringEmptyGatewayBaseURLIsNotDefaulted(t *testing.T) {
+	env := map[string]string{"AI_GATEWAY_API_KEY": "host", "AI_GATEWAY_BASE_URL": ""}
+	sandboxEnv := map[string]string{"AI_GATEWAY_API_KEY": "sandbox"}
+	if _, err := CredentialBrokeringErr(env, sandboxEnv, nil, true); err == nil {
+		t.Fatal("expected Invalid URL for an empty AI_GATEWAY_BASE_URL")
+	}
+	delete(env, "AI_GATEWAY_BASE_URL")
+	if got, err := CredentialBrokeringErr(env, sandboxEnv, nil, true); err != nil || len(got) != 1 {
+		t.Fatalf("absent key: %v %v", got, err)
+	}
+}

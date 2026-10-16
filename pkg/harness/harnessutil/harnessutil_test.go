@@ -808,3 +808,12 @@ func TestOAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestR25NormalizeHeadersDeterministicForbidden(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		_, err := NormalizeHeaders(map[string]string{"X-Client-App": "a", "Authorization": "b", "User-Agent": "c", "x-api-key": "d"})
+		if err == nil || !strings.Contains(err.Error(), "`authorization`") {
+			t.Fatalf("err = %v", err)
+		}
+	}
+}

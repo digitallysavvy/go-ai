@@ -267,7 +267,7 @@ func (s *Server) handleInbound(c *serverConn, raw []byte) {
 			data = onStop()
 		}
 		body, _ := json.Marshal(data)
-		if len(body) == 0 {
+		if len(body) == 0 || string(body) == "null" {
 			body = []byte("{}")
 		}
 		_ = c.send(&bridge.Stop{Data: body})

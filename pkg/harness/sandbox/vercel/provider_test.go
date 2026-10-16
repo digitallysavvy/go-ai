@@ -344,3 +344,14 @@ func TestDeriveTemplateNameIsDeterministicAndInjective(t *testing.T) {
 		t.Fatalf("expected a hashed suffix, got %q", a)
 	}
 }
+
+func TestR25NilTemplatePrepareReturnsError(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	_, err := CreateNetworkSandboxSession(context.Background(), CreateSessionOptions{
+		Credentials: testCreds(), BaseURL: f.URL(), Template: &Template{Identity: "x"},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}

@@ -146,6 +146,9 @@ func CreateNetworkSandboxSession(ctx context.Context, opts CreateSessionOptions)
 	}
 	client := NewAPIClient(opts.BaseURL, creds)
 
+	if opts.Template != nil && opts.Template.Prepare == nil {
+		return nil, errors.New("createVercelNetworkSandboxSession: template.Prepare must be provided.") //nolint:staticcheck // mirrors TS message style
+	}
 	if opts.Template == nil {
 		params := baseParams
 		if liveName != "" {
