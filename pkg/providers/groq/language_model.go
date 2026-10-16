@@ -150,7 +150,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// (convert-to-groq-chat-messages.ts) always sets `content: text`
 	// unconditionally, never null, even when tool calls are present and no
 	// text was generated.
-	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AssistantToolCallContentMode: prompt.AssistantToolCallContentText}
+	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{AssistantToolCallContentMode: prompt.AssistantToolCallContentText, ReasoningKey: "reasoning"}
 	if opts.Prompt.IsMessages() {
 		body["messages"] = prompt.ToOpenAIMessages(opts.Prompt.Messages, toOpenAIMessagesOpts)
 	} else if opts.Prompt.IsSimple() {

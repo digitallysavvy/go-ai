@@ -46,6 +46,14 @@ type ToOpenAIMessagesOptions struct {
 	// and Azure's chat-completions models must leave this false.
 	IncludePromptCacheBreakpoint bool
 
+	// ReasoningKey, when set, replays assistant reasoning parts as a
+	// top-level string field of that name on the assistant message:
+	// "reasoning_content" for @ai-sdk/openai-compatible (TS #12049) and
+	// "reasoning" for Groq, so multi-turn tool-call conversations keep their
+	// thinking. OpenAI's own chat converter ignores reasoning parts, so only
+	// callers whose TS converter replays them set this.
+	ReasoningKey string
+
 	// WrapToolErrorOutputs sends error-text and error-json tool outputs as
 	// JSON.stringify({error: value}) so the model can tell a failed tool
 	// execution from a successful result (TS #22209,
@@ -305,6 +313,9 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 				applyThoughtSignatures(toolCalls, msg, opt.ThoughtSignatureKey)
 			}
 			openAIMsg["tool_calls"] = toolCalls
+			if reasoning := assistantReasoningContent(msg.Content); opt.ReasoningKey != "" && reasoning != "" {
+				openAIMsg[opt.ReasoningKey] = reasoning
+			}
 			if opt.IncludePromptCacheBreakpoint {
 				if textParts, hasBreakpoint := assistantTextPartsWithBreakpoint(msg.Content); hasBreakpoint {
 					openAIMsg["content"] = textParts
@@ -327,6 +338,30 @@ func toOpenAIMessages(messages []types.Message, opt ToOpenAIMessagesOptions, ref
 				} else {
 					openAIMsg["content"] = text
 				}
+			}
+			if msg.Name != "" {
+				openAIMsg["name"] = msg.Name
+			}
+			result = append(result, openAIMsg)
+			continue
+		}
+
+		// Assistant messages without tool calls: TS concatenates every text
+		// part into one content string (an array of text parts only when a
+		// part carries a prompt cache breakpoint) and ignores every other part
+		// type. Messages holding provider-specific custom blocks keep the
+		// part-array form below.
+		if msg.Role == types.RoleAssistant && !hasOpenAICustomBlock(msg.Content) {
+			if opt.IncludePromptCacheBreakpoint {
+				if textParts, hasBreakpoint := assistantTextPartsWithBreakpoint(msg.Content); hasBreakpoint {
+					openAIMsg["content"] = textParts
+				}
+			}
+			if _, set := openAIMsg["content"]; !set {
+				openAIMsg["content"] = assistantTextContent(msg.Content)
+			}
+			if reasoning := assistantReasoningContent(msg.Content); opt.ReasoningKey != "" && reasoning != "" {
+				openAIMsg[opt.ReasoningKey] = reasoning
 			}
 			if msg.Name != "" {
 				openAIMsg["name"] = msg.Name
@@ -470,11 +505,46 @@ func openAIToolCalls(toolCalls []types.ToolCall, sanitizeReplayedArguments bool)
 func assistantTextContent(content []types.ContentPart) string {
 	var b strings.Builder
 	for _, part := range content {
-		if text, ok := part.(types.TextContent); ok {
+		switch text := part.(type) {
+		case types.TextContent:
 			b.WriteString(text.Text)
+		case *types.TextContent:
+			if text != nil {
+				b.WriteString(text.Text)
+			}
 		}
 	}
 	return b.String()
+}
+
+// assistantReasoningContent concatenates an assistant message's reasoning
+// parts (TS openai-compatible `reasoning += part.text`).
+func assistantReasoningContent(content []types.ContentPart) string {
+	var b strings.Builder
+	for _, part := range content {
+		switch r := part.(type) {
+		case types.ReasoningContent:
+			b.WriteString(r.Text)
+		case *types.ReasoningContent:
+			if r != nil {
+				b.WriteString(r.Text)
+			}
+		}
+	}
+	return b.String()
+}
+
+// hasOpenAICustomBlock reports whether content holds a CustomContent part
+// carrying openai-keyed provider options that must be forwarded verbatim.
+func hasOpenAICustomBlock(content []types.ContentPart) bool {
+	for _, part := range content {
+		if c, ok := part.(types.CustomContent); ok {
+			if _, ok := c.ProviderOptions["openai"].(map[string]interface{}); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // assistantTextPartsWithBreakpoint builds the per-part "text" array TS emits

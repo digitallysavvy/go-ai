@@ -362,6 +362,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	// carry a concrete message slice for the system-message prepend below.
 	body["messages"] = []map[string]interface{}{}
 	toOpenAIMessagesOpts := prompt.ToOpenAIMessagesOptions{ThoughtSignatureKey: m.thoughtSignatureKey(), SanitizeReplayedToolCallArguments: native, IncludePromptCacheBreakpoint: native, WrapToolErrorOutputs: native, AllowVideo: m.provider.config.AllowVideo || m.provider.config.OpenAICompatible, SupportsMultiPartToolContent: m.provider.config.SupportsMultiPartToolContent, Provider: m.fileReferenceProvider()}
+	if !native {
+		toOpenAIMessagesOpts.ReasoningKey = "reasoning_content"
+	}
 	if opts.Prompt.IsMessages() {
 		converted, convErr := prompt.ToOpenAIMessagesWithError(convertMessages(opts.Prompt.Messages), toOpenAIMessagesOpts)
 		if convErr != nil {
