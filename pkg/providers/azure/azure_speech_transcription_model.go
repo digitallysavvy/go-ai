@@ -283,10 +283,9 @@ func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definiti
 	writer := multipart.NewWriter(&buf)
 
 	extension := mediaTypeToExtension(mimeType)
-	if extension == "" {
-		extension = "bin"
-	}
-	part, err := writer.CreateFormFile("audio", "audio."+extension)
+	// TS: new Blob([...], {type: mediaType}) named `audio.${ext}`; the part
+	// carries the media type and an empty extension is kept as-is.
+	part, err := providerutils.CreateTypedFormFile(writer, "audio", "audio."+extension, mimeType)
 	if err != nil {
 		return nil, "", err
 	}
