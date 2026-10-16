@@ -1,10 +1,15 @@
 package acp
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge/bridgetest"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 func TestR25EmptyPnpmWorkspaceYAMLRejected(t *testing.T) {
@@ -55,6 +60,58 @@ func TestImplementationErrorQuotesLikeJSONStringify(t *testing.T) {
 	})
 	want := "ACP executable must be a bare command name without a path; received \"a\\u0001 \"."
 	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+}
+
+// boundPortSandbox reports a bridge-ready port different from the requested
+// one and resolves every port to the live bridge.
+type boundPortSandbox struct{ *fakeSandbox }
+
+func (s boundPortSandbox) Spawn(_ context.Context, _ providerutils.SandboxProcessOptions) (providerutils.SandboxProcess, error) {
+	proc := bridgetest.NewProcess()
+	go func() {
+		time.Sleep(2 * time.Millisecond)
+		proc.WriteStdout(`{"type":"bridge-ready","port":5555}` + "\n")
+		time.Sleep(5 * time.Millisecond)
+		proc.Exit(0)
+	}()
+	return proc, nil
+}
+
+func (s boundPortSandbox) GetPortEndpoint(_ context.Context, _ harness.PortEndpointOptions) (harness.PortEndpoint, error) {
+	return harness.PortEndpoint{URL: "ws://" + s.bridgeAddr + "/"}, nil
+}
+
+// TS persists the port the bridge reported ready on (`boundPort`), not the
+// port that was requested, in the lifecycle bridge coordinates.
+func TestDoStartPersistsBoundBridgePort(t *testing.T) {
+	const token = "bound-port-token"
+	srv := newServer(t, token, func(*bridgetest.Turn, map[string]any) {})
+	h, err := CreateACP(testSettings(func(s *Settings) {
+		s.MintBridgeToken = func(string) string { return token }
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := h.DoStart(context.Background(), harness.StartOptions{
+		SessionID: "s", SessionWorkDir: "/w", SandboxSession: boundPortSandbox{newFakeSandbox(srv)},
+	})
+	if err != nil {
+		t.Fatalf("DoStart: %v", err)
+	}
+	defer func() { _ = sess.DoDestroy(context.Background()) }()
+	if got := sess.(*session).p.bridgePort; got != 5555 {
+		t.Fatalf("bridgePort = %d, want the bound port 5555", got)
+	}
+}
+
+func (s boundPortSandbox) Restricted() providerutils.SandboxSession { return s }
+
+func TestWrapPortErrorMessageMatchesTS(t *testing.T) {
+	err := wrapPortError(bridge.ErrNoPort, "h")
+	want := "The h ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or configure the harness `port`."
+	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
 }

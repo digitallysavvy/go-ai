@@ -695,7 +695,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 
 	sessionArgs.channel = channel
 	sessionArgs.proc = launched.Proc
-	sessionArgs.bridgePort = port
+	sessionArgs.bridgePort = launched.Port
 	sessionArgs.bridgeToken = token
 	sessionArgs.isResume = isResume
 	sessionArgs.acpSessionID = resumeData.ACPSessionID
@@ -768,7 +768,7 @@ func resolveBridgeEndpoint(ctx context.Context, sandboxSession providerutils.San
 func wrapPortError(err error, harnessID string) error {
 	if err == bridge.ErrNoPort {
 		return unsupported(harnessID, fmt.Sprintf(
-			"The %s ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or pass `port` in settings.", harnessID))
+			"The %s ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or configure the harness `port`.", harnessID))
 	}
 	return err
 }
@@ -798,8 +798,7 @@ func writeAuthenticationFiles(ctx context.Context, sandbox providerutils.Sandbox
 			}
 		}
 		if f.Path == "" || posixpath.IsAbs(f.Path) || traversal {
-			quoted, _ := json.Marshal(f.Path)
-			return fmt.Errorf("ACP authentication file path must be relative without traversal: %s.", quoted) //nolint:staticcheck // matches TS SDK's exact error text
+			return fmt.Errorf("ACP authentication file path must be relative without traversal: %s.", jsonString(f.Path)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
 		targetPaths[i] = posixpath.Join(homePath, f.Path)
 	}
