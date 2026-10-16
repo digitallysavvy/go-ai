@@ -123,7 +123,9 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		}
 	}
 
-	if humeOpts != nil && humeOpts.Context != nil {
+	if rawCtx, ok := humeContextFromRaw(opts.ProviderOptions); ok {
+		body["context"] = rawCtx
+	} else if humeOpts != nil && humeOpts.Context != nil {
 		if humeOpts.Context.HasGenerationID() {
 			body["context"] = map[string]interface{}{"generation_id": humeOpts.Context.GenerationID}
 		} else if humeOpts.Context.Utterances != nil {
@@ -167,4 +169,52 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	}
 
 	return body, warnings
+}
+
+// humeContextFromRaw builds the request context from the untyped
+// providerOptions.hume.context the way the zod-parsed value reads in TS:
+// `'generationId' in context` wins (even for ""), unknown keys are stripped,
+// empty-string members are kept, and a voice with an id drops its name (the
+// {id, provider?} branch of the union matches first and strips the rest).
+func humeContextFromRaw(providerOptions map[string]interface{}) (map[string]interface{}, bool) {
+	hume, _ := providerOptions["hume"].(map[string]interface{})
+	ctx, _ := hume["context"].(map[string]interface{})
+	if ctx == nil {
+		return nil, false
+	}
+	if id, ok := ctx["generationId"].(string); ok {
+		return map[string]interface{}{"generation_id": id}, true
+	}
+	list, ok := ctx["utterances"].([]interface{})
+	if !ok {
+		return nil, false
+	}
+	utterances := make([]map[string]interface{}, 0, len(list))
+	for _, item := range list {
+		u, _ := item.(map[string]interface{})
+		entry := map[string]interface{}{"text": u["text"]}
+		if v, ok := u["description"].(string); ok {
+			entry["description"] = v
+		}
+		if v, ok := u["speed"]; ok && v != nil {
+			entry["speed"] = v
+		}
+		if v, ok := u["trailingSilence"]; ok && v != nil {
+			entry["trailing_silence"] = v
+		}
+		if voice, ok := u["voice"].(map[string]interface{}); ok {
+			out := map[string]interface{}{}
+			if id, ok := voice["id"].(string); ok {
+				out["id"] = id
+			} else if name, ok := voice["name"].(string); ok {
+				out["name"] = name
+			}
+			if p, ok := voice["provider"].(string); ok {
+				out["provider"] = p
+			}
+			entry["voice"] = out
+		}
+		utterances = append(utterances, entry)
+	}
+	return map[string]interface{}{"utterances": utterances}, true
 }
