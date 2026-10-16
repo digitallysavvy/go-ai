@@ -446,11 +446,19 @@ func isStatementStart(out []tsToken) bool {
 	if out[i].kind != "punct" {
 		// A line break after a complete statement starts the next one
 		// (automatic semicolon insertion): `const a = b` newline `type T = ...`.
+		// `return` and a line break end the statement as well (a restricted
+		// production), so what follows on the next line starts a new one.
+		if out[i].kind == "ident" && out[i].text == "return" {
+			return endsWithLineBreak(out)
+		}
 		return endsWithLineBreak(out) && endsExpression(out)
 	}
 	switch out[i].text {
 	case ";", "}":
 		return true
+	case "++", "--":
+		// A postfix operator ends an expression statement at a line break.
+		return endsWithLineBreak(out) && endsExpression(out)
 	case "{":
 		return looksLikeBlockOpen(out[:i])
 	case ")", "]":

@@ -46,3 +46,20 @@ func TestR30StripGuardsMembersStartingWithStarOrBracket(t *testing.T) {
 		}
 	}
 }
+
+// Node 24.20 output: after `return` or a postfix ++/-- and a line break, a type
+// alias, interface or declare statement starts a new statement and is erased.
+func TestR30StripDeclarationAfterReturnOrPostfixIncrement(t *testing.T) {
+	for _, tc := range [][2]string{
+		{"return\ntype T = number\n(f)()", "return\n;              \n(f)()"},
+		{"a++\ntype T = number\n(f)()", "a++\n;              \n(f)()"},
+		{"a++\ndeclare const d: number\n(f)()", "a++\n;                      \n(f)()"},
+		{"a++\ninterface I { a: number }\n(f)()", "a++\n;                        \n(f)()"},
+		{"a++\ntype T = number\nlet z = 1", "a++\n               \nlet z = 1"},
+	} {
+		got, err := stripTypeScriptAnnotations(tc[0])
+		if err != nil || got != tc[1] {
+			t.Errorf("%q\n got  %q (err %v)\n want %q", tc[0], got, err, tc[1])
+		}
+	}
+}
