@@ -14,6 +14,13 @@ func unsupportedFilePart(functionality string) error {
 	return &providererrors.UnsupportedFunctionalityError{Functionality: functionality}
 }
 
+// ResolveFullMediaType is TS resolveFullMediaType for a file part: it exposes
+// the strict resolver to providers outside this package. inline reports that
+// data holds the part's bytes (data.type === 'data').
+func ResolveFullMediaType(mediaType string, data []byte, inline bool) (string, error) {
+	return resolveFullMediaTypeStrict(mediaType, data, inline)
+}
+
 // resolveFullMediaTypeStrict is TS resolveFullMediaType for a file part: a full
 // type/subtype is returned as is, a top-level-only or wildcard type is sniffed
 // from inline bytes, and anything else is an UnsupportedFunctionalityError.
