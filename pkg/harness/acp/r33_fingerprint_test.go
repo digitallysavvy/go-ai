@@ -40,3 +40,13 @@ func TestTurnStartConfigFingerprintUsesCodeUnitOrder(t *testing.T) {
 		t.Fatal("fingerprint is not over code-unit ordered keys")
 	}
 }
+
+func TestAuthenticationProfileDigestUsesCodeUnitOrder(t *testing.T) {
+	auth := &Authentication{MethodID: "m", Meta: map[string]any{"A_B": 1, "AB": 2, "a": 3}}
+	id := createAuthenticationProfileIdentity(auth, nil)
+	payload := map[string]any{"authentication": auth, "providerAuthentication": nil}
+	sum := sha256.Sum256([]byte(stableStringifyCodeUnit(payload)))
+	if id.Digest != hex.EncodeToString(sum[:]) {
+		t.Fatal("authentication profile digest is not over code-unit ordered keys")
+	}
+}
