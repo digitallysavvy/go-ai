@@ -55,6 +55,12 @@ func extractSpeechModelOptions(providerOptions map[string]interface{}) *SpeechMo
 		return nil
 	}
 	var opts SpeechModelOptions
+	var rate struct {
+		SampleRate *float64 `json:"sampleRate"`
+	}
+	if json.Unmarshal(b, &rate) == nil {
+		opts.sampleRate = rate.SampleRate
+	}
 	if err := json.Unmarshal(b, &opts); err != nil {
 		// A field the Go struct can't hold (TS sampleRate is z.number(), the
 		// struct an int) must not drop every other option: encoding/json
@@ -381,32 +387,50 @@ func applyDeepgramSpeechOptions(query map[string]string, opts *SpeechModelOption
 		}
 	}
 
-	if opts.SampleRate != nil {
+	sampleRatePtr := opts.sampleRate
+	if sampleRatePtr == nil && opts.SampleRate != nil {
+		v := float64(*opts.SampleRate)
+		sampleRatePtr = &v
+	}
+	if sampleRatePtr != nil {
 		encoding := strings.ToLower(query["encoding"])
-		sampleRate := *opts.SampleRate
+		sampleRate := *sampleRatePtr
+		// JS String(number): 22050.5 stays fractional, 48000 has no ".0".
+		rateStr := strconv.FormatFloat(sampleRate, 'f', -1, 64)
+		inRates := func(rates ...float64) bool {
+			for _, r := range rates {
+				if r == sampleRate {
+					return true
+				}
+			}
+			return false
+		}
+		unsupported := func(details string) {
+			*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: details})
+		}
 		switch encoding {
 		case "linear16":
-			if !intInSlice([]int{8000, 16000, 24000, 32000, 48000}, sampleRate) {
-				*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "linear16" only supports sample rates: 8000, 16000, 24000, 32000, 48000. Sample rate %d was ignored.`, sampleRate)})
+			if !inRates(8000, 16000, 24000, 32000, 48000) {
+				unsupported(fmt.Sprintf(`Encoding "linear16" only supports sample rates: 8000, 16000, 24000, 32000, 48000. Sample rate %s was ignored.`, rateStr))
 			} else {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+				query["sample_rate"] = rateStr
 			}
 		case "mulaw", "alaw":
-			if !intInSlice([]int{8000, 16000}, sampleRate) {
-				*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "%s" only supports sample rates: 8000, 16000. Sample rate %d was ignored.`, encoding, sampleRate)})
+			if !inRates(8000, 16000) {
+				unsupported(fmt.Sprintf(`Encoding "%s" only supports sample rates: 8000, 16000. Sample rate %s was ignored.`, encoding, rateStr))
 			} else {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+				query["sample_rate"] = rateStr
 			}
 		case "flac":
-			if !intInSlice([]int{8000, 16000, 22050, 32000, 48000}, sampleRate) {
-				*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "flac" only supports sample rates: 8000, 16000, 22050, 32000, 48000. Sample rate %d was ignored.`, sampleRate)})
+			if !inRates(8000, 16000, 22050, 32000, 48000) {
+				unsupported(fmt.Sprintf(`Encoding "flac" only supports sample rates: 8000, 16000, 22050, 32000, 48000. Sample rate %s was ignored.`, rateStr))
 			} else {
-				query["sample_rate"] = strconv.Itoa(sampleRate)
+				query["sample_rate"] = rateStr
 			}
 		case "mp3", "opus", "aac":
-			*warnings = append(*warnings, types.Warning{Type: "unsupported", Feature: "providerOptions", Details: fmt.Sprintf(`Encoding "%s" has a fixed sample rate and does not support sample_rate parameter. Sample rate %d was ignored.`, encoding, sampleRate)})
+			unsupported(fmt.Sprintf(`Encoding "%s" has a fixed sample rate and does not support sample_rate parameter. Sample rate %s was ignored.`, encoding, rateStr))
 		default:
-			query["sample_rate"] = strconv.Itoa(sampleRate)
+			query["sample_rate"] = rateStr
 		}
 	}
 
