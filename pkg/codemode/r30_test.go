@@ -138,3 +138,21 @@ func TestR30StripArrowReturnTypeSpanningLines(t *testing.T) {
 		}
 	}
 }
+
+// Node 24.20 keeps the `<T>` of `new C<T>` when the next token continues a
+// comparison (`+`, `-`, a bracket); it strips it before `;`, a line break or
+// `(`.
+func TestR30StripNewTypeArgsFollowTheComparisonRule(t *testing.T) {
+	for _, tc := range [][2]string{
+		{"x = new C<T> + a;", "x = new C<T> + a;"},
+		{"x = new C<T>[0];", "x = new C<T>[0];"},
+		{"x = new C<T>;", "x = new C   ;"},
+		{"x = new C<T>\nfoo();", "x = new C   \nfoo();"},
+		{"x = new C<T>();", "x = new C   ();"},
+	} {
+		got, err := stripTypeScriptAnnotations(tc[0])
+		if err != nil || got != tc[1] {
+			t.Errorf("%q\n got  %q (err %v)\n want %q", tc[0], got, err, tc[1])
+		}
+	}
+}

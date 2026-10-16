@@ -370,15 +370,11 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 		// for call-expression generics (`ident<T>(...)`), which can follow
 		// any identifier -- including a property access like
 		// `obj.method<T>(...)`.
-		afterNew := precededByNew(*out)
 		*out = append(*out, t)
 		i++
 		if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "<" {
 			// `new Box<T>;` has type arguments without a call.
 			end, ok := consumeCallGenerics(tokens, p)
-			if !ok && afterNew {
-				end, ok = consumeAngleTypeArgsBalanced(tokens, p)
-			}
 			if ok {
 				if n := nextSignificant(tokens, end); n >= 0 && tokens[n].text == "?." && keepsTypeArgsBeforeOptionalCall(*out) {
 					ok = false
@@ -764,17 +760,6 @@ func closesControlHeader(out []tsToken) bool {
 				return false
 			}
 		}
-	}
-	return false
-}
-
-// precededByNew reports whether the last significant token in out is `new`.
-func precededByNew(out []tsToken) bool {
-	for i := len(out) - 1; i >= 0; i-- {
-		if out[i].kind == "space" || out[i].kind == "comment" {
-			continue
-		}
-		return out[i].kind == "ident" && out[i].text == "new"
 	}
 	return false
 }
