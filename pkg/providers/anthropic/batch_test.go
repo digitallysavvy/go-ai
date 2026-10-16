@@ -1342,3 +1342,26 @@ func TestAnthropicBatchProviderBetasUsesFirstNameSegment(t *testing.T) {
 		t.Fatalf("betas = %v, want [a]", got)
 	}
 }
+
+// TS createJsonLinesResponseHandler(anthropicBatchResultLineSchema): a results
+// line that is not JSON or lacks a string custom_id fails the stream with a
+// JSONParseError / TypeValidationError instead of yielding an item.
+func TestBatch_ResultsLineValidation(t *testing.T) {
+	cases := map[string]string{
+		"not json":          `{"custom_id":"a"`,
+		"missing custom_id": `{"result":{"type":"canceled"}}`,
+		"numeric custom_id": `{"custom_id":1,"result":{"type":"canceled"}}`,
+		"not an object":     `[1]`,
+	}
+	for name, line := range cases {
+		t.Run(name, func(t *testing.T) {
+			stream := newAnthropicBatchResultsStream(io.NopCloser(strings.NewReader(line+"\n")), nil, "https://x.example/r", 1<<20)
+			item, err := stream.Next()
+			var jp *providererrors.JSONParseError
+			var tv *providererrors.TypeValidationError
+			if item != nil || (!errors.As(err, &jp) && !errors.As(err, &tv)) {
+				t.Fatalf("item=%+v err=%T %v, want JSONParseError or TypeValidationError", item, err, err)
+			}
+		})
+	}
+}
