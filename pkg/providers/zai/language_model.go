@@ -244,6 +244,10 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["reasoning_effort"] = string(*opts.Reasoning)
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	// TS transformZaiRequestBody drops user and verbosity (and
+	// frequency_penalty / presence_penalty / seed) from the compat args.
+	delete(body, "user")
+	delete(body, "verbosity")
 
 	zaiOpts, err := decodeZaiOptions(compatibleOptions)
 	if err != nil {
@@ -260,9 +264,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		if zaiOpts.thinking.clearThinking != nil {
 			thinkingBody["clear_thinking"] = *zaiOpts.thinking.clearThinking
 		}
-		if len(thinkingBody) > 0 {
-			body["thinking"] = thinkingBody
-		}
+		// TS `thinking !== undefined && { thinking: {...} }`: an empty
+		// thinking object is forwarded as {}.
+		body["thinking"] = thinkingBody
 	}
 	if zaiOpts.toolStream != nil {
 		body["tool_stream"] = *zaiOpts.toolStream
