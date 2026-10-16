@@ -218,7 +218,7 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		if fishOpts.EarlyStopThreshold != nil {
 			body["early_stop_threshold"] = *fishOpts.EarlyStopThreshold
 		}
-		if len(fishOpts.Features) > 0 {
+		if fishOpts.Features != nil {
 			body["features"] = fishOpts.Features
 		}
 	}
