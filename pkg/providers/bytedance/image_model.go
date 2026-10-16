@@ -277,5 +277,4 @@ type byteDanceImageUsage struct {
 	TotalTokens  *int `json:"total_tokens"`
 }
 
-// errorResponse and errorDetail are shared with video_model.go's ByteDance
-// error envelope.
+// errorDetail is shared with video_model.go's ByteDance error envelope.

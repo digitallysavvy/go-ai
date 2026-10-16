@@ -669,15 +669,6 @@ var bytedanceStatusSpec = zodjson.Obj([]string{"id", "model", "status", "content
 	"error":   zodjson.Obj([]string{"code", "message"}, nil),
 })
 
-// mustMarshal marshals a value to JSON string, returning "{}" on error
-func mustMarshal(v interface{}) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
-
 func flattenHeaders(headers map[string][]string) map[string]string {
 	out := make(map[string]string, len(headers))
 	for k, vs := range headers {
@@ -725,12 +716,6 @@ type taskContentField struct {
 // taskUsageField holds token usage info
 type taskUsageField struct {
 	CompletionTokens int `json:"completion_tokens"`
-}
-
-// errorResponse is the error response format from ByteDance
-type errorResponse struct {
-	Error   *errorDetail `json:"error"`
-	Message string       `json:"message"`
 }
 
 // errorDetail holds the error message and code

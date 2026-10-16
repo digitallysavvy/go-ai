@@ -438,7 +438,7 @@ func isValidXMLReference(ref []rune) bool {
 				return false
 			}
 			for _, r := range hex {
-				if !(r >= '0' && r <= '9' || r >= 'A' && r <= 'F' || r >= 'a' && r <= 'f') {
+				if (r < '0' || r > '9') && (r < 'A' || r > 'F') && (r < 'a' || r > 'f') {
 					return false
 				}
 			}
