@@ -95,6 +95,14 @@ func parsePerplexityAgentOptions(raw map[string]interface{}) (*perplexityLanguag
 	// JSON values the TS schema sees.
 	raw = providerutils.NormalizeOptionsJSON(raw)
 
+	// zod .optional() accepts undefined but not null: an explicit null for a
+	// modeled option fails validation in TS.
+	for key := range perplexityAgentKnownOptionKeys {
+		if v, present := raw[key]; present && v == nil {
+			return nil, nil, invalidPerplexityProviderOptions(key, "invalid input: expected the option to be omitted or set, received null")
+		}
+	}
+
 	opts := &perplexityLanguageModelOptions{}
 	var err error
 
@@ -268,7 +276,7 @@ func perplexityAgentReasoningField(raw map[string]interface{}) (map[string]inter
 	if !ok {
 		return nil, invalidPerplexityProviderOptions("reasoning", fmt.Sprintf("must be an object, got %T", v))
 	}
-	if effort, ok := m["effort"]; ok && effort != nil {
+	if effort, ok := m["effort"]; ok {
 		s, ok := effort.(string)
 		if !ok || !perplexityAgentReasoningEfforts[s] {
 			return nil, invalidPerplexityProviderOptions("reasoning.effort", fmt.Sprintf("invalid value %v", effort))
@@ -323,14 +331,14 @@ func validatePerplexityNativeTool(tool map[string]interface{}) error {
 		}
 	case "web_search":
 		if filters, ok := tool["filters"].(map[string]interface{}); ok {
-			if recency, ok := filters["search_recency_filter"]; ok && recency != nil {
+			if recency, ok := filters["search_recency_filter"]; ok {
 				s, ok := recency.(string)
 				if !ok || !perplexityWebSearchRecencyFilters[s] {
 					return invalidPerplexityProviderOptions("tools", fmt.Sprintf("web_search.filters.search_recency_filter: invalid value %v", recency))
 				}
 			}
 		}
-		if size, ok := tool["search_context_size"]; ok && size != nil {
+		if size, ok := tool["search_context_size"]; ok {
 			s, ok := size.(string)
 			if !ok || !perplexitySearchContextSizes[s] {
 				return invalidPerplexityProviderOptions("tools", fmt.Sprintf("web_search.search_context_size: invalid value %v", size))
@@ -433,7 +441,7 @@ func validatePerplexityNativeToolFieldTypes(toolType string, tool map[string]int
 		return invalidPerplexityProviderOptions("tools", fmt.Sprintf("%s.%s must be %s", toolType, path, want))
 	}
 	check := func(m map[string]interface{}, key, path, want string, ok func(interface{}) bool) error {
-		if v, present := m[key]; present && v != nil && !ok(v) {
+		if v, present := m[key]; present && (v == nil || !ok(v)) {
 			return bad(path, want)
 		}
 		return nil
@@ -487,7 +495,7 @@ func validatePerplexityNativeToolFieldTypes(toolType string, tool map[string]int
 		}); err != nil {
 			return err
 		}
-		if v, ok := tool["filters"]; ok && v != nil {
+		if v, ok := tool["filters"]; ok {
 			f, isMap := v.(map[string]interface{})
 			if !isMap {
 				return bad("filters", "an object")
@@ -502,7 +510,7 @@ func validatePerplexityNativeToolFieldTypes(toolType string, tool map[string]int
 				return err
 			}
 		}
-		if v, ok := tool["user_location"]; ok && v != nil {
+		if v, ok := tool["user_location"]; ok {
 			l, isMap := v.(map[string]interface{})
 			if !isMap {
 				return bad("user_location", "an object")

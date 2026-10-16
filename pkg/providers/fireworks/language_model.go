@@ -264,13 +264,15 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			thinkingBody["budget_tokens"] = budgetTokens
 		}
 
-		if len(thinkingBody) > 0 {
-			body["thinking"] = thinkingBody
-		}
+		// TS `...(thinking && { thinking: {...} })`: an empty object is
+		// truthy, so `thinking: {}` is forwarded as {}.
+		body["thinking"] = thinkingBody
 	}
 
 	// Extract reasoningHistory and convert to snake_case (reasoning_history)
-	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok {
+	// TS `...(reasoningHistory && { reasoning_history })`: an empty string is
+	// falsy and is not forwarded.
+	if reasoningHistory, ok := providerutils.OpenAICompatibleStringOption(fireworksOptions, "reasoningHistory"); ok && reasoningHistory != "" {
 		body["reasoning_history"] = reasoningHistory
 	}
 

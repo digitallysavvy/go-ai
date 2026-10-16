@@ -437,7 +437,12 @@ func convertGroqUsage(usage groqUsage) types.Usage {
 		ReasoningTokens: reasoning,
 	}
 
-	// Store raw usage
+	// usage.raw is the parsed wire usage as the TS zod schema keeps it (unknown
+	// keys stripped, absent keys absent, null kept as sent).
+	if usage.rawWire != nil {
+		result.Raw = filterGroqUsageRaw(usage.rawWire)
+		return result
+	}
 	result.Raw = map[string]interface{}{
 		"prompt_tokens":     usage.PromptTokens,
 		"completion_tokens": usage.CompletionTokens,
@@ -514,6 +519,53 @@ type groqUsage struct {
 		AcceptedPredictionTokens *int `json:"accepted_prediction_tokens,omitempty"`
 		RejectedPredictionTokens *int `json:"rejected_prediction_tokens,omitempty"`
 	} `json:"completion_tokens_details,omitempty"`
+
+	// rawWire is the usage object exactly as sent; UnmarshalJSON keeps it so
+	// usage.raw can follow the TS schema instead of re-encoding typed fields.
+	rawWire map[string]interface{}
+}
+
+// UnmarshalJSON decodes the usage and keeps the wire object.
+func (u *groqUsage) UnmarshalJSON(b []byte) error {
+	type plain groqUsage
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*u = groqUsage(p)
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil && raw != nil {
+		u.rawWire = raw
+	}
+	return nil
+}
+
+// filterGroqUsageRaw keeps the keys the TS groq usage schema declares (zod
+// strips the rest): token counts, prompt_tokens_details.cached_tokens and
+// completion_tokens_details.reasoning_tokens.
+func filterGroqUsageRaw(raw map[string]interface{}) map[string]interface{} {
+	pick := func(m map[string]interface{}, keys ...string) map[string]interface{} {
+		out := map[string]interface{}{}
+		for _, k := range keys {
+			if v, ok := m[k]; ok {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	out := pick(raw, "prompt_tokens", "completion_tokens", "total_tokens")
+	for key, inner := range map[string]string{"prompt_tokens_details": "cached_tokens", "completion_tokens_details": "reasoning_tokens"} {
+		v, ok := raw[key]
+		if !ok {
+			continue
+		}
+		if d, isMap := v.(map[string]interface{}); isMap {
+			out[key] = pick(d, inner)
+		} else {
+			out[key] = v
+		}
+	}
+	return out
 }
 
 type groqStreamChunk struct {

@@ -244,6 +244,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["reasoning_effort"] = string(*opts.Reasoning)
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
+	// TS transformZaiRequestBody drops user and verbosity. v0.5.2 forwarded
+	// them (providerOptions.zai/openaiCompatible user and textVerbosity), so
+	// they are still sent for existing Go callers (Known difference).
 
 	zaiOpts, err := decodeZaiOptions(compatibleOptions)
 	if err != nil {
@@ -260,9 +263,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		if zaiOpts.thinking.clearThinking != nil {
 			thinkingBody["clear_thinking"] = *zaiOpts.thinking.clearThinking
 		}
-		if len(thinkingBody) > 0 {
-			body["thinking"] = thinkingBody
-		}
+		// TS `thinking !== undefined && { thinking: {...} }`: an empty
+		// thinking object is forwarded as {}.
+		body["thinking"] = thinkingBody
 	}
 	if zaiOpts.toolStream != nil {
 		body["tool_stream"] = *zaiOpts.toolStream
