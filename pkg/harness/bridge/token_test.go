@@ -77,3 +77,20 @@ func TestWithBridgeToken_EmptyPathGetsSlash(t *testing.T) {
 		t.Fatalf("got %q want %q", endpoint.URL, want)
 	}
 }
+
+func TestWithBridgeToken_WHATWGDefaultPortAndLenientQuery(t *testing.T) {
+	cases := map[string]string{
+		"ws://Host:80/a?x=a+b%zz": "ws://host/a?x=a+b%25zz&agent_bridge_token=tok",
+		"wss://h:443":             "wss://h/?agent_bridge_token=tok",
+		"wss://h:80":              "wss://h:80/?agent_bridge_token=tok",
+	}
+	for in, want := range cases {
+		endpoint, err := WithBridgeToken(harness.PortEndpoint{URL: in}, "tok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if endpoint.URL != want {
+			t.Errorf("%s: got %q want %q", in, endpoint.URL, want)
+		}
+	}
+}

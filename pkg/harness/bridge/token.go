@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -77,6 +78,10 @@ func WithBridgeToken(endpoint harness.PortEndpoint, token string) (harness.PortE
 			u.Path = "/"
 		}
 		u.Host = strings.ToLower(u.Host)
+		// WHATWG drops a port equal to the scheme's default.
+		if port := u.Port(); port != "" && port == defaultPorts[u.Scheme] {
+			u.Host = strings.TrimSuffix(u.Host, ":"+port)
+		}
 	}
 
 	out := harness.PortEndpoint{URL: u.String()}
@@ -112,9 +117,29 @@ func formEncode(s string) string {
 	return b.String()
 }
 
+var defaultPorts = map[string]string{"http": "80", "https": "443", "ws": "80", "wss": "443"}
+
+// formDecode is the lenient application/x-www-form-urlencoded decoder of
+// URLSearchParams: "+" is a space and malformed percent sequences stay
+// literal (url.QueryUnescape would reject the whole string instead).
 func formDecode(s string) string {
-	if v, err := url.QueryUnescape(s); err == nil {
-		return v
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '+':
+			b = append(b, ' ')
+		case c == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]):
+			v, _ := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			b = append(b, byte(v))
+			i += 2
+		default:
+			b = append(b, c)
+		}
 	}
-	return s
+	return string(b)
+}
+
+func isHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
