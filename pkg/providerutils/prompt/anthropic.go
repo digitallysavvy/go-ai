@@ -8,8 +8,8 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
-	"github.com/digitallysavvy/go-ai/pkg/internal/media"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -792,23 +792,14 @@ func (f anthropicFile) resolveFullMediaType() (string, error) {
 }
 
 func detectAnthropicMediaType(data []byte, topLevel string) string {
-	isPDF := len(data) >= 4 && string(data[:4]) == "%PDF"
-	switch topLevel {
-	case "image":
-		if len(data) < 3 {
-			return ""
-		}
-		return media.DetectImageMediaType(data)
-	case "application":
-		if isPDF {
-			return "application/pdf"
-		}
-	case "":
-		if isPDF {
-			return "application/pdf"
-		}
+	// TS passes topLevelType: getTopLevelMediaType(mediaType), which is ""
+	// (not undefined) for an empty media type, so detectMediaType finds no
+	// signature table and returns undefined.
+	if topLevel == "" {
+		return ""
 	}
-	return ""
+	detected, _ := fileutil.DetectMediaTypeSignature(data, topLevel)
+	return detected
 }
 
 // validateAnthropicFilePartOptions mirrors TS parseProviderOptions with
