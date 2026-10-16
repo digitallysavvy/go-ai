@@ -792,12 +792,8 @@ func (f anthropicFile) resolveFullMediaType() (string, error) {
 }
 
 func detectAnthropicMediaType(data []byte, topLevel string) string {
-	// TS passes topLevelType: getTopLevelMediaType(mediaType), which is ""
-	// (not undefined) for an empty media type, so detectMediaType finds no
-	// signature table and returns undefined.
-	if topLevel == "" {
-		return ""
-	}
+	// An empty top-level type (Go callers often omit MediaType) scans every
+	// signature table, like the other converters (resolveFullMediaTypeStrict).
 	detected, _ := fileutil.DetectMediaTypeSignature(data, topLevel)
 	return detected
 }

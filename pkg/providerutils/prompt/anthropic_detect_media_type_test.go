@@ -16,7 +16,7 @@ func TestDetectAnthropicMediaTypeMatchesTS(t *testing.T) {
 		{"jpeg needs only FF D8", []byte{0xff, 0xd8, 0x00}, "image", "image/jpeg"},
 		{"unknown image bytes undetected", []byte("hello world!"), "image", ""},
 		{"pdf", []byte("%PDF-1.7"), "application", "application/pdf"},
-		{"empty top-level type detects nothing", []byte("%PDF-1.7"), "", ""},
+		{"empty top-level type scans every table", []byte("%PDF-1.7"), "", "application/pdf"},
 	} {
 		if got := detectAnthropicMediaType(tc.data, tc.top); got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
