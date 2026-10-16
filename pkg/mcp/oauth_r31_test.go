@@ -43,3 +43,55 @@ func TestExtractWWWAuthenticateParamsRequiresSecondToken(t *testing.T) {
 		}
 	}
 }
+
+// TS normalizeUrl is `new URL(x).href`: "/" for an empty path (even before a
+// query), lower-case host, default port dropped.
+func TestOAuthURLHrefMatchesWHATWG(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://auth.example.com":          "https://auth.example.com/",
+		"https://auth.example.com?x=1":      "https://auth.example.com/?x=1",
+		"https://AUTH.Example.com:443/p":    "https://auth.example.com/p",
+		"http://auth.example.com:80":        "http://auth.example.com/",
+		"https://auth.example.com:8443/p?q": "https://auth.example.com:8443/p?q",
+		"http://[::1]:3000":                 "http://[::1]:3000/",
+	} {
+		if got := normalizeOAuthURL(in); got != want {
+			t.Errorf("normalizeOAuthURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestStartOAuthAuthorizationNormalizesEmptyPath(t *testing.T) {
+	got, _, err := StartOAuthAuthorization("https://auth.example.com", StartOAuthAuthorizationParams{
+		Metadata: &OAuthAuthorizationServerMetadata{
+			AuthorizationEndpoint:         "https://auth.example.com",
+			ResponseTypesSupported:        []string{"code"},
+			CodeChallengeMethodsSupported: []string{"S256"},
+		},
+		ClientInformation: OAuthClientInformation{ClientID: "c"},
+		RedirectURL:       "https://app/cb",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "https://auth.example.com/?response_type=code"; got[:len(want)] != want {
+		t.Fatalf("authorization URL = %s, want prefix %s", got, want)
+	}
+}
+
+func TestRegisterOAuthClientSendsOnlyContentType(t *testing.T) {
+	var accept string
+	var sawAccept bool
+	client := oauthTestClient(func(req *http.Request) (*http.Response, error) {
+		_, sawAccept = req.Header["Accept"]
+		accept = req.Header.Get("Accept")
+		return jsonResponse(http.StatusOK, `{"client_id":"c","redirect_uris":["https://app/cb"]}`), nil
+	})
+	_, err := RegisterOAuthClient(context.Background(), "https://auth.example.com", nil, OAuthClientMetadata{RedirectURIs: []string{"https://app/cb"}}, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawAccept {
+		t.Fatalf("registration sent Accept %q; TS sends Content-Type only", accept)
+	}
+}

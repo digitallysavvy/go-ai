@@ -485,13 +485,26 @@ func origin(u *url.URL) string {
 	return scheme + "://" + host
 }
 
+// oauthURLHref approximates the WHATWG URL.href that TS normalizeUrl relies
+// on for hierarchical URLs: an empty path becomes "/" (also before a query or
+// fragment), the host is lower-cased and a default port is dropped.
 func oauthURLHref(u *url.URL) string {
-	if u.Path == "" && u.RawQuery == "" && u.Fragment == "" && u.Host != "" {
-		copy := *u
-		copy.Path = "/"
-		return copy.String()
+	if u.Host == "" {
+		return u.String()
 	}
-	return u.String()
+	c := *u
+	if c.Path == "" {
+		c.Path = "/"
+	}
+	host := strings.ToLower(c.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := c.Port(); port != "" && !((strings.ToLower(c.Scheme) == "http" && port == "80") || (strings.ToLower(c.Scheme) == "https" && port == "443")) {
+		host += ":" + port
+	}
+	c.Host = host
+	return c.String()
 }
 
 func containsOAuthString(values []string, want string) bool {

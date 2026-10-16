@@ -648,7 +648,7 @@ func StartOAuthAuthorization(authorizationServerURL string, params StartOAuthAut
 	}
 	authURL.RawQuery = query.encode()
 
-	return authURL.String(), codeVerifier, nil
+	return oauthURLHref(authURL), codeVerifier, nil
 }
 
 // ExchangeOAuthAuthorizationParams configures ExchangeOAuthAuthorization.
@@ -809,8 +809,8 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	}
 
 	headers := http.Header{}
+	// TS registerClient sends Content-Type only (no Accept header).
 	headers.Set("Content-Type", "application/json")
-	headers.Set("Accept", "application/json")
 
 	resp, err := doOAuthTokenPOST(ctx, httpClient, registrationURL.String(), allowLoopback, headers, body)
 	if err != nil {
