@@ -1,13 +1,13 @@
 package xai
 
 import (
-	"fmt"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -112,7 +112,8 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 
 // EmbeddingModel returns an embedding model by ID
 func (p *Provider) EmbeddingModel(modelID string) (provider.EmbeddingModel, error) {
-	return nil, fmt.Errorf("xAI does not support embeddings")
+	// TS: provider.embeddingModel throws NoSuchModelError.
+	return nil, providererrors.NewNoSuchModelError(modelID, "embeddingModel")
 }
 
 // ImageModel returns an image generation model by ID
@@ -138,7 +139,9 @@ func (p *Provider) TranscriptionModel(modelID string) (provider.TranscriptionMod
 
 // RerankingModel returns a reranking model by ID
 func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, error) {
-	return nil, fmt.Errorf("xAI does not support reranking")
+	// The TS xAI provider has no rerankingModel, so the registry resolves it
+	// to NoSuchModelError.
+	return nil, providererrors.NewNoSuchModelError(modelID, "rerankingModel")
 }
 
 // VideoModel returns a video generation model by ID
