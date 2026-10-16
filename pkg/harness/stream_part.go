@@ -455,7 +455,23 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 		return nil, err
 	}
 	part := spec.newPart()
-	if err := json.Unmarshal(data, part); err != nil {
+	if tc, ok := part.(*ToolCallPart); ok {
+		// TS dropped `stepToolCallCount` from the tool-call schema, so zod
+		// strips it whatever its value: an unusable count is ignored, never a
+		// reason to reject the frame.
+		type toolCallAlias ToolCallPart
+		wire := struct {
+			*toolCallAlias
+			StepToolCallCount json.RawMessage `json:"stepToolCallCount"`
+		}{toolCallAlias: (*toolCallAlias)(tc)}
+		if err := json.Unmarshal(data, &wire); err != nil {
+			return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
+		}
+		var n int
+		if json.Unmarshal(wire.StepToolCallCount, &n) == nil && n > 0 {
+			tc.StepToolCallCount = &n
+		}
+	} else if err := json.Unmarshal(data, part); err != nil {
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 	}
 	if err := validateStreamPart(part); err != nil {
@@ -514,10 +530,6 @@ func validateStreamPart(part StreamPart) error {
 			default:
 				return fmt.Errorf("invalid warning type %q", w.Type)
 			}
-		}
-	case *ToolCallPart:
-		if p.StepToolCallCount != nil && *p.StepToolCallCount <= 0 {
-			return errors.New("stepToolCallCount must be a positive integer")
 		}
 	case *FinishStepPart:
 		return p.FinishReason.validate()
