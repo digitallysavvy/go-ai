@@ -160,7 +160,7 @@ func (d *turnDriver) telStart() {
 		OperationType:  "ai.harness",
 		Settings:       d.in.Telemetry,
 		ModelProvider:  "harness:" + d.in.Harness.HarnessID(),
-		ModelID:        d.in.Model,
+		ModelID:        d.modelID,
 		System:         d.in.Instructions,
 		Messages:       promptAsMessages(d.in.Prompt),
 		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
@@ -184,7 +184,7 @@ func (d *turnDriver) telStepStart() {
 		Settings:       d.in.Telemetry,
 		StepNumber:     d.stepNumber,
 		ModelProvider:  provider,
-		ModelID:        d.in.Model,
+		ModelID:        d.modelID,
 		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
 		ToolsContext:   telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
 	})
@@ -203,7 +203,7 @@ func (d *turnDriver) telStepStart() {
 		Settings:      d.in.Telemetry,
 		CallID:        d.telCallID,
 		ModelProvider: provider,
-		ModelID:       d.in.Model,
+		ModelID:       d.modelID,
 		System:        d.in.Instructions,
 		Prompt:        types.Prompt{Messages: promptAsMessages(d.in.Prompt)},
 		Tools:         toolSpecsAsTypesTools(d.in.ToolSpecs),
@@ -278,7 +278,7 @@ func (d *turnDriver) languageModelCallEnd(finishReason FinishReason, usage Usage
 	}
 	if d.in.Callbacks.OnLanguageModelCallEnd != nil {
 		d.in.Callbacks.OnLanguageModelCallEnd(d.ctx, ai.LanguageModelCallEndEvent{
-			CallID: d.telCallID, Provider: provider, ModelID: d.in.Model,
+			CallID: d.telCallID, Provider: provider, ModelID: d.modelID,
 			FinishReason: unifiedFinishReason(finishReason), Usage: typesUsage,
 			Content: content, ResponseID: responseID, ProviderMetadata: providerMetadata,
 			Performance: ai.LanguageModelCallPerformance{ResponseTimeMs: responseTimeMs},
@@ -291,7 +291,7 @@ func (d *turnDriver) languageModelCallEnd(finishReason FinishReason, usage Usage
 		Settings:         d.in.Telemetry,
 		CallID:           d.telCallID,
 		ModelProvider:    provider,
-		ModelID:          d.in.Model,
+		ModelID:          d.modelID,
 		FinishReason:     string(unifiedFinishReason(finishReason)),
 		Usage:            telemetryUsageFromTypesUsage(typesUsage),
 		Content:          content,
@@ -415,7 +415,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 		FinishReason:     string(finalStep.FinishReason),
 		Usage:            telemetryUsageFromTypesUsage(totalUsage),
 		ModelProvider:    "harness:" + d.in.Harness.HarnessID(),
-		ModelID:          d.in.Model,
+		ModelID:          d.modelID,
 		Text:             finalStep.Text,
 		Reasoning:        finalStep.ReasoningText,
 		ToolCalls:        toolCalls,

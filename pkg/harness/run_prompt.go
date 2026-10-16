@@ -458,6 +458,10 @@ type turnDriver struct {
 
 	closingResumedStep bool
 
+	// streamErrorLogged is set once a harness `error` part has been written to
+	// stderr, so run() does not log the same failure a second time.
+	streamErrorLogged bool
+
 	// pendingStopBoundary is set at a finish-step whose completed step might
 	// satisfy a StopCondition, and resolved against the *next* part read
 	// (TS's "one event of lookahead") before actually deciding to suspend.
@@ -474,7 +478,14 @@ type turnDriver struct {
 	// telemetry.OpenTelemetry) nest turn -> step -> model-call/tool-execution
 	// spans correctly. telEnded guards telEnd/telError against firing twice
 	// for the same turn (TS turn-telemetry.ts's `ended` flag).
-	telCallID             string
+	telCallID string
+	// modelID is the model id telemetry and callback events report: the
+	// requested model, or the runtime-resolved one a `stream-start` part
+	// carried before the turn's first start event (TS lifecycle `modelId`).
+	// respModelID is the id the result's steps and response report (TS
+	// `result.setModelId`, accepted only until the first step completes).
+	modelID               string
+	respModelID           string
 	telCtx                context.Context
 	telStepCtx            context.Context
 	telModelCallStartedAt int64
@@ -515,6 +526,21 @@ func (d *turnDriver) rememberCall(toolCallID, toolName, input string, parsed boo
 	d.callInfo[toolCallID] = suspendedCallInfo{name: toolName, input: input, parsed: parsed}
 }
 
+// turnErrorWrite replaces the stderr sink of turn failure logs (tests only).
+var turnErrorWrite func(line string)
+
+// logError writes a turn failure to stderr the way TS runPrompt's
+// `logBridgeError` calls do.
+func (d *turnDriver) logError(context string, err any) {
+	LogBridgeError(LogBridgeErrorOptions{
+		Write:     turnErrorWrite,
+		HarnessID: d.in.Harness.HarnessID(),
+		SessionID: d.in.Session.SessionID(),
+		Context:   context,
+		Error:     err,
+	})
+}
+
 func (d *turnDriver) run() {
 	d.execToolCallsByID = map[string]*ToolCallPart{}
 	d.toolCallsByID = map[string]types.ToolCall{}
@@ -536,6 +562,8 @@ func (d *turnDriver) run() {
 	d.startedToolExecutions = map[string]bool{}
 	d.telToolCtx = map[string]context.Context{}
 	d.stripToolInput = NewToolInputWorkDirStripper(d.in.SessionWorkDir)
+	d.modelID = d.in.Model
+	d.respModelID = d.in.Model
 
 	d.activeToolSet = map[string]struct{}{}
 	for name := range d.in.Tools {
@@ -564,12 +592,31 @@ func (d *turnDriver) run() {
 		d.continuationsByToolCallID[c.ToolCallID] = c
 	}
 
+	// partsCh plays the role of TS `toHarnessStream`'s ReadableStream: every
+	// emit becomes a part, the stream closes when the adapter's control is
+	// done, and a failed control surfaces as a trailing `error` part. emitMu
+	// and partsClosed make an emit after that close a no-op (TS safeEnqueue)
+	// instead of a send on a closed channel; exited unblocks a blocked send
+	// once this driver has returned.
 	partsCh := make(chan StreamPart, 64)
-	emit := func(part StreamPart) {
+	exited := make(chan struct{})
+	defer close(exited)
+	var emitMu sync.Mutex
+	partsClosed := false
+	send := func(part StreamPart) {
 		select {
 		case partsCh <- part:
 		case <-d.ctx.Done():
+		case <-exited:
 		}
+	}
+	emit := func(part StreamPart) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		if partsClosed {
+			return
+		}
+		send(part)
 	}
 
 	var control PromptControl
@@ -596,6 +643,7 @@ func (d *turnDriver) run() {
 		// turn-state callback has already run, or AgentSession.
 		// HasUnfinishedTurn() could still (harmlessly but confusingly)
 		// report true for an instant after the caller's own wait returned.
+		d.logError("failed to start harness turn", err)
 		d.settleFailure(err)
 		return
 	}
@@ -606,6 +654,12 @@ func (d *turnDriver) run() {
 
 	go func() {
 		<-control.Done()
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		if err := control.Err(); err != nil {
+			send(&ErrorPart{Error: err})
+		}
+		partsClosed = true
 		close(partsCh)
 	}()
 
@@ -625,6 +679,12 @@ func (d *turnDriver) run() {
 		return
 	}
 	if turnErr != nil {
+		// A harness `error` part already logged itself ("harness stream
+		// error"); the caller's own cancellation is not a malfunction. Every
+		// other failure is "harness turn failed" (TS run-prompt.ts catch).
+		if !d.streamErrorLogged && !(d.ctx.Err() != nil && errors.Is(turnErr, d.ctx.Err())) {
+			d.logError("harness turn failed", turnErr)
+		}
 		d.settleFailure(turnErr)
 		return
 	}
@@ -825,6 +885,17 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 		}
 
 		if sp, isStart := part.(*StreamStartPart); isStart {
+			// TS: `modelId = value.modelId ?? input.model`; the result takes it
+			// only while no step has completed, the lifecycle only on its first
+			// start.
+			if resolved := sp.ModelID; resolved != "" {
+				if len(d.completedSteps) == 0 {
+					d.respModelID = resolved
+				}
+				if !d.startCalled {
+					d.modelID = resolved
+				}
+			}
 			d.ensureStarted()
 			for _, c := range TranslatePart(sp, TranslateOptions{}) {
 				d.stream.push(c)
@@ -927,6 +998,21 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// Err()-based error surface (see pkg/ai/stream_external_test.go
 			// TestNewStreamTextResultFromParts_ErrorChunkPreservesPartialStep).
 			_ = d.joinOutstandingExecutions()
+			// Stderr diagnostics keep the raw error (absolute paths help
+			// debugging); a turn the caller itself cancelled ends with an
+			// error-shaped part by construction and is not diagnosed.
+			if d.ctx.Err() == nil {
+				rawErr := ep.Error
+				if rp, ok := part.(*ErrorPart); ok {
+					rawErr = rp.Error
+				}
+				d.logError("harness stream error", rawErr)
+			}
+			d.streamErrorLogged = true
+			if typed, ok := ep.Error.(error); ok {
+				// Keep the typed error so errors.As works on the result's Err().
+				return false, false, typed
+			}
 			return false, false, fmt.Errorf("%v", ep.Error)
 		}
 
@@ -1244,7 +1330,7 @@ func (d *turnDriver) ensureStarted() {
 			CallID:         d.telCallID,
 			OperationID:    "ai.harness",
 			Provider:       provider,
-			ModelID:        d.in.Model,
+			ModelID:        d.modelID,
 			Instructions:   d.in.Instructions,
 			Messages:       promptAsMessages(d.in.Prompt),
 			Output:         d.in.Output,
@@ -1260,6 +1346,12 @@ func (d *turnDriver) ensureStepOpen() {
 		return
 	}
 	d.stepOpen = true
+	// The step's response id and model (TS `finishStep`: response.id
+	// `${callId}-${stepNumber}`, response.modelId). A metadata chunk opens no
+	// step of its own.
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{
+		ID: fmt.Sprintf("%s-%d", d.telCallID, d.stepNumber), Timestamp: time.Now(), ModelID: d.respModelID,
+	}})
 	d.telStepStart()
 	if d.in.Callbacks.OnStepStart != nil {
 		provider := "harness:" + d.in.Harness.HarnessID()
@@ -1267,7 +1359,7 @@ func (d *turnDriver) ensureStepOpen() {
 			CallID:         d.telCallID,
 			StepNumber:     d.stepNumber,
 			Provider:       provider,
-			ModelID:        d.in.Model,
+			ModelID:        d.modelID,
 			Instructions:   d.in.Instructions,
 			Messages:       promptAsMessages(d.in.Prompt),
 			Output:         d.in.Output,
@@ -1279,7 +1371,7 @@ func (d *turnDriver) ensureStepOpen() {
 	}
 	if d.in.Callbacks.OnLanguageModelCallStart != nil {
 		d.in.Callbacks.OnLanguageModelCallStart(d.ctx, ai.LanguageModelCallStartEvent{
-			CallID: d.telCallID, Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model,
+			CallID: d.telCallID, Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.modelID,
 			Instructions: d.in.Instructions, Messages: promptAsMessages(d.in.Prompt),
 			Tools: toolSpecsAsTypesTools(d.in.ToolSpecs),
 		})
@@ -1475,7 +1567,7 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metada
 	step := types.StepResult{
 		CallID:          d.telCallID,
 		StepNumber:      d.stepNumber,
-		Model:           types.StepModel{Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.in.Model},
+		Model:           types.StepModel{Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.respModelID},
 		Text:            d.stepText,
 		ReasoningText:   d.stepReasoning,
 		ToolCalls:       append([]types.ToolCall(nil), d.stepToolCalls...),
@@ -2124,7 +2216,14 @@ func (d *turnDriver) executeHostToolAsync(tool types.Tool, raw *ToolCallPart, ca
 			}
 		}
 		d.setHostOutcome(raw.ToolCallID, hostToolOutcome{output: output})
-		d.submitHostToolResult(raw.ToolCallID, submission)
+		if err := d.submitToolResult(submission); err != nil {
+			// TS maybeExecuteHostTool submits inside its try block: a model
+			// output the harness cannot deliver (or a failed submit) is the
+			// tool's error, reported back to the runtime as such, not a
+			// turn failure.
+			d.setHostOutcome(raw.ToolCallID, hostToolOutcome{err: err})
+			d.submitHostToolResult(raw.ToolCallID, ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: map[string]interface{}{"error": toolErrorString(err)}, IsError: true})
+		}
 	}
 	if inline {
 		body()

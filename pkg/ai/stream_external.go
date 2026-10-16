@@ -306,10 +306,16 @@ func (r *StreamTextResult) consumeExternalParts(ctx context.Context, src provide
 		// the tool message.
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(step.toolCalls, content, step.toolResults)
 		step.response.Messages = stepResponseMsgs
+		// A chunk-supplied response model (the runtime-resolved one) wins over
+		// the requested one, as TS's step modelId follows the result's.
+		stepModelID := opts.ModelID
+		if step.response.ModelID != "" {
+			stepModelID = step.response.ModelID
+		}
 		result := types.StepResult{
 			CallID:           r.cbCallID,
 			StepNumber:       stepNumber,
-			Model:            types.StepModel{Provider: opts.Provider, ModelID: opts.ModelID},
+			Model:            types.StepModel{Provider: opts.Provider, ModelID: stepModelID},
 			Text:             step.text,
 			Content:          content,
 			Reasoning:        reasoning,
