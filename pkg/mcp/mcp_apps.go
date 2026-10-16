@@ -2,9 +2,9 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
