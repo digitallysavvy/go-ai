@@ -23,3 +23,8 @@ func JSTrim(s string) string {
 func JSTrimStart(s string) string {
 	return strings.TrimLeftFunc(s, isJSWhiteSpace)
 }
+
+// JSTrimEnd is JavaScript's String.prototype.trimEnd.
+func JSTrimEnd(s string) string {
+	return strings.TrimRightFunc(s, isJSWhiteSpace)
+}

@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
@@ -165,17 +167,8 @@ func findVisibleBreakPoint(input string, width int) int {
 	return len(sliceVisible(input, width))
 }
 
-// isJSSpace reports whether r is JavaScript WhiteSpace or LineTerminator, the
-// set String.prototype.trim removes. It differs from unicode.IsSpace on U+0085
-// (JS keeps it) and U+FEFF (JS trims it).
-func isJSSpace(r rune) bool {
-	switch r {
-	case '\t', '\n', '\v', '\f', '\r', ' ', 0x00a0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
-		return true
-	}
-	return r >= 0x2000 && r <= 0x200a
-}
-
-func jsTrim(s string) string      { return jsTrimEnd(jsTrimStart(s)) }
-func jsTrimStart(s string) string { return strings.TrimLeftFunc(s, isJSSpace) }
-func jsTrimEnd(s string) string   { return strings.TrimRightFunc(s, isJSSpace) }
+// JS String.prototype.trim/trimStart/trimEnd (shared with providerutils): JS
+// trims U+FEFF but keeps U+0085, unlike unicode.IsSpace.
+func jsTrim(s string) string      { return providerutils.JSTrim(s) }
+func jsTrimStart(s string) string { return providerutils.JSTrimStart(s) }
+func jsTrimEnd(s string) string   { return providerutils.JSTrimEnd(s) }
