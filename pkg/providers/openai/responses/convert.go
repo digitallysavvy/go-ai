@@ -2047,13 +2047,6 @@ func computerCallFromArgs(args map[string]interface{}) (string, []map[string]int
 	return status, actions, checks, nil
 }
 
-func stringArgDefault(values map[string]interface{}, key, fallback string) string {
-	if v := stringArg(values, key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 func applyPatchFromArgs(args map[string]interface{}) (string, ApplyPatchOperation, error) {
 	var parsed struct {
 		CallID    string `json:"callId"`
@@ -2083,68 +2076,6 @@ func stringPtr(value string) *string {
 		return nil
 	}
 	return &value
-}
-
-func stringPtrArg(values map[string]interface{}, key string) *string {
-	return stringPtr(stringArg(values, key))
-}
-
-func intPtrArg(values map[string]interface{}, key string) *int {
-	if values == nil {
-		return nil
-	}
-	switch value := values[key].(type) {
-	case int:
-		return &value
-	case int64:
-		v := int(value)
-		return &v
-	case float64:
-		v := int(value)
-		return &v
-	default:
-		return nil
-	}
-}
-
-func stringSliceArg(values map[string]interface{}, key string) []string {
-	if values == nil {
-		return nil
-	}
-	switch raw := values[key].(type) {
-	case []string:
-		return raw
-	case []interface{}:
-		out := make([]string, 0, len(raw))
-		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func stringMapArg(values map[string]interface{}, key string) map[string]string {
-	if values == nil {
-		return nil
-	}
-	switch raw := values[key].(type) {
-	case map[string]string:
-		return raw
-	case map[string]interface{}:
-		out := make(map[string]string, len(raw))
-		for k, v := range raw {
-			if s, ok := v.(string); ok {
-				out[k] = s
-			}
-		}
-		return out
-	default:
-		return nil
-	}
 }
 
 func decodeToolOutputJSON(value interface{}, target interface{}) bool {
