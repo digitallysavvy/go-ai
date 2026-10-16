@@ -41,6 +41,8 @@ type Config struct {
 
 // New creates a new ByteDance provider with the given configuration
 func New(cfg Config) (*Provider, error) {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = os.Getenv("BYTEDANCE_API_KEY")

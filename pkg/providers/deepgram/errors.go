@@ -3,6 +3,7 @@ package deepgram
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -12,9 +13,9 @@ import (
 // deepgramErrorPayload documents Deepgram's error envelope:
 // {"err_code","err_msg","request_id"}.
 type deepgramErrorPayload struct {
-	ErrCode   string `json:"err_code"`
-	ErrMsg    string `json:"err_msg"`
-	RequestID string `json:"request_id,omitempty"`
+	ErrCode   *string `json:"err_code"`
+	ErrMsg    *string `json:"err_msg"`
+	RequestID string  `json:"request_id,omitempty"`
 }
 
 // handleError converts an HTTP error into a ProviderError, parsing
@@ -26,11 +27,15 @@ func handleError(providerName string, err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
 		var payload deepgramErrorPayload
-		message := string(statusErr.Body)
+		// TS deepgramErrorDataSchema: err_code and err_msg are required
+		// strings; anything else gives the HTTP status text.
+		message := http.StatusText(statusErr.StatusCode)
 		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.ErrMsg != "" {
-			message = payload.ErrMsg
-			code = payload.ErrCode
+		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.ErrCode != nil && payload.ErrMsg != nil {
+			message = *payload.ErrMsg
+			code = *payload.ErrCode
+		} else {
+			payload = deepgramErrorPayload{}
 		}
 		providerErr := providererrors.NewProviderError(providerName, statusErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)

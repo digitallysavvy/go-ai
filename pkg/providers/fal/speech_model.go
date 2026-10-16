@@ -170,7 +170,7 @@ func (m *SpeechModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))
+		message := parseFalErrorMessage(statusErr.Body, http.StatusText(statusErr.StatusCode))
 		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, "", message, err)
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
 		return providerErr

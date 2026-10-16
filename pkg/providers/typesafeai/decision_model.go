@@ -1,6 +1,7 @@
 package typesafeai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -264,32 +265,7 @@ func (m *DecisionModel) handleError(err error) error {
 		return err // includes the schema failure (Invalid JSON response)
 	}
 
-	var envelope typesafeErrorEnvelope
-	_ = json.Unmarshal(httpErr.Body, &envelope)
-
-	message := envelope.Message
-	if message == "" {
-		if envelope.Error != nil {
-			if envelope.Error.str != "" {
-				message = envelope.Error.str
-			} else if envelope.Error.obj != nil {
-				message = envelope.Error.obj.Message
-			}
-		}
-	}
-	if message == "" && envelope.Detail != nil {
-		if s, ok := envelope.Detail.(string); ok {
-			message = s
-		} else if b, marshalErr := json.Marshal(envelope.Detail); marshalErr == nil {
-			message = string(b)
-		}
-	}
-	if message == "" {
-		message = envelope.ErrorType
-	}
-	if message == "" {
-		message = "TypeSafe request failed"
-	}
+	message := typesafeErrorMessage(httpErr.StatusCode, httpErr.Body)
 
 	return &providererrors.ProviderError{
 		Provider:        m.Provider(),
@@ -300,38 +276,93 @@ func (m *DecisionModel) handleError(err error) error {
 	}
 }
 
-// typesafeErrorEnvelope decodes TypeSafe AI's several observed error body
-// shapes: {message}, {error: string}, {error: {message}}, {detail}, {error_type}.
-type typesafeErrorEnvelope struct {
-	Message   string              `json:"message"`
-	Detail    interface{}         `json:"detail"`
-	Error     *typesafeErrorUnion `json:"error"`
-	ErrorType string              `json:"error_type"`
-}
+// typesafeErrorMessage mirrors TS typesafeFailedResponseHandler. A body that
+// is not an object matching the error schema (empty, not JSON, a wrongly
+// typed field) gives the HTTP status text. Otherwise the message is, with JS
+// `??` semantics (only null/absent falls through): message, then error (a
+// string, or error.message), then detail (a string, else JSON.stringify of
+// it, which is the text "null" for an explicit null), then error_type, then
+// "TypeSafe request failed".
+func typesafeErrorMessage(statusCode int, body []byte) string {
+	statusText := http.StatusText(statusCode)
+	var fields map[string]json.RawMessage
+	if trimmed := bytes.TrimSpace(body); len(trimmed) == 0 || trimmed[0] != '{' || json.Unmarshal(body, &fields) != nil {
+		return statusText
+	}
+	// A map keeps an explicit null distinguishable from an absent key, which
+	// a RawMessage struct field does not.
+	raw := struct{ Message, Detail, Error, ErrorType json.RawMessage }{
+		Message: fields["message"], Detail: fields["detail"], Error: fields["error"], ErrorType: fields["error_type"],
+	}
+	isNull := func(r json.RawMessage) bool { return len(r) == 0 || string(bytes.TrimSpace(r)) == "null" }
+	// nullableString reports (value, present, schemaOK) for a string|null field.
+	nullableString := func(r json.RawMessage) (string, bool, bool) {
+		if isNull(r) {
+			return "", false, true
+		}
+		var s string
+		if json.Unmarshal(r, &s) != nil {
+			return "", false, false
+		}
+		return s, true, true
+	}
 
-// typesafeErrorUnion decodes the "error" field, which may be either a bare
-// string or an object with a "message" field.
-type typesafeErrorUnion struct {
-	str string
-	obj *struct {
-		Message string `json:"message"`
+	message, haveMessage, ok := nullableString(raw.Message)
+	if !ok {
+		return statusText
 	}
-}
+	errorType, haveErrorType, ok := nullableString(raw.ErrorType)
+	if !ok {
+		return statusText
+	}
+	var errorText string
+	haveError := false
+	if !isNull(raw.Error) {
+		var s string
+		if json.Unmarshal(raw.Error, &s) == nil {
+			errorText, haveError = s, true
+		} else {
+			var obj struct {
+				Message json.RawMessage `json:"message"`
+			}
+			trimmed := bytes.TrimSpace(raw.Error)
+			if trimmed[0] != '{' || json.Unmarshal(raw.Error, &obj) != nil {
+				return statusText
+			}
+			var present bool
+			errorText, present, ok = nullableString(obj.Message)
+			if !ok {
+				return statusText
+			}
+			haveError = present
+		}
+	}
 
-func (u *typesafeErrorUnion) UnmarshalJSON(data []byte) error {
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		u.str = s
-		return nil
+	switch {
+	case haveMessage:
+		return message
+	case haveError:
+		return errorText
 	}
-	var obj struct {
-		Message string `json:"message"`
+	// `detail` is z.unknown().nullish(): absent skips this step, anything
+	// else (including an explicit null) is stringified.
+	if _, present := fields["detail"]; present {
+		if isNull(raw.Detail) {
+			return "null"
+		}
+		var s string
+		if json.Unmarshal(raw.Detail, &s) == nil {
+			return s
+		}
+		var compact bytes.Buffer
+		if json.Compact(&compact, raw.Detail) == nil {
+			return compact.String()
+		}
 	}
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return err
+	if haveErrorType {
+		return errorType
 	}
-	u.obj = &obj
-	return nil
+	return "TypeSafe request failed"
 }
 
 // typesafeResponseWire is the wire shape of a successful /systemone response.

@@ -12,6 +12,7 @@ import (
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/imageutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodjson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -556,7 +557,8 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 	}
 	if taskID == "" {
 		return nil, providererrors.NewVideoGenerationError("alibaba", m.modelID,
-			fmt.Sprintf("No task_id returned from Alibaba API. Response: %s", string(mustMarshal(createResp))), nil)
+			// TS JSON.stringify(createResponse): the zod-parsed body.
+			"No task_id returned from Alibaba API. Response: "+zodjson.Stringify(httpResp.Body, alibabaCreateSpec), nil)
 	}
 
 	operation, _ := json.Marshal(alibabaOperation{TaskID: taskID})
@@ -757,12 +759,8 @@ func (m *VideoModel) handleError(err error) error {
 	if httpErr == nil {
 		return providererrors.NewVideoGenerationError("alibaba", m.modelID, err.Error(), err)
 	}
-	var apiErr alibabaVideoAPIError
-	message := string(httpErr.Body)
-	if jsonErr := json.Unmarshal(httpErr.Body, &apiErr); jsonErr == nil && apiErr.Message != "" {
-		message = apiErr.Message
-	}
-	return providererrors.NewProviderError("alibaba", httpErr.StatusCode, apiErr.Code, message, err)
+	message, code := alibabaNativeErrorMessage(httpErr.StatusCode, httpErr.Body)
+	return providererrors.NewProviderError("alibaba", httpErr.StatusCode, code, message, err)
 }
 
 func flattenHTTPHeaders(headers map[string][]string) map[string]string {
@@ -775,23 +773,15 @@ func flattenHTTPHeaders(headers map[string][]string) map[string]string {
 	return out
 }
 
-func mustMarshal(v interface{}) []byte {
-	b, _ := json.Marshal(v)
-	return b
-}
+// alibabaCreateSpec is TS alibabaVideoCreateTaskSchema's shape.
+var alibabaCreateSpec = zodjson.Obj([]string{"output", "request_id"}, map[string]*zodjson.Node{
+	"output": zodjson.Obj([]string{"task_status", "task_id"}, nil),
+})
 
 // alibabaOperation is the opaque operation reference returned by DoStart and
 // passed back into DoStatus.
 type alibabaOperation struct {
 	TaskID string `json:"taskId"`
-}
-
-// alibabaVideoAPIError is the DashScope native API error format (different
-// from the OpenAI-compatible chat endpoint).
-type alibabaVideoAPIError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	RequestID string `json:"request_id"`
 }
 
 type alibabaVideoCreateResponse struct {

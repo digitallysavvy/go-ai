@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -42,16 +44,46 @@ func (m *ImageModel) ModelID() string {
 
 // DoGenerate performs image generation
 func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerateOptions) (*types.ImageResult, error) {
+	if opts == nil {
+		opts = &provider.ImageGenerateOptions{}
+	}
+	currentDate := time.Now()
 	reqBody := m.buildRequestBody(opts)
 
 	path := fmt.Sprintf("/v1/generation/%s/text-to-image", m.modelID)
 	var response stabilityImageResponse
-	err := m.provider.client.DoJSON(ctx, internalhttp.Request{Method: "POST", Path: path, Body: reqBody, Headers: opts.Headers}, &response)
+	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{Method: "POST", Path: path, Body: reqBody, Headers: opts.Headers}, &response)
 	if err != nil {
 		return nil, providererrors.NewProviderError("stability", 0, "", err.Error(), err)
 	}
 
-	return m.convertResponse(response)
+	result, err := m.convertResponse(response)
+	if err != nil {
+		return nil, err
+	}
+	result.Warnings = unsupportedWarnings(opts)
+	result.Response = &types.ResponseMetadata{
+		Timestamp: currentDate,
+		ModelID:   m.modelID,
+		Headers:   providerutils.ExtractHeaders(httpResp.Headers),
+	}
+	return result, nil
+}
+
+// unsupportedWarnings reports the call options the v1 text-to-image endpoint
+// cannot honor, instead of silently dropping them.
+func unsupportedWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
+	var warnings []types.Warning
+	if opts.AspectRatio != "" {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "aspectRatio", Details: "Stability AI text-to-image does not support aspectRatio. Use size instead."})
+	}
+	if len(opts.Files) > 0 {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "files", Details: "Stability AI text-to-image does not support input images. The files were ignored."})
+	}
+	if opts.Mask != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "mask", Details: "Stability AI text-to-image does not support masks. The mask was ignored."})
+	}
+	return warnings
 }
 
 func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[string]interface{} {

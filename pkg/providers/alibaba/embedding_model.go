@@ -159,19 +159,7 @@ func (m *EmbeddingModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			RequestID string `json:"request_id"`
-		}
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil {
-			if payload.Message != "" {
-				message = payload.Message
-			}
-			code = payload.Code
-		}
+		message, code := alibabaNativeErrorMessage(statusErr.StatusCode, statusErr.Body)
 		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
 		return providerErr

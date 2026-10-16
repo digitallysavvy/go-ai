@@ -43,6 +43,8 @@ func resolveQuiverAIConfig(cfg Config) (apiKey, baseURL string) {
 	if baseURL == "" {
 		baseURL = os.Getenv("QUIVERAI_BASE_URL")
 	}
+	// TS withoutTrailingSlash(loadOptionalSetting(...)) ?? defaultBaseURL.
+	baseURL = providerutils.WithoutTrailingSlash(baseURL)
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}

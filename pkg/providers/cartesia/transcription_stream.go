@@ -121,7 +121,7 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 		opts = &provider.TranscriptionStreamOptions{}
 	}
 	if !isStreamingTranscriptionModelID(m.modelID) {
-		return nil, fmt.Errorf("%w: streaming transcription with %s", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "streaming transcription with " + m.modelID}
 	}
 
 	currentDate := time.Now()

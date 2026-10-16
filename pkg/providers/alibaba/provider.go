@@ -20,6 +20,10 @@ type Provider struct {
 
 // New creates a new Alibaba Cloud provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
+	cfg.VideoBaseURL = providerutils.WithoutTrailingSlash(cfg.VideoBaseURL)
+	cfg.EmbeddingBaseURL = providerutils.WithoutTrailingSlash(cfg.EmbeddingBaseURL)
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("ALIBABA_API_KEY")
 	}

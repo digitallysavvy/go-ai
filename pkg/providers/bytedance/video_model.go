@@ -1,7 +1,6 @@
 package bytedance
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/internal/polling"
+	"github.com/digitallysavvy/go-ai/pkg/internal/zodjson"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -347,13 +347,9 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 			}
 		}
 		if details == "" {
-			// TS JSON.stringify(response) of the parsed body.
-			var compact bytes.Buffer
-			if json.Compact(&compact, result.Data) == nil {
-				details = compact.String()
-			} else {
-				details = mustMarshal(statusResp)
-			}
+			// TS JSON.stringify(statusResponse): the zod-parsed body, so the
+			// schema's keys in schema order and no unknown wire keys.
+			details = zodjson.Stringify(result.Data, bytedanceStatusSpec)
 		}
 		return &provider.VideoModelV3OperationStatusResult{
 			Status:   provider.VideoOperationStatusError,
@@ -575,19 +571,7 @@ func (m *VideoModel) buildRequestBodyWithWarnings(opts *provider.VideoModelV3Cal
 
 // parseAPIError parses a ByteDance API error response
 func (m *VideoModel) parseAPIError(body []byte, statusCode int) error {
-	var errResp errorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil {
-		msg := ""
-		if errResp.Error != nil {
-			msg = errResp.Error.Message
-		} else if errResp.Message != "" {
-			msg = errResp.Message
-		}
-		if msg != "" {
-			return NewError(statusCode, msg, "")
-		}
-	}
-	return NewError(statusCode, fmt.Sprintf("API returned status %d", statusCode), string(body))
+	return newHTTPError(statusCode, body)
 }
 
 // handlePollError converts a fileutil poll error (a providererrors.DownloadError
@@ -678,14 +662,12 @@ func extractProviderOptions(opts map[string]interface{}) (*ProviderOptions, erro
 	return &provOpts, nil
 }
 
-// mustMarshal marshals a value to JSON string, returning "{}" on error
-func mustMarshal(v interface{}) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
+// bytedanceStatusSpec is TS byteDanceStatusResponseSchema's shape.
+var bytedanceStatusSpec = zodjson.Obj([]string{"id", "model", "status", "content", "usage", "error"}, map[string]*zodjson.Node{
+	"content": zodjson.Obj([]string{"video_url", "last_frame_url"}, nil),
+	"usage":   zodjson.Obj([]string{"completion_tokens"}, nil),
+	"error":   zodjson.Obj([]string{"code", "message"}, nil),
+})
 
 func flattenHeaders(headers map[string][]string) map[string]string {
 	out := make(map[string]string, len(headers))
@@ -734,12 +716,6 @@ type taskContentField struct {
 // taskUsageField holds token usage info
 type taskUsageField struct {
 	CompletionTokens int `json:"completion_tokens"`
-}
-
-// errorResponse is the error response format from ByteDance
-type errorResponse struct {
-	Error   *errorDetail `json:"error"`
-	Message string       `json:"message"`
 }
 
 // errorDetail holds the error message and code

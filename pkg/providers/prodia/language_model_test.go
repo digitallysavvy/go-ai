@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -505,6 +506,11 @@ func TestDoGenerateRejectsProviderReferenceImage(t *testing.T) {
 
 // URL image parts are fetched and uploaded (TS fetches part.data.url).
 func TestDoGenerateFetchesURLImage(t *testing.T) {
+	prev := promptImageDownloadOptions
+	promptImageDownloadOptions = func() fileutil.DownloadOptions {
+		return fileutil.DownloadOptions{MaxSize: maxPromptImageBytes}
+	}
+	defer func() { promptImageDownloadOptions = prev }()
 	img := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
 	}))
@@ -531,5 +537,19 @@ func TestDoGenerateFetchesURLImage(t *testing.T) {
 	}
 	if !strings.Contains(string(gotBody), "PNG") {
 		t.Fatalf("image bytes not uploaded: %q", gotBody)
+	}
+}
+
+// A URL image part pointing at a loopback/private address is refused by the
+// SSRF-validated download instead of being fetched.
+func TestFetchImageURLRefusesLoopback(t *testing.T) {
+	hit := false
+	img := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		_, _ = w.Write([]byte{0x89, 'P', 'N', 'G'})
+	}))
+	defer img.Close()
+	if _, err := fetchImageURL(context.Background(), img.URL); err == nil || hit {
+		t.Fatalf("err = %v, hit = %v; want the loopback fetch refused", err, hit)
 	}
 }

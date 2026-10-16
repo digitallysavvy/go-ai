@@ -1707,3 +1707,30 @@ func TestIntegration_ByteDanceVideoGeneration(t *testing.T) {
 
 	t.Logf("Generated video URL: %s", result.Videos[0].URL)
 }
+
+// A failed task without a structured reason reports TS JSON.stringify of the
+// zod-parsed body: schema key order, unknown wire keys dropped, nulls kept.
+func TestError_TaskFailedDetailsAreTheParsedBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/contents/generations/tasks", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintln(w, `{"id": "t1"}`)
+	})
+	mux.HandleFunc("/api/v3/contents/generations/tasks/t1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintln(w, `{"status": "failed", "created_at": 1, "id": "t1", "content": null, "extra": {"a": 1}}`)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	model := newVideoModel(providerForServer(t, server.URL), "seedance-1-0-pro-250528")
+	start, err := model.DoStart(context.Background(), &provider.VideoModelV3StartOptions{VideoModelV3CallOptions: provider.VideoModelV3CallOptions{Prompt: "x", N: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := model.DoStatus(context.Background(), &provider.VideoModelV3StatusOptions{Operation: start.Operation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `Video generation failed. Task ID: t1. {"id":"t1","status":"failed","content":null}`
+	if status.Error != want {
+		t.Fatalf("Error = %q, want %q", status.Error, want)
+	}
+}

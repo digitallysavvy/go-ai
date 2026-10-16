@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -329,24 +330,19 @@ func lastUserImageFile(p types.Prompt) (*types.FileContent, error) {
 	return nil, nil
 }
 
+// promptImageDownloadOptions returns the options for fetching a URL image
+// part. The URL is caller-supplied, so it goes through the SSRF-validated
+// download path (private/loopback targets are refused at connect time and on
+// every redirect) with a size cap. A variable so tests can reach a loopback
+// httptest server.
+var promptImageDownloadOptions = func() fileutil.DownloadOptions {
+	opts := fileutil.DefaultDownloadOptions()
+	opts.MaxSize = maxPromptImageBytes
+	return opts
+}
+
 func fetchImageURL(ctx context.Context, rawURL string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxPromptImageBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxPromptImageBytes {
-		return nil, fmt.Errorf("prodia: image URL response exceeds %d bytes", maxPromptImageBytes)
-	}
-	return data, nil
+	return fileutil.Download(ctx, rawURL, promptImageDownloadOptions())
 }
 
 // extractPromptAndImage walks the message prompt and returns:

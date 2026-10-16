@@ -127,7 +127,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		body, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close() //nolint:errcheck
-		return nil, internalhttp.StatusProviderError("alibaba", httpResp.StatusCode, httpResp.Header, []byte(body))
+		return nil, chatStatusError(httpResp.StatusCode, httpResp.Header, body)
 	}
 
 	// Create stream wrapper
@@ -470,6 +470,9 @@ func (m *LanguageModel) handleError(err error) error {
 	}
 	if providerutils.IsInvalidJSONResponse(err) {
 		return err // TS createJsonResponseHandler failure
+	}
+	if converted, ok := asChatStatusError(err); ok {
+		return converted
 	}
 	return providererrors.NewProviderError("alibaba", 0, "", err.Error(), err)
 }

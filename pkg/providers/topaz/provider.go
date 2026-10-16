@@ -60,6 +60,8 @@ type Config struct {
 // If Config.APIKey is empty, the API key is loaded from the TOPAZ_API_KEY
 // environment variable.
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL

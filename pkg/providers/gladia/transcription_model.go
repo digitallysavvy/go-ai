@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -456,13 +457,13 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message, code := parseGladiaErrorBody(statusErr.Body)
+		message, code := parseGladiaErrorBody(statusErr.StatusCode, statusErr.Body)
 		return providererrors.NewProviderError("gladia", statusErr.StatusCode, code, message, err)
 	}
 
 	var downloadErr *providererrors.DownloadError
 	if errors.As(err, &downloadErr) {
-		message, code := parseGladiaErrorBody(downloadErr.Body)
+		message, code := parseGladiaErrorBody(downloadErr.StatusCode, downloadErr.Body)
 		if message == "" {
 			message = downloadErr.Error()
 		}
@@ -477,22 +478,22 @@ func handleError(err error) error {
 	return providererrors.NewProviderError("gladia", 0, "", err.Error(), err)
 }
 
-// parseGladiaErrorBody decodes Gladia's `{"error":{"message","code"}}` error
-// envelope. It returns the raw body as the message (and an empty code) when
-// body is empty or does not match the envelope.
-func parseGladiaErrorBody(body []byte) (message string, code string) {
-	message = string(body)
+// parseGladiaErrorBody mirrors TS gladiaFailedResponseHandler: a body that
+// matches {"error":{"message":string,"code":number}} gives that message
+// (even an empty one) and the code; anything else (empty, not JSON, a missing
+// or wrongly typed field) gives the HTTP status text as the message.
+func parseGladiaErrorBody(statusCode int, body []byte) (message string, code string) {
 	var payload struct {
-		Error struct {
-			Message string `json:"message"`
-			Code    int    `json:"code"`
+		Error *struct {
+			Message *string  `json:"message"`
+			Code    *float64 `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &payload); err == nil && payload.Error.Message != "" {
-		message = payload.Error.Message
-		code = fmt.Sprintf("%d", payload.Error.Code)
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+		payload.Error.Message != nil && payload.Error.Code != nil {
+		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
 	}
-	return message, code
+	return http.StatusText(statusCode), ""
 }
 
 // gladiaSchemaResult applies the TS result schema (zod strips unknown keys):

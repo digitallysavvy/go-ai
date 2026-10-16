@@ -93,7 +93,9 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, internalhttp.StatusProviderError("elevenlabs", resp.StatusCode, resp.Headers, resp.Body)
+		// TS elevenlabsFailedResponseHandler: {"error":{"message","code"}} or
+		// the HTTP status text.
+		return nil, handleTranscriptionError(&internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Headers, Body: resp.Body})
 	}
 	requestBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -206,7 +208,8 @@ func applySpeechModelOptions(body, voiceSettings map[string]interface{}, queryPa
 			body["language_code"] = opts.LanguageCode
 		}
 	}
-	if len(opts.PronunciationDictionaryLocators) > 0 {
+	// JS truthiness: an empty array is truthy and is sent as [].
+	if opts.PronunciationDictionaryLocators != nil {
 		locators := make([]map[string]interface{}, 0, len(opts.PronunciationDictionaryLocators))
 		for _, locator := range opts.PronunciationDictionaryLocators {
 			item := map[string]interface{}{
@@ -228,10 +231,10 @@ func applySpeechModelOptions(body, voiceSettings map[string]interface{}, queryPa
 	if opts.NextText != "" {
 		body["next_text"] = opts.NextText
 	}
-	if len(opts.PreviousRequestIDs) > 0 {
+	if opts.PreviousRequestIDs != nil {
 		body["previous_request_ids"] = opts.PreviousRequestIDs
 	}
-	if len(opts.NextRequestIDs) > 0 {
+	if opts.NextRequestIDs != nil {
 		body["next_request_ids"] = opts.NextRequestIDs
 	}
 	if opts.ApplyTextNormalization != "" {

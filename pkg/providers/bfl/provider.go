@@ -38,6 +38,8 @@ type Config struct {
 
 // New creates a new Black Forest Labs provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("BFL_API_KEY")
 	}

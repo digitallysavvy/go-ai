@@ -1,8 +1,10 @@
 package gmicloud
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -17,42 +19,61 @@ import (
 // engine's diagnostic in error.details as a JSON-encoded string, which the
 // default OpenAI-compatible error handling would otherwise drop.
 type gmicloudErrorPayload struct {
-	Error struct {
-		Message string      `json:"message"`
-		Type    string      `json:"type,omitempty"`
-		Param   interface{} `json:"param,omitempty"`
-		Code    interface{} `json:"code,omitempty"`
-		Details string      `json:"details,omitempty"`
+	Error *struct {
+		Message *string         `json:"message"`
+		Type    *string         `json:"type"`
+		Param   interface{}     `json:"param"`
+		Code    json.RawMessage `json:"code"`
+		Details *string         `json:"details"`
 	} `json:"error"`
 }
 
-// parseGmicloudProviderError extracts a GMI Cloud error envelope from an HTTP
-// error response and returns a ProviderError. When error.details contains a
-// JSON-encoded inner error with its own message, that inner message is
-// surfaced instead of the outer (generic) backend message, mirroring TS
-// gmicloudErrorStructure.errorToMessage.
+// parseGmicloudProviderError builds the ProviderError for an HTTP error
+// response, or returns nil when err carries no HTTP response. A body matching
+// gmicloudErrorDataSchema gives its message (even an empty one); when
+// error.details contains a JSON-encoded inner error with its own message,
+// that inner message is surfaced instead of the outer (generic) backend
+// message, mirroring TS gmicloudErrorStructure.errorToMessage. A body that
+// does not match the schema gives the HTTP status text.
 func parseGmicloudProviderError(err error) error {
 	var statusErr *internalhttp.HTTPStatusError
 	if !errors.As(err, &statusErr) {
 		return nil
 	}
 
+	message := http.StatusText(statusErr.StatusCode)
+	code := ""
 	var payload gmicloudErrorPayload
-	if unmarshalErr := json.Unmarshal(statusErr.Body, &payload); unmarshalErr != nil || payload.Error.Message == "" {
-		return nil
-	}
-
-	message := payload.Error.Message
-	if inner := unwrapGmicloudDetailsMessage(payload.Error.Details); inner != "" {
-		message = inner
-	}
-
-	code := gmicloudErrorCode(payload.Error.Code)
-	if code == "" {
-		code = payload.Error.Type
+	if unmarshalErr := json.Unmarshal(statusErr.Body, &payload); unmarshalErr == nil && payload.Error != nil &&
+		payload.Error.Message != nil && gmicloudCodeMatchesSchema(payload.Error.Code) {
+		message = *payload.Error.Message
+		if payload.Error.Details != nil {
+			if inner := unwrapGmicloudDetailsMessage(*payload.Error.Details); inner != "" {
+				message = inner
+			}
+		}
+		code = gmicloudErrorCode(payload.Error.Code)
+		if code == "" && payload.Error.Type != nil {
+			code = *payload.Error.Type
+		}
 	}
 
 	return providererrors.NewProviderError("gmicloud", statusErr.StatusCode, code, message, err)
+}
+
+// gmicloudCodeMatchesSchema reports whether raw is absent, null, a string or
+// a number (TS z.union([z.string(), z.number()]).nullish()).
+func gmicloudCodeMatchesSchema(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return true
+	}
+	var s string
+	if json.Unmarshal(trimmed, &s) == nil {
+		return true
+	}
+	var n float64
+	return json.Unmarshal(trimmed, &n) == nil
 }
 
 // unwrapGmicloudDetailsMessage parses error.details (a JSON-encoded string
@@ -71,18 +92,23 @@ func unwrapGmicloudDetailsMessage(details string) string {
 	if err := json.Unmarshal([]byte(details), &inner); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(inner.Error.Message)
+	// TS checks message.trim() !== '' but returns the message untrimmed.
+	if strings.TrimSpace(inner.Error.Message) == "" {
+		return ""
+	}
+	return inner.Error.Message
 }
 
 // gmicloudErrorCode normalizes error.code, which may be a JSON string or
 // number, to a string.
-func gmicloudErrorCode(code interface{}) string {
-	switch c := code.(type) {
-	case string:
-		return c
-	case float64:
-		return strconv.FormatFloat(c, 'f', -1, 64)
-	default:
-		return ""
+func gmicloudErrorCode(raw json.RawMessage) string {
+	var str string
+	if json.Unmarshal(raw, &str) == nil && len(bytes.TrimSpace(raw)) > 0 && string(bytes.TrimSpace(raw)) != "null" {
+		return str
 	}
+	var n float64
+	if json.Unmarshal(raw, &n) == nil && len(bytes.TrimSpace(raw)) > 0 && string(bytes.TrimSpace(raw)) != "null" {
+		return strconv.FormatFloat(n, 'f', -1, 64)
+	}
+	return ""
 }

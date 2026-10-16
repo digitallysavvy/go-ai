@@ -365,11 +365,11 @@ func (m *ImageModel) parseErrorResponse(body []byte, statusCode int) error {
 	// schema (or is empty) gives the HTTP status text as the message.
 	msg := stdhttp.StatusText(statusCode)
 	var errResp lumaErrorResponse
-	if err := json.Unmarshal(body, &errResp); err == nil && len(errResp.Detail) > 0 {
-		msg = errResp.Detail[0].Msg
-		if msg == "" {
-			msg = "Unknown error"
-		}
+	if err := json.Unmarshal(body, &errResp); err == nil && errResp.valid() {
+		// detail[0].msg is a required string, so `?? 'Unknown error'` never
+		// applies; an empty detail array makes errorToMessage throw, which
+		// the handler also turns into the status text.
+		msg = *errResp.Detail[0].Msg
 	}
 	cause := &internalhttp.HTTPStatusError{StatusCode: statusCode, Body: body}
 	return providererrors.NewProviderError("luma", 0, "", msg, cause)
@@ -397,12 +397,37 @@ type lumaGenerationResponse struct {
 	} `json:"assets"`
 }
 
+// lumaErrorDetail mirrors one entry of TS lumaErrorSchema.detail: type, loc
+// (string array), msg and input are all required strings, ctx is an optional
+// object with a required string `expected`. Pointers distinguish absent from
+// zero.
 type lumaErrorDetail struct {
-	Type  string `json:"type"`
-	Msg   string `json:"msg"`
-	Input string `json:"input"`
+	Type  *string   `json:"type"`
+	Loc   *[]string `json:"loc"`
+	Msg   *string   `json:"msg"`
+	Input *string   `json:"input"`
+	Ctx   *struct {
+		Expected *string `json:"expected"`
+	} `json:"ctx"`
 }
 
 type lumaErrorResponse struct {
 	Detail []lumaErrorDetail `json:"detail"`
+}
+
+// valid reports whether the body matches lumaErrorSchema and detail[0]
+// exists.
+func (r lumaErrorResponse) valid() bool {
+	if len(r.Detail) == 0 {
+		return false
+	}
+	for _, d := range r.Detail {
+		if d.Type == nil || d.Loc == nil || d.Msg == nil || d.Input == nil {
+			return false
+		}
+		if d.Ctx != nil && d.Ctx.Expected == nil {
+			return false
+		}
+	}
+	return true
 }

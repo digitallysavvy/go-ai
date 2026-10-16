@@ -1,6 +1,7 @@
 package fal
 
 import (
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"os"
 	"strings"
 
@@ -62,6 +63,8 @@ type Config struct {
 
 // New creates a new Fal.ai provider with the given configuration
 func New(cfg Config) *Provider {
+	// TS withoutTrailingSlash(baseURL): a trailing "/" must not double up with request paths.
+	cfg.BaseURL = providerutils.WithoutTrailingSlash(cfg.BaseURL)
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("FAL_API_KEY")
 	}

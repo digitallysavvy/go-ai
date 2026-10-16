@@ -3,7 +3,8 @@ package hume
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"net/http"
+	"strconv"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -12,9 +13,9 @@ import (
 
 // humeErrorPayload documents Hume's error envelope: {"error":{"message","code"}}.
 type humeErrorPayload struct {
-	Error struct {
-		Message string `json:"message"`
-		Code    int    `json:"code"`
+	Error *struct {
+		Message *string  `json:"message"`
+		Code    *float64 `json:"code"`
 	} `json:"error"`
 }
 
@@ -26,17 +27,24 @@ func handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		var payload humeErrorPayload
-		message := string(statusErr.Body)
-		code := ""
-		if jsonErr := json.Unmarshal(statusErr.Body, &payload); jsonErr == nil && payload.Error.Message != "" {
-			message = payload.Error.Message
-			code = fmt.Sprintf("%d", payload.Error.Code)
-		}
+		message, code := errorMessageAndCode(statusErr.StatusCode, statusErr.Body)
 		providerErr := providererrors.NewProviderError("hume", statusErr.StatusCode, code, message, err)
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
 		providerErr.ResponseBody = string(statusErr.Body)
 		return providerErr
 	}
 	return providererrors.NewProviderError("hume", 0, "", err.Error(), err)
+}
+
+// errorMessageAndCode mirrors the TS humeFailedResponseHandler: a body matching
+// {"error":{"message":string,"code":number}} gives that message (even an
+// empty one) and the code; anything else (empty, not JSON, a missing or
+// wrongly typed field) gives the HTTP status text.
+func errorMessageAndCode(statusCode int, body []byte) (message, code string) {
+	var payload humeErrorPayload
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != nil &&
+		payload.Error.Message != nil && payload.Error.Code != nil {
+		return *payload.Error.Message, strconv.FormatFloat(*payload.Error.Code, 'f', -1, 64)
+	}
+	return http.StatusText(statusCode), ""
 }

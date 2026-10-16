@@ -62,7 +62,7 @@ type cartesiaTranscriptionResponse struct {
 // DoTranscribe performs batch speech-to-text transcription via POST /stt.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
 	if isStreamingTranscriptionModelID(m.modelID) {
-		return nil, fmt.Errorf("%w: non-streaming transcription with %s (this model is realtime/WebSocket-only)", providererrors.ErrUnsupportedFeature, m.modelID)
+		return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "non-streaming transcription with " + m.modelID}
 	}
 	if opts == nil {
 		opts = &provider.TranscriptionOptions{}

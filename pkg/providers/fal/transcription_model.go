@@ -71,14 +71,20 @@ type falTranscriptionResultResponse struct {
 }
 
 // falTranscriptionParsedOptions mirrors falTranscriptionModelOptionsSchema
-// in fal-transcription-model-options.ts, including its defaults.
+// in fal-transcription-model-options.ts, including its defaults. The *Null
+// flags record an explicit JSON null, which zod's .nullish().default(x) keeps
+// (the default only replaces an absent value).
 type falTranscriptionParsedOptions struct {
-	Language    string
-	Diarize     bool
-	ChunkLevel  string
-	Version     string
-	BatchSize   float64
-	NumSpeakers *float64
+	Language       string
+	LanguageNull   bool
+	Diarize        bool
+	ChunkLevel     string
+	ChunkLevelNull bool
+	Version        string
+	VersionNull    bool
+	BatchSize      float64
+	BatchSizeNull  bool
+	NumSpeakers    *float64
 }
 
 // parseFalTranscriptionOptions applies the schema defaults from
@@ -102,20 +108,28 @@ func parseFalTranscriptionOptions(raw interface{}) (*falTranscriptionParsedOptio
 	if !ok {
 		return nil, fmt.Errorf("invalid fal provider options: expected object")
 	}
-	if v, ok := m["language"].(string); ok {
-		out.Language = v
+	if v, present := m["language"]; present && v == nil {
+		out.LanguageNull = true
+	} else if s, ok := v.(string); ok {
+		out.Language = s
 	}
 	if v, ok := m["diarize"].(bool); ok {
 		out.Diarize = v
 	}
-	if v, ok := m["chunkLevel"].(string); ok {
-		out.ChunkLevel = v
+	if v, present := m["chunkLevel"]; present && v == nil {
+		out.ChunkLevelNull = true
+	} else if s, ok := v.(string); ok {
+		out.ChunkLevel = s
 	}
-	if v, ok := m["version"].(string); ok {
-		out.Version = v
+	if v, present := m["version"]; present && v == nil {
+		out.VersionNull = true
+	} else if s, ok := v.(string); ok {
+		out.Version = s
 	}
-	if v, ok := toFalFloat64(m["batchSize"]); ok {
-		out.BatchSize = v
+	if v, present := m["batchSize"]; present && v == nil {
+		out.BatchSizeNull = true
+	} else if f, ok := toFalFloat64(v); ok {
+		out.BatchSize = f
 	}
 	if v, ok := toFalFloat64(m["numSpeakers"]); ok {
 		out.NumSpeakers = &v
@@ -155,11 +169,22 @@ func (m *TranscriptionModel) buildRequestBody(opts *provider.TranscriptionOption
 			if err != nil {
 				return nil, err
 			}
-			body["language"] = parsed.Language
-			body["version"] = parsed.Version
-			body["batch_size"] = parsed.BatchSize
+			// TS: language is assigned as-is (an explicit null is sent as
+			// null); version and batchSize use `?? undefined`, so an explicit
+			// null omits them; a null chunkLevel is falsy and keeps 'word'.
+			if parsed.LanguageNull {
+				body["language"] = nil
+			} else {
+				body["language"] = parsed.Language
+			}
+			if !parsed.VersionNull {
+				body["version"] = parsed.Version
+			}
+			if !parsed.BatchSizeNull {
+				body["batch_size"] = parsed.BatchSize
+			}
 			body["diarize"] = parsed.Diarize
-			if parsed.ChunkLevel != "" {
+			if !parsed.ChunkLevelNull && parsed.ChunkLevel != "" {
 				body["chunk_level"] = parsed.ChunkLevel
 			}
 			if parsed.NumSpeakers != nil {
@@ -333,7 +358,7 @@ func (m *TranscriptionModel) handleError(err error) error {
 	}
 	var statusErr *internalhttp.HTTPStatusError
 	if errors.As(err, &statusErr) {
-		message := parseFalErrorMessage(statusErr.Body, string(statusErr.Body))
+		message := parseFalErrorMessage(statusErr.Body, http.StatusText(statusErr.StatusCode))
 		providerErr := providererrors.NewProviderError(m.Provider(), statusErr.StatusCode, "", message, err)
 		providerErr.ResponseHeaders = providerutils.ExtractHeaders(statusErr.Headers)
 		return providerErr
