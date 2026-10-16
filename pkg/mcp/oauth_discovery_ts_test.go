@@ -130,10 +130,12 @@ func TestTSPRMDiscoveryRetriesNetworkFailureWithoutProtocolHeader(t *testing.T) 
 		t.Fatalf("calls = %+v", *calls)
 	}
 
-	// Both attempts failing counts as "no metadata" (TS: undefined response).
+	// Both attempts failing counts as "no metadata" (TS: undefined response);
+	// shouldAttemptFallback is true for it even at a root URL, so the root
+	// well-known is tried again (2 more requests).
 	client, calls = recordingClient(t, func(int, *http.Request) (*http.Response, error) { return nil, errors.New("down") })
 	_, err = DiscoverOAuthProtectedResourceMetadata(context.Background(), "https://resource.example.com", OAuthDiscoveryOptions{HTTPClient: client})
-	if err == nil || !strings.Contains(err.Error(), "does not implement OAuth 2.0 Protected Resource Metadata") || len(*calls) != 2 {
+	if err == nil || !strings.Contains(err.Error(), "does not implement OAuth 2.0 Protected Resource Metadata") || len(*calls) != 4 {
 		t.Fatalf("err = %v, calls = %d", err, len(*calls))
 	}
 }

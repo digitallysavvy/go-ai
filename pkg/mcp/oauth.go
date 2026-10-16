@@ -434,6 +434,11 @@ func oauthIssuerMatches(issuer, expected string) bool {
 }
 
 func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string) bool {
+	// TS shouldAttemptFallback: `!response || (4xx && pathname !== '/')`; a
+	// transport failure is retried at the root even for a root server URL.
+	if resp == nil {
+		return true
+	}
 	server, err := url.Parse(serverURL)
 	if err != nil {
 		return false
@@ -441,7 +446,7 @@ func shouldAttemptOAuthFallback(resp *http.Response, _ string, serverURL string)
 	if server.Path == "" || server.Path == "/" {
 		return false
 	}
-	return resp == nil || (resp.StatusCode >= http.StatusBadRequest && resp.StatusCode < http.StatusInternalServerError)
+	return (resp.StatusCode >= http.StatusBadRequest && resp.StatusCode < http.StatusInternalServerError)
 }
 
 func closeResponse(resp *http.Response) {
