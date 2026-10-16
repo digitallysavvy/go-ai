@@ -252,6 +252,7 @@ Common errors and how to handle them:
 ```go
 result, err := ai.GenerateText(ctx, opts)
 if err != nil {
+    var providerErr *providererrors.ProviderError
     switch {
     case errors.Is(err, context.DeadlineExceeded):
         log.Println("Request timed out")
@@ -259,8 +260,10 @@ if err != nil {
         log.Println("Request was canceled")
     case strings.Contains(err.Error(), "model is required"):
         log.Println("Missing required model parameter")
-    case strings.Contains(err.Error(), "generation failed"):
-        log.Println("Generation error:", err)
+    case errors.As(err, &providerErr):
+        // Model errors are returned as is (as in the TypeScript SDK), so
+        // match them by type, not by message text.
+        log.Println("Generation error:", providerErr.StatusCode, err)
     default:
         log.Println("Unknown error:", err)
     }

@@ -115,3 +115,14 @@ func TestJSKeyOrderIntegerKeysFirst(t *testing.T) {
 		t.Fatalf("got %s want %s", got, want)
 	}
 }
+
+func TestStringifyNumbersUseJSNotation(t *testing.T) {
+	v, ok := Parse([]byte(`{"a":1.0,"b":1e2,"c":1E-7,"d":12345678901234567890,"e":-0,"f":0.10,"g":1e21,"h":1e400,"i":[2.50]}`))
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	want := `{"a":1,"b":100,"c":1e-7,"d":12345678901234567000,"e":0,"f":0.1,"g":1e+21,"h":null,"i":[2.5]}`
+	if got := Stringify(v); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

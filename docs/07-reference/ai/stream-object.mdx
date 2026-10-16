@@ -222,13 +222,16 @@ fmt.Printf("Final: %+v\n", result.Object)
 ```go
 result, err := ai.StreamObject(ctx, opts)
 if err != nil {
+    var providerErr *providererrors.ProviderError
     switch {
     case strings.Contains(err.Error(), "model is required"):
         log.Println("Missing required model parameter")
     case strings.Contains(err.Error(), "schema is required"):
         log.Println("Schema is required for streaming objects")
-    case strings.Contains(err.Error(), "stream error"):
-        log.Println("Streaming failed:", err)
+    case errors.As(err, &providerErr):
+        // Model and stream errors are returned as is (as in the TypeScript
+        // SDK), so match them by type, not by message text.
+        log.Println("Streaming failed:", providerErr.StatusCode, err)
     case strings.Contains(err.Error(), "validation failed"):
         log.Println("Object validation error:", err)
     case strings.Contains(err.Error(), "failed to parse"):

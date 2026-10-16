@@ -179,6 +179,9 @@ type EmbedOptions struct {
 
 // EmbedResult contains the result of an embedding operation
 type EmbedResult struct {
+	// Value is the text that was embedded (TS EmbedResult.value).
+	Value string
+
 	// Embedding vector
 	Embedding []float64
 
@@ -345,6 +348,7 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	}
 
 	embedResult := &EmbedResult{
+		Value:            opts.Input,
 		Embedding:        result.Embedding,
 		Usage:            result.Usage,
 		Warnings:         warningsOrEmpty(result.Warnings),
@@ -471,6 +475,10 @@ type EmbedManyOptions struct {
 
 // EmbedManyResult contains the result of a batch embedding operation
 type EmbedManyResult struct {
+	// Values are the texts that were embedded, in input order (TS
+	// EmbedManyResult.values).
+	Values []string
+
 	// Embeddings for each input
 	Embeddings [][]float64
 
@@ -578,6 +586,8 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
+
+	embedResult.Values = opts.Inputs
 
 	logModelWarnings(embedResult.Warnings, opts.Model.Provider(), opts.Model.ModelID())
 

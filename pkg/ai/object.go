@@ -961,7 +961,9 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
 	}
 
 	// A response without any text fails before the step-end event, as in TS
@@ -1126,7 +1128,9 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
 	}
 
 	// A response without any text fails before the step-end event, as in TS
@@ -1281,7 +1285,9 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
 	}
 
 	// A response without any text fails before the step-end event, as in TS
@@ -1430,7 +1436,9 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		// leak, since no fireObjectStepEnd/fireObjectLanguageModelCallEnd will
 		// ever run for this step (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
-		return nil, fmt.Errorf("generation failed: %w", err)
+		// TS generateObject rethrows the model error unwrapped (the retry utility
+		// builds the RetryError around it).
+		return nil, err
 	}
 
 	// A response without any text fails before the step-end event, as in TS
@@ -1812,7 +1820,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		// FireOnError call below, which only closes the root span (H4 item 2).
 		fireObjectStepError(telStep, opts.ExperimentalTelemetry, err)
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
-		return nil, fmt.Errorf("stream error: %w", err)
+		// TS streamObject surfaces the model error as is (no "stream error: "
+		// message prefix).
+		return nil, err
 	}
 	defer stream.Close() //nolint:errcheck
 
@@ -2009,7 +2019,8 @@ streamLoop:
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
-		return nil, fmt.Errorf("stream error: %w", streamErr)
+		// TS streamObject surfaces the stream error as is (no message prefix).
+		return nil, streamErr
 	}
 
 	// Fire OnStepFinish after stream ends, BEFORE JSON parsing.
