@@ -760,7 +760,7 @@ func (m *VideoModel) buildRequestBody(opts *provider.VideoModelV3CallOptions, mm
 				Details: fmt.Sprintf("%s requires a whole number of seconds. The requested duration of %v was rounded to %v.", m.modelID, raw, rounded),
 			})
 		}
-		d := minimaxDefaultDuration
+		var d int
 		switch {
 		case rounded > minimaxMaxDuration:
 			warnings = append(warnings, types.Warning{
