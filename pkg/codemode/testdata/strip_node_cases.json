@@ -1,0 +1,1407 @@
+[
+{
+"src": "const x: number = 1;\nreturn x;",
+"out": "const x         = 1;\nreturn x;",
+"ok": true
+},
+{
+"src": "const r = await tools.search({ q: 'a' } as any);\nreturn r as unknown as string[];",
+"out": "const r = await tools.search({ q: 'a' }       );\nreturn r                       ;",
+"ok": true
+},
+{
+"src": "type Row = { id: number; name?: string };\nconst rows: Row[] = [];\nreturn rows;",
+"out": "                                         \nconst rows        = [];\nreturn rows;",
+"ok": true
+},
+{
+"src": "interface A<T> { x: T }\nconst a: A<number> = { x: 1 };\nreturn a.x;",
+"out": "                       \nconst a            = { x: 1 };\nreturn a.x;",
+"ok": true
+},
+{
+"src": "const f = async <T,>(x: T): Promise<T> => x;\nreturn await f(1);",
+"out": "const f = async     (x   )             => x;\nreturn await f(1);",
+"ok": true
+},
+{
+"src": "const f = async (x: number, y?: string): Promise<number> => x;\nreturn f(1);",
+"out": "const f = async (x        , y         )                  => x;\nreturn f(1);",
+"ok": true
+},
+{
+"src": "function g(a: number = 1, ...rest: string[]): void {}\nreturn g();",
+"out": "function g(a         = 1, ...rest          )       {}\nreturn g();",
+"ok": true
+},
+{
+"src": "const o = { m(a: number): string { return String(a); }, get v(): number { return 1; } };\nreturn o.m(1);",
+"out": "const o = { m(a        )         { return String(a); }, get v()         { return 1; } };\nreturn o.m(1);",
+"ok": true
+},
+{
+"src": "class C<T> extends Array<T> implements I { private readonly p: number = 1; static s?: string; m<U>(x: U): U { return x; } }\nreturn new C();",
+"out": "class C    extends Array                 {                  p         = 1; static s         ; m   (x   )    { return x; } }\nreturn new C();",
+"ok": true
+},
+{
+"src": "const v = <number>(1);",
+"out": "const v = <number>(1);",
+"ok": false
+},
+{
+"src": "let a: Array<Map<string, number>> = [];\nreturn a;",
+"out": "let a                             = [];\nreturn a;",
+"ok": true
+},
+{
+"src": "let x = a < b && c > d;\nreturn x;",
+"out": "let x = a < b && c > d;\nreturn x;",
+"ok": true
+},
+{
+"src": "const m = new Map<string, number[]>();\nreturn m;",
+"out": "const m = new Map                  ();\nreturn m;",
+"ok": true
+},
+{
+"src": "const s = (x as any)!.y!.z;\nreturn s;",
+"out": "const s = (x       ) .y .z;\nreturn s;",
+"ok": true
+},
+{
+"src": "label: for (const i of [1,2,3]) { if (i) continue label; }",
+"out": "label: for (const i of [1,2,3]) { if (i) continue label; }",
+"ok": true
+},
+{
+"src": "const {a, b}: {a: number; b: string} = obj;\nreturn a;",
+"out": "const {a, b}                         = obj;\nreturn a;",
+"ok": true
+},
+{
+"src": "const [p, q]: [number, number] = [1, 2];\nreturn p;",
+"out": "const [p, q]                   = [1, 2];\nreturn p;",
+"ok": true
+},
+{
+"src": "function f(x: number): x is 1 { return true }\nreturn f(1)",
+"out": "function f(x        )         { return true }\nreturn f(1)",
+"ok": true
+},
+{
+"src": "function assertX(v: unknown): asserts v is string {}\nassertX(1)",
+"out": "function assertX(v         )                      {}\nassertX(1)",
+"ok": true
+},
+{
+"src": "const t = `a${x as string}b${(y satisfies number)}`;\nreturn t;",
+"out": "const t = `a${x          }b${(y                 )}`;\nreturn t;",
+"ok": true
+},
+{
+"src": "const fn = function <T>(this: Window, x: T) { return x };\nreturn fn;",
+"out": "const fn = function    (              x   ) { return x };\nreturn fn;",
+"ok": true
+},
+{
+"src": "abstract class B { abstract m(): void; protected abstract p: number }\n",
+"out": "         class B {                                                  }\n",
+"ok": true
+},
+{
+"src": "declare const z: number;\nreturn typeof z;",
+"out": "                        \nreturn typeof z;",
+"ok": true
+},
+{
+"src": "declare function foo(x: number): void;\nreturn 1;",
+"out": "                                      \nreturn 1;",
+"ok": true
+},
+{
+"src": "namespace N { export const a = 1 }\nreturn N.a;",
+"out": "namespace N { export const a = 1 }\nreturn N.a;",
+"ok": false
+},
+{
+"src": "enum E { A, B }\nreturn E.A;",
+"out": "enum E { A, B }\nreturn E.A;",
+"ok": false
+},
+{
+"src": "class K { constructor(private x: number) {} }\nreturn new K(1);",
+"out": "class K { constructor(private x: number) {} }\nreturn new K(1);",
+"ok": false
+},
+{
+"src": "const x = y as const;\nreturn x;",
+"out": "const x = y         ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const arr = [1, 2] as const;\nreturn arr;",
+"out": "const arr = [1, 2]         ;\nreturn arr;",
+"ok": true
+},
+{
+"src": "type A = typeof import('x');\nreturn 1;",
+"out": "                            \nreturn 1;",
+"ok": true
+},
+{
+"src": "type U = 'a' | 'b';\nlet u: U = 'a';\nreturn u;",
+"out": "                   \nlet u    = 'a';\nreturn u;",
+"ok": true
+},
+{
+"src": "let f: (a: number) => void = () => {};\nreturn f;",
+"out": "let f                      = () => {};\nreturn f;",
+"ok": true
+},
+{
+"src": "let g: new () => Foo;\nreturn 1;",
+"out": "let g               ;\nreturn 1;",
+"ok": true
+},
+{
+"src": "const k = a ? (b): c => d : e;\nreturn k;",
+"out": "const k = a ? (b)    => d : e;\nreturn k;",
+"ok": true
+},
+{
+"src": "const r = cond ? (x) : y;\nreturn r;",
+"out": "const r = cond ? (x) : y;\nreturn r;",
+"ok": true
+},
+{
+"src": "const r = cond ? (x): number => 1 : 2;\nreturn r;",
+"out": "const r = cond ? (x)         => 1 : 2;\nreturn r;",
+"ok": true
+},
+{
+"src": "class A { x!: number; y?: string; declare z: number; static readonly w = 1; override m() {} }\nreturn 1;",
+"out": "class A { x!: number; y?: string; declare z: number; static readonly w = 1; override m() {} }\nreturn 1;",
+"ok": false
+},
+{
+"src": "class A { [key: string]: any; }\nreturn 1;",
+"out": "class A {                     }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { public static async *gen<T>(): AsyncGenerator<T> {} }\nreturn 1;",
+"out": "class A {        static async *gen   ()                    {} }\nreturn 1;",
+"ok": true
+},
+{
+"src": "function f<const T extends readonly unknown[]>(x: T) { return x }\nreturn f([1])",
+"out": "function f                                    (x   ) { return x }\nreturn f([1])",
+"ok": true
+},
+{
+"src": "function f(x: number): number;\nfunction f(x: string): string;\nfunction f(x: any) { return x }\nreturn f(1);",
+"out": "                              \n                              \nfunction f(x     ) { return x }\nreturn f(1);",
+"ok": true
+},
+{
+"src": "const x = (await foo()) as Bar<Baz>;\nreturn x;",
+"out": "const x = (await foo())            ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = foo<string>('a');\nreturn x;",
+"out": "const x = foo        ('a');\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = new Foo<string>;\nreturn x;",
+"out": "const x = new Foo        ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = foo<string>`tpl`;\nreturn x;",
+"out": "const x = foo        `tpl`;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = a?.b<string>?.();\nreturn x;",
+"out": "const x = a?.b<string>?.();\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = a < b > (c);\nreturn x;",
+"out": "const x = a       (c);\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = a<b>(c);\nreturn x;",
+"out": "const x = a   (c);\nreturn x;",
+"ok": true
+},
+{
+"src": "import type { A } from 'x';\nreturn 1;",
+"out": "import type { A } from 'x';\nreturn 1;",
+"ok": false
+},
+{
+"src": "const x: typeof y = 1;\nreturn x;",
+"out": "const x           = 1;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x: keyof typeof y = 'a';\nreturn x;",
+"out": "const x                 = 'a';\nreturn x;",
+"ok": true
+},
+{
+"src": "const x: unique symbol = Symbol();\nreturn x;",
+"out": "const x                = Symbol();\nreturn x;",
+"ok": true
+},
+{
+"src": "let x: { a: number, b: string }[] = [];\nreturn x;",
+"out": "let x                             = [];\nreturn x;",
+"ok": true
+},
+{
+"src": "let x: Record<string, (a: number) => void> = {};\nreturn x;",
+"out": "let x                                      = {};\nreturn x;",
+"ok": true
+},
+{
+"src": "let x: A extends B ? C : D;\nreturn 1;",
+"out": "let x                     ;\nreturn 1;",
+"ok": true
+},
+{
+"src": "type M = { [K in keyof T]?: T[K] };\nreturn 1;",
+"out": "                                   \nreturn 1;",
+"ok": true
+},
+{
+"src": "type F = <T>(x: T) => T;\nreturn 1;",
+"out": "                        \nreturn 1;",
+"ok": true
+},
+{
+"src": "const x = (a: number, b: number) => a + b;\nreturn x(1,2);",
+"out": "const x = (a        , b        ) => a + b;\nreturn x(1,2);",
+"ok": true
+},
+{
+"src": "const x = async (a): Promise<void> => {};\nreturn x;",
+"out": "const x = async (a)                => {};\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = (a, b?) => a;\nreturn x;",
+"out": "const x = (a, b ) => a;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = { a: 1 } satisfies Record<string, number>;\nreturn x;",
+"out": "const x = { a: 1 }                                 ;\nreturn x;",
+"ok": true
+},
+{
+"src": "for (let i: number = 0; i < 3; i++) {}\nreturn 1;",
+"out": "for (let i         = 0; i < 3; i++) {}\nreturn 1;",
+"ok": true
+},
+{
+"src": "for (const k in o as any) {}\nreturn 1;",
+"out": "for (const k in o       ) {}\nreturn 1;",
+"ok": true
+},
+{
+"src": "try { x() } catch (e: unknown) { return String(e) }",
+"out": "try { x() } catch (e         ) { return String(e) }",
+"ok": true
+},
+{
+"src": "try { x() } catch (e: any) { return e }",
+"out": "try { x() } catch (e     ) { return e }",
+"ok": true
+},
+{
+"src": "const re = /a<b>/g; const y: number = 1;\nreturn re;",
+"out": "const re = /a<b>/g; const y         = 1;\nreturn re;",
+"ok": true
+},
+{
+"src": "const s = 'a: number'; const t = \"x as y\";\nreturn s;",
+"out": "const s = 'a: number'; const t = \"x as y\";\nreturn s;",
+"ok": true
+},
+{
+"src": "// comment: number\nconst x: number = 1; /* as any */\nreturn x;",
+"out": "// comment: number\nconst x         = 1; /* as any */\nreturn x;",
+"ok": true
+},
+{
+"src": "const a = 1\nconst b = <T>(x: T) => x\nreturn b(a)",
+"out": "const a = 1\nconst b =    (x   ) => x\nreturn b(a)",
+"ok": true
+},
+{
+"src": "let x: number\nlet y = 2\nreturn y",
+"out": "let x        \nlet y = 2\nreturn y",
+"ok": true
+},
+{
+"src": "let x: string | undefined = undefined, y: number = 2;\nreturn y;",
+"out": "let x                     = undefined, y         = 2;\nreturn y;",
+"ok": true
+},
+{
+"src": "var f = function (x: number): void {};\nreturn f;",
+"out": "var f = function (x        )       {};\nreturn f;",
+"ok": true
+},
+{
+"src": "const obj = { async m<T>(x: T): Promise<T> { return x }, *g(): Generator<number> {} };\nreturn obj;",
+"out": "const obj = { async m   (x   )             { return x }, *g()                    {} };\nreturn obj;",
+"ok": true
+},
+{
+"src": "const o = { f: (x: number): number => x, 'k': 1 as number };\nreturn o;",
+"out": "const o = { f: (x        )         => x, 'k': 1           };\nreturn o;",
+"ok": true
+},
+{
+"src": "const fn = (x: number): { a: number } => ({ a: x });\nreturn fn(1);",
+"out": "const fn = (x        )                => ({ a: x });\nreturn fn(1);",
+"ok": true
+},
+{
+"src": "const x = y! + z!;\nreturn x;",
+"out": "const x = y  + z ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = y!;\nreturn x;",
+"out": "const x = y ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = a![0]!.b!();\nreturn x;",
+"out": "const x = a [0] .b ();\nreturn x;",
+"ok": true
+},
+{
+"src": "if (a < b) { const c: number = 1 }\nreturn 1;",
+"out": "if (a < b) { const c         = 1 }\nreturn 1;",
+"ok": true
+},
+{
+"src": "const x = (y as any as string).length;\nreturn x;",
+"out": "const x = (y                 ).length;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = <const>['a'];\nreturn x;",
+"out": "const x = <const>['a'];\nreturn x;",
+"ok": true
+},
+{
+"src": "accessor",
+"out": "accessor",
+"ok": true
+},
+{
+"src": "class A { accessor x = 1 }\nreturn 1;",
+"out": "class A { accessor x = 1 }\nreturn 1;",
+"ok": true
+},
+{
+"src": "function f(this: void) {}\nreturn 1;",
+"out": "function f(          ) {}\nreturn 1;",
+"ok": true
+},
+{
+"src": "export const x = 1;",
+"out": "export const x = 1;",
+"ok": false
+},
+{
+"src": "const { a = 1 as number }: { a?: number } = {};\nreturn a;",
+"out": "const { a = 1           }                 = {};\nreturn a;",
+"ok": true
+},
+{
+"src": "switch (x as number) { case 1 as number: break }\nreturn 1;",
+"out": "switch (x          ) { case 1          : break }\nreturn 1;",
+"ok": true
+},
+{
+"src": "const x: number\n  = 1;\nreturn x;",
+"out": "const x        \n  = 1;\nreturn x;",
+"ok": true
+},
+{
+"src": "let x = 1 as number\n;[1].map((v: number) => v)\nreturn x",
+"out": "let x = 1          \n;[1].map((v        ) => v)\nreturn x",
+"ok": true
+},
+{
+"src": "type T = {\n a: number\n}\n;(async () => 1)()\nreturn 1",
+"out": "          \n          \n \n (async () => 1)()\nreturn 1",
+"ok": true
+},
+{
+"src": "const gen = function* (): Generator<number, void, unknown> { yield 1 };\nreturn gen;",
+"out": "const gen = function* ()                                   { yield 1 };\nreturn gen;",
+"ok": true
+},
+{
+"src": "const f = (cb: (err: Error | null, v?: string) => void): void => cb(null);\nreturn f;",
+"out": "const f = (cb                                         )       => cb(null);\nreturn f;",
+"ok": true
+},
+{
+"src": "const x = (a: any): a is string => true;\nreturn x;",
+"out": "const x = (a     )              => true;\nreturn x;",
+"ok": true
+},
+{
+"src": "const o = { a, b } as { a: number; b: string };\nreturn o;",
+"out": "const o = { a, b }                            ;\nreturn o;",
+"ok": true
+},
+{
+"src": "const x: Promise<Array<{ id: number }>> = fetchIt();\nreturn x;",
+"out": "const x                                 = fetchIt();\nreturn x;",
+"ok": true
+},
+{
+"src": "let v: number[][] = [[1]];\nreturn v[0]![0];",
+"out": "let v             = [[1]];\nreturn v[0] [0];",
+"ok": true
+},
+{
+"src": "let v = obj?.[key as string];\nreturn v;",
+"out": "let v = obj?.[key          ];\nreturn v;",
+"ok": true
+},
+{
+"src": "const x = a >> b;\nconst y: number = 3;\nreturn y;",
+"out": "const x = a >> b;\nconst y         = 3;\nreturn y;",
+"ok": true
+},
+{
+"src": "const x = a >>> b > c;\nreturn x;",
+"out": "const x = a >>> b > c;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = (a < b) > c;\nreturn x;",
+"out": "const x = (a < b) > c;\nreturn x;",
+"ok": true
+},
+{
+"src": "const f = <T extends unknown>(x: T) => x;\nreturn f(1);",
+"out": "const f =                    (x   ) => x;\nreturn f(1);",
+"ok": true
+},
+{
+"src": "const f = async <T,>(x: T) => x;\nreturn f(1);",
+"out": "const f = async     (x   ) => x;\nreturn f(1);",
+"ok": true
+},
+{
+"src": "class A { static { this.x = 1 } }\nreturn 1;",
+"out": "class A { static { this.x = 1 } }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A<in out T> {}\nreturn 1;",
+"out": "class A           {}\nreturn 1;",
+"ok": true
+},
+{
+"src": "let x: asserts;\nreturn 1;",
+"out": "let x         ;\nreturn 1;",
+"ok": true
+},
+{
+"src": "using x = foo();\nreturn 1;",
+"out": "using x = foo();\nreturn 1;",
+"ok": true
+},
+{
+"src": "const x = { type: 1, interface: 2 };\nreturn x.type;",
+"out": "const x = { type: 1, interface: 2 };\nreturn x.type;",
+"ok": true
+},
+{
+"src": "const type = 1; const declare = 2; const abstract = 3; const as = 4; const satisfies = 5;\nreturn type + declare + abstract + as + satisfies;",
+"out": "const type = 1; const declare = 2; const abstract = 3; const as = 4; const satisfies = 5;\nreturn type + declare + abstract + as + satisfies;",
+"ok": true
+},
+{
+"src": "const x = type\nconst y = 2\nreturn y",
+"out": "const x = type\nconst y = 2\nreturn y",
+"ok": true
+},
+{
+"src": "type\nfoo = 1\nreturn 1",
+"out": "type\nfoo = 1\nreturn 1",
+"ok": true
+},
+{
+"src": "const x = a\nas\nb\nreturn 1",
+"out": "const x = a\nas\nb\nreturn 1",
+"ok": true
+},
+{
+"src": "let async: number = 1;\nreturn async;",
+"out": "let async         = 1;\nreturn async;",
+"ok": true
+},
+{
+"src": "function f(x?: number, y?) {}\nreturn 1;",
+"out": "function f(x         , y ) {}\nreturn 1;",
+"ok": true
+},
+{
+"src": "const x = async function* <T>(): AsyncGenerator<T> {};\nreturn x;",
+"out": "const x = async function*    ()                    {};\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = new (foo as any)();\nreturn x;",
+"out": "const x = new (foo       )();\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = new foo<string>();\nreturn x;",
+"out": "const x = new foo        ();\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = <T>(y);\nreturn 1;",
+"out": "const x = <T>(y);\nreturn 1;",
+"ok": false
+},
+{
+"src": "class A { x = 1 }\nreturn 1;",
+"out": "class A { x = 1 }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { x = 1\n y: number = 2\n m() { return 1 } }\nreturn new A().y;",
+"out": "class A { x = 1\n y         = 2\n m() { return 1 } }\nreturn new A().y;",
+"ok": true
+},
+{
+"src": "class A { x: number\n y: string\n m(): void {} }\nreturn 1;",
+"out": "class A { x        \n y        \n m()       {} }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { static x: number = 1; static y = 2\n static z?: string\n}\nreturn 1;",
+"out": "class A { static x         = 1; static y = 2\n static z         \n}\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { constructor(x: number, y?: string) { this.x = x } x: number }\nreturn new A(1);",
+"out": "class A { constructor(x        , y         ) { this.x = x } x         }\nreturn new A(1);",
+"ok": true
+},
+{
+"src": "class A extends B<string> implements C, D<number> { }\nreturn 1;",
+"out": "class A extends B                                 { }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { get x(): number { return 1 } set x(v: number) {} static async *g<T>(a: T): AsyncGenerator<T> {} }\nreturn 1;",
+"out": "class A { get x()         { return 1 } set x(v        ) {} static async *g   (a   )                    {} }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { private async m(): Promise<void> {} protected static s: number = 1; public readonly r = 2 }\nreturn 1;",
+"out": "class A {         async m()                {}           static s         = 1;                 r = 2 }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { #p: number = 1; m(): number { return this.#p } }\nreturn 1;",
+"out": "class A { #p         = 1; m()         { return this.#p } }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { f = (x: number): number => x; g: (a: number) => void = () => {} }\nreturn 1;",
+"out": "class A { f = (x        )         => x; g                      = () => {} }\nreturn 1;",
+"ok": true
+},
+{
+"src": "type A = {\n a: number\n b: string\n}\nconst x: A = { a: 1, b: 'x' }\nreturn x;",
+"out": "          \n          \n          \n \nconst x    = { a: 1, b: 'x' }\nreturn x;",
+"ok": true
+},
+{
+"src": "type A = string | number\nconst x: A = 1\nreturn x;",
+"out": "                        \nconst x    = 1\nreturn x;",
+"ok": true
+},
+{
+"src": "type A =\n  | 'a'\n  | 'b'\nconst x: A = 'a'\nreturn x;",
+"out": "        \n       \n       \nconst x    = 'a'\nreturn x;",
+"ok": true
+},
+{
+"src": "type F = (a: number) => void\nconst f: F = () => {}\nreturn f;",
+"out": "                            \nconst f    = () => {}\nreturn f;",
+"ok": true
+},
+{
+"src": "type G<T> = T extends string ? 'a' : 'b'\nreturn 1;",
+"out": "                                        \nreturn 1;",
+"ok": true
+},
+{
+"src": "type G<T> = T extends (infer U)[] ? U : never;\nreturn 1;",
+"out": "                                              \nreturn 1;",
+"ok": true
+},
+{
+"src": "interface A { x: number }\ninterface B extends A { y: string }\nconst b: B = { x: 1, y: 'a' }\nreturn b;",
+"out": "                         \n                                   \nconst b    = { x: 1, y: 'a' }\nreturn b;",
+"ok": true
+},
+{
+"src": "interface A extends Base<{ k: 1 }> { y: string }\nreturn 1;",
+"out": "                                                \nreturn 1;",
+"ok": true
+},
+{
+"src": "interface A {\n x: number;\n m(): void\n}\nreturn 1;",
+"out": "             \n           \n          \n \nreturn 1;",
+"ok": true
+},
+{
+"src": "const x = c ? a as T : b;\nreturn x;",
+"out": "const x = c ? a      : b;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = c ? (a as T) : (b as U);\nreturn x;",
+"out": "const x = c ? (a     ) : (b     );\nreturn x;",
+"ok": true
+},
+{
+"src": "const o = { a: x as T, b: y as U };\nreturn o;",
+"out": "const o = { a: x     , b: y      };\nreturn o;",
+"ok": true
+},
+{
+"src": "const x = { a: 1 } as { a: number }\nreturn x;",
+"out": "const x = { a: 1 }                 \nreturn x;",
+"ok": true
+},
+{
+"src": "const x = foo() as Promise<void>\nawait x\nreturn 1",
+"out": "const x = foo()                 \nawait x\nreturn 1",
+"ok": true
+},
+{
+"src": "const x = (await foo()) as string[]\nreturn x",
+"out": "const x = (await foo())            \nreturn x",
+"ok": true
+},
+{
+"src": "const f = (a: number): number => a\nconst g = (b: string) => b\nreturn f(1)",
+"out": "const f = (a        )         => a\nconst g = (b        ) => b\nreturn f(1)",
+"ok": true
+},
+{
+"src": "const f = function (a: number): number { return a }\nreturn f",
+"out": "const f = function (a        )         { return a }\nreturn f",
+"ok": true
+},
+{
+"src": "function f(a: number): { x: number } { return { x: a } }\nreturn f(1);",
+"out": "function f(a        )                { return { x: a } }\nreturn f(1);",
+"ok": true
+},
+{
+"src": "function f(a: number): Array<{ x: number }> { return [] }\nreturn f(1);",
+"out": "function f(a        )                       { return [] }\nreturn f(1);",
+"ok": true
+},
+{
+"src": "function f(cb: (e: Error) => void, d?: number): void {}\nreturn f;",
+"out": "function f(cb                    , d         )       {}\nreturn f;",
+"ok": true
+},
+{
+"src": "function f({ a, b }: { a: number; b: string }, [c]: number[]): void {}\nreturn f;",
+"out": "function f({ a, b }                          , [c]          )       {}\nreturn f;",
+"ok": true
+},
+{
+"src": "function f(a: number = (1 as number)): void {}\nreturn f;",
+"out": "function f(a         = (1          ))       {}\nreturn f;",
+"ok": true
+},
+{
+"src": "const x = `${a as string} and ${b!} and ${(c as any).d} ${`nested ${e as T}`}`;\nreturn x;",
+"out": "const x = `${a          } and ${b } and ${(c       ).d} ${`nested ${e     }`}`;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = tag`${a as string}`;\nreturn x;",
+"out": "const x = tag`${a          }`;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = `a ${ {k: 1 as number}.k } b`;\nreturn x;",
+"out": "const x = `a ${ {k: 1          }.k } b`;\nreturn x;",
+"ok": true
+},
+{
+"src": "const o = { m(a: number): void {}, async n(b: string): Promise<void> {}, [k](c: T): T { return c } };\nreturn o;",
+"out": "const o = { m(a        )       {}, async n(b        )                {}, [k](c   )    { return c } };\nreturn o;",
+"ok": true
+},
+{
+"src": "const o = { get a(): number { return 1 }, set a(v: number) {} };\nreturn o;",
+"out": "const o = { get a()         { return 1 }, set a(v        ) {} };\nreturn o;",
+"ok": true
+},
+{
+"src": "if (x) { foo(a) }\nwhile (y) { bar(b) }\nfor (const i of z) { baz(i) }\nswitch (q) { case 1: { break } }\nreturn 1;",
+"out": "if (x) { foo(a) }\nwhile (y) { bar(b) }\nfor (const i of z) { baz(i) }\nswitch (q) { case 1: { break } }\nreturn 1;",
+"ok": true
+},
+{
+"src": "const r = items.map((i: Item): string => i.name).filter((n): n is string => !!n);\nreturn r;",
+"out": "const r = items.map((i      )         => i.name).filter((n)              => !!n);\nreturn r;",
+"ok": true
+},
+{
+"src": "const r = await Promise.all<number>([a, b]);\nreturn r;",
+"out": "const r = await Promise.all        ([a, b]);\nreturn r;",
+"ok": true
+},
+{
+"src": "const m = new Map<string, Array<number>>([['a', [1]]]);\nreturn m;",
+"out": "const m = new Map                       ([['a', [1]]]);\nreturn m;",
+"ok": true
+},
+{
+"src": "let a: number, b: string;\nreturn 1;",
+"out": "let a        , b        ;\nreturn 1;",
+"ok": true
+},
+{
+"src": "let a: number\nlet b: string\nreturn 1;",
+"out": "let a        \nlet b        \nreturn 1;",
+"ok": true
+},
+{
+"src": "var a: any = 1\nvar b = 2\nreturn b",
+"out": "var a      = 1\nvar b = 2\nreturn b",
+"ok": true
+},
+{
+"src": "const a = 1 as number\nconst b = 2 as number\nreturn a + b",
+"out": "const a = 1          \nconst b = 2          \nreturn a + b",
+"ok": true
+},
+{
+"src": "const e = x!\nconst f = y!\nreturn e",
+"out": "const e = x \nconst f = y \nreturn e",
+"ok": true
+},
+{
+"src": "switch (x) { case 'a' as string: return 1; default: return 2 }",
+"out": "switch (x) { case 'a'          : return 1; default: return 2 }",
+"ok": true
+},
+{
+"src": "label: { break label }\nreturn 1;",
+"out": "label: { break label }\nreturn 1;",
+"ok": true
+},
+{
+"src": "const x: unknown = JSON.parse(s);\nif (typeof x === 'object' && x !== null && 'a' in x) { return (x as { a: number }).a }\nreturn null;",
+"out": "const x          = JSON.parse(s);\nif (typeof x === 'object' && x !== null && 'a' in x) { return (x                 ).a }\nreturn null;",
+"ok": true
+},
+{
+"src": "for (const [k, v] of Object.entries(o) as [string, number][]) { total += v }\nreturn total;",
+"out": "for (const [k, v] of Object.entries(o)                      ) { total += v }\nreturn total;",
+"ok": true
+},
+{
+"src": "const t = <T,>(x: T) => x\nconst u = t<number>(1)\nreturn u",
+"out": "const t =     (x   ) => x\nconst u = t        (1)\nreturn u",
+"ok": true
+},
+{
+"src": "const x = a satisfies B\nconst y = 1\nreturn y",
+"out": "const x = a            \nconst y = 1\nreturn y",
+"ok": true
+},
+{
+"src": "abstract class A { abstract x: number; abstract m(): void; n(): number { return 1 } }\nreturn 1;",
+"out": "         class A {                                         n()         { return 1 } }\nreturn 1;",
+"ok": true
+},
+{
+"src": "abstract class A { protected abstract readonly x: number\n n() {} }\nreturn 1;",
+"out": "         class A {                                      \n n() {} }\nreturn 1;",
+"ok": true
+},
+{
+"src": "class A { [k: string]: any\n m() {} }\nreturn 1;",
+"out": "class A {                 \n m() {} }\nreturn 1;",
+"ok": true
+},
+{
+"src": "declare module 'x' { export const a: number }\nreturn 1;",
+"out": "                                             \nreturn 1;",
+"ok": true
+},
+{
+"src": "declare global { interface Window { a: number } }\nreturn 1;",
+"out": "                                                 \nreturn 1;",
+"ok": true
+},
+{
+"src": "export default 1;",
+"out": "export default 1;",
+"ok": false
+},
+{
+"src": "const x: Array<number>= [];\nreturn x;",
+"out": "const x               = [];\nreturn x;",
+"ok": true
+},
+{
+"src": "const x: Array<Array<number>>= [];\nreturn x;",
+"out": "const x                      = [];\nreturn x;",
+"ok": true
+},
+{
+"src": "let fn: typeof foo<string>;\nreturn 1;",
+"out": "let fn                    ;\nreturn 1;",
+"ok": true
+},
+{
+"src": "const enumValue = 1; const declare = 2; const namespace = 3;\nreturn enumValue + declare + namespace;",
+"out": "const enumValue = 1; const declare = 2; const namespace = 3;\nreturn enumValue + declare + namespace;",
+"ok": true
+},
+{
+"src": "function f<T extends { id: number } = { id: 1 }>(x: T): T { return x }\nreturn f({ id: 1 });",
+"out": "function f                                      (x   )    { return x }\nreturn f({ id: 1 });",
+"ok": true
+},
+{
+"src": "const x = obj?.a!.b?.[0]!;\nreturn x;",
+"out": "const x = obj?.a .b?.[0] ;\nreturn x;",
+"ok": true
+},
+{
+"src": "async function* g(): AsyncGenerator<number, void, undefined> { yield 1 }\nreturn g;",
+"out": "async function* g()                                          { yield 1 }\nreturn g;",
+"ok": true
+},
+{
+"src": "const handler = async (req: Request, res: Response<any>): Promise<void> => { await res.send(1) };\nreturn handler;",
+"out": "const handler = async (req         , res               )                => { await res.send(1) };\nreturn handler;",
+"ok": true
+},
+{
+"src": "export function f() {}",
+"out": "export function f() {}",
+"ok": false
+},
+{
+"src": "const x = import('y');\nreturn x;",
+"out": "const x = import('y');\nreturn x;",
+"ok": true
+},
+{
+"src": "for (let i: number = 0, n: number = 3; i < n; i++) {}\nreturn 1;",
+"out": "for (let i         = 0, n         = 3; i < n; i++) {}\nreturn 1;",
+"ok": true
+},
+{
+"src": "const {a, ...rest}: Props = props;\nreturn rest;",
+"out": "const {a, ...rest}        = props;\nreturn rest;",
+"ok": true
+},
+{
+"src": "function f(...args: any[]) {}\nreturn f;",
+"out": "function f(...args       ) {}\nreturn f;",
+"ok": true
+},
+{
+"src": "function f(this: Foo, ...args: number[]) {}\nreturn f;",
+"out": "function f(           ...args          ) {}\nreturn f;",
+"ok": true
+},
+{
+"src": "const o = { f: function (a: number): number { return a } };\nreturn o;",
+"out": "const o = { f: function (a        )         { return a } };\nreturn o;",
+"ok": true
+},
+{
+"src": "const o = { 'a-b': (x: number): void => {} };\nreturn o;",
+"out": "const o = { 'a-b': (x        )       => {} };\nreturn o;",
+"ok": true
+},
+{
+"src": "const x = a < b ? c : d;\nconst y: number = 1;\nreturn y;",
+"out": "const x = a < b ? c : d;\nconst y         = 1;\nreturn y;",
+"ok": true
+},
+{
+"src": "if (a < b && c > d) { return 1 }\nreturn 2;",
+"out": "if (a < b && c > d) { return 1 }\nreturn 2;",
+"ok": true
+},
+{
+"src": "const x = (a: number, b: number): number => a < b ? a : b;\nreturn x;",
+"out": "const x = (a        , b        )         => a < b ? a : b;\nreturn x;",
+"ok": true
+},
+{
+"src": "let x: number | undefined;\nx = 1\nreturn x",
+"out": "let x                    ;\nx = 1\nreturn x",
+"ok": true
+},
+{
+"src": "let x: string[] = []\nlet y: Record<string, number> = {}\nreturn x",
+"out": "let x           = []\nlet y                         = {}\nreturn x",
+"ok": true
+},
+{
+"src": "const cb: (err: Error | null) => void = () => {}\nreturn cb",
+"out": "const cb                              = () => {}\nreturn cb",
+"ok": true
+},
+{
+"src": "const arr: ((a: number) => void)[] = []\nreturn arr",
+"out": "const arr                          = []\nreturn arr",
+"ok": true
+},
+{
+"src": "const fnOrNull: ((a: number) => void) | null = null\nreturn fnOrNull",
+"out": "const fnOrNull                               = null\nreturn fnOrNull",
+"ok": true
+},
+{
+"src": "let u: A | B\n  | C = null as any\nreturn u",
+"out": "let u       \n      = null       \nreturn u",
+"ok": true
+},
+{
+"src": "const results: Array<{ name: string; score: number }> = [];\nfor (const item of items as any[]) {\n  results.push({ name: item.name, score: Number(item.score) });\n}\nreturn results.sort((a, b) => b.score - a.score);",
+"out": "const results                                         = [];\nfor (const item of items         ) {\n  results.push({ name: item.name, score: Number(item.score) });\n}\nreturn results.sort((a, b) => b.score - a.score);",
+"ok": true
+},
+{
+"src": "async function main(): Promise<void> {\n  const res = await tools.fetch({ url: 'x' }) as { body: string };\n  console.log(res.body);\n}\nawait main();",
+"out": "async function main()                {\n  const res = await tools.fetch({ url: 'x' })                    ;\n  console.log(res.body);\n}\nawait main();",
+"ok": true
+},
+{
+"src": "const data = (await tools.get({})) as Record<string, unknown>;\nconst keys: string[] = Object.keys(data);\nreturn keys.length > 0 ? keys : null;",
+"out": "const data = (await tools.get({}))                           ;\nconst keys           = Object.keys(data);\nreturn keys.length > 0 ? keys : null;",
+"ok": true
+},
+{
+"src": "const a = x!.y;\nconst b = !!z;\nconst c = !(w);\nif (!d) return a;\nreturn b && c;",
+"out": "const a = x .y;\nconst b = !!z;\nconst c = !(w);\nif (!d) return a;\nreturn b && c;",
+"ok": true
+},
+{
+"src": "function isStr(x: unknown): x is string { return typeof x === 'string' }\nreturn [1, 'a'].filter(isStr);",
+"out": "function isStr(x         )              { return typeof x === 'string' }\nreturn [1, 'a'].filter(isStr);",
+"ok": true
+},
+{
+"src": "const x = foo ? bar : baz as T;\nreturn x;",
+"out": "const x = foo ? bar : baz     ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const sum = (xs: number[]): number => xs.reduce((a: number, b: number): number => a + b, 0);\nreturn sum([1,2]);",
+"out": "const sum = (xs          )         => xs.reduce((a        , b        )         => a + b, 0);\nreturn sum([1,2]);",
+"ok": true
+},
+{
+"src": "const o: { [k: string]: number } = {};\nreturn o;",
+"out": "const o                          = {};\nreturn o;",
+"ok": true
+},
+{
+"src": "const fnMap: Record<string, (x: number) => Promise<void>> = {};\nreturn fnMap;",
+"out": "const fnMap                                               = {};\nreturn fnMap;",
+"ok": true
+},
+{
+"src": "let timer: ReturnType<typeof setTimeout> | undefined;\nreturn timer;",
+"out": "let timer                                           ;\nreturn timer;",
+"ok": true
+},
+{
+"src": "const x = 5 as const, y = 'a' as const;\nreturn [x, y];",
+"out": "const x = 5         , y = 'a'         ;\nreturn [x, y];",
+"ok": true
+},
+{
+"src": "let i = 0;\nwhile (i < 3) i++;\nconst r = i < 5 ? 'a' : 'b';\nreturn r;",
+"out": "let i = 0;\nwhile (i < 3) i++;\nconst r = i < 5 ? 'a' : 'b';\nreturn r;",
+"ok": true
+},
+{
+"src": "const re = /[a-z]+/gi; const s: string = 'x';\nreturn s.match(re) as RegExpMatchArray | null;",
+"out": "const re = /[a-z]+/gi; const s         = 'x';\nreturn s.match(re)                           ;",
+"ok": true
+},
+{
+"src": "const x = a / b / c;\nconst y: number = 4;\nreturn y;",
+"out": "const x = a / b / c;\nconst y         = 4;\nreturn y;",
+"ok": true
+},
+{
+"src": "// leading comment\n/* block */ const x: number /* inline */ = 1; // trailing\nreturn x;",
+"out": "// leading comment\n/* block */ const x         /* inline */ = 1; // trailing\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = {\n  a: 1, // one\n  b: 2 as number, /* two */\n};\nreturn x;",
+"out": "const x = {\n  a: 1, // one\n  b: 2          , /* two */\n};\nreturn x;",
+"ok": true
+},
+{
+"src": "const obj = {\n  async run(input: string): Promise<string> {\n    return input;\n  },\n  sync(n: number): number { return n },\n};\nreturn obj;",
+"out": "const obj = {\n  async run(input        )                  {\n    return input;\n  },\n  sync(n        )         { return n },\n};\nreturn obj;",
+"ok": true
+},
+{
+"src": "const f = async function* <T>(xs: T[]): AsyncGenerator<T> { for (const x of xs) yield x };\nreturn f;",
+"out": "const f = async function*    (xs     )                    { for (const x of xs) yield x };\nreturn f;",
+"ok": true
+},
+{
+"src": "const t: [string, number?] = ['a'];\nreturn t;",
+"out": "const t                    = ['a'];\nreturn t;",
+"ok": true
+},
+{
+"src": "const t: readonly string[] = ['a'];\nreturn t;",
+"out": "const t                    = ['a'];\nreturn t;",
+"ok": true
+},
+{
+"src": "function f(x: number, ...rest: Array<string | number>): void {}\nreturn f;",
+"out": "function f(x        , ...rest                        )       {}\nreturn f;",
+"ok": true
+},
+{
+"src": "function f(opts: { a?: number; b?: string } = {}): void {}\nreturn f;",
+"out": "function f(opts                             = {})       {}\nreturn f;",
+"ok": true
+},
+{
+"src": "function f<T>(this: void, x: T): asserts x is NonNullable<T> {}\nreturn f;",
+"out": "function f   (            x   )                              {}\nreturn f;",
+"ok": true
+},
+{
+"src": "class Foo<T extends object = {}> { private items: T[] = []; add(item: T): this { this.items.push(item); return this } get size(): number { return this.items.length } }\nreturn new Foo();",
+"out": "class Foo                        {         items      = []; add(item   )       { this.items.push(item); return this } get size()         { return this.items.length } }\nreturn new Foo();",
+"ok": true
+},
+{
+"src": "class Foo { static create<T>(this: new () => T): T { return new this() } }\nreturn Foo;",
+"out": "class Foo { static create   (                 )    { return new this() } }\nreturn Foo;",
+"ok": true
+},
+{
+"src": "class A { x = 1; y = 2 }\nclass B extends A { z!: number; constructor() { super(); this.z = 3 } }\nreturn new B();",
+"out": "class A { x = 1; y = 2 }\nclass B extends A { z         ; constructor() { super(); this.z = 3 } }\nreturn new B();",
+"ok": true
+},
+{
+"src": "class A { m(): void\n m(x?: number): void {} }\nreturn 1;",
+"out": "class A {          \n m(x         )       {} }\nreturn 1;",
+"ok": true
+},
+{
+"src": "const x = y as any as T[];\nreturn x;",
+"out": "const x = y              ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = <const T,>(a: T) => a;\nreturn x;",
+"out": "const x =           (a   ) => a;\nreturn x;",
+"ok": true
+},
+{
+"src": "const { data }: { data: Item[] } = await tools.list({});\nreturn data;",
+"out": "const { data }                   = await tools.list({});\nreturn data;",
+"ok": true
+},
+{
+"src": "for (const x of (xs as Item[])) { use(x) }\nreturn 1;",
+"out": "for (const x of (xs          )) { use(x) }\nreturn 1;",
+"ok": true
+},
+{
+"src": "const v = obj as unknown as { run(): void };\nv.run();\nreturn 1;",
+"out": "const v = obj                              ;\nv.run();\nreturn 1;",
+"ok": true
+},
+{
+"src": "const k = key as keyof typeof obj;\nreturn obj[k];",
+"out": "const k = key                    ;\nreturn obj[k];",
+"ok": true
+},
+{
+"src": "let x = (y as number) + 1;\nlet z = (<any>y);\nreturn x;",
+"out": "let x = (y as number) + 1;\nlet z = (<any>y);\nreturn x;",
+"ok": false
+},
+{
+"src": "type Item = { id: number };\ntype Items = Item[];\nconst xs: Items = [];\nreturn xs;",
+"out": "                           \n                    \nconst xs        = [];\nreturn xs;",
+"ok": true
+},
+{
+"src": "const items: Item[] = [];\ntype Item = { id: number };\nreturn items;",
+"out": "const items         = [];\n                           \nreturn items;",
+"ok": true
+},
+{
+"src": "enum Color { Red }\nreturn 1;",
+"out": "enum Color { Red }\nreturn 1;",
+"ok": false
+},
+{
+"src": "const x = await (async (): Promise<number> => 1)();\nreturn x;",
+"out": "const x = await (async ()                  => 1)();\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = (() => { return 1 })() as number;\nreturn x;",
+"out": "const x = (() => { return 1 })()          ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = a ? (b as C) : (d as E);\nreturn x;",
+"out": "const x = a ? (b     ) : (d     );\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = a ? b : c ? d as T : e;\nreturn x;",
+"out": "const x = a ? b : c ? d      : e;\nreturn x;",
+"ok": true
+},
+{
+"src": "const lookup = { a: 1 } as const satisfies Record<string, number>;\nreturn lookup;",
+"out": "const lookup = { a: 1 }                                          ;\nreturn lookup;",
+"ok": true
+},
+{
+"src": "declare const process: any;\nreturn process.env;",
+"out": "                           \nreturn process.env;",
+"ok": true
+},
+{
+"src": "function overload(a: string): string;\nfunction overload(a: number): number;\nfunction overload(a: any): any { return a }\nreturn overload(1);",
+"out": "                                     \n                                     \nfunction overload(a     )      { return a }\nreturn overload(1);",
+"ok": true
+},
+{
+"src": "const x = a! as string;\nreturn x;",
+"out": "const x = a           ;\nreturn x;",
+"ok": true
+},
+{
+"src": "const y = (a as string)!;\nreturn y;",
+"out": "const y = (a          ) ;\nreturn y;",
+"ok": true
+},
+{
+"src": "const z = a!!.b;\nreturn z;",
+"out": "const z = a  .b;\nreturn z;",
+"ok": true
+},
+{
+"src": "const x: number = (a!);\nreturn x;",
+"out": "const x         = (a );\nreturn x;",
+"ok": true
+},
+{
+"src": "let total = 0\nfor (const n of nums) total += n!\nreturn total",
+"out": "let total = 0\nfor (const n of nums) total += n \nreturn total",
+"ok": true
+},
+{
+"src": "const a = [1, 2, 3].map((x): number => x * 2)\nconst b = a.length\nreturn b",
+"out": "const a = [1, 2, 3].map((x)         => x * 2)\nconst b = a.length\nreturn b",
+"ok": true
+},
+{
+"src": "const f = (x: number) =>\n  x * 2\nconst g = 1\nreturn f(g)",
+"out": "const f = (x        ) =>\n  x * 2\nconst g = 1\nreturn f(g)",
+"ok": true
+},
+{
+"src": "const v = cond\n  ? (x: number): number => x\n  : (x: number): number => -x\nreturn v",
+"out": "const v = cond\n  ? (x        )         => x\n  : (x        )         => -x\nreturn v",
+"ok": true
+},
+{
+"src": "let a: number = 1, b = 2, c: string = 'x'\nreturn a + b",
+"out": "let a         = 1, b = 2, c         = 'x'\nreturn a + b",
+"ok": true
+},
+{
+"src": "const cb = (e: Event): void => {\n  e.preventDefault()\n}\nreturn cb",
+"out": "const cb = (e       )       => {\n  e.preventDefault()\n}\nreturn cb",
+"ok": true
+},
+{
+"src": "let u: undefined | null = null; let w: void;\nreturn u;",
+"out": "let u                   = null; let w      ;\nreturn u;",
+"ok": true
+},
+{
+"src": "let g: Generator<number, string, boolean>;\nreturn 1;",
+"out": "let g                                    ;\nreturn 1;",
+"ok": true
+},
+{
+"src": "const x: Promise<void>[] = [];\nreturn x;",
+"out": "const x                  = [];\nreturn x;",
+"ok": true
+},
+{
+"src": "const x: (typeof y)[number] = 1;\nreturn x;",
+"out": "const x                     = 1;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x: `a-${string}` = 'a-b';\nreturn x;",
+"out": "const x                = 'a-b';\nreturn x;",
+"ok": true
+},
+{
+"src": "const x: { a: number }['a'] = 1;\nreturn x;",
+"out": "const x                     = 1;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x: A.B.C<D> = null as any;\nreturn x;",
+"out": "const x           = null       ;\nreturn x;",
+"ok": true
+},
+{
+"src": "let x: import('y').Z;\nreturn 1;",
+"out": "let x               ;\nreturn 1;",
+"ok": true
+},
+{
+"src": "const fn = <T, U>(a: T, b: U): [T, U] => [a, b];\nreturn fn(1, 2);",
+"out": "const fn =       (a   , b   )         => [a, b];\nreturn fn(1, 2);",
+"ok": true
+},
+{
+"src": "const y = z satisfies A as B;\nreturn y;",
+"out": "const y = z                 ;\nreturn y;",
+"ok": true
+},
+{
+"src": "try { f() } catch { return 1 } finally { g() }",
+"out": "try { f() } catch { return 1 } finally { g() }",
+"ok": true
+},
+{
+"src": "try { f() } catch (error) { return error as Error }",
+"out": "try { f() } catch (error) { return error          }",
+"ok": true
+},
+{
+"src": "const o = { if: 1, for: 2 };\nif (o.if) { f(o) }\nreturn o;",
+"out": "const o = { if: 1, for: 2 };\nif (o.if) { f(o) }\nreturn o;",
+"ok": true
+},
+{
+"src": "const x = a ? b : (c) ? d : e;\nreturn x;",
+"out": "const x = a ? b : (c) ? d : e;\nreturn x;",
+"ok": true
+},
+{
+"src": "foo(a)\n{ const x: number = 1 }\nreturn 1;",
+"out": "foo(a)\n{ const x         = 1 }\nreturn 1;",
+"ok": true
+},
+{
+"src": "const s = 'it\\'s' + \"q\\\"q\" + `t\\`t${1 as number}`;\nreturn s;",
+"out": "const s = 'it\\'s' + \"q\\\"q\" + `t\\`t${1          }`;\nreturn s;",
+"ok": true
+},
+{
+"src": "const x = y as number;;\nreturn x;",
+"out": "const x = y          ;;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = a /* c */ as /* d */ string /* e */;\nreturn x;",
+"out": "const x = a                           /* e */;\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = (\n  a as string\n);\nreturn x;",
+"out": "const x = (\n  a          \n);\nreturn x;",
+"ok": true
+},
+{
+"src": "const x = [\n  1 as number,\n  2 as number,\n];\nreturn x;",
+"out": "const x = [\n  1          ,\n  2          ,\n];\nreturn x;",
+"ok": true
+},
+{
+"src": "foo(a as number, b as string);\nreturn 1;",
+"out": "foo(a          , b          );\nreturn 1;",
+"ok": true
+},
+{
+"src": "foo<number, string>(a, b);\nbar<Array<number>>(c);\nreturn 1;",
+"out": "foo                (a, b);\nbar               (c);\nreturn 1;",
+"ok": true
+},
+{
+"src": "const c = new Cls<number>(1);\nconst d = new Map<string, Set<number>>();\nreturn c;",
+"out": "const c = new Cls        (1);\nconst d = new Map                     ();\nreturn c;",
+"ok": true
+},
+{
+"src": "const a = b<c>(d);\nconst e = f < g;\nreturn a;",
+"out": "const a = b   (d);\nconst e = f < g;\nreturn a;",
+"ok": true
+},
+{
+"src": "x = a < b;\ny = c > (d);\nreturn 1;",
+"out": "x = a < b;\ny = c > (d);\nreturn 1;",
+"ok": true
+},
+{
+"src": "const p = new Promise<void>((resolve) => setTimeout(resolve, 1));\nawait p;\nreturn 1;",
+"out": "const p = new Promise      ((resolve) => setTimeout(resolve, 1));\nawait p;\nreturn 1;",
+"ok": true
+},
+{
+"src": "const p = new Promise<number>((resolve: (v: number) => void, reject: (e: unknown) => void): void => resolve(1));\nreturn p;",
+"out": "const p = new Promise        ((resolve                     , reject                      )       => resolve(1));\nreturn p;",
+"ok": true
+}
+]

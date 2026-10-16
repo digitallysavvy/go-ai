@@ -1,14 +1,13 @@
 package codemode
 
+import "fmt"
+
 // skipInterfaceDecl returns the index just past a balanced
 // `interface ... { ... }` block starting at tokens[i] (the "interface"
 // token), dropping it entirely. If no opening brace is found, only the
 // "interface" token itself is skipped.
 func skipInterfaceDecl(tokens []tsToken, i int) int {
-	j := i + 1
-	for j < len(tokens) && (tokens[j].kind != "punct" || tokens[j].text != "{") {
-		j++
-	}
+	j := scanUntilTopLevelBrace(tokens, i+1)
 	if j >= len(tokens) {
 		return i + 1
 	}
@@ -60,7 +59,25 @@ func looksLikeTypeAlias(tokens []tsToken, i int) bool {
 // starting at tokens[i] (the "type" token), consuming through the matching
 // top-level semicolon (or end of input), dropping it entirely.
 func skipTypeAlias(tokens []tsToken, i int) int {
-	return scanToStatementEnd(tokens, i+1)
+	eq := nextSignificant(tokens, i+1)
+	if eq >= 0 {
+		eq = nextSignificant(tokens, eq+1)
+	}
+	if eq >= 0 && tokens[eq].kind == "punct" && tokens[eq].text == "<" {
+		if end, ok := consumeAngleTypeArgsBalanced(tokens, eq); ok {
+			eq = nextSignificant(tokens, end)
+		}
+	}
+	if eq < 0 || tokens[eq].kind != "punct" || tokens[eq].text != "=" {
+		return scanToStatementEnd(tokens, i+1)
+	}
+	// The aliased type ends where the type grammar ends (a line break can end
+	// it), not at the next `;`.
+	end := consumeTypeExpr(tokens, eq+1, false)
+	if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+		return semi + 1
+	}
+	return end
 }
 
 // scanToStatementEnd returns the index just past the next top-level (at
@@ -143,19 +160,19 @@ func handleDeclare(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 	}
 }
 
-// handleImportExport erases a whole `import type ...;` / `export type
-// ...;` statement (which has no runtime effect). Any other `import`/
-// `export` statement is left for the caller to hand to the JavaScript
-// engine unchanged -- it isn't TypeScript-only syntax this stripper
-// removes, and (like TypeScript code-mode, which wraps snippets as a
-// function body before stripping -- see strip_types.go) it will fail to
-// parse in the sandbox the same way it would upstream, since import/export
-// declarations cannot appear inside a function body.
+// handleImportExport rejects a static `import`/`export` statement. code-mode
+// wraps the snippet in a function body before stripping (see strip_types.go),
+// where neither can appear, so Node's stripTypeScriptTypes throws
+// ERR_INVALID_TYPESCRIPT_SYNTAX for them -- `import type` and `export type`
+// included -- and the whole snippet is handed to the engine unstripped, which
+// reports the SyntaxError. A dynamic `import(...)` or `import.meta` is an
+// expression and is copied through.
 func handleImportExport(tokens []tsToken, i int, out *[]tsToken) (int, error) {
-	next := nextSignificant(tokens, i+1)
-	if next >= 0 && tokens[next].kind == "ident" && tokens[next].text == "type" {
-		return scanToStatementEnd(tokens, next+1), nil
+	if tokens[i].text == "import" {
+		if next := nextSignificant(tokens, i+1); next >= 0 && tokens[next].kind == "punct" && (tokens[next].text == "(" || tokens[next].text == ".") {
+			*out = append(*out, tokens[i])
+			return i + 1, nil
+		}
 	}
-	*out = append(*out, tokens[i])
-	return i + 1, nil
+	return i, fmt.Errorf("code mode source uses %s outside a module", tokens[i].text)
 }

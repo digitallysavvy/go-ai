@@ -13,7 +13,7 @@ import (
 func TestCanonicalJSONKeySortMatchesLocaleCompare(t *testing.T) {
 	in := map[string]interface{}{
 		"Z": 1, "a": 2,
-		"A": map[string]interface{}{"_x": 1, "-a": 2, "B": 3, "b": 4, "10": 5, "2": 6, "é": 7, "e": 8, "Id": 9, "id": 10, "ID": 11},
+		"A":   map[string]interface{}{"_x": 1, "-a": 2, "B": 3, "b": 4, "10": 5, "2": 6, "é": 7, "e": 8, "Id": 9, "id": 10, "ID": 11},
 		"a b": []interface{}{map[string]interface{}{"c": 1, "C": 2}},
 		"ab":  3, "aB": 4,
 	}

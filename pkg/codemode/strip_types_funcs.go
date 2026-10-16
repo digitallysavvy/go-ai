@@ -322,7 +322,12 @@ func handleFunctionSignature(tokens []tsToken, i int, out *[]tsToken) (int, erro
 	if next >= 0 && tokens[next].kind == "punct" && tokens[next].text == "{" {
 		return i, nil
 	}
-	end := scanToStatementEnd(tokens, i)
+	// A bodyless signature (an overload) ends with its return type, or with
+	// a `;` after it.
+	end := i
+	if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+		end = semi + 1
+	}
 	*out = (*out)[:memberStart]
 	return end, nil
 }

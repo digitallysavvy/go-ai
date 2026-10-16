@@ -1,5 +1,7 @@
 package codemode
 
+import "strings"
+
 // handleClassDecl strips a class declaration/expression's generics,
 // `extends`/`implements` clause, and member signatures. tokens[i] is
 // "class".
@@ -209,6 +211,7 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		}
 	}
 
+	sawAbstract := false
 	for {
 		k := nextSignificant(tokens, i)
 		if k < 0 || tokens[k].kind != "ident" {
@@ -221,11 +224,17 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 		if after := nextSignificant(tokens, k+1); after >= 0 && tokens[after].kind == "punct" && tokens[after].text == "(" {
 			break
 		}
+		if tokens[k].text == "declare" {
+			// A `declare` field is ambient syntax Node's strip-only mode
+			// rejects.
+			return k, errUnsupportedTSSyntax("declare field")
+		}
 		if classMemberTSModifiers[tokens[k].text] {
 			i = k + 1
 			continue
 		}
 		if tokens[k].text == "abstract" {
+			sawAbstract = true
 			i = k + 1
 			continue
 		}
@@ -244,6 +253,26 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 			*out = append(*out, tokens[k])
 		}
 		i = p + 1
+	}
+
+	// An index signature (`[key: string]: any;`) has no runtime form and is
+	// erased whole.
+	if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "[" {
+		if q := nextSignificant(tokens, p+1); q >= 0 && tokens[q].kind == "ident" {
+			if c := nextSignificant(tokens, q+1); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
+				if closeIdx := matchParen(tokens, p); closeIdx >= 0 {
+					end := closeIdx + 1
+					if m := nextSignificant(tokens, end); m >= 0 && tokens[m].kind == "punct" && tokens[m].text == ":" {
+						end = consumeTypeExpr(tokens, m+1, false)
+					}
+					if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+						end = semi + 1
+					}
+					*out = (*out)[:memberStart]
+					return end, nil
+				}
+			}
+		}
 	}
 
 	nameEnd, ok, isCtor := copyMemberName(tokens, i, out)
@@ -297,25 +326,117 @@ func stripClassMember(tokens []tsToken, i int, out *[]tsToken) (int, error) {
 			}
 			return end, nil
 		}
-		end := scanToStatementEnd(tokens, i)
+		// A bodyless signature (an overload or abstract method) ends with
+		// its return type, or with a `;` after it.
+		end := i
+		if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+			end = semi + 1
+		}
 		*out = (*out)[:memberStart]
 		return end, nil
 	}
 
 	// Field.
+	if sawAbstract {
+		// An abstract field has no runtime form: the whole member goes.
+		end := i
+		if c := nextSignificant(tokens, i); c >= 0 && tokens[c].kind == "punct" && tokens[c].text == ":" {
+			end = consumeTypeExpr(tokens, c+1, false)
+		}
+		if semi := nextSignificant(tokens, end); semi >= 0 && tokens[semi].kind == "punct" && tokens[semi].text == ";" {
+			end = semi + 1
+		}
+		*out = (*out)[:memberStart]
+		return end, nil
+	}
 	i = stripOptionalTypeAnnotation(tokens, i, out, false)
 	if p := nextSignificant(tokens, i); p >= 0 && tokens[p].kind == "punct" && tokens[p].text == "=" {
 		for k := i; k <= p; k++ {
 			*out = append(*out, tokens[k])
 		}
 		i = p + 1
+		end := fieldInitializerEnd(tokens, i)
 		var err error
-		i, err = stripBody(tokens, i, out, stopAtAny(";"))
+		i, err = stripBody(tokens[:end], i, out, stopAtAny(";"))
 		if err != nil {
 			return i, err
 		}
+		if i >= end {
+			i = end
+		}
 	}
 	return i, nil
+}
+
+// fieldInitializerEnd returns where a class field's initializer expression
+// ends: at the `;` or the class body's `}`, or, when the field has no
+// semicolon, where automatic semicolon insertion ends it: a line break after a
+// complete operand followed by a token that starts a new member.
+func fieldInitializerEnd(tokens []tsToken, i int) int {
+	depth := 0
+	sawNewline := false
+	var prev *tsToken
+	for ; i < len(tokens); i++ {
+		t := tokens[i]
+		if t.kind == "space" || t.kind == "comment" {
+			if strings.ContainsAny(t.text, "\n\r") {
+				sawNewline = true
+			}
+			continue
+		}
+		if depth == 0 {
+			if t.kind == "punct" && (t.text == ";" || t.text == "}") {
+				return i
+			}
+			if sawNewline && prev != nil && expressionOperandEnds(prev) && startsNewMember(t) {
+				return i
+			}
+		}
+		sawNewline = false
+		if t.kind == "punct" {
+			switch t.text {
+			case "(", "[", "{":
+				depth++
+			case ")", "]", "}":
+				depth--
+			}
+		}
+		prev = &tokens[i]
+	}
+	return len(tokens)
+}
+
+func expressionOperandEnds(t *tsToken) bool {
+	switch t.kind {
+	case "ident":
+		return !isExpressionPrefixKeyword(t.text)
+	case "number", "string", "regex":
+		return true
+	case "punct":
+		switch t.text {
+		case ")", "]", "}":
+			return true
+		}
+	}
+	return false
+}
+
+// startsNewMember reports whether t, on a new line after a complete
+// expression, cannot continue it and so begins the next class member.
+func startsNewMember(t tsToken) bool {
+	switch t.kind {
+	case "ident":
+		switch t.text {
+		case "in", "instanceof", "of", "as", "satisfies":
+			return false
+		}
+		return true
+	case "string", "number":
+		return true
+	case "punct":
+		return t.text == "#" || t.text == "@"
+	}
+	return false
 }
 
 // copyMemberName copies a class member's name -- a plain identifier, a
