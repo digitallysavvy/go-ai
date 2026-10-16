@@ -2260,7 +2260,11 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 				// Capture container info (present when container was used/created).
 				// In message_start it contains id and expires_at but no skills.
 				if msg.Message.Container != nil {
-					s.container = msg.Message.Container
+					// TS: {expiresAt, id, skills: null} -- message_start never
+					// reports skills.
+					c := *msg.Message.Container
+					c.Skills = nil
+					s.container = &c
 				}
 
 				// Programmatic tool calling: pre-populated tool_use blocks. TS
