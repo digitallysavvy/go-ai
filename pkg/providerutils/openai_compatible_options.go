@@ -24,7 +24,7 @@ func ResolveOpenAICompatibleProviderOptions(providerName string, providerOptions
 
 	var warnings []types.Warning
 	mergeProviderOptions(resolved, providerOptions["openai-compatible"])
-	if _, ok := providerOptions["openai-compatible"]; ok {
+	if providerOptions["openai-compatible"] != nil {
 		warnings = append(warnings, deprecatedProviderOptionsKeyWarning("openai-compatible", "openaiCompatible"))
 	}
 
@@ -33,7 +33,7 @@ func ResolveOpenAICompatibleProviderOptions(providerName string, providerOptions
 
 	camelProviderName := ToOpenAICompatibleCamelCase(providerName)
 	if providerName != camelProviderName {
-		if _, ok := providerOptions[providerName]; ok {
+		if providerOptions[providerName] != nil {
 			warnings = append(warnings, deprecatedProviderOptionsKeyWarning(providerName, camelProviderName))
 		}
 		mergeProviderOptions(resolved, providerOptions[camelProviderName])
@@ -45,19 +45,19 @@ func ResolveOpenAICompatibleProviderOptions(providerName string, providerOptions
 // ToOpenAICompatibleCamelCase matches the TS helper that converts hyphen and
 // underscore followed by a lower-case character to camelCase.
 func ToOpenAICompatibleCamelCase(value string) string {
+	// JS: value.replace(/[_-]([a-z])/g, g => g[1].toUpperCase()). A hyphen or
+	// underscore that is not followed by a-z (digit, another separator, end of
+	// string) is kept as is.
 	var b strings.Builder
 	b.Grow(len(value))
-	upperNext := false
-	for _, r := range value {
-		if r == '-' || r == '_' {
-			upperNext = true
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c == '-' || c == '_') && i+1 < len(value) && value[i+1] >= 'a' && value[i+1] <= 'z' {
+			b.WriteByte(value[i+1] - ('a' - 'A'))
+			i++
 			continue
 		}
-		if upperNext && r >= 'a' && r <= 'z' {
-			r = r - ('a' - 'A')
-		}
-		upperNext = false
-		b.WriteRune(r)
+		b.WriteByte(c)
 	}
 	return b.String()
 }

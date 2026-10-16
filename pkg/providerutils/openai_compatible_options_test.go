@@ -32,6 +32,10 @@ func TestToOpenAICompatibleCamelCase(t *testing.T) {
 		"openai-compatible": "openaiCompatible",
 		"reasoning_effort":  "reasoningEffort",
 		"alreadyCamel":      "alreadyCamel",
+		"my-provider-2":     "myProvider-2",
+		"a--b":              "a-B",
+		"trailing-":         "trailing-",
+		"x_-y":              "x_Y",
 	}
 	for input, want := range tests {
 		if got := ToOpenAICompatibleCamelCase(input); got != want {
