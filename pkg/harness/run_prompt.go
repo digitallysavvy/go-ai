@@ -775,8 +775,30 @@ func (d *turnDriver) run() {
 		if !finished {
 			d.discardCurrentStep()
 		}
-	} else if finished && d.in.OnTurnFinished != nil {
-		d.in.OnTurnFinished()
+	} else if finished {
+		if d.in.OnTurnFinished != nil {
+			d.in.OnTurnFinished()
+		}
+	} else {
+		// The adapter's stream ended without a terminal `finish`: TS calls
+		// onTurnFailed and then `result.finish(undefined)`, which fails the
+		// result only when step content is still unclosed and otherwise
+		// closes it with the last step's finish reason and the summed usage.
+		if d.in.OnTurnFailed != nil {
+			d.in.OnTurnFailed()
+		}
+		if d.stepOpen {
+			d.telError(errors.New(unclosedStepErrorMessage)) //nolint:staticcheck // exact TS parity string
+			d.fail(errors.New(unclosedStepErrorMessage))     //nolint:staticcheck // exact TS parity string
+			return
+		}
+		reason := types.FinishReason("other")
+		raw := ""
+		if n := len(d.completedSteps); n > 0 {
+			reason = d.completedSteps[n-1].FinishReason
+			raw = d.completedSteps[n-1].RawFinishReason
+		}
+		d.pendingFinishChunk = &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, RawFinishReason: raw}
 	}
 	// Push the terminal finish chunk (if any) only now, after
 	// OnTurnFinished has already run — see pendingFinishChunk's doc.
@@ -906,11 +928,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				return false, false, nil
 			}
 			if !finished {
-				// The adapter ended the turn (closed its Done channel)
-				// without ever emitting `finish`. Mirrors TS's fallback
-				// `else { input.onTurnFailed?.(); }` branch for a reader
-				// loop that ends without reaching a terminal `finish`.
-				return false, false, errors.New("harness: adapter ended the turn without emitting `finish`")
+				// The adapter ended the turn (closed its stream) without
+				// ever emitting `finish`. TS reports onTurnFailed and then
+				// finishes the result normally (`result.finish(undefined)`);
+				// run() does the same.
+				return false, false, nil
 			}
 			return true, false, nil
 		}
