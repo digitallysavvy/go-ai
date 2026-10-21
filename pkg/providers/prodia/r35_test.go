@@ -1,6 +1,7 @@
 package prodia
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -28,5 +29,22 @@ func TestR35_JobPartIsValidatedAgainstTSSchema(t *testing.T) {
 	body, ct := buildTestMultipartBody(`{"id":"j","price":null,"config":{"seed":1,"x":2},"extra":1}`, []byte("x"), "image/png")
 	if _, _, _, err := parseMultipartResponseFor(ct, body, "image/"); err != nil {
 		t.Errorf("valid job rejected: %v", err)
+	}
+}
+
+// TS sends JSON.stringify(body) as the job part: key order kept, no HTML
+// escaping, no trailing newline.
+func TestR35_JobPartIsPlainJSONStringify(t *testing.T) {
+	buf, ct, err := buildMultipartJobRequest(map[string]interface{}{
+		"type":   "m",
+		"config": map[string]interface{}{"resolution": "720p", "prompt": "a<b&c", "seed": 1},
+	}, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = ct
+	want := `{"type":"m","config":{"prompt":"a<b&c","seed":1,"resolution":"720p"}}`
+	if !bytes.Contains(buf.Bytes(), []byte(want+"\r\n--")) {
+		t.Fatalf("job part not %s in:\n%s", want, buf.String())
 	}
 }

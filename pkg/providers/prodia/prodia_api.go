@@ -219,6 +219,14 @@ func buildProdiaProviderMetadata(job *prodiaJobResponse) map[string]interface{} 
 	return m
 }
 
+// prodiaJobBodyOrder is the key order of the TS job body literals
+// ({type, config: {prompt, seed, resolution}} for video and
+// {prompt, include_messages, aspect_ratio} for the language model).
+var prodiaJobBodyOrder = map[string][]string{
+	"":       {"type", "config"},
+	"config": {"prompt", "seed", "resolution", "include_messages", "aspect_ratio"},
+}
+
 // buildMultipartJobRequest creates a multipart/form-data request body with:
 //   - a "job" part containing the JSON-encoded jobBody
 //   - an optional "input" part with binary data (skipped when inputData is empty)
@@ -237,7 +245,9 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create job part: %w", err)
 	}
-	if err := json.NewEncoder(jobPart).Encode(jobBody); err != nil {
+	// TS JSON.stringify(body): insertion key order, no HTML escaping and no
+	// trailing newline (json.Encoder adds one and escapes <, > and &).
+	if _, err := jobPart.Write([]byte(providerutils.StringifyOrdered(jobBody, prodiaJobBodyOrder))); err != nil {
 		return nil, "", fmt.Errorf("failed to encode job body: %w", err)
 	}
 
