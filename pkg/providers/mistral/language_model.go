@@ -412,6 +412,11 @@ func (m *LanguageModel) handleError(err error) error {
 // convertMistralUsage, which sets `raw: usage` to the whole decoded object,
 // not a hand-picked subset of fields).
 func convertMistralUsage(raw json.RawMessage) types.Usage {
+	// TS convertMistralUsage(undefined | null) is the null usage (token counts
+	// unknown), not zero tokens.
+	if len(raw) == 0 || string(raw) == "null" {
+		return types.Usage{}
+	}
 	var usage mistralUsage
 	if len(raw) > 0 {
 		_ = json.Unmarshal(raw, &usage)

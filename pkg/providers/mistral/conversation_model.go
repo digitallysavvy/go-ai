@@ -333,6 +333,8 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 	var raw json.RawMessage
 	resp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method: http.MethodPost, Path: "/v1/conversations", Body: body, Headers: opts.Headers,
+		// TS createJsonResponseHandler(mistralConversationResponseSchema).
+		ValidateResponse: providerutils.MistralConversationResponseValidator(m.Provider()),
 	}, &raw)
 	if err != nil {
 		return nil, (&LanguageModel{provider: m.provider, modelID: m.modelID}).handleError(err)
