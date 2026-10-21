@@ -71,7 +71,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		switch msg.Role {
 		case types.RoleSystem:
 			if msgOpts != nil && len(msgOpts.Tools) > 0 {
-				if len(msg.Content) > 0 {
+				if extractMoonshotText(msg.Content) != "" {
 					return nil, nil, &providererrors.InvalidArgumentError{
 						Field:   "prompt",
 						Message: "A Moonshot dynamic-tool system message must use empty content because the API forbids content alongside tools.",
