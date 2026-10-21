@@ -874,14 +874,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
+	// liveResult is the result under construction. The deferred abort handler
+	// reads the steps completed so far from it: a failing step returns a nil
+	// named result, which would otherwise hide them.
+	var liveResult *GenerateTextResult
+
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
 	defer func() {
 		if err != nil {
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
-				if result != nil {
-					abortSteps = append([]types.StepResult(nil), result.Steps...)
+				if liveResult != nil {
+					abortSteps = append([]types.StepResult(nil), liveResult.Steps...)
 				}
 				reason := abortReason(ctx, err)
 				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
@@ -962,6 +967,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	result = &GenerateTextResult{
 		Steps: []types.StepResult{},
 	}
+	liveResult = result
 
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
 	maxSteps := 1000 // safety ceiling only
@@ -1499,7 +1505,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 
 		workflowBlocked := workflowBlockedToolStep(opts.Internal, genResult.FinishReason, stepResult.Content)
-		if len(genResult.ToolCalls) > 0 && len(stepTools) > 0 && !workflowBlocked {
+		// With no tools at all the model's calls are all invalid (NoSuchTool)
+		// or provider-executed dynamic calls; TS still answers every invalid
+		// client call with a tool-error output.
+		toolsToExecute := genResult.ToolCalls
+		if len(stepTools) == 0 {
+			toolsToExecute = invalidClientToolCalls(genResult.ToolCalls)
+		}
+		if len(toolsToExecute) > 0 && !workflowBlocked {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              callID,
@@ -1525,7 +1538,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// Tools run inside the step context: the TS step timeout aborts the
 			// whole step (mergedAbortSignal also feeds executeTools), and the
 			// tool spans parent under the step span.
-			toolResults, err := executeToolsConfigured(stepCtx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks, toolCallConcurrency)
+			toolResults, err := executeToolsConfigured(stepCtx, toolsToExecute, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks, toolCallConcurrency)
 			if err != nil {
 				if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
 					err = wrapTimeoutError(TimeoutReasonStep, err)
@@ -2068,6 +2081,18 @@ func (e *toolResultModelOutputError) Unwrap() error {
 		return nil
 	}
 	return e.err
+}
+
+// invalidClientToolCalls returns the invalid, locally handled calls of a step:
+// the calls TS answers with a tool-error output even when no tools exist.
+func invalidClientToolCalls(calls []types.ToolCall) []types.ToolCall {
+	var out []types.ToolCall
+	for _, call := range calls {
+		if call.Invalid && !call.ProviderExecuted {
+			out = append(out, call)
+		}
+	}
+	return out
 }
 
 // isClientToolCall reports whether a tool call is one the SDK must answer

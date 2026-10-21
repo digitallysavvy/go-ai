@@ -759,8 +759,8 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// an earlier step's ChunkTypeFinishStep (see
 		// TestNewStreamTextResultFromParts_ToUIMessageStream).
 		sawStepFinishStep := false
-		activeTextIDs := map[string]bool{}
-		activeReasoningIDs := map[string]bool{}
+		activeTextIDs := &orderedIDSet{}
+		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
 		reasoningID := ""
 		textSeq := 0
@@ -773,8 +773,8 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				}
 				id = textID
 			}
-			if !activeTextIDs[id] {
-				activeTextIDs[id] = true
+			if !activeTextIDs.has(id) {
+				activeTextIDs.add(id)
 				processChunk(UIMessageChunk{"type": "text-start", "id": id})
 			}
 			return id
@@ -787,24 +787,24 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				}
 				id = reasoningID
 			}
-			if !activeReasoningIDs[id] {
-				activeReasoningIDs[id] = true
+			if !activeReasoningIDs.has(id) {
+				activeReasoningIDs.add(id)
 				processChunk(UIMessageChunk{"type": "reasoning-start", "id": id})
 			}
 			return id
 		}
 		closeOpenParts := func() {
-			for id := range activeTextIDs {
+			for _, id := range activeTextIDs.snapshot() {
 				processChunk(UIMessageChunk{"type": "text-end", "id": id})
-				delete(activeTextIDs, id)
+				activeTextIDs.remove(id)
 			}
 			if sendReasoning {
-				for id := range activeReasoningIDs {
+				for _, id := range activeReasoningIDs.snapshot() {
 					processChunk(UIMessageChunk{"type": "reasoning-end", "id": id})
-					delete(activeReasoningIDs, id)
+					activeReasoningIDs.remove(id)
 				}
 			} else {
-				activeReasoningIDs = map[string]bool{}
+				activeReasoningIDs.clear()
 			}
 		}
 		for {
@@ -876,7 +876,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = fmt.Sprintf("text-%d", textSeq)
 					textID = id
 				}
-				activeTextIDs[id] = true
+				activeTextIDs.add(id)
 				chunkForConversion.ID = id
 			case provider.ChunkTypeText:
 				chunkForConversion.ID = ensureTextStart(chunk.ID)
@@ -886,7 +886,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = textID
 				}
 				chunkForConversion.ID = id
-				delete(activeTextIDs, id)
+				activeTextIDs.remove(id)
 				if id == textID {
 					textID = ""
 				}
@@ -900,7 +900,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = fmt.Sprintf("reasoning-%d", reasoningSeq)
 					reasoningID = id
 				}
-				activeReasoningIDs[id] = true
+				activeReasoningIDs.add(id)
 				chunkForConversion.ID = id
 			case provider.ChunkTypeReasoning:
 				if sendReasoning {
@@ -915,7 +915,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					id = reasoningID
 				}
 				chunkForConversion.ID = id
-				delete(activeReasoningIDs, id)
+				activeReasoningIDs.remove(id)
 				if id == reasoningID {
 					reasoningID = ""
 				}
@@ -2716,3 +2716,40 @@ func InvalidToolCallInput(call types.ToolCall) interface{} {
 	}
 	return call.Arguments
 }
+
+// orderedIDSet is a set of open block ids that remembers insertion order, so
+// the text-end/reasoning-end parts synthesized when a step closes come out in
+// the order the blocks were opened instead of in random map order.
+type orderedIDSet struct {
+	order []string
+	set   map[string]bool
+}
+
+func (s *orderedIDSet) has(id string) bool { return s.set[id] }
+
+func (s *orderedIDSet) add(id string) {
+	if s.set == nil {
+		s.set = map[string]bool{}
+	}
+	if !s.set[id] {
+		s.set[id] = true
+		s.order = append(s.order, id)
+	}
+}
+
+func (s *orderedIDSet) remove(id string) {
+	if !s.set[id] {
+		return
+	}
+	delete(s.set, id)
+	for i, v := range s.order {
+		if v == id {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+}
+
+func (s *orderedIDSet) snapshot() []string { return append([]string(nil), s.order...) }
+
+func (s *orderedIDSet) clear() { s.order, s.set = nil, nil }

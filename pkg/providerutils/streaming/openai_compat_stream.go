@@ -310,7 +310,12 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 		// Provider-specific delta hook (e.g. xAI reasoning_content).
 		if s.OnExtraDelta != nil {
 			if chunk, handled := s.OnExtraDelta([]byte(eventData)); handled {
-				if chunk != nil && len(s.flushQueue) > 0 {
+				if chunk == nil {
+					// Handled with nothing to emit: skip the event rather
+					// than returning a nil chunk with a nil error.
+					continue
+				}
+				if len(s.flushQueue) > 0 {
 					s.flushQueue = append(s.flushQueue, chunk)
 					continue
 				}

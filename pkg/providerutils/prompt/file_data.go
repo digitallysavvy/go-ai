@@ -598,6 +598,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.ImageContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeImageContent(*typed)
 			if err != nil {
 				return nil, err
@@ -610,6 +613,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.FileContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeFileContent(*typed)
 			if err != nil {
 				return nil, err
@@ -622,6 +628,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, file)
 		case *types.ReasoningFileContent:
+			if typed == nil {
+				continue
+			}
 			file, err := NormalizeReasoningFileContent(*typed)
 			if err != nil {
 				return nil, err
@@ -634,6 +643,9 @@ func NormalizeContentParts(parts []types.ContentPart) ([]types.ContentPart, erro
 			}
 			normalized = append(normalized, toolResult)
 		case *types.ToolResultContent:
+			if typed == nil {
+				continue
+			}
 			toolResult, err := NormalizeToolResultContent(*typed)
 			if err != nil {
 				return nil, err
@@ -829,6 +841,9 @@ func NormalizeToolResultContent(part types.ToolResultContent) (types.ToolResultC
 			}
 			blocks = append(blocks, normalized)
 		case *types.FileContentBlock:
+			if typed == nil {
+				continue
+			}
 			normalized, err := NormalizeToolResultFileContent(*typed)
 			if err != nil {
 				return types.ToolResultContent{}, err
@@ -845,6 +860,9 @@ func NormalizeToolResultContent(part types.ToolResultContent) (types.ToolResultC
 			}
 			blocks = append(blocks, normalized)
 		case *types.ImageContentBlock:
+			if typed == nil {
+				continue
+			}
 			normalized, err := NormalizeToolResultFileContent(types.FileContentBlock{
 				Data:            typed.Data,
 				MediaType:       firstNonEmpty(typed.MediaType, "image"),

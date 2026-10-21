@@ -1799,8 +1799,12 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
 	// Build prompt
+	// A failure from here on still closes the root span opened by FireOnStart
+	// (TS stream-object.ts reports pipeline errors, including prompt
+	// standardization, through telemetry onError).
 	prompt, err := prepareObjectPrompt(ctx, opts.Prompt, opts.Messages, opts.System, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), opts.Model, opts.ExperimentalDownload)
 	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 
@@ -1821,6 +1825,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	}
 	responseFormat, err := buildStreamObjectResponseFormat(opts)
 	if err != nil {
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: err})
 		return nil, err
 	}
 	genOpts.ResponseFormat = responseFormat

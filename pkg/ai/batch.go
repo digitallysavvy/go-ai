@@ -432,16 +432,29 @@ func ExperimentalGetBatchResults(ctx context.Context, opts GetBatchResultsOption
 // parseBatchToolCalls validates the tool calls of a succeeded text result
 // against tools and returns a copy of the result carrying the parsed calls.
 func parseBatchToolCalls(ctx context.Context, result *types.GenerateResult, tools []types.Tool) (*types.GenerateResult, error) {
-	if len(result.ToolCalls) == 0 {
-		return result, nil
-	}
-	parsed, _, err := parseToolCalls(ctx, result.ToolCalls, ParseToolCallOptions{Tools: tools})
+	// TS convertGenerateResult -> convertLanguageModelContent downloads
+	// URL-backed file parts and rejects a tool-result part that answers no
+	// tool call of the same response ("Tool call <id> not found.").
+	resolved, err := resolveContentFiles(ctx, result.Content)
 	if err != nil {
 		return nil, err
 	}
+	parsedCalls := result.ToolCalls
+	if len(parsedCalls) > 0 {
+		parsedCalls, _, err = parseToolCalls(ctx, result.ToolCalls, ParseToolCallOptions{Tools: tools})
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := ValidateToolResultParts(resolved, parsedCalls, tools); err != nil {
+		return nil, err
+	}
 	out := *result
-	out.ToolCalls = parsed
-	out.Content = replaceToolCallContentParts(append([]types.ContentPart(nil), result.Content...), parsed)
+	out.ToolCalls = parsedCalls
+	out.Content = resolved
+	if len(parsedCalls) > 0 {
+		out.Content = replaceToolCallContentParts(append([]types.ContentPart(nil), resolved...), parsedCalls)
+	}
 	return &out, nil
 }
 
