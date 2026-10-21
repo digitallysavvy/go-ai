@@ -2510,7 +2510,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		skipStepTools := stepSawErrorChunk && opts.Internal != nil && opts.Internal.StopOnStreamError
 		workflowBlocked := workflowBlockedToolStep(opts.Internal, r.finishReason, stepContent)
 		skipStepTools = skipStepTools || workflowBlocked
-		if len(stepToolCalls) > 0 && len(stepTools) > 0 && !skipStepTools {
+		// With no tools at all only invalid client calls are answered (TS
+		// emits their tool-error whatever the tool set).
+		callsToExecute := stepToolCalls
+		if len(stepTools) == 0 {
+			callsToExecute = invalidClientToolCalls(stepToolCalls)
+		}
+		if len(callsToExecute) > 0 && !skipStepTools {
 			toolExecutionMs = map[string]int64{}
 			toolCallbacks := toolCallEventCallbacks{
 				callID:              r.cbCallID,
@@ -2544,7 +2550,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			usageForTools := r.usage.Add(stepUsage)
 			stepToolCallConcurrency, _ := prepareToolCallConcurrency(opts.ToolCallConcurrency)
 			var toolsErr error
-			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, stepToolCalls, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
+			stepToolResults, toolsErr = executeToolsConfigured(stepCtx, callsToExecute, stepExecutionTools, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, &usageForTools, toolCallbacks, stepToolCallConcurrency)
 			// A failing ToModelOutput conversion is a stream error (as in
 			// GenerateText); cancellation errors are handled by the
 			// abort/timeout checks below.
