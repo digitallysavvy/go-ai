@@ -459,6 +459,16 @@ var (
 		"tool_reference": zObj(fl("type", zLit("tool_reference")), fl("tool", nStr), fl("title", nStr), fl("url", nStr)),
 	})
 
+	// mistralConversationUsageSchema: mistralUsageSchema with the three token
+	// counts defaulting to 0.
+	zMistralConversationUsage = zObj(
+		fl("prompt_tokens", zOptional(zNum)), fl("completion_tokens", zOptional(zNum)), fl("total_tokens", zOptional(zNum)),
+		fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
+		fl("prompt_tokens_details", zNullish(zMistralDetails)),
+		fl("prompt_token_details", zNullish(zMistralDetails)),
+		fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+	)
+
 	// mistralConversationResponseSchema.
 	zMistralConversationResponse = zObj(
 		fl("conversation_id", zStr),
@@ -470,14 +480,7 @@ var (
 			"message.output": zObj(fl("type", zLit("message.output")),
 				fl("content", zUnionOf(zStr, zArr(zMistralConversationContent))), fl("model", nStr)),
 		}))),
-		// mistralUsageSchema with the three token counts defaulting to 0.
-		fl("usage", zNullish(zObj(
-			fl("prompt_tokens", zOptional(zNum)), fl("completion_tokens", zOptional(zNum)), fl("total_tokens", zOptional(zNum)),
-			fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
-			fl("prompt_tokens_details", zNullish(zMistralDetails)),
-			fl("prompt_token_details", zNullish(zMistralDetails)),
-			fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
-		))),
+		fl("usage", zNullish(zMistralConversationUsage)),
 	)
 )
 
@@ -494,4 +497,34 @@ func MistralConversationResponseValidator(providerName string) func(statusCode i
 		}
 		return nil
 	})
+}
+
+// MistralConversationStreamContentError reports why a streamed
+// message.output.delta `content` value (a string or one conversation content
+// chunk) fails the TS schema; nil when it is valid.
+func MistralConversationStreamContentError(raw []byte) error {
+	var value interface{}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if _, ok := value.(string); ok {
+		return nil
+	}
+	if bad := zMistralConversationContent(value, true, nil); bad != nil {
+		return bad
+	}
+	return nil
+}
+
+// MistralConversationUsageError reports why a streamed
+// conversation.response.done `usage` value fails the TS schema.
+func MistralConversationUsageError(raw []byte) error {
+	var value interface{}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if bad := zMistralConversationUsage(value, true, nil); bad != nil {
+		return bad
+	}
+	return nil
 }
