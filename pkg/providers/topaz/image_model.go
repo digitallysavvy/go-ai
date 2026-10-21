@@ -332,7 +332,7 @@ func writeFloatField(w *multipart.Writer, key string, value *float64) error {
 	if value == nil {
 		return nil
 	}
-	return w.WriteField(key, strconv.FormatFloat(*value, 'g', -1, 64))
+	return w.WriteField(key, providerutils.JSNumberString(*value))
 }
 
 // parseSize parses a "{width}x{height}" call option.
