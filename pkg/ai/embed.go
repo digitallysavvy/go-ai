@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -801,14 +802,8 @@ func RankBySimilarity(query []float64, candidates [][]float64) ([]int, []float64
 		results[i] = result{index: i, similarity: sim}
 	}
 
-	// Sort by similarity (descending)
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].similarity > results[i].similarity {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	// Sort by similarity (descending); ties keep input order.
+	sort.SliceStable(results, func(i, j int) bool { return results[i].similarity > results[j].similarity })
 
 	// Extract indices and similarities
 	indices := make([]int, len(results))
