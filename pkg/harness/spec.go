@@ -427,6 +427,17 @@ type SkillFile struct {
 // by harness id. Mirrors TS `HarnessV1Metadata`.
 type Metadata map[string]map[string]any
 
+// UnmarshalJSON decodes the record and rejects a null harness entry like
+// `harnessV1MetadataSchema` (every value must be an object).
+func (m *Metadata) UnmarshalJSON(data []byte) error {
+	out, err := decodeNamespacedRecord(data)
+	if err != nil {
+		return err
+	}
+	*m = out
+	return nil
+}
+
 // CallWarningType discriminates CallWarning.
 type CallWarningType string
 
