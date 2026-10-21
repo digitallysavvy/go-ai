@@ -967,19 +967,7 @@ func resolveWorkflowToolContext(tool *types.Tool, toolName string, toolsContext 
 	if toolsContext != nil {
 		entry = toolsContext[toolName]
 	}
-	if tool == nil || tool.ContextSchema == nil {
-		return entry, nil
-	}
-	normalized := schema.ApplyDefaults(entry, tool.ContextSchema)
-	if err := tool.ContextSchema.Validator().Validate(normalized); err != nil {
-		return nil, providererrors.NewValidationErrorWithContext(
-			normalized,
-			fmt.Sprintf("invalid tool context for %s: %v", toolName, err),
-			err,
-			&providererrors.ValidationContext{Field: "tool context", EntityName: toolName},
-		)
-	}
-	return normalized, nil
+	return ai.ValidateToolContext(tool, toolName, entry)
 }
 
 func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call types.ToolCall, opts workflowApprovalResumeOptions) (interface{}, error) {

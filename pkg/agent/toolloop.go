@@ -840,6 +840,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 						if toolResults[i].ToolCallID == synthetic.ToolCallID && toolResults[i].ProviderExecuted && toolResults[i].Result == nil && toolResults[i].Error == nil {
 							toolResults[i].Result = synthetic.Result
 							toolResults[i].ModelOutput = synthetic.ModelOutput
+							// The answered call keeps the loop going (as
+							// generate.go's injectedProviderResult).
+							shouldContinue = true
 						}
 					}
 				}
@@ -2681,19 +2684,7 @@ func normalizeAgentApprovalValue(value interface{}) types.ToolApprovalResult {
 }
 
 func validateAgentToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {
-	if tool == nil || tool.ContextSchema == nil {
-		return ctxValue, nil
-	}
-	normalized := schema.ApplyDefaults(ctxValue, tool.ContextSchema)
-	if err := tool.ContextSchema.Validator().Validate(normalized); err != nil {
-		return nil, providererrors.NewValidationErrorWithContext(
-			normalized,
-			fmt.Sprintf("invalid tool context for %s: %v", toolName, err),
-			err,
-			&providererrors.ValidationContext{Field: "tool context", EntityName: toolName},
-		)
-	}
-	return normalized, nil
+	return ai.ValidateToolContext(tool, toolName, ctxValue)
 }
 
 func strPtr(s string) *string {
