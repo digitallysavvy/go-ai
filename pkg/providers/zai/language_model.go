@@ -180,18 +180,20 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["stop"] = opts.StopSequences
 	}
 
-	var warnings []types.Warning
+	// zaiWarnings are TS prepareCallOptions' warnings; TS appends them AFTER
+	// the shared chat model's own warnings (`[...result.warnings, ...warnings]`).
+	var zaiWarnings []types.Warning
 
 	// frequencyPenalty/presencePenalty/seed are never supported by Z.AI (TS
 	// prepareCallOptions always strips them and warns when set).
 	if opts.FrequencyPenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
+		zaiWarnings = append(zaiWarnings, types.Warning{Type: "unsupported", Feature: "frequencyPenalty"})
 	}
 	if opts.PresencePenalty != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
+		zaiWarnings = append(zaiWarnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 	}
 	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+		zaiWarnings = append(zaiWarnings, types.Warning{Type: "unsupported", Feature: "seed"})
 	}
 
 	// toolChoice: Z.AI only supports automatic tool selection.
@@ -203,30 +205,33 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		tools = nil
 		toolChoice = types.ToolChoice{}
 	case toolChoice.Type != "" && toolChoice.Type != types.ToolChoiceAuto:
-		warnings = append(warnings, types.Warning{
+		zaiWarnings = append(zaiWarnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "toolChoice " + string(toolChoice.Type),
 			Details: "Z.AI currently supports only automatic tool selection.",
 		})
 		toolChoice = types.ToolChoice{}
 	}
+	var toolWarnings []types.Warning
 	if len(tools) > 0 {
 		// TS prepareTools: a provider-defined tool is dropped with an
 		// `unsupported` warning instead of being sent as a function tool.
 		functionTools, dropped := tool.DropProviderDefinedTools(tools, nil)
-		warnings = append(warnings, dropped...)
+		toolWarnings = dropped
 		body["tools"] = tool.ToOpenAIFormat(functionTools)
-	}
-	if opts.TopK != nil {
-		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
 	}
 	if toolChoice.Type != "" {
 		body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(toolChoice)
 	}
 
 	compatibleOptions, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("zai", opts.ProviderOptions)
-	warnings = append(warnings, resolveWarnings...)
+	// Shared chat model order: option warnings, topK, responseFormat, tool
+	// warnings; then the Z.AI wrapper's own.
+	warnings := append([]types.Warning(nil), resolveWarnings...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
 
 	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
 		StructuredOutputs:         false,
@@ -237,6 +242,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		body["response_format"] = responseFormat
 	}
 	warnings = append(warnings, formatWarnings...)
+	warnings = append(warnings, toolWarnings...)
+	warnings = append(warnings, zaiWarnings...)
 
 	// Map top-level Reasoning to reasoning_effort when the caller hasn't set
 	// providerOptions.zai.reasoningEffort explicitly.
