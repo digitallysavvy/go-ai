@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // prodiaJobResponse represents the Prodia job API response metadata.
@@ -129,11 +130,11 @@ func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix s
 		partCT := part.Header.Get("Content-Type")
 		switch part.FormName() {
 		case "job":
-			var j prodiaJobResponse
-			if err := json.Unmarshal(partData, &j); err != nil {
-				return nil, nil, "", fmt.Errorf("failed to parse job metadata: %w", err)
+			j, err := parseJobPart(partData)
+			if err != nil {
+				return nil, nil, "", err
 			}
-			jobResp = &j
+			jobResp = j
 		case "output":
 			outputData = partData
 			if partCT != "" {
@@ -170,6 +171,20 @@ func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix s
 	return jobResp, outputData, outputMIME, nil
 }
 
+// parseJobPart decodes the multipart "job" part, applying TS
+// prodiaJobResultSchema first: a body that does not match is the typed
+// validation (or JSON parse) error itself, as TS parseJSON({schema}) throws it.
+func parseJobPart(data []byte) (*prodiaJobResponse, error) {
+	if err := providerutils.MediaSchemaParser(providerutils.SchemaProdiaJob)(0, nil, data); err != nil {
+		return nil, err
+	}
+	var j prodiaJobResponse
+	if err := json.Unmarshal(data, &j); err != nil {
+		return nil, fmt.Errorf("failed to parse job metadata: %w", err)
+	}
+	return &j, nil
+}
+
 // buildProdiaProviderMetadata converts a prodiaJobResponse to a provider
 // metadata map.  Field names and structure match the TypeScript SDK's
 // buildProdiaProviderMetadata function exactly.
@@ -204,6 +219,14 @@ func buildProdiaProviderMetadata(job *prodiaJobResponse) map[string]interface{} 
 	return m
 }
 
+// prodiaJobBodyOrder is the key order of the TS job body literals
+// ({type, config: {prompt, seed, resolution}} for video and
+// {prompt, include_messages, aspect_ratio} for the language model).
+var prodiaJobBodyOrder = map[string][]string{
+	"":       {"type", "config"},
+	"config": {"prompt", "seed", "resolution", "include_messages", "aspect_ratio"},
+}
+
 // buildMultipartJobRequest creates a multipart/form-data request body with:
 //   - a "job" part containing the JSON-encoded jobBody
 //   - an optional "input" part with binary data (skipped when inputData is empty)
@@ -222,7 +245,9 @@ func buildMultipartJobRequest(jobBody interface{}, inputData []byte, inputMIME s
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create job part: %w", err)
 	}
-	if err := json.NewEncoder(jobPart).Encode(jobBody); err != nil {
+	// TS JSON.stringify(body): insertion key order, no HTML escaping and no
+	// trailing newline (json.Encoder adds one and escapes <, > and &).
+	if _, err := jobPart.Write([]byte(providerutils.StringifyOrdered(jobBody, prodiaJobBodyOrder))); err != nil {
 		return nil, "", fmt.Errorf("failed to encode job body: %w", err)
 	}
 
@@ -331,11 +356,11 @@ func parseMultipartOutputs(contentType string, body []byte) (*prodiaJobResponse,
 		partCT := part.Header.Get("Content-Type")
 		switch part.FormName() {
 		case "job":
-			var j prodiaJobResponse
-			if err := json.Unmarshal(data, &j); err != nil {
-				return nil, nil, fmt.Errorf("failed to parse job metadata: %w", err)
+			j, err := parseJobPart(data)
+			if err != nil {
+				return nil, nil, err
 			}
-			jobResp = &j
+			jobResp = j
 		case "output":
 			switch {
 			case strings.HasPrefix(partCT, "text/") || strings.Contains(part.Header.Get("Content-Disposition"), ".txt"):

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -314,8 +315,8 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		"videos": []map[string]interface{}{
 			{
 				"url":         statusResp.Video.URL,
-				"width":       statusResp.Video.Width,
-				"height":      statusResp.Video.Height,
+				"width":       falNumberPtr(statusResp.Video.Width),
+				"height":      falNumberPtr(statusResp.Video.Height),
 				"duration":    statusResp.Video.Duration,
 				"fps":         statusResp.Video.FPS,
 				"contentType": contentType,
@@ -326,7 +327,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 		if isNull(raw) || statusResp.Seed == nil {
 			falMeta["seed"] = nil
 		} else {
-			falMeta["seed"] = *statusResp.Seed
+			falMeta["seed"] = falNumber(*statusResp.Seed)
 		}
 	}
 	if raw, ok := rawTop["timings"]; ok && !isNull(raw) {
@@ -491,18 +492,42 @@ type falVideoQueueResponse struct {
 type falVideoStatusResponse struct {
 	Video *struct {
 		URL         string   `json:"url"`
-		Width       *int     `json:"width,omitempty"`
-		Height      *int     `json:"height,omitempty"`
+		Width       *float64 `json:"width,omitempty"`
+		Height      *float64 `json:"height,omitempty"`
 		Duration    *float64 `json:"duration,omitempty"`
 		FPS         *float64 `json:"fps,omitempty"`
 		ContentType string   `json:"content_type,omitempty"`
 	} `json:"video,omitempty"`
-	Seed    *int `json:"seed,omitempty"`
+	Seed    *float64 `json:"seed,omitempty"`
 	Timings *struct {
 		Inference *float64 `json:"inference,omitempty"`
 	} `json:"timings,omitempty"`
 	HasNSFWConcepts []bool `json:"has_nsfw_concepts,omitempty"`
 	Prompt          string `json:"prompt,omitempty"`
+}
+
+// falNumber keeps a whole JSON number an int (what v0.5.2 returned for the
+// integer-typed fields) and a fractional or huge one a float64: TS reads these
+// as z.number(), so 1280.5 or 1e21 must not fail the decode.
+func falNumber(f float64) interface{} {
+	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
+		return int(f)
+	}
+	return f
+}
+
+// falNumberPtr is falNumber for an optional field: an absent value stays a
+// nil *int, a present one is a pointer to the int (or *float64) form.
+func falNumberPtr(f *float64) interface{} {
+	if f == nil {
+		return (*int)(nil)
+	}
+	switch n := falNumber(*f).(type) {
+	case int:
+		return &n
+	default:
+		return f
+	}
 }
 
 // headersOf converts fileutil's header map to http.Header.
