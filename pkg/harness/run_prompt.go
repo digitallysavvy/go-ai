@@ -1632,6 +1632,7 @@ func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call typ
 		d.in.Callbacks.OnToolExecutionStart(d.ctx, ai.OnToolCallStartEvent{
 			CallID:     d.telCallID,
 			ToolCallID: call.ID, ToolName: call.ToolName, ToolCall: call,
+			Messages:       promptAsMessages(d.in.Prompt),
 			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
@@ -1722,6 +1723,7 @@ func (d *turnDriver) publishToolExecutionEnd(toolCallID, toolName string, call t
 			CallID:     d.telCallID,
 			ToolCallID: toolCallID, ToolName: toolName, ToolCall: call, ToolOutput: toolResult,
 			ToolExecutionMs: execMs,
+			Messages:        promptAsMessages(d.in.Prompt),
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}

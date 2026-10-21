@@ -102,3 +102,37 @@ func TestRunPrompt_LanguageModelCallStartToolsCarryInputSchema(t *testing.T) {
 		t.Fatalf("model call start tools = %+v", got)
 	}
 }
+
+// TS onToolExecutionStart / onToolExecutionEnd events carry `messages` (the
+// turn's prompt as a user message).
+func TestRunPrompt_ToolExecutionEventsCarryMessages(t *testing.T) {
+	tool := types.Tool{Name: "a", Parameters: map[string]any{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		}}
+	tools := map[string]types.Tool{"a": tool}
+	session := &slowToolTurnSession{toolName: "a"}
+	var mu sync.Mutex
+	var startMsgs, endMsgs []types.Message
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(), Model: "harness-model",
+		Callbacks: Callbacks{
+			OnToolExecutionStart: func(_ context.Context, e ai.OnToolCallStartEvent) { mu.Lock(); startMsgs = e.Messages; mu.Unlock() },
+			OnToolExecutionEnd:   func(_ context.Context, e ai.OnToolCallFinishEvent) { mu.Lock(); endMsgs = e.Messages; mu.Unlock() },
+		},
+	})
+	stream := out.Result.Stream()
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	<-out.Done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(startMsgs) != 1 || len(endMsgs) != 1 {
+		t.Fatalf("messages start=%v end=%v, want the prompt as one user message", startMsgs, endMsgs)
+	}
+}
