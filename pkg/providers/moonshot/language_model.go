@@ -697,7 +697,7 @@ type moonshotStreamToolCallDelta struct {
 	Type     string `json:"type"`
 	Function struct {
 		Name      streaming.WireName `json:"name"`
-		Arguments string             `json:"arguments"`
+		Arguments *string            `json:"arguments"`
 	} `json:"function"`
 }
 
@@ -931,7 +931,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 					}
 					s.toolCallTypes[idx] = tc.Type
 				}
-				for _, tcc := range s.toolCallTracker.TrackWire(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+				for _, tcc := range s.toolCallTracker.TrackWirePtr(&idx, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 					c := tcc
 					s.flushQueue = append(s.flushQueue, &c)
 				}

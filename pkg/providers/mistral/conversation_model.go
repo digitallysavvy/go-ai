@@ -603,7 +603,7 @@ func (s *conversationStream) handle(data string) {
 	case "function.call.delta":
 		s.closeContent()
 		s.hasFunctionCalls = true
-		for _, c := range s.tracker.TrackWire(ev.OutputIndex, ev.ToolCallID, ev.Name, ev.Arguments) {
+		for _, c := range s.tracker.TrackWirePtr(ev.OutputIndex, ev.ToolCallID, ev.Name, &ev.Arguments) {
 			cc := c
 			s.queue = append(s.queue, &cc)
 		}

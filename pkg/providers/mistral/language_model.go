@@ -705,7 +705,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 						Type     string `json:"type"`
 						Function struct {
 							Name      streaming.WireName `json:"name"`
-							Arguments string             `json:"arguments"`
+							Arguments *string            `json:"arguments"`
 						} `json:"function"`
 					} `json:"tool_calls"`
 				} `json:"delta"`
@@ -828,7 +828,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		// finish-time-only semantics).
 		if len(choice.Delta.ToolCalls) > 0 {
 			for _, tc := range choice.Delta.ToolCalls {
-				for _, chunk := range s.toolCallTracker.TrackWire(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+				for _, chunk := range s.toolCallTracker.TrackWirePtr(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 					c := chunk
 					s.flushQueue = append(s.flushQueue, &c)
 				}

@@ -458,6 +458,16 @@ func convertUserMessage(msg types.Message, opts ConvertOptions) (UserMessage, er
 						}
 						parts = append(parts, part)
 					} else {
+						// TS resolves the full media type and applies the
+						// passThroughUnsupportedFiles check before the file-id
+						// branch of a non-image data part.
+						resolvedMediaType, resolveErr := resolveInlineBase64MediaType(mediaType, p.FileData.DataString)
+						if resolveErr != nil {
+							return UserMessage{}, resolveErr
+						}
+						if err := validateResponsesFileMediaType(resolvedMediaType, opts.PassThroughUnsupportedFiles, providerName); err != nil {
+							return UserMessage{}, err
+						}
 						parts = append(parts, map[string]interface{}{"type": "input_file", "file_id": fileID})
 					}
 					continue
@@ -1821,7 +1831,12 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 		}
 		return convertShellOutput(part)
 	case "apply_patch":
-		if !opts.HasApplyPatchTool {
+		// TS matches the RAW tool name here (part.toolName === 'apply_patch'),
+		// not the provider-mapped one. The Go factory (NewApplyPatchTool) names
+		// the tool "openai.apply_patch", so that default name is the raw name
+		// of a Go caller's tool and is accepted too; a custom name mapped onto
+		// apply_patch is not.
+		if !opts.HasApplyPatchTool || (part.ToolName != "apply_patch" && part.ToolName != "openai.apply_patch") {
 			return nil, nil
 		}
 		return convertApplyPatchOutput(part)
