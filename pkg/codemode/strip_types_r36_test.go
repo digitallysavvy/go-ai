@@ -1,6 +1,7 @@
 package codemode
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -40,5 +41,32 @@ func TestStripTypeScriptLeavesTooDeeplyNestedSourceUnmodified(t *testing.T) {
 	tmpl := "const x: number = " + strings.Repeat("`${", maxStripNesting+1) + "1" + strings.Repeat("}`", maxStripNesting+1) + ";"
 	if got, err := stripTypeScriptAnnotations(tmpl); err == nil || got != tmpl {
 		t.Fatalf("deep templates: err=%v", err)
+	}
+}
+
+// Source nested deeper than the stripper cap reaches the engine unmodified: a
+// type annotation left in it is a syntax error there, and plain deep JS still
+// runs; either way RunCodeMode returns promptly instead of hanging.
+func TestRunCodeModeTooDeeplyNestedSourceFailsCleanly(t *testing.T) {
+	deep := strings.Repeat("(", maxStripNesting+1) + "1" + strings.Repeat(")", maxStripNesting+1)
+	for name, src := range map[string]string{
+		"annotated": "const x: number = " + deep + "; return x;",
+		"plain":     "const x = " + deep + "; return x;",
+	} {
+		start := time.Now()
+		got, err := RunCodeMode(context.Background(), RunInput{JS: src, Tools: ToolSet{}})
+		if d := time.Since(start); d > 10*time.Second {
+			t.Fatalf("%s: took %v", name, d)
+		}
+		switch name {
+		case "annotated":
+			if err == nil {
+				t.Fatalf("annotated: want an engine syntax error, got %v", got)
+			}
+		case "plain":
+			if err != nil {
+				t.Logf("plain: engine error %v", err)
+			}
+		}
 	}
 }
