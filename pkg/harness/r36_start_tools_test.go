@@ -181,3 +181,50 @@ func TestRunPrompt_LegacyTelemetryRootSpanRecordsZeroMaxRetries(t *testing.T) {
 	}
 	t.Fatalf("root span has no ai.settings.maxRetries: %v", roots[0].Attributes())
 }
+
+// TS lifecycle events carry the prompt as one user message whose content is
+// promptToText(prompt): the text parts of a structured message, joined.
+func TestRunPrompt_LifecycleMessagesArePromptText(t *testing.T) {
+	tools := map[string]types.Tool{"a": {Name: "a", Parameters: map[string]any{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		}}}
+	cases := []struct {
+		name   string
+		prompt Prompt
+		want   string
+	}{
+		{"structured", Prompt{Message: &types.Message{Role: types.RoleUser, Content: []types.ContentPart{
+			types.TextContent{Text: "look "}, types.ImageContent{Image: []byte("x"), MimeType: "image/png"}, types.TextContent{Text: "here"},
+		}}}, "look here"},
+		{"empty text", TextPrompt(""), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session := &slowToolTurnSession{toolName: "a"}
+			var mu sync.Mutex
+			var got []types.Message
+			out := runPrompt(context.Background(), runPromptInput{
+				Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+				Prompt: tc.prompt, Tools: tools, ActiveTools: tools,
+				SandboxSession: testSandbox(), Model: "harness-model",
+				Callbacks: Callbacks{OnStart: func(_ context.Context, e ai.OnStartEvent) { mu.Lock(); got = e.Messages; mu.Unlock() }},
+			})
+			stream := out.Result.Stream()
+			for {
+				if _, err := stream.Next(); err != nil {
+					break
+				}
+			}
+			<-out.Done
+			mu.Lock()
+			defer mu.Unlock()
+			if len(got) != 1 || got[0].Role != types.RoleUser || len(got[0].Content) != 1 {
+				t.Fatalf("messages = %+v, want one user message with one text part", got)
+			}
+			if txt, ok := got[0].Content[0].(types.TextContent); !ok || txt.Text != tc.want {
+				t.Fatalf("content = %#v, want text %q", got[0].Content[0], tc.want)
+			}
+		})
+	}
+}
