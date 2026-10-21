@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"context"
@@ -506,15 +507,15 @@ func (s *conversationStream) handle(data string) {
 		CreatedAt      *string                `json:"created_at"`
 		Usage          json.RawMessage        `json:"usage"`
 		Message        string                 `json:"message"`
-		Code           int                    `json:"code"`
+		Code           float64                `json:"code"`
 		ID             string                 `json:"id"`
-		ContentIndex   *int                   `json:"content_index"`
+		ContentIndex   *float64               `json:"content_index"`
 		Content        json.RawMessage        `json:"content"`
 		Model          *string                `json:"model"`
 		ToolCallID     string                 `json:"tool_call_id"`
 		Name           streaming.WireName     `json:"name"`
 		Arguments      string                 `json:"arguments"`
-		OutputIndex    *int                   `json:"output_index"`
+		OutputIndex    *float64               `json:"output_index"`
 		Function       *string                `json:"function"`
 		Info           map[string]interface{} `json:"info"`
 	}
@@ -571,11 +572,12 @@ func (s *conversationStream) handle(data string) {
 			s.hasModelID = true
 			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ModelID: *ev.Model}})
 		}
-		idx := 0
+		// z.number(): content_index may be fractional (`${id}-${index}` in JS).
+		idx := "0"
 		if ev.ContentIndex != nil {
-			idx = *ev.ContentIndex
+			idx = strconv.FormatFloat(*ev.ContentIndex, 'f', -1, 64)
 		}
-		id := fmt.Sprintf("%s-%d", ev.ID, idx)
+		id := ev.ID + "-" + idx
 		for _, chunk := range parseConversationContent(ev.Content) {
 			for _, part := range s.converter.convertChunk(chunk) {
 				switch part.kind {
@@ -602,7 +604,12 @@ func (s *conversationStream) handle(data string) {
 	case "function.call.delta":
 		s.closeContent()
 		s.hasFunctionCalls = true
-		for _, c := range s.tracker.TrackWirePtr(ev.OutputIndex, ev.ToolCallID, ev.Name, &ev.Arguments) {
+		var outputIndex *int
+		if ev.OutputIndex != nil {
+			n := int(*ev.OutputIndex) // z.number(): a fractional index is truncated
+			outputIndex = &n
+		}
+		for _, c := range s.tracker.TrackWirePtr(outputIndex, ev.ToolCallID, ev.Name, &ev.Arguments) {
 			cc := c
 			s.queue = append(s.queue, &cc)
 		}

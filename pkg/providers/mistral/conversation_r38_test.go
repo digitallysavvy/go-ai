@@ -35,3 +35,24 @@ func TestConversationStreamRejectsMalformedChunkMembers(t *testing.T) {
 		})
 	}
 }
+
+// z.number() accepts fractional code / content_index / output_index.
+func TestConversationStreamAcceptsFractionalNumbers(t *testing.T) {
+	_, p := newConvRecorder(t, "text/event-stream", sse(
+		`{"type":"message.output.delta","id":"m","content_index":1.5,"content":"hi"}`,
+		`{"type":"function.call.delta","tool_call_id":"c","name":"f","arguments":"{}","output_index":0.0}`,
+		`{"type":"conversation.response.done"}`))
+	chunks := streamWith(t, p, &provider.GenerateOptions{Prompt: whoWon()})
+	var id string
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeError {
+			t.Fatalf("unexpected error chunk: %#v", c)
+		}
+		if c.Type == provider.ChunkTypeText {
+			id = c.ID
+		}
+	}
+	if id != "m-1.5" {
+		t.Errorf("text id = %q, want m-1.5", id)
+	}
+}

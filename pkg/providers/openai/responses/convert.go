@@ -259,8 +259,11 @@ func convertSystemMidConversationMessage(msg types.Message, systemMessageMode st
 	sysOpts := systemMessageProviderOptions(msg, providerName)
 	effort, _ := sysOpts["reasoningEffortUpdate"].(string)
 	content := systemMessageText(msg)
+	// zod `.optional()` enum: a present key must hold a valid value (an empty
+	// string, a number or an explicit null is rejected, not ignored).
+	_, effortPresent := sysOpts["reasoningEffortUpdate"]
 
-	if effort != "" {
+	if effortPresent {
 		// TS parses this field against a fixed schema enum
 		// (z.enum(['none','low','medium','high','xhigh','max']), row
 		// 94d5d6d3e6) before any model-specific handling, so an
