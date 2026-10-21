@@ -179,3 +179,60 @@ func TestGeneratedFileDownload_AbortCancelsDownload(t *testing.T) {
 func asDownloadError(err error, target **providererrors.DownloadError) bool {
 	return errors.As(err, target)
 }
+
+// TS getBatchResults -> convertGenerateResult -> convertLanguageModelContent
+// downloads URL-backed file parts of a succeeded text result.
+func TestGeneratedFileDownload_BatchTextResultDownloadsFiles(t *testing.T) {
+	var hits atomic.Int32
+	url := fileServer(t, http.StatusOK, &hits)
+	stream := &mockBatchItemStream{items: []provider.BatchV4ItemResult{{
+		Type: provider.BatchRequestTypeText, ID: "req-1", Status: provider.BatchItemSucceeded,
+		TextResult: &types.GenerateResult{Content: []types.ContentPart{urlFile(url)}, FinishReason: types.FinishReasonStop},
+	}}}
+	mock := &mockBatchV4{
+		providerName: "mock.batch",
+		resultsFn: func(context.Context, provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
+			return stream, nil
+		},
+	}
+	rs, err := ExperimentalGetBatchResults(context.Background(), GetBatchResultsOptions{
+		Provider: mock,
+		Batch:    BatchReference{Version: 2, ID: "job_1", Provider: "mock.batch"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := rs.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := item.Text.Content[0].(types.GeneratedFileContent)
+	if !ok || string(f.Data) != "Hello World" || f.URL != "" || hits.Load() != 1 {
+		t.Fatalf("content = %+v hits=%d", item.Text.Content, hits.Load())
+	}
+}
+
+// A tool-result part that answers no tool call of the response fails the
+// batch item conversion (TS "Tool call <id> not found.").
+func TestBatchResults_ToolResultWithoutCallRejected(t *testing.T) {
+	stream := &mockBatchItemStream{items: []provider.BatchV4ItemResult{{
+		Type: provider.BatchRequestTypeText, ID: "req-1", Status: provider.BatchItemSucceeded,
+		TextResult: &types.GenerateResult{Content: []types.ContentPart{types.ToolResultContent{ToolCallID: "x", ToolName: "t", Result: "r"}}},
+	}}}
+	mock := &mockBatchV4{
+		providerName: "mock.batch",
+		resultsFn: func(context.Context, provider.BatchV4OperationOptions) (provider.BatchV4ItemResultStream, error) {
+			return stream, nil
+		},
+	}
+	rs, err := ExperimentalGetBatchResults(context.Background(), GetBatchResultsOptions{
+		Provider: mock,
+		Batch:    BatchReference{Version: 2, ID: "job_1", Provider: "mock.batch"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rs.Next(); err == nil {
+		t.Fatal("want a Tool call not found error")
+	}
+}
