@@ -35,3 +35,23 @@ func TestStripReturnTypedArrowInCaseLabelMatchesNode(t *testing.T) {
 		}
 	}
 }
+
+// Node writes the ASI `;` over an erased type before a template literal only
+// when the template has no substitutions. Expected strings are Node 24.20
+// stripTypeScriptTypes output.
+func TestStripAsiGuardSkipsTemplateWithSubstitution(t *testing.T) {
+	for _, c := range [][2]string{
+		{"type F = T;\n`x${a}`", "           \n`x${a}`"},
+		{"type F = T\n`x${a}`", "          \n`x${a}`"},
+		{"type F = T\n`t`", ";         \n`t`"},
+		{"x = y as T\n`a${b}c`", "x = y     \n`a${b}c`"},
+		{"x = y as T\n`t`", "x = y ;   \n`t`"},
+		{"type F = T;\n`x\\${a}`", ";          \n`x\\${a}`"},
+		{"type F = T\n`\\\\${a}`", "          \n`\\\\${a}`"},
+	} {
+		got, err := stripTypeScriptAnnotations(c[0])
+		if err != nil || got != c[1] {
+			t.Errorf("%q\n got  %q (%v)\n want %q", c[0], got, err, c[1])
+		}
+	}
+}

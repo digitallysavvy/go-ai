@@ -572,7 +572,10 @@ func asiGuard(tokens []tsToken, next int, out *[]tsToken, pos int, statement boo
 	}
 	t := tokens[j]
 	switch {
-	case t.kind == "string" && strings.HasPrefix(t.text, "`"):
+	case t.kind == "string" && strings.HasPrefix(t.text, "`") && !templateHasSubstitution(t.text):
+		// Node guards only a template without substitutions
+		// (NoSubstitutionTemplateLiteral); one that starts with a
+		// `${...}` head gets no `;`.
 	case t.kind == "punct" && (t.text == "(" || t.text == "["):
 	case statement && t.kind == "regex":
 	case statement && t.kind == "punct" && (t.text == "+" || t.text == "-" || t.text == "/"):
@@ -591,6 +594,22 @@ func asiGuard(tokens []tsToken, next int, out *[]tsToken, pos int, statement boo
 		break
 	}
 	*out = append(*out, tsToken{kind: "punct", text: ";", pos: pos})
+}
+
+// templateHasSubstitution reports whether the template literal token holds an
+// unescaped `${`.
+func templateHasSubstitution(text string) bool {
+	for i := 1; i+1 < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '$':
+			if text[i+1] == '{' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isExpressionPrefixKeyword(ident string) bool { return expressionPrefixKeywords[ident] }
