@@ -249,3 +249,19 @@ func TestResolveAuthenticationEnvironment_RefreshFailureFailsStart(t *testing.T)
 		t.Fatal("expected the refresh failure to be returned")
 	}
 }
+
+// TS getClaudeOAuthCredential only checks types: an empty accessToken string
+// is still a credential and is returned as-is.
+func TestReadClaudeCodeSubscription_EmptyTokenStringsAreCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	farFuture := time.Now().Add(24 * time.Hour).UnixMilli()
+	writeCredentialFile(t, home, map[string]any{
+		"claudeAiOauth": map[string]any{"accessToken": "", "refreshToken": "", "expiresAt": float64(farFuture)},
+	})
+	env, ok := readClaudeCodeSubscription(context.Background())
+	if !ok || env["CLAUDE_CODE_OAUTH_TOKEN"] != "" || env["ANTHROPIC_BASE_URL"] != claudeSubscriptionBaseURL {
+		t.Fatalf("env = %v ok = %v", env, ok)
+	}
+}

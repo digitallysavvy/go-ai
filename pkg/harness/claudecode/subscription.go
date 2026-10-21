@@ -168,9 +168,6 @@ func resolveClaudeCodeSubscription(ctx context.Context) (map[string]string, bool
 	accessToken, _ := oauth["accessToken"].(string)
 	refreshToken, _ := oauth["refreshToken"].(string)
 	expiresAt, _ := oauth["expiresAt"].(float64)
-	if accessToken == "" || refreshToken == "" {
-		return nil, false, nil
-	}
 
 	if harnessutil.IsAccessTokenExpiringSoon(int64(expiresAt), time.Now().UnixMilli(), 0) {
 		refreshed, err := harnessutil.RefreshOAuthAccessToken(ctx, harnessutil.RefreshOAuthAccessTokenOptions{
