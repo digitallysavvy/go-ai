@@ -1084,7 +1084,7 @@ func anthropicRawUsage(usage anthropicUsage) map[string]interface{} {
 	if usage.CacheReadInputTokens > 0 {
 		raw["cache_read_input_tokens"] = usage.CacheReadInputTokens
 	}
-	if len(usage.Iterations) > 0 {
+	if usage.Iterations != nil {
 		raw["iterations"] = usage.Iterations
 	}
 	if usage.OutputTokensDetails != nil {
@@ -1094,7 +1094,7 @@ func anthropicRawUsage(usage anthropicUsage) map[string]interface{} {
 }
 
 func anthropicUsageIterationsMetadata(iterations []UsageIteration) interface{} {
-	if len(iterations) == 0 {
+	if iterations == nil {
 		return nil
 	}
 	out := make([]map[string]interface{}, 0, len(iterations))
@@ -2682,7 +2682,7 @@ func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
 					s.cacheWriteTokens = int64(*delta.Usage.CacheCreationInputTokens)
 					s.usage.CacheCreationInputTokens = *delta.Usage.CacheCreationInputTokens
 				}
-				if len(delta.Usage.Iterations) > 0 {
+				if delta.Usage.Iterations != nil {
 					s.usage.Iterations = delta.Usage.Iterations
 				}
 				usage := convertAnthropicUsage(s.usage)
