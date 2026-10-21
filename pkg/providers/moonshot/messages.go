@@ -61,7 +61,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 				Message: "Moonshot AI Partial Mode requires `partial: true` on an assistant message.",
 			}
 		}
-		if msgOpts != nil && len(msgOpts.Tools) > 0 && msg.Role != types.RoleSystem {
+		if msgOpts != nil && msgOpts.HasTools && msg.Role != types.RoleSystem {
 			return nil, nil, &providererrors.InvalidArgumentError{
 				Field:   "prompt",
 				Message: "Moonshot dynamic tools must be configured on a system message.",
@@ -71,7 +71,7 @@ func convertToMoonshotChatMessages(modelID string, messages []types.Message, res
 		switch msg.Role {
 		case types.RoleSystem:
 			if msgOpts != nil && len(msgOpts.Tools) > 0 {
-				if extractMoonshotText(msg.Content) != "" {
+				if len(msg.Content) > 0 {
 					return nil, nil, &providererrors.InvalidArgumentError{
 						Field:   "prompt",
 						Message: "A Moonshot dynamic-tool system message must use empty content because the API forbids content alongside tools.",

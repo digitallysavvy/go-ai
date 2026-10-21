@@ -76,34 +76,34 @@ func invalidMoonshotProviderOptions(cause error) error {
 func parseMoonshotModelOptions(opts map[string]interface{}) (moonshotModelOptions, error) {
 	var result moonshotModelOptions
 
-	// zod rejects a member of the wrong type; a null/absent member is skipped
-	// here the way the typed readers below skip it.
+	// zod `.optional()` accepts an absent member but rejects a wrongly typed
+	// one, an explicit null included.
 	for _, key := range []string{"strictJsonSchema", "logprobs"} {
-		if v, ok := opts[key]; ok && v != nil {
+		if v, ok := opts[key]; ok {
 			if _, isBool := v.(bool); !isBool {
 				return result, invalidMoonshotProviderOptions(nil)
 			}
 		}
 	}
 	for _, key := range []string{"reasoningEffort", "reasoningHistory", "promptCacheKey", "safetyIdentifier"} {
-		if v, ok := opts[key]; ok && v != nil {
+		if v, ok := opts[key]; ok {
 			if _, isString := v.(string); !isString {
 				return result, invalidMoonshotProviderOptions(nil)
 			}
 		}
 	}
-	if v, ok := opts["thinking"]; ok && v != nil {
+	if v, ok := opts["thinking"]; ok {
 		thinking, isObject := v.(map[string]interface{})
 		if !isObject {
 			return result, invalidMoonshotProviderOptions(nil)
 		}
-		if t, ok := thinking["type"]; ok && t != nil {
+		if t, ok := thinking["type"]; ok {
 			if _, isString := t.(string); !isString {
 				return result, invalidMoonshotProviderOptions(nil)
 			}
 		}
 		// budgetTokens: z.number().int().min(1024).
-		if bt, ok := thinking["budgetTokens"]; ok && bt != nil {
+		if bt, ok := thinking["budgetTokens"]; ok {
 			f, isNumber := moonshotNumber(bt)
 			if !isNumber || f != float64(int64(f)) || f < 1024 {
 				return result, invalidMoonshotProviderOptions(nil)
@@ -119,7 +119,10 @@ func parseMoonshotModelOptions(opts map[string]interface{}) (moonshotModelOption
 		result.HasLogprobs = true
 		result.Logprobs = v
 	}
-	if v, ok := opts["topLogprobs"]; ok && v != nil {
+	if v, ok := opts["topLogprobs"]; ok {
+		if v == nil {
+			return result, invalidMoonshotProviderOptions(nil)
+		}
 		if f, isFloat := v.(float64); isFloat && f != float64(int(f)) {
 			return result, invalidMoonshotProviderOptions(nil)
 		}
@@ -136,7 +139,7 @@ func parseMoonshotModelOptions(opts map[string]interface{}) (moonshotModelOption
 		}
 		result.ReasoningEffort = v
 	}
-	if v, ok := opts["prediction"]; ok && v != nil {
+	if v, ok := opts["prediction"]; ok {
 		prediction, err := validateMoonshotPrediction(v)
 		if err != nil {
 			return result, err
@@ -152,7 +155,7 @@ func parseMoonshotModelOptions(opts map[string]interface{}) (moonshotModelOption
 			}
 			thinking.Type = t
 		}
-		if bt, ok := v["budgetTokens"]; ok && bt != nil {
+		if _, ok := v["budgetTokens"]; ok {
 			thinking.HasBudgetTokens = true
 		}
 		result.Thinking = thinking
@@ -224,9 +227,16 @@ type moonshotMessageOptions struct {
 
 	Partial bool
 
-	Tools []types.Tool
+	// HasTools records that the `tools` key was present (TS `tools != null`),
+	// even when the list is empty.
+	HasTools bool
+	Tools    []types.Tool
 }
 
+// parseMoonshotMessageOptions parses+validates a message's provider options
+// like TS parseProviderOptions with moonshotaiAllMessageProviderOptions: a
+// non-string `name`, a `partial` other than true, an explicit null for any
+// modeled key, or a malformed dynamic tool is an InvalidArgumentError.
 func parseMoonshotMessageOptions(providerOptions map[string]interface{}) (*moonshotMessageOptions, error) {
 	resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions("moonshot", providerOptions)
 	mergeMoonshotAIProviderOptions(resolved, providerOptions)
@@ -235,31 +245,58 @@ func parseMoonshotMessageOptions(providerOptions map[string]interface{}) (*moons
 	}
 
 	result := &moonshotMessageOptions{}
-	if name, ok := providerutils.OpenAICompatibleStringOption(resolved, "name"); ok {
+	if v, ok := resolved["name"]; ok {
+		name, isString := v.(string)
+		if !isString {
+			return nil, invalidMoonshotProviderOptions(nil)
+		}
 		result.HasName = true
 		result.Name = name
 	}
-	if partial, ok := providerutils.OpenAICompatibleBoolOption(resolved, "partial"); ok {
-		result.Partial = partial
+	if v, ok := resolved["partial"]; ok {
+		if partial, isBool := v.(bool); !isBool || !partial {
+			return nil, invalidMoonshotProviderOptions(nil)
+		}
+		result.Partial = true
 	}
-	if toolsRaw, ok := resolved["tools"].([]interface{}); ok {
+	if v, ok := resolved["tools"]; ok {
+		toolsRaw, isList := v.([]interface{})
+		if !isList {
+			return nil, invalidMoonshotProviderOptions(nil)
+		}
+		result.HasTools = true
 		tools := make([]types.Tool, 0, len(toolsRaw))
 		for _, raw := range toolsRaw {
 			toolMap, ok := raw.(map[string]interface{})
 			if !ok {
-				continue
+				return nil, invalidMoonshotProviderOptions(nil)
 			}
-			tool := types.Tool{}
-			if name, ok := toolMap["name"].(string); ok {
-				tool.Name = name
+			// moonshotaiDynamicToolSchema.
+			if t, _ := toolMap["type"].(string); t != "function" {
+				return nil, invalidMoonshotProviderOptions(nil)
 			}
-			if desc, ok := toolMap["description"].(string); ok {
+			name, ok := toolMap["name"].(string)
+			if !ok {
+				return nil, invalidMoonshotProviderOptions(nil)
+			}
+			tool := types.Tool{Name: name}
+			if d, ok := toolMap["description"]; ok {
+				desc, isString := d.(string)
+				if !isString {
+					return nil, invalidMoonshotProviderOptions(nil)
+				}
 				tool.Description = desc
 			}
-			if params, ok := toolMap["inputSchema"]; ok {
-				tool.Parameters = params
+			params, ok := toolMap["inputSchema"].(map[string]interface{})
+			if !ok {
+				return nil, invalidMoonshotProviderOptions(nil)
 			}
-			if strict, ok := toolMap["strict"].(bool); ok {
+			tool.Parameters = params
+			if st, ok := toolMap["strict"]; ok {
+				strict, isBool := st.(bool)
+				if !isBool {
+					return nil, invalidMoonshotProviderOptions(nil)
+				}
 				tool.Strict = &strict
 			}
 			tools = append(tools, tool)
