@@ -259,6 +259,13 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	if err != nil {
 		var dlErr *providererrors.DownloadError
 		if errors.As(err, &dlErr) && dlErr.Body != nil {
+			// TS reads the failed body with `await response.clone().json()`
+			// and then `body.detail`: a body that is not JSON (or is the
+			// JSON null) makes that throw, which is not an APICallError, so
+			// doStatus rejects instead of reporting an error status.
+			if trimmed := strings.TrimSpace(string(dlErr.Body)); !json.Valid(dlErr.Body) || trimmed == "null" {
+				return nil, fmt.Errorf("fal: status response (HTTP %d) body is not a JSON object: %w", dlErr.StatusCode, err)
+			}
 			var detail struct {
 				Detail string `json:"detail"`
 			}
