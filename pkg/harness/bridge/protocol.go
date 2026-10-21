@@ -182,6 +182,9 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 	if err := harness.RequireKeys(typ, fields, required); err != nil {
 		return nil, seq, err
 	}
+	if err := harness.RejectNullKeys(typ, fields, controlFrameOptionalKeys[typ]); err != nil {
+		return nil, seq, err
+	}
 	if err := json.Unmarshal(data, target); err != nil {
 		return nil, seq, fmt.Errorf("harness bridge: invalid %s frame: %w", typ, err)
 	}
@@ -194,8 +197,24 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 		if !m.Level.Valid() {
 			return nil, seq, fmt.Errorf("harness bridge: invalid debug-event level %q", m.Level)
 		}
-		if raw, ok := fields["error"]; ok && string(raw) != "null" {
-			if err := harness.RequireKeys("debug-event error", readObject(raw), []string{"message"}); err != nil {
+		if raw, ok := fields["error"]; ok {
+			obj := readObject(raw)
+			if err := harness.RequireKeys("debug-event error", obj, []string{"message"}); err != nil {
+				return nil, seq, err
+			}
+			if err := harness.RejectNullKeys("debug-event error", obj, []string{"name", "stack"}); err != nil {
+				return nil, seq, err
+			}
+		}
+	case *Hello:
+		if raw, ok := fields["capabilities"]; ok {
+			if err := harness.RejectNullKeys("bridge-hello capabilities", readObject(raw), []string{"experimental_userMessageResponses"}); err != nil {
+				return nil, seq, err
+			}
+		}
+	case *UserMessageResponse:
+		if raw, ok := fields["error"]; ok {
+			if err := harness.RequireKeys("user-message-response error", readObject(raw), []string{"message"}); err != nil {
 				return nil, seq, err
 			}
 		}
@@ -205,6 +224,14 @@ func DecodeOutbound(data []byte) (msg OutboundMessage, seq *float64, err error) 
 		}
 	}
 	return target, seq, nil
+}
+
+// controlFrameOptionalKeys lists the `.optional()` keys of the control frames
+// (absent is fine, explicit null is rejected by zod).
+var controlFrameOptionalKeys = map[string][]string{
+	TypeHello:               {"state", "lastSeq", "capabilities"},
+	TypeUserMessageResponse: {"error"},
+	TypeDebugEvent:          {"attrs", "error"},
 }
 
 // MarshalOutbound encodes a bridge->host frame (used by fake bridges in

@@ -430,6 +430,38 @@ var streamPartSpecs = map[string]streamPartSpec{
 	PartTypeRaw:        {func() StreamPart { return &RawPart{} }, nil},
 }
 
+// streamPartOptionalKeys lists each variant's `.optional()` keys: absent is
+// fine, an explicit JSON null is not (zod rejects it).
+var streamPartOptionalKeys = map[string][]string{
+	PartTypeStreamStart:         {"warnings", "modelId"},
+	PartTypeTextStart:           {"harnessMetadata"},
+	PartTypeTextDelta:           {"harnessMetadata"},
+	PartTypeTextEnd:             {"harnessMetadata"},
+	PartTypeReasoningStart:      {"harnessMetadata"},
+	PartTypeReasoningDelta:      {"harnessMetadata"},
+	PartTypeReasoningEnd:        {"harnessMetadata"},
+	PartTypeToolInputStart:      {"providerMetadata", "providerExecuted", "dynamic", "title"},
+	PartTypeToolInputDelta:      {"providerMetadata"},
+	PartTypeToolInputEnd:        {"providerMetadata"},
+	PartTypeToolCall:            {"providerExecuted", "dynamic", "providerMetadata", "nativeName"},
+	PartTypeToolApprovalRequest: {"providerMetadata"},
+	PartTypeToolResult:          {"isError", "preliminary", "dynamic", "providerMetadata"},
+	PartTypeFinishStep:          {"harnessMetadata"},
+	PartTypeFinish:              {"harnessMetadata"},
+	PartTypeFileChange:          {"harnessMetadata"},
+	PartTypeCompaction:          {"tokensBefore", "tokensAfter", "harnessMetadata"},
+}
+
+// RejectNullKeys fails when any of the optional keys is present as JSON null.
+func RejectNullKeys(typ string, fields map[string]json.RawMessage, optional []string) error {
+	for _, key := range optional {
+		if raw, ok := fields[key]; ok && string(raw) == "null" {
+			return fmt.Errorf("harness: invalid %s frame: %q must not be null", typ, key)
+		}
+	}
+	return nil
+}
+
 // IsStreamPartType reports whether typ is a stream-part discriminator.
 func IsStreamPartType(typ string) bool {
 	_, ok := streamPartSpecs[typ]
@@ -452,6 +484,10 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 		return nil, fmt.Errorf("%w %q", ErrUnknownPartType, typ)
 	}
 	if err := RequireKeys(typ, fields, spec.required); err != nil {
+		return nil, err
+	}
+	// zod `.optional()` accepts an absent key but rejects an explicit null.
+	if err := RejectNullKeys(typ, fields, streamPartOptionalKeys[typ]); err != nil {
 		return nil, err
 	}
 	if err := requireUsageShape(typ, fields); err != nil {
