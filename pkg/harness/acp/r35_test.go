@@ -46,3 +46,12 @@ func TestStartMessageOmitsToolsWhenUndefined(t *testing.T) {
 		t.Fatalf("tools lost: %s", b)
 	}
 }
+
+func TestFingerprintPayloadKeepsNullGatewayCredentialSource(t *testing.T) {
+	id := createAuthenticationProfileIdentity(nil, &providerAuthenticationCompatibility{Type: "ai-gateway", Mode: "ai-gateway", BaseURL: "u"})
+	got := stableStringifyCodeUnit(id.fingerprintPayload())
+	want := `{"digest":"` + id.Digest + `","gatewayCredentialSource":null,"providerKind":"ai-gateway","providerMode":"ai-gateway"}`
+	if got != want {
+		t.Fatalf("got %s\nwant %s", got, want)
+	}
+}

@@ -71,7 +71,7 @@ type createTurnStartConfigInput struct {
 // createTurnStartConfig mirrors TS `createACPTurnStartConfig`.
 func createTurnStartConfig(in createTurnStartConfigInput) TurnStartConfig {
 	fingerprintPayload := map[string]any{
-		"authenticationProfile": in.AuthenticationProfile,
+		"authenticationProfile": in.AuthenticationProfile.fingerprintPayload(),
 		"sessionMeta":           in.SessionMeta,
 		"modelMapping":          in.ModelMapping,
 		"builtinTools":          in.BuiltinTools,

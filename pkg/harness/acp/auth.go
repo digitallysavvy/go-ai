@@ -89,6 +89,28 @@ func (a authenticationProfileIdentity) matchesDigest(persisted string) bool {
 	return persisted == a.Digest || (a.legacyDigest != "" && persisted == a.legacyDigest)
 }
 
+// fingerprintPayload is the identity as TS hashes it into the turn start
+// configuration fingerprint: an ai-gateway profile always carries
+// `gatewayCredentialSource`, `null` when no credential source resolved (the
+// struct's omitempty would drop the key).
+func (a authenticationProfileIdentity) fingerprintPayload() map[string]any {
+	out := map[string]any{"digest": a.Digest, "providerKind": a.ProviderKind}
+	if a.ACPMethodID != "" {
+		out["acpMethodId"] = a.ACPMethodID
+	}
+	if a.ProviderMode != "" {
+		out["providerMode"] = a.ProviderMode
+	}
+	if a.ProviderKind == "ai-gateway" {
+		if a.GatewayCredentialSource == "" {
+			out["gatewayCredentialSource"] = nil
+		} else {
+			out["gatewayCredentialSource"] = a.GatewayCredentialSource
+		}
+	}
+	return out
+}
+
 // createAuthenticationProfileIdentity mirrors TS
 // `createACPAuthenticationProfileIdentity`.
 func createAuthenticationProfileIdentity(authentication *Authentication, compat *providerAuthenticationCompatibility) authenticationProfileIdentity {
