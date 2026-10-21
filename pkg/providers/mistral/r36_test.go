@@ -40,3 +40,28 @@ func TestConversationResponseSchemaAndNullUsage(t *testing.T) {
 		t.Errorf("usage = %+v, want the null usage", res.Usage)
 	}
 }
+
+// Conversations: an explicit promptCacheKey (even "") warns as unsupported;
+// an unset one does not.
+func TestConversationPromptCacheKeyWarningOnlyWhenPresent(t *testing.T) {
+	m := NewConversationLanguageModel(New(Config{APIKey: "k"}), "mistral-large-latest")
+	count := func(po map[string]interface{}) int {
+		_, warnings, err := m.buildRequest(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: po})
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, w := range warnings {
+			if w.Feature == "promptCacheKey" {
+				n++
+			}
+		}
+		return n
+	}
+	if n := count(nil); n != 0 {
+		t.Errorf("unset promptCacheKey warned %d times", n)
+	}
+	if n := count(map[string]interface{}{"mistral": map[string]interface{}{"promptCacheKey": ""}}); n != 1 {
+		t.Errorf("empty promptCacheKey warned %d times, want 1", n)
+	}
+}

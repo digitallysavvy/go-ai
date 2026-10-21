@@ -68,3 +68,19 @@ func TestMoonshotStreamErrorChunkClearsRawFinishReason(t *testing.T) {
 		t.Fatalf("finish = %+v, want error with empty raw", finish)
 	}
 }
+
+// An unset promptCacheKey / safetyIdentifier stays off the wire.
+func TestMoonshotOmitsUnsetPromptCacheKeyAndSafetyIdentifier(t *testing.T) {
+	m := NewLanguageModel(New(Config{APIKey: "k"}), "kimi-k2.5")
+	for _, opts := range []map[string]interface{}{nil, {"moonshotai": map[string]interface{}{}}} {
+		body, _, err := m.buildRequestBodyWithWarnings(&provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}, ProviderOptions: opts}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range []string{"prompt_cache_key", "safety_identifier"} {
+			if v, ok := body[k]; ok {
+				t.Errorf("%s = %#v must be absent when unset", k, v)
+			}
+		}
+	}
+}
