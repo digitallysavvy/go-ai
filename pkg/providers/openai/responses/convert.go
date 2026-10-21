@@ -192,6 +192,11 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 		}
 		input = append(input, sysMsg)
 	}
+	// TS treats the system prompt as the first system message, so "remove"
+	// mode warns for it as well.
+	if prompt.System != "" && systemMessageMode == "remove" {
+		warnings = append(warnings, types.Warning{Type: "other", Message: "system messages are removed for this model"})
+	}
 
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
@@ -2132,12 +2137,19 @@ func shouldSkipApprovalDeniedOutput(part types.ToolResultContent) bool {
 	if part.Output == nil || part.Output.Type != types.ToolResultOutputExecutionDenied {
 		return false
 	}
-	openaiOptions, ok := part.ProviderOptions["openai"].(map[string]interface{})
-	if !ok {
-		return false
+	// TS reads output.providerOptions.openai.approvalId (the denial result the
+	// core builds for provider-executed tools); the part-level options are
+	// also honoured for callers that set it there.
+	for _, options := range []map[string]interface{}{part.Output.ProviderOptions, part.ProviderOptions} {
+		openaiOptions, ok := options["openai"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if approvalID, _ := openaiOptions["approvalId"].(string); approvalID != "" {
+			return true
+		}
 	}
-	approvalID, _ := openaiOptions["approvalId"].(string)
-	return approvalID != ""
+	return false
 }
 
 // validateToolOutputFileReferences mirrors TS resolveProviderReference for
@@ -2475,6 +2487,34 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 		}
 		return nil, false, false
 	}
+	// sources is a top-level member of the TS schema: an invalid entry fails
+	// the validation whatever the action type, though only a search keeps it.
+	var validSources []interface{}
+	if rawSources, present := parsed["sources"]; present {
+		list, ok := rawSources.([]interface{})
+		if !ok {
+			return nil
+		}
+		for _, src := range list {
+			m, ok := src.(map[string]interface{})
+			if !ok {
+				return nil
+			}
+			switch m["type"] {
+			case "url":
+				if _, ok := m["url"].(string); !ok {
+					return nil
+				}
+			case "api":
+				if _, ok := m["name"].(string); !ok {
+					return nil
+				}
+			default:
+				return nil
+			}
+		}
+		validSources = list
+	}
 	wireAction := map[string]interface{}{}
 	switch action["type"] {
 	case "search":
@@ -2500,30 +2540,8 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 			}
 			wireAction["queries"] = queries
 		}
-		if rawSources, present := parsed["sources"]; present {
-			list, ok := rawSources.([]interface{})
-			if !ok {
-				return nil
-			}
-			for _, src := range list {
-				m, ok := src.(map[string]interface{})
-				if !ok {
-					return nil
-				}
-				switch m["type"] {
-				case "url":
-					if _, ok := m["url"].(string); !ok {
-						return nil
-					}
-				case "api":
-					if _, ok := m["name"].(string); !ok {
-						return nil
-					}
-				default:
-					return nil
-				}
-			}
-			wireAction["sources"] = list
+		if validSources != nil {
+			wireAction["sources"] = validSources
 		}
 	case "openPage":
 		wireAction["type"] = "open_page"
