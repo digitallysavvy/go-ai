@@ -80,11 +80,15 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 				opts.OnComplete()
 			}
 		}()
-		err := streamArrayElements(result, arr.ParsePartialOutput, arr.maxItems, arr.minItems, func(elem ElementStreamResult[ELEMENT]) {
-			ch <- elem
+		closed := result.closedSignal()
+		err := streamArrayElements(result, arr.ParsePartialOutput, arr.maxItems, arr.minItems, func(elem ElementStreamResult[ELEMENT]) bool {
+			if !sendUnlessClosed(ch, elem, closed) {
+				return false
+			}
 			if opts.OnElement != nil {
 				opts.OnElement(elem)
 			}
+			return true
 		})
 		if err != nil && opts.OnError != nil {
 			opts.OnError(err)
@@ -102,7 +106,7 @@ func streamArrayElements[ELEMENT any](
 	result *StreamTextResult,
 	parsePartial func(context.Context, ParsePartialOutputOptions) (*PartialOutput[[]ELEMENT], error),
 	maxItems, minItems *int,
-	emit func(ElementStreamResult[ELEMENT]),
+	emit func(ElementStreamResult[ELEMENT]) bool,
 ) error {
 	ctx := context.Background()
 	var text string
@@ -137,7 +141,9 @@ func streamArrayElements[ELEMENT any](
 				if maxItems != nil && published >= *maxItems {
 					return arrayLengthValidationError(len(partial.Partial), minItems, maxItems)
 				}
-				emit(ElementStreamResult[ELEMENT]{Element: partial.Partial[published], Index: published})
+				if !emit(ElementStreamResult[ELEMENT]{Element: partial.Partial[published], Index: published}) {
+					return nil // consumer abandoned the stream (result closed)
+				}
 			}
 		case provider.ChunkTypeFinish:
 			return nil
@@ -182,8 +188,23 @@ func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Outpu
 
 	go func() {
 		defer close(ch)
-		_ = streamArrayElements(result, output.ParsePartialOutput, maxItems, minItems, func(elem ElementStreamResult[ELEMENT]) { ch <- elem })
+		closed := result.closedSignal()
+		_ = streamArrayElements(result, output.ParsePartialOutput, maxItems, minItems, func(elem ElementStreamResult[ELEMENT]) bool {
+			return sendUnlessClosed(ch, elem, closed)
+		})
 	}()
 
 	return ch
+}
+
+// sendUnlessClosed sends v on ch, giving up (false) when closed fires first, so
+// a consumer that stops reading and closes the result cannot strand the
+// producing goroutine.
+func sendUnlessClosed[T any](ch chan<- T, v T, closed <-chan struct{}) bool {
+	select {
+	case ch <- v:
+		return true
+	case <-closed:
+		return false
+	}
 }
