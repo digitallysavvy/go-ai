@@ -138,13 +138,6 @@ func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]
 	return out
 }
 
-func telemetryToolContext(settings *telemetry.Options, toolName string, toolContext interface{}) map[string]interface{} {
-	if settings == nil {
-		return map[string]interface{}{}
-	}
-	return filterIncludedContext(toolContext, settings.IncludeToolsContext[toolName])
-}
-
 // telStart fires the turn-level ("ai.harness") telemetry start event once
 // per turn and records the returned root ctx for span nesting. Called from
 // ensureStarted, which already guards against firing more than once.
@@ -332,15 +325,16 @@ func (d *turnDriver) telToolExecutionEnd(call types.ToolCall, result types.ToolR
 		toolCtx = d.telStepCtx
 	}
 	telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
-		Settings:    d.in.Telemetry,
-		CallID:      d.telCallID,
-		ToolCallID:  call.ID,
-		ToolName:    call.ToolName,
-		Args:        call.Arguments,
-		Result:      result.Result,
-		Error:       result.Error,
-		DurationMs:  durationMs,
-		ToolContext: telemetryToolContext(d.in.Telemetry, call.ToolName, d.in.ToolsContext[call.ToolName]),
+		Settings:   d.in.Telemetry,
+		CallID:     d.telCallID,
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
+		Args:       call.Arguments,
+		Result:     result.Result,
+		Error:      result.Error,
+		DurationMs: durationMs,
+		// TS publishToolExecutionEnd passes `toolContext: undefined`.
+		ToolContext: nil,
 	})
 }
 

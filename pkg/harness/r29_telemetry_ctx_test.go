@@ -13,9 +13,6 @@ func TestTelemetryContextFiltersReturnEmptyObjectsNotNil(t *testing.T) {
 	if got := telemetryRuntimeContext(s, nil); got == nil {
 		t.Error("runtime context must be {} not nil")
 	}
-	if got := telemetryToolContext(s, "t", nil); got == nil {
-		t.Error("tool context must be {} not nil")
-	}
 	got := telemetryToolsContext(s, map[string]interface{}{"t": map[string]interface{}{"b": 1}})
 	if v, ok := got["t"]; !ok || v == nil {
 		t.Errorf("per-tool entry must be an empty object, got %#v", got)
@@ -32,14 +29,8 @@ func TestTelemetryContextFiltersReturnEmptyObjectsNotNil(t *testing.T) {
 		if v, ok := got["t"]; !ok || v == nil {
 			t.Errorf("per-tool entry for %#v must be an empty object, got %#v", ctxValue, got)
 		}
-		if got := telemetryToolContext(s, "t", ctxValue); got == nil {
-			t.Errorf("tool context for %#v must be {} not nil", ctxValue)
-		}
 	}
 	if got := telemetryRuntimeContext(nil, map[string]interface{}{"a": 1}); got == nil {
 		t.Error("runtime context without settings must be {}")
-	}
-	if got := telemetryToolContext(nil, "t", map[string]interface{}{"a": 1}); got == nil {
-		t.Error("tool context without settings must be {}")
 	}
 }

@@ -1619,12 +1619,14 @@ func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call typ
 
 	if telCtx != nil {
 		toolCtx := telemetry.FireOnToolCallStart(telCtx, telemetry.TelemetryToolCallStartEvent{
-			Settings:    d.in.Telemetry,
-			CallID:      d.telCallID,
-			ToolCallID:  call.ID,
-			ToolName:    call.ToolName,
-			Args:        call.Arguments,
-			ToolContext: telemetryToolContext(d.in.Telemetry, call.ToolName, d.in.ToolsContext[call.ToolName]),
+			Settings:   d.in.Telemetry,
+			CallID:     d.telCallID,
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			Args:       call.Arguments,
+			// TS publishToolExecutionStart passes `toolContext: undefined`, so
+			// the dispatcher never augments the event with a tool context.
+			ToolContext: nil,
 		})
 		d.execMu.Lock()
 		d.telToolCtx[call.ID] = toolCtx
