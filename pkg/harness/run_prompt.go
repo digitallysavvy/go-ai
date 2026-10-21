@@ -1017,11 +1017,24 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			continue
 		}
 
+		// Open the step lazily before the first real content of each step,
+		// before any settled-replay skip (TS run-prompt.ts runs
+		// `lifecycle.ensureStepOpen()` ahead of both the tool-input and the
+		// settled-replay `continue`s), but not for step/turn boundaries or the
+		// error part themselves: TS's exact exclusion list is `!== 'finish-step'
+		// && !== 'finish' && !== 'error'` ('stream-start' is handled above). This
+		// also keeps the unclosed-step check meaningful: d.stepOpen only
+		// reflects genuine unflushed content.
+		switch part.(type) {
+		case *FinishStepPart, *FinishPart, *ErrorPart:
+		default:
+			d.ensureStepOpen()
+		}
+
 		if id := toolInputStreamID(part); id != "" {
 			if d.isSettled(id) {
 				continue
 			}
-			d.ensureStepOpen()
 			for _, displayed := range d.stripToolInput(part) {
 				for _, c := range TranslatePart(displayed, d.translateOpts()) {
 					d.stream.push(c)
@@ -1098,19 +1111,6 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			d.resetStepAccum()
 			d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeDiscardStep})
 			continue
-		}
-
-		// Open the step lazily before the first real content of each step,
-		// but not for step/turn boundaries or the error part themselves —
-		// mirrors TS's exact exclusion list (`!== 'finish-step' && !==
-		// 'finish' && !== 'error'`; 'stream-start' is handled earlier above
-		// and never reaches this point). This is also what makes the
-		// unclosed-step check below meaningful: d.stepOpen only reflects
-		// genuine unflushed content, never a boundary part opening "itself".
-		switch display.(type) {
-		case *FinishStepPart, *FinishPart, *ErrorPart:
-		default:
-			d.ensureStepOpen()
 		}
 
 		if ep, isErr := display.(*ErrorPart); isErr {
@@ -1261,6 +1261,12 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// and the later lifecycle.error is a no-op.
 			d.telEnd(d.completedSteps, *usage)
 			if d.stepOpen {
+				// TS calls onTurnFinished for the terminal finish and only
+				// then result.finish() rejects the unclosed step, whose
+				// catch settles the failure and fires onTurnFailed too.
+				if !d.suspending() && d.in.OnTurnFinished != nil {
+					d.in.OnTurnFinished()
+				}
 				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
 			}
 			// Deferred, not pushed here — see turnDriver.pendingFinishChunk's
