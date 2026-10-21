@@ -2487,6 +2487,34 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 		}
 		return nil, false, false
 	}
+	// sources is a top-level member of the TS schema: an invalid entry fails
+	// the validation whatever the action type, though only a search keeps it.
+	var validSources []interface{}
+	if rawSources, present := parsed["sources"]; present {
+		list, ok := rawSources.([]interface{})
+		if !ok {
+			return nil
+		}
+		for _, src := range list {
+			m, ok := src.(map[string]interface{})
+			if !ok {
+				return nil
+			}
+			switch m["type"] {
+			case "url":
+				if _, ok := m["url"].(string); !ok {
+					return nil
+				}
+			case "api":
+				if _, ok := m["name"].(string); !ok {
+					return nil
+				}
+			default:
+				return nil
+			}
+		}
+		validSources = list
+	}
 	wireAction := map[string]interface{}{}
 	switch action["type"] {
 	case "search":
@@ -2512,30 +2540,8 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 			}
 			wireAction["queries"] = queries
 		}
-		if rawSources, present := parsed["sources"]; present {
-			list, ok := rawSources.([]interface{})
-			if !ok {
-				return nil
-			}
-			for _, src := range list {
-				m, ok := src.(map[string]interface{})
-				if !ok {
-					return nil
-				}
-				switch m["type"] {
-				case "url":
-					if _, ok := m["url"].(string); !ok {
-						return nil
-					}
-				case "api":
-					if _, ok := m["name"].(string); !ok {
-						return nil
-					}
-				default:
-					return nil
-				}
-			}
-			wireAction["sources"] = list
+		if validSources != nil {
+			wireAction["sources"] = validSources
 		}
 	case "openPage":
 		wireAction["type"] = "open_page"

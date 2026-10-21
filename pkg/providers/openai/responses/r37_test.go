@@ -61,3 +61,30 @@ func TestR37_ApprovalDeniedOutputProviderOptionsSkipsResult(t *testing.T) {
 		t.Fatalf("input[0] = %T", input[0])
 	}
 }
+
+// webSearchOutputSchema validates sources at the top level, so an invalid
+// source rejects the whole output for every action type (TS then falls back to
+// the generic handling instead of rebuilding a web_search_call).
+func TestR37_WebSearchInvalidSourcesRejectedForEveryAction(t *testing.T) {
+	for _, action := range []map[string]interface{}{
+		{"type": "search", "query": "q"},
+		{"type": "openPage", "url": "https://example.com"},
+		{"type": "findInPage", "url": "https://example.com", "pattern": "p"},
+	} {
+		part := types.ToolResultContent{
+			ToolCallID: "ws_1",
+			ToolName:   "web_search",
+			Output: &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{
+				"action":  action,
+				"sources": []interface{}{map[string]interface{}{"type": "url"}},
+			}},
+		}
+		if got := convertWebSearchToolResultOutput(part, "ws_1"); got != nil {
+			t.Errorf("%v: got %#v, want nil", action["type"], got)
+		}
+		part.Output.Value = map[string]interface{}{"action": action}
+		if got := convertWebSearchToolResultOutput(part, "ws_1"); got == nil {
+			t.Errorf("%v: valid output was rejected", action["type"])
+		}
+	}
+}
