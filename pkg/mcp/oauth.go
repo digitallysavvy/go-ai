@@ -183,7 +183,7 @@ func AssertOAuthResourceMetadataURLSameOrigin(serverURL string, resourceMetadata
 		return err
 	}
 	if origin(server) != origin(resource) {
-		return NewMCPClientError(0, fmt.Sprintf("OAuth protected resource metadata URL %s must have the same origin as the MCP server URL %s", resource.String(), origin(server)), nil)
+		return oauthClientError(fmt.Sprintf("OAuth protected resource metadata URL %s must have the same origin as the MCP server URL %s", resource.String(), origin(server)))
 	}
 	return nil
 }
@@ -410,7 +410,7 @@ func DiscoverAuthorizationServerMetadata(ctx context.Context, authorizationServe
 			return nil, err
 		}
 		if !oauthIssuerMatches(metadata.Issuer, candidate.ExpectedIssuer) {
-			return nil, NewMCPClientError(0, fmt.Sprintf("OAuth authorization server metadata issuer %s does not match expected issuer %s", metadata.Issuer, candidate.ExpectedIssuer), nil)
+			return nil, oauthClientError(fmt.Sprintf("OAuth authorization server metadata issuer %s does not match expected issuer %s", metadata.Issuer, candidate.ExpectedIssuer))
 		}
 		if candidate.Type == "oidc" && !containsOAuthString(metadata.CodeChallengeMethodsSupported, "S256") {
 			return nil, fmt.Errorf("Incompatible OIDC provider at %s: does not support S256 code challenge method required by MCP specification", candidate.URL) //nolint:staticcheck // matches TS SDK's exact error text
@@ -643,4 +643,12 @@ func isSafeOAuthURL(raw string) bool {
 		return false
 	}
 	return true
+}
+
+// oauthClientError builds the TS MCPClientOAuthError for a client-side OAuth
+// check. v0.5.2 returned a *MCPClientError for these, so that error is kept
+// as the cause: errors.As matches both *MCPClientOAuthError (TS parity) and
+// *MCPClientError (existing callers).
+func oauthClientError(message string) error {
+	return &MCPClientOAuthError{Message: message, Cause: NewMCPClientError(0, message, nil)}
 }

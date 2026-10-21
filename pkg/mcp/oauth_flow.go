@@ -808,6 +808,13 @@ func RegisterOAuthClient(ctx context.Context, authorizationServerURL string, met
 	}
 
 	if clientMetadata.ApplicationType == "" {
+		// TS inferOAuthApplicationType calls `new URL(redirectUri)` on each
+		// URI and lets the TypeError escape for an unparseable one.
+		for _, uri := range clientMetadata.RedirectURIs {
+			if !isAbsoluteOAuthURL(uri) {
+				return nil, fmt.Errorf("Invalid URL: %s", uri) //nolint:staticcheck // matches TS TypeError text
+			}
+		}
 		clientMetadata.ApplicationType = inferOAuthApplicationType(clientMetadata.RedirectURIs)
 	}
 
