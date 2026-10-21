@@ -835,6 +835,8 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 			},
 			Prompt: wirePrompt, BuiltinTools: s.p.builtinTools, PermissionModeMapping: s.p.permissionModeMapping,
 			MCPServers: s.p.mcpServers, TurnStartConfig: turnStartConfig,
+			// TS: `tools: options.tools == null ? undefined : turnStartConfig.tools`.
+			OmitTools: tools == nil,
 		}
 		if model != "" {
 			msg.Model = model

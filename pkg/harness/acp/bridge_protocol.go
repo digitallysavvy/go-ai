@@ -104,6 +104,26 @@ type StartMessage struct {
 	ModelMapping          *ModelMapping          `json:"modelMapping,omitempty"`
 	TurnStartConfig       TurnStartConfig        `json:"turnStartConfig"`
 	RecoveryMode          *RecoveryMode          `json:"recoveryMode,omitempty"`
+
+	// OmitTools drops the `tools` key from the frame. TS's
+	// `startMessageSchema` declares `tools` optional and the harness sends
+	// `tools: options.tools == null ? undefined : ...`, so a prompt with no
+	// tools option carries no `tools` key (JSON.stringify drops undefined),
+	// unlike the base schema's default `[]`.
+	OmitTools bool `json:"-"`
+}
+
+// MarshalJSON honors OmitTools by shadowing the embedded StartBase.Tools
+// field with an omitted-when-nil one.
+func (m StartMessage) MarshalJSON() ([]byte, error) {
+	type plain StartMessage
+	if !m.OmitTools {
+		return json.Marshal(plain(m))
+	}
+	return json.Marshal(struct {
+		plain
+		Tools *[]harness.ToolSpec `json:"tools,omitempty"`
+	}{plain: plain(m)})
 }
 
 // RecoveryMode tags a "start" frame sent to a respawned bridge process as a
