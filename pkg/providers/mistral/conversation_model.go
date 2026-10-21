@@ -1,6 +1,7 @@
 package mistral
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,7 +367,13 @@ func (m *ConversationLanguageModel) DoGenerate(ctx context.Context, opts *provid
 			if len(out.Arguments) > 0 && out.Arguments[0] == '"' {
 				_ = json.Unmarshal(out.Arguments, &argStr)
 			} else {
-				argStr = string(out.Arguments)
+				// TS JSON.stringify(output.arguments): minified text.
+				var compact bytes.Buffer
+				if err := json.Compact(&compact, out.Arguments); err == nil {
+					argStr = compact.String()
+				} else {
+					argStr = string(out.Arguments)
+				}
 			}
 			var args map[string]interface{}
 			_ = json.Unmarshal([]byte(argStr), &args)
