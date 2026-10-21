@@ -2137,12 +2137,19 @@ func shouldSkipApprovalDeniedOutput(part types.ToolResultContent) bool {
 	if part.Output == nil || part.Output.Type != types.ToolResultOutputExecutionDenied {
 		return false
 	}
-	openaiOptions, ok := part.ProviderOptions["openai"].(map[string]interface{})
-	if !ok {
-		return false
+	// TS reads output.providerOptions.openai.approvalId (the denial result the
+	// core builds for provider-executed tools); the part-level options are
+	// also honoured for callers that set it there.
+	for _, options := range []map[string]interface{}{part.Output.ProviderOptions, part.ProviderOptions} {
+		openaiOptions, ok := options["openai"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if approvalID, _ := openaiOptions["approvalId"].(string); approvalID != "" {
+			return true
+		}
 	}
-	approvalID, _ := openaiOptions["approvalId"].(string)
-	return approvalID != ""
+	return false
 }
 
 // validateToolOutputFileReferences mirrors TS resolveProviderReference for
