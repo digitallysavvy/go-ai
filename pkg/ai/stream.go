@@ -666,6 +666,9 @@ type StreamTextResult struct {
 	// (e.g. in tests exercising the lower-level stream helpers directly),
 	// which fall back to the raw stream field.
 	chunkBuf *chunkBuffer
+	// closedCh/closedFlag signal Close() to Chunks goroutines (guarded by mu).
+	closedCh   chan struct{}
+	closedFlag bool
 	// chunkBufReader is the single cursor over chunkBuf handed out by
 	// Stream(); it is created lazily on first use and memoized (guarded by
 	// mu) so that repeated Stream() calls resume the same cursor rather than
@@ -4090,6 +4093,12 @@ func (r *StreamTextResult) Close() error {
 		r.cancelBootstrap()
 	}
 	r.mu.Lock()
+	if !r.closedFlag {
+		r.closedFlag = true
+		if r.closedCh != nil {
+			close(r.closedCh)
+		}
+	}
 	cancel := r.initialStepCancel
 	s := r.stream
 	r.mu.Unlock()
@@ -4867,27 +4876,68 @@ func (r *StreamTextResult) Files() []types.GeneratedFileContent {
 
 // Chunks returns a channel that streams the full, processed multi-step chunk
 // sequence (see Stream). This provides an idiomatic Go way to consume the
-// stream.
+// stream. The channel is closed when the stream ends, and also when Close is
+// called on the result, so a consumer that stops reading must call Close (or
+// use ChunksContext) to release the producing goroutine.
 func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
+	return r.ChunksContext(context.Background())
+}
+
+// ChunksContext is Chunks with a context: the producing goroutine exits and
+// the channel is closed when ctx is cancelled or the result is closed, even if
+// the consumer has stopped reading.
+func (r *StreamTextResult) ChunksContext(ctx context.Context) <-chan provider.StreamChunk {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ch := make(chan provider.StreamChunk, 10)
 	stream := r.Stream()
+	closed := r.closedSignal()
+	finished := make(chan struct{})
+
+	// Watcher: wakes a Next blocked waiting for a chunk.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = stream.Close()
+		case <-closed:
+			_ = stream.Close()
+		case <-finished:
+		}
+	}()
 
 	go func() {
+		defer close(finished)
 		defer close(ch)
 		for {
 			chunk, err := stream.Next()
-			if err == io.EOF {
-				break
-			}
 			if err != nil {
-				break
+				return
 			}
-
-			ch <- *chunk
+			select {
+			case ch <- *chunk:
+			case <-ctx.Done():
+				return
+			case <-closed:
+				return
+			}
 		}
 	}()
 
 	return ch
+}
+
+// closedSignal returns a channel closed when Close is first called.
+func (r *StreamTextResult) closedSignal() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closedCh == nil {
+		r.closedCh = make(chan struct{})
+		if r.closedFlag {
+			close(r.closedCh)
+		}
+	}
+	return r.closedCh
 }
 
 // finalStepText is the text TS reports for a finished call (the final step's
