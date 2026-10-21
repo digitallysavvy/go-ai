@@ -273,18 +273,6 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		compatPassthrough = resolved
 	}
 
-	// reasoningSummary is a Responses API option; the chat options schema has
-	// no field for it, so it would otherwise be silently dropped. Warn
-	// instead (TS commit 5b8e63bad8, #21178). The message is provider-neutral
-	// because azure.chat() shares this code path.
-	if v, ok := openaiOpts["reasoningSummary"]; ok && v != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "reasoningSummary",
-			Details: "reasoningSummary is only supported by the Responses API, not the Chat Completions API",
-		})
-	}
-
 	// Extract store flag early — needed before message conversion so we can
 	// filter unencrypted reasoning parts from assistant messages when store=false.
 	// storeExplicit tracks whether the caller set the flag (so we only send it
@@ -332,6 +320,25 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			Details: m.modelID + " only supports the following reasoning efforts: " + strings.Join(capabilities.SupportedReasoningEfforts, ", "),
 		})
 		resolvedReasoningEffort = ""
+	}
+
+	// TS getArgs warning order: reasoningEffort, topK, reasoningSummary, message
+	// warnings, response-format schema warnings, promptCacheRetention, the
+	// reasoning-model removals, serviceTier and finally the tool warnings.
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "topK"})
+	}
+
+	// reasoningSummary is a Responses API option; the chat options schema has
+	// no field for it, so it would otherwise be silently dropped. Warn
+	// instead (TS commit 5b8e63bad8, #21178). The message is provider-neutral
+	// because azure.chat() shares this code path.
+	if v, ok := openaiOpts["reasoningSummary"]; ok && v != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "reasoningSummary",
+			Details: "reasoningSummary is only supported by the Responses API, not the Chat Completions API",
+		})
 	}
 
 	// Convert messages, filtering unencrypted reasoning from assistant messages
@@ -437,6 +444,88 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 				"content": opts.Prompt.System,
 			}
 			body["messages"] = append([]map[string]interface{}{systemMsg}, messages...)
+		}
+	}
+
+	// Add response format if present
+	// Response format (TS openai-chat-language-model.ts): json_schema when a
+	// schema is present (strictJsonSchema defaults to true), else json_object.
+	// The schema is normalized for OpenAI structured outputs first (d5e3024,
+	// 411b3f2: drop propertyNames / lookaround patterns).
+	responseFormat := opts.ResponseFormat
+	if m.provider.config.OpenAICompatible {
+		supportsStructured := m.provider.config.SupportsStructuredOutputs != nil && *m.provider.config.SupportsStructuredOutputs // TS default false
+		// OpenAICompatibleChatLanguageModel: json_schema only when
+		// supportsStructuredOutputs and a schema is present (no strict flag, no
+		// OpenAI schema normalization), else json_object.
+		if responseFormat != nil && responseFormat.Type == "json" {
+			schema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema)
+			if supportsStructured && schema != nil {
+				name := responseFormat.Name
+				if name == "" {
+					name = "response"
+				}
+				strict := true
+				cname, _, _ := strings.Cut(m.provider.Name(), ".")
+				if resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(strings.TrimSpace(cname), opts.ProviderOptions); resolved != nil {
+					if v, ok := resolved["strictJsonSchema"].(bool); ok {
+						strict = v
+					}
+				}
+				js := map[string]interface{}{"schema": schema, "strict": strict, "name": name}
+				if responseFormat.Description != "" {
+					js["description"] = responseFormat.Description
+				}
+				body["response_format"] = map[string]interface{}{"type": "json_schema", "json_schema": js}
+			} else {
+				body["response_format"] = map[string]interface{}{"type": "json_object"}
+				if schema != nil {
+					warnings = append(warnings, types.Warning{
+						Type:    "unsupported",
+						Feature: "responseFormat",
+						Details: "JSON response format schema is only supported with structuredOutputs",
+					})
+				}
+			}
+		}
+	} else {
+		if responseFormat != nil && responseFormat.Type == "json" {
+			if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(responseFormat.Schema); rawSchema != nil {
+				{
+					normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
+					if normErr != nil {
+						return nil, nil, normErr
+					}
+					warnings = append(warnings, schemaWarnings...)
+					rfCopy := *responseFormat
+					rfCopy.Schema = normalizedSchema
+					responseFormat = &rfCopy
+				}
+			}
+		}
+		if format, fmtWarnings := providerutils.ChatResponseFormat(responseFormat, providerutils.ChatResponseFormatOptions{
+			StructuredOutputs: true,
+			StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
+		}); format != nil {
+			body["response_format"] = format
+			warnings = append(warnings, fmtWarnings...)
+		}
+	}
+
+	// Apply OpenAI-specific provider options
+	// Add prompt cache retention if present.
+	// Supports "in_memory" (default) and "24h" (for gpt-5.1 series).
+	// GPT-6+ models don't support it; use promptCacheOptions instead
+	// (b2b1bb9).
+	if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
+		if capabilities.SupportedReasoningEfforts != nil {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "promptCacheRetention",
+				Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+			})
+		} else {
+			body["prompt_cache_retention"] = promptCacheRetention
 		}
 	}
 
@@ -597,6 +686,35 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
+	if resolvedReasoningEffort != "" {
+		body["reasoning_effort"] = resolvedReasoningEffort
+	}
+
+	// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
+	// prompt_cache_options.
+	if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
+		body["prompt_cache_options"] = promptCacheOptions
+	}
+	// serviceTier (17d3436/4cd4548): flex requires supportsFlexProcessing;
+	// priority/fast require supportsPriorityProcessing.
+	if serviceTier, ok := openaiOpts["serviceTier"].(string); ok && serviceTier != "" {
+		switch {
+		case serviceTier == "flex" && !capabilities.SupportsFlexProcessing:
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "serviceTier",
+				Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
+			})
+		case (serviceTier == "priority" || serviceTier == "fast") && !capabilities.SupportsPriorityProcessing:
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "serviceTier",
+				Details: "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
+			})
+		default:
+			body["service_tier"] = serviceTier
+		}
+	}
 	// Add tools if present. Function tool parameter schemas are normalized
 	// for OpenAI structured outputs (d5e3024, 411b3f2), mirroring TS
 	// prepareChatTools -- kept local to the OpenAI chat model rather than the
@@ -624,116 +742,6 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
-	// Add response format if present
-	// Response format (TS openai-chat-language-model.ts): json_schema when a
-	// schema is present (strictJsonSchema defaults to true), else json_object.
-	// The schema is normalized for OpenAI structured outputs first (d5e3024,
-	// 411b3f2: drop propertyNames / lookaround patterns).
-	responseFormat := opts.ResponseFormat
-	if m.provider.config.OpenAICompatible {
-		supportsStructured := m.provider.config.SupportsStructuredOutputs != nil && *m.provider.config.SupportsStructuredOutputs // TS default false
-		// OpenAICompatibleChatLanguageModel: json_schema only when
-		// supportsStructuredOutputs and a schema is present (no strict flag, no
-		// OpenAI schema normalization), else json_object.
-		if responseFormat != nil && responseFormat.Type == "json" {
-			schema := providerutils.ResponseFormatJSONSchema(responseFormat.Schema)
-			if supportsStructured && schema != nil {
-				name := responseFormat.Name
-				if name == "" {
-					name = "response"
-				}
-				strict := true
-				cname, _, _ := strings.Cut(m.provider.Name(), ".")
-				if resolved, _ := providerutils.ResolveOpenAICompatibleProviderOptions(strings.TrimSpace(cname), opts.ProviderOptions); resolved != nil {
-					if v, ok := resolved["strictJsonSchema"].(bool); ok {
-						strict = v
-					}
-				}
-				js := map[string]interface{}{"schema": schema, "strict": strict, "name": name}
-				if responseFormat.Description != "" {
-					js["description"] = responseFormat.Description
-				}
-				body["response_format"] = map[string]interface{}{"type": "json_schema", "json_schema": js}
-			} else {
-				body["response_format"] = map[string]interface{}{"type": "json_object"}
-				if schema != nil {
-					warnings = append(warnings, types.Warning{
-						Type:    "unsupported",
-						Feature: "responseFormat",
-						Details: "JSON response format schema is only supported with structuredOutputs",
-					})
-				}
-			}
-		}
-	} else {
-		if responseFormat != nil && responseFormat.Type == "json" {
-			if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(responseFormat.Schema); rawSchema != nil {
-				{
-					normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
-					if normErr != nil {
-						return nil, nil, normErr
-					}
-					warnings = append(warnings, schemaWarnings...)
-					rfCopy := *responseFormat
-					rfCopy.Schema = normalizedSchema
-					responseFormat = &rfCopy
-				}
-			}
-		}
-		if format, fmtWarnings := providerutils.ChatResponseFormat(responseFormat, providerutils.ChatResponseFormatOptions{
-			StructuredOutputs: true,
-			StrictJSONSchema:  m.strictJSONSchema(opts.ProviderOptions),
-		}); format != nil {
-			body["response_format"] = format
-			warnings = append(warnings, fmtWarnings...)
-		}
-	}
-
-	if resolvedReasoningEffort != "" {
-		body["reasoning_effort"] = resolvedReasoningEffort
-	}
-
-	// Apply OpenAI-specific provider options
-	// Add prompt cache retention if present.
-	// Supports "in_memory" (default) and "24h" (for gpt-5.1 series).
-	// GPT-6+ models don't support it; use promptCacheOptions instead
-	// (b2b1bb9).
-	if promptCacheRetention, ok := openaiOpts["promptCacheRetention"].(string); ok && promptCacheRetention != "" {
-		if capabilities.SupportedReasoningEfforts != nil {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "promptCacheRetention",
-				Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
-			})
-		} else {
-			body["prompt_cache_retention"] = promptCacheRetention
-		}
-	}
-	// promptCacheOptions (b2b1bb9): {mode, ttl} forwarded as-is to
-	// prompt_cache_options.
-	if promptCacheOptions, ok := openaiOpts["promptCacheOptions"]; ok && promptCacheOptions != nil {
-		body["prompt_cache_options"] = promptCacheOptions
-	}
-	// serviceTier (17d3436/4cd4548): flex requires supportsFlexProcessing;
-	// priority/fast require supportsPriorityProcessing.
-	if serviceTier, ok := openaiOpts["serviceTier"].(string); ok && serviceTier != "" {
-		switch {
-		case serviceTier == "flex" && !capabilities.SupportsFlexProcessing:
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "serviceTier",
-				Details: "flex processing is only available for o3, o4-mini, and gpt-5 models",
-			})
-		case (serviceTier == "priority" || serviceTier == "fast") && !capabilities.SupportsPriorityProcessing:
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "serviceTier",
-				Details: "priority processing is only available for supported models (gpt-4, gpt-5, gpt-5-mini, o3, o4-mini) and requires Enterprise access. gpt-5-nano is not supported",
-			})
-		default:
-			body["service_tier"] = serviceTier
-		}
-	}
 	// Forward store only when explicitly set (already extracted above).
 	if storeExplicit {
 		body["store"] = store
@@ -1414,7 +1422,9 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		}
 		rawChunk := s.rawChunk(event.Data)
 		if len(chunkData.Error) > 0 {
-			if !s.outputStarted {
+			// TS throwIfOpenAIStreamErrorBeforeOutput wraps only the native OpenAI
+			// models; the openai-compatible chat model emits an error part.
+			if !s.outputStarted && !s.compat {
 				s.flushQueue = nil
 				s.pendingRaw = nil
 				s.pendingMetadata = nil
