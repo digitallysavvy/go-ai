@@ -993,6 +993,8 @@ func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
 	var gotNative any
 	var toNativeArgs []any
 	var gotRequestID string
+	// The adapter's metadata map must not be mutated (TS spreads into new objects).
+	adapterMeta := harness.ProviderMetadata{"test": {"preserved": true}, "test-acp": {"own": 1}}
 	toolResults := make(chan map[string]any, 4)
 	started := make(chan *bridgetest.Turn, 1)
 	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok",
@@ -1011,7 +1013,7 @@ func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
 				}
 				return &harness.ToolCallPart{ToolCallID: "question-1", ToolName: "askUserQuestions",
 					Input:            `{"allowPartialAnswers":false,"questions":[{"id":"q1","question":"Framework?"}]}`,
-					ProviderMetadata: harness.ProviderMetadata{"test": {"preserved": true}}}
+					ProviderMetadata: adapterMeta}
 			},
 			ToNativeResponse: func(nativeRequest any, toolResult types.ToolResultContent) any {
 				toNativeArgs = []any{nativeRequest, toolResult}
@@ -1067,6 +1069,9 @@ func TestTSReplay_TranslatesQuestionRequestsAndClientResults(t *testing.T) {
 	if forwarded.ToolCallID != "question-1" || forwarded.ProviderExecuted || forwarded.ProviderMetadata["test"]["preserved"] != true ||
 		!reflect.DeepEqual(forwarded.ProviderMetadata["test-acp"]["nativeRequest"], nativeRequest) {
 		t.Fatalf("forwarded = %+v", forwarded)
+	}
+	if _, polluted := adapterMeta["test-acp"]["nativeRequest"]; polluted || forwarded.ProviderMetadata["test-acp"]["own"] != 1 {
+		t.Fatalf("adapter metadata mutated or own keys lost: %v / %v", adapterMeta, forwarded.ProviderMetadata)
 	}
 
 	result := types.ToolResultContent{ToolCallID: "question-1", ToolName: "askUserQuestions",
@@ -1138,7 +1143,7 @@ func TestTSReplay_QuestionToolCallWithOmittedProviderExecutedIsRejected(t *testi
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !strings.Contains(errText, "must return a client-executed askUserQuestions tool call") {
+	if errText != "test-acp ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call." {
 		t.Fatalf("error part = %q", errText)
 	}
 }

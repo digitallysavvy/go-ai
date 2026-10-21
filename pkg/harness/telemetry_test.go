@@ -575,3 +575,63 @@ func TestAgent_NoTelemetrySettingsFiresNothingEvenWithGlobalIntegration(t *testi
 		t.Fatal("control: integration saw nothing with Telemetry set")
 	}
 }
+
+type toolContextIntegration struct {
+	telemetry.NoopTelemetryIntegration
+	mu     sync.Mutex
+	starts []map[string]interface{}
+	ends   []map[string]interface{}
+}
+
+func (c *toolContextIntegration) OnToolExecutionStart(ctx context.Context, e telemetry.TelemetryToolCallStartEvent) context.Context {
+	c.mu.Lock()
+	c.starts = append(c.starts, e.ToolContext)
+	c.mu.Unlock()
+	return ctx
+}
+func (c *toolContextIntegration) OnToolExecutionEnd(_ context.Context, e telemetry.TelemetryToolCallFinishEvent) {
+	c.mu.Lock()
+	c.ends = append(c.ends, e.ToolContext)
+	c.mu.Unlock()
+}
+
+// TS turn-telemetry publishes tool execution events with
+// `toolContext: undefined`, so the dispatcher adds no tool context even when
+// includeToolsContext selects keys for the tool.
+func TestAgent_TelemetryToolExecutionEventsCarryNoToolContext(t *testing.T) {
+	rec := &toolContextIntegration{}
+	tool := types.Tool{
+		Name: "ctxTool", Description: "d", Parameters: map[string]any{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		},
+	}
+	tools := map[string]types.Tool{"ctxTool": tool}
+	session := &slowToolTurnSession{toolName: "ctxTool"}
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		ToolsContext:   map[string]interface{}{"ctxTool": map[string]interface{}{"secret": "s", "public": "p"}},
+		SandboxSession: testSandbox(), Model: "harness-model",
+		Telemetry: &telemetry.Options{
+			IsEnabled:           telemetry.Bool(true),
+			Integrations:        []telemetry.TelemetryIntegration{rec},
+			IncludeToolsContext: map[string]map[string]bool{"ctxTool": {"public": true}},
+		},
+	})
+	stream := out.Result.Stream()
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	<-out.Done
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.starts) != 1 || len(rec.ends) != 1 {
+		t.Fatalf("starts=%v ends=%v, want one of each", rec.starts, rec.ends)
+	}
+	if rec.starts[0] != nil || rec.ends[0] != nil {
+		t.Fatalf("tool execution events carry a tool context: start=%v end=%v", rec.starts[0], rec.ends[0])
+	}
+}

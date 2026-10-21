@@ -442,18 +442,22 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 				// ProviderExecuted must be an explicit false (client-executed; TS
 				// checks `providerExecuted !== false`, so an undefined flag is
 				// rejected too, which Go signals with ProviderExecutedOmitted).
-				return fmt.Errorf("%s ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call", s.p.harnessID)
+				return fmt.Errorf("%s ACP askUserQuestions.fromNativeRequest must return a client-executed askUserQuestions tool call.", s.p.harnessID) //nolint:staticcheck // matches TS SDK exact error text
 			}
+			// Mirrors TS `withNativeQuestionRequest`, which spreads into new
+			// objects: the adapter's returned metadata map must stay untouched.
 			withNative := *toolCall
-			if withNative.ProviderMetadata == nil {
-				withNative.ProviderMetadata = harness.ProviderMetadata{}
+			metadata := harness.ProviderMetadata{}
+			for k, v := range toolCall.ProviderMetadata {
+				metadata[k] = v
 			}
 			meta := map[string]any{}
-			for k, v := range withNative.ProviderMetadata[s.p.harnessID] {
+			for k, v := range toolCall.ProviderMetadata[s.p.harnessID] {
 				meta[k] = v
 			}
 			meta["nativeRequest"] = nativeRequest
-			withNative.ProviderMetadata[s.p.harnessID] = meta
+			metadata[s.p.harnessID] = meta
+			withNative.ProviderMetadata = metadata
 
 			buffered, hasBuffered := s.takeBufferedQuestionResult(withNative.ToolCallID, nativeRequest)
 

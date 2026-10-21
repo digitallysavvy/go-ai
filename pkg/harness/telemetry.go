@@ -40,33 +40,49 @@ import (
 // ctx rather than a separate model-call ctx — see pkg/ai/generate.go's
 // identical pattern, which this mirrors exactly).
 
-// promptAsMessages converts a harness Prompt into the single-message slice
-// TS's turn-telemetry `messages` field uses
-// (`input.prompt == null ? [] : [{role:'user', content: promptToText(...)}]`).
-// A structured Prompt.Message is used as-is; a plain-text Prompt becomes one
-// user message; an empty Prompt (e.g. a "continue" turn, which carries no
-// fresh prompt) yields no messages.
-func promptAsMessages(p Prompt) []types.Message {
-	if p.Message != nil {
-		return []types.Message{*p.Message}
+// promptText is the best-effort plain text of a turn's prompt (TS
+// `promptToText`): the string itself, or the concatenated text parts of a
+// structured user message.
+func promptText(p Prompt) string {
+	if p.Message == nil {
+		return p.Text
 	}
-	if p.Text != "" {
-		return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: p.Text}}}}
+	var text string
+	for _, part := range p.Message.Content {
+		switch c := part.(type) {
+		case types.TextContent:
+			text += c.Text
+		case *types.TextContent:
+			if c != nil {
+				text += c.Text
+			}
+		}
 	}
-	return nil
+	return text
+}
+
+// promptMessages is the turn's `messages` field in lifecycle callbacks and
+// telemetry (TS `input.prompt == null ? [] : [{role:'user', content:
+// promptToText(input.prompt)}]`): one user message with the prompt's plain
+// text, or none for a continuation, which carries no fresh prompt.
+func (d *turnDriver) promptMessages() []types.Message {
+	if d.in.Mode == "continue" {
+		return nil
+	}
+	return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: promptText(d.in.Prompt)}}}}
 }
 
 // toolSpecsAsTypesTools projects harness ToolSpecs into the []types.Tool
 // shape telemetry.LanguageModelCallStartEvent.Tools/gen_ai.tool.definitions
-// expects (name/description only — the wire-format InputSchema isn't part
-// of that projection).
+// expects: TS `languageModelTools` carries name, description and inputSchema
+// (each only when set).
 func toolSpecsAsTypesTools(specs []ToolSpec) []types.Tool {
 	if len(specs) == 0 {
 		return nil
 	}
 	out := make([]types.Tool, len(specs))
 	for i, s := range specs {
-		out[i] = types.Tool{Name: s.Name, Description: s.Description}
+		out[i] = types.Tool{Name: s.Name, Description: s.Description, Parameters: s.InputSchema}
 	}
 	return out
 }
@@ -138,13 +154,6 @@ func telemetryToolsContext(settings *telemetry.Options, toolsContext map[string]
 	return out
 }
 
-func telemetryToolContext(settings *telemetry.Options, toolName string, toolContext interface{}) map[string]interface{} {
-	if settings == nil {
-		return map[string]interface{}{}
-	}
-	return filterIncludedContext(toolContext, settings.IncludeToolsContext[toolName])
-}
-
 // telStart fires the turn-level ("ai.harness") telemetry start event once
 // per turn and records the returned root ctx for span nesting. Called from
 // ensureStarted, which already guards against firing more than once.
@@ -155,14 +164,17 @@ func (d *turnDriver) telStart() {
 	if d.in.Telemetry == nil {
 		return
 	}
+	// TS start event: `maxRetries: 0` (a harness turn never retries).
+	maxRetries := 0
 	d.telCtx = telemetry.FireOnStart(d.ctx, telemetry.TelemetryStartEvent{
+		MaxRetries:     &maxRetries,
 		CallID:         d.telCallID,
 		OperationType:  "ai.harness",
 		Settings:       d.in.Telemetry,
 		ModelProvider:  "harness:" + d.in.Harness.HarnessID(),
 		ModelID:        d.modelID,
 		System:         d.in.Instructions,
-		Messages:       promptAsMessages(d.in.Prompt),
+		Messages:       d.promptMessages(),
 		RuntimeContext: telemetryRuntimeContext(d.in.Telemetry, d.in.RuntimeContext),
 		ToolsContext:   telemetryToolsContext(d.in.Telemetry, d.in.ToolsContext),
 	})
@@ -205,7 +217,7 @@ func (d *turnDriver) telStepStart() {
 		ModelProvider: provider,
 		ModelID:       d.modelID,
 		System:        d.in.Instructions,
-		Prompt:        types.Prompt{Messages: promptAsMessages(d.in.Prompt)},
+		Prompt:        types.Prompt{Messages: d.promptMessages()},
 		Tools:         toolSpecsAsTypesTools(d.in.ToolSpecs),
 	})
 }
@@ -332,15 +344,16 @@ func (d *turnDriver) telToolExecutionEnd(call types.ToolCall, result types.ToolR
 		toolCtx = d.telStepCtx
 	}
 	telemetry.FireOnToolCallFinish(toolCtx, telemetry.TelemetryToolCallFinishEvent{
-		Settings:    d.in.Telemetry,
-		CallID:      d.telCallID,
-		ToolCallID:  call.ID,
-		ToolName:    call.ToolName,
-		Args:        call.Arguments,
-		Result:      result.Result,
-		Error:       result.Error,
-		DurationMs:  durationMs,
-		ToolContext: telemetryToolContext(d.in.Telemetry, call.ToolName, d.in.ToolsContext[call.ToolName]),
+		Settings:   d.in.Telemetry,
+		CallID:     d.telCallID,
+		ToolCallID: call.ID,
+		ToolName:   call.ToolName,
+		Args:       call.Arguments,
+		Result:     result.Result,
+		Error:      result.Error,
+		DurationMs: durationMs,
+		// TS publishToolExecutionEnd passes `toolContext: undefined`.
+		ToolContext: nil,
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -627,6 +628,9 @@ func (d *turnDriver) run() {
 	for _, tool := range d.in.Tools {
 		d.toolsList = append(d.toolsList, tool)
 	}
+	// Go maps have no insertion order; a stable order keeps the tool list the
+	// start events report deterministic.
+	sort.Slice(d.toolsList, func(i, j int) bool { return d.toolsList[i].Name < d.toolsList[j].Name })
 	d.settledHostIDs = map[string]struct{}{}
 	d.settledBuiltinIDs = map[string]struct{}{}
 	d.pendingApprovalsByApprovalID = map[string]*PendingToolApproval{}
@@ -1477,12 +1481,25 @@ func (d *turnDriver) ensureStarted() {
 			Provider:       provider,
 			ModelID:        d.modelID,
 			Instructions:   d.in.Instructions,
-			Messages:       promptAsMessages(d.in.Prompt),
+			Messages:       d.promptMessages(),
+			Tools:          d.toolsList,
+			ActiveTools:    d.activeToolNames(),
 			Output:         d.in.Output,
 			RuntimeContext: d.in.RuntimeContext,
 			ToolsContext:   d.in.ToolsContext,
 		})
 	}
+}
+
+// activeToolNames lists the tools the runtime may invoke this turn (TS
+// `activeToolNames`), in name order since Go maps carry no insertion order.
+func (d *turnDriver) activeToolNames() []string {
+	names := make([]string, 0, len(d.activeToolSet))
+	for name := range d.activeToolSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (d *turnDriver) ensureStepOpen() {
@@ -1506,7 +1523,9 @@ func (d *turnDriver) ensureStepOpen() {
 			Provider:       provider,
 			ModelID:        d.modelID,
 			Instructions:   d.in.Instructions,
-			Messages:       promptAsMessages(d.in.Prompt),
+			Messages:       d.promptMessages(),
+			Tools:          d.toolsList,
+			ActiveTools:    d.activeToolNames(),
 			Output:         d.in.Output,
 			Steps:          append([]types.StepResult(nil), d.completedSteps...),
 			PreviousSteps:  append([]types.StepResult(nil), d.completedSteps...),
@@ -1517,7 +1536,7 @@ func (d *turnDriver) ensureStepOpen() {
 	if d.in.Callbacks.OnLanguageModelCallStart != nil {
 		d.in.Callbacks.OnLanguageModelCallStart(d.ctx, ai.LanguageModelCallStartEvent{
 			CallID: d.telCallID, Provider: "harness:" + d.in.Harness.HarnessID(), ModelID: d.modelID,
-			Instructions: d.in.Instructions, Messages: promptAsMessages(d.in.Prompt),
+			Instructions: d.in.Instructions, Messages: d.promptMessages(),
 			Tools: toolSpecsAsTypesTools(d.in.ToolSpecs),
 		})
 	}
@@ -1613,18 +1632,21 @@ func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call typ
 		d.in.Callbacks.OnToolExecutionStart(d.ctx, ai.OnToolCallStartEvent{
 			CallID:     d.telCallID,
 			ToolCallID: call.ID, ToolName: call.ToolName, ToolCall: call,
+			Messages:       d.promptMessages(),
 			RuntimeContext: d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
 
 	if telCtx != nil {
 		toolCtx := telemetry.FireOnToolCallStart(telCtx, telemetry.TelemetryToolCallStartEvent{
-			Settings:    d.in.Telemetry,
-			CallID:      d.telCallID,
-			ToolCallID:  call.ID,
-			ToolName:    call.ToolName,
-			Args:        call.Arguments,
-			ToolContext: telemetryToolContext(d.in.Telemetry, call.ToolName, d.in.ToolsContext[call.ToolName]),
+			Settings:   d.in.Telemetry,
+			CallID:     d.telCallID,
+			ToolCallID: call.ID,
+			ToolName:   call.ToolName,
+			Args:       call.Arguments,
+			// TS publishToolExecutionStart passes `toolContext: undefined`, so
+			// the dispatcher never augments the event with a tool context.
+			ToolContext: nil,
 		})
 		d.execMu.Lock()
 		d.telToolCtx[call.ID] = toolCtx
@@ -1701,6 +1723,7 @@ func (d *turnDriver) publishToolExecutionEnd(toolCallID, toolName string, call t
 			CallID:     d.telCallID,
 			ToolCallID: toolCallID, ToolName: toolName, ToolCall: call, ToolOutput: toolResult,
 			ToolExecutionMs: execMs,
+			Messages:        d.promptMessages(),
 			RuntimeContext:  d.in.RuntimeContext, ToolsContext: d.in.ToolsContext,
 		})
 	}
