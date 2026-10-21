@@ -84,7 +84,7 @@ func stripBody(tokens []tsToken, i int, out *[]tsToken, stop func(tsToken) bool)
 			switch t.text {
 			case "(":
 				closeIdx := matchParen(tokens, i)
-				if closeIdx >= 0 && (!inCaseLabel(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) && isArrowParamList(tokens, closeIdx) && (!inConditionalTrueBranch(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) {
+				if closeIdx >= 0 && isArrowParamList(tokens, closeIdx) && (!inCaseLabel(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) && (!inConditionalTrueBranch(*out) || returnTypedArrowEndsInConditional(tokens, closeIdx)) {
 					var err error
 					i, err = stripParamList(tokens, i, out, false)
 					if err != nil {
@@ -906,17 +906,27 @@ func typeSpanUnterminated(span []tsToken) bool {
 	return len(stack) > 0
 }
 
+// keepsTypeArgsWindow is how many trailing significant tokens
+// keepsTypeArgsBeforeOptionalCall looks at.
+const keepsTypeArgsWindow = 2048
+
 // keepsTypeArgsBeforeOptionalCall reports whether Node 24 leaves the `<T>` of
 // `base<T>?.x` in place: swc does not read type arguments there when base is a
 // call result (`f()<T>?.()`, `new A()<T>?.()`) or a member chain that goes
 // through `?.` (`a?.b<T>?.()`); it does for `a<T>?.()`, `a.b<T>?.()`,
 // `a[0]<T>?.()` and `(a)<T>?.()`.
 func keepsTypeArgsBeforeOptionalCall(out []tsToken) bool {
-	var sig []tsToken
-	for _, t := range out {
-		if t.kind != "space" && t.kind != "comment" {
-			sig = append(sig, t)
+	// Only the tail matters; copying all of out for every call made a long
+	// run of optional calls quadratic.
+	var rev []tsToken
+	for i := len(out) - 1; i >= 0 && len(rev) < keepsTypeArgsWindow; i-- {
+		if out[i].kind != "space" && out[i].kind != "comment" {
+			rev = append(rev, out[i])
 		}
+	}
+	sig := make([]tsToken, len(rev))
+	for i, t := range rev {
+		sig[len(rev)-1-i] = t
 	}
 	n := len(sig)
 	if n == 0 {
