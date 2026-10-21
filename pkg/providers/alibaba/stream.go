@@ -222,7 +222,7 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 
 // accumulateToolCall accumulates tool call data from a delta chunk.
 func (s *alibabaStream) accumulateToolCall(tc alibabaToolCallDelta) {
-	for _, chunk := range s.toolCallTracker.TrackWire(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
+	for _, chunk := range s.toolCallTracker.TrackWirePtr(tc.Index, tc.ID, tc.Function.Name, tc.Function.Arguments) {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
@@ -306,7 +306,7 @@ type alibabaToolCallDelta struct {
 // alibabaToolCallFunctionDelta represents a tool call function delta
 type alibabaToolCallFunctionDelta struct {
 	Name      streaming.WireName `json:"name"`
-	Arguments string             `json:"arguments,omitempty"`
+	Arguments *string            `json:"arguments"`
 }
 
 // convertAlibabaUsageToTypes converts Alibaba usage to types.Usage

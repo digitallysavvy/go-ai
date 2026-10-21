@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"mime/multipart"
-	"strconv"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -90,6 +89,8 @@ func resolveGroqTranscriptionOptions(providerOptions map[string]interface{}) gro
 
 // DoTranscribe performs batch speech-to-text transcription.
 func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.TranscriptionOptions) (*types.TranscriptionResult, error) {
+	// TS reads currentDate at the start of doGenerate, before the request.
+	timestamp := time.Now()
 	audio, err := groqAudioBytes(opts)
 	if err != nil {
 		return nil, err
@@ -122,7 +123,6 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, providererrors.NewProviderError("groq", resp.StatusCode, "", string(resp.Body), nil)
 	}
 
-	timestamp := time.Now()
 	responseHeaders := providerutils.ExtractHeaders(resp.Headers)
 
 	// A plain-text response (responseFormat: "text") is not JSON; only try
@@ -236,7 +236,7 @@ func (m *TranscriptionModel) buildMultipartBody(audio []byte, mediaType string, 
 		}
 	}
 	if opts.Temperature != nil {
-		if err := writer.WriteField("temperature", strconv.FormatFloat(*opts.Temperature, 'f', -1, 64)); err != nil {
+		if err := writer.WriteField("temperature", providerutils.JSNumberString(*opts.Temperature)); err != nil {
 			return nil, "", err
 		}
 	}

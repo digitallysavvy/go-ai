@@ -113,6 +113,11 @@ type ConvertOptions struct {
 	emittedParallelToolCalls   map[string]bool
 	emittedParallelToolResults map[string]bool
 
+	// processedApprovalIDs de-duplicates tool-approval responses across every
+	// tool message of the prompt (TS processedApprovalIds is shared by the
+	// whole conversion, not reset per message).
+	processedApprovalIDs map[string]bool
+
 	// toolOutputWarnings collects the "unsupported tool content part type"
 	// warnings TS pushes while converting tool-result content outputs.
 	// Populated by ConvertPromptToInputWithOptions; do not set directly.
@@ -172,6 +177,7 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 	}
 	opts.emittedParallelToolCalls = map[string]bool{}
 	opts.emittedParallelToolResults = map[string]bool{}
+	opts.processedApprovalIDs = map[string]bool{}
 	var toolOutputWarnings []types.Warning
 	opts.toolOutputWarnings = &toolOutputWarnings
 
@@ -1468,7 +1474,10 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 		opts = options[0]
 	}
 	items := make([]interface{}, 0, len(msg.Content))
-	processedApprovals := map[string]bool{}
+	processedApprovals := opts.processedApprovalIDs
+	if processedApprovals == nil {
+		processedApprovals = map[string]bool{}
+	}
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case types.ToolApprovalResponseContent:

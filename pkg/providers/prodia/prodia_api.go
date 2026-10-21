@@ -152,8 +152,10 @@ func parseMultipartResponseFor(contentType string, body []byte, fallbackPrefix s
 				}
 			}
 		default:
-			// Fallback: treat any part whose Content-Type starts with "video/" as output.
-			if outputData == nil && partCT != "" {
+			// Fallback: treat any part whose Content-Type starts with the
+			// output prefix as output; as in TS a later such part replaces an
+			// earlier output.
+			if partCT != "" {
 				if mt, _, err2 := mime.ParseMediaType(partCT); err2 == nil {
 					if strings.HasPrefix(mt, fallbackPrefix) {
 						outputData = partData

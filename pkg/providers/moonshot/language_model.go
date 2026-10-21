@@ -442,10 +442,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if reasoningEffort != "" {
 		body["reasoning_effort"] = reasoningEffort
 	}
-	if modelOpts.PromptCacheKey != "" {
+	if modelOpts.HasPromptCacheKey {
 		body["prompt_cache_key"] = modelOpts.PromptCacheKey
 	}
-	if modelOpts.SafetyIdentifier != "" {
+	if modelOpts.HasSafetyIdentifier {
 		body["safety_identifier"] = modelOpts.SafetyIdentifier
 	}
 
@@ -587,17 +587,16 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 			meta["messageRole"] = b
 		}
 	}
-	if len(choice.Message.ToolCalls) > 0 {
+	// TS: `choice.message.tool_calls != null` keeps toolCallTypes, even empty.
+	if choice.Message.ToolCalls != nil {
 		toolCallTypes := make([]string, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {
 			if tc.Type != "" {
 				toolCallTypes = append(toolCallTypes, tc.Type)
 			}
 		}
-		if len(toolCallTypes) > 0 {
-			if b, err := json.Marshal(toolCallTypes); err == nil {
-				meta["toolCallTypes"] = b
-			}
+		if b, err := json.Marshal(toolCallTypes); err == nil {
+			meta["toolCallTypes"] = b
 		}
 	}
 	result.ProviderMetadata = map[string]interface{}{"moonshotai": meta}
@@ -813,6 +812,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		}
 		if perr != nil {
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: finishReason = { unified: 'error', raw: undefined }
 			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, errChunk)
@@ -825,6 +825,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			// TS: an error chunk sets the finish reason to error and enqueues
 			// the error part; the stream keeps going and flush() finishes it.
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: finishReason = { unified: 'error', raw: undefined }
 			// P1-1c part 2: attach the structured StreamProviderError (TS
 			// createMoonshotAIStreamError) so streamRetries/IsRetryable see the
 			// real type/code/statusCode/isRetryable instead of generic inference.

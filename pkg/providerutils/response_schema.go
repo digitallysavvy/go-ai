@@ -449,3 +449,49 @@ func HuggingFaceResponsesResponseValidator(providerName string) func(statusCode 
 		return nil
 	})
 }
+
+var (
+	// mistralConversationContentSchema.
+	zMistralConversationContent = zDiscType(map[string]zNode{
+		"text": zObj(fl("type", zLit("text")), fl("text", zStr)),
+		"thinking": zObj(fl("type", zLit("thinking")), fl("thinking", zArr(
+			zObj(fl("type", zLit("text")), fl("text", zStr))))),
+		"tool_reference": zObj(fl("type", zLit("tool_reference")), fl("tool", nStr), fl("title", nStr), fl("url", nStr)),
+	})
+
+	// mistralConversationResponseSchema.
+	zMistralConversationResponse = zObj(
+		fl("conversation_id", zStr),
+		fl("outputs", zArr(zDiscType(map[string]zNode{
+			"tool.execution": zObj(fl("type", zLit("tool.execution")), fl("id", zStr), fl("name", zStr), fl("arguments", zStr),
+				fl("function", nStr), fl("info", zNullish(zRec(zAny)))),
+			"function.call": zObj(fl("type", zLit("function.call")), fl("tool_call_id", zStr), fl("name", zStr),
+				fl("arguments", zUnionOf(zStr, zRec(zAny)))),
+			"message.output": zObj(fl("type", zLit("message.output")),
+				fl("content", zUnionOf(zStr, zArr(zMistralConversationContent))), fl("model", nStr)),
+		}))),
+		// mistralUsageSchema with the three token counts defaulting to 0.
+		fl("usage", zNullish(zObj(
+			fl("prompt_tokens", zOptional(zNum)), fl("completion_tokens", zOptional(zNum)), fl("total_tokens", zOptional(zNum)),
+			fl("prompt_audio_seconds", nNum), fl("request_count", nNum), fl("service_tier", nStr), fl("num_cached_tokens", nNum),
+			fl("prompt_tokens_details", zNullish(zMistralDetails)),
+			fl("prompt_token_details", zNullish(zMistralDetails)),
+			fl("completion_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum)))),
+		))),
+	)
+)
+
+// MistralConversationResponseValidator is ChatResponseValidator for the
+// Mistral Conversations API (mistralConversationResponseSchema).
+func MistralConversationResponseValidator(providerName string) func(statusCode int, headers http.Header, body []byte) error {
+	return responseValidator(providerName, func(body []byte) error {
+		var value interface{}
+		if err := json.Unmarshal(body, &value); err != nil {
+			return err
+		}
+		if bad := zMistralConversationResponse(value, true, nil); bad != nil {
+			return bad
+		}
+		return nil
+	})
+}
