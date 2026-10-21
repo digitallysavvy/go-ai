@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -63,5 +64,25 @@ func TestRunPrompt_FinishWithUnclosedStepFiresFinishedAndFailed(t *testing.T) {
 	drainRunPrompt(t, out)
 	if finished.Load() != 1 || failed.Load() != 1 {
 		t.Fatalf("finished=%d failed=%d, want 1 and 1", finished.Load(), failed.Load())
+	}
+}
+
+// TS lifecycle.error/abort start the lifecycle (onStart callback) and mark the
+// turn ended even when no telemetry is configured.
+func TestRunPrompt_StartFailureFiresOnStartWithoutTelemetry(t *testing.T) {
+	sess := &mockSession{id: "r35-session"}
+	sess.doPromptTurn = func(context.Context, PromptTurnOptions) (PromptControl, error) {
+		return nil, errors.New("boom")
+	}
+	h := &mockHarnessAdapter{id: "mock", session: sess}
+	var starts atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: h, Session: sess,
+		Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Callbacks: Callbacks{OnStart: func(context.Context, ai.OnStartEvent) { starts.Add(1) }},
+	})
+	drainRunPrompt(t, out)
+	if starts.Load() != 1 {
+		t.Fatalf("OnStart calls = %d, want 1", starts.Load())
 	}
 }

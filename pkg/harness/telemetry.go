@@ -442,11 +442,16 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 // content existed), so the root span this reports the error on always
 // exists.
 func (d *turnDriver) telError(err error) {
-	if d.telEnded || d.in.Telemetry == nil {
+	// TS `lifecycle.error` starts the lifecycle (firing the onStart callback)
+	// and marks the turn ended whether or not telemetry is configured.
+	if d.telEnded {
 		return
 	}
 	d.ensureStarted()
 	d.telEnded = true
+	if d.in.Telemetry == nil {
+		return
+	}
 	// H5: CallID is now required so each registered integration can resolve
 	// ITS OWN root span by CallID instead of trace.SpanFromContext(ctx) —
 	// pkg/ai/generate.go's matching FireOnError call was updated the same way.
@@ -461,11 +466,14 @@ func (d *turnDriver) telError(err error) {
 // the stream itself settles through an `abort` chunk (turnDriver.abort)
 // rather than an `error` one. Guarded by d.telEnded like telError.
 func (d *turnDriver) telAbort(err error) {
-	if d.telEnded || d.in.Telemetry == nil {
+	if d.telEnded {
 		return
 	}
 	d.ensureStarted()
 	d.telEnded = true
+	if d.in.Telemetry == nil {
+		return
+	}
 	telemetry.FireOnAbort(d.telCtx, telemetry.TelemetryAbortEvent{
 		Settings: d.in.Telemetry, CallID: d.telCallID, Reason: err, Steps: d.completedSteps,
 	})
