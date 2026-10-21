@@ -1821,7 +1821,9 @@ func convertSpecialToolOutput(part types.ToolResultContent, opts ConvertOptions)
 		}
 		return convertShellOutput(part)
 	case "apply_patch":
-		if !opts.HasApplyPatchTool {
+		// TS matches the RAW tool name here (part.toolName === 'apply_patch'),
+		// not the provider-mapped one.
+		if !opts.HasApplyPatchTool || part.ToolName != "apply_patch" {
 			return nil, nil
 		}
 		return convertApplyPatchOutput(part)

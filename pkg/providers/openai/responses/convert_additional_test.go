@@ -1782,3 +1782,34 @@ func TestConvertPromptToInput_NonPDFURLFilePassesThrough(t *testing.T) {
 		t.Fatalf("part = %+v", part)
 	}
 }
+
+// TS matches apply_patch results on the RAW tool name (part.toolName ===
+// 'apply_patch'), not the provider-mapped name.
+func TestConvertPromptToInput_ApplyPatchOutputMatchesRawToolName(t *testing.T) {
+	t.Parallel()
+
+	input, _, err := ConvertPromptToInputWithOptions(types.Prompt{
+		Messages: []types.Message{{
+			Role: types.RoleTool,
+			Content: []types.ContentPart{types.ToolResultContent{
+				ToolCallID: "patch-call",
+				ToolName:   "patcher",
+				Output: &types.ToolResultOutput{
+					Type:  types.ToolResultOutputJSON,
+					Value: map[string]interface{}{"status": "completed", "output": "ok"},
+				},
+			}},
+		}},
+	}, "system", ConvertOptions{
+		HasApplyPatchTool: true,
+		ProviderToolNames: map[string]string{"patcher": "apply_patch"},
+	})
+	if err != nil {
+		t.Fatalf("conversion failed: %v", err)
+	}
+	for _, it := range input {
+		if _, ok := it.(ApplyPatchCallOutput); ok {
+			t.Fatalf("mapped (non-raw) tool name produced apply_patch_call_output: %#v", input)
+		}
+	}
+}
