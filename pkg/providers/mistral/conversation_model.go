@@ -152,7 +152,7 @@ func (m *ConversationLanguageModel) buildRequest(opts *provider.GenerateOptions)
 		{"safePrompt", provOpts.SafePrompt != nil},
 		{"documentImageLimit", provOpts.DocumentImageLimit != nil},
 		{"documentPageLimit", provOpts.DocumentPageLimit != nil},
-		{"promptCacheKey", provOpts.PromptCacheKey != ""},
+		{"promptCacheKey", provOpts.PromptCacheKey != nil},
 		{"parallelToolCalls", provOpts.ParallelToolCalls != nil},
 	} {
 		if f.set {

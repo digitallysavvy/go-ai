@@ -23,7 +23,7 @@ import (
 // ai/packages/mistral/src/mistral-chat-language-model-options.ts.
 type mistralProviderOptions struct {
 	ReasoningEffort    string
-	PromptCacheKey     string
+	PromptCacheKey     *string // nil when absent; "" is forwarded (TS `!== undefined`)
 	SafePrompt         *bool
 	DocumentImageLimit *float64
 	DocumentPageLimit  *float64
@@ -215,7 +215,7 @@ func extractMistralProviderOptions(opts *provider.GenerateOptions) (mistralProvi
 	}
 
 	if value, ok := mistralOpts["promptCacheKey"].(string); ok {
-		result.PromptCacheKey = value
+		result.PromptCacheKey = &value
 	}
 	if value, ok := mistralOpts["safePrompt"].(bool); ok {
 		result.SafePrompt = &value
@@ -285,8 +285,8 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	if provOpts.DocumentPageLimit != nil {
 		body["document_page_limit"] = *provOpts.DocumentPageLimit
 	}
-	if provOpts.PromptCacheKey != "" {
-		body["prompt_cache_key"] = provOpts.PromptCacheKey
+	if provOpts.PromptCacheKey != nil {
+		body["prompt_cache_key"] = *provOpts.PromptCacheKey
 	}
 	if len(opts.Tools) > 0 {
 		tools, _ := tool.DropProviderDefinedTools(opts.Tools, nil)
