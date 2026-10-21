@@ -653,10 +653,11 @@ func scanUntilTopLevelBrace(tokens []tsToken, i int) int {
 
 // returnTypedArrowEndsInConditional reports whether the arrow function whose
 // parameter list closes at tokens[closeIdx], written with a `: ReturnType`,
-// may stand as the true branch of a conditional. TypeScript only accepts it
-// there when the arrow body is followed by the `:` of the conditional;
-// otherwise `c ? (x) : y => z` is a conditional whose false branch is the
-// arrow `y => z`.
+// may stand as the true branch of a conditional or as a case label's
+// expression. TypeScript only accepts it there when the arrow body is followed
+// by the `:` of the conditional (or of the label); otherwise `c ? (x) : y => z`
+// is a conditional whose false branch is the arrow `y => z`, and `case (x): y
+// => 1;` is a label followed by an arrow statement.
 func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
 	colon := nextSignificant(tokens, closeIdx+1)
 	if colon < 0 || tokens[colon].text != ":" {
@@ -687,9 +688,16 @@ func returnTypedArrowEndsInConditional(tokens []tsToken, closeIdx int) bool {
 			// belongs to another statement.
 			return false
 		}
+		if t.kind == "ident" && (t.text == "as" || t.text == "satisfies") && depth == 0 {
+			// The type after `as`/`satisfies` (`as Map<K, V> - c`): its commas
+			// and `<`/`>` are not the body's, whatever follows the type.
+			if end := consumeTypeExpr(tokens, j+1, false); end > j+1 {
+				j = end - 1
+				continue
+			}
+		}
 		if t.kind == "punct" && t.text == "<" && depth == 0 {
-			// Type arguments (`f<A, B>(x)`, `as Map<K, V>`): their commas are
-			// not the body's.
+			// Type arguments (`f<A, B>(x)`): their commas are not the body's.
 			if end, ok := consumeCallGenerics(tokens, j); ok {
 				j = end - 1
 				continue
