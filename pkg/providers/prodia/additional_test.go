@@ -70,7 +70,7 @@ func TestProdiaProvider_ModelRoutingAndMetadata(t *testing.T) {
 func TestProdiaLanguageModel_DoStreamAndStreamHelpers(t *testing.T) {
 	t.Parallel()
 
-	body, contentType := buildTestMultipartBody(`{"id":"job-1","config":{"seed":42},"price":{"dollars":0.01}}`, []byte("hello"), "text/plain")
+	body, contentType := buildTestMultipartBody(`{"id":"job-1","config":{"seed":42},"price":{"product":"p","dollars":0.01}}`, []byte("hello"), "text/plain")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/job") {
 			http.NotFound(w, r)

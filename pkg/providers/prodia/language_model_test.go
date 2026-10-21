@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -442,22 +443,29 @@ func TestProdiaLanguageModelMultipartRequest(t *testing.T) {
 		t.Errorf("content-type %q missing boundary", ct)
 	}
 
-	// Parse the produced body to verify structure.
-	jobResp, outputData, outputMIME, err := parseMultipartResponse(ct, buf.Bytes())
+	// Parse the produced body to verify structure: this is a request body, so
+	// read it with a plain multipart reader (it has no response job schema).
+	_, params, err := mime.ParseMediaType(ct)
 	if err != nil {
-		t.Fatalf("parseMultipartResponse error: %v", err)
+		t.Fatalf("ParseMediaType: %v", err)
 	}
-	// The job response from our body is the job metadata from the request body,
-	// which encodes as the jobBody above.  The "job" part is present.
-	_ = jobResp // job part was present (no parse error)
-
-	// The image was written to the "input" part (not "output"), so outputData
-	// will be nil from parseMultipartResponse (it only reads "output" form name).
-	// The purpose of this test is to confirm the multipart was well-formed.
-	_ = outputData
-	_ = outputMIME
-
-	_ = ct
+	mr := multipart.NewReader(bytes.NewReader(buf.Bytes()), params["boundary"])
+	sawJob := false
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("multipart not well-formed: %v", err)
+		}
+		if part.FormName() == "job" {
+			sawJob = true
+		}
+	}
+	if !sawJob {
+		t.Error("job part missing")
+	}
 }
 
 // TestProviderLanguageModelRouting verifies provider.LanguageModel() routes

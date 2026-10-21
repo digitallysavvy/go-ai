@@ -38,15 +38,17 @@ const (
 	// SchemaTogetherRerank is togetheraiRerankingResponseSchema.
 	SchemaTogetherRerank MediaResponseSchema = "together-rerank"
 
-	SchemaOpenAIImage     MediaResponseSchema = "openai-image"
-	SchemaCompatImage     MediaResponseSchema = "compat-image"
-	SchemaTogetherImage   MediaResponseSchema = "together-image"
-	SchemaDeepInfraImage  MediaResponseSchema = "deepinfra-image"
-	SchemaDeepInfraEdit   MediaResponseSchema = "deepinfra-edit"
-	SchemaXAIImage        MediaResponseSchema = "xai-image"
-	SchemaByteDanceImage  MediaResponseSchema = "bytedance-image"
-	SchemaQuiverSVG       MediaResponseSchema = "quiverai-svg"
-	SchemaTopazSubmit     MediaResponseSchema = "topaz-submit"
+	SchemaOpenAIImage    MediaResponseSchema = "openai-image"
+	SchemaCompatImage    MediaResponseSchema = "compat-image"
+	SchemaTogetherImage  MediaResponseSchema = "together-image"
+	SchemaDeepInfraImage MediaResponseSchema = "deepinfra-image"
+	SchemaDeepInfraEdit  MediaResponseSchema = "deepinfra-edit"
+	SchemaXAIImage       MediaResponseSchema = "xai-image"
+	SchemaByteDanceImage MediaResponseSchema = "bytedance-image"
+	SchemaQuiverSVG      MediaResponseSchema = "quiverai-svg"
+	SchemaTopazSubmit    MediaResponseSchema = "topaz-submit"
+	// SchemaProdiaJob is prodiaJobResultSchema (the multipart "job" part).
+	SchemaProdiaJob       MediaResponseSchema = "prodia-job"
 	SchemaTopazStatus     MediaResponseSchema = "topaz-status"
 	SchemaTopazDownload   MediaResponseSchema = "topaz-download"
 	SchemaAzureMAIImage   MediaResponseSchema = "azure-mai-image"
@@ -300,6 +302,11 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 				fl("loop_period_ms", zNullish(zIntNonneg)), fl("opening_animation_ms", zNullish(zIntNonneg))))),
 			fl("usage", zNullish(zObj(fl("total_tokens", zIntNonneg), fl("input_tokens", zIntNonneg), fl("output_tokens", zIntNonneg)))),
 			fl("credits", zNullish(zIntNonneg))),
+		SchemaProdiaJob: zObj(fl("id", zStr), fl("created_at", zOptional(zStr)), fl("updated_at", zOptional(zStr)), fl("expires_at", zOptional(zStr)),
+			fl("state", zOptional(zObj(fl("current", zStr)))),
+			fl("config", zOptional(zObj(fl("seed", zOptional(zNum))))),
+			fl("metrics", zOptional(zObj(fl("elapsed", zOptional(zNum)), fl("ips", zOptional(zNum))))),
+			fl("price", zNullish(zObj(fl("product", zStr), fl("dollars", zNum))))),
 		SchemaTopazSubmit:   zObj(fl("process_id", nStr)),
 		SchemaTopazStatus:   zObj(fl("status", nStr), fl("credits", nNum), fl("output_width", nNum), fl("output_height", nNum), fl("output_format", nStr)),
 		SchemaTopazDownload: zObj(fl("download_url", nStr)),
