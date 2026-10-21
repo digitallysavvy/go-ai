@@ -51,6 +51,41 @@ const (
 // ProviderMetadata mirrors `SharedV4ProviderMetadata` on tool parts.
 type ProviderMetadata map[string]map[string]any
 
+// UnmarshalJSON decodes the record and rejects a null namespace entry: zod's
+// `z.record(z.string(), z.record(...))` requires every value to be an object
+// (null values nested inside an entry are valid JSON values and stay).
+func (m *ProviderMetadata) UnmarshalJSON(data []byte) error {
+	out, err := decodeNamespacedRecord(data)
+	if err != nil {
+		return err
+	}
+	*m = out
+	return nil
+}
+
+// decodeNamespacedRecord decodes `Record<string, Record<string, JSONValue>>`.
+func decodeNamespacedRecord(data []byte) (map[string]map[string]any, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, nil
+	}
+	out := make(map[string]map[string]any, len(raw))
+	for key, v := range raw {
+		var inner map[string]any
+		if err := json.Unmarshal(v, &inner); err != nil {
+			return nil, fmt.Errorf("harness: metadata entry %q must be an object: %w", key, err)
+		}
+		if inner == nil {
+			return nil, fmt.Errorf("harness: metadata entry %q must be an object, not null", key)
+		}
+		out[key] = inner
+	}
+	return out, nil
+}
+
 // InputTokenUsage is the input-token breakdown of LanguageModelV4Usage.
 type InputTokenUsage struct {
 	Total      *int `json:"total,omitempty"`

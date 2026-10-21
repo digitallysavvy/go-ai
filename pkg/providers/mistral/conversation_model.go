@@ -209,31 +209,6 @@ func parseConversationContent(raw json.RawMessage) []conversationContent {
 	}
 }
 
-// validConversationContent reports whether a streamed message.output.delta
-// content value matches the TS schema: a string or a text / thinking /
-// tool_reference chunk.
-func validConversationContent(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	switch raw[0] {
-	case '"':
-		return true
-	case '{':
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(raw, &head) != nil {
-			return false
-		}
-		switch head.Type {
-		case "text", "thinking", "tool_reference":
-			return true
-		}
-	}
-	return false
-}
-
 type conversationConverter struct {
 	names      conversationToolNames
 	sourceURLs map[string]bool
@@ -565,15 +540,30 @@ func (s *conversationStream) handle(data string) {
 		}
 		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: meta})
 	case "conversation.response.done":
+		if len(ev.Usage) > 0 && string(ev.Usage) != "null" {
+			if usageErr := providerutils.MistralConversationUsageError(ev.Usage); usageErr != nil {
+				s.hasError = true
+				msg, perr := providerutils.ChunkParseFailure(data, usageErr)
+				s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
+				return
+			}
+		}
 		s.usage = ev.Usage
 		s.isDone = true
 	case "conversation.response.error":
 		s.hasError = true
 		s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: ev.Message})
 	case "message.output.delta":
-		if !validConversationContent(ev.Content) {
+		// TS: content is a string or a text / thinking / tool_reference chunk.
+		var contentErr error
+		if len(ev.Content) == 0 {
+			contentErr = errors.New("content: Invalid input")
+		} else {
+			contentErr = providerutils.MistralConversationStreamContentError(ev.Content)
+		}
+		if contentErr != nil {
 			s.hasError = true
-			msg, perr := providerutils.ChunkParseFailure(data, errors.New("content: Invalid input"))
+			msg, perr := providerutils.ChunkParseFailure(data, contentErr)
 			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 			return
 		}
