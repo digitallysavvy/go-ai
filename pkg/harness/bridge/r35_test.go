@@ -37,3 +37,22 @@ func TestDecodeOutboundRejectsNullOptionalKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestDecodeOutboundStreamStartWarningRequiredKeys(t *testing.T) {
+	bad := []string{
+		`{"type":"stream-start","warnings":[{"type":"unsupported-setting"}]}`,
+		`{"type":"stream-start","warnings":[{"type":"unsupported-tool"}]}`,
+		`{"type":"stream-start","warnings":[{"type":"other"}]}`,
+		`{"type":"stream-start","warnings":[{"type":"other","message":null}]}`,
+		`{"type":"stream-start","warnings":[{"type":"unsupported-tool","tool":"t","details":null}]}`,
+	}
+	for _, in := range bad {
+		if _, _, err := DecodeOutbound([]byte(in)); err == nil {
+			t.Errorf("accepted %s", in)
+		}
+	}
+	good := `{"type":"stream-start","warnings":[{"type":"unsupported-setting","setting":"s"},{"type":"unsupported-tool","tool":"t","details":"d"},{"type":"other","message":"m"}]}`
+	if _, _, err := DecodeOutbound([]byte(good)); err != nil {
+		t.Errorf("rejected: %v", err)
+	}
+}

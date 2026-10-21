@@ -516,11 +516,45 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 	if err := validateStreamPart(part); err != nil {
 		return nil, fmt.Errorf("harness: invalid %s part: %w", typ, err)
 	}
+	if typ == PartTypeStreamStart {
+		if err := requireWarningKeys(fields["warnings"]); err != nil {
+			return nil, err
+		}
+	}
 	if tc, ok := part.(*ToolCallPart); ok {
 		_, present := fields["providerExecuted"]
 		tc.ProviderExecutedOmitted = !present
 	}
 	return part, nil
+}
+
+// requireWarningKeys checks the per-variant keys of `harnessV1CallWarningSchema`:
+// `setting` (unsupported-setting), `tool` (unsupported-tool) and `message`
+// (other) are required strings, `details` is optional but not null.
+func requireWarningKeys(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var warnings []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &warnings); err != nil {
+		return nil // the typed decode already rejected a malformed list
+	}
+	for _, w := range warnings {
+		var typ CallWarningType
+		_ = json.Unmarshal(w["type"], &typ)
+		required := map[CallWarningType]string{
+			CallWarningUnsupportedSetting: "setting", CallWarningUnsupportedTool: "tool", CallWarningOther: "message",
+		}[typ]
+		if err := RequireKeys("stream-start warning", w, []string{required}); err != nil {
+			return err
+		}
+		if typ != CallWarningOther {
+			if err := RejectNullKeys("stream-start warning", w, []string{"details"}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // requireUsageShape checks the usage of a finish-step or finish part like
