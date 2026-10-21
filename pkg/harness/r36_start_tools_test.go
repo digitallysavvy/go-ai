@@ -65,3 +65,40 @@ func TestRunPrompt_StartEventsCarryToolsAndActiveTools(t *testing.T) {
 		t.Fatalf("OnStepStart activeTools = %v, want [a]", stepStart.ActiveTools)
 	}
 }
+
+// TS onLanguageModelCallStart lists the tools as {name, description?,
+// inputSchema?}; the schema must reach the event (and so
+// gen_ai.tool.definitions), not just the name.
+func TestRunPrompt_LanguageModelCallStartToolsCarryInputSchema(t *testing.T) {
+	schema := map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}
+	tools := map[string]types.Tool{"a": {Name: "a", Parameters: schema,
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		}}}
+	session := &slowToolTurnSession{toolName: "a"}
+	var mu sync.Mutex
+	var got []types.Tool
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		ToolSpecs:      []ToolSpec{{Name: "a", Description: "d", InputSchema: schema}},
+		SandboxSession: testSandbox(), Model: "harness-model",
+		Callbacks: Callbacks{OnLanguageModelCallStart: func(_ context.Context, e ai.LanguageModelCallStartEvent) {
+			mu.Lock()
+			got = e.Tools
+			mu.Unlock()
+		}},
+	})
+	stream := out.Result.Stream()
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	<-out.Done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0].Name != "a" || got[0].Description != "d" || !reflect.DeepEqual(got[0].Parameters, schema) {
+		t.Fatalf("model call start tools = %+v", got)
+	}
+}

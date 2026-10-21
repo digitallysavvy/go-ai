@@ -58,15 +58,15 @@ func promptAsMessages(p Prompt) []types.Message {
 
 // toolSpecsAsTypesTools projects harness ToolSpecs into the []types.Tool
 // shape telemetry.LanguageModelCallStartEvent.Tools/gen_ai.tool.definitions
-// expects (name/description only — the wire-format InputSchema isn't part
-// of that projection).
+// expects: TS `languageModelTools` carries name, description and inputSchema
+// (each only when set).
 func toolSpecsAsTypesTools(specs []ToolSpec) []types.Tool {
 	if len(specs) == 0 {
 		return nil
 	}
 	out := make([]types.Tool, len(specs))
 	for i, s := range specs {
-		out[i] = types.Tool{Name: s.Name, Description: s.Description}
+		out[i] = types.Tool{Name: s.Name, Description: s.Description, Parameters: s.InputSchema}
 	}
 	return out
 }
