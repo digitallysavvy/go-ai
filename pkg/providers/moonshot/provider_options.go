@@ -1,6 +1,8 @@
 package moonshot
 
 import (
+	"encoding/json"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
@@ -73,6 +75,41 @@ func invalidMoonshotProviderOptions(cause error) error {
 // moonshotaiLanguageModelOptions zod schema.
 func parseMoonshotModelOptions(opts map[string]interface{}) (moonshotModelOptions, error) {
 	var result moonshotModelOptions
+
+	// zod rejects a member of the wrong type; a null/absent member is skipped
+	// here the way the typed readers below skip it.
+	for _, key := range []string{"strictJsonSchema", "logprobs"} {
+		if v, ok := opts[key]; ok && v != nil {
+			if _, isBool := v.(bool); !isBool {
+				return result, invalidMoonshotProviderOptions(nil)
+			}
+		}
+	}
+	for _, key := range []string{"reasoningEffort", "reasoningHistory", "promptCacheKey", "safetyIdentifier"} {
+		if v, ok := opts[key]; ok && v != nil {
+			if _, isString := v.(string); !isString {
+				return result, invalidMoonshotProviderOptions(nil)
+			}
+		}
+	}
+	if v, ok := opts["thinking"]; ok && v != nil {
+		thinking, isObject := v.(map[string]interface{})
+		if !isObject {
+			return result, invalidMoonshotProviderOptions(nil)
+		}
+		if t, ok := thinking["type"]; ok && t != nil {
+			if _, isString := t.(string); !isString {
+				return result, invalidMoonshotProviderOptions(nil)
+			}
+		}
+		// budgetTokens: z.number().int().min(1024).
+		if bt, ok := thinking["budgetTokens"]; ok && bt != nil {
+			f, isNumber := moonshotNumber(bt)
+			if !isNumber || f != float64(int64(f)) || f < 1024 {
+				return result, invalidMoonshotProviderOptions(nil)
+			}
+		}
+	}
 
 	if v, ok := providerutils.OpenAICompatibleBoolOption(opts, "strictJsonSchema"); ok {
 		result.HasStrictJSONSchema = true
@@ -231,4 +268,38 @@ func parseMoonshotMessageOptions(providerOptions map[string]interface{}) (*moons
 	}
 
 	return result, nil
+}
+
+// moonshotNumber reads a numeric option given as any Go numeric type.
+func moonshotNumber(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int8:
+		return float64(n), true
+	case int16:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case uint:
+		return float64(n), true
+	case uint8:
+		return float64(n), true
+	case uint16:
+		return float64(n), true
+	case uint32:
+		return float64(n), true
+	case uint64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
 }
