@@ -510,28 +510,26 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	if choice.Message.Role != "" {
 		meta["messageRole"] = choice.Message.Role
 	}
-	if len(choice.Message.ToolCalls) > 0 {
+	// TS: `choice.message.tool_calls != null` keeps toolCallTypes (possibly
+	// empty) and `choice.logprobs != null` keeps the logprobs object.
+	if choice.Message.ToolCalls != nil {
 		toolCallTypes := make([]string, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {
 			if tc.Type != "" {
 				toolCallTypes = append(toolCallTypes, tc.Type)
 			}
 		}
-		if len(toolCallTypes) > 0 {
-			meta["toolCallTypes"] = toolCallTypes
-		}
+		meta["toolCallTypes"] = toolCallTypes
 	}
 	if choice.Logprobs != nil {
 		lp := map[string]interface{}{}
-		if len(choice.Logprobs.Content) > 0 {
+		if choice.Logprobs.Content != nil {
 			lp["content"] = choice.Logprobs.Content
 		}
-		if len(choice.Logprobs.ReasoningContent) > 0 {
+		if choice.Logprobs.ReasoningContent != nil {
 			lp["reasoning_content"] = choice.Logprobs.ReasoningContent
 		}
-		if len(lp) > 0 {
-			meta["logprobs"] = lp
-		}
+		meta["logprobs"] = lp
 	}
 	if response.SystemFingerprint != "" {
 		meta["systemFingerprint"] = response.SystemFingerprint
