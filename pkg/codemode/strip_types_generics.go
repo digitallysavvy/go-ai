@@ -321,6 +321,9 @@ var angleDisallowedAtDepth0 = map[string]bool{
 	"&&=": true, "||=": true, "??=": true, "*": true, "/": true, "%": true,
 }
 
+// maxAngleDepth bounds the `<` nesting consumeAngleTypeArgsBalanced follows.
+const maxAngleDepth = 64
+
 // consumeAngleTypeArgsBalanced attempts to consume a `<...>`
 // type-argument/type-parameter list starting at tokens[i] (the "<"),
 // requiring it to be structurally balanced and free of tokens that could
@@ -361,6 +364,12 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 		switch t.text {
 		case "<":
 			depth++
+			// Type arguments do not nest this deep; a run of comparisons
+			// (`a<b, c<d, ...`) would otherwise scan to the end of the
+			// source from every `<`.
+			if depth > maxAngleDepth {
+				return i, false
+			}
 			contentSeen = true
 			j++
 		case ">":
@@ -779,13 +788,22 @@ func asiBreaksBefore(tokens []tsToken, j int) bool {
 	return false
 }
 
+// backScanBudget bounds how many emitted tokens the context checks below look
+// back over; a long run of comma-separated arrows would otherwise rescan the
+// whole list at every `(`.
+const backScanBudget = 4096
+
 // inCaseLabel reports whether the emitted tokens end inside a `case` clause's
 // expression: a `case` before the end, at the same bracket level, with no `:`
 // or statement boundary in between. The `:` after such an expression closes
 // the label, so `case (x): y => 1` holds an arrow statement, not a return-typed
 // arrow.
 func inCaseLabel(out []tsToken) bool {
+	budget := backScanBudget
 	for i := len(out) - 1; i >= 0; i-- {
+		if budget--; budget < 0 {
+			return false
+		}
 		t := out[i]
 		switch {
 		case t.kind == "ident" && t.text == "case":
@@ -797,6 +815,9 @@ func inCaseLabel(out []tsToken) bool {
 		case ")", "]", "}":
 			depth := 1
 			for i--; i >= 0 && depth > 0; i-- {
+				if budget--; budget < 0 {
+					return false
+				}
 				if out[i].kind != "punct" {
 					continue
 				}
@@ -820,7 +841,11 @@ func inCaseLabel(out []tsToken) bool {
 // at the same bracket level and within the same statement.
 func inConditionalTrueBranch(out []tsToken) bool {
 	pending := 0
+	budget := backScanBudget
 	for i := len(out) - 1; i >= 0; i-- {
+		if budget--; budget < 0 {
+			return false
+		}
 		t := out[i]
 		if t.kind != "punct" {
 			continue
@@ -829,6 +854,9 @@ func inConditionalTrueBranch(out []tsToken) bool {
 		case ")", "]", "}":
 			depth := 1
 			for i--; i >= 0 && depth > 0; i-- {
+				if budget--; budget < 0 {
+					return false
+				}
 				if out[i].kind != "punct" {
 					continue
 				}

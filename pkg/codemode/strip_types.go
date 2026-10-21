@@ -123,6 +123,38 @@ func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 	return blankDropped(src, kept), nil
 }
 
+// maxStripNesting bounds how deeply brackets and template substitutions may
+// nest in a snippet the stripper works on. The transforms rescan the enclosing
+// span at every level, so nesting costs quadratic time (a 256 KiB snippet of
+// nested parentheses took minutes); no real snippet nests anywhere near this
+// deep. A deeper one is left unmodified, like any source the stripper rejects.
+const maxStripNesting = 256
+
+// templateNestingDepth is the deepest `${` nesting inside a template literal
+// token (braces inside nested strings are not told apart; it only bounds work).
+func templateNestingDepth(text string) int {
+	depth, max := 0, 0
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '$':
+			if i+1 < len(text) && text[i+1] == '{' {
+				depth++
+				i++
+				if depth > max {
+					max = depth
+				}
+			}
+		case '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return max
+}
+
 // checkBracketBalance rejects a snippet whose ( [ { ) ] } do not pair up, as
 // Node's parser does for the wrapped `async function __runUser__(){ ... }`
 // (so `x = a as T);` is a syntax error, not something to blank). The wrapper's
@@ -131,12 +163,18 @@ func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 func checkBracketBalance(tokens []tsToken) error {
 	stack := []string{"{"}
 	for _, t := range tokens {
+		if t.kind == "string" && strings.HasPrefix(t.text, "`") && templateNestingDepth(t.text) > maxStripNesting {
+			return fmt.Errorf("codemode: template literals nested deeper than %d in TypeScript source", maxStripNesting)
+		}
 		if t.kind != "punct" {
 			continue
 		}
 		switch t.text {
 		case "(", "[", "{":
 			stack = append(stack, t.text)
+			if len(stack) > maxStripNesting+1 {
+				return fmt.Errorf("codemode: brackets nested deeper than %d in TypeScript source", maxStripNesting)
+			}
 		case ")", "]", "}":
 			want := map[string]string{")": "(", "]": "[", "}": "{"}[t.text]
 			if n := len(stack); n == 0 || stack[n-1] != want {
