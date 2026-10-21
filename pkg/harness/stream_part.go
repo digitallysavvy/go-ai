@@ -574,11 +574,29 @@ func requireUsageShape(typ string, fields map[string]json.RawMessage) error {
 	if err := json.Unmarshal(fields[key], &usage); err != nil || usage == nil {
 		return invalid()
 	}
-	for _, member := range []string{"inputTokens", "outputTokens"} {
+	// zod `.optional()` accepts an absent key but rejects an explicit null,
+	// at every level of the usage and finish-reason objects.
+	if err := RejectNullKeys(typ+" "+key, usage, []string{"raw"}); err != nil {
+		return err
+	}
+	for _, m := range []struct {
+		name     string
+		optional []string
+	}{
+		{"inputTokens", []string{"total", "noCache", "cacheRead", "cacheWrite"}},
+		{"outputTokens", []string{"total", "text", "reasoning"}},
+	} {
 		var obj map[string]json.RawMessage
-		if err := json.Unmarshal(usage[member], &obj); err != nil || obj == nil {
+		if err := json.Unmarshal(usage[m.name], &obj); err != nil || obj == nil {
 			return invalid()
 		}
+		if err := RejectNullKeys(typ+" "+key+"."+m.name, obj, m.optional); err != nil {
+			return err
+		}
+	}
+	var reason map[string]json.RawMessage
+	if json.Unmarshal(fields["finishReason"], &reason) == nil {
+		return RejectNullKeys(typ+" finishReason", reason, []string{"raw"})
 	}
 	return nil
 }
