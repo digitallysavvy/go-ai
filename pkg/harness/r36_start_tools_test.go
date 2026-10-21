@@ -8,6 +8,9 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // TS onStart / onStepStart events carry `tools` (the merged tool set) and
@@ -135,4 +138,46 @@ func TestRunPrompt_ToolExecutionEventsCarryMessages(t *testing.T) {
 	if len(startMsgs) != 1 || len(endMsgs) != 1 {
 		t.Fatalf("messages start=%v end=%v, want the prompt as one user message", startMsgs, endMsgs)
 	}
+}
+
+// TS publishes `maxRetries: 0` on the harness start event; the legacy OTel
+// integration records it as ai.settings.maxRetries on the root span.
+func TestRunPrompt_LegacyTelemetryRootSpanRecordsZeroMaxRetries(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	tools := map[string]types.Tool{"a": {Name: "a", Parameters: map[string]any{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		}}}
+	session := &slowToolTurnSession{toolName: "a"}
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: &mockHarnessAdapter{id: "mock", session: session}, Session: session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(), Model: "harness-model",
+		Telemetry: &telemetry.Options{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")})},
+		},
+	})
+	stream := out.Result.Stream()
+	for {
+		if _, err := stream.Next(); err != nil {
+			break
+		}
+	}
+	<-out.Done
+	roots := spansNamed(rec, "ai.harness")
+	if len(roots) != 1 {
+		t.Fatalf("ai.harness spans = %d", len(roots))
+	}
+	for _, kv := range roots[0].Attributes() {
+		if string(kv.Key) == "ai.settings.maxRetries" {
+			if kv.Value.AsInt64() != 0 {
+				t.Fatalf("ai.settings.maxRetries = %v", kv.Value)
+			}
+			return
+		}
+	}
+	t.Fatalf("root span has no ai.settings.maxRetries: %v", roots[0].Attributes())
 }

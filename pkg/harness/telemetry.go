@@ -148,7 +148,10 @@ func (d *turnDriver) telStart() {
 	if d.in.Telemetry == nil {
 		return
 	}
+	// TS start event: `maxRetries: 0` (a harness turn never retries).
+	maxRetries := 0
 	d.telCtx = telemetry.FireOnStart(d.ctx, telemetry.TelemetryStartEvent{
+		MaxRetries:     &maxRetries,
 		CallID:         d.telCallID,
 		OperationType:  "ai.harness",
 		Settings:       d.in.Telemetry,
