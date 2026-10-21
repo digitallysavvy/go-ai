@@ -442,10 +442,10 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if reasoningEffort != "" {
 		body["reasoning_effort"] = reasoningEffort
 	}
-	if modelOpts.PromptCacheKey != "" {
+	if modelOpts.HasPromptCacheKey {
 		body["prompt_cache_key"] = modelOpts.PromptCacheKey
 	}
-	if modelOpts.SafetyIdentifier != "" {
+	if modelOpts.HasSafetyIdentifier {
 		body["safety_identifier"] = modelOpts.SafetyIdentifier
 	}
 
@@ -587,17 +587,16 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 			meta["messageRole"] = b
 		}
 	}
-	if len(choice.Message.ToolCalls) > 0 {
+	// TS: `choice.message.tool_calls != null` keeps toolCallTypes, even empty.
+	if choice.Message.ToolCalls != nil {
 		toolCallTypes := make([]string, 0, len(choice.Message.ToolCalls))
 		for _, tc := range choice.Message.ToolCalls {
 			if tc.Type != "" {
 				toolCallTypes = append(toolCallTypes, tc.Type)
 			}
 		}
-		if len(toolCallTypes) > 0 {
-			if b, err := json.Marshal(toolCallTypes); err == nil {
-				meta["toolCallTypes"] = b
-			}
+		if b, err := json.Marshal(toolCallTypes); err == nil {
+			meta["toolCallTypes"] = b
 		}
 	}
 	result.ProviderMetadata = map[string]interface{}{"moonshotai": meta}

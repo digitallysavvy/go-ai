@@ -54,6 +54,10 @@ type moonshotModelOptions struct {
 
 	PromptCacheKey   string
 	SafetyIdentifier string
+	// HasPromptCacheKey / HasSafetyIdentifier record that the option key was
+	// present, so an empty string is still forwarded (TS `!= null`).
+	HasPromptCacheKey   bool
+	HasSafetyIdentifier bool
 }
 
 func invalidMoonshotProviderOptions(cause error) error {
@@ -124,9 +128,11 @@ func parseMoonshotModelOptions(opts map[string]interface{}) (moonshotModelOption
 	}
 	if v, ok := providerutils.OpenAICompatibleStringOption(opts, "promptCacheKey"); ok {
 		result.PromptCacheKey = v
+		result.HasPromptCacheKey = true
 	}
 	if v, ok := providerutils.OpenAICompatibleStringOption(opts, "safetyIdentifier"); ok {
 		result.SafetyIdentifier = v
+		result.HasSafetyIdentifier = true
 	}
 
 	return result, nil
