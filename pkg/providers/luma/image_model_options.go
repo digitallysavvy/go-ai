@@ -35,6 +35,11 @@ type ImageModelOptions struct {
 	// MaxPollAttempts overrides the maximum number of polling attempts
 	// (default 120).
 	MaxPollAttempts *int
+	// pollIntervalMillisF and maxPollAttemptsF keep the raw TS z.number()
+	// values: PollIntervalMillis/MaxPollAttempts truncate a fractional value,
+	// but the TS loop runs `i < maxPollAttempts` (2.5 allows 3 attempts).
+	pollIntervalMillisF *float64
+	maxPollAttemptsF    *float64
 	// Additional carries any passthrough fields not explicitly modeled here
 	// (the TS schema is a looseObject, and every unrecognized field is
 	// spread directly into the request body).
@@ -84,6 +89,12 @@ func parseImageModelOptions(providerOptions map[string]interface{}) *ImageModelO
 	}
 	if v, ok := intFromInterface(raw["maxPollAttempts"]); ok {
 		opts.MaxPollAttempts = &v
+	}
+	if v, ok := floatFromInterface(raw["pollIntervalMillis"]); ok {
+		opts.pollIntervalMillisF = &v
+	}
+	if v, ok := floatFromInterface(raw["maxPollAttempts"]); ok {
+		opts.maxPollAttemptsF = &v
 	}
 
 	additional := map[string]interface{}{}

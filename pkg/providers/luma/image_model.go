@@ -141,14 +141,18 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 		return nil, fmt.Errorf("luma: failed to decode generation response: %w", err)
 	}
 
-	pollIntervalMillis := defaultPollIntervalMillis
-	maxPollAttempts := defaultMaxPollAttempts
+	pollIntervalMillis := float64(defaultPollIntervalMillis)
+	maxPollAttempts := float64(defaultMaxPollAttempts)
 	if lumaOpts != nil {
-		if lumaOpts.PollIntervalMillis != nil {
-			pollIntervalMillis = *lumaOpts.PollIntervalMillis
+		if lumaOpts.pollIntervalMillisF != nil {
+			pollIntervalMillis = *lumaOpts.pollIntervalMillisF
+		} else if lumaOpts.PollIntervalMillis != nil {
+			pollIntervalMillis = float64(*lumaOpts.PollIntervalMillis)
 		}
-		if lumaOpts.MaxPollAttempts != nil {
-			maxPollAttempts = *lumaOpts.MaxPollAttempts
+		if lumaOpts.maxPollAttemptsF != nil {
+			maxPollAttempts = *lumaOpts.maxPollAttemptsF
+		} else if lumaOpts.MaxPollAttempts != nil {
+			maxPollAttempts = float64(*lumaOpts.MaxPollAttempts)
 		}
 	}
 
@@ -197,10 +201,10 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // `getFromApi({ validateUrl: false })` for this call, so no additional SSRF
 // validation is required here -- only the final image download (below) needs
 // it, since that URL comes from the response body.
-func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, headers map[string]string, pollIntervalMillis, maxPollAttempts int) (string, error) {
+func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, headers map[string]string, pollIntervalMillis, maxPollAttempts float64) (string, error) {
 	path := "/dream-machine/v1/generations/" + generationID
 
-	for i := 0; i < maxPollAttempts; i++ {
+	for i := 0; float64(i) < maxPollAttempts; i++ {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -240,7 +244,7 @@ func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, h
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(time.Duration(pollIntervalMillis) * time.Millisecond):
+		case <-time.After(time.Duration(pollIntervalMillis * float64(time.Millisecond))):
 		}
 	}
 
