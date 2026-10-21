@@ -2545,106 +2545,9 @@ func filterAgentDynamicToolResults(results []types.ToolResult) []types.ToolResul
 }
 
 func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) (types.ToolApprovalResult, error) {
-	tool := findAgentTool(call.ToolName, tools)
-	approval, err := normalizeAgentToolApproval(call, tool, tools, messages, toolApproval, runtimeContext, toolsContext)
-	if err != nil {
-		return types.ToolApprovalResult{}, err
-	}
-	if approval.Status != types.ToolApprovalStatusNotApplicable {
-		return approval, nil
-	}
-	if tool == nil {
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	}
-	setting := tool.ToolApproval
-	if setting == nil {
-		setting = tool.NeedsApproval
-	}
-	switch v := setting.(type) {
-	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case bool:
-		if v {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.ToolNeedsApprovalFunc:
-		toolCtx, err := validateAgentToolContext(tool, call.ToolName, toolsContext[tool.Name])
-		if err != nil {
-			return types.ToolApprovalResult{}, err
-		}
-		if v(ctx, call.Arguments, types.ToolNeedsApprovalOptions{
-			ToolCallID: call.ID,
-			Messages:   messages,
-			Context:    toolCtx,
-		}) {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.NeedsApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		if _, err := validateAgentToolContext(tool, call.ToolName, toolsContext[tool.Name]); err != nil {
-			return types.ToolApprovalResult{}, err
-		}
-		if v(ctx, call.Arguments) {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusUserApproval}, nil
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.ToolApprovalStatus:
-		return normalizeAgentApprovalValue(v), nil
-	case string:
-		return normalizeAgentApprovalValue(types.ToolApprovalStatus(v)), nil
-	}
-	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-}
-
-func normalizeAgentToolApproval(call types.ToolCall, tool *types.Tool, tools []types.Tool, messages []types.Message, cfg interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) (types.ToolApprovalResult, error) {
-	switch v := cfg.(type) {
-	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
-	case types.GenericToolApprovalFunc:
-		return normalizeAgentApprovalValue(v(types.ToolApprovalOptions{
-			ToolCall:       call,
-			Tools:          tools,
-			ToolsContext:   toolsCtx,
-			RuntimeContext: runtimeCtx,
-			Messages:       messages,
-		})), nil
-	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		return normalizeAgentApprovalValue(v(call, tools, messages, runtimeCtx, toolsCtx)), nil
-	case map[string]interface{}:
-		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
-	case map[string]types.ToolApprovalValue:
-		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
-	default:
-		return normalizeAgentApprovalValue(v), nil
-	}
-}
-
-func normalizeAgentToolApprovalValue(call types.ToolCall, tool *types.Tool, tools []types.Tool, messages []types.Message, value interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) (types.ToolApprovalResult, error) {
-	switch fn := value.(type) {
-	case types.SingleToolApprovalFunc:
-		toolCtx, err := validateAgentToolContext(tool, call.ToolName, toolsCtx[call.ToolName])
-		if err != nil {
-			return types.ToolApprovalResult{}, err
-		}
-		return normalizeAgentApprovalValue(fn(call.Arguments, types.SingleToolApprovalOptions{
-			ToolContext:    toolCtx,
-			RuntimeContext: runtimeCtx,
-			ToolCallID:     call.ID,
-			Messages:       messages,
-		})), nil
-	case types.GenericToolApprovalFunc:
-		return normalizeAgentApprovalValue(fn(types.ToolApprovalOptions{
-			ToolCall:       call,
-			Tools:          tools,
-			ToolsContext:   toolsCtx,
-			RuntimeContext: runtimeCtx,
-			Messages:       messages,
-		})), nil
-	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
-		return normalizeAgentApprovalValue(fn(call, tools, messages, runtimeCtx, toolsCtx)), nil
-	}
-	return normalizeAgentApprovalValue(value), nil
+	// Shared with ai.GenerateText so the loop fails closed the same way: an
+	// unknown status or unsupported configuration is an error, not a pass.
+	return ai.ResolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
 }
 
 func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
@@ -2654,35 +2557,6 @@ func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
 		}
 	}
 	return nil
-}
-
-func normalizeAgentApprovalValue(value interface{}) types.ToolApprovalResult {
-	switch v := value.(type) {
-	case nil:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-	case types.ToolApprovalResult:
-		if v.Status == "" {
-			v.Status = types.ToolApprovalStatusNotApplicable
-		}
-		return v
-	case *types.ToolApprovalResult:
-		if v == nil {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-		}
-		return normalizeAgentApprovalValue(*v)
-	case types.ToolApprovalStatus:
-		if v == "" {
-			v = types.ToolApprovalStatusNotApplicable
-		}
-		return types.ToolApprovalResult{Status: v}
-	case string:
-		if v == "" {
-			return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-		}
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatus(v)}
-	default:
-		return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}
-	}
 }
 
 func validateAgentToolContext(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error) {

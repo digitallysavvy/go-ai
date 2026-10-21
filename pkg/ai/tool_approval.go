@@ -63,6 +63,21 @@ func normalizeToolApprovalStatus(status types.ToolApprovalStatus) types.ToolAppr
 	return types.ToolApprovalResult{Status: status}
 }
 
+// ResolveToolApproval is resolveToolApproval for the agent tool loop: it fails
+// closed, so an unknown approval status or an unsupported configuration value
+// is an error instead of letting the tool run unapproved.
+func ResolveToolApproval(
+	ctx context.Context,
+	call types.ToolCall,
+	tools []types.Tool,
+	messages []types.Message,
+	runtimeCtx interface{},
+	toolsCtx map[string]interface{},
+	toolApproval interface{},
+) (types.ToolApprovalResult, error) {
+	return resolveToolApproval(ctx, call, tools, messages, runtimeCtx, toolsCtx, toolApproval)
+}
+
 // resolveToolApproval decides whether a tool call needs approval. It fails
 // closed: a configuration value or status it doesn't recognize is an error,
 // which reaches the model as a tool error instead of running the tool.
