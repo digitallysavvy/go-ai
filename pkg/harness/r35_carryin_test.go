@@ -115,3 +115,34 @@ func TestRunPrompt_ContentlessFinishStepStillOpensStep(t *testing.T) {
 		t.Fatalf("starts=%d modelStarts=%d modelEnds=%d stepEnds=%d, want 1 each", starts.Load(), modelStarts.Load(), modelEnds.Load(), stepEnds.Load())
 	}
 }
+
+// TS opens the step before the settled-replay `continue`, so a step whose only
+// content is a replay is open when a bare finish arrives: the turn fails with
+// the unclosed-step error (after onTurnFinished), as for any other content.
+func TestRunPrompt_SettledReplayThenBareFinishIsUnclosedStep(t *testing.T) {
+	restricted := types.Tool{Name: "restricted", Parameters: restrictedSchema()}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "restricted", Input: `{"city":`},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonToolCalls}, Usage: stringUsage(1, 1)},
+				&ToolApprovalRequestPart{ApprovalID: "a1", ToolCallID: "c1"},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	tools := map[string]types.Tool{"restricted": restricted}
+	var finished, failed atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), Tools: tools, ActiveTools: tools,
+		SandboxSession: testSandbox(),
+		OnTurnFinished: func() { finished.Add(1) },
+		OnTurnFailed:   func() { failed.Add(1) },
+	})
+	drainRunPrompt(t, out)
+	if finished.Load() != 1 || failed.Load() != 1 {
+		t.Fatalf("finished=%d failed=%d, want 1 and 1 (replay-only step left open)", finished.Load(), failed.Load())
+	}
+}
