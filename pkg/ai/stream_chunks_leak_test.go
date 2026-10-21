@@ -99,3 +99,29 @@ func TestElementStream_AbandonedConsumerExitsOnClose(t *testing.T) {
 	waitGoroutines(t, base)
 	_ = ch
 }
+
+// Cancelling one ChunksContext consumer must not detach the shared Stream()
+// cursor: a later accessor still reads the rest of the stream (TS: each
+// accessor is an independent tee).
+func TestChunksContext_CancelLeavesStreamUsable(t *testing.T) {
+	res := manyChunkResult(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	ch := res.ChunksContext(ctx)
+	<-ch
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+	st := res.Stream()
+	sawFinish := false
+	for {
+		c, err := st.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			sawFinish = true
+		}
+	}
+	if !sawFinish {
+		t.Fatal("Stream() after ChunksContext cancel did not reach the finish chunk")
+	}
+}

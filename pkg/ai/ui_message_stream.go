@@ -2344,6 +2344,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			break
 		}
 		fileContent := chunk.ReasoningFileContent
+		if fileContent == nil {
+			break
+		}
 		part := map[string]interface{}{
 			"type":      "reasoning-file",
 			"mediaType": fileContent.MediaType,

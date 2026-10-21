@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -4901,12 +4902,22 @@ func (r *StreamTextResult) ChunksContext(ctx context.Context) <-chan provider.St
 	stream := r.Stream()
 	closed := r.closedSignal()
 	finished := make(chan struct{})
+	// Cancelling ctx releases only this consumer: the shared Stream() cursor
+	// stays attached (TS: each accessor is its own tee), so a later Stream()
+	// call resumes. Only Close of the result ends the shared cursor.
+	buf, _ := stream.(*chunkBufferReader)
+	var ctxDone atomic.Bool
 
 	// Watcher: wakes a Next blocked waiting for a chunk.
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = stream.Close()
+			if buf != nil {
+				ctxDone.Store(true)
+				buf.buf.wake()
+			} else {
+				_ = stream.Close()
+			}
 		case <-closed:
 			_ = stream.Close()
 		case <-finished:
@@ -4917,13 +4928,22 @@ func (r *StreamTextResult) ChunksContext(ctx context.Context) <-chan provider.St
 		defer close(finished)
 		defer close(ch)
 		for {
-			chunk, err := stream.Next()
+			var chunk *provider.StreamChunk
+			var err error
+			if buf != nil {
+				chunk, err = buf.nextUnless(ctxDone.Load)
+			} else {
+				chunk, err = stream.Next()
+			}
 			if err != nil {
 				return
 			}
 			select {
 			case ch <- *chunk:
 			case <-ctx.Done():
+				if buf != nil {
+					buf.unread()
+				}
 				return
 			case <-closed:
 				return

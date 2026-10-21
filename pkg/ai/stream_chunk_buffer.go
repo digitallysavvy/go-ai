@@ -73,9 +73,22 @@ type chunkBufferReader struct {
 // reports io.EOF once closed, the same terminal value a reader sees once the
 // whole shared buffer closes cleanly.
 func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
+	return r.nextUnless(nil)
+}
+
+// errReadAborted is returned by nextUnless when abort fired.
+var errReadAborted = io.ErrClosedPipe
+
+// nextUnless is Next that also returns errReadAborted, without detaching the
+// reader, once abort reports true (checked under the buffer lock; the aborter
+// must call wake after making it true).
+func (r *chunkBufferReader) nextUnless(abort func() bool) (*provider.StreamChunk, error) {
 	r.buf.mu.Lock()
 	defer r.buf.mu.Unlock()
 	for {
+		if abort != nil && abort() {
+			return nil, errReadAborted
+		}
 		if r.closed {
 			return nil, io.EOF
 		}
@@ -92,6 +105,24 @@ func (r *chunkBufferReader) Next() (*provider.StreamChunk, error) {
 		}
 		r.buf.cond.Wait()
 	}
+}
+
+// wake wakes every goroutine blocked in a reader's Next so it re-checks its
+// abort condition.
+func (b *chunkBuffer) wake() {
+	b.mu.Lock()
+	b.cond.Broadcast()
+	b.mu.Unlock()
+}
+
+// unread steps the cursor back over the chunk just returned by Next, for a
+// consumer that took it but could not deliver it.
+func (r *chunkBufferReader) unread() {
+	r.buf.mu.Lock()
+	if !r.closed && r.index > 0 {
+		r.index--
+	}
+	r.buf.mu.Unlock()
 }
 
 // Err returns the terminal error of the underlying buffer, if any.
