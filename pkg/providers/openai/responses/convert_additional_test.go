@@ -1813,3 +1813,31 @@ func TestConvertPromptToInput_ApplyPatchOutputMatchesRawToolName(t *testing.T) {
 		}
 	}
 }
+
+// TS resolves the full media type and enforces passThroughUnsupportedFiles
+// before the file-id branch of a non-image data part, so a file id with a
+// non-PDF media type is rejected unless pass-through is on.
+func TestConvertPromptToInput_FileIDNonPDFHonorsPassThroughCheck(t *testing.T) {
+	t.Parallel()
+
+	prompt := types.Prompt{Messages: []types.Message{{
+		Role: types.RoleUser,
+		Content: []types.ContentPart{types.FileContent{FileData: types.FileData{
+			Type:       types.FileDataTypeData,
+			DataString: "file-abc",
+			MediaType:  "text/plain",
+		}}},
+	}}}
+	_, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{FileIDPrefixes: []string{"file-"}})
+	if !providerrors.IsUnsupportedFunctionalityError(err) || !strings.Contains(err.Error(), "file part media type text/plain") {
+		t.Fatalf("err = %v, want unsupported file part media type text/plain", err)
+	}
+	input, _, err := ConvertPromptToInputWithOptions(prompt, "system", ConvertOptions{FileIDPrefixes: []string{"file-"}, PassThroughUnsupportedFiles: true})
+	if err != nil {
+		t.Fatalf("pass-through err = %v", err)
+	}
+	part := input[0].(UserMessage).Content.([]interface{})[0].(map[string]interface{})
+	if part["file_id"] != "file-abc" {
+		t.Fatalf("part = %#v, want file_id file-abc", part)
+	}
+}
