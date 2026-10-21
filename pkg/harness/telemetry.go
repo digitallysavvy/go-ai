@@ -259,6 +259,9 @@ func (d *turnDriver) telStepContent() []types.ContentPart {
 // harness metadata as provider metadata, and TS's `${callId}-${stepNumber}`
 // response id.
 func (d *turnDriver) languageModelCallEnd(finishReason FinishReason, usage Usage, metadata Metadata) {
+	// TS lifecycle.languageModelCallEnd opens the step first, so a step that
+	// closes without any content still reports its start events.
+	d.ensureStepOpen()
 	responseTimeMs := int64(0)
 	if d.telModelCallStartedAt > 0 {
 		if elapsed := nowMs() - d.telModelCallStartedAt; elapsed > 0 {

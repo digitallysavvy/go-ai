@@ -86,3 +86,32 @@ func TestRunPrompt_StartFailureFiresOnStartWithoutTelemetry(t *testing.T) {
 		t.Fatalf("OnStart calls = %d, want 1", starts.Load())
 	}
 }
+
+// TS lifecycle.languageModelCallEnd opens the step first: a finish-step with
+// no content still reports step-start, model-call start and end.
+func TestRunPrompt_ContentlessFinishStepStillOpensStep(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			return []StreamPart{
+				&StreamStartPart{},
+				&FinishStepPart{FinishReason: FinishReason{Unified: FinishReasonStop}, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: FinishReason{Unified: FinishReasonStop}, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	var starts, modelStarts, modelEnds, stepEnds atomic.Int32
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session,
+		Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Callbacks: Callbacks{
+			OnStepStart:              func(context.Context, ai.OnStepStartEvent) { starts.Add(1) },
+			OnLanguageModelCallStart: func(context.Context, ai.LanguageModelCallStartEvent) { modelStarts.Add(1) },
+			OnLanguageModelCallEnd:   func(context.Context, ai.LanguageModelCallEndEvent) { modelEnds.Add(1) },
+			OnStepEnd:                func(context.Context, ai.OnStepFinishEvent) { stepEnds.Add(1) },
+		},
+	})
+	drainRunPrompt(t, out)
+	if starts.Load() != 1 || modelStarts.Load() != 1 || modelEnds.Load() != 1 || stepEnds.Load() != 1 {
+		t.Fatalf("starts=%d modelStarts=%d modelEnds=%d stepEnds=%d, want 1 each", starts.Load(), modelStarts.Load(), modelEnds.Load(), stepEnds.Load())
+	}
+}
