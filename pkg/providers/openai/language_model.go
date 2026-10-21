@@ -1374,7 +1374,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 						Type     *string `json:"type"` // nullable: OpenAI may send null for type in streaming deltas (#12901)
 						Function struct {
 							Name      streaming.WireName `json:"name"`
-							Arguments string             `json:"arguments"`
+							Arguments *string            `json:"arguments"`
 						} `json:"function"`
 					} `json:"tool_calls,omitempty"`
 					Annotations []openAIAnnotation `json:"annotations,omitempty"`
@@ -1533,7 +1533,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				if !s.compat && tc.Type != nil {
 					toolCallType = *tc.Type
 				}
-				for _, chunk := range s.toolCallTracker.TrackWireWithType(tc.Index, tc.ID, tc.Function.Name, toolCallType, tc.Function.Arguments) {
+				for _, chunk := range s.toolCallTracker.TrackWireWithTypePtr(tc.Index, tc.ID, tc.Function.Name, toolCallType, tc.Function.Arguments) {
 					c := chunk
 					emit(&c)
 				}

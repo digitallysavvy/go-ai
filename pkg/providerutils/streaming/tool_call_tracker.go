@@ -140,6 +140,28 @@ func (t *StreamingToolCallTracker) TrackWire(index *int, id string, name WireNam
 	return t.TrackDelta(d)
 }
 
+// TrackWireWithTypePtr is TrackWireWithType for callers that decoded the
+// wire arguments as *string: a present (possibly empty) string emits a
+// tool-input-delta on an existing call as in TS (`arguments != null`), a
+// missing or null one emits nothing.
+func (t *StreamingToolCallTracker) TrackWireWithTypePtr(index *int, id string, name WireName, typ string, args *string) []ToolCallChunk {
+	d := ToolCallDelta{Index: index, ID: id, Name: name.Value, Type: typ}
+	if args != nil {
+		d.ArgumentsDelta = *args
+		d.ArgumentsPresent = true
+	}
+	if nonBlank(name.Value) == "" {
+		d.NameBlank = name.Present
+		d.NameAbsent = !name.Present
+	}
+	return t.TrackDelta(d)
+}
+
+// TrackWirePtr is TrackWireWithTypePtr without a type.
+func (t *StreamingToolCallTracker) TrackWirePtr(index *int, id string, name WireName, args *string) []ToolCallChunk {
+	return t.TrackWireWithTypePtr(index, id, name, "", args)
+}
+
 // ToolCallChunk is a chunk emitted by the tracker while processing or
 // finalizing tool call deltas.
 type ToolCallChunk = provider.StreamChunk
