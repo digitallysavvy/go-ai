@@ -402,9 +402,11 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 	d.telEnded = true
 	finalStep := steps[len(steps)-1]
 	var toolCalls []types.ToolCall
+	var toolResults []types.ToolResult
 	var files []types.GeneratedFileContent
 	for _, st := range steps {
 		toolCalls = append(toolCalls, st.ToolCalls...)
+		toolResults = append(toolResults, st.ToolResults...)
 		files = append(files, st.Files...)
 	}
 	if d.in.Callbacks.OnEnd != nil {
@@ -435,14 +437,18 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 		return
 	}
 	telemetry.FireOnEnd(d.telCtx, telemetry.TelemetryFinishEvent{
-		CallID:           d.telCallID,
-		FinishReason:     string(finalStep.FinishReason),
-		Usage:            telemetryUsageFromTypesUsage(totalUsage),
-		ModelProvider:    "harness:" + d.in.Harness.HarnessID(),
-		ModelID:          d.modelID,
-		Text:             finalStep.Text,
-		Reasoning:        finalStep.ReasoningText,
-		ToolCalls:        toolCalls,
+		CallID:        d.telCallID,
+		FinishReason:  string(finalStep.FinishReason),
+		Usage:         telemetryUsageFromTypesUsage(totalUsage),
+		ModelProvider: "harness:" + d.in.Harness.HarnessID(),
+		ModelID:       d.modelID,
+		Text:          finalStep.Text,
+		Reasoning:     finalStep.ReasoningText,
+		ToolCalls:     toolCalls,
+		// TS passes toolResults of every step and finalStep.reasoning; the
+		// GenAI integration formats them into gen_ai.output.messages.
+		ToolResults:      toolResults,
+		ReasoningParts:   finalStep.Reasoning,
 		Files:            files,
 		ProviderMetadata: finalStep.ProviderMetadata,
 		Settings:         d.in.Telemetry,

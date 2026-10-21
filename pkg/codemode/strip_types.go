@@ -252,6 +252,7 @@ func tokenizeTS(src string) []tsToken {
 	runes := []rune(src)
 	n := len(runes)
 	var tokens []tsToken
+	regexMemo := &regexFailMemo{}
 	// prevSignificant is the kind/text of the last non-space/non-comment
 	// token, used to disambiguate a leading `/` as a regex literal (as
 	// opposed to division) the same way real JS lexers do.
@@ -286,7 +287,7 @@ func tokenizeTS(src string) []tsToken {
 			i = end
 
 		case c == '/' && regexAllowedAfter(prevSignificant) && !divisionAfterPrev:
-			if end, ok := scanRegexLiteral(runes, i); ok {
+			if end, ok := scanRegexLiteral(runes, i, regexMemo); ok {
 				tokens = append(tokens, tsToken{"regex", string(runes[i:end]), i})
 				i = end
 				prevSignificant = &tokens[len(tokens)-1]
@@ -300,7 +301,7 @@ func tokenizeTS(src string) []tsToken {
 			i = j
 
 		case c == '`':
-			j := scanTemplateLiteral(runes, i)
+			j := scanTemplateLiteral(runes, i, regexMemo)
 			tokens = append(tokens, tsToken{"string", string(runes[i:j]), i})
 			i = j
 
@@ -386,7 +387,7 @@ func scanStringLiteral(runes []rune, i int) int {
 // nested strings, template literals, and comments, so a `}`, backtick, or
 // quote inside a nested string/template cannot prematurely close the
 // interpolation or the outer template.
-func scanTemplateLiteral(runes []rune, i int) int {
+func scanTemplateLiteral(runes []rune, i int, memo *regexFailMemo) int {
 	n := len(runes)
 	j := i + 1
 	for j < n {
@@ -397,7 +398,7 @@ func scanTemplateLiteral(runes []rune, i int) int {
 		case c == '`':
 			return j + 1
 		case c == '$' && j+1 < n && runes[j+1] == '{':
-			j = scanBalancedExpr(runes, j+2)
+			j = scanBalancedExprMemo(runes, j+2, memo)
 		default:
 			j++
 		}
@@ -411,6 +412,10 @@ func scanTemplateLiteral(runes []rune, i int) int {
 // strings, template literals, and comments so their contents can't disturb
 // that count.
 func scanBalancedExpr(runes []rune, j int) int {
+	return scanBalancedExprMemo(runes, j, &regexFailMemo{})
+}
+
+func scanBalancedExprMemo(runes []rune, j int, memo *regexFailMemo) int {
 	n := len(runes)
 	depth := 0
 	// last is the previous significant rune ('a' after an operand), used to
@@ -423,7 +428,7 @@ func scanBalancedExpr(runes []rune, j int) int {
 			j = scanStringLiteral(runes, j)
 			last = 'a'
 		case c == '`':
-			j = scanTemplateLiteral(runes, j)
+			j = scanTemplateLiteral(runes, j, memo)
 			last = 'a'
 		case c == '/' && j+1 < n && runes[j+1] == '/':
 			for j < n && !isLineTerminator(runes[j]) {
@@ -441,7 +446,7 @@ func scanBalancedExpr(runes []rune, j int) int {
 		case c == '/' && interpolationRegexAllowed(last):
 			// A regular expression literal: its quotes, backticks and
 			// brackets are not code.
-			if end, ok := scanRegexLiteral(runes, j); ok {
+			if end, ok := scanRegexLiteral(runes, j, memo); ok {
 				j = end
 				last = 'a'
 				continue
@@ -494,16 +499,47 @@ func isLineTerminator(r rune) bool {
 	return r == '\n' || r == '\r' || r == '\u2028' || r == '\u2029'
 }
 
+// regexFailMemo remembers the scan states (position, inside a character class
+// or not) that a failed scanRegexLiteral walked through. The scan is
+// deterministic, so a later scan that reaches one of them fails too; without
+// this, a long line of unterminated `/[` candidates rescanned to the end of the
+// line at every `/` (quadratic time on a source of the default size limit).
+type regexFailMemo struct {
+	seen [2][]bool
+}
+
+func (m *regexFailMemo) visit(j int, inClass bool, n int) (alreadyFailed bool) {
+	k := 0
+	if inClass {
+		k = 1
+	}
+	if m.seen[k] == nil {
+		m.seen[k] = make([]bool, n+1)
+	}
+	if m.seen[k][j] {
+		return true
+	}
+	m.seen[k][j] = true
+	return false
+}
+
 // scanRegexLiteral attempts to scan a regular expression literal starting
 // at runes[i] == '/'. It respects character classes (`[...]`), where an
 // unescaped `/` does not terminate the literal, and returns
 // (indexPastFlags, true) on success or (_, false) if this `/` cannot be
 // parsed as a regex (e.g. it is unterminated before a line break).
-func scanRegexLiteral(runes []rune, i int) (int, bool) {
+//
+// The tokenizer only moves forward, so a state visited by an earlier scan
+// either led to a failure or lies inside a literal that was consumed; either
+// way revisiting it means this scan fails too.
+func scanRegexLiteral(runes []rune, i int, memo *regexFailMemo) (int, bool) {
 	n := len(runes)
 	j := i + 1
 	inClass := false
 	for j < n {
+		if memo.visit(j, inClass, n) {
+			return 0, false
+		}
 		c := runes[j]
 		if c == '\n' {
 			return 0, false
