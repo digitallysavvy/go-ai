@@ -651,6 +651,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		return nil, err
 	}
 
+	// pendingDeferredToolCalls tracks provider-executed calls of tools with
+	// SupportsDeferredResults whose result has not arrived yet (TS
+	// pendingDeferredToolCalls): the loop keeps going until they resolve.
+	pendingDeferredToolCalls := map[string]string{}
+
 	// Execute agent loop
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
 		stepIndex := stepNum - 1
@@ -721,6 +726,13 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		stepStarted := time.Now()
 		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(stepCtx, callConfig, stepTel)
 		customData = newCustomData
+		if err == nil {
+			// TS generateText continues only for client (locally executed)
+			// tool calls or while a deferred-result provider tool is still
+			// pending; a step whose provider-executed calls all carry their
+			// results ends the run.
+			shouldContinue = agentStepContinues(stepResult, callConfig.Tools, pendingDeferredToolCalls)
+		}
 		if err != nil {
 			stepTel.fail(err)
 			// Call OnChainError callback
@@ -2895,6 +2907,40 @@ func validateStepToolResults(messages []types.Message, tools []types.Tool) error
 
 // hasUnresolvedLocalAgentToolCalls reports whether a locally executed tool call
 // of the step has no tool result (mirrors ai.hasUnresolvedLocalToolCalls).
+// agentStepContinues applies the TS generateText continuation rule to a
+// step's model response (before client tools run): continue when the step has
+// a client tool call or a deferred provider result is still pending. It also
+// updates pending (TS pendingDeferredToolCalls): provider-executed calls of a
+// SupportsDeferredResults tool without an inline result are added, and every
+// tool-result part in the response resolves its entry.
+func agentStepContinues(step *types.StepResult, tools []types.Tool, pending map[string]string) bool {
+	hasResult := func(id string) bool {
+		for _, part := range step.Content {
+			if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == id {
+				return true
+			}
+		}
+		return false
+	}
+	hasClient := false
+	for _, call := range step.ToolCalls {
+		tool := findAgentTool(call.ToolName, tools)
+		if !call.ProviderExecuted && (tool == nil || !tool.ProviderExecuted) {
+			hasClient = true
+			continue
+		}
+		if tool != nil && tool.ProviderExecuted && tool.SupportsDeferredResults && !hasResult(call.ID) {
+			pending[call.ID] = call.ToolName
+		}
+	}
+	for _, part := range step.Content {
+		if tr, ok := part.(types.ToolResultContent); ok {
+			delete(pending, tr.ToolCallID)
+		}
+	}
+	return hasClient || len(pending) > 0
+}
+
 func hasUnresolvedLocalAgentToolCalls(calls []types.ToolCall, tools []types.Tool, results []types.ToolResult) bool {
 	resolved := make(map[string]bool, len(results))
 	for _, r := range results {
