@@ -192,6 +192,11 @@ func ConvertPromptToInputWithOptions(prompt types.Prompt, systemMessageMode stri
 		}
 		input = append(input, sysMsg)
 	}
+	// TS treats the system prompt as the first system message, so "remove"
+	// mode warns for it as well.
+	if prompt.System != "" && systemMessageMode == "remove" {
+		warnings = append(warnings, types.Warning{Type: "other", Message: "system messages are removed for this model"})
+	}
 
 	for _, msg := range prompt.Messages {
 		switch msg.Role {
