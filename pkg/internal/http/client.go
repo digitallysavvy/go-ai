@@ -9,10 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
-	neturl "net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -275,15 +276,48 @@ func (c *Client) snapshot() (string, map[string]string) {
 	return c.baseURL, headers
 }
 
-// encodeQuery is URLSearchParams.toString() for a parameter map: keys and
-// values percent-encoded (space as +), in sorted key order so the URL is
-// deterministic.
+// encodeQuery is URLSearchParams.toString() for a parameter map, in sorted
+// key order so the URL is deterministic. It uses the
+// application/x-www-form-urlencoded byte set: ASCII alphanumerics and
+// "*-._" stay literal, space is "+", everything else (including "~", which
+// Go's url.QueryEscape leaves alone) is percent-encoded in upper-case hex.
 func encodeQuery(q map[string]string) string {
-	values := make(neturl.Values, len(q))
-	for k, v := range q {
-		values.Set(k, v)
+	keys := make([]string, 0, len(q))
+	for k := range q {
+		keys = append(keys, k)
 	}
-	return values.Encode()
+	sort.Strings(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		formEscape(&b, k)
+		b.WriteByte('=')
+		formEscape(&b, q[k])
+	}
+	return b.String()
+}
+
+func formEscape(b *strings.Builder, s string) {
+	const hex = "0123456789ABCDEF"
+	// Invalid UTF-8 becomes U+FFFD, as the WHATWG encoder does.
+	for _, r := range s {
+		switch {
+		case r == ' ':
+			b.WriteByte('+')
+		case r < 0x80 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '*' || r == '-' || r == '.' || r == '_'):
+			b.WriteByte(byte(r))
+		default:
+			var buf [4]byte
+			n := utf8.EncodeRune(buf[:], r)
+			for _, c := range buf[:n] {
+				b.WriteByte('%')
+				b.WriteByte(hex[c>>4])
+				b.WriteByte(hex[c&15])
+			}
+		}
+	}
 }
 
 // Do performs an HTTP request
