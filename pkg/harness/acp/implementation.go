@@ -105,7 +105,14 @@ func validateImplementation(impl implementation) error {
 }
 
 func validateEnvironment(env map[string]string) error {
-	for k, v := range env {
+	// Go maps have no insertion order; sort so the reported key is stable.
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		v := env[k]
 		if !envVarNameRegexp.MatchString(k) {
 			return fmt.Errorf("ACP environment variable name is invalid: %s.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
