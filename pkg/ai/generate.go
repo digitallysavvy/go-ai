@@ -2083,10 +2083,6 @@ func (e *toolResultModelOutputError) Unwrap() error {
 	return e.err
 }
 
-// isClientToolCall reports whether a tool call is one the SDK must answer
-// itself (TS: toolCall.providerExecuted !== true). That includes calls to
-// tools that do not exist or whose input was invalid: they are answered with
-// an error result and the loop continues so the model can recover.
 // invalidClientToolCalls returns the invalid, locally handled calls of a step:
 // the calls TS answers with a tool-error output even when no tools exist.
 func invalidClientToolCalls(calls []types.ToolCall) []types.ToolCall {
@@ -2099,6 +2095,10 @@ func invalidClientToolCalls(calls []types.ToolCall) []types.ToolCall {
 	return out
 }
 
+// isClientToolCall reports whether a tool call is one the SDK must answer
+// itself (TS: toolCall.providerExecuted !== true). That includes calls to
+// tools that do not exist or whose input was invalid: they are answered with
+// an error result and the loop continues so the model can recover.
 func isClientToolCall(call types.ToolCall, toolsByName map[string]*types.Tool) bool {
 	if call.ProviderExecuted {
 		return false
