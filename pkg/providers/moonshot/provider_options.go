@@ -287,8 +287,11 @@ func parseMoonshotMessageOptions(providerOptions map[string]interface{}) (*moons
 				}
 				tool.Description = desc
 			}
-			params, ok := toolMap["inputSchema"].(map[string]interface{})
-			if !ok {
+			// zod z.record: the schema must be a JSON object. v0.5.2 accepted
+			// any Go value here (json.RawMessage, a typed schema struct), so
+			// any value that encodes to a JSON object is kept as given.
+			params, present := toolMap["inputSchema"]
+			if !present || !encodesToJSONObject(params) {
 				return nil, invalidMoonshotProviderOptions(nil)
 			}
 			tool.Parameters = params
@@ -339,4 +342,20 @@ func moonshotNumber(v interface{}) (float64, bool) {
 		return f, err == nil
 	}
 	return 0, false
+}
+
+// encodesToJSONObject reports whether v is (or JSON-encodes to) a JSON object.
+func encodesToJSONObject(v interface{}) bool {
+	switch v.(type) {
+	case nil:
+		return false
+	case map[string]interface{}:
+		return true
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	return json.Unmarshal(b, &obj) == nil && obj != nil
 }

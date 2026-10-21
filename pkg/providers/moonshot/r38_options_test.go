@@ -1,6 +1,7 @@
 package moonshot
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -58,6 +59,32 @@ func TestMoonshotModelOptionsRejectExplicitNull(t *testing.T) {
 	for _, k := range []string{"type", "budgetTokens"} {
 		if _, err := parseMoonshotModelOptions(map[string]interface{}{"thinking": map[string]interface{}{k: nil}}); err == nil {
 			t.Errorf("thinking.%s: null accepted", k)
+		}
+	}
+}
+
+// v0.5.2 accepted any Go value for a dynamic tool's inputSchema; a value that
+// encodes to a JSON object still works, anything else is rejected like zod.
+func TestDynamicToolInputSchemaAcceptsJSONObjectValues(t *testing.T) {
+	for name, tc := range map[string]struct {
+		schema interface{}
+		ok     bool
+	}{
+		"map":         {map[string]interface{}{"type": "object"}, true},
+		"raw message": {json.RawMessage(`{"type":"object"}`), true},
+		"typed struct": {struct {
+			Type string `json:"type"`
+		}{"object"}, true},
+		"string":    {"object", false},
+		"array":     {[]interface{}{}, false},
+		"raw array": {json.RawMessage(`[1]`), false},
+		"nil":       {nil, false},
+	} {
+		_, err := parseMoonshotMessageOptions(map[string]interface{}{"moonshotai": map[string]interface{}{
+			"tools": []interface{}{map[string]interface{}{"type": "function", "name": "calc", "inputSchema": tc.schema}},
+		}})
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", name, err, tc.ok)
 		}
 	}
 }
