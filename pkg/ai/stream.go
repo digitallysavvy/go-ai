@@ -1037,6 +1037,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 		if len(prepared.InstructionMessages) > 0 {
 			if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
+				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 				r.fail(err)
 				return
 			}
