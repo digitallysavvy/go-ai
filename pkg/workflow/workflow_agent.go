@@ -1070,51 +1070,39 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 	return result, err
 }
 
-func mergeStart(a, b StartCallback) StartCallback {
-	if a == nil {
-		return b
+// mergeSafe is TS mergeCallbacks: every callback runs for the event and one
+// that fails (here: panics) neither stops the others nor reaches the caller,
+// as Promise.allSettled swallows a rejected callback. A single callback is
+// guarded the same way. It returns nil when both are nil.
+func mergeSafe[E any](a, b func(context.Context, E)) func(context.Context, E) {
+	if a == nil && b == nil {
+		return nil
 	}
-	if b == nil {
-		return a
+	return func(ctx context.Context, e E) {
+		for _, fn := range []func(context.Context, E){a, b} {
+			if fn == nil {
+				continue
+			}
+			func() {
+				defer func() { _ = recover() }()
+				fn(ctx, e)
+			}()
+		}
 	}
-	return func(ctx context.Context, e ai.OnStartEvent) { a(ctx, e); b(ctx, e) }
 }
-func mergeStepStart(a, b StepStartCallback) StepStartCallback {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	return func(ctx context.Context, e ai.OnStepStartEvent) { a(ctx, e); b(ctx, e) }
-}
+
+func mergeStart(a, b StartCallback) StartCallback { return mergeSafe(a, b) }
+
+func mergeStepStart(a, b StepStartCallback) StepStartCallback { return mergeSafe(a, b) }
+
 func mergeToolStart(a, b ToolExecutionStartCallback) ToolExecutionStartCallback {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	return func(ctx context.Context, e ai.OnToolCallStartEvent) { a(ctx, e); b(ctx, e) }
+	return mergeSafe(a, b)
 }
-func mergeToolEnd(a, b ToolExecutionEndCallback) ToolExecutionEndCallback {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	return func(ctx context.Context, e ai.OnToolCallFinishEvent) { a(ctx, e); b(ctx, e) }
-}
-func mergeStepFinish(a, b StepFinishCallback) StepFinishCallback {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	return func(ctx context.Context, e ai.OnStepFinishEvent) { a(ctx, e); b(ctx, e) }
-}
+
+func mergeToolEnd(a, b ToolExecutionEndCallback) ToolExecutionEndCallback { return mergeSafe(a, b) }
+
+func mergeStepFinish(a, b StepFinishCallback) StepFinishCallback { return mergeSafe(a, b) }
+
 func resolveStepEnd(onStepEnd StepEndCallback, onStepFinish StepFinishCallback) StepFinishCallback {
 	if onStepEnd != nil {
 		return func(ctx context.Context, e ai.OnStepFinishEvent) { onStepEnd(ctx, e) }
@@ -1131,34 +1119,40 @@ func resolveEnd(onEnd EndCallback, onFinish FinishCallback) FinishCallback {
 	}
 	return onFinish
 }
-func mergeFinish(a, b FinishCallback) FinishCallback {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	return func(ctx context.Context, e ai.OnFinishEvent) { a(ctx, e); b(ctx, e) }
-}
+func mergeFinish(a, b FinishCallback) FinishCallback { return mergeSafe(a, b) }
 
 func mergeError(a, b ErrorCallback) ErrorCallback {
-	if a == nil {
-		return b
+	if a == nil && b == nil {
+		return nil
 	}
-	if b == nil {
-		return a
+	return func(ctx context.Context, err error) {
+		for _, fn := range []ErrorCallback{a, b} {
+			if fn == nil {
+				continue
+			}
+			func() {
+				defer func() { _ = recover() }()
+				fn(ctx, err)
+			}()
+		}
 	}
-	return func(ctx context.Context, err error) { a(ctx, err); b(ctx, err) }
 }
 
 func mergeAbort(a, b AbortCallback) AbortCallback {
-	if a == nil {
-		return b
+	if a == nil && b == nil {
+		return nil
 	}
-	if b == nil {
-		return a
+	return func(ctx context.Context, steps []types.StepResult) {
+		for _, fn := range []AbortCallback{a, b} {
+			if fn == nil {
+				continue
+			}
+			func() {
+				defer func() { _ = recover() }()
+				fn(ctx, steps)
+			}()
+		}
 	}
-	return func(ctx context.Context, steps []types.StepResult) { a(ctx, steps); b(ctx, steps) }
 }
 
 // prepareCallContext bundles per-call values that are known once, at call
