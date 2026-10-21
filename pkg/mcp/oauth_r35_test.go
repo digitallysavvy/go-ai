@@ -28,6 +28,10 @@ func TestOAuthIssuerMismatchIsMCPClientOAuthError(t *testing.T) {
 	if !errors.As(err, &oauthErr) {
 		t.Fatalf("issuer mismatch must be *MCPClientOAuthError, got %T %v", err, err)
 	}
+	var clientErr *MCPClientError
+	if !errors.As(err, &clientErr) {
+		t.Fatalf("v0.5.2 callers match *MCPClientError, got %T", err)
+	}
 }
 
 func TestRegisterOAuthClientInvalidRedirectURIFailsInference(t *testing.T) {
