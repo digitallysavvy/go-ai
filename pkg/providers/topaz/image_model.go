@@ -237,7 +237,7 @@ func (m *ImageModel) buildFormData(opts *provider.ImageGenerateOptions, topazOpt
 			return nil, "", err
 		}
 	} else {
-		part, err := providerutils.CreateTypedFormFile(writer, "image", "image"+topazImageExtension(file.MediaType), file.MediaType)
+		part, err := providerutils.CreateTypedFormFile(writer, "image", "image."+providerutils.MediaTypeToExtension(file.MediaType), file.MediaType)
 		if err != nil {
 			return nil, "", err
 		}
@@ -347,19 +347,6 @@ func parseSize(size string) (width, height *int) {
 	return &w, &h
 }
 
-// topazImageExtension picks a file extension for the uploaded image part
-// from its media type. Topaz only processes JPEG, PNG and TIFF.
-func topazImageExtension(mediaType string) string {
-	switch strings.ToLower(mediaType) {
-	case "image/jpeg", "image/jpg":
-		return ".jpg"
-	case "image/tiff", "image/tif":
-		return ".tiff"
-	default:
-		return ".png"
-	}
-}
-
 // imageMimeType derives the result's MIME type from the status response's
 // output_format, falling back to sniffing the downloaded bytes.
 func imageMimeType(outputFormat *string, data []byte) string {
@@ -387,13 +374,16 @@ func imageMimeType(outputFormat *string, data []byte) string {
 // is in flight.
 func (m *ImageModel) waitForCompletion(ctx context.Context, processID string, headers map[string]string, pollInterval, pollTimeout time.Duration) (*topazImageStatusResponse, error) {
 	deadline := time.Now().Add(pollTimeout)
-	lastStatus := "unknown"
+	var lastStatus string
 
 	for {
 		status, err := m.getStatus(ctx, processID, headers)
 		if err != nil {
 			return nil, err
 		}
+		// TS reports the current poll's `status ?? 'unknown'`, not the last
+		// non-empty one.
+		lastStatus = "unknown"
 		if status.Status != "" {
 			lastStatus = status.Status
 		}

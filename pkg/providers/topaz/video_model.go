@@ -549,11 +549,9 @@ func containerFromURL(rawURL string) string {
 	if idx := strings.IndexAny(rawURL, "?#"); idx >= 0 {
 		withoutQuery = rawURL[:idx]
 	}
-	idx := strings.LastIndex(withoutQuery, ".")
-	if idx < 0 {
-		return ""
-	}
-	extension := strings.ToLower(withoutQuery[idx+1:])
+	// TS withoutQuery.split('.').pop(): with no dot the whole string is the
+	// "extension".
+	extension := strings.ToLower(withoutQuery[strings.LastIndex(withoutQuery, ".")+1:])
 	return extensionContainers[extension]
 }
 
