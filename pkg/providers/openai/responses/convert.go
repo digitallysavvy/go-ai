@@ -2495,25 +2495,31 @@ func convertWebSearchToolResultOutput(part types.ToolResultContent, id string) i
 		if !ok {
 			return nil
 		}
+		validSources = make([]interface{}, 0, len(list))
 		for _, src := range list {
 			m, ok := src.(map[string]interface{})
 			if !ok {
 				return nil
 			}
+			// z.object strips unknown keys, so only the schema's members
+			// reach the wire.
 			switch m["type"] {
 			case "url":
-				if _, ok := m["url"].(string); !ok {
+				url, ok := m["url"].(string)
+				if !ok {
 					return nil
 				}
+				validSources = append(validSources, map[string]interface{}{"type": "url", "url": url})
 			case "api":
-				if _, ok := m["name"].(string); !ok {
+				name, ok := m["name"].(string)
+				if !ok {
 					return nil
 				}
+				validSources = append(validSources, map[string]interface{}{"type": "api", "name": name})
 			default:
 				return nil
 			}
 		}
-		validSources = list
 	}
 	wireAction := map[string]interface{}{}
 	switch action["type"] {
