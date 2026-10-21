@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
@@ -92,6 +93,54 @@ type InputTokenUsage struct {
 	NoCache    *int `json:"noCache,omitempty"`
 	CacheRead  *int `json:"cacheRead,omitempty"`
 	CacheWrite *int `json:"cacheWrite,omitempty"`
+}
+
+// UnmarshalJSON accepts any JSON number for a token count, like zod
+// `z.number()` (`1e3`, `1000.0`, `1.5`); the Go field is an int, so a
+// fraction is truncated toward zero.
+func (u *InputTokenUsage) UnmarshalJSON(data []byte) error {
+	var w struct {
+		Total      *float64 `json:"total"`
+		NoCache    *float64 `json:"noCache"`
+		CacheRead  *float64 `json:"cacheRead"`
+		CacheWrite *float64 `json:"cacheWrite"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*u = InputTokenUsage{Total: tokenCount(w.Total), NoCache: tokenCount(w.NoCache),
+		CacheRead: tokenCount(w.CacheRead), CacheWrite: tokenCount(w.CacheWrite)}
+	return nil
+}
+
+// UnmarshalJSON accepts any JSON number for a token count; see
+// InputTokenUsage.UnmarshalJSON.
+func (u *OutputTokenUsage) UnmarshalJSON(data []byte) error {
+	var w struct {
+		Total     *float64 `json:"total"`
+		Text      *float64 `json:"text"`
+		Reasoning *float64 `json:"reasoning"`
+	}
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*u = OutputTokenUsage{Total: tokenCount(w.Total), Text: tokenCount(w.Text), Reasoning: tokenCount(w.Reasoning)}
+	return nil
+}
+
+func tokenCount(f *float64) *int {
+	if f == nil {
+		return nil
+	}
+	n := int(math.MaxInt32) // clamp: out-of-range counts stay usable
+	switch {
+	case *f >= float64(math.MaxInt32):
+	case *f <= -float64(math.MaxInt32):
+		n = -math.MaxInt32
+	default:
+		n = int(*f)
+	}
+	return &n
 }
 
 // OutputTokenUsage is the output-token breakdown of LanguageModelV4Usage.
