@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -627,6 +628,9 @@ func (d *turnDriver) run() {
 	for _, tool := range d.in.Tools {
 		d.toolsList = append(d.toolsList, tool)
 	}
+	// Go maps have no insertion order; a stable order keeps the tool list the
+	// start events report deterministic.
+	sort.Slice(d.toolsList, func(i, j int) bool { return d.toolsList[i].Name < d.toolsList[j].Name })
 	d.settledHostIDs = map[string]struct{}{}
 	d.settledBuiltinIDs = map[string]struct{}{}
 	d.pendingApprovalsByApprovalID = map[string]*PendingToolApproval{}
@@ -1478,11 +1482,24 @@ func (d *turnDriver) ensureStarted() {
 			ModelID:        d.modelID,
 			Instructions:   d.in.Instructions,
 			Messages:       promptAsMessages(d.in.Prompt),
+			Tools:          d.toolsList,
+			ActiveTools:    d.activeToolNames(),
 			Output:         d.in.Output,
 			RuntimeContext: d.in.RuntimeContext,
 			ToolsContext:   d.in.ToolsContext,
 		})
 	}
+}
+
+// activeToolNames lists the tools the runtime may invoke this turn (TS
+// `activeToolNames`), in name order since Go maps carry no insertion order.
+func (d *turnDriver) activeToolNames() []string {
+	names := make([]string, 0, len(d.activeToolSet))
+	for name := range d.activeToolSet {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (d *turnDriver) ensureStepOpen() {
@@ -1507,6 +1524,8 @@ func (d *turnDriver) ensureStepOpen() {
 			ModelID:        d.modelID,
 			Instructions:   d.in.Instructions,
 			Messages:       promptAsMessages(d.in.Prompt),
+			Tools:          d.toolsList,
+			ActiveTools:    d.activeToolNames(),
 			Output:         d.in.Output,
 			Steps:          append([]types.StepResult(nil), d.completedSteps...),
 			PreviousSteps:  append([]types.StepResult(nil), d.completedSteps...),
