@@ -2,6 +2,8 @@ package moonshot
 
 import (
 	"encoding/json"
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -42,5 +44,27 @@ func TestMoonshotResponseKeepsEmptyToolCallTypes(t *testing.T) {
 	meta := res.ProviderMetadata["moonshotai"].(map[string]json.RawMessage)
 	if string(meta["toolCallTypes"]) != "[]" {
 		t.Errorf("toolCallTypes = %s, want []", meta["toolCallTypes"])
+	}
+}
+
+// An error chunk after a finish_reason resets the finish to {error, raw:
+// undefined}; the earlier raw reason must not survive.
+func TestMoonshotStreamErrorChunkClearsRawFinishReason(t *testing.T) {
+	sse := `data: {"choices":[{"index":0,"delta":{"content":"x"},"finish_reason":"stop"}]}` + "\n\n" +
+		`data: {"error":{"message":"boom","type":"server_error"}}` + "\n\n" +
+		"data: [DONE]\n\n"
+	s := newMoonshotStream(io.NopCloser(strings.NewReader(sse)), false)
+	var finish *provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeFinish {
+			finish = c
+		}
+	}
+	if finish == nil || finish.FinishReason != types.FinishReasonError || finish.RawFinishReason != "" {
+		t.Fatalf("finish = %+v, want error with empty raw", finish)
 	}
 }

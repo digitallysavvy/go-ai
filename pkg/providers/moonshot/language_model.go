@@ -812,6 +812,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 		}
 		if perr != nil {
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: finishReason = { unified: 'error', raw: undefined }
 			errChunk := &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr}
 			if len(s.flushQueue) > 0 {
 				s.flushQueue = append(s.flushQueue, errChunk)
@@ -824,6 +825,7 @@ func (s *moonshotStream) Next() (*provider.StreamChunk, error) {
 			// TS: an error chunk sets the finish reason to error and enqueues
 			// the error part; the stream keeps going and flush() finishes it.
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: finishReason = { unified: 'error', raw: undefined }
 			// P1-1c part 2: attach the structured StreamProviderError (TS
 			// createMoonshotAIStreamError) so streamRetries/IsRetryable see the
 			// real type/code/statusCode/isRetryable instead of generic inference.
