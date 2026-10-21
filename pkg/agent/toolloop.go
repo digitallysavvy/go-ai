@@ -1837,7 +1837,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// presence of client tool calls whatever the finish reason (a "stop"
 	// response that carries tool calls still runs them); the caller's later
 	// checks stop the loop when a call is left without a result, which is
-	// what happens for the finish reasons that never execute tools.
+	// what happens for the finish reasons that never execute tools. The run
+	// loop refines this with agentStepContinues (client calls only, plus
+	// pending deferred provider results).
 	shouldContinue := len(toolCalls) > 0
 
 	return stepResult, shouldContinue, callConfig.CustomData, callConfig.Tools, nil
@@ -2896,8 +2898,6 @@ func validateStepToolResults(messages []types.Message, tools []types.Tool) error
 	return promptutils.ValidateToolResults(messages, providerTools...)
 }
 
-// hasUnresolvedLocalAgentToolCalls reports whether a locally executed tool call
-// of the step has no tool result (mirrors ai.hasUnresolvedLocalToolCalls).
 // agentStepContinues applies the TS generateText continuation rule to a
 // step's model response (before client tools run): continue when the step has
 // a client tool call or a deferred provider result is still pending. It also
@@ -2932,6 +2932,8 @@ func agentStepContinues(step *types.StepResult, tools []types.Tool, pending map[
 	return hasClient || len(pending) > 0
 }
 
+// hasUnresolvedLocalAgentToolCalls reports whether a locally executed tool call
+// of the step has no tool result (mirrors ai.hasUnresolvedLocalToolCalls).
 func hasUnresolvedLocalAgentToolCalls(calls []types.ToolCall, tools []types.Tool, results []types.ToolResult) bool {
 	resolved := make(map[string]bool, len(results))
 	for _, r := range results {
