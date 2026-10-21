@@ -846,10 +846,12 @@ func processCustomEvent(data interface{}) []ai.UIMessageChunk {
 	customTypeName := "custom"
 	var partID interface{}
 	if m, ok := asMap(data); ok {
-		if typ := stringValue(m["type"]); typ != "" {
+		// TS `typeof dataObj.type === 'string' && dataObj.type`: a number is
+		// not a type name or part id.
+		if typ, _ := m["type"].(string); typ != "" {
 			customTypeName = typ
 		}
-		if id := stringValue(m["id"]); id != "" {
+		if id, _ := m["id"].(string); id != "" {
 			partID = id
 		}
 	}
@@ -1332,7 +1334,8 @@ func processToolsEvent(state *eventState, event StreamEvent) []ai.UIMessageChunk
 	if !ok {
 		return nil
 	}
-	toolCallID := stringValue(payload["toolCallId"])
+	// TS `typeof payload.toolCallId === 'string'`: a numeric id is ignored.
+	toolCallID, _ := payload["toolCallId"].(string)
 	if toolCallID == "" {
 		return nil
 	}
