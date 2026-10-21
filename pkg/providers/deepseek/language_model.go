@@ -215,7 +215,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if err != nil {
 		return nil, nil, err
 	}
-	warnings = append(warnings, toolWarnings...)
+	// TS appends the tool warnings last: [...allWarnings, ...toolWarnings].
 	if deepseekTools != nil {
 		body["tools"] = deepseekTools
 	}
@@ -293,6 +293,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		// response format sends no response_format at all.
 	}
 	_, hasProviderReasoningEffort := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort")
+	// TS computes the reasoning-effort warnings after the thinking, temperature
+	// and topP warnings.
+	var effortWarnings []types.Warning
 
 	// Map top-level Reasoning to DeepSeek thinking + reasoning_effort (TS parity).
 	// TS effort map: minimal/low -> low, medium/high -> high, xhigh -> max.
@@ -307,7 +310,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			}
 			body["reasoning_effort"] = effort
 			if effort != string(*opts.Reasoning) && !hasProviderReasoningEffort {
-				warnings = append(warnings, reasoningCompatibilityWarning(string(*opts.Reasoning), effort))
+				effortWarnings = append(effortWarnings, reasoningCompatibilityWarning(string(*opts.Reasoning), effort))
 			}
 		}
 	}
@@ -331,7 +334,7 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		mapped, remapped := deepseekProviderReasoningEffort(effort)
 		if remapped {
 			details := fmt.Sprintf("reasoningEffort %q is not a canonical DeepSeek value. mapped to %q.", effort, mapped)
-			warnings = append(warnings, types.Warning{Type: "compatibility", Feature: "reasoningEffort", Details: details, Message: details})
+			effortWarnings = append(effortWarnings, types.Warning{Type: "compatibility", Feature: "reasoningEffort", Details: details, Message: details})
 		}
 		body["reasoning_effort"] = mapped
 	}
@@ -370,6 +373,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			})
 		}
 	}
+
+	warnings = append(warnings, effortWarnings...)
+	warnings = append(warnings, toolWarnings...)
 
 	// userId (providerOptions.deepseek.userId): opaque end-user identifier.
 	if userID, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "userId"); ok {
