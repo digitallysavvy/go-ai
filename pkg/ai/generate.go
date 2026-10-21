@@ -874,14 +874,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
+	// liveResult is the result under construction. The deferred abort handler
+	// reads the steps completed so far from it: a failing step returns a nil
+	// named result, which would otherwise hide them.
+	var liveResult *GenerateTextResult
+
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
 	defer func() {
 		if err != nil {
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
-				if result != nil {
-					abortSteps = append([]types.StepResult(nil), result.Steps...)
+				if liveResult != nil {
+					abortSteps = append([]types.StepResult(nil), liveResult.Steps...)
 				}
 				reason := abortReason(ctx, err)
 				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
@@ -962,6 +967,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	result = &GenerateTextResult{
 		Steps: []types.StepResult{},
 	}
+	liveResult = result
 
 	stopConditions := resolveStopConditions(opts.StopWhen, opts.MaxSteps)
 	maxSteps := 1000 // safety ceiling only
