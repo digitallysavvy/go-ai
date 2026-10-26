@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -68,4 +69,37 @@ func TestChunks_FullConsumerSeesAllChunks(t *testing.T) {
 	if text != 100 {
 		t.Fatalf("text chunks = %d, want 100", text)
 	}
+}
+
+func TestElementStream_AbandonedConsumerExitsOnClose(t *testing.T) {
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			chunks := []provider.StreamChunk{{Type: provider.ChunkTypeText, Text: `{"elements":[`}}
+			for i := 0; i < 40; i++ {
+				txt := `{"n":1}`
+				if i > 0 {
+					txt = "," + txt
+				}
+				chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeText, Text: txt})
+			}
+			chunks = append(chunks,
+				provider.StreamChunk{Type: provider.ChunkTypeText, Text: `]}`},
+				provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop})
+			return testutil.NewMockTextStream(chunks), nil
+		},
+	}
+	base := runtime.NumGoroutine()
+	res, err := StreamText(context.Background(), StreamTextOptions{Model: model, Prompt: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type item struct {
+		N int `json:"n"`
+	}
+	ch := ElementStream[item](res, ElementStreamOptions[item]{ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})})
+	<-ch
+	time.Sleep(100 * time.Millisecond)
+	_ = res.Close()
+	_, _ = res.ReadAll()
+	waitGoroutines(t, base)
 }

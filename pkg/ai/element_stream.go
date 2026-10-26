@@ -81,6 +81,7 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 		// callbacks). Reading result.nextChunk() here too would race with
 		// that goroutine over the same underlying stream.
 		stream := result.Stream()
+		closed := result.closedSignal()
 
 		for {
 			chunk, err := stream.Next()
@@ -111,7 +112,9 @@ func ElementStream[ELEMENT any](result *StreamTextResult, opts ElementStreamOpti
 							IsFinal: false,
 						}
 
-						ch <- elemResult
+						if !sendUnlessClosed(ch, elemResult, closed) {
+							return // consumer abandoned the stream (result closed)
+						}
 						if opts.OnElement != nil {
 							opts.OnElement(elemResult)
 						}
@@ -235,6 +238,7 @@ func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Outpu
 		// to avoid racing processStream's own read of the raw provider
 		// stream.
 		stream := result.Stream()
+		closed := result.closedSignal()
 
 		for {
 			chunk, err := stream.Next()
@@ -258,10 +262,12 @@ func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Outpu
 				currentElements := partialOutput.Partial
 				if len(currentElements) > lastElementCount {
 					for i := lastElementCount; i < len(currentElements); i++ {
-						ch <- ElementStreamResult[ELEMENT]{
+						if !sendUnlessClosed(ch, ElementStreamResult[ELEMENT]{
 							Element: currentElements[i],
 							Index:   i,
 							IsFinal: false,
+						}, closed) {
+							return // consumer abandoned the stream (result closed)
 						}
 					}
 					lastElementCount = len(currentElements)
@@ -276,4 +282,16 @@ func ElementStreamWithOutput[ELEMENT any](result *StreamTextResult, output Outpu
 	}()
 
 	return ch
+}
+
+// sendUnlessClosed sends v on ch, giving up (false) when closed fires first, so
+// a consumer that stops reading and closes the result cannot strand the
+// producing goroutine.
+func sendUnlessClosed[T any](ch chan<- T, v T, closed <-chan struct{}) bool {
+	select {
+	case ch <- v:
+		return true
+	case <-closed:
+		return false
+	}
 }
