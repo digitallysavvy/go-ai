@@ -139,6 +139,7 @@ and more).
 
 - [**From TypeScript AI SDK**](./08-migration-guides/from-typescript-ai-sdk.mdx)
 - [**From v0.4.x to v0.5.0**](./08-migration-guides/from-v0.4-to-v0.5.mdx)
+- [**From v0.5.x to v0.6.0**](./08-migration-guides/from-v0.5-to-v0.6.mdx)
 
 ### [Troubleshooting](./09-troubleshooting/index.mdx)
 

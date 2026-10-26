@@ -1386,11 +1386,12 @@ func TestGenerateObject_RetriesDoGenerate(t *testing.T) {
 	}
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
 
+	retries := 2
 	result, err := GenerateObject(context.Background(), GenerateObjectOptions{
 		Model:      model,
 		Prompt:     "retry",
 		Schema:     testSchema,
-		MaxRetries: 2,
+		MaxRetries: &retries,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

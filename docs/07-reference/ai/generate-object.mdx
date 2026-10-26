@@ -255,7 +255,7 @@ This table is generated from the `ai.GenerateObjectOptions` source and lists eve
 | `FrequencyPenalty` | `*float64` |  |
 | `PresencePenalty` | `*float64` |  |
 | `Seed` | `*int` |  |
-| `MaxRetries` | `int` |  |
+| `MaxRetries` | `*int` | MaxRetries controls transient provider call retries (HTTP 408, 409, 429 and 5xx, or errors a provider marks retryable). nil uses the TypeScript SDK default of 2 retries with exponential backoff starting at 2s; set to 0 to disable. |
 | `RepairText` | `RepairTextFunc` | RepairText repairs invalid JSON or schema-invalid object output. Return nil when the output cannot be repaired. Takes precedence over ExperimentalRepairText when both are set (audit row 09a52cb). |
 | `ExperimentalRepairText` | `RepairTextFunc` | ExperimentalRepairText repairs invalid JSON or schema-invalid object output. Return nil when the output cannot be repaired. Deprecated: use RepairText. |
 | `Headers` | `map[string]string` | Additional HTTP headers sent with the request. |

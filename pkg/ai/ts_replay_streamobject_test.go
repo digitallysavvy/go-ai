@@ -86,8 +86,9 @@ func TestTSReplay_StreamObject_DoStreamThrows(t *testing.T) {
 		},
 	}
 	var got []error
+	zeroRetries := 0
 	_, err := StreamObject(context.Background(), StreamObjectOptions{
-		Model: model, Prompt: "prompt", Schema: contentSchema(), MaxRetries: 0,
+		Model: model, Prompt: "prompt", Schema: contentSchema(), MaxRetries: &zeroRetries,
 		OnError: func(_ context.Context, e error) { got = append(got, e) },
 	})
 	if !errors.Is(err, boom) {

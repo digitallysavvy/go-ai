@@ -1,0 +1,79 @@
+---
+title: Migrating from v0.5.x to v0.6.0
+description: "Migration guide for upgrading Go AI SDK apps from v0.5.x to v0.6.0, covering the GenerateObject MaxRetries pointer, the evaluate-to-decide rename, and behavior changes that match the TypeScript AI SDK."
+---
+
+# Migrate Go AI SDK v0.5.x to v0.6.0
+
+v0.6.0 catches up with the TypeScript AI SDK `ai@7.0.140`. Most v0.5.x code
+compiles and runs unchanged. This page lists the changes that can need an
+edit.
+
+## Compile-time changes
+
+### GenerateObject / StreamObject: MaxRetries is now a pointer
+
+**Impact:** compile error if you set `MaxRetries` as a plain int.
+
+`GenerateObjectOptions.MaxRetries` and `StreamObjectOptions.MaxRetries`
+changed from `int` to `*int`, matching `GenerateTextOptions.MaxRetries` and
+the TS `maxRetries` option. nil uses the default of 2 retries. An explicit `0`
+now disables retries (before, `0` selected the default, so retries could not
+be turned off). A negative value returns `*errors.InvalidArgumentError`.
+
+**Before:**
+
+```go skip-compile
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:      model,
+    Prompt:     "Generate a recipe",
+    Schema:     recipeSchema,
+    MaxRetries: 5,
+})
+```
+
+**After:**
+
+```go skip-compile
+retries := 5
+result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
+    Model:      model,
+    Prompt:     "Generate a recipe",
+    Schema:     recipeSchema,
+    MaxRetries: &retries,
+})
+```
+
+If you set `MaxRetries: 0` to get the default, remove the field instead.
+
+### Evaluate end-event struct literals use the Decide field names
+
+**Impact:** compile error only if you build these event structs yourself
+(for example in tests); the SDK normally creates them.
+
+`experimental_evaluate` is now `experimental_decide`, as in TS. The old type
+names stay as deprecated aliases, so their embedded field is now named after
+the new type. Reading promoted fields still compiles.
+
+| Type | Embedded field to use in a struct literal |
+| --- | --- |
+| `telemetry.EvaluateEndEvent` | `DecideStartEvent` |
+| `telemetry.EvaluationModelCallEndEvent` | `DecisionModelCallStartEvent` |
+| `ai.EvaluateOnEndEvent` | `DecideOnStartEvent` |
+
+## Behavior changes that can need an edit
+
+- **Prompt validation matches TS.** `GenerateText`, `StreamText`,
+  `GenerateObject`, `StreamObject` and the agent calls return
+  `*errors.InvalidPromptError` when neither or both of `Prompt` and
+  `Messages` are set, or when `Messages` is an empty non-nil slice. Pass
+  exactly one of them.
+- **GenerateObject / StreamObject reject system messages in `Messages`**
+  unless `AllowSystemMessages` is set, as `GenerateText` already did. Put the
+  system prompt in `Instructions` (or `System`).
+- **ACP lifecycle state persisted by v0.5.x does not resume.** As in TS, the
+  persisted implementation identity includes the package version. Start fresh
+  ACP sessions after upgrading.
+- **Wrapper providers no longer fall back to `OPENAI_API_KEY`.** Baseten,
+  Cerebras, DeepInfra, Fireworks, Together, Vertex MaaS and the Azure
+  delegates read only their own API key environment variable.

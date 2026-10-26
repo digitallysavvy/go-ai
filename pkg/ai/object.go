@@ -181,14 +181,16 @@ func doStreamWithRetry(ctx context.Context, model provider.LanguageModel, opts *
 	return stream, err
 }
 
-func normalizeObjectMaxRetries(maxRetries int) (int, error) {
-	if maxRetries < 0 {
-		return 0, fmt.Errorf("maxRetries must be >= 0")
+// normalizeObjectMaxRetries mirrors TS prepareRetries: nil selects the
+// default of 2, 0 disables retries, and a negative value is rejected.
+func normalizeObjectMaxRetries(maxRetries *int) (int, error) {
+	if err := validateMaxRetries(maxRetries); err != nil {
+		return 0, err
 	}
-	if maxRetries == 0 {
+	if maxRetries == nil {
 		return defaultObjectMaxRetries, nil
 	}
-	return maxRetries, nil
+	return *maxRetries, nil
 }
 
 func responseMetadataFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) *types.ResponseMetadata {
@@ -586,7 +588,11 @@ type GenerateObjectOptions struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	Seed             *int
-	MaxRetries       int
+	// MaxRetries controls transient provider call retries (HTTP 408, 409, 429
+	// and 5xx, or errors a provider marks retryable). nil uses the TypeScript
+	// SDK default of 2 retries with exponential backoff starting at 2s; set to
+	// 0 to disable.
+	MaxRetries *int
 
 	// RepairText repairs invalid JSON or schema-invalid object output.
 	// Return nil when the output cannot be repaired. Takes precedence over
@@ -770,7 +776,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	if maxRetryErr != nil {
 		return nil, maxRetryErr
 	}
-	opts.MaxRetries = maxRetries
+	opts.MaxRetries = &maxRetries
 
 	// Validate mode-specific requirements (TS validateObjectGenerationInput).
 	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
@@ -815,7 +821,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		FrequencyPenalty:  opts.FrequencyPenalty,
 		PresencePenalty:   opts.PresencePenalty,
 		Seed:              opts.Seed,
-		MaxRetries:        opts.MaxRetries,
+		MaxRetries:        *opts.MaxRetries,
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
@@ -834,7 +840,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	// registered this is a no-op, and with one registered it creates exactly
 	// one "ai.generateObject" span instead of a duplicate.
 	telObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
-	objectMaxRetries := opts.MaxRetries
+	objectMaxRetries := *opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
 		CallID:           callID,
 		OperationType:    "ai.generateObject",
@@ -972,7 +978,7 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 	// GenerateObject previously fired no step/model-call spans at all.
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
@@ -1139,7 +1145,7 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
@@ -1296,7 +1302,7 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
@@ -1447,7 +1453,7 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 
 	telStep := fireObjectStepStart(ctx, "ai.generateObject", cc.callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	genResult, err := doGenerateWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil {
 		// Close the step span (and, for the GenAI integration, the nested
 		// "chat" span) opened by fireObjectStepStart above — otherwise they
@@ -1608,7 +1614,11 @@ type StreamObjectOptions struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	Seed             *int
-	MaxRetries       int
+	// MaxRetries controls transient provider call retries (HTTP 408, 409, 429
+	// and 5xx, or errors a provider marks retryable). nil uses the TypeScript
+	// SDK default of 2 retries with exponential backoff starting at 2s; set to
+	// 0 to disable.
+	MaxRetries *int
 
 	// RepairText repairs invalid JSON or schema-invalid object output.
 	// Return nil when the output cannot be repaired. Takes precedence over
@@ -1718,7 +1728,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if maxRetryErr != nil {
 		return nil, maxRetryErr
 	}
-	opts.MaxRetries = maxRetries
+	opts.MaxRetries = &maxRetries
 	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
 		return nil, err
 	}
@@ -1752,7 +1762,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		FrequencyPenalty:  opts.FrequencyPenalty,
 		PresencePenalty:   opts.PresencePenalty,
 		Seed:              opts.Seed,
-		MaxRetries:        opts.MaxRetries,
+		MaxRetries:        *opts.MaxRetries,
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
@@ -1770,7 +1780,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// StreamObject previously fired no telemetry spans whatsoever, unlike
 	// GenerateObject/GenerateText/StreamText.
 	streamObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
-	streamObjectMaxRetries := opts.MaxRetries
+	streamObjectMaxRetries := *opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
 		CallID:           callID,
 		OperationType:    "ai.streamObject",
@@ -1845,7 +1855,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	telStep := fireObjectStepStart(ctx, "ai.streamObject", callID, opts.Model, genOpts, opts.ExperimentalTelemetry)
 
-	stream, err := doStreamWithRetry(telStep.modelCallCtx, opts.Model, genOpts, opts.MaxRetries)
+	stream, err := doStreamWithRetry(telStep.modelCallCtx, opts.Model, genOpts, *opts.MaxRetries)
 	if err != nil || stream == nil {
 		if err == nil {
 			err = errors.New("stream is nil")

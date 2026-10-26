@@ -215,7 +215,7 @@ func TestGenerateObjectModelErrorIsNotPrefixed(t *testing.T) {
 	}
 	zero := 0
 	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: zero,
+		Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: &zero,
 	})
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("GenerateObject() error = %v, want exactly boom", err)
@@ -235,7 +235,7 @@ func TestStreamObjectErrorsAreNotPrefixed(t *testing.T) {
 			},
 		}
 		_, err := StreamObject(context.Background(), StreamObjectOptions{
-			Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: zero,
+			Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: &zero,
 		})
 		var pe *providererrors.ProviderError
 		if err == nil || err.Error() != boom.Error() || !errors.As(err, &pe) {
@@ -250,7 +250,7 @@ func TestStreamObjectErrorsAreNotPrefixed(t *testing.T) {
 			},
 		}
 		_, err := StreamObject(context.Background(), StreamObjectOptions{
-			Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: zero,
+			Model: model, Prompt: "hi", OutputMode: ObjectModeNoSchema, MaxRetries: &zero,
 		})
 		if err == nil || err.Error() != "boom" || !errors.Is(err, boom) {
 			t.Fatalf("StreamObject() error = %v, want exactly boom", err)
