@@ -1224,9 +1224,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.stepReopenCtx = modelCallCtx
 	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
-		if stepCancel != nil {
-			stepCancel()
-		}
+		// stepCancel runs only after the error is classified below: a cancelled
+		// step context would make every open failure look like a step timeout.
 		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 		} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
@@ -1248,6 +1247,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		} else {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+		}
+		if stepCancel != nil {
+			stepCancel()
 		}
 		r.fail(fmt.Errorf("failed to start stream: %w", err))
 		return
@@ -2829,9 +2831,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.stepReopenModel = nextModel
 		r.stepReopenGenOpts = nextGenOpts
 		r.stepReopenCtx = nextModelCallCtx
-		newStream, err := nextModel.DoStream(nextModelCallCtx, nextGenOpts)
+		newStream, err := doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, opts.MaxRetries)
 		if err != nil {
-			nextStepCancel()
+			// nextStepCancel runs after the error is classified: a cancelled
+			// step context would make every open failure look like a step timeout.
 			if r.timeout != nil && r.timeout.HasPerStep() && nextStepCtx.Err() != nil {
 				err = wrapTimeoutError(TimeoutReasonStep, nextStepCtx.Err())
 			} else if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
@@ -2852,6 +2855,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if isAbort {
 				fireAbort(r.err)
 			}
+			nextStepCancel()
 			break
 		}
 		pendingStepCtx = nextStepCtx
