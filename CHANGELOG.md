@@ -9,8 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.3] - 2026-10-15
 
-Patch release: bug fixes backported from the v0.6.0 line, including two
-security fixes.
+Patch release: bug and security fixes backported from the v0.6.0 line.
 
 ### Security
 
@@ -21,6 +20,33 @@ security fixes.
 - Harness: ACP (and Fx) authentication files are rejected unless the path is
   relative without traversal, and are restricted to the owner (`chmod 600`)
   after writing. They were written world-readable.
+- Agents: the legacy `ToolLoopAgent` loop (`Execute`, `GenerateAgent`) fails
+  closed on an unknown approval status or an unsupported `ToolApproval` value
+  (a tool error) instead of running the tool unapproved.
+- Code mode: the TypeScript stripper, which runs before the sandbox and outside
+  its timeout, is bounded on deep nesting, long `a<b,` lists and unterminated
+  regex candidates (a 256 KiB snippet took up to 22 s). Sources nested deeper
+  than 256 brackets run unstripped.
+- Gladia: the `result_url` poll sends the API key and caller headers only when
+  the URL is same-origin with the configured base URL.
+- Downloads: the SSRF hostname blocklist strips trailing dots, so `localhost.`
+  and `x.local.` are blocked.
+- MCP OAuth: `javascript:`, `data:` and `vbscript:` URLs are rejected in
+  authorization server and protected resource metadata, token responses and
+  client registration responses.
+- MCP OAuth: the protected resource check compares normalized paths, so
+  `https://host/api/../admin` is no longer accepted under `https://host/api`.
+- Cerebras, DeepInfra, Baseten, Vercel and Vertex MaaS no longer fall back to
+  `OPENAI_API_KEY`, which sent the OpenAI key to another service. They read
+  `CEREBRAS_API_KEY`, `DEEPINFRA_API_KEY`, `BASETEN_API_KEY` and
+  `VERCEL_API_KEY` (new `openai.Config.APIKeyEnvVar` and `NoAPIKey`).
+- Multipart uploads (OpenAI/xAI files, OpenAI batch): CR/LF in a part name,
+  file name or media type no longer injects part header lines (low).
+- Vertex Gemini Live transcription dials the host derived from the location,
+  never `BaseURL`, and rejects a location that is not a single DNS label before
+  sending the bearer token (low).
+- Bedrock event stream: a declared frame length over 16 MiB is rejected instead
+  of being buffered.
 
 ### Fixed
 
@@ -75,6 +101,32 @@ security fixes.
   `BaseURL` without a version segment (a host or a proxy path) still gets `/v2`
   appended, as chat did before; one ending in `/v1` or `/v2` is used as is.
   Embed now sends `embedding_types: ["float"]`, which v2 requires.
+- `DoEmbed` panicked on a 2xx response with no embeddings (Cohere, Fireworks,
+  Mistral, Ollama, Together, Voyage). It returns an error.
+- ACP: `SubmitToolResult` returns a malformed `askUserQuestions` result as an
+  error instead of panicking in the caller's goroutine.
+- ACP: a turn that settled early no longer leaves the session marked in flight
+  after the bridge finishes it, so later prompts are accepted.
+- Replicate language model: nil options no longer panic, and a non-2xx poll
+  response is a `ProviderError` instead of a 2 minute spin before "timed out".
+- `StreamTextResult.Chunks` and `ElementStream` / `ElementStreamWithOutput`:
+  the producing goroutine exits when the result is closed, so a consumer that
+  stops reading no longer leaks it.
+- Google and Vertex Interactions: the background stream fails after 3
+  connections in a row that produce no event instead of reconnecting forever.
+- `StreamText` with `Timeout.PerStep`: a stream-open error stays that error
+  instead of becoming a step timeout and abort, and a later step's open is
+  retried like the first.
+- `PrepareStep` `ActiveTools` was ignored; it now restricts the step's tools.
+  In `GenerateText` the per-step timeout also covers tool execution.
+- `WorkflowAgent.Generate` / `Stream` dropped the positional prompt when the
+  options struct had an empty `Prompt`.
+- OpenAI Responses: a denied provider-executed (MCP) approval sent a
+  `function_call_output` as well as the `mcp_approval_response`.
+- Code mode stripper: `!!x` lost one `!`, and after `a++ / 2` the rest of the
+  line was read as a regex, so later annotations stayed in.
+- Bedrock Mantle: SigV4 requests are signed with the `bedrock-mantle` service
+  (new `bedrock.NewAWSSignerForService`).
 
 ## [0.5.2] - 2026-10-04
 
