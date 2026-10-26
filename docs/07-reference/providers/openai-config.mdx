@@ -16,6 +16,8 @@ The tables on this page are generated from the Go source. For usage, see the [Op
 | Field | Type | Description |
 | --- | --- | --- |
 | `APIKey` | `string` | APIKey is the OpenAI API key |
+| `APIKeyEnvVar` | `string` | APIKeyEnvVar is the environment variable read when APIKey is empty. Defaults to OPENAI_API_KEY. Wrapper providers set their own variable so that an OpenAI key is never forwarded to another service. |
+| `NoAPIKey` | `bool` | NoAPIKey marks a wrapper that authenticates through its own Headers or HTTP transport (such as Vertex MaaS): no API key is read from the environment. |
 | `Name` | `string` | Name overrides the provider name returned by Provider.Name(). Defaults to "openai". |
 | `BaseURL` | `string` | BaseURL is the base URL for the OpenAI API (default: https://api.openai.com/v1) |
 | `Organization` | `string` | Organization is the optional organization ID |
