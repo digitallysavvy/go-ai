@@ -1002,6 +1002,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		stepActiveTools := opts.ActiveTools
 		stepToolChoice := opts.ToolChoice
 		stepToolOrder := opts.ToolOrder
 		stepProviderOptions := opts.ProviderOptions
@@ -1074,9 +1075,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if prepared.Messages != nil {
 				stepMessages = prepared.Messages
 			}
-			if prepared.Tools != nil {
-				stepTools = prepared.Tools
-			}
+			stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
 				stepToolChoice = prepared.ToolChoice
 			}
@@ -1168,7 +1167,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Messages:            stepMessages,
 			Tools:               stepTools,
 			ToolChoice:          stepToolChoice,
-			ActiveTools:         opts.ActiveTools,
+			ActiveTools:         stepActiveTools,
 			ToolOrder:           stepToolOrder,
 			ProviderOptions:     stepProviderOptions,
 			Steps:               result.Steps,
@@ -1477,9 +1476,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				toolExecutionMs:     map[string]int64{},
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
+			// Tools run inside the step context: the TS step timeout aborts the
+			// whole step (mergedAbortSignal also feeds executeTools).
+			toolResults, err := executeTools(stepCtx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
 			if err != nil {
-				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+				if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+					err = wrapTimeoutError(TimeoutReasonStep, err)
+				} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 				var conversionErr *toolResultModelOutputError
@@ -1762,6 +1765,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, stepResult.ToolResults) {
 			break
 		}
+
+		// TS generate-text.ts: the step timeout aborts the shared signal for
+		// good, so the next iteration's throwIfAborted() rejects with the
+		// step TimeoutError (a tool that swallowed the abort does not
+		// prevent it).
+		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+			return nil, wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+		}
 	}
 
 	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
@@ -2034,6 +2045,25 @@ func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.
 		}
 	}
 	return refined, nil
+}
+
+// applyPreparedTools applies the tool-related overrides a PrepareStep callback
+// returned. TS PrepareStepResult.activeTools restricts the step to those
+// tools (filterActiveTools on the full tool set); Go's additional Tools
+// override, when set, replaces the base the filter runs on.
+func applyPreparedTools(callTools, current []types.Tool, currentActive []string, prepared PrepareStepOptions) ([]types.Tool, []string) {
+	tools := current
+	if prepared.Tools != nil {
+		tools = prepared.Tools
+	}
+	if prepared.ActiveTools == nil {
+		return tools, currentActive
+	}
+	base := callTools
+	if prepared.Tools != nil {
+		base = prepared.Tools
+	}
+	return FilterActiveTools(base, prepared.ActiveTools), prepared.ActiveTools
 }
 
 // executeTools executes a list of tool calls

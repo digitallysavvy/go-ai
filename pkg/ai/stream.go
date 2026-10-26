@@ -929,6 +929,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
 	}
 	stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+	stepActiveTools := opts.ActiveTools
 	stepToolChoice := opts.ToolChoice
 	stepToolOrder := opts.ToolOrder
 	stepProviderOptions := opts.ProviderOptions
@@ -999,9 +1000,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if prepared.Messages != nil {
 			stepMessages = prepared.Messages
 		}
-		if prepared.Tools != nil {
-			stepTools = prepared.Tools
-		}
+		stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 		if prepared.ToolChoice.Type != "" {
 			stepToolChoice = prepared.ToolChoice
 		}
@@ -1083,7 +1082,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Messages:            stepMessages,
 		Tools:               stepTools,
 		ToolChoice:          stepToolChoice,
-		ActiveTools:         opts.ActiveTools,
+		ActiveTools:         stepActiveTools,
 		ToolOrder:           stepToolOrder,
 		ProviderOptions:     stepProviderOptions,
 		PreviousSteps:       nil, // first (and only) step
@@ -2559,6 +2558,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextSystem := r.cbSystem
 		nextMessages := currentMessages
 		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		nextActiveTools := opts.ActiveTools
 		nextToolChoice := opts.ToolChoice
 		nextToolOrder := opts.ToolOrder
 		nextProviderOptions := opts.ProviderOptions
@@ -2630,9 +2630,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if prepared.Messages != nil {
 				nextMessages = prepared.Messages
 			}
-			if prepared.Tools != nil {
-				nextTools = prepared.Tools
-			}
+			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
 				nextToolChoice = prepared.ToolChoice
 			}
@@ -2727,7 +2725,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Messages:            nextMessages,
 			Tools:               nextTools,
 			ToolChoice:          nextToolChoice,
-			ActiveTools:         opts.ActiveTools,
+			ActiveTools:         nextActiveTools,
 			ToolOrder:           nextToolOrder,
 			ProviderOptions:     nextProviderOptions,
 			Steps:               allSteps,
