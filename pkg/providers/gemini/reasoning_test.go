@@ -70,11 +70,11 @@ func TestReasoningDynamicBudget(t *testing.T) {
 		level types.ReasoningLevel
 		want  int
 	}{
-		{"gemini-2.5-pro", types.ReasoningMinimal, 1311},  // round(65536*0.02)
-		{"gemini-2.5-pro", types.ReasoningLow, 6554},      // round(65536*0.1)
-		{"gemini-2.5-pro", types.ReasoningMedium, 19661},  // round(65536*0.3)
-		{"gemini-2.5-pro", types.ReasoningHigh, 32768},    // clamped to 2.5-pro max
-		{"gemini-2.5-pro", types.ReasoningXHigh, 32768},   // clamped to 2.5-pro max
+		{"gemini-2.5-pro", types.ReasoningMinimal, 1311}, // round(65536*0.02)
+		{"gemini-2.5-pro", types.ReasoningLow, 6554},     // round(65536*0.1)
+		{"gemini-2.5-pro", types.ReasoningMedium, 19661}, // round(65536*0.3)
+		{"gemini-2.5-pro", types.ReasoningHigh, 32768},   // clamped to 2.5-pro max
+		{"gemini-2.5-pro", types.ReasoningXHigh, 32768},  // clamped to 2.5-pro max
 		{"gemini-2.5-flash-lite", types.ReasoningMedium, 19661},
 		{"gemini-2.5-flash", types.ReasoningHigh, 24576}, // clamped to flash max
 	}

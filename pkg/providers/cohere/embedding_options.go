@@ -16,10 +16,10 @@ const (
 type InputType string
 
 const (
-	InputTypeSearchDocument  InputType = "search_document"
-	InputTypeSearchQuery     InputType = "search_query"
-	InputTypeClassification  InputType = "classification"
-	InputTypeClustering      InputType = "clustering"
+	InputTypeSearchDocument InputType = "search_document"
+	InputTypeSearchQuery    InputType = "search_query"
+	InputTypeClassification InputType = "classification"
+	InputTypeClustering     InputType = "clustering"
 )
 
 // TruncateMode represents how to handle inputs that exceed max token length

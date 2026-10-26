@@ -42,10 +42,10 @@ func TestGetAPIKeyDeprecatedFallback(t *testing.T) {
 
 // TestGetAPIKeyEmpty verifies empty string is returned when neither env var is set.
 func TestGetAPIKeyEmpty(t *testing.T) {
-	_ = os.Unsetenv("TOGETHER_API_KEY") //nolint:errcheck
+	_ = os.Unsetenv("TOGETHER_API_KEY")    //nolint:errcheck
 	_ = os.Unsetenv("TOGETHER_AI_API_KEY") //nolint:errcheck
 	t.Cleanup(func() {
-		_ = os.Unsetenv("TOGETHER_API_KEY") //nolint:errcheck
+		_ = os.Unsetenv("TOGETHER_API_KEY")    //nolint:errcheck
 		_ = os.Unsetenv("TOGETHER_AI_API_KEY") //nolint:errcheck
 	})
 

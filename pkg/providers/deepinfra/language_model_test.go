@@ -30,7 +30,7 @@ func TestFixUsageForGeminiModels(t *testing.T) {
 			expected: types.Usage{
 				InputTokens:  int64Ptr(100),
 				OutputTokens: int64Ptr(1165), // 84 + 1081
-				TotalTokens:  int64Ptr(1265),  // 184 + 1081
+				TotalTokens:  int64Ptr(1265), // 184 + 1081
 				OutputDetails: &types.OutputTokenDetails{
 					TextTokens:      int64Ptr(84),
 					ReasoningTokens: int64Ptr(1081),
@@ -159,7 +159,7 @@ func TestFixUsageForGeminiModels(t *testing.T) {
 			expected: types.Usage{
 				InputTokens:  int64Ptr(100),
 				OutputTokens: int64Ptr(1050), // 50 + 1000
-				TotalTokens:  int64Ptr(1150),  // 150 + 1000
+				TotalTokens:  int64Ptr(1150), // 150 + 1000
 				OutputDetails: &types.OutputTokenDetails{
 					TextTokens:      int64Ptr(50),
 					ReasoningTokens: int64Ptr(1000),
@@ -192,7 +192,7 @@ func TestFixUsageForGeminiModels(t *testing.T) {
 			expected: types.Usage{
 				InputTokens:  int64Ptr(100),
 				OutputTokens: int64Ptr(860), // 60 + 800
-				TotalTokens:  int64Ptr(960),  // 160 + 800
+				TotalTokens:  int64Ptr(960), // 160 + 800
 				OutputDetails: &types.OutputTokenDetails{
 					TextTokens:      int64Ptr(60),
 					ReasoningTokens: int64Ptr(800),

@@ -126,27 +126,27 @@ func TestNewProvider_DoesNotValidateUnusedLocationWithCustomBaseURL(t *testing.T
 
 func TestProvider_BaseURLBuilding(t *testing.T) {
 	tests := []struct {
-		name         string
-		location     string
-		project      string
-		expectedURL  string
+		name        string
+		location    string
+		project     string
+		expectedURL string
 	}{
 		{
-			name:     "us-central1",
-			location: "us-central1",
-			project:  "my-project",
+			name:        "us-central1",
+			location:    "us-central1",
+			project:     "my-project",
 			expectedURL: "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/my-project/locations/us-central1/publishers/google",
 		},
 		{
-			name:     "europe-west1",
-			location: "europe-west1",
-			project:  "test-project",
+			name:        "europe-west1",
+			location:    "europe-west1",
+			project:     "test-project",
 			expectedURL: "https://europe-west1-aiplatform.googleapis.com/v1beta1/projects/test-project/locations/europe-west1/publishers/google",
 		},
 		{
-			name:     "asia-southeast1",
-			location: "asia-southeast1",
-			project:  "asia-project",
+			name:        "asia-southeast1",
+			location:    "asia-southeast1",
+			project:     "asia-project",
 			expectedURL: "https://asia-southeast1-aiplatform.googleapis.com/v1beta1/projects/asia-project/locations/asia-southeast1/publishers/google",
 		},
 	}
@@ -270,7 +270,7 @@ func TestLanguageModel_SupportsImageInput(t *testing.T) {
 	}
 
 	tests := []struct {
-		modelID      string
+		modelID       string
 		supportsImage bool
 	}{
 		{"gemini-1.5-pro", true},
