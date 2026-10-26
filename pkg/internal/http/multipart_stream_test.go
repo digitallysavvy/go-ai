@@ -172,3 +172,38 @@ func TestNewMultipartStreamBody_CloseWithoutReadingDoesNotLeakGoroutine(t *testi
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// CR/LF in a caller-supplied part name, file name or media type never reach a
+// part header line (TS escapeMultipartHeaderValue drops them).
+func TestNewMultipartStreamBody_HeaderCRLFStripped(t *testing.T) {
+	body, ct, err := NewMultipartStreamBody([]MultipartStreamPart{
+		{Name: "a\r\nX-Evil: 1", Value: "v"},
+		{IsFile: true, Name: "file\r\nX-Evil: 2", Filename: "f.txt\"\r\nX-Evil: 3", MediaType: "text/plain\r\nX-Evil: 4", Content: strings.NewReader("data")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(body)
+	_ = body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if strings.Contains(s, "\r\nX-Evil") || strings.Contains(s, "\nX-Evil") {
+		t.Fatalf("header smuggling: %q", s)
+	}
+	if !strings.Contains(s, `name="fileX-Evil: 2"; filename="f.txt\"X-Evil: 3"`) || !strings.Contains(s, "Content-Type: text/plainX-Evil: 4\r\n") {
+		t.Fatalf("unexpected body: %q", s)
+	}
+	_, params, _ := mime.ParseMediaType(ct)
+	mr := multipart.NewReader(strings.NewReader(s), params["boundary"])
+	for i := 0; i < 2; i++ {
+		p, err := mr.NextPart()
+		if err != nil {
+			t.Fatalf("part %d: %v", i, err)
+		}
+		if p.Header.Get("X-Evil") != "" {
+			t.Fatalf("part %d has injected header", i)
+		}
+	}
+}

@@ -103,9 +103,19 @@ func NewMultipartStreamBody(parts []MultipartStreamPart) (io.ReadCloser, string,
 func createFormFilePart(w *multipart.Writer, fieldName, filename, mediaType string) (io.Writer, error) {
 	h := make(textproto.MIMEHeader)
 	h.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`,
-		escapeMultipartQuotes(fieldName), escapeMultipartQuotes(filename)))
-	h.Set("Content-Type", mediaType)
+		multipartHeaderValue(fieldName), multipartHeaderValue(filename)))
+	h.Set("Content-Type", stripCRLF(mediaType))
 	return w.CreatePart(h)
+}
+
+// multipartHeaderValue mirrors TS escapeMultipartHeaderValue: CR/LF are
+// dropped (no header smuggling) and backslash and quote are escaped.
+func multipartHeaderValue(value string) string {
+	return escapeMultipartQuotes(stripCRLF(value))
+}
+
+func stripCRLF(value string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(value)
 }
 
 func escapeMultipartQuotes(s string) string {
