@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -37,6 +38,13 @@ type interactionsStream struct {
 	lastEventID     string
 	resumable       bool
 	finished        bool
+
+	// attempt and receivedEvent mirror streamGoogleInteractionEvents'
+	// consecutive-failure accounting (stream-google-interactions.ts):
+	// attempt counts reconnects that produced no event, receivedEvent
+	// whether the current connection produced any event.
+	attempt       int
+	receivedEvent bool
 
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
@@ -189,6 +197,7 @@ restart:
 			s.err = err
 			return nil, err
 		}
+		s.receivedEvent = true
 		if event.ID != "" {
 			s.lastEventID = event.ID
 		}
@@ -243,17 +252,44 @@ func (s *interactionsStream) openGETStream() error {
 	return nil
 }
 
+// Reconnect policy of streamGoogleInteractionEvents (stream-google-interactions.ts):
+// at most interactionsStreamMaxRetries consecutive connections without an
+// event, retryDelay*attempt between them.
+const interactionsStreamMaxRetries = 3
+
+// interactionsStreamRetryDelay is the base delay between reconnect attempts
+// (a variable so tests can shorten it).
+var interactionsStreamRetryDelay = 500 * time.Millisecond
+
+// reopenAfterEOF handles a connection that ended before the terminal event:
+// a connection that produced no event at all counts as a failure (an
+// empty/misbehaving server must not make the stream reconnect forever),
+// otherwise the failure counter resets and the stream resumes from
+// last_event_id.
 func (s *interactionsStream) reopenAfterEOF() error {
 	if s.reader != nil {
 		_ = s.reader.Close()
 	}
+	var delay time.Duration
+	if !s.receivedEvent {
+		s.attempt++
+		if s.attempt >= interactionsStreamMaxRetries {
+			return fmt.Errorf("google.interactions: SSE stream closed without producing any events.") //nolint:staticcheck // matches TS SDK exact error text
+		}
+		delay = interactionsStreamRetryDelay * time.Duration(s.attempt)
+	} else {
+		s.attempt = 0
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 	select {
 	case <-s.ctx.Done():
 		_ = (&InteractionsLanguageModel{cfg: InteractionsConfig{Client: s.client}}).cancelInteraction(context.Background(), s.interactionID, s.headers)
 		return s.ctx.Err()
-	default:
-		return s.openGETStream()
+	case <-timer.C:
 	}
+	s.receivedEvent = false
+	return s.openGETStream()
 }
 
 func (s *interactionsStream) processEvent(event interactionsEvent) {
