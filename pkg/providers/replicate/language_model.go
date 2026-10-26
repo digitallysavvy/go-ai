@@ -57,6 +57,9 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if opts == nil {
+		opts = &provider.GenerateOptions{}
+	}
 	reqBody := m.buildRequestBody(opts)
 
 	// Create prediction
