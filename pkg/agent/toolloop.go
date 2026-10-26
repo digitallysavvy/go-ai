@@ -2140,7 +2140,25 @@ func filterAgentDynamicToolResults(results []types.ToolResult) []types.ToolResul
 	return out
 }
 
+// resolveToolApproval fails closed like ai.GenerateText: an unknown approval
+// status or an unsupported configuration value is an error (reported to the
+// model as a tool error) instead of letting the tool run unapproved.
 func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) (types.ToolApprovalResult, error) {
+	result, err := resolveAgentToolApprovalValue(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
+	if err != nil {
+		return types.ToolApprovalResult{}, err
+	}
+	switch result.Status {
+	case types.ToolApprovalStatusNotApplicable, types.ToolApprovalStatusApproved,
+		types.ToolApprovalStatusDenied, types.ToolApprovalStatusUserApproval:
+		return result, nil
+	}
+	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unknown tool approval status %q (want %q, %q, %q or %q)",
+		call.ToolName, result.Status, types.ToolApprovalStatusNotApplicable, types.ToolApprovalStatusApproved,
+		types.ToolApprovalStatusDenied, types.ToolApprovalStatusUserApproval)
+}
+
+func resolveAgentToolApprovalValue(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) (types.ToolApprovalResult, error) {
 	tool := findAgentTool(call.ToolName, tools)
 	approval, err := normalizeAgentToolApproval(call, tool, tools, messages, toolApproval, runtimeContext, toolsContext)
 	if err != nil {
@@ -2190,7 +2208,7 @@ func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.Tool
 	case string:
 		return normalizeAgentApprovalValue(types.ToolApprovalStatus(v)), nil
 	}
-	return types.ToolApprovalResult{Status: types.ToolApprovalStatusNotApplicable}, nil
+	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unsupported ToolApproval value of type %T: use a bool, a ToolApprovalStatus or a ToolNeedsApprovalFunc", call.ToolName, setting)
 }
 
 func normalizeAgentToolApproval(call types.ToolCall, tool *types.Tool, tools []types.Tool, messages []types.Message, cfg interface{}, runtimeCtx interface{}, toolsCtx map[string]interface{}) (types.ToolApprovalResult, error) {
@@ -2212,7 +2230,7 @@ func normalizeAgentToolApproval(call types.ToolCall, tool *types.Tool, tools []t
 	case map[string]types.ToolApprovalValue:
 		return normalizeAgentToolApprovalValue(call, tool, tools, messages, v[call.ToolName], runtimeCtx, toolsCtx)
 	default:
-		return normalizeAgentApprovalValue(v), nil
+		return normalizeAgentApprovalValueChecked(call, v)
 	}
 }
 
@@ -2240,7 +2258,18 @@ func normalizeAgentToolApprovalValue(call types.ToolCall, tool *types.Tool, tool
 	case types.ToolApprovalFunc: //nolint:staticcheck // legacy function type still accepted for backward compatibility
 		return normalizeAgentApprovalValue(fn(call, tools, messages, runtimeCtx, toolsCtx)), nil
 	}
-	return normalizeAgentApprovalValue(value), nil
+	return normalizeAgentApprovalValueChecked(call, value)
+}
+
+// normalizeAgentApprovalValueChecked normalizes a configured approval value
+// and rejects value types it does not understand instead of treating them as
+// "no approval needed".
+func normalizeAgentApprovalValueChecked(call types.ToolCall, value interface{}) (types.ToolApprovalResult, error) {
+	switch value.(type) {
+	case nil, types.ToolApprovalResult, *types.ToolApprovalResult, types.ToolApprovalStatus, string:
+		return normalizeAgentApprovalValue(value), nil
+	}
+	return types.ToolApprovalResult{}, fmt.Errorf("tool %q: unsupported tool approval value of type %T", call.ToolName, value)
 }
 
 func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
