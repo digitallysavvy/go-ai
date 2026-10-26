@@ -191,7 +191,7 @@ func tokenizeTS(src string) []tsToken {
 			tokens = append(tokens, tsToken{"comment", string(runes[i:end])})
 			i = end
 
-		case c == '/' && regexAllowedAfter(prevSignificant):
+		case c == '/' && regexAllowedAfter(prevSignificant) && !postfixIncDecBefore(tokens):
 			if end, ok := scanRegexLiteral(runes, i, regexMemo); ok {
 				tokens = append(tokens, tsToken{"regex", string(runes[i:end])})
 				i = end
@@ -409,6 +409,42 @@ func scanRegexLiteral(runes []rune, i int, memo *regexFailMemo) (int, bool) {
 		j++
 	}
 	return 0, false
+}
+
+// postfixIncDecBefore reports whether the last significant tokens are a
+// postfix `++`/`--` (an operand on the same line before it), after which a `/`
+// divides: `n++ / 2`. A prefix `++` cannot be followed by a regex literal, and
+// a line break before the operator (`a\n++\n/re/`) makes it a prefix one.
+// The tokenizer emits `++` as two adjacent `+` tokens (likewise `--`).
+func postfixIncDecBefore(tokens []tsToken) bool {
+	k := len(tokens) - 1
+	for k >= 0 && (tokens[k].kind == "space" || tokens[k].kind == "comment") {
+		k--
+	}
+	if k < 1 || tokens[k].kind != "punct" || tokens[k-1].kind != "punct" ||
+		(tokens[k].text != "+" && tokens[k].text != "-") || tokens[k-1].text != tokens[k].text {
+		return false
+	}
+	k--
+	for k--; k >= 0; k-- {
+		t := tokens[k]
+		if t.kind == "space" || t.kind == "comment" {
+			if strings.ContainsAny(t.text, "\n\r\u2028\u2029") {
+				return false
+			}
+			continue
+		}
+		switch t.kind {
+		case "number", "string", "regex":
+			return true
+		case "ident":
+			return !isRegexPrecedingKeyword(t.text)
+		case "punct":
+			return t.text == ")" || t.text == "]"
+		}
+		return false
+	}
+	return false
 }
 
 // regexAllowedAfter reports whether a `/` immediately following prev could
