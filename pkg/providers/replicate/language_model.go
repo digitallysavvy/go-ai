@@ -166,6 +166,13 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 		if err != nil {
 			return replicatePrediction{}, err
 		}
+		// A non-2xx poll response is an API error, not a prediction still in
+		// progress (its body would otherwise decode to an empty status and the
+		// loop would spin until the attempt limit).
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return replicatePrediction{}, providererrors.NewProviderError("replicate", resp.StatusCode, "",
+				fmt.Sprintf("replicate API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
+		}
 
 		var prediction replicatePrediction
 		if err := json.Unmarshal(resp.Body, &prediction); err != nil {
