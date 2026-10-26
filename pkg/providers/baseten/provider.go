@@ -78,6 +78,7 @@ func New(cfg Config) *Provider {
 
 	chatProvider := openai.New(openai.Config{
 		APIKey:           apiKey,
+		APIKeyEnvVar:     "BASETEN_API_KEY",
 		BaseURL:          chatBaseURL,
 		Headers:          cfg.Headers,
 		HTTPClient:       cfg.HTTPClient,
@@ -96,6 +97,7 @@ func New(cfg Config) *Provider {
 	if cfg.ModelURL != "" && strings.Contains(cfg.ModelURL, "/sync") {
 		p.embedding = openai.New(openai.Config{
 			APIKey:        apiKey,
+			APIKeyEnvVar:  "BASETEN_API_KEY",
 			BaseURL:       basetenEmbeddingURL(cfg.ModelURL),
 			Headers:       cfg.Headers,
 			HTTPClient:    cfg.HTTPClient,

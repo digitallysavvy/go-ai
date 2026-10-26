@@ -29,6 +29,16 @@ type Config struct {
 	// APIKey is the OpenAI API key
 	APIKey string
 
+	// APIKeyEnvVar is the environment variable read when APIKey is empty.
+	// Defaults to OPENAI_API_KEY. Wrapper providers set their own variable so
+	// that an OpenAI key is never forwarded to another service.
+	APIKeyEnvVar string
+
+	// NoAPIKey marks a wrapper that authenticates through its own Headers or
+	// HTTP transport (such as Vertex MaaS): no API key is read from the
+	// environment.
+	NoAPIKey bool
+
 	// Name overrides the provider name returned by Provider.Name().
 	// Defaults to "openai".
 	Name string
@@ -151,9 +161,13 @@ func New(cfg Config) *Provider {
 	baseURL = strings.TrimRight(baseURL, "/")
 	cfg.BaseURL = baseURL
 
+	apiKeyEnv := cfg.APIKeyEnvVar
+	if apiKeyEnv == "" {
+		apiKeyEnv = "OPENAI_API_KEY"
+	}
 	apiKey := cfg.APIKey
-	if apiKey == "" && cfg.Name != "azure" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" && !cfg.NoAPIKey && cfg.Name != "azure" {
+		apiKey = os.Getenv(apiKeyEnv)
 	}
 	cfg.APIKey = apiKey
 
