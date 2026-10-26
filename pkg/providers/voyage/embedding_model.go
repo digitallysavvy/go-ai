@@ -33,6 +33,9 @@ func (m *EmbeddingModel) DoEmbed(ctx context.Context, input string, opts *provid
 	if err != nil {
 		return nil, err
 	}
+	if len(out.Embeddings) == 0 {
+		return nil, fmt.Errorf("no embedding data in response")
+	}
 	res := &types.EmbeddingResult{Embedding: out.Embeddings[0], Usage: out.Usage, Warnings: out.Warnings}
 	if len(out.Responses) > 0 {
 		res.Response = out.Responses[0]
