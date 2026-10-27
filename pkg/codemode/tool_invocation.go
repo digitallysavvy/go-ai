@@ -3,6 +3,7 @@ package codemode
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -177,16 +178,19 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		for name := range b.tools {
 			names = append(names, name)
 		}
+		// TS lists Object.keys(tools) (insertion order); a Go map has none,
+		// so the list is sorted to stay deterministic.
+		sort.Strings(names)
 		return "", NewToolError(fmt.Sprintf("Unknown tool: %s", toolName), map[string]interface{}{
 			"toolName":       toolName,
 			"availableTools": names,
 		})
 	}
 	if tool.Execute == nil {
-		return "", NewToolError(fmt.Sprintf("Tool %q does not have execute().", toolName), map[string]interface{}{"toolName": toolName})
+		return "", NewToolError("Tool \""+toolName+"\" does not have execute().", map[string]interface{}{"toolName": toolName})
 	}
 
-	if err := assertJSONPayloadSize(inputJSON, b.policy.MaxToolInputBytes, fmt.Sprintf("Tool %q input", toolName)); err != nil {
+	if err := assertJSONPayloadSize(inputJSON, b.policy.MaxToolInputBytes, "Tool \""+toolName+"\" input"); err != nil {
 		return "", err
 	}
 	inputVal, ferr := fromJSONPayload(inputJSON)
@@ -206,7 +210,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 			}
 		}
 		return "", NewToolError(
-			fmt.Sprintf("Invalid input for tool %q: %s", toolName, cause),
+			"Invalid input for tool \""+toolName+"\": "+cause,
 			map[string]interface{}{"toolName": toolName, "input": inputVal, "cause": cause},
 		)
 	}
@@ -223,7 +227,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		input = applyToolInputDefaults(input, validator)
 		if verr := validator.Validate(input); verr != nil {
 			return "", NewToolError(
-				fmt.Sprintf("Invalid input for tool %q: %s", toolName, verr.Error()),
+				"Invalid input for tool \""+toolName+"\": "+verr.Error(),
 				map[string]interface{}{"toolName": toolName, "input": input, "cause": verr.Error()},
 			)
 		}
@@ -292,7 +296,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		return "", NewToolError("Host tool failed.", map[string]interface{}{"toolName": toolName, "cause": oerr.Error()})
 	}
 
-	outJSON, jerr := toJSONPayload(output, b.policy.MaxToolOutputBytes, fmt.Sprintf("Tool %q output", toolName))
+	outJSON, jerr := toJSONPayload(output, b.policy.MaxToolOutputBytes, "Tool \""+toolName+"\" output")
 	if jerr != nil {
 		return "", jerr
 	}

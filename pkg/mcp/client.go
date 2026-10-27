@@ -333,7 +333,7 @@ func (c *MCPClient) handshake(ctx context.Context) error {
 	if c.config.InitialInitializeResult != nil {
 		result := *c.config.InitialInitializeResult
 		if !isSupportedProtocolVersion(result.ProtocolVersion) {
-			return fmt.Errorf("failed to initialize: server's protocol version is not supported: %s", result.ProtocolVersion)
+			return fmt.Errorf("failed to initialize: %w", unsupportedProtocolVersionError(result.ProtocolVersion))
 		}
 		c.applyInitializeResult(result)
 		return nil
@@ -513,7 +513,7 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 		return fmt.Errorf("initialize failed: %w", err)
 	}
 	if !isSupportedProtocolVersion(result.ProtocolVersion) {
-		return fmt.Errorf("server's protocol version is not supported: %s", result.ProtocolVersion)
+		return unsupportedProtocolVersionError(result.ProtocolVersion)
 	}
 
 	c.applyInitializeResult(result)
@@ -585,7 +585,7 @@ func (c *MCPClient) prepareToolDefinitions(result *ListToolsResult, resetHeaderB
 		bindings, err := GetMCPToolHeaderBindings(tool.InputSchema)
 		if err != nil {
 			if c.config.OnError != nil {
-				c.config.OnError(NewMCPClientError(0, fmt.Sprintf("Ignoring MCP tool %q: %s", tool.Name, err.Error()), nil))
+				c.config.OnError(NewMCPClientError(0, "Ignoring MCP tool \""+tool.Name+"\": "+err.Error(), nil))
 			}
 			continue
 		}
@@ -620,7 +620,7 @@ func (c *MCPClient) toolCallHeaders(method string, params interface{}) (map[stri
 	if err != nil {
 		// TS getToolRequestHeaders throws inside request(), so the call is
 		// rejected rather than sent without its routing headers.
-		return nil, &MCPClientError{Message: fmt.Sprintf("Failed to create MCP headers for tool %q", callParams.Name), Cause: err}
+		return nil, &MCPClientError{Message: "Failed to create MCP headers for tool \"" + callParams.Name + "\"", Cause: err}
 	}
 	return headers, nil
 }
@@ -1035,7 +1035,7 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 	select {
 	case response := <-responseCh:
 		if response == nil {
-			return fmt.Errorf("connection closed")
+			return NewMCPClientError(0, "Connection closed", nil)
 		}
 
 		// Check for error
@@ -1070,7 +1070,9 @@ func (c *MCPClient) call(ctx context.Context, method string, params interface{},
 		return NewMCPClientError(0, "Connection closed", nil)
 
 	case <-c.ctx.Done():
-		return fmt.Errorf("client closed")
+		// TS close() runs onClose, which rejects every pending request
+		// with "Connection closed".
+		return NewMCPClientError(0, "Connection closed", nil)
 	}
 }
 
@@ -1321,6 +1323,11 @@ func parseElicitationRequestParams(raw json.RawMessage) (ElicitationRequest, err
 	}
 
 	return ElicitationRequest{Message: message, RequestedSchema: requestedSchema, Meta: meta}, nil
+}
+
+// unsupportedProtocolVersionError is TS applyInitializeResult's error.
+func unsupportedProtocolVersionError(version string) error {
+	return NewMCPClientError(0, "Server's protocol version is not supported: "+version, nil)
 }
 
 func isSupportedProtocolVersion(version string) bool {

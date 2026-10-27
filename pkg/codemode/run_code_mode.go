@@ -233,19 +233,17 @@ func prepareContinuation(input RunInput, toolNames []string, maxToolOutputBytes 
 		)
 	}
 
+	// TS reports a fully resolved continuation (no pending entry at the
+	// next index) with the same mismatch error.
 	resolutionIndex := len(continuation.Resolutions)
-	if resolutionIndex >= len(continuation.PendingInterruptions) {
-		return preparedContinuation{}, NewProtocolError(
-			"Code mode continuation has no further pending interruptions to resolve.", nil,
-		)
-	}
-	pending := continuation.PendingInterruptions[resolutionIndex]
-	if pending.InterruptID != input.InterruptResolution.InterruptID {
+	if resolutionIndex >= len(continuation.PendingInterruptions) ||
+		continuation.PendingInterruptions[resolutionIndex].InterruptID != input.InterruptResolution.InterruptID {
 		return preparedContinuation{}, NewProtocolError(
 			"Interrupt resolution does not match the next pending code-mode interruption.",
 			map[string]interface{}{"interruptId": input.InterruptResolution.InterruptID},
 		)
 	}
+	pending := continuation.PendingInterruptions[resolutionIndex]
 
 	resolutionValue, err := normalizeResolutionForPending(pending, input.InterruptResolution.Resolution, maxToolOutputBytes)
 	if err != nil {

@@ -16,8 +16,9 @@ import (
 // commands/args with CR or LF are rejected only on Windows.
 func TestValidateStdioCommandForGOOS(t *testing.T) {
 	t.Run("rejects command with line break on windows", func(t *testing.T) {
-		if err := validateStdioCommandForGOOS("windows", "node\n", nil); err == nil {
-			t.Fatal("expected error for command containing a line break on windows")
+		err := validateStdioCommandForGOOS("windows", "node\n", nil)
+		if err == nil || err.Error() != "Stdio MCP commands and arguments must not contain line breaks on Windows." {
+			t.Fatalf("err = %v, want the TS TypeError text", err)
 		}
 	})
 
@@ -146,9 +147,15 @@ func TestStdioTransportSkipsInvalidJSONLines(t *testing.T) {
 		t.Fatalf("message = %+v", msg)
 	}
 	// JSON that is not a JSON-RPC message (a structured log line) is skipped
-	// too, as TS parseJSONRPCMessage rejects it.
-	if len(reported) != 2 || !strings.Contains(reported[0].Error(), "failed to unmarshal message") || !strings.Contains(reported[1].Error(), "failed to unmarshal message") {
+	// too, as TS parseJSONRPCMessage rejects it, and so is the blank line
+	// (TS JSON.parse('') throws and reaches onerror).
+	if len(reported) != 3 {
 		t.Fatalf("reported = %v", reported)
+	}
+	for _, err := range reported {
+		if !strings.Contains(err.Error(), "failed to unmarshal message") {
+			t.Fatalf("reported = %v", reported)
+		}
 	}
 }
 

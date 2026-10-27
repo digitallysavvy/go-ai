@@ -687,12 +687,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		// Matches TS send(): when the failed response to a request carries a
 		// JSON-RPC error, deliver it as the request's response (a null id is
 		// filled in with the request id) instead of an HTTP transport error.
+		// TS parses the body as one JSON-RPC message (parseJSONRPCMessage), so
+		// an array body is an HTTP error.
 		if message.ID != nil && len(body) > 0 {
-			if msgs, perr := parseMCPHTTPJSONMessages(body); perr == nil && len(msgs) == 1 && msgs[0].Error != nil {
-				if msgs[0].ID == nil {
-					msgs[0].ID = message.ID
+			if msg, perr := parseMCPMessage(bytes.TrimSpace(body)); perr == nil && msg.Error != nil {
+				if msg.ID == nil {
+					msg.ID = message.ID
 				}
-				t.queueReceivedMessages(msgs)
+				t.queueReceivedMessages([]*MCPMessage{msg})
 				return nil
 			}
 		}
@@ -891,7 +893,7 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release cont
 		}
 		msg, err := parseMCPMessage([]byte(event.Data))
 		if err != nil {
-			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
+			t.reportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
 		t.queueReceivedMessages([]*MCPMessage{msg})
@@ -956,9 +958,14 @@ func (t *HTTPTransport) deriveRequestContext(ctx context.Context) (context.Conte
 func (t *HTTPTransport) startInboundSSELifecycle() {
 	t.sseMu.Lock()
 	defer t.sseMu.Unlock()
-	if t.sseLifecycleCtx != nil {
+	if t.sseLifecycleCtx != nil && !t.sseClosing {
 		return
 	}
+	// A Connect after Close starts a fresh lifecycle: the closed one is
+	// canceled, and every request derived from it would fail at once.
+	t.sseClosing = false
+	t.sseConnCancel = nil
+	t.sseReconnectAttempts = 0
 	ctx, cancel := context.WithCancel(context.Background())
 	t.sseLifecycleCtx = ctx
 	t.sseLifecycleCancel = cancel
@@ -1205,9 +1212,8 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	// status itself is OK (only reachable via a custom SSEClient, since a
 	// real net/http response body is never nil).
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
-		var body []byte
 		if resp.Body != nil {
-			body = readErrorBody(resp.Body)
+			drainBody(resp.Body)
 			resp.Body.Close() //nolint:errcheck
 		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
@@ -1215,7 +1221,8 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		}
 		statusText := http.StatusText(resp.StatusCode)
 		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, statusText)
-		t.reportError(NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, string(body))))
+		// TS reports only the status and URL here, not the response body.
+		t.reportError(NewMCPClientError(0, message, nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		connCancel()
 		return
 	}
@@ -1263,7 +1270,7 @@ func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel
 		}
 		msg, err := parseMCPMessage([]byte(event.Data))
 		if err != nil {
-			t.reportError(NewMCPClientError(0, "MCP HTTP Transport Error: Failed to parse message", err))
+			t.reportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
 		t.queueReceivedMessages([]*MCPMessage{msg})

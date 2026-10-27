@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 	wsp1 "github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
@@ -195,5 +198,55 @@ func TestSharedRuntime_CancelOneRunLeavesOthers(t *testing.T) {
 	defer closeRuntimeForTest(third)
 	if got := evalString(t, third, `typeof globalThis.leak`); got != "undefined" {
 		t.Fatalf("typeof leak = %q", got)
+	}
+}
+
+type countingListenerFactory struct{ calls *atomic.Int64 }
+
+func (f countingListenerFactory) NewFunctionListener(api.FunctionDefinition) experimental.FunctionListener {
+	return countingListener(f)
+}
+
+type countingListener struct{ calls *atomic.Int64 }
+
+func (l countingListener) Before(context.Context, api.Module, api.FunctionDefinition, []uint64, experimental.StackIterator) {
+	l.calls.Add(1)
+}
+func (countingListener) After(context.Context, api.Module, api.FunctionDefinition, []uint64) {}
+func (countingListener) Abort(context.Context, api.Module, api.FunctionDefinition, error)    {}
+
+// wazero reads a function listener factory from the compile ctx. The shared
+// runtime's compiled code serves every later run, so a listener in the ctx of
+// the run that happened to compile it must not observe other runs.
+func TestSharedRuntime_CompileCtxValuesDoNotReachOtherRuns(t *testing.T) {
+	compilationMutex.Lock()
+	prev, prevKey := shared, sharedKey
+	shared = nil
+	compilationMutex.Unlock()
+	defer func() {
+		compilationMutex.Lock()
+		shared, sharedKey = prev, prevKey
+		compilationMutex.Unlock()
+	}()
+
+	var calls atomic.Int64
+	spyCtx := experimental.WithFunctionListenerFactory(context.Background(), countingListenerFactory{&calls})
+	first, err := New(sandboxOption(spyCtx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeRuntimeForTest(first)
+	calls.Store(0)
+
+	other, err := New(sandboxOption(context.Background()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeRuntimeForTest(other)
+	if got := evalString(t, other, `"private:" + (6 * 7)`); got != "private:42" {
+		t.Fatalf("eval = %q", got)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("a listener from the compiling run's ctx observed %d calls of another run", n)
 	}
 }

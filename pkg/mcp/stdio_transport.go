@@ -2,9 +2,9 @@ package mcp
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -94,6 +94,9 @@ type StdioTransportConfig struct {
 	OnError func(error) `json:"-"`
 }
 
+// stdioWindowsLineBreakMessage is TS createChildProcess's TypeError text.
+const stdioWindowsLineBreakMessage = "Stdio MCP commands and arguments must not contain line breaks on Windows."
+
 // validateStdioCommandForWindows rejects stdio commands/args containing CR or
 // LF on Windows, mirroring TS createChildProcess (mcp-stdio/create-child-process.ts,
 // hash b352a6a): a line break in the command or an argument can be used to
@@ -111,7 +114,7 @@ func validateStdioCommandForGOOS(goos, command string, args []string) error {
 	values := append([]string{command}, args...)
 	for _, value := range values {
 		if strings.ContainsAny(value, "\r\n") {
-			return fmt.Errorf("stdio MCP commands and arguments must not contain line breaks on Windows")
+			return errors.New(stdioWindowsLineBreakMessage) //nolint:staticcheck // matches TS TypeError text
 		}
 	}
 	return nil
@@ -325,17 +328,14 @@ func (t *StdioTransport) Receive(ctx context.Context) (*MCPMessage, error) {
 		}
 
 		line := reader.Bytes()
-		if len(bytes.TrimSpace(line)) == 0 {
-			continue
-		}
 
 		if t.config.EnableLogging {
 			fmt.Printf("MCP Receive: %s\n", string(line))
 		}
 
 		// Parse JSON. A line that is not a JSON-RPC message (servers often
-		// print log output on stdout) is reported and skipped, as TS does,
-		// rather than ending the connection.
+		// print log output on stdout), including a blank one, is reported and
+		// skipped, as TS does, rather than ending the connection.
 		message, err := parseMCPMessage(line)
 		if err != nil {
 			if t.onError != nil {

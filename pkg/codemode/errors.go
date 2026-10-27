@@ -203,7 +203,7 @@ type ToolApprovalRequiredError struct{ *BaseError }
 // NewToolApprovalRequiredError creates a ToolApprovalRequiredError.
 func NewToolApprovalRequiredError(toolName string, input interface{}, toolCallID string) *ToolApprovalRequiredError {
 	return &ToolApprovalRequiredError{NewError(
-		fmt.Sprintf("Tool %q requires approval before execution.", toolName),
+		"Tool \""+toolName+"\" requires approval before execution.",
 		"CODE_MODE_TOOL_APPROVAL_REQUIRED",
 		map[string]interface{}{"toolName": toolName, "input": input, "toolCallId": toolCallID},
 	)}
@@ -215,10 +215,10 @@ type ToolApprovalDeniedError struct{ *BaseError }
 
 // NewToolApprovalDeniedError creates a ToolApprovalDeniedError.
 func NewToolApprovalDeniedError(toolName string, input interface{}, toolCallID, reason string) *ToolApprovalDeniedError {
-	msg := fmt.Sprintf("Tool %q approval was denied.", toolName)
+	msg := "Tool \"" + toolName + "\" approval was denied."
 	details := map[string]interface{}{"toolName": toolName, "input": input, "toolCallId": toolCallID}
 	if reason != "" {
-		msg = fmt.Sprintf("Tool %q approval was denied: %s", toolName, reason)
+		msg = "Tool \"" + toolName + "\" approval was denied: " + reason
 		details["reason"] = reason
 	}
 	return &ToolApprovalDeniedError{NewError(msg, "CODE_MODE_TOOL_APPROVAL_DENIED", details)}

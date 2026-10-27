@@ -517,6 +517,12 @@ type ToolCall struct {
 	// When true, the provider handled execution server-side (e.g., xAI file_search, web_search).
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
 
+	// ProviderExecutedSet marks ProviderExecuted as explicitly set, so an
+	// explicit false is kept where TS forwards `providerExecuted` whenever it
+	// is not undefined (for example the workflow UI chunk converter). A Go
+	// bool cannot tell false from unset. Never serialized.
+	ProviderExecutedSet bool `json:"-"`
+
 	// ProviderMetadata carries provider-specific metadata associated with this tool call.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
