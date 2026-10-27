@@ -3633,8 +3633,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	})
 
 	// Mark stream as done before firing callbacks so callers that check
-	// Status() inside callbacks observe the terminal state.
+	// Status() inside callbacks observe the terminal state. Request() and
+	// Response() are set first: once the status is done they no longer wait
+	// for processing to finish.
 	r.mu.Lock()
+	if len(allSteps) > 0 {
+		r.stepRequest = allSteps[len(allSteps)-1].Request
+		r.stepResponse = allSteps[len(allSteps)-1].Response
+	}
 	r.status = StreamStatusDone
 	r.mu.Unlock()
 

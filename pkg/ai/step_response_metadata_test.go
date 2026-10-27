@@ -190,3 +190,32 @@ func TestStreamText_ModelCallEndResponseID(t *testing.T) {
 		})
 	}
 }
+
+// Request()/Response() are ready when OnEnd runs: the status is done by then,
+// so the accessors no longer wait for processing to finish.
+func TestStreamText_ResponseReadyInOnEnd(t *testing.T) {
+	t.Parallel()
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{ID: "resp_1"}},
+				{Type: provider.ChunkTypeText, Text: "hi"},
+				{Type: provider.ChunkTypeFinish, FinishReason: "stop"},
+			}), nil
+		},
+	}
+	got := make(chan string, 1)
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model: model, Prompt: "hi",
+		OnEnd: func(r *StreamTextResult) { got <- r.Response().ID },
+	})
+	if err != nil {
+		t.Fatalf("StreamText() error = %v", err)
+	}
+	if _, err := result.ReadAll(); err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if id := <-got; id != "resp_1" {
+		t.Errorf("Response().ID inside OnEnd = %q, want resp_1", id)
+	}
+}
