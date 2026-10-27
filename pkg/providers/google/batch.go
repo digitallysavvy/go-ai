@@ -778,8 +778,8 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 
 	// TS safeValidateTypes(responseSchema): a result that does not match the
 	// schema fails that item.
-	var geminiResp gemini.Response
-	if geminischema.ValidationMessage(string(response)) != "" || json.Unmarshal(response, &geminiResp) != nil {
+	var decoded gemini.GenerateResponse
+	if geminischema.GenerateValidationMessage(string(response)) != "" || json.Unmarshal(response, &decoded) != nil {
 		return &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     key,
@@ -789,7 +789,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	}
 
 	lm := NewLanguageModel(b.provider, "")
-	genResult := lm.ConvertBatchResponse(geminiResp)
+	genResult := lm.ConvertBatchResponse(decoded.Response)
 
 	if imageResult := convertGoogleBatchImageResult(genResult); imageResult != nil {
 		return &provider.BatchV4ItemResult{

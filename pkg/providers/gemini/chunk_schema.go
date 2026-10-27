@@ -11,6 +11,9 @@ import (
 // reading.
 var zChunk = geminischema.Response
 
+// zResponse is the doGenerate responseSchema.
+var zResponse = geminischema.GenerateResponse
+
 // chunkValidationMessage validates a JSON frame against the TS chunkSchema.
 // It returns "" when the frame matches (or is not JSON, which is reported
 // separately), otherwise the TS TypeValidationError message.

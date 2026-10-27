@@ -90,11 +90,27 @@ var (
 		fl("details", zNullish(zArr(zAny))),
 	)
 
-	Response = zObj(
-		fl("error", zNullish(zGoogleError)),
+	zContent = zObj(fl("parts", zNullish(zArr(zPart))))
+
+	// Response is the streaming chunkSchema: it also checks an in-stream
+	// `error` frame.
+	Response = response(fl("error", zNullish(zGoogleError)), fl("content", zNullish(zContent)))
+
+	// GenerateResponse is responseSchema (doGenerate and google-batch result
+	// lines). It has no `error` key, so TS strips one of any shape, and its
+	// content is getContentSchema().nullish().or(z.object({}).strict()).
+	GenerateResponse = response(fl("content", zUnionOf(zNullish(zContent), zodlite.StrictEmptyObject)))
+)
+
+// response builds the top-level GenerateContentResponse object. extra goes
+// first (the streaming `error` key) and the last field is the candidate's
+// content.
+func response(fields ...zodlite.Field) zodlite.Node {
+	extra, content := fields[:len(fields)-1], fields[len(fields)-1]
+	return zObj(append(append([]zodlite.Field{}, extra...),
 		fl("responseId", zNullish(zStr)),
 		fl("candidates", zNullish(zArr(zObj(
-			fl("content", zNullish(zObj(fl("parts", zNullish(zArr(zPart)))))),
+			content,
 			fl("finishReason", zNullish(zStr)), fl("finishMessage", zNullish(zStr)), fl("continuationToken", zNullish(zStr)),
 			fl("safetyRatings", zNullish(zArr(zSafety))),
 			fl("groundingMetadata", zNullish(zGrounding)),
@@ -102,12 +118,18 @@ var (
 		)))),
 		fl("usageMetadata", zNullish(zUsage)),
 		fl("promptFeedback", zNullish(zObj(fl("blockReason", zNullish(zStr)), fl("safetyRatings", zNullish(zArr(zSafety)))))),
-	)
-)
+	)...)
+}
 
-// ValidationMessage validates a GenerateContent JSON body or frame against
-// Response. It returns "" when it matches (or is not JSON), otherwise the TS
-// TypeValidationError message.
+// ValidationMessage validates a streaming frame against Response (TS
+// chunkSchema). It returns "" when it matches (or is not JSON), otherwise the
+// TS TypeValidationError message.
 func ValidationMessage(data string) string {
 	return zodlite.ValidationMessage(Response, data)
+}
+
+// GenerateValidationMessage validates a doGenerate body or batch result line
+// against GenerateResponse (TS responseSchema).
+func GenerateValidationMessage(data string) string {
+	return zodlite.ValidationMessage(GenerateResponse, data)
 }

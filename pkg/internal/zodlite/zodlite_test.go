@@ -130,3 +130,21 @@ func TestLiteralMessageIsRawQuoted(t *testing.T) {
 		t.Fatalf("message = %q", got)
 	}
 }
+
+// z.object({}).strict(): zod v4 unrecognized_keys, "key" vs "keys".
+func TestStrictEmptyObject(t *testing.T) {
+	if StrictEmptyObject(map[string]interface{}{}, true, nil) != nil {
+		t.Fatal("empty object rejected")
+	}
+	one := StrictEmptyObject(map[string]interface{}{"a": 1.0}, true, nil)
+	if one == nil || one.Message != `Unrecognized key: "a"` || string(one.json()) != `{"code":"unrecognized_keys","keys":["a"],"path":[],"message":"Unrecognized key: \"a\""}` {
+		t.Fatalf("one key: %+v %s", one, one.json())
+	}
+	two := StrictEmptyObject(map[string]interface{}{"b": 1.0, "a": 1.0}, true, nil)
+	if two == nil || two.Message != `Unrecognized keys: "a", "b"` {
+		t.Fatalf("two keys: %+v", two)
+	}
+	if bad := StrictEmptyObject("s", true, nil); bad == nil || bad.Code != "invalid_type" {
+		t.Fatalf("non-object: %+v", bad)
+	}
+}
