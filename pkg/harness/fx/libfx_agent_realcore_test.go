@@ -36,7 +36,7 @@ func weatherTool(mu *sync.Mutex, calls *int, celsius int) types.Tool {
 // (TS: part.type === 'tool-result').
 func countToolResultChunks(t *testing.T, r *ai.StreamTextResult) int {
 	t.Helper()
-	stream := r.FullStream()
+	stream := r.Stream()
 	n := 0
 	for {
 		chunk, err := stream.Next()
@@ -285,7 +285,7 @@ func TestLibfxAgentEchoesAutomaticResultPastPendingCall(t *testing.T) {
 
 func collectResults(t *testing.T, r *ai.StreamTextResult, names *[]string) {
 	t.Helper()
-	stream := r.FullStream()
+	stream := r.Stream()
 	for {
 		chunk, err := stream.Next()
 		if errors.Is(err, io.EOF) {
