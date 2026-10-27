@@ -81,3 +81,37 @@ func TestOpenTelemetryEmbedEnrichSpanOptionsUseRootOperation(t *testing.T) {
 		t.Fatalf("embedding enrichSpan options = %+v", got)
 	}
 }
+
+// The provider-executed execute_tool span carries the enrichSpan attributes.
+func TestOpenTelemetryProviderExecutedToolSpanIsEnriched(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t"), EnrichSpan: func(_ context.Context, o EnrichSpanOptions) map[string]interface{} {
+		if o.SpanType == SpanTypeTool {
+			return map[string]interface{}{"app.enriched": "yes"}
+		}
+		return nil
+	}})
+	settings := &Settings{Integrations: []TelemetryIntegration{integration}}
+	callID := "call-enrich-pe-r44"
+	ctx := FireOnStart(context.Background(), TelemetryStartEvent{CallID: callID, OperationType: "ai.generateText", ModelProvider: "p", ModelID: "m", Settings: settings})
+	stepCtx := FireOnStepStart(ctx, TelemetryStepStartEvent{CallID: callID, Settings: settings, OperationType: "ai.generateText", ModelProvider: "p", ModelID: "m"})
+	lmCtx := FireOnLanguageModelCallStart(stepCtx, LanguageModelCallStartEvent{CallID: callID, Settings: settings, ModelProvider: "p", ModelID: "m"})
+	FireOnLanguageModelCallEnd(lmCtx, LanguageModelCallEndEvent{CallID: callID, Settings: settings, ModelProvider: "p", ModelID: "m", FinishReason: "stop",
+		Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "pe1", ToolName: "web_search", ProviderExecuted: true}}})
+	FireOnStepEnd(stepCtx, TelemetryStepEndEvent{CallID: callID, Settings: settings, OperationType: "ai.generateText", FinishReason: "stop"})
+	FireOnEnd(ctx, TelemetryFinishEvent{CallID: callID, Settings: settings, OperationType: "ai.generateText", FinishReason: "stop"})
+	for _, s := range rec.Ended() {
+		if s.Name() != "execute_tool web_search" {
+			continue
+		}
+		for _, kv := range s.Attributes() {
+			if string(kv.Key) == "app.enriched" && kv.Value.AsString() == "yes" {
+				return
+			}
+		}
+		t.Fatalf("execute_tool span attributes = %v, want app.enriched", s.Attributes())
+	}
+	t.Fatal("no provider-executed execute_tool span")
+}
