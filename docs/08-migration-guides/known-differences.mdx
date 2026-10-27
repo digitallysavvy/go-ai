@@ -79,6 +79,25 @@ Two details differ:
   with a `ProtocolError`. TypeScript waits for the execution timeout.
 - `MaxInFlightBridgeRequests` counts the calls in an approval batch.
 
+## fx: libfx runtime
+
+- **Opt-in, not the default.** TS `createFx()` always runs libfx. Go keeps
+  the v0.5.x sandbox `fx acp` adapter as the default (`fx.RuntimeSandboxACP`)
+  and runs libfx with `fx.Settings{Runtime: fx.RuntimeLibfx}`. Making libfx
+  the default would change the built-in tools, the network path and the
+  lifecycle state for v0.5.x callers.
+- **wasm only.** Go runs libfx's `fx-core.wasm` on wazero. The Node native
+  addon (`backend: "native"`) is not available.
+- **The credential stays on the host.** The TS host puts the AI Gateway key
+  in the core's environment. Go gives the core a placeholder and swaps in
+  the real key on the host, only for AI Gateway requests, and removes the
+  key from responses.
+- **Origin allowlist.** The core's requests may reach only the AI Gateway
+  base URL and libfx's provider origins; TS's fetch allows any URL.
+- **Not yet ported.** Codex and grok subscription authentication and MCP
+  servers on the libfx runtime are still to come. Until then, use the default
+  runtime for them.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
