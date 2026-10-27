@@ -271,7 +271,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 			return "", aerr
 		}
 		if needsApproval {
-			if err := b.resolveApproval(tool, toolName, input, toolCallID, n); err != nil {
+			if err := b.resolveApproval(tool, toolName, input, inputJSON, toolCallID, n); err != nil {
 				return "", err
 			}
 		}
@@ -291,8 +291,9 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		}
 		if sig, ok := oerr.(*interruptSignal); ok {
 			// The tool called RequestCodeModeInterrupt: pause here
-			// instead of sanitizing this as a tool failure.
-			return "", b.raiseInterrupt(toolName, input, toolCallID, n, sig.payload)
+			// instead of sanitizing this as a tool failure. The pending
+			// interruption keeps the sandbox's raw argument, as in TS.
+			return "", b.raiseInterrupt(toolName, rawToolInput(inputJSON), toolCallID, n, sig.payload)
 		}
 		// Mirrors TypeScript's invokeCodeModeTool: any non-CodeModeError
 		// thrown by a host tool is sanitized to a generic message, with TS's
@@ -346,6 +347,15 @@ func (b *toolBridge) raiseInterrupt(toolName string, input interface{}, toolCall
 	}
 	b.pendingBatch = append(b.pendingBatch, pending)
 	return &interruptUnwind{pending: pending}
+}
+
+// rawToolInput decodes a call's argument as the sandbox passed it (nil when
+// it passed none), freshly, so neither schema defaults nor a tool that
+// modified its input map change the recorded interruption input. inputJSON
+// was already decoded once by invoke, so it cannot fail here.
+func rawToolInput(inputJSON string) interface{} {
+	v, _ := fromJSONPayload(inputJSON)
+	return v
 }
 
 // interruptUnwind is the sentinel error returned by invoke when a call
@@ -431,7 +441,10 @@ func (b *toolBridge) setFatal(err CodeModeError) {
 	}
 }
 
-func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map[string]interface{}, toolCallID string, n int) error {
+// inputJSON is the call's argument as the sandbox passed it: TS records an
+// interruption's input from the host function arguments
+// (toPendingInterruptions), not from the validated value.
+func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map[string]interface{}, inputJSON string, toolCallID string, n int) error {
 	mode := ApprovalModeCallback
 	var onApprovalRequired OnApprovalRequiredFunc
 	if b.options != nil && b.options.Approval != nil {
@@ -442,7 +455,7 @@ func (b *toolBridge) resolveApproval(tool types.Tool, toolName string, input map
 	}
 
 	if mode == ApprovalModeInterrupt {
-		return b.raiseInterrupt(toolName, input, toolCallID, n, InterruptPayload{"kind": ToolApprovalKind})
+		return b.raiseInterrupt(toolName, rawToolInput(inputJSON), toolCallID, n, InterruptPayload{"kind": ToolApprovalKind})
 	}
 
 	if onApprovalRequired == nil {

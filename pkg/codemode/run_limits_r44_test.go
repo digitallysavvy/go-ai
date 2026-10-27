@@ -3,6 +3,7 @@ package codemode
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -139,5 +140,59 @@ func TestOversizedInputToUnknownToolReportsSizeError(t *testing.T) {
 	})
 	if err == nil || err.Error() != `Tool "nope" input exceeds the 5 byte size limit.` {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TS records an interruption's input from the host function arguments
+// (toPendingInterruptions), so schema defaults applied for validation and
+// execute do not appear in Interrupt.Input or the approval messages.
+func TestInterruptInputIsTheSandboxArgument(t *testing.T) {
+	var executed map[string]interface{}
+	tools := ToolSet{"search": {
+		Name: "search",
+		Parameters: map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"q": map[string]interface{}{"type": "string"}, "limit": map[string]interface{}{"type": "number", "default": 10}},
+		},
+		NeedsApproval: true,
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			executed = input
+			return "ok", nil
+		},
+	}}
+	options := &Options{Approval: &ApprovalOptions{Mode: ApprovalModeInterrupt}}
+	js := `return await tools.search({q: "a"});`
+	pending, err := RunCodeMode(context.Background(), RunInput{JS: js, Tools: tools, Options: options})
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupt := pending.(*Interrupt)
+	if in, _ := interrupt.Input.(map[string]interface{}); len(in) != 1 || in["q"] != "a" {
+		t.Fatalf("Interrupt.Input = %#v, want the sandbox argument", interrupt.Input)
+	}
+	got, err := ContinueCodeModeApproval(context.Background(), *interrupt, ApprovalResponse{ApprovalID: interrupt.InterruptID, Approved: true}, tools, options, nil)
+	if err != nil || got != "ok" {
+		t.Fatalf("resume = %v, %v", got, err)
+	}
+	if fmt.Sprint(executed["limit"]) != "10" {
+		t.Fatalf("execute input = %#v, want the defaulted input", executed)
+	}
+
+	// A host interrupt records the argument too, even if the tool changed
+	// its input map first.
+	hostTools := ToolSet{"ask": {
+		Name:       "ask",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			input["mutated"] = true
+			return nil, RequestCodeModeInterrupt(InterruptPayload{"kind": "question"})
+		},
+	}}
+	pending, err = RunCodeMode(context.Background(), RunInput{JS: `return await tools.ask({q: "b"});`, Tools: hostTools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in, _ := pending.(*Interrupt).Input.(map[string]interface{}); len(in) != 1 || in["q"] != "b" {
+		t.Fatalf("host Interrupt.Input = %#v", pending.(*Interrupt).Input)
 	}
 }
