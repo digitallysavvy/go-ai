@@ -42,3 +42,26 @@ func TestR44_PrepareToolsPassesEmptyValuesThrough(t *testing.T) {
 		t.Error("nil headers must stay absent")
 	}
 }
+
+func TestR44_CustomToolCallReplaysRawInputText(t *testing.T) {
+	// How the model decodes a custom_tool_call: Arguments {"input": text}, and
+	// RawArguments the JSON string literal of the text (TS
+	// `input: JSON.stringify(part.input)`).
+	for name, call := range map[string]types.ToolCallContent{
+		"arguments only": {ToolCallID: "c1", ToolName: "grammar_tool", Arguments: map[string]interface{}{"input": "raw input"}},
+		"quoted input":   {ToolCallID: "c1", ToolName: "grammar_tool", Input: `"raw input"`},
+		"both":           {ToolCallID: "c1", ToolName: "grammar_tool", Input: `"raw input"`, Arguments: map[string]interface{}{"input": "raw input"}},
+	} {
+		input, _, err := ConvertPromptToInputWithOptions(types.Prompt{Messages: []types.Message{{
+			Role:    types.RoleAssistant,
+			Content: []types.ContentPart{call},
+		}}}, "system", ConvertOptions{CustomToolNames: map[string]bool{"grammar_tool": true}})
+		if err != nil || len(input) != 1 {
+			t.Fatalf("%s: input=%v err=%v", name, input, err)
+		}
+		item, ok := input[0].(CustomToolCallItem)
+		if !ok || item.Input != "raw input" {
+			t.Errorf("%s: item = %#v, want custom_tool_call with the raw text", name, input[0])
+		}
+	}
+}

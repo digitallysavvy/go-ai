@@ -1600,10 +1600,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
+			// TS: input: JSON.stringify(part.input) -- the JSON string literal
+			// of the raw custom tool text.
+			customRaw, _ := jsonstr.Marshal(item.Input)
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
+				RawArguments:     string(customRaw),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, nil),
 			})
 
@@ -2373,6 +2377,12 @@ func toRawMetadata(m map[string]interface{}) json.RawMessage {
 
 // nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
 // (matching TS's `encryptedContent ?? null`), or the string itself otherwise.
+// customToolRaw is TS JSON.stringify of a custom tool call's raw text input.
+func customToolRaw(input string) string {
+	raw, _ := jsonstr.Marshal(input)
+	return string(raw)
+}
+
 func nonEmptyOrNil(s string) interface{} {
 	if s == "" {
 		return nil
@@ -4354,6 +4364,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
+				RawArguments:     customToolRaw(item.Input),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, nil),
 			},
 		})
