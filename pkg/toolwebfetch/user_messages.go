@@ -7,7 +7,10 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
-var urlPattern = regexp.MustCompile("(?i)https?://[^\\s<>\"'`]+")
+// urlPattern is the TS /https?:\/\/[^\s<>"'`]+/gi. JavaScript's \s is wider
+// than RE2's: it also holds vertical tab, no-break space and the Unicode
+// space separators, so text pasted from rich editors ends a URL there too.
+var urlPattern = regexp.MustCompile("(?i)https?://[^\\s\\x0b\\x{a0}\\x{1680}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}\\x{feff}<>\"'`]+")
 
 // extractURLs finds http(s) URLs in text. Punctuation at the end of a match,
 // as in "see https://example.com/docs.", is also tried without it.

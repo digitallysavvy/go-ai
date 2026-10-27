@@ -730,3 +730,12 @@ func TestDefaultTransportBlocksLoopbackAtConnectTime(t *testing.T) {
 		t.Fatalf("output = %#v", out)
 	}
 }
+
+func TestUserMessageURLEndsAtJavaScriptWhitespace(t *testing.T) {
+	ft := fixed(200, "ok", "Content-Type", "text/plain")
+	tool := newTool(t, Options{Transport: ft, RequireURLInUserMessage: true})
+	for _, sep := range []string{"\u00a0", "\u2003", "\u3000", "\u000b", "\ufeff"} {
+		msg := userMessage("read https://example.com/docs" + sep + "please")
+		doc(t, run(t, tool, "https://example.com/docs", 0, msg))
+	}
+}
