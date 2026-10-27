@@ -742,12 +742,8 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	var supportsUserMessageResponses atomic.Bool
 	channel := bridge.NewChannel(bridge.ChannelOptions{
 		Connect: bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{
-			Name: "OpenCode bridge",
-			OnHello: func(h *bridge.Hello) {
-				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
-					supportsUserMessageResponses.Store(*h.Capabilities.ExperimentalUserMessageResponses)
-				}
-			},
+			Name:    "OpenCode bridge",
+			OnHello: trackUserMessageResponses(&supportsUserMessageResponses),
 		}),
 		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
 	})

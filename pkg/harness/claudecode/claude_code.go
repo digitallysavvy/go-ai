@@ -248,15 +248,6 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		}
 	}
 
-	// A fresh start creates the workdir and bridge-state directory; resumes
-	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
-	// undefined` mkdir.
-	if respawnStrategy == "" {
-		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
-			return nil, err
-		}
-	}
-
 	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, HarnessID)
 	if err != nil {
 		return nil, err
@@ -264,6 +255,15 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	token := bridge.CreateBridgeToken()
 	if settings.MintBridgeToken != nil {
 		token = settings.MintBridgeToken(sandboxID)
+	}
+
+	// A fresh start creates the workdir and bridge-state directory; resumes
+	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
+	// undefined` mkdir.
+	if respawnStrategy == "" {
+		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
+			return nil, err
+		}
 	}
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
@@ -287,11 +287,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	channelOpts := bridge.ChannelOptions{
 		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
 			Name: "claude-code bridge", OpenRetryTimeout: timeout, StartContext: ctx,
-			OnHello: func(h *bridge.Hello) {
-				if h.SupportsUserMessageResponses() {
-					supportsUserMessages.Store(true)
-				}
-			},
+			OnHello: trackUserMessageResponses(&supportsUserMessages),
 		}),
 		Reconnect:     settings.Reconnect,
 		OnDebug:       settings.OnDebug,
@@ -371,12 +367,8 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 	var supportsUserMessages atomic.Bool
 	channel := bridge.NewChannel(bridge.ChannelOptions{
 		Connect: bridge.NewBridgeConnectFunc(attachEndpoint, bridge.BridgeConnectOptions{
-			Name: "claude-code bridge",
-			OnHello: func(h *bridge.Hello) {
-				if h.SupportsUserMessageResponses() {
-					supportsUserMessages.Store(true)
-				}
-			},
+			Name:    "claude-code bridge",
+			OnHello: trackUserMessageResponses(&supportsUserMessages),
 		}),
 		Reconnect:              opts.settings.Reconnect,
 		OnDebug:                opts.settings.OnDebug,
@@ -405,6 +397,13 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		permissionMode:               opts.permissionMode, builtinToolFiltering: opts.builtinToolFiltering,
 		mcpServers: opts.mcpServers, sandbox: opts.sandbox, sandboxHomeDir: opts.sandboxHomeDir,
 	})
+}
+
+// trackUserMessageResponses records the capability of each bridge-hello,
+// including a later one without it. Mirrors TS `onHello`
+// (`supportsUserMessageResponses = hello.capabilities?.experimental_userMessageResponses === true`).
+func trackUserMessageResponses(supported *atomic.Bool) func(*bridge.Hello) {
+	return func(h *bridge.Hello) { supported.Store(h.SupportsUserMessageResponses()) }
 }
 
 func mkdirs(ctx context.Context, sandbox providerutils.SandboxSession, dirs ...string) error {
