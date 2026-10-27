@@ -166,3 +166,29 @@ func TestSetMaxWorkers_OverridesDefault(t *testing.T) {
 		t.Fatalf("after ResetMaxWorkers the default is %d, want 32", got)
 	}
 }
+
+// TS run runManaged checks the abort signal before the worker cap, so an
+// invocation whose context is already canceled fails with the aborted error,
+// not *ConcurrencyError, even when the cap is reached.
+func TestRunCodeMode_AbortedBeforeConcurrencyCheck(t *testing.T) {
+	withAvailableMemory(t, 1<<34, true)
+	if err := SetMaxWorkers(1); err != nil {
+		t.Fatal(err)
+	}
+	release, err := acquireWorkerSlot(DefaultMemoryLimitBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = RunCodeMode(ctx, RunInput{JS: "return 1;", Tools: ToolSet{}})
+	var aborted *AbortedError
+	if !errors.As(err, &aborted) {
+		t.Fatalf("expected *AbortedError, got %#v (%v)", err, err)
+	}
+	if got, want := err.Error(), "Code mode execution was aborted."; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
