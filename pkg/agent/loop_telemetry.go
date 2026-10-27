@@ -40,6 +40,17 @@ func newTelemetryCallID() string {
 	return gen()
 }
 
+// newTextResponseID is the default step response id of TS generateText
+// (generateId: createIdGenerator({prefix: 'aitxt', size: 24})), which the TS
+// ToolLoopAgent runs on.
+func newTextResponseID() string {
+	gen, err := ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{Prefix: "aitxt", Size: 24})
+	if err != nil {
+		return "aitxt-" + ai.GenerateID()
+	}
+	return gen()
+}
+
 // loopTelemetry carries the per-run telemetry state of the legacy loop.
 type loopTelemetry struct {
 	settings *ai.TelemetrySettings

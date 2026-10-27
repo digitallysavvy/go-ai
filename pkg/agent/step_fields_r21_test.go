@@ -36,6 +36,10 @@ func TestLegacyLoopStepResultCarriesContentFields(t *testing.T) {
 	if st.Response.ID == "" || st.Response.ModelID == "" || st.Response.Timestamp.IsZero() {
 		t.Fatalf("response = %+v", st.Response)
 	}
+	// TS generateText's default generateId: "aitxt-" plus 24 characters.
+	if !strings.HasPrefix(st.Response.ID, "aitxt-") || len(st.Response.ID) != len("aitxt-")+24 {
+		t.Fatalf("response id = %q, want an aitxt- id", st.Response.ID)
+	}
 }
 
 // The legacy loop hands tools the step messages and usage and enforces the
