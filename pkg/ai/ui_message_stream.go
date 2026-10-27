@@ -2340,13 +2340,13 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			break
 		}
 		if chunk.SourceContent.SourceType == "document" {
+			// A document source's title is a required string (TS writes
+			// it even when empty; the UI message schema requires it).
 			part := map[string]interface{}{
 				"type":      "source-document",
 				"sourceId":  chunk.SourceContent.ID,
 				"mediaType": chunk.SourceContent.MediaType,
-			}
-			if chunk.SourceContent.Title != "" {
-				part["title"] = chunk.SourceContent.Title
+				"title":     chunk.SourceContent.Title,
 			}
 			if chunk.SourceContent.Filename != "" {
 				part["filename"] = chunk.SourceContent.Filename
