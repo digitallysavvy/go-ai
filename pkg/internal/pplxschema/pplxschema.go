@@ -41,22 +41,24 @@ var (
 			fl("arguments", nStr), fl("thought_signature", nStr)),
 	}
 
-	// zPplxItem is perplexityOutputItemSchema: the four handled shapes, or any
-	// object with a string `type` that is not one of them.
-	zPplxItem zNode = func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return &zodlite.Issue{Path: path, Code: "invalid_union", Message: "Invalid input"}
+	// zPplxUnhandled is the union's last member: an object whose string
+	// `type` is not a handled one (the refine's custom issue otherwise).
+	zPplxUnhandled zNode = func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+		if bad := zObj(fl("type", zStr))(v, present, path); bad != nil {
+			return bad
 		}
-		t, isStr := m["type"].(string)
-		if !isStr {
-			return &zodlite.Issue{Path: path, Code: "invalid_union", Message: "Invalid input"}
-		}
-		if n, handled := zPplxHandledItems[t]; handled {
-			return n(v, present, path)
+		if _, handled := zPplxHandledItems[v.(map[string]interface{})["type"].(string)]; handled {
+			return &zodlite.Issue{Path: append(append([]interface{}{}, path...), "type"), Code: "custom", Message: "Invalid input"}
 		}
 		return nil
 	}
+
+	// zPplxItem is perplexityOutputItemSchema: the four handled shapes, or any
+	// object with a string `type` that is not one of them. A failing item
+	// reports every member's issues (the last member is a pipe, so its refine
+	// failure aborts like the others and zod reports invalid_union).
+	zPplxItem = zodlite.Union(zPplxHandledItems["message"], zPplxHandledItems["search_results"],
+		zPplxHandledItems["fetch_url_results"], zPplxHandledItems["function_call"], zPplxUnhandled)
 
 	zPplxCost = zObj(fl("currency", zOptional(zStr)), fl("input_cost", zOptional(zNum)), fl("output_cost", zOptional(zNum)),
 		fl("total_cost", zOptional(zNum)), fl("cache_creation_cost", nNum), fl("cache_read_cost", nNum), fl("tool_calls_cost", nNum))

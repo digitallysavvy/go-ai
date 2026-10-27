@@ -70,8 +70,9 @@ var (
 			fl("segment_text", zNullish(zStr)), fl("groundingChunkIndices", zNumArr), fl("supportChunkIndices", zNumArr),
 			fl("confidenceScores", zNumArr), fl("confidenceScore", zNumArr),
 		)))),
-		// union([{webDynamicRetrievalScore: number}, {}]): any object passes.
-		fl("retrievalMetadata", zNullish(zObj())),
+		// union([{webDynamicRetrievalScore: number}, {}]): any object passes,
+		// and a non-object reports both members.
+		fl("retrievalMetadata", zNullish(zUnionOf(zObj(fl("webDynamicRetrievalScore", zNum)), zObj()))),
 	)
 
 	zUsage = zObj(

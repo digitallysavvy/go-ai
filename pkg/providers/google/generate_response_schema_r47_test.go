@@ -39,3 +39,15 @@ func TestGenerateResponseSchemaContentUnion(t *testing.T) {
 		}
 	}
 }
+
+// retrievalMetadata is union([{webDynamicRetrievalScore: number}, {}]): any
+// object passes and a non-object reports both members.
+func TestGroundingRetrievalMetadataUnion(t *testing.T) {
+	if msg := geminischema.ValidationMessage(`{"candidates":[{"groundingMetadata":{"retrievalMetadata":{"webDynamicRetrievalScore":"x"}}}]}`); msg != "" {
+		t.Fatalf("object rejected: %s", msg)
+	}
+	msg := geminischema.ValidationMessage(`{"candidates":[{"groundingMetadata":{"retrievalMetadata":5}}]}`)
+	if !strings.Contains(msg, `"code": "invalid_union"`) || strings.Count(msg, `"expected": "object"`) != 2 {
+		t.Fatalf("message:\n%s", msg)
+	}
+}
