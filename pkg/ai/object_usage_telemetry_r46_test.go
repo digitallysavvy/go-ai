@@ -42,7 +42,7 @@ func TestGenerateObject_RootSpanUsageDetails(t *testing.T) {
 		got := ""
 		for _, a := range root.Attributes() {
 			if string(a.Key) == key {
-				got = a.Value.Emit()
+				got = a.Value.String()
 			}
 		}
 		if got != want {
