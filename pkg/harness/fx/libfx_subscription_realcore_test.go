@@ -387,3 +387,111 @@ func modelRecordComplete(session harness.Session) bool {
 	defer s.mu.Unlock()
 	return s.state.Turn != nil && len(s.state.Turn.Models) > 0 && s.state.Turn.Models[0] != nil && s.state.Turn.Models[0].Complete
 }
+
+// TestLibfxRealCoreSubscriptionColdReplayFromPartialRecord suspends at the
+// first text delta even when the model record is still incomplete, the
+// timing the parsed-output test above avoids (TS serves its fixture as one
+// chunk; a network body in chunks reaches it too). A truncated record is
+// never replayed: as in TS, the continuation re-attempts the request, and
+// the new attempt's text is a new block (TS part ids carry the attempt), so
+// the abandoned partial block is not continued or mixed into it.
+func TestLibfxRealCoreSubscriptionColdReplayFromPartialRecord(t *testing.T) {
+	for _, provider := range []string{"codex", "grok"} {
+		t.Run(provider, func(t *testing.T) {
+			fixtures := responsesFixtures(t, provider, true)
+			fixture := fixtures[len(fixtures)-1]
+			sub := &memSubscription{creds: libfx.Credentials{AccessToken: "test-token", RefreshToken: "test-refresh", AccountID: "account", ExpiresAt: 2_000_000_000_000}}
+			network := &subscriptionNetwork{t: t, model: func(int) *http.Response { return sseBody(fixture) }}
+			h := newSubscriptionHarness(t, provider, sub, network)
+			sb := newFakeSandbox()
+			ctx := context.Background()
+			start := startOpts(sb, "partial-"+provider)
+			opts := harness.TurnSettings{Model: subscriptionModel(provider)}
+			session, err := h.DoStart(ctx, start)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.DoDestroy(ctx) //nolint:errcheck
+			suspended := make(chan (<-chan *harness.ContinueTurnState), 1)
+			var once sync.Once
+			var partial bool
+			before := &partLog{}
+			before.on = func(p harness.StreamPart) {
+				if p.PartType() == harness.PartTypeTextDelta {
+					once.Do(func() {
+						partial = !modelRecordComplete(session)
+						suspended <- suspendFromEmit(t, session)
+					})
+				}
+			}
+			control, err := session.DoPromptTurn(ctx, harness.PromptTurnOptions{TurnSettings: opts, Prompt: harness.TextPrompt("Reply."), Emit: before.emit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var continueFrom *harness.ContinueTurnState
+			select {
+			case ch := <-suspended:
+				continueFrom = <-ch
+			case <-time.After(60 * time.Second):
+				t.Fatal("no text arrived")
+			}
+			_ = waitDone(t, control)
+			if continueFrom == nil {
+				t.Fatal("no continuation")
+			}
+			requests := network.postCount()
+			resumed, err := h.DoStart(ctx, harness.StartOptions{SandboxSession: sb, SessionID: start.SessionID, SessionWorkDir: start.SessionWorkDir, ContinueFrom: continueFrom})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resumed.DoDestroy(ctx) //nolint:errcheck
+			after := &partLog{}
+			continued, err := resumed.DoContinueTurn(ctx, harness.ContinueTurnOptions{TurnSettings: opts, Emit: after.emit})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := waitDone(t, continued); err != nil {
+				t.Fatalf("continued: %v", err)
+			}
+			wantPosts := requests
+			if partial {
+				wantPosts++
+			}
+			if n := network.postCount(); n != wantPosts {
+				t.Errorf("posts after continuation = %d, want %d (record partial at suspend: %v)", n, wantPosts, partial)
+			}
+			all := &partLog{parts: append(before.snapshot(), after.snapshot()...)}
+			want := 28
+			if provider == "grok" {
+				want = 2786
+			}
+			wantStarts := 1
+			if partial {
+				// The partial attempt's text stays as emitted; the new
+				// attempt emits the whole response as a new block.
+				wantStarts = 2
+				if got := len([]rune(after.text())); got != want {
+					t.Errorf("re-attempted text length = %d, want %d", got, want)
+				}
+				starts := all.ofType(harness.PartTypeTextStart)
+				if len(starts) == 2 && starts[0].(*harness.TextStartPart).ID == starts[1].(*harness.TextStartPart).ID {
+					t.Errorf("the re-attempt reused text block id %q", starts[0].(*harness.TextStartPart).ID)
+				}
+			} else if got := len([]rune(all.text())); got != want {
+				t.Errorf("text length = %d, want %d", got, want)
+			}
+			if n := len(all.ofType(harness.PartTypeTextStart)); n != wantStarts {
+				t.Errorf("text-start parts = %d, want %d", n, wantStarts)
+			}
+			if n := len(after.ofType(harness.PartTypeTextEnd)); n != 1 {
+				t.Errorf("text-end parts = %d", n)
+			}
+			if errs := after.ofType(harness.PartTypeError); len(errs) != 0 {
+				t.Errorf("errors: %+v", errs)
+			}
+			if n := len(after.ofType(harness.PartTypeFinish)); n != 1 {
+				t.Errorf("finish parts = %d", n)
+			}
+		})
+	}
+}
