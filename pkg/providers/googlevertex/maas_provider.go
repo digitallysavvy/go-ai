@@ -236,6 +236,7 @@ func (p *MaaSProvider) init() error {
 
 	p.provider = openai.New(openai.Config{
 		Name:             "vertex.maas",
+		NoAPIKey:         true,
 		BaseURL:          baseURL,
 		HTTPClient:       httpClient,
 		ChatProviderName: "vertex.maas",
@@ -243,6 +244,8 @@ func (p *MaaSProvider) init() error {
 		// createOpenAICompatible, which tags requests with its own
 		// `ai-sdk-openai-compatible/VERSION` (not `ai-sdk-google-vertex`).
 		UserAgentName: "openai-compatible",
+		// TS createOpenAICompatible without includeUsage sends no stream_options.
+		OmitStreamUsage: true,
 	})
 	return nil
 }

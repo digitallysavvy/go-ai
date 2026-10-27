@@ -26,7 +26,7 @@ func (t *sigV4Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
 			return nil, fmt.Errorf("AWS credential provider failed: incomplete credentials. Please ensure your credential provider returns valid AWS credentials with AccessKeyID and SecretAccessKey fields")
 		}
-		signer = bedrock.NewAWSSigner(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.region)
+		signer = bedrock.NewAWSSignerForService(creds.AccessKeyID, creds.SecretAccessKey, creds.SessionToken, t.region, mantleSigningService)
 	}
 	if signer == nil {
 		return t.base.RoundTrip(req)

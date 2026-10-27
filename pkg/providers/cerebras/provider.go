@@ -37,14 +37,18 @@ func New(cfg Config) *Provider {
 	}
 
 	openaiProvider := openai.New(openai.Config{
-		APIKey:     cfg.APIKey,
-		Name:       "cerebras",
-		BaseURL:    baseURL,
-		HTTPClient: withCerebrasTransform(cfg.HTTPClient),
+		APIKey: cfg.APIKey,
+		// Never fall back to OPENAI_API_KEY (it would be sent to Cerebras).
+		APIKeyEnvVar: "CEREBRAS_API_KEY",
+		Name:         "cerebras",
+		BaseURL:      baseURL,
+		HTTPClient:   withCerebrasTransform(cfg.HTTPClient),
 		// TS CerebrasChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:    true,
 		UserAgentName: "cerebras",
+		// TS sends stream_options only when includeUsage is set (it is not).
+		OmitStreamUsage: true,
 		// TransformRequestBody applies the structural (provider-options-
 		// independent) half of TS transformCerebrasRequestBody: renaming
 		// max_tokens -> max_completion_tokens and reasoning_content ->

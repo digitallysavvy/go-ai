@@ -564,6 +564,13 @@ func ExtractSystemMessage(messages []types.Message) string {
 }
 
 func openAIFileContentPart(file types.FileContent, allowVideo bool) map[string]interface{} {
+	// The core builds file parts with the tagged FileData only (for example
+	// from UI messages); sync the legacy Data/URL fields this converter reads.
+	if !file.FileData.IsZero() {
+		if normalized, err := NormalizeFileContent(file); err == nil {
+			file = normalized
+		}
+	}
 	mediaType := firstNonEmpty(file.MediaType, file.MimeType, file.FileData.MediaType)
 	if strings.HasPrefix(mediaType, "image/") || mediaType == "image" {
 		imageURL := file.URL

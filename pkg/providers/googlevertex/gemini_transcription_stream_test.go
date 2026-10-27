@@ -190,6 +190,9 @@ func hasRealtimeInputKey(key string) func(map[string]interface{}) bool {
 func newLiveTestModel(t *testing.T, baseURL string) *GeminiTranscriptionModel {
 	t.Helper()
 	prov := newVertexTestProvider(t, baseURL)
+	// The Live WebSocket host comes from the location, never the baseURL
+	// (TS), so point the socket at the test server explicitly.
+	prov.liveWebSocketOrigin = "ws" + strings.TrimPrefix(baseURL, "http")
 	return NewGeminiTranscriptionModel(prov, ModelGemini35TranscribeLive)
 }
 

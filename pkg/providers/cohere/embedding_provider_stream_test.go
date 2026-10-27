@@ -63,7 +63,7 @@ func TestCohereEmbeddingModelDoEmbedMany(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoEmbedMany error = %v", err)
 	}
-	if seenPath != "/v1/embed" || seenHeader != "yes" {
+	if seenPath != "/embed" || seenHeader != "yes" {
 		t.Fatalf("request mismatch path=%q header=%q", seenPath, seenHeader)
 	}
 	if seenBody["model"] != "embed-v4" {

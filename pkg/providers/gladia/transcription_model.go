@@ -276,7 +276,7 @@ func gladiaAudioExtension(mimeType string) string {
 func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, headers map[string]string) (map[string]interface{}, map[string]string, error) {
 	trustedOrigin := m.provider.config.BaseURL
 	pollOpts := fileutil.TrustedOriginDownloadOptions(trustedOrigin, m.provider.client.HTTPClient().Transport)
-	pollOpts.Headers = internalhttp.MergeHeaders(map[string]string{"x-gladia-key": m.provider.config.APIKey}, headers)
+	pollOpts.Headers = m.pollHeaders(resultURL, trustedOrigin, headers)
 
 	start := time.Now()
 	for {
@@ -309,6 +309,16 @@ func (m *TranscriptionModel) pollResult(ctx context.Context, resultURL string, h
 		case <-time.After(pollInterval):
 		}
 	}
+}
+
+// pollHeaders withholds the API key and caller headers unless the
+// response-supplied result URL is same-origin with the configured API (TS
+// getFromApi credentialedOrigin).
+func (m *TranscriptionModel) pollHeaders(resultURL, trustedOrigin string, headers map[string]string) map[string]string {
+	if !fileutil.IsSameOrigin(resultURL, trustedOrigin) {
+		return nil
+	}
+	return internalhttp.MergeHeaders(map[string]string{"x-gladia-key": m.provider.config.APIKey}, headers)
 }
 
 // flattenHeaders joins multi-value HTTP headers into single strings, matching

@@ -1084,7 +1084,10 @@ func validatePromptMessages(prompt string, messages []types.Message) error {
 func (w *WorkflowAgent) Generate(ctx context.Context, prompt string, opts *agent.AgentGenerateOptions) (*WorkflowResult, error) {
 	legacy := WorkflowGenerateOptions{Prompt: prompt}
 	if opts != nil {
-		legacy.Prompt = opts.Prompt
+		// The positional prompt stays unless the options carry their own.
+		if opts.Prompt != "" {
+			legacy.Prompt = opts.Prompt
+		}
 		legacy.Messages = opts.Messages
 		legacy.System = opts.System
 		legacy.AllowSystemInMessages = opts.AllowSystemInMessages
@@ -1208,7 +1211,10 @@ func workflowModelInfo(model provider.LanguageModel) (string, string) {
 func (w *WorkflowAgent) Stream(ctx context.Context, prompt string, opts *agent.AgentStreamOptions) (*WorkflowStreamResult, error) {
 	legacy := WorkflowStreamOptions{Prompt: prompt}
 	if opts != nil {
-		legacy.Prompt = opts.Prompt
+		// The positional prompt stays unless the options carry their own.
+		if opts.Prompt != "" {
+			legacy.Prompt = opts.Prompt
+		}
 		legacy.Messages = opts.Messages
 		legacy.System = opts.System
 		legacy.AllowSystemInMessages = opts.AllowSystemInMessages

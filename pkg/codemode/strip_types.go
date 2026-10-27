@@ -104,6 +104,9 @@ func stripWithRecover(src string, core func(string) (string, error)) (out string
 // recovery. Only stripTypeScriptAnnotations and tests call it directly.
 func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 	tokens := tokenizeTS(src)
+	if err := checkStripNesting(tokens); err != nil {
+		return src, err
+	}
 	kept, err := stripTSTokens(tokens)
 	if err != nil {
 		return src, err
@@ -113,6 +116,35 @@ func stripTypeScriptAnnotationsUnchecked(src string) (string, error) {
 		b.WriteString(t.text)
 	}
 	return b.String(), nil
+}
+
+// maxStripNesting bounds how deeply brackets may nest in a snippet the
+// stripper works on. The transforms rescan the enclosing span at every level,
+// so nesting costs quadratic time; no real snippet nests anywhere near this
+// deep. A deeper one is left unmodified, like any source the stripper rejects.
+const maxStripNesting = 256
+
+// checkStripNesting rejects a token stream whose ( [ { nest deeper than
+// maxStripNesting.
+func checkStripNesting(tokens []tsToken) error {
+	depth := 0
+	for _, t := range tokens {
+		if t.kind != "punct" {
+			continue
+		}
+		switch t.text {
+		case "(", "[", "{":
+			depth++
+			if depth > maxStripNesting {
+				return fmt.Errorf("codemode: brackets nested deeper than %d in TypeScript source", maxStripNesting)
+			}
+		case ")", "]", "}":
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 // tsToken is one lexical token of (possibly-TypeScript) source.
@@ -130,6 +162,7 @@ func tokenizeTS(src string) []tsToken {
 	runes := []rune(src)
 	n := len(runes)
 	var tokens []tsToken
+	regexMemo := &regexFailMemo{}
 	// prevSignificant is the kind/text of the last non-space/non-comment
 	// token, used to disambiguate a leading `/` as a regex literal (as
 	// opposed to division) the same way real JS lexers do.
@@ -158,8 +191,8 @@ func tokenizeTS(src string) []tsToken {
 			tokens = append(tokens, tsToken{"comment", string(runes[i:end])})
 			i = end
 
-		case c == '/' && regexAllowedAfter(prevSignificant):
-			if end, ok := scanRegexLiteral(runes, i); ok {
+		case c == '/' && regexAllowedAfter(prevSignificant) && !postfixIncDecBefore(tokens):
+			if end, ok := scanRegexLiteral(runes, i, regexMemo); ok {
 				tokens = append(tokens, tsToken{"regex", string(runes[i:end])})
 				i = end
 				prevSignificant = &tokens[len(tokens)-1]
@@ -313,16 +346,47 @@ func scanBalancedExpr(runes []rune, j int) int {
 	return j
 }
 
+// regexFailMemo remembers the scan states (position, inside a character class
+// or not) that scanRegexLiteral walked through. The scan is deterministic, so
+// a later scan that reaches one of them fails too; without this, a long line
+// of unterminated `/[` candidates rescanned to the end of the line at every
+// `/` (quadratic time on a source of the default size limit).
+type regexFailMemo struct {
+	seen [2][]bool
+}
+
+func (m *regexFailMemo) visit(j int, inClass bool, n int) (alreadyFailed bool) {
+	k := 0
+	if inClass {
+		k = 1
+	}
+	if m.seen[k] == nil {
+		m.seen[k] = make([]bool, n+1)
+	}
+	if m.seen[k][j] {
+		return true
+	}
+	m.seen[k][j] = true
+	return false
+}
+
 // scanRegexLiteral attempts to scan a regular expression literal starting
 // at runes[i] == '/'. It respects character classes (`[...]`), where an
 // unescaped `/` does not terminate the literal, and returns
 // (indexPastFlags, true) on success or (_, false) if this `/` cannot be
 // parsed as a regex (e.g. it is unterminated before a line break).
-func scanRegexLiteral(runes []rune, i int) (int, bool) {
+//
+// The tokenizer only moves forward, so a state visited by an earlier scan
+// either led to a failure or lies inside a literal that was consumed; either
+// way revisiting it means this scan fails too.
+func scanRegexLiteral(runes []rune, i int, memo *regexFailMemo) (int, bool) {
 	n := len(runes)
 	j := i + 1
 	inClass := false
 	for j < n {
+		if memo.visit(j, inClass, n) {
+			return 0, false
+		}
 		c := runes[j]
 		if c == '\n' {
 			return 0, false
@@ -345,6 +409,42 @@ func scanRegexLiteral(runes []rune, i int) (int, bool) {
 		j++
 	}
 	return 0, false
+}
+
+// postfixIncDecBefore reports whether the last significant tokens are a
+// postfix `++`/`--` (an operand on the same line before it), after which a `/`
+// divides: `n++ / 2`. A prefix `++` cannot be followed by a regex literal, and
+// a line break before the operator (`a\n++\n/re/`) makes it a prefix one.
+// The tokenizer emits `++` as two adjacent `+` tokens (likewise `--`).
+func postfixIncDecBefore(tokens []tsToken) bool {
+	k := len(tokens) - 1
+	for k >= 0 && (tokens[k].kind == "space" || tokens[k].kind == "comment") {
+		k--
+	}
+	if k < 1 || tokens[k].kind != "punct" || tokens[k-1].kind != "punct" ||
+		(tokens[k].text != "+" && tokens[k].text != "-") || tokens[k-1].text != tokens[k].text {
+		return false
+	}
+	k--
+	for k--; k >= 0; k-- {
+		t := tokens[k]
+		if t.kind == "space" || t.kind == "comment" {
+			if strings.ContainsAny(t.text, "\n\r\u2028\u2029") {
+				return false
+			}
+			continue
+		}
+		switch t.kind {
+		case "number", "string", "regex":
+			return true
+		case "ident":
+			return !isRegexPrecedingKeyword(t.text)
+		case "punct":
+			return t.text == ")" || t.text == "]"
+		}
+		return false
+	}
+	return false
 }
 
 // regexAllowedAfter reports whether a `/` immediately following prev could

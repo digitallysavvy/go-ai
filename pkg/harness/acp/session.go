@@ -90,6 +90,21 @@ func newSession(p sessionParams) *session {
 			s.mu.Unlock()
 		}
 	})
+	// Mirrors TS `markTurnFinished`: outside a resumed in-flight continuation
+	// (whose replayed events are consumed by wireTurn), a terminal event
+	// clears the in-flight flag even when no wireTurn is subscribed any more,
+	// e.g. a turn that settled early on a callback error and then finished on
+	// the bridge after its abort.
+	if !p.turnInFlight {
+		markTurnFinished := func() {
+			s.mu.Lock()
+			s.turnInFlight = false
+			s.mu.Unlock()
+		}
+		s.p.channel.On(harness.PartTypeFinish, func(bridge.Event) { markTurnFinished() })
+		s.p.channel.On(harness.PartTypeError, func(bridge.Event) { markTurnFinished() })
+		s.p.channel.OnClose(func(int, string) { markTurnFinished() })
+	}
 	return s
 }
 
@@ -169,7 +184,10 @@ func (c *promptControl) SubmitToolResult(_ context.Context, r harness.ToolResult
 			lossyRerun := c.s.lossyRerun
 			c.s.mu.Unlock()
 			if !lossyRerun && hasPrevious {
-				output := c.s.p.askUserQuestions.ToNativeResponse(previousNativeRequest, *toolResult)
+				output, err := c.toNativeResponse(previousNativeRequest, *toolResult)
+				if err != nil {
+					return err
+				}
 				return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: output, IsError: r.IsError, ToolResult: toolResult})
 			}
 			c.s.mu.Lock()
@@ -182,10 +200,26 @@ func (c *promptControl) SubmitToolResult(_ context.Context, r harness.ToolResult
 			c.s.mu.Unlock()
 			return nil
 		}
-		output := c.s.p.askUserQuestions.ToNativeResponse(rawJSONToAny(active.NativeRequest), *toolResult)
+		output, err := c.toNativeResponse(rawJSONToAny(active.NativeRequest), *toolResult)
+		if err != nil {
+			return err
+		}
 		return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: output, IsError: r.IsError, ToolResult: toolResult})
 	}
 	return c.channel.Send(bridge.ToolResultCommand{ToolCallID: r.ToolCallID, Output: r.Output, IsError: r.IsError, ToolResult: r.ToolResult})
+}
+
+// toNativeResponse runs the adapter's ToNativeResponse, which signals a
+// malformed result by panicking (TS throws). From SubmitToolResult that TS
+// throw is a rejected promise the host observes, so it is returned as an
+// error instead of unwinding the host's goroutine.
+func (c *promptControl) toNativeResponse(nativeRequest any, toolResult types.ToolResultContent) (output any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	return c.s.p.askUserQuestions.ToNativeResponse(nativeRequest, toolResult), nil
 }
 
 func (c *promptControl) Done() <-chan struct{} { return c.done }
@@ -417,7 +451,17 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		if buffered.ToolResult != nil {
 			tr = *buffered.ToolResult
 		}
-		output := s.p.askUserQuestions.ToNativeResponse(nativeRequest, tr)
+		// A malformed buffered result makes the adapter panic (TS throws);
+		// TS's handler try/catch settles the turn with an error part and an
+		// abort, so it must not unwind the bridge's event goroutine.
+		output, err := c.toNativeResponse(nativeRequest, tr)
+		if err != nil {
+			closeForwardedBlock()
+			forward(&harness.ErrorPart{Error: err.Error()})
+			_ = s.p.channel.Send(bridge.AbortCommand{})
+			settle(err)
+			return
+		}
 		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: withNative.ToolCallID, Output: output, IsError: isErr, ToolResult: buffered.ToolResult})
 	}))
 

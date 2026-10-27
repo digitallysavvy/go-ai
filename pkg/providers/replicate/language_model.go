@@ -57,6 +57,9 @@ func (m *LanguageModel) SupportsImageInput() bool {
 
 // DoGenerate performs non-streaming text generation
 func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if opts == nil {
+		opts = &provider.GenerateOptions{}
+	}
 	reqBody := m.buildRequestBody(opts)
 
 	// Create prediction
@@ -162,6 +165,13 @@ func (m *LanguageModel) pollPrediction(ctx context.Context, predictionID string)
 		resp, err := m.provider.client.Get(ctx, "/predictions/"+predictionID)
 		if err != nil {
 			return replicatePrediction{}, err
+		}
+		// A non-2xx poll response is an API error, not a prediction still in
+		// progress (its body would otherwise decode to an empty status and the
+		// loop would spin until the attempt limit).
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return replicatePrediction{}, providererrors.NewProviderError("replicate", resp.StatusCode, "",
+				fmt.Sprintf("replicate API returned status %d: %s", resp.StatusCode, string(resp.Body)), nil)
 		}
 
 		var prediction replicatePrediction

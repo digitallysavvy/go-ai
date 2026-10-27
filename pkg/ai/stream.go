@@ -16,6 +16,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
@@ -629,6 +630,10 @@ type StreamTextResult struct {
 	// (e.g. in tests exercising the lower-level stream helpers directly),
 	// which fall back to the raw stream field.
 	chunkBuf *chunkBuffer
+	// closedCh/closedFlag signal Close() to Chunks and ElementStream
+	// goroutines (guarded by mu).
+	closedCh   chan struct{}
+	closedFlag bool
 	// chunkBufReader is the single cursor over chunkBuf handed out by
 	// Stream(); it is created lazily on first use and memoized (guarded by
 	// mu) so that repeated Stream() calls resume the same cursor rather than
@@ -924,6 +929,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
 	}
 	stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+	stepActiveTools := opts.ActiveTools
 	stepToolChoice := opts.ToolChoice
 	stepToolOrder := opts.ToolOrder
 	stepProviderOptions := opts.ProviderOptions
@@ -994,9 +1000,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if prepared.Messages != nil {
 			stepMessages = prepared.Messages
 		}
-		if prepared.Tools != nil {
-			stepTools = prepared.Tools
-		}
+		stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 		if prepared.ToolChoice.Type != "" {
 			stepToolChoice = prepared.ToolChoice
 		}
@@ -1078,7 +1082,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		Messages:            stepMessages,
 		Tools:               stepTools,
 		ToolChoice:          stepToolChoice,
-		ActiveTools:         opts.ActiveTools,
+		ActiveTools:         stepActiveTools,
 		ToolOrder:           stepToolOrder,
 		ProviderOptions:     stepProviderOptions,
 		PreviousSteps:       nil, // first (and only) step
@@ -1131,7 +1135,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		StopSequences:         stepStopSequences,
 		Seed:                  stepSeed,
 		Headers:               opts.Headers,
-		Tools:                 stepTools,
+		Tools:                 toolutil.ResolveToolSchemas(stepTools),
 		ToolChoice:            stepToolChoice,
 		IncludeRawChunks:      includeRawChunksValue(include),
 		RuntimeContext:        runtimeContext,
@@ -1219,9 +1223,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.stepReopenCtx = modelCallCtx
 	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 	if err != nil {
-		if stepCancel != nil {
-			stepCancel()
-		}
+		// stepCancel runs only after the error is classified below: a cancelled
+		// step context would make every open failure look like a step timeout.
 		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
 			err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 		} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
@@ -1243,6 +1246,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		} else {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+		}
+		if stepCancel != nil {
+			stepCancel()
 		}
 		r.fail(fmt.Errorf("failed to start stream: %w", err))
 		return
@@ -2526,8 +2532,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// in-step, or when a deferred provider tool has not yet delivered its result.
 		hasLocalToolCalls := false
 		for _, call := range stepToolCalls {
-			tool := toolsByName[call.ToolName]
-			if tool != nil && !tool.ProviderExecuted {
+			if isClientToolCall(call, toolsByName) {
 				hasLocalToolCalls = true
 				break
 			}
@@ -2553,6 +2558,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextSystem := r.cbSystem
 		nextMessages := currentMessages
 		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		nextActiveTools := opts.ActiveTools
 		nextToolChoice := opts.ToolChoice
 		nextToolOrder := opts.ToolOrder
 		nextProviderOptions := opts.ProviderOptions
@@ -2624,9 +2630,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if prepared.Messages != nil {
 				nextMessages = prepared.Messages
 			}
-			if prepared.Tools != nil {
-				nextTools = prepared.Tools
-			}
+			nextTools, nextActiveTools = applyPreparedTools(opts.Tools, nextTools, nextActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
 				nextToolChoice = prepared.ToolChoice
 			}
@@ -2721,7 +2725,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Messages:            nextMessages,
 			Tools:               nextTools,
 			ToolChoice:          nextToolChoice,
-			ActiveTools:         opts.ActiveTools,
+			ActiveTools:         nextActiveTools,
 			ToolOrder:           nextToolOrder,
 			ProviderOptions:     nextProviderOptions,
 			Steps:               allSteps,
@@ -2753,7 +2757,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			StopSequences:         nextStopSequences,
 			Seed:                  nextSeed,
 			Headers:               opts.Headers,
-			Tools:                 nextTools,
+			Tools:                 toolutil.ResolveToolSchemas(nextTools),
 			ToolChoice:            nextToolChoice,
 			IncludeRawChunks:      includeRawChunksValue(r.cbInclude),
 			RuntimeContext:        r.cbRuntimeCtx,
@@ -2825,9 +2829,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.stepReopenModel = nextModel
 		r.stepReopenGenOpts = nextGenOpts
 		r.stepReopenCtx = nextModelCallCtx
-		newStream, err := nextModel.DoStream(nextModelCallCtx, nextGenOpts)
+		newStream, err := doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, opts.MaxRetries)
 		if err != nil {
-			nextStepCancel()
+			// nextStepCancel runs after the error is classified: a cancelled
+			// step context would make every open failure look like a step timeout.
 			if r.timeout != nil && r.timeout.HasPerStep() && nextStepCtx.Err() != nil {
 				err = wrapTimeoutError(TimeoutReasonStep, nextStepCtx.Err())
 			} else if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
@@ -2848,6 +2853,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if isAbort {
 				fireAbort(r.err)
 			}
+			nextStepCancel()
 			break
 		}
 		pendingStepCtx = nextStepCtx
@@ -3567,6 +3573,12 @@ func (r *StreamTextResult) Close() error {
 		r.cancelBootstrap()
 	}
 	r.mu.Lock()
+	if !r.closedFlag {
+		r.closedFlag = true
+		if r.closedCh != nil {
+			close(r.closedCh)
+		}
+	}
 	cancel := r.initialStepCancel
 	s := r.stream
 	r.mu.Unlock()
@@ -3577,6 +3589,19 @@ func (r *StreamTextResult) Close() error {
 		return nil
 	}
 	return s.Close()
+}
+
+// closedSignal returns a channel closed when Close is first called.
+func (r *StreamTextResult) closedSignal() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closedCh == nil {
+		r.closedCh = make(chan struct{})
+		if r.closedFlag {
+			close(r.closedCh)
+		}
+	}
+	return r.closedCh
 }
 
 // ReadAll returns the complete generated text once streaming (and, for
@@ -4314,22 +4339,38 @@ func (r *StreamTextResult) Files() []types.GeneratedFileContent {
 // Chunks returns a channel that streams the full, processed multi-step chunk
 // sequence (see Stream). This provides an idiomatic Go way to consume the
 // stream.
+//
+// The channel is closed when the stream ends, and also when Close is called on
+// the result, so a consumer that stops reading must call Close to release the
+// producing goroutine.
 func (r *StreamTextResult) Chunks() <-chan provider.StreamChunk {
 	ch := make(chan provider.StreamChunk, 10)
 	stream := r.Stream()
+	closed := r.closedSignal()
+	finished := make(chan struct{})
+
+	// Watcher: wakes a Next blocked waiting for a chunk.
+	go func() {
+		select {
+		case <-closed:
+			_ = stream.Close()
+		case <-finished:
+		}
+	}()
 
 	go func() {
+		defer close(finished)
 		defer close(ch)
 		for {
 			chunk, err := stream.Next()
-			if err == io.EOF {
-				break
-			}
 			if err != nil {
-				break
+				return
 			}
-
-			ch <- *chunk
+			select {
+			case ch <- *chunk:
+			case <-closed:
+				return
+			}
 		}
 	}()
 

@@ -2,6 +2,9 @@ package cohere
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -9,8 +12,9 @@ import (
 )
 
 const (
-	// DefaultBaseURL is the default Cohere API base URL
-	DefaultBaseURL = "https://api.cohere.ai/v1"
+	// DefaultBaseURL is the default Cohere API base URL (TS createCohere
+	// baseURL). Endpoint paths (/chat, /embed, /rerank) are relative to it.
+	DefaultBaseURL = "https://api.cohere.com/v2"
 )
 
 // Provider implements the provider.Provider interface for Cohere
@@ -24,7 +28,9 @@ type Config struct {
 	// APIKey is the Cohere API key
 	APIKey string
 
-	// BaseURL is the base URL for the Cohere API (default: https://api.cohere.ai/v1)
+	// BaseURL is the base URL for the Cohere API including the version
+	// (default: https://api.cohere.com/v2). A value without a version
+	// segment, such as "https://api.cohere.com" or a proxy path, gets "/v2" appended
 	BaseURL string
 
 	// Headers are custom HTTP headers to include in requests.
@@ -33,10 +39,7 @@ type Config struct {
 
 // New creates a new Cohere provider with the given configuration
 func New(cfg Config) *Provider {
-	baseURL := cfg.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultBaseURL
-	}
+	baseURL := normalizeBaseURL(cfg.BaseURL)
 
 	// Create HTTP client with default headers
 	headers := map[string]string{
@@ -122,3 +125,24 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 func (p *Provider) Client() *http.Client {
 	return p.client
 }
+
+// normalizeBaseURL applies the default and keeps custom base URLs working:
+// v0.5.2 appended "/v2/chat" to the configured base, so a base that does not
+// already end in a version segment (a host, or a proxy path) meant "<base>/v2".
+func normalizeBaseURL(base string) string {
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return DefaultBaseURL
+	}
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return base
+	}
+	last := u.Path[strings.LastIndex(u.Path, "/")+1:]
+	if versionSegment.MatchString(last) {
+		return base
+	}
+	return base + "/v2"
+}
+
+var versionSegment = regexp.MustCompile(`^v[0-9]+$`)

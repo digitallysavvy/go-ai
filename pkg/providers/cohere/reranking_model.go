@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -112,8 +112,8 @@ func (m *RerankingModel) handleError(err error) error {
 type cohereRerankResponse struct {
 	ID      string `json:"id"`
 	Results []struct {
-		Index          int     `json:"index"`
-		RelevanceScore float64 `json:"relevance_score"`
+		Index          int         `json:"index"`
+		RelevanceScore float64     `json:"relevance_score"`
 		Document       interface{} `json:"document,omitempty"`
 	} `json:"results"`
 	Meta *struct {

@@ -52,13 +52,17 @@ func New(cfg Config) *Provider {
 	}
 
 	openaiProvider := openai.New(openai.Config{
-		APIKey:  cfg.APIKey,
-		BaseURL: baseURL,
-		Headers: cfg.Headers,
+		APIKey: cfg.APIKey,
+		// Never fall back to OPENAI_API_KEY (it would be sent to DeepInfra).
+		APIKeyEnvVar: "DEEPINFRA_API_KEY",
+		BaseURL:      baseURL,
+		Headers:      cfg.Headers,
 		// TS DeepInfraChatLanguageModel extends OpenAICompatibleChatLanguageModel,
 		// which supports video_url content parts (7dd9ec320c).
 		AllowVideo:    true,
 		UserAgentName: "deepinfra",
+		// TS sends stream_options only when includeUsage is set (it is not).
+		OmitStreamUsage: true,
 	})
 
 	return &Provider{

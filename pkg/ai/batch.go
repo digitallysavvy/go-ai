@@ -12,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -671,7 +672,7 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 			PresencePenalty:  t.PresencePenalty,
 			StopSequences:    t.StopSequences,
 			Seed:             t.Seed,
-			Tools:            resolvedTools,
+			Tools:            toolutil.ResolveToolSchemas(resolvedTools),
 			ToolChoice:       t.ToolChoice,
 			Reasoning:        t.Reasoning,
 			ResponseFormat:   t.ResponseFormat,

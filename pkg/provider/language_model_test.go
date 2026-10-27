@@ -22,12 +22,12 @@ type mockLanguageModel struct {
 	streamCalls   []*GenerateOptions
 }
 
-func (m *mockLanguageModel) SpecificationVersion() string { return "v3" }
-func (m *mockLanguageModel) Provider() string              { return m.providerName }
-func (m *mockLanguageModel) ModelID() string               { return m.modelName }
-func (m *mockLanguageModel) SupportsTools() bool          { return m.toolSupport }
+func (m *mockLanguageModel) SpecificationVersion() string   { return "v3" }
+func (m *mockLanguageModel) Provider() string               { return m.providerName }
+func (m *mockLanguageModel) ModelID() string                { return m.modelName }
+func (m *mockLanguageModel) SupportsTools() bool            { return m.toolSupport }
 func (m *mockLanguageModel) SupportsStructuredOutput() bool { return m.structuredSupport }
-func (m *mockLanguageModel) SupportsImageInput() bool     { return m.imageSupport }
+func (m *mockLanguageModel) SupportsImageInput() bool       { return m.imageSupport }
 
 func (m *mockLanguageModel) DoGenerate(ctx context.Context, opts *GenerateOptions) (*types.GenerateResult, error) {
 	m.mu.Lock()
@@ -242,7 +242,7 @@ func TestLanguageModel_GenerateOptions(t *testing.T) {
 		{
 			name: "with temperature",
 			options: &GenerateOptions{
-				Prompt:     types.Prompt{Text: "Test"},
+				Prompt:      types.Prompt{Text: "Test"},
 				Temperature: floatPtr(0.7),
 			},
 			wantErr: false,
@@ -250,7 +250,7 @@ func TestLanguageModel_GenerateOptions(t *testing.T) {
 		{
 			name: "with max tokens",
 			options: &GenerateOptions{
-				Prompt:   types.Prompt{Text: "Test"},
+				Prompt:    types.Prompt{Text: "Test"},
 				MaxTokens: intPtr(100),
 			},
 			wantErr: false,
@@ -338,9 +338,9 @@ func TestChunkType_Constants(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
+		name      string
 		chunkType ChunkType
-		want     string
+		want      string
 	}{
 		{"text", ChunkTypeText, "text"},
 		{"tool-call", ChunkTypeToolCall, "tool-call"},
@@ -424,4 +424,3 @@ func TestImageModelSupportsFileAndMaskInputs(t *testing.T) {
 		t.Errorf("capable model with unset capability SupportsFileInputs() = %v, want nil", *got)
 	}
 }
-

@@ -133,8 +133,18 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 	if opts.ResponseFormat != nil {
-		body["response_format"] = map[string]interface{}{
-			"type": opts.ResponseFormat.Type,
+		if providerutils.IsJSONResponseFormat(opts.ResponseFormat) {
+			// "json" (TS responseFormat.type) is not a wire value: map it to
+			// json_schema when a schema is present, else json_object.
+			format, _ := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+				StructuredOutputs: true,
+				StrictJSONSchema:  true,
+			})
+			body["response_format"] = format
+		} else {
+			body["response_format"] = map[string]interface{}{
+				"type": opts.ResponseFormat.Type,
+			}
 		}
 	}
 	return body

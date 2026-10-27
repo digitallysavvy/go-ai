@@ -228,9 +228,9 @@ func TestTracker_ExperimentIDTakesPrecedence(t *testing.T) {
 
 func TestURLParsing(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		trackingURI string
-		wantErr    bool
+		wantErr     bool
 	}{
 		{
 			name:        "localhost",

@@ -53,6 +53,10 @@ type Provider struct {
 	// OAuth-authenticated *stdhttp.Client as client/endpointClient. nil in
 	// Express Mode (API key auth), which Chirp speech models reject outright.
 	cloudTTSClient *http.Client
+
+	// liveWebSocketOrigin replaces the Gemini Live transcription WebSocket
+	// origin ("wss://{vertexHost}"); tests only.
+	liveWebSocketOrigin string
 }
 
 // defaultCloudTTSSynthesizeURL is the (non-regional) Cloud Text-to-Speech

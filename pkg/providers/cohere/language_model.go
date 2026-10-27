@@ -68,7 +68,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, m.handleError(err)
 	}
 	var response cohereV2Response
-	err = m.provider.client.PostJSON(ctx, "/v2/chat", reqBody, &response)
+	err = m.provider.client.PostJSON(ctx, "/chat", reqBody, &response)
 	if err != nil {
 		return nil, m.handleError(err)
 	}
@@ -89,7 +89,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	reqBody["stream"] = true
 	httpResp, err := m.provider.client.DoStream(ctx, internalhttp.Request{
 		Method: http.MethodPost,
-		Path:   "/v2/chat",
+		Path:   "/chat",
 		Body:   reqBody,
 	})
 	if err != nil {

@@ -25,6 +25,7 @@ type AWSSigner struct {
 	secretAccessKey string
 	sessionToken    string
 	region          string
+	service         string
 }
 
 // NewAWSSigner creates a new AWS signer
@@ -34,7 +35,19 @@ func NewAWSSigner(accessKeyID, secretAccessKey, sessionToken, region string) *AW
 		secretAccessKey: secretAccessKey,
 		sessionToken:    sessionToken,
 		region:          region,
+		service:         serviceName,
 	}
+}
+
+// NewAWSSignerForService creates a signer whose SigV4 credential scope uses
+// service instead of the default "bedrock" (TS createSigV4FetchFunction's
+// `service` argument; Bedrock Mantle signs as "bedrock-mantle").
+func NewAWSSignerForService(accessKeyID, secretAccessKey, sessionToken, region, service string) *AWSSigner {
+	s := NewAWSSigner(accessKeyID, secretAccessKey, sessionToken, region)
+	if service != "" {
+		s.service = service
+	}
+	return s
 }
 
 // SignRequest signs an HTTP request with AWS Signature V4
@@ -67,25 +80,22 @@ func (s *AWSSigner) SignRequest(req *http.Request, payload []byte) error {
 }
 
 func (s *AWSSigner) buildCanonicalRequest(req *http.Request, payload []byte) string {
-	// Canonical URI. When the caller has set req.URL.Opaque (used by the
-	// Converse endpoints to preserve a literal, already-percent-encoded model
-	// ID/ARN on the wire — see converseURL/jsEncodeURIComponent), AWS SigV4
-	// requires the canonical URI to be that same wire path *encoded a second
-	// time* (RFC 3986 unreserved chars pass through, '/' stays a delimiter,
-	// everything else — including the '%' from the first encoding pass — is
-	// re-escaped). This is the standard SigV4 "double URI-encode" rule used by
-	// every AWS service except S3. Requests that don't set Opaque keep the
-	// prior, single-encoded behavior to avoid changing already-correct
-	// signing for the embeddings/image/rerank endpoints.
-	var canonicalURI string
-	if req.URL.Opaque != "" {
-		canonicalURI = awsDoubleEncodeURIPath(req.URL.Opaque)
-	} else {
-		canonicalURI = req.URL.Path
-		if canonicalURI == "" {
-			canonicalURI = "/"
-		}
+	// Canonical URI. AWS SigV4 (every service except S3) canonicalizes the
+	// path by URI-encoding the path as sent a second time: RFC 3986 unreserved
+	// characters pass through, '/' stays a delimiter, everything else --
+	// including the '%' of an existing escape -- is re-escaped.
+	// The signature must cover the path exactly as it is sent: the Opaque
+	// form when set, otherwise the escaped path (a literal ':' in a model ID
+	// such as amazon.titan-embed-text-v2:0 is sent as-is, and the service
+	// canonicalizes it to %3A; signing the decoded path would be rejected).
+	wirePath := req.URL.Opaque
+	if wirePath == "" {
+		wirePath = req.URL.EscapedPath()
 	}
+	if wirePath == "" {
+		wirePath = "/"
+	}
+	canonicalURI := awsDoubleEncodeURIPath(wirePath)
 
 	// Canonical query string
 	canonicalQueryString := s.buildCanonicalQueryString(req)
@@ -130,6 +140,9 @@ func (s *AWSSigner) buildCanonicalQueryString(req *http.Request) string {
 func (s *AWSSigner) buildCanonicalHeaders(req *http.Request) (string, string) {
 	headers := make(map[string]string)
 	for k, v := range req.Header {
+		if !isSignableHeader(v) {
+			continue
+		}
 		lowerKey := strings.ToLower(k)
 		headers[lowerKey] = strings.TrimSpace(v[0])
 	}
@@ -171,14 +184,14 @@ func (s *AWSSigner) getCredentialScope(t time.Time) string {
 	return fmt.Sprintf("%s/%s/%s/%s",
 		t.Format(shortTimeFormat),
 		s.region,
-		serviceName,
+		s.service,
 		requestType)
 }
 
 func (s *AWSSigner) calculateSignature(t time.Time, stringToSign string) string {
 	kDate := s.hmac([]byte("AWS4"+s.secretAccessKey), []byte(t.Format(shortTimeFormat)))
 	kRegion := s.hmac(kDate, []byte(s.region))
-	kService := s.hmac(kRegion, []byte(serviceName))
+	kService := s.hmac(kRegion, []byte(s.service))
 	kSigning := s.hmac(kService, []byte(requestType))
 	signature := s.hmac(kSigning, []byte(stringToSign))
 
@@ -196,7 +209,10 @@ func (s *AWSSigner) buildAuthorizationHeader(t time.Time, credentialScope string
 
 	// Get signed headers
 	keys := make([]string, 0, len(headers))
-	for k := range headers {
+	for k, v := range headers {
+		if !isSignableHeader(v) {
+			continue
+		}
 		keys = append(keys, strings.ToLower(k))
 	}
 	sort.Strings(keys)
@@ -268,4 +284,24 @@ func isAWSURIUnreservedByte(c byte) bool {
 		return true
 	}
 	return false
+}
+
+// isSignableHeader reports whether a header can take part in SigV4 signing.
+// Headers with non-ASCII values (for example a user-agent or metadata value
+// containing a non-Latin character) are neither signed nor listed in
+// SignedHeaders, but are still sent unsigned. Matches TS #22265.
+func isSignableHeader(values []string) bool {
+	if len(values) == 0 {
+		return true
+	}
+	return isASCII(values[0])
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

@@ -74,8 +74,8 @@ func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedHeaders["user-agent"] != "ai/0.5.0" {
-		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "ai/0.5.3" {
+		t.Fatalf("user-agent = %q, want ai/0.5.3", capturedHeaders["user-agent"])
 	}
 
 	// Existing user-agent values are kept as a prefix, not replaced.
@@ -88,8 +88,8 @@ func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.0" {
-		t.Fatalf("user-agent = %q, want custom-agent ai/0.5.0", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.3" {
+		t.Fatalf("user-agent = %q, want custom-agent ai/0.5.3", capturedHeaders["user-agent"])
 	}
 }
 

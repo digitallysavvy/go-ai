@@ -222,7 +222,12 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(op.SubmitURL, nil)
-	downloadOpts.Headers = opts.Headers
+	// The status URL comes from the queue response body: the provider
+	// credentials (and call headers) are only sent when it is same-origin
+	// with the submit URL (TS credentialedOrigin: submitUrl).
+	if fileutil.IsSameOrigin(op.ResponseURL, op.SubmitURL) {
+		downloadOpts.Headers = internalhttp.MergeHeaders(m.prov.absClient.Headers(), opts.Headers)
+	}
 
 	var statusResp falVideoStatusResponse
 	result, err := fileutil.PollJSON(ctx, op.ResponseURL, downloadOpts, &statusResp)

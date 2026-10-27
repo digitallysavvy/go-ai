@@ -288,8 +288,8 @@ func TestRemoveTrailingCommas(t *testing.T) {
 	}{
 		{`{"a": 1,}`, `{"a": 1}`},
 		{`["a",]`, `["a"]`},
-		{`{"a": 1, }`, `{"a": 1}`},   // Regex collapses ", }" to "}"
-		{`["a", ]`, `["a"]`},          // Regex collapses ", ]" to "]"
+		{`{"a": 1, }`, `{"a": 1}`}, // Regex collapses ", }" to "}"
+		{`["a", ]`, `["a"]`},       // Regex collapses ", ]" to "]"
 	}
 
 	for _, tt := range tests {

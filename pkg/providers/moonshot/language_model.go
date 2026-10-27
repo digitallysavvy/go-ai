@@ -520,8 +520,9 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 		result.ToolCalls = make([]types.ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
 			var args map[string]interface{}
-			if len(tc.Function.Arguments) > 0 {
-				_ = json.Unmarshal(tc.Function.Arguments, &args)
+			argText := toolArgumentsString(tc.Function.Arguments)
+			if argText != "" {
+				_ = json.Unmarshal([]byte(argText), &args)
 			}
 			if args == nil {
 				args = map[string]interface{}{}
@@ -534,7 +535,7 @@ func (m *LanguageModel) convertResponse(resp moonshotResponse) (*types.GenerateR
 				ID:           id,
 				ToolName:     tc.Function.Name,
 				Arguments:    args,
-				RawArguments: string(tc.Function.Arguments),
+				RawArguments: argText,
 			}
 		}
 	}
@@ -988,4 +989,18 @@ func (s *moonshotStream) Err() error {
 		return nil
 	}
 	return s.err
+}
+
+// toolArgumentsString returns a tool call's arguments as JSON text. The wire
+// value is normally a JSON string holding JSON text (OpenAI style); some hosts
+// send the object itself, whose text is returned as is.
+func toolArgumentsString(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
 }

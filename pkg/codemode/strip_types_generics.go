@@ -107,6 +107,9 @@ var angleDisallowedAtDepth0 = map[string]bool{
 // matching ">" (or the corresponding share of a merged ">>"/">>>" token)
 // and true on success, or (i, false) if this doesn't look like a type
 // argument list.
+// maxAngleDepth bounds the `<` nesting consumeAngleTypeArgsBalanced follows.
+const maxAngleDepth = 64
+
 func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 	if tokens[i].kind != "punct" || tokens[i].text != "<" {
 		return i, false
@@ -126,6 +129,12 @@ func consumeAngleTypeArgsBalanced(tokens []tsToken, i int) (int, bool) {
 		switch t.text {
 		case "<":
 			depth++
+			// Type arguments do not nest this deep; a run of comparisons
+			// (`a<b, c<d, ...`) would otherwise scan to the end of the
+			// source from every `<`.
+			if depth > maxAngleDepth {
+				return i, false
+			}
 			contentSeen = true
 			j++
 		case ">":

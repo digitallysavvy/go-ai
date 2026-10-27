@@ -609,7 +609,9 @@ func TestToolSearch_Description(t *testing.T) {
 		}
 	}
 
-	noop := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) { return nil, nil }
+	noop := func(ctx context.Context, query string, tools []ToolSearchCandidate) ([]string, error) {
+		return nil, nil
+	}
 	custom := ToolSearch(ToolSearchConfig{Search: noop, MaxResults: 3}).Description
 	if !strings.Contains(custom, "Search for tools matching a query.") {
 		t.Fatalf("custom search description = %q, want custom phrasing", custom)

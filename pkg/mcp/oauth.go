@@ -469,7 +469,7 @@ func validateOAuthProtectedResourceMetadata(metadata OAuthProtectedResourceMetad
 		return fmt.Errorf("OAuth protected resource metadata resource must be a valid URL")
 	}
 	for _, server := range metadata.AuthorizationServers {
-		if !isAbsoluteOAuthURL(server) {
+		if !isSafeOAuthURL(server) {
 			return fmt.Errorf("OAuth protected resource metadata authorization server must be a valid URL")
 		}
 	}
@@ -483,20 +483,20 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 	if metadata.AuthorizationEndpoint == "" {
 		return fmt.Errorf("OAuth authorization server metadata missing required authorization_endpoint")
 	}
-	if !isAbsoluteOAuthURL(metadata.AuthorizationEndpoint) {
+	if !isSafeOAuthURL(metadata.AuthorizationEndpoint) {
 		return fmt.Errorf("OAuth authorization server metadata authorization_endpoint must be a valid URL")
 	}
 	if metadata.TokenEndpoint == "" {
 		return fmt.Errorf("OAuth authorization server metadata missing required token_endpoint")
 	}
-	if !isAbsoluteOAuthURL(metadata.TokenEndpoint) {
+	if !isSafeOAuthURL(metadata.TokenEndpoint) {
 		return fmt.Errorf("OAuth authorization server metadata token_endpoint must be a valid URL")
 	}
 	if len(metadata.ResponseTypesSupported) == 0 {
 		return fmt.Errorf("OAuth authorization server metadata missing required response_types_supported")
 	}
 	if metadata.RegistrationEndpoint != "" {
-		if !isAbsoluteOAuthURL(metadata.RegistrationEndpoint) {
+		if !isSafeOAuthURL(metadata.RegistrationEndpoint) {
 			return fmt.Errorf("OAuth authorization server metadata registration_endpoint must be a valid URL")
 		}
 	}
@@ -504,7 +504,7 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 		if metadata.JWKSURI == "" {
 			return fmt.Errorf("OpenID provider metadata missing required jwks_uri")
 		}
-		if !isAbsoluteOAuthURL(metadata.JWKSURI) {
+		if !isSafeOAuthURL(metadata.JWKSURI) {
 			return fmt.Errorf("OpenID provider metadata jwks_uri must be a valid URL")
 		}
 		if len(metadata.SubjectTypesSupported) == 0 {
@@ -520,4 +520,22 @@ func validateOAuthAuthorizationServerMetadata(metadata OAuthAuthorizationServerM
 func isAbsoluteOAuthURL(raw string) bool {
 	parsed, err := url.Parse(raw)
 	return err == nil && parsed.Scheme != "" && parsed.Host != ""
+}
+
+// isSafeOAuthURL is TS SafeUrlSchema: a parseable absolute URL that does not
+// use the javascript:, data: or vbscript: scheme (javascript://host/%0a... has
+// a host and would otherwise pass).
+func isSafeOAuthURL(raw string) bool {
+	if !isAbsoluteOAuthURL(raw) {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "javascript", "data", "vbscript":
+		return false
+	}
+	return true
 }

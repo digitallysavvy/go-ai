@@ -158,7 +158,7 @@ func TestEmbedOnStartHeadersAndMaxRetries(t *testing.T) {
 	if e.Headers["x-custom"] != "value" {
 		t.Errorf("Headers[x-custom] = %q, want %q", e.Headers["x-custom"], "value")
 	}
-	if !strings.Contains(e.Headers["user-agent"], "ai/0.5.0") {
+	if !strings.Contains(e.Headers["user-agent"], "ai/0.5.3") {
 		t.Errorf("Headers[user-agent] = %q, want it to contain ai/<version>", e.Headers["user-agent"])
 	}
 }

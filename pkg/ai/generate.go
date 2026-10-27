@@ -14,6 +14,7 @@ import (
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
+	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
@@ -37,7 +38,7 @@ func abortReason(ctx context.Context, fallback error) error {
 }
 
 func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
-	if model == nil || model.Provider() != "gateway" {
+	if model == nil {
 		return 0
 	}
 	if maxRetries == nil {
@@ -46,9 +47,9 @@ func gatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 	return *maxRetries
 }
 
-// GatewayMaxRetries is the exported form of gatewayMaxRetries: 0 unless model
-// is an AI Gateway model, in which case it is maxRetries (default 2 when
-// nil). Exported so other packages (e.g. pkg/agent) can share this logic
+// GatewayMaxRetries is the exported form of gatewayMaxRetries: the retry
+// limit for a model call, maxRetries (default 2 when nil, as TS), or 0 for a
+// nil model. The name is historical; it applies to every provider. Exported so other packages (e.g. pkg/agent) can share this logic
 // instead of maintaining their own copy.
 func GatewayMaxRetries(model provider.LanguageModel, maxRetries *int) int {
 	return gatewayMaxRetries(model, maxRetries)
@@ -95,8 +96,25 @@ func isGatewayCallRetryable(err error) bool {
 	}
 	var providerErr *providererrors.ProviderError
 	if errors.As(err, &providerErr) {
+		if providerErr.Retryable != nil {
+			return *providerErr.Retryable
+		}
 		status := providerErr.StatusCode
+		if status == 0 && providerErr.Cause != nil {
+			// A provider wrapped a cause that classifies itself (e.g. a
+			// failure to connect to the API).
+			var retryable interface{ IsRetryable() bool }
+			if errors.As(providerErr.Cause, &retryable) {
+				return retryable.IsRetryable()
+			}
+		}
 		return status == 408 || status == 409 || status == 429 || status >= 500
+	}
+	// Errors that classify themselves (e.g. a failure to connect to the API,
+	// which TS treats as a retryable APICallError).
+	var retryable interface{ IsRetryable() bool }
+	if errors.As(err, &retryable) {
+		return retryable.IsRetryable()
 	}
 	return false
 }
@@ -326,8 +344,10 @@ type GenerateTextOptions struct {
 	//   }
 	ProviderOptions map[string]interface{}
 
-	// MaxRetries controls transient provider call retries. For Gateway models,
-	// nil uses the TypeScript SDK default of 2 retries; set to 0 to disable.
+	// MaxRetries controls transient provider call retries (HTTP 408, 409, 429
+	// and 5xx, or errors a provider marks retryable). nil uses the TypeScript
+	// SDK default of 2 retries with exponential backoff starting at 2s; set to
+	// 0 to disable.
 	MaxRetries *int
 
 	// ExperimentalSandbox is passed through to tool execution. PrepareStep can
@@ -982,6 +1002,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
+		stepActiveTools := opts.ActiveTools
 		stepToolChoice := opts.ToolChoice
 		stepToolOrder := opts.ToolOrder
 		stepProviderOptions := opts.ProviderOptions
@@ -1054,9 +1075,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if prepared.Messages != nil {
 				stepMessages = prepared.Messages
 			}
-			if prepared.Tools != nil {
-				stepTools = prepared.Tools
-			}
+			stepTools, stepActiveTools = applyPreparedTools(opts.Tools, stepTools, stepActiveTools, prepared)
 			if prepared.ToolChoice.Type != "" {
 				stepToolChoice = prepared.ToolChoice
 			}
@@ -1148,7 +1167,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Messages:            stepMessages,
 			Tools:               stepTools,
 			ToolChoice:          stepToolChoice,
-			ActiveTools:         opts.ActiveTools,
+			ActiveTools:         stepActiveTools,
 			ToolOrder:           stepToolOrder,
 			ProviderOptions:     stepProviderOptions,
 			Steps:               result.Steps,
@@ -1193,7 +1212,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			StopSequences:         stepStopSequences,
 			Seed:                  stepSeed,
 			Headers:               opts.Headers,
-			Tools:                 stepTools,
+			Tools:                 toolutil.ResolveToolSchemas(stepTools),
 			ToolChoice:            stepToolChoice,
 			RuntimeContext:        runtimeContext,
 			ToolsContext:          toolsContext,
@@ -1457,9 +1476,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				toolExecutionMs:     map[string]int64{},
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
-			toolResults, err := executeTools(ctx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
+			// Tools run inside the step context: the TS step timeout aborts the
+			// whole step (mergedAbortSignal also feeds executeTools).
+			toolResults, err := executeTools(stepCtx, genResult.ToolCalls, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks)
 			if err != nil {
-				if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+				if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+					err = wrapTimeoutError(TimeoutReasonStep, err)
+				} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 				var conversionErr *toolResultModelOutputError
@@ -1727,8 +1750,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// tool with SupportsDeferredResults has not yet delivered its result.
 		hasLocalToolCalls := false
 		for _, call := range genResult.ToolCalls {
-			tool := toolsByName[call.ToolName]
-			if tool != nil && !tool.ProviderExecuted {
+			if isClientToolCall(call, toolsByName) {
 				hasLocalToolCalls = true
 				break
 			}
@@ -1742,6 +1764,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// left unexecuted because of an unsafe finish reason stop the loop.
 		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, stepResult.ToolResults) {
 			break
+		}
+
+		// TS generate-text.ts: the step timeout aborts the shared signal for
+		// good, so the next iteration's throwIfAborted() rejects with the
+		// step TimeoutError (a tool that swallowed the abort does not
+		// prevent it).
+		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+			return nil, wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 		}
 	}
 
@@ -1938,6 +1968,18 @@ func (e *toolResultModelOutputError) Unwrap() error {
 	return e.err
 }
 
+// isClientToolCall reports whether a tool call is one the SDK must answer
+// itself (TS: toolCall.providerExecuted !== true). That includes calls to
+// tools that do not exist or whose input was invalid: they are answered with
+// an error result and the loop continues so the model can recover.
+func isClientToolCall(call types.ToolCall, toolsByName map[string]*types.Tool) bool {
+	if call.ProviderExecuted {
+		return false
+	}
+	tool := toolsByName[call.ToolName]
+	return tool == nil || !tool.ProviderExecuted
+}
+
 // hasUnresolvedLocalToolCalls reports whether a locally executed tool call
 // of the step has neither a result nor an approval outcome.
 func hasUnresolvedLocalToolCalls(calls []types.ToolCall, toolsByName map[string]*types.Tool, results []types.ToolResult) bool {
@@ -2003,6 +2045,25 @@ func RefineToolCalls(ctx context.Context, calls []types.ToolCall, tools []types.
 		}
 	}
 	return refined, nil
+}
+
+// applyPreparedTools applies the tool-related overrides a PrepareStep callback
+// returned. TS PrepareStepResult.activeTools restricts the step to those
+// tools (filterActiveTools on the full tool set); Go's additional Tools
+// override, when set, replaces the base the filter runs on.
+func applyPreparedTools(callTools, current []types.Tool, currentActive []string, prepared PrepareStepOptions) ([]types.Tool, []string) {
+	tools := current
+	if prepared.Tools != nil {
+		tools = prepared.Tools
+	}
+	if prepared.ActiveTools == nil {
+		return tools, currentActive
+	}
+	base := callTools
+	if prepared.Tools != nil {
+		base = prepared.Tools
+	}
+	return FilterActiveTools(base, prepared.ActiveTools), prepared.ActiveTools
 }
 
 // executeTools executes a list of tool calls

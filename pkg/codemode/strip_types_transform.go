@@ -384,8 +384,11 @@ func endsExpression(out []tsToken) bool {
 		case "number", "string", "regex":
 			return true
 		case "punct":
+			// A `!` left in out is always a prefix NOT (a dropped non-null
+			// assertion never reaches out), so it does not end an
+			// expression: `!!x` keeps both.
 			switch t.text {
-			case ")", "]", "}", "!":
+			case ")", "]", "}":
 				return true
 			}
 			return false
