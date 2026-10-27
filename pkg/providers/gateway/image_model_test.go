@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ func TestGatewayImageModelMetadataAndHeaders(t *testing.T) {
 	if m.SpecificationVersion() != "v4" || m.Provider() != "gateway" || m.ModelID() != "openai/gpt-image-1" {
 		t.Fatalf("metadata mismatch")
 	}
-	if m.MaxImagesPerCall() != 9007199254740991 {
+	if int64(m.MaxImagesPerCall()) != min(int64(9007199254740991), int64(math.MaxInt)) {
 		t.Fatalf("MaxImagesPerCall mismatch")
 	}
 	headers := m.getModelConfigHeaders()

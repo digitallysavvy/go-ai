@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,8 +67,9 @@ func TestVideoModel_MaxVideosPerCall(t *testing.T) {
 		t.Error("MaxVideosPerCall() returned nil")
 		return
 	}
-	if *maxVideos != 9007199254740991 {
-		t.Errorf("MaxVideosPerCall() = %v, want %v", *maxVideos, 9007199254740991)
+	want := min(int64(9007199254740991), int64(math.MaxInt))
+	if int64(*maxVideos) != want {
+		t.Errorf("MaxVideosPerCall() = %v, want %v", *maxVideos, want)
 	}
 }
 

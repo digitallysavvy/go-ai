@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -52,7 +53,8 @@ func (m *VideoModel) ModelID() string {
 // MaxVideosPerCall returns the maximum videos per call
 // Gateway sets a very large number to prevent client-side splitting
 func (m *VideoModel) MaxVideosPerCall() *int {
-	maxVideos := 9007199254740991 // JavaScript Number.MAX_SAFE_INTEGER
+	// JavaScript Number.MAX_SAFE_INTEGER, clamped so 32-bit builds compile.
+	maxVideos := min(9007199254740991, math.MaxInt)
 	return &maxVideos
 }
 

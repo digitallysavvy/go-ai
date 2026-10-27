@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"math"
 	"net/http"
 	"time"
 
@@ -43,7 +44,8 @@ func (m *ImageModel) ModelID() string {
 
 // MaxImagesPerCall returns the maximum number of images accepted in one request.
 func (m *ImageModel) MaxImagesPerCall() int {
-	return 9007199254740991
+	// JavaScript Number.MAX_SAFE_INTEGER, clamped so 32-bit builds compile.
+	return min(9007199254740991, math.MaxInt)
 }
 
 // DoGenerate generates an image based on the given options
