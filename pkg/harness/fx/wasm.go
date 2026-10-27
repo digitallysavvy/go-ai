@@ -21,7 +21,8 @@ const LibfxWasmSHA256 = libfx.WasmSHA256
 //
 // Precedence: Bytes, Path, a cache hit, URL, then the default download.
 // Empty fields fall back to the GO_AI_FX_WASM_PATH, GO_AI_FX_WASM_URL,
-// GO_AI_FX_CACHE_DIR and GO_AI_FX_OFFLINE environment variables.
+// GO_AI_FX_CACHE_DIR and GO_AI_FX_OFFLINE environment variables; the two
+// source variables apply only when none of Bytes, Path and URL is set.
 //
 // The libfx runtime is a preview: CreateFx does not use it yet, and the
 // sandbox `fx acp` adapter stays the default.

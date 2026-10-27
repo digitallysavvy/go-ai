@@ -83,13 +83,15 @@ type Source struct {
 	tarballURL, mirrorURL string
 }
 
-// withEnv fills empty fields from the GO_AI_FX_* environment variables.
+// withEnv fills empty fields from the GO_AI_FX_* environment variables. A
+// source set in code (Bytes, Path or URL) is never overridden by an
+// environment source.
 func (s Source) withEnv() Source {
-	if s.Path == "" && len(s.Bytes) == 0 {
+	if s.Path == "" && len(s.Bytes) == 0 && s.URL == "" {
 		s.Path = os.Getenv(EnvWasmPath)
-	}
-	if s.URL == "" {
-		s.URL = os.Getenv(EnvWasmURL)
+		if s.Path == "" {
+			s.URL = os.Getenv(EnvWasmURL)
+		}
 	}
 	if s.CacheDir == "" {
 		s.CacheDir = os.Getenv(EnvCacheDir)

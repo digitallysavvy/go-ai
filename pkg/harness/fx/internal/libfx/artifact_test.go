@@ -290,3 +290,22 @@ func TestExtractWasmBoundsDecompression(t *testing.T) {
 		t.Fatalf("within the cap: %q, %v", got, err)
 	}
 }
+
+// An explicit URL is not overridden by GO_AI_FX_WASM_PATH, which would
+// otherwise win by precedence (and, with AllowUnpinned, skip the pin).
+func TestResolveEnvDoesNotOverrideExplicitSource(t *testing.T) {
+	clearFxEnv(t)
+	envModule := filepath.Join(t.TempDir(), "env.wasm")
+	if err := os.WriteFile(envModule, []byte("\x00asm\x01\x00\x00\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvWasmPath, envModule)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("\x00asm\x01\x00\x00\x00\x00"))
+	}))
+	defer srv.Close()
+	mod, err := Resolve(context.Background(), Source{URL: srv.URL + "/x.wasm", AllowUnpinned: true, CacheDir: t.TempDir(), download: loopback})
+	if err != nil || mod.Origin != "url" {
+		t.Fatalf("explicit URL lost to the env path: %+v, %v", mod, err)
+	}
+}
