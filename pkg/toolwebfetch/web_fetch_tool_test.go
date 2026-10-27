@@ -739,3 +739,18 @@ func TestUserMessageURLEndsAtJavaScriptWhitespace(t *testing.T) {
 		doc(t, run(t, tool, "https://example.com/docs", 0, msg))
 	}
 }
+
+// The host is decoded once, as WHATWG does: a double-encoded private host
+// ("%256c" -> "%6c") is never fetched, as the initial URL or as a redirect.
+func TestDoubleEncodedHostIsNotFetched(t *testing.T) {
+	const target = "http://%256c%256f%2563%2561%256c%2568%256f%2573%2574/"
+	ft := fixed(200, "ok", "Content-Type", "text/plain")
+	if out := run(t, newTool(t, Options{Transport: ft}), target, 0); ft.count() != 0 {
+		t.Fatalf("initial: requests = %d, out = %v", ft.count(), out)
+	}
+	rt := fixed(307, "", "Location", target)
+	run(t, newTool(t, Options{Transport: rt}), "https://example.com/", 0)
+	if rt.count() != 1 {
+		t.Fatalf("redirect: requests = %d, want 1 (the target must not be requested)", rt.count())
+	}
+}
