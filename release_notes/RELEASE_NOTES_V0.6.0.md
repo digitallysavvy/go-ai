@@ -300,6 +300,11 @@ Each item has before/after code in the
   fails with `*providererrors.InvalidArgumentError`.
   **Migration:** pass a positive integer and `base64_int8` or
   `base64_binary`.
+- **A legacy `ToolLoopAgent` step timeout is `context.DeadlineExceeded`**,
+  not `context.Canceled`, and a `PrepareCall` `Timeout` override now applies
+  to the step, as in TS.
+  **Migration:** check `errors.Is(err, context.DeadlineExceeded)` for step
+  timeouts.
 
 ---
 
@@ -309,6 +314,18 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Core
 
+- **`StreamObject` keeps reading after a provider error part**, as TS. The
+  first error part is the call's error (finish reason `error`), `OnError`
+  fires once per error part, and the call's telemetry ends through `OnEnd`
+  rather than `OnError`. `ObjectOnStartEvent.Schema` and `ai.schema` carry
+  the wrapper schema the model is asked for in array and enum mode.
+- **The legacy `ToolLoopAgent` ends its root span with the settings it
+  started it with**, so a `PrepareCall` telemetry override no longer leaks
+  it, and opens one when an override turns telemetry on.
+- **Telemetry: the GenAI integration records no tool result for a tool
+  without one, and `EnrichSpan` values are sanitized by Go kind** (empty
+  arrays and byte slices dropped, pointers and named types read as their
+  value).
 - **Telemetry ignores events for calls it never saw start.** As in TS, the
   OpenTelemetry integrations create call state only at an operation start.
   An event for an unknown call id no longer creates state or falls back to
@@ -566,6 +583,8 @@ Notable ones:
   Mistral accepts a call-level `Language`.
 - Streaming speech "closed before completion" errors omit the WebSocket
   close code and reason.
+- When a `StreamObject` stream itself fails (`Next()` returns an error), Go
+  still runs the end callbacks and ends telemetry; TS skips them.
 - Google batch `Cursor` and `WebhookURL`, and the response `nextPageToken`,
   treat `""` as absent; Perplexity usage counts such as `12.5` are truncated.
 

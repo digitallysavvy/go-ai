@@ -48,6 +48,11 @@ for chunk := range textResult.Chunks() {
 }
 ```
 
+When the stream itself fails (`Next()` returns an error, rather than the
+provider sending an error part), Go still calls `OnStepEnd` and `OnEnd` with
+the error and ends the call's telemetry. TypeScript never runs its flush
+handler in that case, so it calls neither and leaves the root span open.
+
 ## Video generation webhook suspension in workflows
 
 TypeScript's `experimental_generateVideo` can durably suspend a Vercel

@@ -237,3 +237,16 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   with `*providererrors.InvalidArgumentError`. v0.5 truncated a fractional
   `dimensions` and ignored or sent other values. Pass a positive integer and
   a supported format.
+- **A legacy `ToolLoopAgent` step timeout is `context.DeadlineExceeded`.**
+  The per-step deadline (`Timeout.PerStep`, or a `PrepareCall` `Timeout`
+  override, which now applies as in TS) reaches the model call as a
+  deadline. A timed-out step fails with an error wrapping
+  `context.DeadlineExceeded`; v0.5 surfaced `context.Canceled`. Update
+  timeout checks:
+
+  ```go
+  // v0.5
+  if errors.Is(err, context.Canceled) { /* step timed out */ }
+  // v0.6
+  if errors.Is(err, context.DeadlineExceeded) { /* step timed out */ }
+  ```
