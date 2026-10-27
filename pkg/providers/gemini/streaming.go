@@ -73,6 +73,10 @@ type stream struct {
 	// top of the stack (TS: `activeStreamingToolCalls[length - 1]`).
 	activeStreamingToolCalls []*activeStreamingToolCall
 	drainedOnDone            bool
+	// deferredErr ends the stream with an error once chunkBuffer has drained
+	// (TS: an exception in the transform handler errors the stream after the
+	// chunks it already enqueued).
+	deferredErr error
 
 	// tnm maps provider tool names (e.g. "code_execution") to caller-chosen
 	// custom names, mirroring TS createToolNameMapping.
@@ -182,6 +186,11 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			chunk := s.chunkBuffer[0]
 			s.chunkBuffer = s.chunkBuffer[1:]
 			return chunk, nil
+		}
+
+		if s.deferredErr != nil {
+			s.err = s.deferredErr
+			continue
 		}
 
 		event, err := s.parser.Next()
@@ -1021,7 +1030,7 @@ func (s *stream) processFuncCallPart(part Part) {
 // tool call when neither the functionCall-level willContinue nor any
 // individual partial arg's willContinue is true.
 func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulator, toolCallID string, partialArgs []PartialArg, functionCallWillContinue bool, sigMeta json.RawMessage) {
-	result := accumulator.ProcessPartialArgs(partialArgs)
+	result, accErr := accumulator.processPartialArgs(partialArgs)
 	if result.TextDelta != "" {
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type:             provider.ChunkTypeToolInputDelta,
@@ -1029,6 +1038,14 @@ func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulat
 			Text:             result.TextDelta,
 			ProviderMetadata: sigMeta,
 		})
+	}
+
+	if accErr != nil {
+		// TS would throw (or build arguments that JSON.stringify drops) for a
+		// path that conflicts with an earlier value; end the stream with an
+		// error instead of panicking or emitting a corrupt tool call.
+		s.deferredErr = providererrors.NewStreamProviderError("invalid function call partialArgs: "+accErr.Error(), s.cfg.ProviderName, "", nil, nil, nil, nil)
+		return
 	}
 
 	allArgsDone := true
