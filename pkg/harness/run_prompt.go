@@ -207,7 +207,9 @@ func (d *turnDriver) settleFailure(err error) {
 	// stream itself settles through an `abort` chunk rather than an `error`
 	// one just below.
 	if d.ctx.Err() != nil {
-		d.telAbort(err)
+		// TS `lifecycle.abort(input.abortSignal.reason)`: the reason is the
+		// caller's cancellation cause, not the failure that ended the loop.
+		d.telAbort(context.Cause(d.ctx))
 		d.abort(err)
 		return
 	}
