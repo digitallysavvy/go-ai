@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/zodlite"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -19,7 +20,11 @@ import (
 // mistyped or out-of-range option instead of ignoring it.
 
 func bflImageOptionsSchema(maxSafetyTolerance int) providerutils.OptionSchema {
-	zero, min256, max1920 := 0, 256, 1920
+	return bflImageOptionsSchemaRange(maxSafetyTolerance, 256, 1920)
+}
+
+func bflImageOptionsSchemaRange(maxSafetyTolerance, minDim, maxDim int) providerutils.OptionSchema {
+	zero, min256, max1920 := 0, minDim, maxDim
 	schema := providerutils.OptionSchema{
 		"resolution":          providerutils.OptEnum("768sq", "1k", "1.5k", "2k", "4k"),
 		"grounding":           providerutils.OptBool,
@@ -46,15 +51,53 @@ func bflImageOptionsSchema(maxSafetyTolerance int) providerutils.OptionSchema {
 	return schema
 }
 
+// bflMaxLatestPixels is the pixel limit of the latest image API
+// (width x height <= 16822272).
+const bflMaxLatestPixels = 16822272
+
 // validateBFLImageOptions is parseProviderOptions for the image model: the
-// FLUX 3 schema caps safetyTolerance at 4, the others at 6.
+// FLUX 3 schemas cap safetyTolerance at 7 (the base model and the latest API),
+// the legacy schema at 6. The latest schema also bounds width/height to
+// 64..6256, steps to 1..16, and requires paired dimensions within the pixel
+// limit (blackForestLabsLatestImageModelOptionsSchema).
 func validateBFLImageOptions(modelID string, providerOptions map[string]interface{}) error {
-	maxSafety := 6
-	if modelID == flux3ImageModelID {
-		maxSafety = 4
+	switch bflModelAPIFor(modelID) {
+	case bflAPILatest:
+		schema := bflImageOptionsSchemaRange(7, 64, 6256)
+		steps1, steps16 := 1, 16
+		schema["steps"] = providerutils.OptInt(&steps1, &steps16)
+		obj, err := providerutils.ParseProviderOptions("blackForestLabs", providerOptions, schema)
+		if err != nil {
+			return err
+		}
+		return bflLatestRefinements(obj)
+	case bflAPIFlux3:
+		_, err := providerutils.ParseProviderOptions("blackForestLabs", providerOptions, bflImageOptionsSchema(7))
+		return err
 	}
-	_, err := providerutils.ParseProviderOptions("blackForestLabs", providerOptions, bflImageOptionsSchema(maxSafety))
+	_, err := providerutils.ParseProviderOptions("blackForestLabs", providerOptions, bflImageOptionsSchema(6))
 	return err
+}
+
+// bflLatestRefinements are the two zod refinements of the latest schema.
+func bflLatestRefinements(obj map[string]interface{}) error {
+	w, hasW := intFromInterface(obj["width"])
+	h, hasH := intFromInterface(obj["height"])
+	if hasW != hasH {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid blackForestLabs provider options",
+			Cause:   fmt.Errorf("width and height must be provided together"),
+		}
+	}
+	if hasW && w*h > bflMaxLatestPixels {
+		return &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid blackForestLabs provider options",
+			Cause:   fmt.Errorf("width × height must not exceed %d pixels", bflMaxLatestPixels),
+		}
+	}
+	return nil
 }
 
 // optKeyframes is blackForestLabsVideoKeyframesSchema: 1 to 10 plain

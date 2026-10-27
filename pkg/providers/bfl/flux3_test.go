@@ -23,6 +23,7 @@ type flux3Server struct {
 	downloadHd http.Header
 	pollCount  int
 	pollFn     func(n int, w http.ResponseWriter, r *http.Request)
+	warnings   []types.Warning
 }
 
 func newFlux3Server(t *testing.T) *flux3Server {
@@ -32,7 +33,7 @@ func newFlux3Server(t *testing.T) *flux3Server {
 		fs.mu.Lock()
 		defer fs.mu.Unlock()
 		switch r.URL.Path {
-		case "/flux-3-image", "/flux-pro":
+		case "/flux-3-image", "/flux-pro", "/flux-3-image-klein":
 			var body map[string]interface{}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			fs.submits = append(fs.submits, body)
@@ -211,7 +212,7 @@ func TestFlux3_LegacyOptionsWarn(t *testing.T) {
 
 func TestFlux3_RejectsBeforeSubmission(t *testing.T) {
 	invalid := []map[string]interface{}{
-		{"safetyTolerance": 5}, {"safetyTolerance": -1}, {"safetyTolerance": 1.5},
+		{"safetyTolerance": 8}, {"safetyTolerance": -1}, {"safetyTolerance": 1.5},
 		{"resolution": "8k"}, {"version": "unknown"},
 	}
 	for _, o := range invalid {

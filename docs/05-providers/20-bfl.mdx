@@ -41,6 +41,7 @@ export BFL_API_KEY=...
 | Model ID | Quality | Speed | Best For |
 | ---------- | --------- | ------- | ---------- |
 | flux-3-image | Excellent | Medium | Text-to-image and reference-image editing |
+| flux-3-image-klein | Very Good | Fast | Fast generation and editing with exact output dimensions |
 | flux-pro-1.1 | Excellent | Medium | Professional work |
 | flux-pro | Excellent | Medium | High quality |
 | flux-dev | Very Good | Fast | Development |
@@ -93,7 +94,7 @@ images passed through `Files`). It does not accept masks, `Seed`, or the legacy
 
 Provider options (`providerOptions["blackForestLabs"]`): `resolution`
 (`768sq`, `1k`, `1.5k`, `2k`, `4k`), `grounding` (bool), `version` (`latest`),
-`safetyTolerance` (integer 0-4), `pollIntervalMillis`, and `pollTimeoutMillis`.
+`safetyTolerance` (integer 0-7), `pollIntervalMillis`, and `pollTimeoutMillis`.
 
 Accepted aspect ratios are `21:9`, `2:1`, `16:9`, `3:2`, `7:5`, `4:3`, `5:4`,
 `1:1`, `4:5`, `3:4`, `5:7`, `2:3`, `9:16`, `1:2`, and `9:21`. A ratio derived from
@@ -110,6 +111,42 @@ result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
         "blackForestLabs": map[string]interface{}{
             "resolution":      "2k",
             "safetyTolerance": 2,
+        },
+    },
+})
+```
+
+#### FLUX 3 Image Klein
+
+Unknown image model IDs use the latest supported image API, currently FLUX 3
+Image Klein's request format and options (`flux-pro*`, `flux-dev`,
+`flux-kontext-*`, `flux-1*` and `flux-2*` keep the legacy format, and
+`flux-3-image` keeps its own grounding and version controls). Klein uses the
+same `resolution`, `AspectRatio` and `Files` inputs as `flux-3-image` (reference
+images are sent in the `images` array), and also accepts `Seed`, `outputFormat`
+(`jpeg` or `png`) and `steps` (1-16).
+
+For exact dimensions pass `Size` (for example `2048x2048`) or both
+`width` and `height` provider options. Each dimension must be an integer from 64
+to 6256 and the product must not exceed 16,822,272 pixels. Provider dimensions
+override `Size`; exact dimensions override `resolution` and `AspectRatio`.
+Klein does not accept masks, `grounding`, `version`, `guidance` or `inputImage`
+(these produce `unsupported` warnings; masks are rejected).
+
+```go
+model, _ := bflProvider.ImageModel("flux-3-image-klein")
+
+seed := 42
+result, err := model.DoGenerate(ctx, &provider.ImageGenerateOptions{
+    Prompt:      "Change the sky to sunset while preserving the buildings",
+    AspectRatio: "16:9",
+    Seed:        &seed,
+    Files:       []provider.ImageFile{{Type: "url", URL: "https://example.com/village.png"}},
+    ProviderOptions: map[string]interface{}{
+        "blackForestLabs": map[string]interface{}{
+            "resolution":   "2k",
+            "outputFormat": "png",
+            "steps":        16,
         },
     },
 })

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -54,8 +56,11 @@ func (m *ImageModel) ModelID() string {
 // SupportsFileInputs reports whether the model accepts file inputs for image
 // editing. Returns nil when support is unknown for the model ID.
 func (m *ImageModel) SupportsFileInputs() *bool {
+	if bflModelAPIFor(m.modelID) != bflAPILegacy {
+		return boolPtr(true)
+	}
 	switch m.modelID {
-	case "flux-3-image", "flux-kontext-pro", "flux-kontext-max", "flux-pro-1.0-fill":
+	case "flux-kontext-pro", "flux-kontext-max", "flux-pro-1.0-fill":
 		return boolPtr(true)
 	case "flux-pro-1.1-ultra", "flux-pro-1.1":
 		return boolPtr(false)
@@ -89,14 +94,24 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	if len(opts.Files) > 10 {
 		return nil, fmt.Errorf("Black Forest Labs supports up to 10 input images.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
+	api := bflModelAPIFor(m.modelID)
+	if api == bflAPILatest {
+		merged, err := bflLatestProviderOptions(opts)
+		if err != nil {
+			return nil, err
+		}
+		o := *opts
+		o.ProviderOptions = merged
+		opts = &o
+	}
 	if err := validateBFLImageOptions(m.modelID, opts.ProviderOptions); err != nil {
 		return nil, err
 	}
 	var reqBody map[string]interface{}
 	var warnings []types.Warning
-	if m.modelID == flux3ImageModelID {
+	if api != bflAPILegacy {
 		var err error
-		reqBody, warnings, err = m.buildFlux3Request(opts)
+		reqBody, warnings, err = m.buildFlux3Request(opts, api)
 		if err != nil {
 			return nil, err
 		}
@@ -194,6 +209,69 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 // schema than the legacy FLUX endpoints.
 const flux3ImageModelID = "flux-3-image"
 
+type bflModelAPI int
+
+const (
+	bflAPILegacy bflModelAPI = iota
+	bflAPIFlux3
+	bflAPILatest
+)
+
+var bflLegacyModelRe = regexp.MustCompile(`^flux-[12](?:[.-]|$)`)
+
+// bflModelAPIFor mirrors the TS modelApi getter: the known FLUX 1/2 families
+// keep the legacy request format, flux-3-image has its own API controls, and
+// every other (unknown) model ID inherits the latest supported image API
+// (currently FLUX 3 Image Klein).
+func bflModelAPIFor(modelID string) bflModelAPI {
+	if modelID == "flux-pro" || modelID == "flux-dev" ||
+		strings.HasPrefix(modelID, "flux-pro-") ||
+		strings.HasPrefix(modelID, "flux-kontext-") ||
+		bflLegacyModelRe.MatchString(modelID) {
+		return bflAPILegacy
+	}
+	if modelID == flux3ImageModelID {
+		return bflAPIFlux3
+	}
+	return bflAPILatest
+}
+
+// bflLatestProviderOptions fills width/height of the latest API from size
+// (explicit provider options win), returning a copy of the provider options.
+func bflLatestProviderOptions(opts *provider.ImageGenerateOptions) (map[string]interface{}, error) {
+	if opts.Size == "" {
+		return opts.ProviderOptions, nil
+	}
+	parts := strings.Split(opts.Size, "x")
+	width, werr := strconv.ParseFloat(parts[0], 64)
+	height := math.NaN()
+	var herr error = fmt.Errorf("missing height")
+	if len(parts) > 1 {
+		height, herr = strconv.ParseFloat(parts[1], 64)
+	}
+	if werr != nil || herr != nil || width != math.Trunc(width) || height != math.Trunc(height) {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "invalid blackForestLabs provider options",
+			Cause:   fmt.Errorf("size %q is not a valid WIDTHxHEIGHT", opts.Size),
+		}
+	}
+	merged := make(map[string]interface{}, len(opts.ProviderOptions)+1)
+	for k, v := range opts.ProviderOptions {
+		merged[k] = v
+	}
+	bfl := map[string]interface{}{"width": int(width), "height": int(height)}
+	if raw, ok := merged["blackForestLabs"].(map[string]interface{}); ok {
+		for k, v := range raw {
+			bfl[k] = v
+		}
+	} else if merged["blackForestLabs"] != nil {
+		return merged, nil // let validation report the non-object
+	}
+	merged["blackForestLabs"] = bfl
+	return merged, nil
+}
+
 // flux3AspectRatios are the aspect ratios the FLUX 3 endpoint accepts.
 var flux3AspectRatios = map[string]bool{
 	"21:9": true, "2:1": true, "16:9": true, "3:2": true, "7:5": true,
@@ -208,6 +286,13 @@ var flux3SupportedOptions = map[string]bool{
 	"resolution": true, "safetyTolerance": true, "version": true,
 }
 
+// flux3LatestSupportedOptions are the options the latest image API accepts.
+var flux3LatestSupportedOptions = map[string]bool{
+	"height": true, "outputFormat": true, "pollIntervalMillis": true,
+	"pollTimeoutMillis": true, "resolution": true, "safetyTolerance": true,
+	"steps": true, "width": true,
+}
+
 // bflImageOptionOrder is the key order of TS blackForestLabsImageProviderOptions.
 var bflImageOptionOrder = []string{
 	"resolution", "grounding", "version", "imagePrompt", "imagePromptStrength",
@@ -219,9 +304,10 @@ var bflImageOptionOrder = []string{
 
 // buildFlux3Request builds the FLUX 3 request body and its warnings, mirroring
 // the flux-3-image branch of TS BlackForestLabsImageModel.getArgs.
-func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map[string]interface{}, []types.Warning, error) {
+func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions, api bflModelAPI) (map[string]interface{}, []types.Warning, error) {
 	warnings := []types.Warning{}
-	if opts.Size != "" {
+	latest := api == bflAPILatest
+	if opts.Size != "" && !latest {
 		if opts.AspectRatio == "" {
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
@@ -251,8 +337,14 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map
 		}
 	}
 
+	// Exact dimensions (latest API) take precedence over aspect ratio and
+	// resolution.
+	hasDimensions := latest && raw["width"] != nil
 	// The endpoint uses 21:9 and 9:21 instead of their reduced forms.
 	aspectRatio := finalAspectRatio
+	if hasDimensions {
+		aspectRatio = ""
+	}
 	switch aspectRatio {
 	case "7:3":
 		aspectRatio = "21:9"
@@ -270,13 +362,17 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map
 	if opts.Mask != nil {
 		return nil, nil, &providererrors.UnsupportedFunctionalityError{Functionality: "FLUX 3 image masks"}
 	}
-	if opts.Seed != nil {
+	if opts.Seed != nil && !latest {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "seed"})
+	}
+	supported := flux3SupportedOptions
+	if latest {
+		supported = flux3LatestSupportedOptions
 	}
 	// TS iterates the zod-parsed options, so warnings follow the schema's key
 	// order and unknown keys (stripped by zod) never warn.
 	for _, key := range bflImageOptionOrder {
-		if value, ok := raw[key]; ok && value != nil && !flux3SupportedOptions[key] {
+		if value, ok := raw[key]; ok && value != nil && !supported[key] {
 			warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "blackForestLabs." + key})
 		}
 	}
@@ -292,10 +388,24 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions) (map
 		}
 		body["images"] = images
 	}
-	for from, to := range map[string]string{
+	mapping := map[string]string{
 		"resolution": "resolution", "grounding": "grounding",
 		"safetyTolerance": "safety_tolerance", "version": "version",
-	} {
+	}
+	if latest {
+		mapping = map[string]string{
+			"resolution": "resolution", "safetyTolerance": "safety_tolerance",
+			"width": "width", "height": "height", "steps": "steps",
+			"outputFormat": "output_format",
+		}
+		if opts.Seed != nil {
+			body["seed"] = *opts.Seed
+		}
+	}
+	for from, to := range mapping {
+		if hasDimensions && from == "resolution" {
+			continue
+		}
 		if v := raw[from]; v != nil {
 			body[to] = v
 		}
