@@ -131,6 +131,9 @@ func (m *TranscriptionModel) DoStream(ctx context.Context, opts *provider.Transc
 // Chat/Completion/Responses/Image models (p.responsesBaseURL +
 // p.includeAPIVersionQuery) -- converted from http(s) to ws(s).
 func (m *TranscriptionModel) realtimeWebSocketURL() (string, error) {
+	if m.provider.config.BaseURL == "" && m.provider.config.ResourceName == "" {
+		return "", missingResourceNameError()
+	}
 	target := m.provider.responsesBaseURL(m.deploymentID) + "/realtime?intent=transcription"
 	if m.provider.includeAPIVersionQuery() {
 		target += "&api-version=" + m.provider.config.APIVersion

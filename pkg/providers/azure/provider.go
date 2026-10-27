@@ -166,6 +166,10 @@ func New(cfg Config) (*Provider, error) {
 		HTTPClient: httpClient,
 		// TS loadApiKey runs per request: a missing key is a LoadAPIKeyError.
 		HeadersFunc: func() (map[string]string, error) {
+			// TS builds the URL (getResourceName) before the headers.
+			if cfg.BaseURL == "" && cfg.ResourceName == "" {
+				return nil, missingResourceNameError()
+			}
 			if cfg.ADTokenProvider != nil {
 				return nil, nil
 			}
@@ -487,7 +491,18 @@ func (p *Provider) apiKeyHeaders(api string) (map[string]string, error) {
 // openaiHeadersFunc is the per-request credential hook of the delegated
 // openai/deepseek providers.
 func (p *Provider) openaiHeadersFunc() (map[string]string, error) {
+	// TS url() calls getResourceName before the headers are built.
+	if p.config.BaseURL == "" && p.config.ResourceName == "" {
+		return nil, missingResourceNameError()
+	}
 	return p.apiKeyHeaders("openai")
+}
+
+// missingResourceNameError is TS getResourceName's loadSetting failure: no
+// baseURL and no resourceName / AZURE_RESOURCE_NAME. Like TS it is reported
+// when a request is made, never by New.
+func missingResourceNameError() error {
+	return providererrors.NewLoadSettingError("Azure OpenAI resource name", "resourceName", "AZURE_RESOURCE_NAME")
 }
 
 func (p *Provider) staticAuthHeaders() map[string]string {
@@ -522,6 +537,9 @@ func (p *Provider) speechBaseURL() (string, error) {
 	if p.config.SpeechBaseURL != "" {
 		return strings.TrimRight(p.config.SpeechBaseURL, "/"), nil
 	}
+	if p.config.ResourceName == "" {
+		return "", missingResourceNameError()
+	}
 	if err := validateAzureResourceName(p.config.ResourceName); err != nil {
 		return "", err
 	}
@@ -535,6 +553,9 @@ func (p *Provider) speechBaseURL() (string, error) {
 func (p *Provider) maiBaseURL() (string, error) {
 	if p.config.MaiBaseURL != "" {
 		return strings.TrimRight(p.config.MaiBaseURL, "/"), nil
+	}
+	if p.config.ResourceName == "" {
+		return "", missingResourceNameError()
 	}
 	if err := validateAzureResourceName(p.config.ResourceName); err != nil {
 		return "", err

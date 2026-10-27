@@ -401,6 +401,28 @@ func IsLoadAPIKeyError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// LoadSettingError signals that a required provider setting was neither
+// passed explicitly nor found in its environment variable (TS
+// AI_LoadSettingError).
+type LoadSettingError struct {
+	Message string
+}
+
+func (e *LoadSettingError) Error() string { return e.Message }
+
+// NewLoadSettingError builds the TS loadSetting error text:
+// "<description> setting is missing. Pass it using the '<settingName>'
+// parameter or the <ENV> environment variable."
+func NewLoadSettingError(description, settingName, envVar string) *LoadSettingError {
+	return &LoadSettingError{Message: fmt.Sprintf("%s setting is missing. Pass it using the '%s' parameter or the %s environment variable.", description, settingName, envVar)}
+}
+
+// IsLoadSettingError checks if an error is a LoadSettingError.
+func IsLoadSettingError(err error) bool {
+	var target *LoadSettingError
+	return errors.As(err, &target)
+}
+
 // TooManyEmbeddingValuesForCallError signals that a provider embedding model
 // received more values than it supports in one request.
 type TooManyEmbeddingValuesForCallError struct {
