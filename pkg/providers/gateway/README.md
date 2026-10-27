@@ -309,7 +309,7 @@ func main() {
 
     // Create parallel search tool
     parallelSearch := tools.NewParallelSearch(tools.ParallelSearchConfig{
-        Mode:       "one-shot", // or "agentic"
+        Mode:       tools.ParallelSearchModeBasic, // turbo, fast, basic (default), advanced
         MaxResults: intPtr(10),
         SourcePolicy: &tools.ParallelSearchSourcePolicy{
             IncludeDomains: []string{"wikipedia.org", "nature.com"},
@@ -334,8 +334,22 @@ func main() {
 
 #### Parallel Search Modes
 
-- **one-shot**: Comprehensive results with longer excerpts for single-response answers
-- **agentic**: Concise, token-efficient results for multi-step workflows
+The tool runs on Parallel's GA Search API:
+
+- **turbo**: Fastest, shorter excerpts (English and Japanese only)
+- **fast**: Low latency with shorter excerpts
+- **basic**: Balanced (default)
+- **advanced**: Most thorough
+- **one-shot** and **agentic**: Deprecated aliases of `basic` and `advanced`
+
+Other options: `Location` (ISO 3166-1 alpha-2 country code), `MaxCharsTotal`
+(replaces the deprecated `Excerpts.MaxCharsTotal`), and `FetchPolicy.TimeoutSeconds` /
+`FetchPolicy.DisableCacheFallback`. `FetchPolicy.MaxAgeSeconds` has a minimum of 600.
+
+Results are returned in Parallel's snake_case shape: `search_id`, `results[]` with
+`url`, `title`, `publish_date` and `excerpts` (a list of strings), plus optional
+`warnings`, `usage` and `session_id`. Errors add `execution_error`,
+`gateway_rate_limit` and `unknown_tool`.
 
 ### Perplexity Search
 
@@ -515,11 +529,13 @@ the `ai-o11y-project-id` header alongside other Vercel observability headers.
 
 ### Parallel Search Config
 
-- `Mode` (string): "one-shot" or "agentic"
+- `Mode` (string): "turbo", "fast", "basic" (default), "advanced" (or the deprecated "one-shot" / "agentic")
 - `MaxResults` (int): Maximum results (1-20, default: 10)
 - `SourcePolicy` (*ParallelSearchSourcePolicy): Domain and date filtering
 - `Excerpts` (*ParallelSearchExcerpts): Excerpt length configuration
-- `FetchPolicy` (*ParallelSearchFetchPolicy): Content freshness settings
+- `MaxCharsTotal` (*int): Maximum total characters across all result excerpts
+- `Location` (string): ISO 3166-1 alpha-2 country code to localize results
+- `FetchPolicy` (*ParallelSearchFetchPolicy): Content freshness settings (`MaxAgeSeconds`, `TimeoutSeconds`, `DisableCacheFallback`)
 
 ### Perplexity Search Config
 

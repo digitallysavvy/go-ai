@@ -154,7 +154,8 @@ func exaSearchOutputSchema() map[string]interface{} {
 
 func searchErrorSchema(errorValues []string) map[string]interface{} {
 	return map[string]interface{}{
-		"type": "object",
+		"type":     "object",
+		"required": []string{"error", "message"},
 		"properties": map[string]interface{}{
 			"error":      map[string]interface{}{"type": "string", "enum": errorValues},
 			"statusCode": map[string]interface{}{"type": "number"},
