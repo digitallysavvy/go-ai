@@ -77,6 +77,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   (default 10_000) stops guest JavaScript that runs longer than that in one
   invocation with `*codemode.CPUTimeoutError`. Time in host tools does not
   count. Raise `CPUTimeoutMs` (and `TimeoutMs`) for long-running scripts.
+- **wazero is v1.12.0.** It was v1.9.0. Code mode's sandbox behaves the
+  same: each invocation still gets its own QuickJS instance, memory and host
+  bindings. QuickJS is now compiled once per process into one shared wazero
+  runtime, so sandbox startup is faster than in v0.5 (about 2.4 ms instead of
+  4.3 ms per trivial run on an Apple M1). If you pin wazero yourself, move it
+  to v1.12.0.
 - **MCP OAuth rejects unbound pre-registered confidential credentials.** Client
   information with a client secret but no `Issuer` and no stored authorization
   server information now fails `mcp.Auth` with an authorization-server mismatch
