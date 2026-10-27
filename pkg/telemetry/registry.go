@@ -880,7 +880,8 @@ func modelCallID(parts ...string) string {
 // TS avoids this by giving each integration class its own `callStates =
 // new Map<string, CallState>()`, keyed by the event's callId
 // (packages/otel/src/legacy-open-telemetry.ts / open-telemetry.ts): every
-// lifecycle method looks up (or creates) its OWN state for event.callId and
+// lifecycle method looks up its OWN state for event.callId (only the
+// operation starts create it; the others return when there is none) and
 // reads/writes rootSpan/stepSpan/toolSpans/etc there, never through ambient
 // OTel context. This ports that: legacyCallState is LegacyOpenTelemetry's own
 // per-call bookkeeping (a parallel, GenAI-specific genAICallState exists in
@@ -1027,38 +1028,118 @@ func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settin
 	}
 	out := make([]attribute.KeyValue, 0, len(attrs))
 	for key, value := range attrs {
-		switch v := value.(type) {
-		case string:
-			out = append(out, attribute.String(key, v))
-		case bool:
-			out = append(out, attribute.Bool(key, v))
-		case int:
-			out = append(out, attribute.Int(key, v))
-		case int64:
-			out = append(out, attribute.Int64(key, v))
-		case float64:
-			if kv, ok := finiteFloat64Attr(key, v); ok {
-				out = append(out, kv)
-			}
-		case []string:
-			out = append(out, attribute.StringSlice(key, v))
-		case []bool:
-			out = append(out, attribute.BoolSlice(key, v))
-		case []int:
-			out = append(out, attribute.IntSlice(key, v))
-		case []int64:
-			out = append(out, attribute.Int64Slice(key, v))
-		case []float64:
-			if finite, ok := finiteFloat64Slice(v); ok {
-				out = append(out, attribute.Float64Slice(key, finite))
-			}
-		default:
-			if b, err := jsonstr.Marshal(v); err == nil {
-				out = append(out, attribute.String(key, string(b)))
-			}
+		if kv, ok := enrichAttribute(key, value); ok {
+			out = append(out, kv)
 		}
 	}
 	return out
+}
+
+// enrichAttribute converts one EnrichSpan value like TS sanitizeAttributes
+// followed by OTel's attribute check: strings, booleans and finite numbers
+// are kept; an array keeps its primitives when they all have one type (and,
+// for numbers, are all finite); anything else (null, objects, mixed arrays)
+// is dropped.
+func enrichAttribute(key string, value interface{}) (attribute.KeyValue, bool) {
+	switch v := value.(type) {
+	case nil:
+		return attribute.KeyValue{}, false
+	case string:
+		return attribute.String(key, v), true
+	case bool:
+		return attribute.Bool(key, v), true
+	case int:
+		return attribute.Int(key, v), true
+	case int8:
+		return attribute.Int64(key, int64(v)), true
+	case int16:
+		return attribute.Int64(key, int64(v)), true
+	case int32:
+		return attribute.Int64(key, int64(v)), true
+	case int64:
+		return attribute.Int64(key, v), true
+	case uint8:
+		return attribute.Int64(key, int64(v)), true
+	case uint16:
+		return attribute.Int64(key, int64(v)), true
+	case uint32:
+		return attribute.Int64(key, int64(v)), true
+	case uint:
+		if uint64(v) > math.MaxInt64 {
+			return finiteFloat64Attr(key, float64(v))
+		}
+		return attribute.Int64(key, int64(v)), true
+	case uint64:
+		if v > math.MaxInt64 {
+			return finiteFloat64Attr(key, float64(v))
+		}
+		return attribute.Int64(key, int64(v)), true
+	case float32:
+		return finiteFloat64Attr(key, float64(v))
+	case float64:
+		return finiteFloat64Attr(key, v)
+	case []string:
+		return attribute.StringSlice(key, v), true
+	case []bool:
+		return attribute.BoolSlice(key, v), true
+	case []int:
+		return attribute.IntSlice(key, v), true
+	case []int64:
+		return attribute.Int64Slice(key, v), true
+	case []float64:
+		if finite, ok := finiteFloat64Slice(v); ok {
+			return attribute.Float64Slice(key, finite), true
+		}
+		return attribute.KeyValue{}, false
+	case []interface{}:
+		return enrichArrayAttribute(key, v)
+	}
+	return attribute.KeyValue{}, false
+}
+
+// enrichArrayAttribute is sanitizeAttributeValue for a mixed array: only the
+// string, number and boolean items count, and they must share one type.
+func enrichArrayAttribute(key string, items []interface{}) (attribute.KeyValue, bool) {
+	var strs []string
+	var nums []float64
+	var bools []bool
+	for _, item := range items {
+		switch v := item.(type) {
+		case string:
+			strs = append(strs, v)
+		case bool:
+			bools = append(bools, v)
+		case float64:
+			nums = append(nums, v)
+		case float32:
+			nums = append(nums, float64(v))
+		case int:
+			nums = append(nums, float64(v))
+		case int64:
+			nums = append(nums, float64(v))
+		case int32:
+			nums = append(nums, float64(v))
+		}
+	}
+	kinds := 0
+	for _, n := range []int{len(strs), len(nums), len(bools)} {
+		if n > 0 {
+			kinds++
+		}
+	}
+	if kinds != 1 {
+		return attribute.KeyValue{}, false
+	}
+	switch {
+	case len(strs) > 0:
+		return attribute.StringSlice(key, strs), true
+	case len(bools) > 0:
+		return attribute.BoolSlice(key, bools), true
+	}
+	if finite, ok := finiteFloat64Slice(nums); ok {
+		return attribute.Float64Slice(key, finite), true
+	}
+	return attribute.KeyValue{}, false
 }
 
 // settingsFunctionID returns settings.FunctionID, or "" when settings is nil.
