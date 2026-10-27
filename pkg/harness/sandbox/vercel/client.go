@@ -295,7 +295,16 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 
 	result := &RunCommandWaitResult{}
 
-	if !scanner.Scan() {
+	// Blank lines carry no record; skip them as GetLogs does.
+	scan := func() bool {
+		for scanner.Scan() {
+			if len(bytes.TrimSpace(scanner.Bytes())) > 0 {
+				return true
+			}
+		}
+		return false
+	}
+	if !scan() {
 		return result, streamEndedEarly(sessionID, wrapScanError(scanner.Err(), sessionID))
 	}
 	var first ndjsonLine
@@ -303,7 +312,7 @@ func (c *APIClient) RunCommandWait(ctx context.Context, sessionID string, req ru
 		return result, err
 	}
 
-	for scanner.Scan() {
+	for scan() {
 		var line ndjsonLine
 		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
 			return result, err

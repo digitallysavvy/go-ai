@@ -97,3 +97,23 @@ func TestRunCommandWait_StreamEndedEarly_WrapsRealCause(t *testing.T) {
 		t.Fatalf("streamEndedEarly(nil) = %q, want the generic message preserved", plain.Error())
 	}
 }
+
+// Blank lines between ndjson records are skipped, like GetLogs does.
+func TestR42RunCommandWaitSkipsBlankLines(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var buf bytes.Buffer
+		buf.WriteString("\n")
+		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1"}})
+		buf.WriteString("\n\n")
+		writeNDJSON(&buf, ndjsonLine{Stream: "stdout", Data: "hi"})
+		buf.WriteString("\r\n")
+		exit := 0
+		writeNDJSON(&buf, commandResponse{Command: commandWire{ID: "cmd1", ExitCode: &exit}})
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+	result, err := NewAPIClient(srv.URL, Credentials{Token: "tok"}).RunCommandWait(t.Context(), "s", runCommandRequest{Command: "echo"})
+	if err != nil || result.Stdout != "hi" || result.Command.ExitCode == nil {
+		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+}
