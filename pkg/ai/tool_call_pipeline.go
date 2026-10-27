@@ -355,6 +355,7 @@ func parseProviderExecutedDynamicToolCall(call types.ToolCall) (types.ToolCall, 
 	parsed := call
 	parsed.Arguments = args
 	parsed.ProviderExecuted = true
+	parsed.ProviderExecutedSet = true
 	parsed.Dynamic = true
 	return parsed, nil
 }
