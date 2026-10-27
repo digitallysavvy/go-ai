@@ -514,8 +514,6 @@ in v0.5.3.
 - fx `glob` parses character classes like minimatch: an out-of-order range
   such as `[z-a]` matches nothing instead of failing the tool, `[a-a]` is
   the literal `a`, and `[[:print:]]` is no longer negated.
-- A harness turn the host suspends before the adapter sends `finish` now
-  ends its stream with a `finish` part, as TS does.
 - The harness file reporter writes TS's record shapes: usage detail
   objects, an empty `modelId`, the prompt text as a string message, and a
   runtime tool error's value.
