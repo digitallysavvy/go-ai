@@ -31,6 +31,8 @@ if err != nil {
 }
 ```
 
+`Config.BaseURL` is the host root (default `https://api.mistral.ai`); every request path carries its own `/v1/...` prefix. This differs from the TypeScript SDK, whose `baseURL` includes the version segment (`https://api.mistral.ai/v1`). A trailing `/v1` is stripped, so either spelling reaches the same URL.
+
 ### Get API Key
 
 1. Sign up at [console.mistral.ai](https://console.mistral.ai)
