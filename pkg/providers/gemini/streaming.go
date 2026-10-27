@@ -299,11 +299,12 @@ func (s *stream) continueStream() bool {
 	next, err := s.continueFn(token)
 	if err != nil {
 		s.continuationErr = true
-		message := fmt.Sprintf("failed to continue response: %v", err)
+		// TS emits the thrown error itself as the error part (so callers can
+		// match it by type, e.g. an APICallError); do not wrap it.
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
-			Text: message,
-			Err:  providererrors.NewStreamProviderError(message, s.cfg.ProviderName, "", nil, nil, nil, nil),
+			Text: err.Error(),
+			Err:  err,
 		})
 		return false
 	}

@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1041,5 +1042,30 @@ func TestStream_InStreamError(t *testing.T) {
 				t.Fatalf("usage = %+v", finish.Usage)
 			}
 		})
+	}
+}
+
+// TS emits the thrown continuation error itself as the error part, so callers
+// can still match its type; it must not be wrapped in a generic stream error.
+func TestStreamContinuationFailureKeepsErrorType(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"CONTINUATION","continuationToken":"tok"}]}`))
+	cause := providererrors.NewProviderError("google", 503, "", "overloaded", nil)
+	s.continueFn = func(token string) (io.ReadCloser, error) { return nil, cause }
+	chunks := drainChunks(t, s)
+	var errChunk *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeError {
+			errChunk = c
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("no error chunk")
+	}
+	var pe *providererrors.ProviderError
+	if !errors.As(errChunk.Err, &pe) || pe != cause {
+		t.Fatalf("error chunk Err = %#v, want the original ProviderError", errChunk.Err)
+	}
+	if last := chunks[len(chunks)-1]; last.FinishReason != types.FinishReasonLength {
+		t.Fatalf("finish = %+v", last)
 	}
 }
