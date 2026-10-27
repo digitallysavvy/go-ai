@@ -156,9 +156,11 @@ type perplexityAgentChunk struct {
 // responses can take several shapes (an "error" string or object, a "detail"
 // string or validation-error array, or a bare top-level "message").
 type perplexityErrorEnvelope struct {
-	Error   json.RawMessage `json:"error,omitempty"`
-	Detail  json.RawMessage `json:"detail,omitempty"`
-	Message string          `json:"message,omitempty"`
+	Error  json.RawMessage `json:"error,omitempty"`
+	Detail json.RawMessage `json:"detail,omitempty"`
+	// Message is a pointer so an explicit empty message is kept apart from an
+	// absent one (TS `data.message ?? 'unknown error'`).
+	Message *string `json:"message,omitempty"`
 }
 
 // perplexityErrorToMessage mirrors TS perplexityErrorToMessage: it resolves
@@ -207,8 +209,8 @@ func perplexityErrorToMessage(data perplexityErrorEnvelope) string {
 			return result
 		}
 	}
-	if data.Message != "" {
-		return data.Message
+	if data.Message != nil {
+		return *data.Message
 	}
 	return "unknown error"
 }
