@@ -12,11 +12,11 @@ import (
 
 // DecisionQuestion is one judgment to make about the shared decision
 // state. Mirrors TypeScript's Experimental_DecisionModelV4Question union
-// (choice/score/boolean). Fields are interpreted according to Type; Go does
+// (choice/score/boolean/box). Fields are interpreted according to Type; Go does
 // not have discriminated unions so Criteria is typed loosely, matching how
 // the TypeScript validator itself treats it structurally.
 type DecisionQuestion struct {
-	// Type is "choice", "score", or "boolean".
+	// Type is "choice", "score", "boolean", or "box".
 	Type string
 
 	// Instructions is a JSON-compatible string, map[string]interface{}, or
@@ -30,6 +30,7 @@ type DecisionQuestion struct {
 	//     entries allowed).
 	//   - "boolean": optional; when non-nil, a map[string]interface{} with
 	//     only "true"/"false" keys.
+	//   - "box": unused (a box question has instructions only).
 	Criteria interface{}
 }
 
@@ -191,7 +192,7 @@ func (p DecisionStatePart) InlineData() (mediaType string, data []byte, err erro
 // DecisionAnswer is one typed answer to a DecisionQuestion. Mirrors
 // TypeScript's Experimental_DecisionModelV4Answer union.
 type DecisionAnswer struct {
-	// Type is "choice", "score", "boolean", or "refusal". A "refusal" answer
+	// Type is "choice", "score", "boolean", "box", or "refusal". A "refusal" answer
 	// means the model declined to answer the question; it is valid for any
 	// question type and carries no other fields.
 	Type string `json:"type"`
@@ -210,6 +211,18 @@ type DecisionAnswer struct {
 	// Probabilities is the complete distribution over the question's
 	// options/levels, when available, for "choice" and "score" answers.
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+
+	// Box is the normalized bounding box for a "box" answer.
+	Box *DecisionBox `json:"box,omitempty"`
+}
+
+// DecisionBox is a bounding box with edges in [0, 1], measured from the
+// image's top-left corner (TS `box: { top, bottom, left, right }`).
+type DecisionBox struct {
+	Top    float64 `json:"top"`
+	Bottom float64 `json:"bottom"`
+	Left   float64 `json:"left"`
+	Right  float64 `json:"right"`
 }
 
 // DecisionRounding declares the decimal precision a provider rounded its
@@ -269,7 +282,7 @@ type DecisionModel interface {
 	ModelID() string
 
 	// SupportedQuestionTypes lists the question types this model accepts (a
-	// subset of "choice", "score", "boolean"), used to reject unsupported
+	// subset of "choice", "score", "boolean", "box"), used to reject unsupported
 	// calls before any I/O.
 	SupportedQuestionTypes() []string
 

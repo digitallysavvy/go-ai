@@ -486,6 +486,8 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 		}
 
 		switch q.Type {
+		case "box":
+			// A box question has instructions only (TS `continue`).
 		case "choice":
 			criteria, ok := isDecisionRecord(q.Criteria)
 			if !ok || len(criteria) == 0 {
@@ -522,7 +524,7 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 				}
 			}
 		default:
-			return invalidDecisionInput(field, "question type must be choice, score, or boolean")
+			return invalidDecisionInput(field, "question type must be choice, score, boolean, or box")
 		}
 	}
 	return nil
@@ -649,6 +651,14 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 				if math.Abs(mean-*answer.Score) > decisionTolerance+meanRoundingError+scoreError {
 					return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q score must equal the probability-weighted mean within the declared rounding precision.", id))
 				}
+			}
+		case "box":
+			box := answer.Box
+			if box == nil ||
+				!isDecisionProbability(box.Left) || !isDecisionProbability(box.Right) ||
+				!isDecisionProbability(box.Top) || !isDecisionProbability(box.Bottom) ||
+				!(box.Left < box.Right) || !(box.Top < box.Bottom) {
+				return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q must return box edges in [0, 1] with left < right and top < bottom.", id))
 			}
 		case "boolean":
 			if answer.Probability == nil || !isDecisionProbability(*answer.Probability) {

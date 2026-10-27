@@ -1,6 +1,6 @@
 ---
 title: Decisions
-description: "Ask a model typed questions about shared state with the experimental ai.ExperimentalDecide function: choice, score, and boolean answers, multimodal state, refusals, and migrating from ExperimentalEvaluate."
+description: "Ask a model typed questions about shared state with the experimental ai.ExperimentalDecide function: choice, score, boolean, and box answers, multimodal state, refusals, and migrating from ExperimentalEvaluate."
 ---
 
 # Decisions
@@ -66,11 +66,12 @@ func main() {
 }
 ```
 
-There are three question types:
+There are four question types:
 
 - `choice` picks one option from a nonempty `Criteria` map of option name to description (a `nil` description is allowed). The answer has `Choice` and, when the model reports it, a `Probabilities` distribution.
 - `score` places the state on an ordered rubric. `Criteria` is a slice of at least two levels, indexed from zero. The answer has a fractional `Score` between `0` and the last level.
 - `boolean` estimates `P(true)` as a probability in `[0, 1]`. `Criteria` is optional and may only describe `"true"` and `"false"`.
+- `box` locates a region of an image. It has `Instructions` only (no `Criteria`). The answer's `Box` holds `Top`, `Bottom`, `Left` and `Right` edges in `[0, 1]`, measured from the image's top-left corner, with `Left < Right` and `Top < Bottom`; anything else fails with `*errors.InvalidResponseDataError`. Only models that list `"box"` in `SupportedQuestionTypes` accept it (currently TypeSafe AI). The OpenAI, Anthropic, Google and Gateway models reject it with `*errors.DecisionUnsupportedQuestionTypeError` before any download or provider call.
 
 The SDK validates every answer. Choice probabilities must sum to 1, the selected choice must be a highest-probability option, and a score must equal the probability-weighted mean. Models that round their output declare it in `Rounding`, and the validation allows for that rounding.
 
@@ -126,7 +127,7 @@ Decision models represent a refusal as an answer of `Type: "refusal"`, which is 
 | Anthropic | `anthropic.Provider.DecisionModel(id)` | Wraps the Messages model with `ai.NewDecisionLanguageModel`. |
 | Google | `google.Provider.DecisionModel(id)` | Wraps the Gemini model with `ai.NewDecisionLanguageModel`. |
 | AI Gateway | `gateway.Provider.DecisionModel(id)` | Calls `POST /decision-model`. Supports conditional model fallbacks. |
-| TypeSafe AI | `typesafeai.Provider.DecisionModel(id)` | Text-only. |
+| TypeSafe AI | `typesafeai.Provider.DecisionModel(id)` | Text-only. Supports choice, score, boolean and box questions. |
 
 Pass a model ID string as `Model` to resolve it through `Provider` (or the AI Gateway when `Provider` is nil). The model registry and `registry.NewCustomProvider` resolve decision models through `ResolveDecisionModel` and `CustomProviderOptions.DecisionModels`.
 
