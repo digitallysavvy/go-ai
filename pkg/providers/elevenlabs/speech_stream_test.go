@@ -368,7 +368,7 @@ func TestSpeechStream_ErrorsWhenSocketClosesBeforeIsFinal(t *testing.T) {
 	server.waitForCount(t, 3, 2*time.Second)
 	server.closeConnection()
 	_, err := collectSpeech(t, result.Stream)
-	if err == nil || !strings.HasPrefix(err.Error(), "ElevenLabs speech stream closed before completion") {
+	if err == nil || err.Error() != "ElevenLabs speech stream closed before completion (code 1000)." {
 		t.Fatalf("err = %v", err)
 	}
 }

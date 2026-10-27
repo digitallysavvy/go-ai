@@ -272,7 +272,8 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 		cancelText(err)
 	}
 
-	conn, err := wsutil.Dial(s.Context(), cfg.url.String(), wsutil.DialOptions{Headers: cfg.headers})
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := wsutil.Dial(s.Context(), cfg.url.String(), wsutil.DialOptions{Headers: cfg.headers, WrapConn: closeInfo.Wrap})
 	if err != nil {
 		fail(err)
 		return
@@ -321,7 +322,8 @@ func (s *elevenLabsSpeechStream) run(cfg speechStreamConfig) {
 		case res := <-msgCh:
 			if res.Err != nil {
 				if wsutil.IsCleanClose(res.Err) {
-					fail(errors.New("ElevenLabs speech stream closed before completion.")) //nolint:staticcheck // matches TS SDK's exact error text
+					// TS: "... closed before completion (code N: reason)."
+					fail(errors.New("ElevenLabs speech stream closed before completion" + closeInfo.Suffix() + ".")) //nolint:staticcheck // matches TS SDK's exact error text
 				} else {
 					fail(errors.New("ElevenLabs speech stream error.")) //nolint:staticcheck // matches TS SDK's exact error text
 				}
