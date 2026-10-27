@@ -571,7 +571,11 @@ func (a *Agent) Close(ctx context.Context) error {
 	a.mu.Unlock()
 	if t != nil {
 		t.Cancel()
-		_, _ = t.Wait(ctx)
+		// A core that does not answer the cancelled prompt is stopped by
+		// Engine.Close, which also fails the prompt request.
+		wctx, cancel := context.WithTimeout(ctx, closeGrace)
+		_, _ = t.Wait(wctx)
+		cancel()
 	}
 	a.mu.Lock()
 	a.closing = true

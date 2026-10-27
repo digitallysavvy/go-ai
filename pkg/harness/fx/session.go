@@ -913,8 +913,17 @@ func (a *activeTurn) buildTools(ctx context.Context) ([]libfx.Tool, error) {
 		a.registered[name] = registeredTool{providerExecuted: providerExecuted, kind: kind}
 		tools = append(tools, libfx.Tool{
 			Name: name, Description: description, InputSchema: builtin.Parameters,
-			Execute: func(_ context.Context, input json.RawMessage) (any, error) {
-				return a.executeTool(toolName, impl, providerExecuted, kind, input)
+			Execute: func(callCtx context.Context, input json.RawMessage) (any, error) {
+				// The sandbox command stops when libfx aborts the call as
+				// well as when the turn ends.
+				run := func(ctx context.Context, input json.RawMessage) (any, error) {
+					ctx, cancel := context.WithCancel(ctx)
+					defer cancel()
+					stop := context.AfterFunc(callCtx, cancel)
+					defer stop()
+					return impl(ctx, input)
+				}
+				return a.executeTool(toolName, run, providerExecuted, kind, input)
 			},
 		})
 	}
@@ -1045,19 +1054,25 @@ func (a *activeTurn) runBody() error {
 				return err
 			}
 			s.mu.Lock()
-			rt := a.runtimeTurn
 			var steers []string
 			for _, st := range a.replaySteers {
 				if st.BeforeRequest == requestIndex+1 {
 					steers = append(steers, st.Text)
 				}
 			}
+			// The core can fetch before Prompt has returned the turn a
+			// replayed steer must reach.
+			if len(steers) > 0 {
+				if err := a.waitForLocked(func() bool { return a.runtimeTurn != nil }); err != nil {
+					s.mu.Unlock()
+					return err
+				}
+			}
+			rt := a.runtimeTurn
 			a.notifyLocked()
 			s.mu.Unlock()
-			if rt != nil {
-				for _, text := range steers {
-					_, _ = rt.Steer(text)
-				}
+			for _, text := range steers {
+				_, _ = rt.Steer(text)
 			}
 			return nil
 		},
