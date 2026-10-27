@@ -276,6 +276,12 @@ type StreamTextOptions struct {
 	// is met. Experimental (TS experimental_steering, #23813).
 	ExperimentalSteering *Steering
 
+	// lowMemory is set by StreamTextLowMemory: single-consumer streaming
+	// without a replay buffer; collectContent says whether complete content
+	// must still be collected (tools, output, callbacks, telemetry).
+	lowMemory      bool
+	collectContent bool
+
 	// OnStepError is called when a step that started fails before it produces
 	// a step result: the provider call fails, or the model stream ends
 	// without output (NoOutputGeneratedError). OnStepEnd is not called for
@@ -709,6 +715,14 @@ type StreamTextResult struct {
 	steering     *steeringRun
 	stepSteering []types.Message
 
+	// singleConsumer is set by StreamTextLowMemory: the chunk buffer drops
+	// consumed chunks and the first stream accessor claims the only cursor.
+	// skipTextAccumulation additionally skips collecting generated text when
+	// nothing needs the complete content.
+	singleConsumer       bool
+	streamClaimed        bool // guarded by mu
+	skipTextAccumulation bool
+
 	processingDone chan struct{}
 
 	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
@@ -784,6 +798,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		requestTools:        opts.Tools,
 	}
 	result.chunkBuf = newChunkBuffer()
+	if opts.lowMemory {
+		result.chunkBuf = newSingleConsumerChunkBuffer()
+		result.singleConsumer = true
+		result.skipTextAccumulation = !opts.collectContent
+	}
 	result.processingDone = make(chan struct{})
 
 	go result.bootstrapAndStream(bootstrapCtx, opts, instructionMessages)
@@ -2037,20 +2056,22 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// immediately following another one (e.g. an Anthropic compaction
 			// block followed by plain text) doesn't merge into the previous
 			// block's part and inherit its providerMetadata.
-			if chunk.Type == provider.ChunkTypeTextStart {
+			if chunk.Type == provider.ChunkTypeTextStart && !r.skipTextAccumulation {
 				stepContent = stepBlocks.openText(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// A text-end boundary: attach its providerMetadata and citations to the text part.
-			if chunk.Type == provider.ChunkTypeTextEnd {
+			if chunk.Type == provider.ChunkTypeTextEnd && !r.skipTextAccumulation {
 				stepContent = stepBlocks.closeText(stepContent, chunk.ID, chunk.ProviderMetadata, chunk.Citations)
 			}
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
-				stepTextParts = append(stepTextParts, chunk.Text)
-				accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
-				stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
+				if !r.skipTextAccumulation {
+					stepTextParts = append(stepTextParts, chunk.Text)
+					accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
+					stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
+				}
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
@@ -3820,6 +3841,13 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.chunkBufReader == nil {
+		if r.singleConsumer {
+			// A single-consumer result hands out its only cursor once.
+			if r.streamClaimed {
+				return alreadyConsumedStream{}
+			}
+			r.streamClaimed = true
+		}
 		r.chunkBufReader = r.chunkBuf.reader()
 	}
 	return r.chunkBufReader
@@ -3834,6 +3862,15 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 func (r *StreamTextResult) NewStream() provider.TextStream {
 	if r.chunkBuf == nil {
 		return r.stream
+	}
+	if r.singleConsumer {
+		r.mu.Lock()
+		claimed := r.chunkBufReader != nil
+		r.mu.Unlock()
+		if claimed {
+			return alreadyConsumedStream{}
+		}
+		return r.Stream()
 	}
 	return r.chunkBuf.reader()
 }
@@ -4239,6 +4276,10 @@ func (r *StreamTextResult) ensureConsumed() error {
 func (r *StreamTextResult) Close() error {
 	if r.cancelBootstrap != nil {
 		r.cancelBootstrap()
+	}
+	if r.singleConsumer && r.chunkBuf != nil {
+		// Nobody will read what is left: release a blocked producer.
+		r.chunkBuf.detach()
 	}
 	r.mu.Lock()
 	if !r.closedFlag {

@@ -2532,6 +2532,18 @@ func AddTelemetryIntegration(i TelemetryIntegration) {
 	integrations = append(integrations, i)
 }
 
+// HasIntegrations reports whether any non-noop integration is registered.
+func HasIntegrations() bool {
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, i := range integrations {
+		if _, noop := i.(NoopTelemetryIntegration); !noop {
+			return true
+		}
+	}
+	return false
+}
+
 // ClearTelemetryIntegrations removes all registered integrations.
 // After this call, telemetry events are silently discarded.
 func ClearTelemetryIntegrations() {
