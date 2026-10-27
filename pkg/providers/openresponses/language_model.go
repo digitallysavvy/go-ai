@@ -841,6 +841,15 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 	// Convert usage information
 	if response.Usage != nil {
 		result.Usage = convertOpenResponsesUsage(response.Usage)
+	} else {
+		// TS doGenerate builds the usage from `response.usage?.x` with
+		// `(inputTokens ?? 0) - ...` fallbacks, so a response without usage
+		// still reports noCache 0 and text 0 (totals stay undefined).
+		noCache, text := int64(0), int64(0)
+		result.Usage = types.Usage{
+			InputDetails:  &types.InputTokenDetails{NoCacheTokens: &noCache},
+			OutputDetails: &types.OutputTokenDetails{TextTokens: &text},
+		}
 	}
 
 	// Extract content from output items
