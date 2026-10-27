@@ -61,6 +61,16 @@ the new type. Reading promoted fields still compiles.
 | `telemetry.EvaluationModelCallEndEvent` | `DecisionModelCallStartEvent` |
 | `ai.EvaluateOnEndEvent` | `DecideOnStartEvent` |
 
+### Unkeyed acp.TextContentBlock literals
+
+`acp.TextContentBlock` is now an alias of `acp.ContentBlock`, which also carries
+image blocks (`Data`, `MimeType`). Unkeyed literals such as
+`acp.TextContentBlock{"text", "hello"}` no longer compile. Use keyed fields:
+
+```go
+block := acp.TextContentBlock{Type: "text", Text: "hello"}
+```
+
 ## Behavior changes that can need an edit
 
 - **Code mode has a default 10 s CPU limit.** `ExecutionPolicy.CPUTimeoutMs`
@@ -94,8 +104,9 @@ the new type. Reading promoted fields still compiles.
   unless `AllowSystemMessages` is set, as `GenerateText` already did. Put the
   system prompt in `Instructions` (or `System`).
 - **ACP lifecycle state persisted by v0.5.x does not resume.** As in TS, the
-  persisted implementation identity includes the package version. Start fresh
-  ACP sessions after upgrading.
+  persisted identity is now `agentIdentity`, so old state fails validation
+  with "agentIdentity must be a string" (Cursor, GitHub Copilot, Grok Build
+  and fx adapters). Start fresh ACP sessions after upgrading.
 - **Wrapper providers no longer fall back to `OPENAI_API_KEY`.** Baseten,
   Cerebras, DeepInfra, Fireworks, Together, Vertex MaaS and the Azure
   delegates read only their own API key environment variable.
