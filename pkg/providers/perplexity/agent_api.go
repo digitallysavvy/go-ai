@@ -3,6 +3,8 @@ package perplexity
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/pplxschema"
 )
 
 // This file mirrors the TS SDK's perplexity-agent-api.ts: the wire shapes for
@@ -245,6 +247,15 @@ func validatePerplexityAgentResponse(raw []byte) error {
 		if err := validatePerplexityOutputItem(itemRaw); err != nil {
 			return err
 		}
+	}
+	// The full zod schema: member types, the required usage counts, a message
+	// content part's type, and the error message.
+	var value interface{}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return err
+	}
+	if bad := pplxschema.Response(value, true, nil); bad != nil {
+		return bad
 	}
 	return nil
 }
