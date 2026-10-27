@@ -254,3 +254,114 @@ func TestLibfxRealCoreNewPromptAfterAbort(t *testing.T) {
 type abortReason struct{}
 
 func (*abortReason) Error() string { return "Stop the first turn" }
+
+// TestLibfxRealCoreCredentialBrokering checks that the Gateway credential
+// never reaches fx-core: the core gets and sends a placeholder, the network
+// gets the real key on Gateway requests only, and a response that echoes
+// the key is redacted before the core or the state file sees it.
+func TestLibfxRealCoreCredentialBrokering(t *testing.T) {
+	const secret = "real-gateway-secret-0123456789"
+	echo := strings.Replace(readFixture(t, "gateway-1.sse.txt"), `"delta":"READY"`, `"delta":"READY `+secret+`"`, 1)
+	if !strings.Contains(echo, secret) {
+		t.Fatal("fixture edit failed")
+	}
+	gw := &gatewayServer{t: t}
+	gw.respond = func(req *http.Request, _ string, index int) (*http.Response, error) {
+		body := readFixture(t, "gateway-0.sse.txt")
+		if index == 1 {
+			body = echo
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	}
+	h := newRealHarness(t, gw, Settings{Auth: harness.AuthEnvironment(map[string]string{"AI_GATEWAY_API_KEY": secret})})
+	var mu sync.Mutex
+	var guestKeys []string
+	var coreHeaders []http.Header
+	var coreBodies []string
+	inner := h.newEngine
+	h.newEngine = func(ctx context.Context, o runtimeOptions) (fxEngine, error) {
+		mu.Lock()
+		guestKeys = append(guestKeys, o.APIKey)
+		mu.Unlock()
+		fetch := o.Fetch
+		o.Fetch = func(req *http.Request) (*http.Response, error) {
+			mu.Lock()
+			coreHeaders = append(coreHeaders, req.Header.Clone())
+			mu.Unlock()
+			resp, err := fetch(req)
+			if err != nil || resp.Body == nil {
+				return resp, err
+			}
+			data, rerr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			mu.Lock()
+			coreBodies = append(coreBodies, string(data))
+			mu.Unlock()
+			resp.Body = io.NopCloser(strings.NewReader(string(data)))
+			return resp, rerr
+		}
+		return inner(ctx, o)
+	}
+	sb := newFakeSandbox()
+	bashEffects(sb, new([]string), &sync.Mutex{}, func(string) bool { return false }, "")
+	ctx := context.Background()
+	session, err := h.DoStart(ctx, startOpts(sb, "brokering"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.DoDestroy(ctx) //nolint:errcheck
+	log := &partLog{}
+	control, err := session.DoPromptTurn(ctx, harness.PromptTurnOptions{TurnSettings: harness.TurnSettings{Model: "anthropic/claude-haiku-4-5"}, Prompt: harness.TextPrompt("go"), Emit: log.emit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitDone(t, control); err != nil {
+		t.Fatalf("turn: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(guestKeys) != 1 || guestKeys[0] == "" || strings.Contains(guestKeys[0], secret) {
+		t.Fatalf("the core was given %q", guestKeys)
+	}
+	placeholder := guestKeys[0]
+	sawPlaceholder := false
+	for _, hdr := range coreHeaders {
+		for name, values := range hdr {
+			for _, v := range values {
+				if strings.Contains(v, secret) {
+					t.Errorf("core request header %s carries the real key", name)
+				}
+				if strings.Contains(v, placeholder) {
+					sawPlaceholder = true
+				}
+			}
+		}
+	}
+	if !sawPlaceholder {
+		t.Errorf("the core never sent the placeholder credential: %v", coreHeaders)
+	}
+	for _, b := range coreBodies {
+		if strings.Contains(b, secret) {
+			t.Error("a response body reached the core with the real key")
+		}
+	}
+	gw.mu.Lock()
+	for _, req := range gw.posts {
+		if got := req.Header.Get("Authorization"); got != "Bearer "+secret {
+			t.Errorf("network Authorization = %q", got)
+		}
+		if strings.Contains(strings.Join(req.Header.Values("Authorization"), ""), placeholder) {
+			t.Error("the placeholder reached the network")
+		}
+		if req.Header.Get("x-client-app") != clientApp || req.Header.Get("user-agent") != clientApp {
+			t.Errorf("client app headers = %q / %q", req.Header.Get("x-client-app"), req.Header.Get("user-agent"))
+		}
+	}
+	gw.mu.Unlock()
+	if strings.Contains(sb.allFiles(), secret) {
+		t.Error("the sandbox state holds the real key")
+	}
+	if strings.Contains(log.text(), secret) {
+		t.Error("the stream carried the real key")
+	}
+}
