@@ -562,10 +562,13 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 				if !ok {
 					return invalidDecisionInput(field, "boolean criteria may only describe true and false")
 				}
-				for k, v := range criteria {
+				// TS checks every key before any description.
+				for k := range criteria {
 					if k != "true" && k != "false" {
 						return invalidDecisionInput(field, "boolean criteria may only describe true and false")
 					}
+				}
+				for _, v := range criteria {
 					if v != nil && !isDecisionInput(v) {
 						return invalidDecisionInput(field, "criteria descriptions must be JSON-compatible strings, objects, arrays, or null")
 					}
