@@ -465,3 +465,36 @@ func TestDecisionLanguageModel_DoDecide_KeepsResponseBody(t *testing.T) {
 		t.Fatalf("response = %+v", result.Response)
 	}
 }
+
+// Go language models report the response body as RawResponse (the body
+// GenerateText's step response reads); TS decision results carry it as
+// response.body.
+func TestDecisionLanguageModel_DoDecide_ReportsRawResponseBody(t *testing.T) {
+	mock := &testutil.MockLanguageModel{
+		ProviderName: "test",
+		ModelName:    "test-model",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:             `{"q0":0.75}`,
+				FinishReason:     types.FinishReasonStop,
+				ResponseMetadata: &types.ResponseMetadata{ID: "r1", ModelID: "m1"},
+				RawResponse:      map[string]interface{}{"typed": true},
+			}, nil
+		},
+	}
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     "x",
+		Questions: map[string]provider.DecisionQuestion{"refund": {Type: "boolean", Instructions: "Refund?"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := result.Response.Body.(map[string]interface{})
+	if result.Response.ID != "r1" || body["typed"] != true {
+		t.Fatalf("response = %+v, want the RawResponse body", result.Response)
+	}
+}
