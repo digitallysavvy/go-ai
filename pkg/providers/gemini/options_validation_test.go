@@ -44,7 +44,7 @@ func TestInvalidLanguageModelOptionsFailTheRequest(t *testing.T) {
 
 func TestValidLanguageModelOptionsPass(t *testing.T) {
 	err := checkLanguageModelOptions(map[string]interface{}{
-		"responseModalities": []string{"TEXT", "IMAGE"},
+		"responseModalities": []string{"TEXT", "IMAGE", "AUDIO"},
 		"thinkingConfig":     map[string]interface{}{"thinkingLevel": "low", "thinkingBudget": 10, "includeThoughts": true},
 		"serviceTier":        "flex",
 		"labels":             map[string]string{"a": "b"},

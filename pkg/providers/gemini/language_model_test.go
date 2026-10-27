@@ -3,6 +3,7 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1019,5 +1020,30 @@ func TestConvertResponse_ServerToolCallArgsKeepKeyOrder(t *testing.T) {
 	result := makeTestModel("gemini-3-pro-preview").convertResponse(resp, nil)
 	if len(result.ToolCalls) != 1 || result.ToolCalls[0].RawArguments != `{"zeta":1,"alpha":{"yy":1,"aa":2}}` {
 		t.Fatalf("tool calls = %#v", result.ToolCalls)
+	}
+}
+
+// Ported from TS #14227: AUDIO is a valid responseModalities value, forwarded
+// to generationConfig, and audio inlineData parts surface as file content.
+func TestAudioResponseModalities(t *testing.T) {
+	m := makeTestModel("lyria-3-clip-preview")
+	opts := &provider.GenerateOptions{ProviderOptions: map[string]interface{}{
+		"google": map[string]interface{}{"responseModalities": []interface{}{"TEXT", "AUDIO"}},
+	}}
+	body := m.buildRequestBody(opts, false)
+	gen, _ := body["generationConfig"].(map[string]interface{})
+	if got := fmt.Sprint(gen["responseModalities"]); got != "[TEXT AUDIO]" {
+		t.Fatalf("responseModalities = %v", got)
+	}
+
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[
+		{"text":"Here is audio:"},{"inlineData":{"mimeType":"audio/wav","data":"YXVkaW8="}}]}}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponseFull(resp, toolNameMapping{}, "", nil)
+	f, ok := result.Content[1].(types.GeneratedFileContent)
+	if !ok || f.MediaType != "audio/wav" || string(f.Data) != "audio" {
+		t.Fatalf("file = %#v", result.Content[1])
 	}
 }

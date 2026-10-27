@@ -1045,3 +1045,19 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     },
 })
 ```
+
+### Response modalities
+
+The `responseModalities` provider option accepts `TEXT`, `IMAGE`, and `AUDIO`; which values work depends on the model. Generated audio is returned as a file part (for example `audio/wav`) in the result content.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Compose a short jingle.",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "responseModalities": []string{"TEXT", "AUDIO"},
+        },
+    },
+})
+```
