@@ -2754,6 +2754,20 @@ type codeInterpreterStreamState struct {
 // event carrying item_id -- response.reasoning_summary_part.added,
 // response.reasoning_summary_text.delta, and
 // response.reasoning_summary_part.done -- not just output_item.done.
+// resolveEventItemID is resolveOutputItemID for the events whose TS schema
+// makes output_index nullish (text delta, reasoning summary part added/done,
+// summary text delta): TS keeps the event's own item id when output_index is
+// null or absent, instead of mapping it through index 0.
+func (s *responsesStream) resolveEventItemID(outputIndex int, itemID string) string {
+	var peek struct {
+		OutputIndex *int `json:"output_index"`
+	}
+	if json.Unmarshal([]byte(s.curEventData), &peek) != nil || peek.OutputIndex == nil {
+		return itemID
+	}
+	return s.resolveOutputItemID(outputIndex, itemID)
+}
+
 func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) string {
 	if first, ok := s.firstItemIDByOutputIndex[outputIndex]; ok {
 		return first
@@ -3343,7 +3357,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeText,
-				ID:   s.resolveOutputItemID(e.OutputIndex, e.ItemID),
+				ID:   s.resolveEventItemID(e.OutputIndex, e.ItemID),
 				Text: e.Delta,
 			})
 			if ok {
@@ -3393,7 +3407,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			// TS unconditionally enqueues reasoning-delta here, even for an
 			// empty-string delta -- no guard.
-			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 			meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoning,
@@ -3423,7 +3437,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// output_item.added; only summary_index > 0 needs boundary handling
 			// here (row a0d2e8c/6fe187f area).
 			if e.SummaryIndex > 0 {
-				itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+				itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 				if accum := s.reasoningAccum[itemID]; accum != nil {
 					accum.summaryParts[e.SummaryIndex] = "active"
 					// A new active summary part means every "can-conclude" part
@@ -3475,7 +3489,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if eventRawChunk != nil {
 				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
-			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 			if accum := s.reasoningAccum[itemID]; accum != nil {
 				if s.store {
 					// The response is stored server-side, so no encrypted_content

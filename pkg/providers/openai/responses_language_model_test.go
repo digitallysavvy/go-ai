@@ -3695,3 +3695,24 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custo
 		return
 	}
 }
+
+// TS keeps the event's own item id when a nullish output_index is absent.
+func TestResponsesStream_TextDeltaWithoutOutputIndexKeepsItemID(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_first","role":"assistant","content":[]}}
+
+data: {"type":"response.output_text.delta","item_id":"msg_other","delta":"hi"}
+
+`)), false)
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatal("no text chunk")
+		}
+		if chunk.Type == provider.ChunkTypeText {
+			if chunk.ID != "msg_other" {
+				t.Fatalf("id = %q, want msg_other", chunk.ID)
+			}
+			return
+		}
+	}
+}
