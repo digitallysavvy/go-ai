@@ -71,8 +71,9 @@ The tool input is `{ "url": string, "offset": integer (optional) }`.
 ## Results
 
 A successful call returns a `DocumentOutput`; a failure returns an
-`ErrorOutput` (the call itself only fails when the call's context is
-cancelled).
+`ErrorOutput`. The call itself fails only when the call's context is
+cancelled, or when a redirect `Location` cannot be parsed as a URL (an
+`Invalid URL` error, as TS `new URL` throws).
 
 | Type | Fields |
 | --- | --- |
