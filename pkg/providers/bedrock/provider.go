@@ -28,6 +28,23 @@ type Provider struct {
 	creds     awsCredentials
 	credsFrom string
 	credExp   time.Time
+
+	// fileCreds caches the parsed shared credentials file, keyed by path,
+	// profile, modification time and size, so a request costs one stat
+	// unless the file was rewritten (rotation takes effect at once). The
+	// entry is also re-parsed after sharedFileCacheTTL, in case a rewrite
+	// kept the size within one coarse file-system timestamp tick.
+	fileCredsKey sharedFileKey
+	fileCreds    awsCredentials
+	fileCredsAt  time.Time
+}
+
+const sharedFileCacheTTL = time.Second
+
+type sharedFileKey struct {
+	path, profile string
+	mod           time.Time
+	size          int64
 }
 
 // Config contains configuration for the AWS Bedrock provider
@@ -290,11 +307,6 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 		return creds, nil
 	}
 
-	now := time.Now()
-	if p.creds.valid() && (p.credExp.IsZero() || now.Before(p.credExp.Add(-5*time.Minute))) {
-		return p.creds, nil
-	}
-
 	if p.config.AWSAccessKeyID != "" || p.config.AWSSecretAccessKey != "" || p.config.SessionToken != "" {
 		creds := awsCredentials{
 			AccessKeyID:     firstNonEmpty(p.config.AWSAccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID")),
@@ -307,18 +319,25 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 		if !creds.valid() {
 			return awsCredentials{}, missingSigV4CredentialsError(creds.AccessKeyID, creds.SecretAccessKey)
 		}
-		p.creds, p.credsFrom, p.credExp = creds, "config", time.Time{}
+		p.credsFrom = "config"
 		return creds, nil
 	}
 	if creds := envCredentials(); creds.valid() {
-		p.creds, p.credsFrom, p.credExp = creds, "env", creds.Expiration
+		p.credsFrom = "env"
 		return creds, nil
 	}
-	if creds, err := sharedFileCredentials(p.config.SharedCredentialsFile, p.config.Profile); err == nil && creds.valid() {
-		p.creds, p.credsFrom, p.credExp = creds, "shared-credentials", creds.Expiration
+	if creds, err := p.cachedSharedFileCredentials(); err == nil && creds.valid() {
+		p.credsFrom = "shared-credentials"
 		return creds, nil
 	} else if err != nil && p.config.SharedCredentialsFile != "" {
 		return awsCredentials{}, err
+	}
+	// Environment and shared-file credentials are re-read on every request
+	// (TS loadSetting reads the environment per request), so rotated STS
+	// credentials are picked up. Only the instance-role lookup, a network
+	// round trip, is cached until shortly before it expires.
+	if p.credsFrom == "instance-role" && p.creds.valid() && time.Now().Before(p.credExp.Add(-5*time.Minute)) {
+		return p.creds, nil
 	}
 	if creds, err := instanceRoleCredentials(ctx); err == nil && creds.valid() {
 		p.creds, p.credsFrom, p.credExp = creds, "instance-role", creds.Expiration
@@ -362,6 +381,56 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// cachedSharedFileCredentials returns sharedFileCredentials for the
+// provider's file and profile, parsing the file again only when its
+// modification time or size changed. The caller holds credMu.
+func (p *Provider) cachedSharedFileCredentials() (awsCredentials, error) {
+	path, profile, err := sharedFileLocation(p.config.SharedCredentialsFile, p.config.Profile)
+	if err != nil {
+		return awsCredentials{}, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return awsCredentials{}, nil
+		}
+		return awsCredentials{}, err
+	}
+	key := sharedFileKey{path: path, profile: profile, mod: info.ModTime(), size: info.Size()}
+	if key == p.fileCredsKey && p.fileCreds.valid() && time.Since(p.fileCredsAt) < sharedFileCacheTTL {
+		return p.fileCreds, nil
+	}
+	creds, err := sharedFileCredentials(path, profile)
+	if err != nil {
+		return awsCredentials{}, err
+	}
+	p.fileCredsKey, p.fileCreds, p.fileCredsAt = key, creds, time.Now()
+	return creds, nil
+}
+
+// sharedFileLocation resolves the shared credentials file path and profile
+// (explicit values, then AWS_SHARED_CREDENTIALS_FILE / AWS_PROFILE, then
+// ~/.aws/credentials and "default").
+func sharedFileLocation(path, profile string) (string, string, error) {
+	if path == "" {
+		path = os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
+	}
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", "", err
+		}
+		path = filepath.Join(home, ".aws", "credentials")
+	}
+	if profile == "" {
+		profile = os.Getenv("AWS_PROFILE")
+	}
+	if profile == "" {
+		profile = "default"
+	}
+	return path, profile, nil
 }
 
 func sharedFileCredentials(path, profile string) (awsCredentials, error) {
