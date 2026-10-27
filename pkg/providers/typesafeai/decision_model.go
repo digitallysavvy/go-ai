@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -447,9 +448,10 @@ func typesafeErrorMessage(statusCode int, body []byte) string {
 		if json.Unmarshal(raw.Detail, &s) == nil {
 			return s
 		}
-		var compact bytes.Buffer
-		if json.Compact(&compact, raw.Detail) == nil {
-			return compact.String()
+		// JSON.stringify of the parsed value: numbers read through a double
+		// (1.0 gives 1), keys in JS order, JS string escaping.
+		if tree, ok := jsonorder.Parse(raw.Detail); ok {
+			return jsonorder.Stringify(tree)
 		}
 	}
 	if haveErrorType {
