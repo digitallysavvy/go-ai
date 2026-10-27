@@ -411,8 +411,8 @@ func (b *Batch) DoGetBatchResults(ctx context.Context, opts provider.BatchV4Oper
 		return newGoogleBatchInlineResultsStream(b, inlined), nil
 	}
 
-	responsesFile := operation.responsesFile()
-	if responsesFile == "" {
+	responsesFile, hasResponsesFile := operation.responsesFile()
+	if !hasResponsesFile {
 		if status.Status == provider.BatchStatusCompleted {
 			return nil, providererrors.NewInvalidResponseDataError(operation,
 				fmt.Sprintf("Google batch %q completed without batch output.", opts.BatchID))
@@ -581,7 +581,8 @@ type googleBatchInlinedResponseWire struct {
 }
 
 type googleBatchOutputWire struct {
-	ResponsesFile    string `json:"responsesFile"`
+	// ResponsesFile is a pointer: TS `??` keeps an empty string.
+	ResponsesFile    *string `json:"responsesFile"`
 	InlinedResponses *struct {
 		InlinedResponses []googleBatchInlinedResponseWire `json:"inlinedResponses"`
 	} `json:"inlinedResponses"`
@@ -590,7 +591,7 @@ type googleBatchOutputWire struct {
 type googleBatchOperationWire struct {
 	Name     string `json:"name"`
 	Metadata *struct {
-		State      string                 `json:"state"`
+		State      *string                `json:"state"`
 		CreateTime string                 `json:"createTime"`
 		BatchStats *googleBatchStatsWire  `json:"batchStats"`
 		Output     *googleBatchOutputWire `json:"output"`
@@ -610,25 +611,28 @@ func (o googleBatchOperationWire) inlinedResponses() []googleBatchInlinedRespons
 	return nil
 }
 
-func (o googleBatchOperationWire) responsesFile() string {
-	if o.Metadata != nil && o.Metadata.Output != nil && o.Metadata.Output.ResponsesFile != "" {
-		return o.Metadata.Output.ResponsesFile
+// responsesFile is TS `metadata.output.responsesFile ?? response.responsesFile`:
+// only null/absent falls through, so an empty string is a value.
+func (o googleBatchOperationWire) responsesFile() (string, bool) {
+	if o.Metadata != nil && o.Metadata.Output != nil && o.Metadata.Output.ResponsesFile != nil {
+		return *o.Metadata.Output.ResponsesFile, true
 	}
-	if o.Response != nil {
-		return o.Response.ResponsesFile
+	if o.Response != nil && o.Response.ResponsesFile != nil {
+		return *o.Response.ResponsesFile, true
 	}
-	return ""
+	return "", false
 }
 
 func (o googleBatchOperationWire) toStatus() provider.BatchV4Status {
 	var rawStatus string
-	if o.Metadata != nil {
-		rawStatus = o.Metadata.State
+	hasRawStatus := false
+	if o.Metadata != nil && o.Metadata.State != nil {
+		rawStatus, hasRawStatus = *o.Metadata.State, true
 	}
 	batchErr := o.Error.toBatchError("Google batch failed.")
 
 	status := provider.BatchV4Status{
-		Status:    mapGoogleBatchStatus(rawStatus, o.Done, batchErr != nil),
+		Status:    mapGoogleBatchStatus(rawStatus, hasRawStatus, o.Done, batchErr != nil),
 		RawStatus: rawStatus,
 		Error:     batchErr,
 	}
@@ -639,11 +643,14 @@ func (o googleBatchOperationWire) toStatus() provider.BatchV4Status {
 	return status
 }
 
-func mapGoogleBatchStatus(rawStatus string, done bool, hasError bool) provider.BatchStatusValue {
+// mapGoogleBatchStatus is TS mapGoogleBatchStatus. hasRawStatus is false only
+// when the state is absent or null: an empty-string state is a value, maps to
+// no known state and so stays pending even when done is true.
+func mapGoogleBatchStatus(rawStatus string, hasRawStatus bool, done bool, hasError bool) provider.BatchStatusValue {
 	if hasError {
 		return provider.BatchStatusFailed
 	}
-	if rawStatus == "" {
+	if !hasRawStatus {
 		if done {
 			return provider.BatchStatusCompleted
 		}
