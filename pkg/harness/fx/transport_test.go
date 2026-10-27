@@ -448,3 +448,75 @@ func (r *slowReader) Read(p []byte) (int, error) {
 	r.data = r.data[1:]
 	return 1, nil
 }
+
+// A Gateway request whose path is itself an absolute or scheme-relative URL
+// must not be rewritten to another origin: the transport would add the real
+// key to a request that leaves the Gateway.
+func TestTransportRewriteStaysOnGatewayOrigin(t *testing.T) {
+	b := &credentialBroker{placeholder: "fx-brokered-ph", real: "sk-real-secret"}
+	for _, base := range []string{"", "https://gateway.example/proxy"} {
+		for _, path := range []string{"/https://chatgpt.com/steal", "///chatgpt.com/steal", "/https:%2F%2Fchatgpt.com/steal"} {
+			h := &transportHarness{turn: newTurnState()}
+			var forwarded []*http.Request
+			o := h.options(func(req *http.Request) (*http.Response, error) {
+				forwarded = append(forwarded, req)
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+			})
+			o.baseURL = base
+			o.broker = b
+			tr := newTransport(o)
+			req, err := http.NewRequest(http.MethodGet, "https://ai-gateway.vercel.sh"+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer fx-brokered-ph")
+			_, _ = readAll(t, tr, req)
+			want := defaultGatewayOrigin
+			if base != "" {
+				want = "https://gateway.example"
+			}
+			for _, f := range forwarded {
+				if originOf(f.URL) != want {
+					t.Errorf("base %q path %q: forwarded to %s with Authorization %q", base, path, f.URL, f.Header.Get("Authorization"))
+				}
+			}
+			tr.stop()
+		}
+	}
+}
+
+// The real key is redacted from response headers as well as bodies.
+func TestCredentialBrokerRedactsResponseHeaders(t *testing.T) {
+	b := &credentialBroker{placeholder: "fx-brokered-ph", real: "sk-real-secret"}
+	h := &transportHarness{turn: newTurnState()}
+	o := h.options(func(req *http.Request) (*http.Response, error) {
+		hdr := http.Header{"X-Echo": {req.Header.Get("Authorization")}, "Content-Type": {"text/event-stream"}}
+		status := 200
+		if req.Method == http.MethodPost {
+			status = 401
+		}
+		return &http.Response{StatusCode: status, Header: hdr, Body: io.NopCloser(strings.NewReader("x"))}, nil
+	})
+	o.broker = b
+	tr := newTransport(o)
+	pass, _ := http.NewRequest(http.MethodGet, "https://ai-gateway.vercel.sh/v1/models", nil)
+	pass.Header.Set("Authorization", "Bearer fx-brokered-ph")
+	model := modelRequest(t, `{"prompt":[]}`)
+	model.Header.Set("Authorization", "Bearer fx-brokered-ph")
+	for _, req := range []*http.Request{pass, model} {
+		resp, err := tr.fetch(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		for name, values := range resp.Header {
+			for _, v := range values {
+				if strings.Contains(v, "sk-real-secret") {
+					t.Errorf("%s %s: header %s = %q", req.Method, req.URL, name, v)
+				}
+			}
+		}
+	}
+	tr.stop()
+}

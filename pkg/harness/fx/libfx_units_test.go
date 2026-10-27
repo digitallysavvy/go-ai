@@ -480,3 +480,22 @@ func TestSkillsInstructions(t *testing.T) {
 		t.Error("duplicate skill accepted")
 	}
 }
+
+// The default (sandbox-ACP) runtime refuses libfx lifecycle state at
+// DoStart, for both a resume and a continuation, with the typed error.
+func TestLegacyRuntimeDoStartRejectsLibfxState(t *testing.T) {
+	old, err := CreateFx()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := json.RawMessage(`{"version":1,"stateFileName":"state.json"}`)
+	for name, opts := range map[string]harness.StartOptions{
+		"resume":   {SessionID: "x", ResumeFrom: &harness.ResumeSessionState{Type: "resume-session", HarnessID: "fx", SpecificationVersion: "harness-v1", Data: data}},
+		"continue": {SessionID: "x", ContinueFrom: &harness.ContinueTurnState{Type: "continue-turn", HarnessID: "fx", SpecificationVersion: "harness-v1", Data: data}},
+	} {
+		var inc *IncompatibleStateError
+		if _, err := old.DoStart(context.Background(), opts); !errors.As(err, &inc) || !strings.Contains(err.Error(), "RuntimeLibfx") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
