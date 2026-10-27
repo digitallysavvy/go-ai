@@ -377,6 +377,7 @@ func TestLegacyOpenTelemetryNestedEmbedRerankSpans(t *testing.T) {
 	maxRetries := 2
 
 	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID:        "embed-call",
 		OperationType: "ai.embed",
 		ModelProvider: "openai",
 		ModelID:       "text-embedding-3-small",
@@ -429,6 +430,7 @@ func TestLegacyOpenTelemetryNestedEmbedRerankSpans(t *testing.T) {
 	}
 
 	rerankRootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID:        "rerank-call",
 		OperationType: "ai.rerank",
 		ModelProvider: "cohere",
 		ModelID:       "rerank-v3.5",
@@ -707,6 +709,10 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 		StepNumber:   0,
 		FinishReason: "tool-calls",
 	})
+	// TS drops model-call events for a callId with no operation state, so
+	// the embed and rerank calls get their own operation roots.
+	embedCtx := integration.OnStart(context.Background(), TelemetryStartEvent{CallID: "embed-1", OperationType: "ai.embed", Settings: settings})
+	rerankCtx := integration.OnStart(context.Background(), TelemetryStartEvent{CallID: "rerank-1", OperationType: "ai.rerank", Settings: settings})
 	integration.OnEmbedStart(ctx, EmbeddingModelCallStartEvent{
 		Settings:      settings,
 		CallID:        "embed-1",
@@ -737,6 +743,8 @@ func TestOTelIntegrationCustomSpanAttributes(t *testing.T) {
 	integration.OnEnd(ctx, TelemetryFinishEvent{Settings: settings, FinishReason: "stop"})
 
 	ended := rec.Ended()
+	integration.OnEnd(embedCtx, TelemetryFinishEvent{Settings: settings, CallID: "embed-1"})
+	integration.OnEnd(rerankCtx, TelemetryFinishEvent{Settings: settings, CallID: "rerank-1"})
 	if len(ended) != 5 {
 		t.Fatalf("ended spans = %d, want 5", len(ended))
 	}

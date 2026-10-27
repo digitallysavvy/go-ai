@@ -29,6 +29,8 @@ type Issue struct {
 	Expected      string
 	Values        []string
 	Discriminator string
+	// Keys is the unrecognized_keys "keys" list (a strict object).
+	Keys []string
 	// Errors holds, for a plain invalid_union issue, each member's first
 	// issue with paths relative to the union value (zod v4 nested `errors`).
 	Errors [][]*Issue
@@ -86,6 +88,8 @@ func (i *Issue) json() []byte {
 			vals = []string{}
 		}
 		parts = append(parts, `"code":`+enc(i.Code), `"values":`+enc(vals))
+	case i.Code == "unrecognized_keys":
+		parts = append(parts, `"code":`+enc(i.Code), `"keys":`+enc(i.Keys))
 	case i.Discriminator != "":
 		parts = append(parts, `"code":`+enc(i.Code), `"errors":[]`, `"note":"No matching discriminator"`, `"discriminator":`+enc(i.Discriminator))
 	case i.Code == "invalid_union":
@@ -285,6 +289,32 @@ func Object(fields ...Field) Node {
 		}
 		return join(bad)
 	}
+}
+
+// StrictEmptyObject is z.object({}).strict(): an object with no keys. Go maps
+// lose wire order, so the unrecognized keys are reported sorted.
+func StrictEmptyObject(v interface{}, present bool, path []interface{}) *Issue {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return Invalid("object", v, present, path)
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	quoted := make([]string, len(keys))
+	for i, k := range keys {
+		quoted[i] = `"` + k + `"`
+	}
+	message := "Unrecognized key: "
+	if len(keys) > 1 {
+		message = "Unrecognized keys: "
+	}
+	return &Issue{Path: path, Code: "unrecognized_keys", Keys: keys, Message: message + strings.Join(quoted, ", ")}
 }
 
 // Record is z.record(z.string(), z.unknown()): an object with any values.

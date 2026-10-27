@@ -65,7 +65,8 @@ type loopTelemetry struct {
 // adoptPreparedTelemetry applies a PrepareCall telemetry override (TS
 // prepareCall `telemetry`). Later spans use the new settings. When the caller
 // already opened a root span under the previous settings, the new settings
-// have none, so the loop opens one for them and closes it at the end.
+// have none, so the loop opens one for them, under a new call id, and closes
+// it at the end.
 func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTelemetry, settings *ai.TelemetrySettings, messages []types.Message) context.Context {
 	if lt == nil || settings == nil || settings == lt.settings {
 		return ctx
@@ -74,7 +75,10 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 	if lt.ownsRoot {
 		return ctx
 	}
+	// The caller's root keeps its call id (and the call state integrations
+	// keep under it) for its own end event; the late root is a call of its own.
 	lt.ownsRoot = true
+	lt.callID = newTelemetryCallID()
 	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
 	lt.rootCtx = ctx
 	return ctx
@@ -102,7 +106,7 @@ func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySett
 		Settings:         settings,
 		System:           sys,
 		Messages:         messages,
-		Headers:          a.config.Headers,
+		Headers:          loopHeaders(a.config.Headers),
 		MaxOutputTokens:  a.config.MaxTokens,
 		Temperature:      a.config.Temperature,
 		TopP:             a.config.TopP,

@@ -198,7 +198,7 @@ func TestAdoptPreparedTelemetryStartEventCarriesRequestSettings(t *testing.T) {
 		t.Fatalf("start events = %d, want 1", len(rec.starts))
 	}
 	e := rec.starts[0]
-	if e.CallID != "c1" || e.Temperature == nil || *e.Temperature != temp || e.MaxRetries == nil || *e.MaxRetries != 2 {
+	if e.CallID == "c1" || e.CallID == "" || lt.callID != e.CallID || e.Temperature == nil || *e.Temperature != temp || e.MaxRetries == nil || *e.MaxRetries != 2 {
 		t.Fatalf("start event = %+v", e)
 	}
 }

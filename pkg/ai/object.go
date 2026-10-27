@@ -869,13 +869,15 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		Seed:             opts.Seed,
 		MaxRetries:       &objectMaxRetries,
 		SettingsOutput:   string(opts.OutputMode),
+		// TS ai.schema.name/description are plain values; only ai.schema
+		// is an input.
+		SchemaName:        opts.SchemaName,
+		SchemaDescription: opts.SchemaDescription,
 	}
 	if telObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
 		startEvent.Schema = schemaToMap(opts.Schema)
-		startEvent.SchemaName = opts.SchemaName
-		startEvent.SchemaDescription = opts.SchemaDescription
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
@@ -1806,13 +1808,15 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Seed:             opts.Seed,
 		MaxRetries:       &streamObjectMaxRetries,
 		SettingsOutput:   string(opts.OutputMode),
+		// TS ai.schema.name/description are plain values; only ai.schema
+		// is an input.
+		SchemaName:        opts.SchemaName,
+		SchemaDescription: opts.SchemaDescription,
 	}
 	if streamObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
 		startEvent.Schema = schemaToMap(opts.Schema)
-		startEvent.SchemaName = opts.SchemaName
-		startEvent.SchemaDescription = opts.SchemaDescription
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 

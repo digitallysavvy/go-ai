@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -880,7 +881,8 @@ func modelCallID(parts ...string) string {
 // TS avoids this by giving each integration class its own `callStates =
 // new Map<string, CallState>()`, keyed by the event's callId
 // (packages/otel/src/legacy-open-telemetry.ts / open-telemetry.ts): every
-// lifecycle method looks up (or creates) its OWN state for event.callId and
+// lifecycle method looks up its OWN state for event.callId (only the
+// operation starts create it; the others return when there is none) and
 // reads/writes rootSpan/stepSpan/toolSpans/etc there, never through ambient
 // OTel context. This ports that: legacyCallState is LegacyOpenTelemetry's own
 // per-call bookkeeping (a parallel, GenAI-specific genAICallState exists in
@@ -952,12 +954,18 @@ func legacyDeleteState(callID string) {
 }
 
 // legacyRootSpanFor resolves LegacyOpenTelemetry's own root span for callID.
-// Falls back to trace.SpanFromContext(ctx) when callID is empty or has no
-// recorded root span yet, so any call site not yet updated to populate
-// CallID keeps working exactly as before (single-integration behavior is
-// unaffected either way).
+// An empty callID (a call site that doesn't populate CallID) falls back to
+// trace.SpanFromContext(ctx); a callID with no recorded root span yields a
+// non-recording span, as TS returns when getCallState finds none. Like TS
+// getCallState it never creates call state.
 func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
-	if st := legacyState(callID); st != nil {
+	if callID == "" {
+		return trace.SpanFromContext(ctx)
+	}
+	// TS `if (!state?.rootSpan) return;`: without our own root span the span
+	// in ctx belongs to the caller or to another integration, so return a
+	// non-recording span and let the handler stop.
+	if st := legacyLoadedState(callID); st != nil {
 		st.mu.Lock()
 		span := st.rootSpan
 		st.mu.Unlock()
@@ -965,7 +973,7 @@ func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
 			return span
 		}
 	}
-	return trace.SpanFromContext(ctx)
+	return trace.SpanFromContext(context.Background())
 }
 
 // finiteFloat64Attr returns an attribute.KeyValue for a float64 value, or
@@ -1021,38 +1029,118 @@ func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settin
 	}
 	out := make([]attribute.KeyValue, 0, len(attrs))
 	for key, value := range attrs {
-		switch v := value.(type) {
-		case string:
-			out = append(out, attribute.String(key, v))
-		case bool:
-			out = append(out, attribute.Bool(key, v))
-		case int:
-			out = append(out, attribute.Int(key, v))
-		case int64:
-			out = append(out, attribute.Int64(key, v))
-		case float64:
-			if kv, ok := finiteFloat64Attr(key, v); ok {
-				out = append(out, kv)
-			}
-		case []string:
-			out = append(out, attribute.StringSlice(key, v))
-		case []bool:
-			out = append(out, attribute.BoolSlice(key, v))
-		case []int:
-			out = append(out, attribute.IntSlice(key, v))
-		case []int64:
-			out = append(out, attribute.Int64Slice(key, v))
-		case []float64:
-			if finite, ok := finiteFloat64Slice(v); ok {
-				out = append(out, attribute.Float64Slice(key, finite))
-			}
-		default:
-			if b, err := jsonstr.Marshal(v); err == nil {
-				out = append(out, attribute.String(key, string(b)))
-			}
+		if kv, ok := enrichAttribute(key, value); ok {
+			out = append(out, kv)
 		}
 	}
 	return out
+}
+
+// enrichAttribute converts one EnrichSpan value like TS sanitizeAttributes
+// followed by OTel's attribute check: strings, booleans and finite numbers
+// are kept; an array keeps its primitives when they all have one type (and,
+// for numbers, are all finite); anything else (null, objects, mixed arrays)
+// is dropped.
+func enrichAttribute(key string, value interface{}) (attribute.KeyValue, bool) {
+	switch v := value.(type) {
+	case nil:
+		return attribute.KeyValue{}, false
+	case string:
+		return attribute.String(key, v), true
+	case bool:
+		return attribute.Bool(key, v), true
+	case int:
+		return attribute.Int(key, v), true
+	case int8:
+		return attribute.Int64(key, int64(v)), true
+	case int16:
+		return attribute.Int64(key, int64(v)), true
+	case int32:
+		return attribute.Int64(key, int64(v)), true
+	case int64:
+		return attribute.Int64(key, v), true
+	case uint8:
+		return attribute.Int64(key, int64(v)), true
+	case uint16:
+		return attribute.Int64(key, int64(v)), true
+	case uint32:
+		return attribute.Int64(key, int64(v)), true
+	case uint:
+		if uint64(v) > math.MaxInt64 {
+			return finiteFloat64Attr(key, float64(v))
+		}
+		return attribute.Int64(key, int64(v)), true
+	case uint64:
+		if v > math.MaxInt64 {
+			return finiteFloat64Attr(key, float64(v))
+		}
+		return attribute.Int64(key, int64(v)), true
+	case float32:
+		return finiteFloat64Attr(key, float64(v))
+	case float64:
+		return finiteFloat64Attr(key, v)
+	case []string:
+		return attribute.StringSlice(key, v), true
+	case []bool:
+		return attribute.BoolSlice(key, v), true
+	case []int:
+		return attribute.IntSlice(key, v), true
+	case []int64:
+		return attribute.Int64Slice(key, v), true
+	case []float64:
+		if finite, ok := finiteFloat64Slice(v); ok {
+			return attribute.Float64Slice(key, finite), true
+		}
+		return attribute.KeyValue{}, false
+	case []interface{}:
+		return enrichArrayAttribute(key, v)
+	}
+	return attribute.KeyValue{}, false
+}
+
+// enrichArrayAttribute is sanitizeAttributeValue for a mixed array: only the
+// string, number and boolean items count, and they must share one type.
+func enrichArrayAttribute(key string, items []interface{}) (attribute.KeyValue, bool) {
+	var strs []string
+	var nums []float64
+	var bools []bool
+	for _, item := range items {
+		switch v := item.(type) {
+		case string:
+			strs = append(strs, v)
+		case bool:
+			bools = append(bools, v)
+		case float64:
+			nums = append(nums, v)
+		case float32:
+			nums = append(nums, float64(v))
+		case int:
+			nums = append(nums, float64(v))
+		case int64:
+			nums = append(nums, float64(v))
+		case int32:
+			nums = append(nums, float64(v))
+		}
+	}
+	kinds := 0
+	for _, n := range []int{len(strs), len(nums), len(bools)} {
+		if n > 0 {
+			kinds++
+		}
+	}
+	if kinds != 1 {
+		return attribute.KeyValue{}, false
+	}
+	switch {
+	case len(strs) > 0:
+		return attribute.StringSlice(key, strs), true
+	case len(bools) > 0:
+		return attribute.BoolSlice(key, bools), true
+	}
+	if finite, ok := finiteFloat64Slice(nums); ok {
+		return attribute.Float64Slice(key, finite), true
+	}
+	return attribute.KeyValue{}, false
 }
 
 // settingsFunctionID returns settings.FunctionID, or "" when settings is nil.
@@ -1469,52 +1557,67 @@ func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value
 	if value == nil {
 		return attrs
 	}
-	if nested, ok := value.(map[string]interface{}); ok {
+	if nested, ok := runtimeContextObject(value); ok {
 		for nestedKey, nestedValue := range nested {
 			attrs = appendRuntimeContextAttribute(attrs, key+"."+nestedKey, nestedValue)
 		}
 		return attrs
 	}
-	switch v := value.(type) {
-	case string:
-		return append(attrs, attribute.String(key, v))
-	case bool:
-		return append(attrs, attribute.Bool(key, v))
-	case int:
-		return append(attrs, attribute.Int(key, v))
-	case int64:
-		return append(attrs, attribute.Int64(key, v))
-	case float64:
-		if kv, ok := finiteFloat64Attr(key, v); ok {
-			return append(attrs, kv)
-		}
-		return attrs
-	case []string:
-		return append(attrs, attribute.StringSlice(key, v))
-	case []bool:
-		return append(attrs, attribute.BoolSlice(key, v))
-	case []int:
-		return append(attrs, attribute.IntSlice(key, v))
-	case []int64:
-		return append(attrs, attribute.Int64Slice(key, v))
-	case []float64:
-		if finite, ok := finiteFloat64Slice(v); ok {
-			return append(attrs, attribute.Float64Slice(key, finite))
-		}
-		return attrs
-	default:
-		if b, err := jsonstr.Marshal(v); err == nil {
-			return append(attrs, attribute.String(key, string(b)))
-		}
-		return attrs
+	// Arrays and primitives are kept as they are, then sanitized like every
+	// TS attribute value (selectAttributes -> sanitizeAttributeValue).
+	if kv, ok := enrichAttribute(key, value); ok {
+		return append(attrs, kv)
 	}
+	return attrs
+}
+
+// runtimeContextObject returns the entries of a value TS treats as an object
+// to flatten (typeof 'object', not an array): any string-keyed map, or a
+// struct by its JSON fields.
+func runtimeContextObject(value interface{}) (map[string]interface{}, bool) {
+	if m, ok := value.(map[string]interface{}); ok {
+		return m, true
+	}
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, false
+		}
+		out := make(map[string]interface{}, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out[iter.Key().String()] = iter.Value().Interface()
+		}
+		return out, true
+	case reflect.Struct:
+		b, err := json.Marshal(rv.Interface())
+		if err != nil {
+			return nil, false
+		}
+		var out map[string]interface{}
+		if json.Unmarshal(b, &out) != nil {
+			return nil, false
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // stepSpanFor resolves this integration's open step span for callID from its
-// own call state (TS state.stepSpan), falling back to the step span in ctx,
-// which holds only the last registered integration's span.
+// own call state (TS state.stepSpan). Only an event without a CallID falls
+// back to the step span in ctx, which holds only the last registered
+// integration's span.
 func (i LegacyOpenTelemetry) stepSpanFor(ctx context.Context, callID string) (trace.Span, bool) {
 	if key := i.stateKey(callID); key != "" {
+		// TS `if (!state?.stepSpan) return;`: a step span in ctx is not
+		// necessarily ours.
 		if v, ok := legacyCallStates.Load(key); ok {
 			st := v.(*legacyCallState)
 			st.mu.Lock()
@@ -1524,6 +1627,7 @@ func (i LegacyOpenTelemetry) stepSpanFor(ctx context.Context, callID string) (tr
 				return span, true
 			}
 		}
+		return nil, false
 	}
 	span, ok := ctx.Value(stepSpanKey{}).(trace.Span)
 	return span, ok
@@ -1707,7 +1811,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		}
 	}
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.stepSpan = stepSpan
 			st.mu.Unlock()
@@ -1783,7 +1887,7 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	// OnEmbedEnd ever fires — otherwise this span leaks (TS's onError/onAbort
 	// both iterate state.embedSpans.values()).
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.embedSpans == nil {
 				st.embedSpans = make(map[string]trace.Span)
@@ -1807,7 +1911,7 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			delete(st.embedSpans, e.EmbedCallID)
 			st.mu.Unlock()
@@ -1878,7 +1982,7 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	// state.rerankSpan = {span, context}) so OnError/OnAbort can defensively
 	// close it if the provider call itself fails before OnRerankEnd fires.
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = span
 			st.mu.Unlock()
@@ -1900,7 +2004,7 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 	callID := modelCallID(e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = nil
 			st.mu.Unlock()
@@ -1999,7 +2103,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	}
 	child.SetAttributes(runtimeCtxAttrs...)
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.toolSpans == nil {
 				st.toolSpans = make(map[string]trace.Span)
@@ -2317,7 +2421,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	// state.stepSpan if it's still set, mirroring TS's onAbort/onError) don't
 	// try to end it a second time.
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil
@@ -2349,7 +2453,7 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 	}
 	stepSpan.End()
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil
@@ -2557,10 +2661,10 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 		}
 	}
 	// H5: close any of OUR OWN still-open step/tool spans, mirroring TS's
-	// onError (`if (state.stepSpan) { recordSpanError(...); .end(); }` and a
-	// loop over state.toolSpans) — otherwise a step or tool span left open by
-	// an error that skipped OnStepEnd/OnToolExecutionEnd would leak.
-	if st := legacyState(i.stateKey(e.CallID)); st != nil {
+	// onError (`if (state.stepSpan) { recordSpanError(...); .end(); }`). TS
+	// legacy onError leaves tool spans open (only its onAbort and the GenAI
+	// onError end them); Go ends them with the error so they are not leaked.
+	if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
 		st.stepSpan = nil
@@ -2618,8 +2722,8 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 // OnAbort closes any in-flight step span (mirroring TS onAbort's
 // `state.stepSpan.end()`, no error status — LegacyOpenTelemetry has no
 // inferenceSpan of its own to close, unlike GenAI's OpenTelemetry), any
-// in-flight tool spans, and records the abort reason on the root span before
-// ending it. H5: all three are resolved by CallID from our own state (never
+// in-flight tool, embed, rerank and decision spans, and then ends the root
+// span (TS records no abort reason on it). H5: all three are resolved by CallID from our own state (never
 // trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this closes
 // the right spans even when another integration is also registered.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
@@ -2632,7 +2736,7 @@ func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent)
 			}
 		}
 	}
-	if st := legacyState(i.stateKey(e.CallID)); st != nil {
+	if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
 		st.stepSpan = nil
@@ -2659,7 +2763,7 @@ func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent)
 		if rerankSpan != nil && rerankSpan.IsRecording() {
 			rerankSpan.End()
 		}
-	} else if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
+	} else if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); e.CallID == "" && ok && stepSpan.IsRecording() {
 		stepSpan.End()
 	}
 	span := legacyRootSpanFor(i.stateKey(e.CallID), ctx)

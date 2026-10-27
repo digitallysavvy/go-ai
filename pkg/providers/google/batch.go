@@ -785,13 +785,8 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 
 	// TS safeValidateTypes(responseSchema): a result that does not match the
 	// schema fails that item.
-	// The schema strips an `error` key, so it is not decoded into the typed
-	// response (its shadowing field takes any JSON).
-	var decoded struct {
-		gemini.Response
-		Error json.RawMessage `json:"error"`
-	}
-	if geminischema.BatchValidationMessage(string(response)) != "" || json.Unmarshal(response, &decoded) != nil {
+	var decoded gemini.GenerateResponse
+	if geminischema.GenerateValidationMessage(string(response)) != "" || json.Unmarshal(response, &decoded) != nil {
 		return &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     key,

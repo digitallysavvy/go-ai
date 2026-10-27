@@ -51,6 +51,14 @@ type StreamError struct {
 	Details json.RawMessage `json:"details,omitempty"`
 }
 
+// GenerateResponse decodes a doGenerate body or batch result line (TS
+// responseSchema). That schema has no `error` key, so one of any shape is
+// ignored rather than decoded into Response.Error.
+type GenerateResponse struct {
+	Response
+	Error json.RawMessage `json:"error,omitempty"`
+}
+
 // tokenDetail is one entry of a *TokensDetails array (modality + token count).
 type tokenDetail struct {
 	Modality   string `json:"modality,omitempty"`

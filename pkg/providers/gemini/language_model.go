@@ -72,7 +72,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 
 	generateContent := func(body map[string]interface{}) (Response, *internalhttp.Response, error) {
-		var response Response
+		var response GenerateResponse
 		resp, err := m.cfg.Client.DoJSONResponse(ctx, internalhttp.Request{
 			Method:  http.MethodPost,
 			Path:    m.cfg.GeneratePath(m.modelID),
@@ -81,9 +81,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 			// TS createJsonResponseHandler(responseSchema): a body that is not
 			// JSON or does not match the schema is an APICallError
 			// "Invalid JSON response".
-			ValidateResponse: providerutils.NodeResponseValidator(m.cfg.ProviderName, zChunk),
+			ValidateResponse: providerutils.NodeResponseValidator(m.cfg.ProviderName, zResponse),
 		}, &response)
-		return response, resp, err
+		return response.Response, resp, err
 	}
 
 	response, resp, err := generateContent(reqBody)

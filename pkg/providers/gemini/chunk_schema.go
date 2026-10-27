@@ -6,10 +6,10 @@ import (
 )
 
 // The zod chunkSchema / responseSchema port lives in pkg/internal/geminischema
-// (shared with the google batch result check). A frame that does not match
-// becomes an `error` part (TypeValidationError in TS) and the stream keeps
-// reading.
-var zChunk = geminischema.Response
+// (shared with the google batch result check). A stream frame that does not
+// match chunkSchema becomes an `error` part (TypeValidationError in TS) and
+// the stream keeps reading; zResponse is the doGenerate responseSchema.
+var zResponse = geminischema.GenerateResponse
 
 // chunkValidationMessage validates a JSON frame against the TS chunkSchema.
 // It returns "" when the frame matches (or is not JSON, which is reported
