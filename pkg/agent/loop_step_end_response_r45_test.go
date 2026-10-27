@@ -33,7 +33,7 @@ func TestGenerateAgentStepEndTelemetryCarriesResponseMetadata(t *testing.T) {
 		}
 		got := map[string]string{}
 		for _, kv := range s.Attributes() {
-			got[string(kv.Key)] = kv.Value.Emit()
+			got[string(kv.Key)] = kv.Value.String()
 		}
 		for _, key := range []string{"ai.response.id", "ai.response.model", "ai.response.timestamp", "gen_ai.response.id"} {
 			if got[key] == "" {

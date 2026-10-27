@@ -53,9 +53,9 @@ func TestLegacyStepAndToolSpansUseOwnCallStateWithLaterIntegration(t *testing.T)
 		return attribute.Value{}, false
 	}
 	if v, ok := attrOf("ai.generateText.doGenerate", "gen_ai.request.temperature"); !ok || v.AsFloat64() != temperature {
-		t.Fatalf("legacy step span gen_ai.request.temperature = %v (%v)", v.Emit(), ok)
+		t.Fatalf("legacy step span gen_ai.request.temperature = %v (%v)", v.String(), ok)
 	}
 	if v, ok := attrOf("ai.toolCall", "ai.settings.context.tenant"); !ok || v.AsString() != "acme" {
-		t.Fatalf("legacy tool span ai.settings.context.tenant = %v (%v)", v.Emit(), ok)
+		t.Fatalf("legacy tool span ai.settings.context.tenant = %v (%v)", v.String(), ok)
 	}
 }
