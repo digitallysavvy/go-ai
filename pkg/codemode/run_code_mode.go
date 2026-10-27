@@ -2,6 +2,7 @@ package codemode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync/atomic"
@@ -140,8 +141,16 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		// it round-trips through the sandbox (e.g. a script that catches a
 		// rejected tool call's error and rethrows, or lets it propagate
 		// unchanged) -- mirrors TypeScript's findPreservedCodeModeError.
-		if codeModeErr := bridge.lastCodeModeErr(); codeModeErr != nil {
-			return nil, codeModeErr
+		// Only the script's own rejection can be such an error; an engine
+		// failure (timeout, abort, CPU budget) is reported as itself.
+		var rejected *guestRejection
+		if errors.As(err, &rejected) {
+			if rejected.hasMessage {
+				if codeModeErr := bridge.preservedCodeModeErr(rejected.message); codeModeErr != nil {
+					return nil, codeModeErr
+				}
+			}
+			return nil, rejected.err
 		}
 		return nil, err
 	}
@@ -399,6 +408,18 @@ func toCodeModeInterrupt(continuation Continuation, index int) (*Interrupt, erro
 	}, nil
 }
 
+// guestRejection is the sandboxed script's own failure (its top-level
+// promise rejected). message is the rejection's `message` when it is an
+// Error, used to find the bridge error it carries (preservedCodeModeErr).
+type guestRejection struct {
+	err        error
+	message    string
+	hasMessage bool
+}
+
+func (e *guestRejection) Error() string { return e.err.Error() }
+func (e *guestRejection) Unwrap() error { return e.err }
+
 func stringSlicesEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -564,7 +585,14 @@ func driveCodeModeExecution(jsCtx *qjs.Context, bridge *toolBridge, source strin
 			continue
 		case qjs.PromiseStateRejected:
 			reason := value.PromiseResult()
-			return "", false, false, reason.Exception()
+			rejected := &guestRejection{err: reason.Exception()}
+			if reason.IsError() {
+				msg := reason.GetPropertyStr("message")
+				if msg.IsString() {
+					rejected.message, rejected.hasMessage = msg.String(), true
+				}
+			}
+			return "", false, false, rejected
 		default: // qjs.PromiseStatePending
 			ran, rerr := jsCtx.RunPendingJobs()
 			if rerr != nil {

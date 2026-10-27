@@ -92,14 +92,13 @@ type toolBridge struct {
 	// call.
 	fatalErr CodeModeError
 
-	// lastTypedErr/lastTypedErrIndex record the most recent CodeModeError
-	// produced by a bridge call, so RunCodeMode can re-surface the
-	// original typed error (via the lastCodeModeErr getter) instead of the
-	// generic JavaScript exception text that comes back once it
-	// round-trips through the sandbox (mirrors TypeScript's
-	// codeModeErrors accumulator / findPreservedCodeModeError).
-	lastTypedErr      CodeModeError
-	lastTypedErrIndex int
+	// typedErrs records every CodeModeError produced by a bridge call, so
+	// RunCodeMode can re-surface the original typed error (via
+	// preservedCodeModeErr) instead of the generic JavaScript exception
+	// text that comes back once it round-trips through the sandbox
+	// (mirrors TypeScript's codeModeErrors accumulator /
+	// findPreservedCodeModeError).
+	typedErrs []CodeModeError
 }
 
 func newToolBridge(ctx context.Context, input RunInput, options *Options, policy resolvedPolicy, outerToolCall string, replayLedger map[int]replayRecord, resumePendings map[int]PendingInterruption, resumeResolutions map[int]interface{}) *toolBridge {
@@ -128,8 +127,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		if err != nil {
 			if cmErr, ok := err.(CodeModeError); ok {
 				b.mu.Lock()
-				b.lastTypedErr = cmErr
-				b.lastTypedErrIndex = b.requestCount
+				b.typedErrs = append(b.typedErrs, cmErr)
 				b.mu.Unlock()
 			}
 		}
@@ -279,10 +277,12 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		return tool.Execute(b.ctx, input, execOptions)
 	})
 	if oerr != nil {
-		if cmErr, ok := oerr.(CodeModeError); ok && cmErr.ErrorCode() == "CODE_MODE_ABORTED" {
-			// Mirrors TypeScript's raceAgainstAbort: cancellation wins
-			// the race and propagates as-is, unsanitized (it is not a
-			// tool-thrown error).
+		if _, ok := oerr.(CodeModeError); ok {
+			// Mirrors TypeScript's invokeCodeModeTool: a CodeModeError
+			// (cancellation winning raceAgainstAbort, or one the tool
+			// itself returned, such as RequestCodeModeInterrupt's
+			// *ProtocolError for a malformed payload) propagates as-is,
+			// unsanitized, and is preserved for the caller.
 			return "", oerr
 		}
 		if sig, ok := oerr.(*interruptSignal); ok {
@@ -291,9 +291,10 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 			return "", b.raiseInterrupt(toolName, input, toolCallID, n, sig.payload)
 		}
 		// Mirrors TypeScript's invokeCodeModeTool: any non-CodeModeError
-		// thrown by a host tool is sanitized to a generic message so raw
-		// tool internals never leak into the sandbox.
-		return "", NewToolError("Host tool failed.", map[string]interface{}{"toolName": toolName, "cause": oerr.Error()})
+		// thrown by a host tool is sanitized to a generic message, with TS's
+		// CODE_MODE_HOST_TOOL_ERROR code, so raw tool internals never leak
+		// into the sandbox. The cause stays in Details for the Go caller.
+		return "", newHostToolFailedError(toolName, oerr)
 	}
 
 	outJSON, jerr := toJSONPayload(output, b.policy.MaxToolOutputBytes, "Tool \""+toolName+"\" output")
@@ -381,12 +382,22 @@ func (b *toolBridge) committedSnapshot() map[int]replayRecord {
 	return snap
 }
 
-// lastCodeModeErr returns the most recent typed CodeModeError a bridge
-// call produced, if any (see lastTypedErr's doc comment).
-func (b *toolBridge) lastCodeModeErr() CodeModeError {
+// preservedCodeModeErr returns the typed CodeModeError a bridge call
+// produced whose rejection is the error the sandboxed script failed with
+// (message is that error's `message`), if any (see typedErrs' doc comment).
+// TS matches the run's error code against codeModeErrors; the Go sandbox
+// sees the rejection value itself, so it matches its message. A script that
+// caught a tool error and then failed some other way (its own throw, a
+// timeout) is not reported as that tool error.
+func (b *toolBridge) preservedCodeModeErr(message string) CodeModeError {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.lastTypedErr
+	for i := len(b.typedErrs) - 1; i >= 0; i-- {
+		if b.typedErrs[i].Error() == message {
+			return b.typedErrs[i]
+		}
+	}
+	return nil
 }
 
 // fatal returns the invocation's fatal error, if any (see fatalErr's doc
