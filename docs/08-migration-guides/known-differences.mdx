@@ -73,11 +73,14 @@ OIDC entirely.
 `pkg/codemode` runs model-written JavaScript in a QuickJS-on-WebAssembly
 sandbox (wazero). Concurrent tool calls that need approval (for example
 inside one `Promise.all`) are batched into a single interrupt, as in TS.
-Two details differ:
+These details differ:
 
 - A promise that never settles and has no pending tool call fails fast
   with a `ProtocolError`. TypeScript waits for the execution timeout.
 - `MaxInFlightBridgeRequests` counts the calls in an approval batch.
+- `SetMaxWorkers(0)` means no concurrency limit; TypeScript rejects 0.
+- On platforms other than Linux, macOS and Windows, the default worker cap
+  is 32, because Go cannot read available memory there without cgo.
 
 ## Telemetry: RecordInputs and RecordOutputs are plain booleans
 

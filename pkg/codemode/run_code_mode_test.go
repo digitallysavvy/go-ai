@@ -839,13 +839,9 @@ func TestSetMaxWorkers_RejectsOverCap(t *testing.T) {
 	if err := SetMaxWorkers(1); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer func() {
-		if err := SetMaxWorkers(0); err != nil {
-			t.Fatalf("unexpected error resetting maxWorkers: %v", err)
-		}
-	}()
+	defer ResetMaxWorkers()
 
-	release, err := acquireWorkerSlot()
+	release, err := acquireWorkerSlot(DefaultMemoryLimitBytes)
 	if err != nil {
 		t.Fatalf("unexpected error acquiring the first slot: %v", err)
 	}

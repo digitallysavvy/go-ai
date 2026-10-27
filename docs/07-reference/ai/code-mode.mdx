@@ -126,6 +126,32 @@ if errors.As(err, &cpuErr) {
 }
 ```
 
+## Concurrent invocations
+
+Code mode limits how many sandbox invocations run at once in the process, as
+the TypeScript runner does. An invocation started over the limit fails right
+away with `*ConcurrencyError` (`CODE_MODE_CONCURRENCY_LIMIT`, message
+"Code mode maxWorkers limit reached (N).", details `maxWorkers`). It is not
+queued, so retry it or raise the limit.
+
+| Call | Limit |
+| --- | --- |
+| none (default) | floor(available memory / (`MemoryLimitBytes` + 48 MiB)), at least 1 and at most 32. Each invocation also reserves `MemoryLimitBytes` + 48 MiB against the memory available when the first running invocation started, and is rejected if that does not fit. |
+| `SetMaxWorkers(n)`, n > 0 | n, with no memory reservation. |
+| `SetMaxWorkers(0)` | Unlimited (the v0.5 behavior). TypeScript has no equivalent. |
+| `ResetMaxWorkers()` | Back to the default (TypeScript `experimental_setMaxWorkers(undefined)`). |
+
+Available memory is what Node's `process.availableMemory()` reports: on Linux
+the cgroup memory limit minus current usage, or `MemAvailable`; on macOS free,
+inactive and purgeable pages; on Windows available physical memory. On other
+platforms the default is 32.
+
+<Note>
+  Callers upgrading from v0.5.2 had no limit. Code that runs many scripts at
+  once can now get `*ConcurrencyError`. Call `codemode.SetMaxWorkers` with a
+  higher value, or 0 for no limit.
+</Note>
+
 ## TypeScript in model-written code
 
 Before running, code-mode strips TypeScript annotations from the source with

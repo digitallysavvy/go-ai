@@ -77,6 +77,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   (default 10_000) stops guest JavaScript that runs longer than that in one
   invocation with `*codemode.CPUTimeoutError`. Time in host tools does not
   count. Raise `CPUTimeoutMs` (and `TimeoutMs`) for long-running scripts.
+- **Code mode caps concurrent scripts.** Like the TypeScript SDK, code mode
+  now runs at most floor(available memory / (`ExecutionPolicy.MemoryLimitBytes`
+  + 48 MiB)) sandbox invocations at once, at least 1 and at most 32. v0.5 had
+  no limit. A script started over the limit fails right away with
+  `*codemode.ConcurrencyError` ("Code mode maxWorkers limit reached (N).").
+  Raise the limit with `codemode.SetMaxWorkers(n)`, or pass 0 to keep v0.5's
+  unlimited behavior. `codemode.ResetMaxWorkers()` restores the default.
 - **wazero is v1.12.0.** It was v1.9.0. Code mode's sandbox behaves the
   same: each invocation still gets its own QuickJS instance, memory and host
   bindings. QuickJS is now compiled once per process into one shared wazero
