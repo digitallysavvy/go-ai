@@ -242,25 +242,19 @@ func bflLatestProviderOptions(opts *provider.ImageGenerateOptions) (map[string]i
 	if opts.Size == "" {
 		return opts.ProviderOptions, nil
 	}
+	// TS: width: Number(widthStr), height: Number(heightStr), then the explicit
+	// provider options spread over them. A size Number() cannot read becomes
+	// NaN, which only fails validation when no explicit option replaces it.
 	parts := strings.Split(opts.Size, "x")
-	width, werr := strconv.ParseFloat(parts[0], 64)
-	height := math.NaN()
-	herr := fmt.Errorf("missing height")
+	width, height := jsNumber(parts[0]), math.NaN()
 	if len(parts) > 1 {
-		height, herr = strconv.ParseFloat(parts[1], 64)
-	}
-	if werr != nil || herr != nil || width != math.Trunc(width) || height != math.Trunc(height) {
-		return nil, &providererrors.InvalidArgumentError{
-			Field:   "providerOptions",
-			Message: "invalid blackForestLabs provider options",
-			Cause:   fmt.Errorf("size %q is not a valid WIDTHxHEIGHT", opts.Size),
-		}
+		height = jsNumber(parts[1])
 	}
 	merged := make(map[string]interface{}, len(opts.ProviderOptions)+1)
 	for k, v := range opts.ProviderOptions {
 		merged[k] = v
 	}
-	bfl := map[string]interface{}{"width": int(width), "height": int(height)}
+	bfl := map[string]interface{}{"width": sizeDimension(width), "height": sizeDimension(height)}
 	if raw, ok := merged["blackForestLabs"].(map[string]interface{}); ok {
 		for k, v := range raw {
 			bfl[k] = v
@@ -270,6 +264,29 @@ func bflLatestProviderOptions(opts *provider.ImageGenerateOptions) (map[string]i
 	}
 	merged["blackForestLabs"] = bfl
 	return merged, nil
+}
+
+// jsNumber mirrors JavaScript Number(string) for decimal input: blank is 0 and
+// anything unreadable is NaN.
+func jsNumber(s string) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return math.NaN()
+	}
+	return f
+}
+
+// sizeDimension keeps whole numbers as ints (so they validate as integers) and
+// anything else (NaN, fractions) as a float the integer schema rejects.
+func sizeDimension(f float64) interface{} {
+	if f == math.Trunc(f) && !math.IsInf(f, 0) && math.Abs(f) < 1e15 {
+		return int(f)
+	}
+	return f
 }
 
 // flux3AspectRatios are the aspect ratios the FLUX 3 endpoint accepts.

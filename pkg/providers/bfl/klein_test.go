@@ -204,3 +204,27 @@ func TestKlein_RejectsBeforeSubmission(t *testing.T) {
 		t.Fatalf("files: err=%v", err)
 	}
 }
+
+// TS builds width/height with Number(size part) and spreads the explicit
+// provider options over them, so a size Number() cannot read only fails when
+// no explicit option replaces it.
+func TestKlein_UnreadableSizeIsReplacedByExplicitDimensions(t *testing.T) {
+	fs := newFlux3Server(t)
+	err := fs.generateKlein(t, &provider.ImageGenerateOptions{Size: "abc", ProviderOptions: bflOpts(map[string]interface{}{"width": 512, "height": 256})})
+	if err != nil || fs.lastBody()["width"] != 512.0 || fs.lastBody()["height"] != 256.0 {
+		t.Fatalf("err=%v body=%#v", err, fs.lastBody())
+	}
+	// Only one dimension replaced: the other one still comes from size.
+	fs = newFlux3Server(t)
+	err = fs.generateKlein(t, &provider.ImageGenerateOptions{Size: "abcx128", ProviderOptions: bflOpts(map[string]interface{}{"width": 512})})
+	if err != nil || fs.lastBody()["width"] != 512.0 || fs.lastBody()["height"] != 128.0 {
+		t.Fatalf("err=%v body=%#v", err, fs.lastBody())
+	}
+	for _, size := range []string{"abc", "1024", "1024x", "1.5x64"} {
+		fs = newFlux3Server(t)
+		err = fs.generateKlein(t, &provider.ImageGenerateOptions{Size: size})
+		if err == nil || len(fs.submits) != 0 {
+			t.Fatalf("%q: err=%v submits=%d", size, err, len(fs.submits))
+		}
+	}
+}
