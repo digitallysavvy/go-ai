@@ -20,13 +20,25 @@ import (
 // newCallID generates the call ID that correlates start/finish events: "call-"
 // plus 24 random alphanumerics, the TS createIdGenerator({prefix: 'call',
 // size: 24}) default every AI SDK operation uses for callId.
-func newCallID() string {
+func newCallID() string { return newPrefixedID("call") }
+
+// newTextID is TS generateText/streamText's default generateId,
+// createIdGenerator({prefix: 'aitxt', size: 24}): generated response,
+// approval and part IDs.
+func newTextID() string { return newPrefixedID("aitxt") }
+
+// newObjectID is TS generateObject/streamObject's default generateId,
+// createIdGenerator({prefix: 'aiobj', size: 24}).
+func newObjectID() string { return newPrefixedID("aiobj") }
+
+// newPrefixedID returns prefix, "-" and 24 random alphanumerics.
+func newPrefixedID(prefix string) string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
 	for i := range b {
 		b[i] = defaultIDAlphabet[int(b[i])%len(defaultIDAlphabet)]
 	}
-	return "call-" + string(b)
+	return prefix + "-" + string(b)
 }
 
 func warningsOrEmpty(warnings []types.Warning) []types.Warning {

@@ -194,7 +194,7 @@ func normalizeObjectMaxRetries(maxRetries *int) (int, error) {
 }
 
 func responseMetadataFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) *types.ResponseMetadata {
-	return responseMetadataFromGenerateResultWithID(model, result, newCallID)
+	return responseMetadataFromGenerateResultWithID(model, result, newObjectID)
 }
 
 func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) *types.ResponseMetadata {
@@ -206,7 +206,7 @@ func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, resu
 		return meta
 	}
 	if generateID == nil {
-		generateID = newCallID
+		generateID = newTextID
 	}
 	// TS responseData: each field the provider left out gets its default
 	// (id ?? generateId(), timestamp ?? new Date(), modelId ?? model.modelId).
@@ -229,7 +229,7 @@ func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, resu
 }
 
 func generateStepResponseFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) GenerateStepResponse {
-	return generateStepResponseFromGenerateResultWithID(model, result, newCallID)
+	return generateStepResponseFromGenerateResultWithID(model, result, newObjectID)
 }
 
 func generateStepResponseFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) GenerateStepResponse {
@@ -1897,7 +1897,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	// Response metadata fields updated by ChunkTypeResponseMetadata chunks.
 	streamResMeta := GenerateStepResponse{
-		ID:        newCallID(),
+		ID:        newObjectID(),
 		Timestamp: time.Now(),
 		ModelID:   opts.Model.ModelID(),
 	}

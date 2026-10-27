@@ -1614,6 +1614,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				telemetrySettings:   telemetrySettings,
 				experimentalSandbox: stepSandbox,
 				toolExecutionMs:     map[string]int64{},
+				generateID:          generateID,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
 			// Tools run inside the step context: the TS step timeout aborts the
@@ -2159,6 +2160,9 @@ type toolCallEventCallbacks struct {
 	telemetrySettings   *TelemetrySettings
 	experimentalSandbox interface{}
 	toolExecutionMs     map[string]int64
+	// generateID creates approval IDs (TS generateId, InternalOptions.GenerateID
+	// here); nil uses a random ID.
+	generateID IDGenerator
 	// executionBlocked resolves approvals but skips local tool execution.
 	// Set when the step finished with a finish reason that does not allow
 	// automatic tool execution (TS isToolExecutionAllowedFinishReason).
@@ -2171,6 +2175,15 @@ type toolCallEventCallbacks struct {
 	// stream was running (StreamText); executeTools reuses them instead of
 	// resolving the approval a second time.
 	preApprovals map[string]preResolvedApproval
+}
+
+// newApprovalID returns an approval ID from the call's ID generator (TS
+// generateId()).
+func (c toolCallEventCallbacks) newApprovalID() string {
+	if c.generateID != nil {
+		return c.generateID()
+	}
+	return newTextID()
 }
 
 // isToolExecutionAllowedFinishReason reports whether client tools may be
@@ -2380,7 +2393,7 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			if approval.Status == types.ToolApprovalStatusUserApproval ||
 				approval.Status == types.ToolApprovalStatusApproved ||
 				approval.Status == types.ToolApprovalStatusDenied {
-				approvalID = newCallID()
+				approvalID = callbacks.newApprovalID()
 			}
 		}
 		if approvalErr != nil {
