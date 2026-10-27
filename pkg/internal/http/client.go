@@ -282,9 +282,6 @@ func (c *Client) snapshot() (string, map[string]string) {
 // application/x-www-form-urlencoded byte set: ASCII alphanumerics and
 // "*-._" stay literal, space is "+", everything else (including "~", which
 // Go's url.QueryEscape leaves alone) is percent-encoded in upper-case hex.
-// EncodeQuery exposes encodeQuery to provider packages that build their own URLs.
-func EncodeQuery(q map[string]string) string { return encodeQuery(q) }
-
 func encodeQuery(q map[string]string) string {
 	keys := make([]string, 0, len(q))
 	for k := range q {
@@ -302,6 +299,10 @@ func encodeQuery(q map[string]string) string {
 	}
 	return b.String()
 }
+
+// EncodeQuery exposes encodeQuery to provider packages that build their own
+// URLs (URLSearchParams escaping).
+func EncodeQuery(q map[string]string) string { return encodeQuery(q) }
 
 func formEscape(b *strings.Builder, s string) {
 	const hex = "0123456789ABCDEF"
