@@ -564,12 +564,6 @@ func TestResolveAuthenticationModeAndEnv(t *testing.T) {
 	}
 }
 
-func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
-	if _, err := extractUserText(harness.TextPrompt("hi")); err != nil {
-		t.Fatalf("extractUserText(text) error = %v", err)
-	}
-}
-
 // TS #22367: SubmitToolResult forwards the full tool-result part as
 // `toolResult` alongside output/isError.
 func TestSubmitToolResult_ForwardsToolResult(t *testing.T) {

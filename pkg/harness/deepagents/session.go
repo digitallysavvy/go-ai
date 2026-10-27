@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -204,7 +202,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		return nil, harness.NewCapabilityUnsupportedError(
 			"Harness 'deepagents' requires a JSON schema for structured output.", HarnessID, nil)
 	}
-	promptText, err := extractUserText(opts.Prompt)
+	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -223,13 +221,16 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 
 	msg := StartMessage{
 		StartBase: bridge.StartBase{
-			Prompt: promptText, Tools: opts.Tools, Model: opts.Model,
+			Prompt: content.Text, Tools: opts.Tools, Model: opts.Model,
 			ResponseFormat: opts.ResponseFormat, PermissionMode: s.p.permissionMode,
 			BuiltinToolFiltering: s.p.builtinToolFiltering,
 		},
 		Instructions: opts.Instructions, Thinking: s.p.thinking, Effort: s.p.effort,
 		SkillsPaths: s.p.skillsPaths, SkillsChanged: skillResult.Changed,
 		RecursionLimit: s.p.recursionLimit, MCPServers: s.p.mcpServers, Headers: s.p.headers,
+	}
+	if !content.IsText() {
+		msg.PromptContent = &content
 	}
 	if err := s.p.channel.Send(msg); err != nil {
 		control.settleError(err)
@@ -366,25 +367,6 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.bridgeToken = coords.Token
 	p.isResume = true
 	return newSession(p), true
-}
-
-// extractUserText reduces the prompt to plain user text; non-text parts are
-// unsupported. Mirrors TS `extractUserText`.
-func extractUserText(p harness.Prompt) (string, error) {
-	if p.Message == nil {
-		return p.Text, nil
-	}
-	var parts []string
-	for _, part := range p.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The deepagents harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return strings.Join(parts, "\n\n"), nil
 }
 
 var skillNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)

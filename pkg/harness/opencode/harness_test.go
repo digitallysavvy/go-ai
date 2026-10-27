@@ -604,12 +604,6 @@ func TestSplitOpenCodeModel(t *testing.T) {
 	}
 }
 
-func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
-	if _, err := extractUserText(harness.TextPrompt("hi")); err != nil {
-		t.Fatalf("extractUserText(text) error = %v", err)
-	}
-}
-
 // mcpServers configured on Settings must reach the bridge's "start" frame
 // for a prompt turn. TS coverage of this field lives inside the larger
 // composite `it('passes native config through prompts, compaction, and

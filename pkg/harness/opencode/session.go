@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -440,7 +438,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if err != nil {
 		return nil, err
 	}
-	promptText, err := extractUserText(opts.Prompt)
+	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
 	if err != nil {
 		control.settleError(err)
 		return nil, err
@@ -460,7 +458,10 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		return nil, err
 	}
 	msg.Operation = OperationPrompt
-	msg.Prompt = promptText
+	msg.Prompt = content.Text
+	if !content.IsText() {
+		msg.PromptContent = &content
+	}
 	msg.Tools = opts.Tools
 	msg.ResponseFormat = opts.ResponseFormat
 	msg.Instructions = opts.Instructions
@@ -763,23 +764,4 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.bridgeToken = coords.Token
 	p.supportsUserMessageResponses = supportsUserMessageResponses.Load
 	return newSession(p), true
-}
-
-// extractUserText reduces the prompt to plain user text; non-text parts are
-// unsupported. Mirrors TS `extractUserText`.
-func extractUserText(p harness.Prompt) (string, error) {
-	if p.Message == nil {
-		return p.Text, nil
-	}
-	var parts []string
-	for _, part := range p.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The OpenCode harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return strings.Join(parts, "\n\n"), nil
 }
