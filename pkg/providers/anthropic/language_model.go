@@ -2278,10 +2278,6 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				}
 				s.isMessageOpen = true
 				s.activeMessageID = msg.Message.ID
-				// A new message restarts the stream-wide finish reason (TS
-				// resets to {unified: other}), so a message_stop without a
-				// message_delta does not inherit the previous message's.
-				s.curFinishReason, s.curRawFinishReason = "", ""
 				if msg.Message.StopReason != "" {
 					// TS: a message_start that already carries a stop_reason
 					// sets the stream-wide finish reason.
