@@ -152,12 +152,19 @@ func (gatewayProtocol) rewriteURL(u *url.URL, baseURL string) (*url.URL, error) 
 	if err != nil || base.Scheme == "" || base.Host == "" {
 		return nil, fmt.Errorf("invalid AI_GATEWAY_BASE_URL %q", baseURL)
 	}
-	ref, err := url.Parse(strings.TrimPrefix(u.EscapedPath(), "/"))
+	// "./" keeps a path such as "/https://host/x" or "///host/x" a path:
+	// resolved on its own it would be another origin, and the transport
+	// adds the real credential to Gateway requests.
+	ref, err := url.Parse("./" + strings.TrimPrefix(u.EscapedPath(), "/"))
 	if err != nil {
 		return nil, err
 	}
 	ref.RawQuery = u.RawQuery
-	return base.ResolveReference(ref), nil
+	target := base.ResolveReference(ref)
+	if originOf(target) != originOf(base) {
+		return nil, fmt.Errorf("fx Gateway request path %q leaves AI_GATEWAY_BASE_URL", u.EscapedPath())
+	}
+	return target, nil
 }
 
 func (gatewayProtocol) isModelRequest(u *url.URL, gateway bool) bool {
