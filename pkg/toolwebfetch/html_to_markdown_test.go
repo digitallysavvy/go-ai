@@ -81,3 +81,11 @@ func TestContentSelectorSyntax(t *testing.T) {
 		t.Errorf("unsupported selector should fall back to the page, got %q", content)
 	}
 }
+
+// The plain-text fallback uses JavaScript \s: U+0085 is not white space,
+// U+FEFF and U+00A0 are (TS /[^\S\n]+/g).
+func TestPlainTextWhitespaceIsJavaScriptWhitespace(t *testing.T) {
+	if got := normalizeWhitespace("a\u0085 b\ufeffc\u00a0d"); got != "a\u0085 b c d" {
+		t.Fatalf("normalizeWhitespace = %q", got)
+	}
+}

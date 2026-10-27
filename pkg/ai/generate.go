@@ -620,7 +620,9 @@ type PrepareStepOptions struct {
 	ActiveTools []string
 	ToolOrder   []string
 
-	// ProviderOptions are provider-specific options for this step.
+	// ProviderOptions are provider-specific options for this step. Options
+	// returned from PrepareStep are deep-merged onto the call's
+	// ProviderOptions (nested maps merge; other values replace), as in TS.
 	ProviderOptions map[string]interface{}
 
 	// ExperimentalSandbox overrides the sandbox for this step only.
@@ -1169,7 +1171,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				stepToolOrder = prepared.ToolOrder
 			}
 			if prepared.ProviderOptions != nil {
-				stepProviderOptions = prepared.ProviderOptions
+				// TS mergeObjects(providerOptions, prepareStepResult.providerOptions):
+				// the returned options deep-merge onto the call's options.
+				stepProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
 			}
 			if prepared.RuntimeContext != nil {
 				runtimeContext = prepared.RuntimeContext

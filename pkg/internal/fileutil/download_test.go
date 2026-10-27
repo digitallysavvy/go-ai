@@ -929,3 +929,23 @@ func TestValidateDownloadURLBlocksIDNInternalForms(t *testing.T) {
 		t.Errorf("unexpected: %v", err)
 	}
 }
+
+// TS validateDownloadUrl throws "Invalid URL" for hosts that end in a number
+// but are not IPv4 addresses (new URL rejects them), and allows hosts whose
+// last label is not numeric.
+func TestValidateDownloadURLEndsInANumberHosts(t *testing.T) {
+	for _, raw := range []string{"http://foo.1/", "http://foo.0x/", "http://09.1/", "http://1.2.3.4.5/"} {
+		err := ValidateDownloadURL(raw)
+		if err == nil || !strings.Contains(err.Error(), "Invalid URL: "+raw) {
+			t.Errorf("%s: err = %v, want Invalid URL", raw, err)
+		}
+	}
+	for _, raw := range []string{"http://1.foo/", "http://foo.0x1g/", "http://[64:ff9b::8.8.8.8]/"} {
+		if err := ValidateDownloadURL(raw); err != nil {
+			t.Errorf("%s: err = %v, want allowed", raw, err)
+		}
+	}
+	if got, ok, invalid := CanonicalIPHost("0x8.0x8.010.8"); !ok || invalid || got != "8.8.8.8" {
+		t.Errorf("CanonicalIPHost = %q, %v, %v", got, ok, invalid)
+	}
+}

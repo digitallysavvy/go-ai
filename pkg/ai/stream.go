@@ -586,7 +586,8 @@ type StreamTextResult struct {
 	toolCalls   []types.ToolCall
 	toolResults []types.ToolResult
 
-	// providerMetadata accumulates provider-specific metadata from stream chunks.
+	// providerMetadata is the latest step's finish-chunk provider metadata
+	// (TS finalStep.providerMetadata).
 	// Protected by mu.
 	providerMetadata json.RawMessage
 
@@ -1121,7 +1122,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepToolOrder = prepared.ToolOrder
 		}
 		if prepared.ProviderOptions != nil {
-			stepProviderOptions = prepared.ProviderOptions
+			// TS mergeObjects(providerOptions, prepareStepResult.providerOptions).
+			stepProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
 		}
 		if prepared.RuntimeContext != nil {
 			runtimeContext = prepared.RuntimeContext
@@ -1799,6 +1801,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
 		var stepUsage types.Usage
+		// stepProviderMetadataRaw is the provider metadata of this step's
+		// finish chunk (TS stepProviderMetadata = model-call-end
+		// providerMetadata); metadata on other chunks belongs to their parts.
+		var stepProviderMetadataRaw json.RawMessage
 		var stepSawTerminal bool
 		// stepSawErrorChunk: the step's stream carried a terminal error part (not
 		// retried). With InternalOptions.StopOnStreamError the step's tool calls
@@ -2211,6 +2217,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if chunk.Type == provider.ChunkTypeFinish {
 				stepSawTerminal = true
 				r.finishReason = chunk.FinishReason
+				stepProviderMetadataRaw = chunk.ProviderMetadata
 				if chunk.RawFinishReason != "" {
 					r.rawFinishReason = chunk.RawFinishReason
 				}
@@ -2248,13 +2255,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						Performance:      languageModelCallPerformance(performance),
 					})
 				}
-			}
-
-			// Accumulate provider metadata from each chunk that carries it.
-			if len(chunk.ProviderMetadata) > 0 {
-				r.mu.Lock()
-				r.providerMetadata = chunk.ProviderMetadata
-				r.mu.Unlock()
 			}
 
 			// Accumulate sources from ChunkTypeSource chunks.
@@ -2449,6 +2449,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepReasoningBuilder.Reset()
 					modelCallEndFired = false
 					stepUsage = types.Usage{}
+					stepProviderMetadataRaw = nil
 					stepSawTerminal = false
 					stepSawErrorChunk = false
 					stepSawOutput = false
@@ -2804,13 +2805,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.toolResults = append(r.toolResults, publicStepToolResults...)
 		r.usage = r.usage.Add(stepUsage)
 		r.mu.Unlock()
-		// Decode provider metadata for this step.
+		// Decode provider metadata for this step: the finish chunk's only,
+		// so a step without any does not report an earlier chunk's or step's.
 		r.mu.Lock()
-		var stepProviderMeta map[string]interface{}
-		if len(r.providerMetadata) > 0 {
-			_ = json.Unmarshal(r.providerMetadata, &stepProviderMeta)
-		}
+		r.providerMetadata = stepProviderMetadataRaw
 		r.mu.Unlock()
+		var stepProviderMeta map[string]interface{}
+		if len(stepProviderMetadataRaw) > 0 {
+			_ = json.Unmarshal(stepProviderMetadataRaw, &stepProviderMeta)
+		}
 
 		// Build reasoning content from deltas accumulated during this step.
 		stepReasoning := reasoningPartsOf(stepContent)
@@ -2891,7 +2894,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Performance:      &finishStepPerf,
 			FinishReason:     r.finishReason,
 			RawFinishReason:  stepRawFinishReason,
-			ProviderMetadata: r.providerMetadata,
+			ProviderMetadata: stepProviderMetadataRaw,
 		}})
 
 		// With experimental transforms the recorded step comes from the
@@ -3218,7 +3221,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				nextToolOrder = prepared.ToolOrder
 			}
 			if prepared.ProviderOptions != nil {
-				nextProviderOptions = prepared.ProviderOptions
+				// TS mergeObjects(providerOptions, prepareStepResult.providerOptions).
+				nextProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
 			}
 			if prepared.RuntimeContext != nil {
 				r.cbRuntimeCtx = prepared.RuntimeContext
@@ -4998,9 +5002,9 @@ func isModelOutputChunkType(chunkType provider.ChunkType) bool {
 	}
 }
 
-// ProviderMetadata returns the most recently received provider-specific metadata
-// from stream chunks. Only populated when the provider emits metadata in chunks.
-// Safe to call concurrently with streaming.
+// ProviderMetadata returns the provider metadata of the latest finished
+// step's finish chunk (TS providerMetadata, the final step's). It is nil when
+// that finish chunk carried none. Safe to call concurrently with streaming.
 //
 // Deprecated: use FinalStep().ProviderMetadata instead.
 func (r *StreamTextResult) ProviderMetadata() json.RawMessage {

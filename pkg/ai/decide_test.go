@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -477,5 +478,44 @@ func TestExperimentalDecide_AbortAfterModelCall(t *testing.T) {
 	_, err := ExperimentalDecide(ctx, DecideOptions{Model: mock, State: map[string]interface{}{"m": "x"}, Questions: decisionQuestionsFixture()})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// TS reports refusals and the first invalid or unsupported question in
+// Object.keys(questions) order; Go follows DecideOptions.QuestionOrder.
+func TestExperimentalDecide_QuestionOrderDrivesRefusalAndErrorOrder(t *testing.T) {
+	answers := decisionAnswersFixture()
+	answers["topic"] = provider.DecisionAnswer{Type: "refusal"}
+	answers["refund"] = provider.DecisionAnswer{Type: "refusal"}
+	for _, c := range []struct {
+		order []string
+		want  []string
+	}{
+		{[]string{"topic", "severity", "refund"}, []string{"topic", "refund"}},
+		{[]string{"refund", "topic", "severity"}, []string{"refund", "topic"}},
+		{nil, []string{"refund", "topic"}},
+	} {
+		mock := &mockDecisionModel{
+			providerName: "test", modelID: "m",
+			doDecide: func(context.Context, provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+				return &provider.DecisionResult{Answers: answers}, nil
+			},
+		}
+		_, err := ExperimentalDecide(context.Background(), DecideOptions{
+			Model: mock, State: "", Questions: decisionQuestionsFixture(), QuestionOrder: c.order,
+		})
+		var target *providererrors.DecisionRefusalError
+		if !errors.As(err, &target) || strings.Join(target.QuestionIDs, ",") != strings.Join(c.want, ",") {
+			t.Fatalf("order %v: err = %v, want refusal of %v", c.order, err, c.want)
+		}
+	}
+
+	limited := &mockDecisionModel{providerName: "test", modelID: "m", supportedTypes: []string{"choice"}}
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model: limited, State: "", Questions: decisionQuestionsFixture(), QuestionOrder: []string{"topic", "severity", "refund"},
+	})
+	var unsupported *providererrors.DecisionUnsupportedQuestionTypeError
+	if !errors.As(err, &unsupported) || unsupported.QuestionID != "severity" {
+		t.Fatalf("err = %v, want unsupported severity", err)
 	}
 }

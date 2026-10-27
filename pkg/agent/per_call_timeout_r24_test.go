@@ -27,3 +27,23 @@ func TestPerCallTimeoutOverridesConfig(t *testing.T) {
 		t.Fatal("prepared call config lost per-call timeout")
 	}
 }
+
+// The per-call timeout also wins over a timeout PrepareCall returns: TS
+// prepareCall never sees the call's timeout, and generate/stream use
+// `timeout ?? preparedCall.timeout`.
+func TestPerCallTimeoutWinsOverPrepareCallTimeout(t *testing.T) {
+	prepared, callTimeoutDur := time.Hour, time.Millisecond
+	call := &ai.TimeoutConfig{ToolMs: &callTimeoutDur}
+	agent := NewToolLoopAgent(AgentConfig{
+		PrepareCall: func(_ context.Context, c PrepareCallConfig) PrepareCallConfig {
+			c.Timeout = &ai.TimeoutConfig{ToolMs: &prepared}
+			return c
+		},
+	})
+	if got := agent.prepareGenerateCallConfig(context.Background(), "p", nil, call); got.Timeout != call {
+		t.Fatalf("timeout = %+v, want the per-call timeout", got.Timeout)
+	}
+	if got := agent.prepareGenerateCallConfig(context.Background(), "p", nil, nil); got.Timeout == nil || got.Timeout.ToolMs == nil || *got.Timeout.ToolMs != prepared {
+		t.Fatalf("timeout = %+v, want PrepareCall's timeout without a per-call one", got.Timeout)
+	}
+}

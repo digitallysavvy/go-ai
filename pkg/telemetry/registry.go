@@ -1381,6 +1381,32 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	return ctx // span is embedded via OTel context propagation
 }
 
+// legacyInheritedAttrs returns the attributes a nested span (doGenerate/
+// doStream step, doEmbed, doRerank, doDecide) copies from its root: TS
+// `...state.baseTelemetryAttributes`, which getBaseTelemetryAttributes builds
+// from the model, settings, headers and the runtime context
+// (ai.settings.context.*). It reads this integration's callID state and falls
+// back to the values OnStart stashed in ctx.
+func legacyInheritedAttrs(ctx context.Context, callID string) []attribute.KeyValue {
+	var base, runtimeCtx []attribute.KeyValue
+	if callID != "" {
+		if v, ok := legacyCallStates.Load(callID); ok {
+			st := v.(*legacyCallState)
+			st.mu.Lock()
+			base, runtimeCtx = st.baseAttrs, st.runtimeCtxAttrs
+			st.mu.Unlock()
+		}
+	}
+	if base == nil {
+		base, _ = ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue)
+	}
+	if runtimeCtx == nil {
+		runtimeCtx, _ = ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue)
+	}
+	out := make([]attribute.KeyValue, 0, len(base)+len(runtimeCtx))
+	return append(append(out, base...), runtimeCtx...)
+}
+
 // runtimeContextAttrsKey is a private context key carrying the root span's
 // flattened ai.settings.context.* attributes down to descendant spans.
 type runtimeContextAttrsKey struct{}
@@ -1563,9 +1589,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		functionID = e.Settings.FunctionID
 	}
 	stepSpan.SetAttributes(legacyOperationNameAttrs(legacyStepOperationID(opType), functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		stepSpan.SetAttributes(baseAttrs...)
-	}
+	stepSpan.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
 	// TS's onStepStart sets 'ai.model.provider'/'ai.model.id' from the
 	// step's own event.provider/event.modelId AFTER spreading
 	// state.baseTelemetryAttributes, so a step whose model differs from the
@@ -1671,9 +1695,7 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	}
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		span.SetAttributes(baseAttrs...)
-	}
+	span.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
 	if (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", legacyJSONEachElement(e.Values)))
 	}
@@ -1768,9 +1790,7 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	}
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		span.SetAttributes(baseAttrs...)
-	}
+	span.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
 	if (e.Settings == nil || e.Settings.RecordInputs) && e.Documents != nil {
 		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
 			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
@@ -2261,6 +2281,9 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 // gen_ai.system/gen_ai.request.model from the root span for the same
 // reason: TS's onXEnd methods never set gen_ai.* on the root span at all).
 func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
+	// The end is terminal for the call: its state goes even when no span is
+	// recording, so a late event cannot leave an entry behind.
+	defer legacyDeleteState(e.CallID)
 	// H5: resolve OUR OWN root span by CallID instead of
 	// trace.SpanFromContext(ctx), which — with a second integration also
 	// registered — would silently resolve to that other integration's span
@@ -2430,6 +2453,9 @@ func (i LegacyOpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEven
 // OnDecisionModelCallEnd is never notified on an error path (mirrors
 // decide.ts, where onDecisionModelCallEnd only fires on success).
 func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
+	// Terminal for the call (also when it arrives after OnEnd, as for a
+	// generateText output parse failure): never leave state behind.
+	defer legacyDeleteState(e.CallID)
 	if e.CallID != "" {
 		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
@@ -2507,6 +2533,7 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 // trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this closes
 // the right spans even when another integration is also registered.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	defer legacyDeleteState(e.CallID)
 	if e.CallID != "" {
 		// TS onAbort also ends an in-flight decision model-call span.
 		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID)); ok {

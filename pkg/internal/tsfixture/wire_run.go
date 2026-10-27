@@ -418,7 +418,9 @@ func CompareWireResult(srv *WireServer, s WireSuite, c WireCall, got map[string]
 			delete(gr, "modelId")
 		}
 	}
-	if WireKind(c) == "language" {
+	// A DecisionLanguageModel reports its language model's response body,
+	// so it differs from TS the same way a language result's body does.
+	if WireKind(c) == "language" || (WireKind(c) == "decide" && c.Model.Cls == "DecisionLanguageModel") {
 		// TS exposes the zod-parsed response body, Go the typed one.
 		for _, m := range []map[string]interface{}{want, g} {
 			if r, ok := m["response"].(map[string]interface{}); ok {

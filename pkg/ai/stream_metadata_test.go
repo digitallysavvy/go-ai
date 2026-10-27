@@ -16,8 +16,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-// TestStreamProviderMetadataPassedWithChunks verifies that provider metadata
-// emitted in stream chunks is accumulated and exposed via ProviderMetadata().
+// TestStreamProviderMetadataPassedWithChunks verifies that the finish chunk's
+// provider metadata is exposed via ProviderMetadata() (TS
+// finalStep.providerMetadata); metadata on a text chunk belongs to that part.
 func TestStreamProviderMetadataPassedWithChunks(t *testing.T) {
 	t.Parallel()
 
@@ -27,8 +28,8 @@ func TestStreamProviderMetadataPassedWithChunks(t *testing.T) {
 		DoStreamFunc: func(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
 			return testutil.NewMockTextStream([]provider.StreamChunk{
 				{Type: provider.ChunkTypeText, Text: "hello"},
-				{Type: provider.ChunkTypeText, Text: " world", ProviderMetadata: meta},
-				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				{Type: provider.ChunkTypeText, Text: " world", ProviderMetadata: json.RawMessage(`{"part":true}`)},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, ProviderMetadata: meta},
 			}), nil
 		},
 	}

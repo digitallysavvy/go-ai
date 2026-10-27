@@ -459,8 +459,23 @@ func TestToUIMessageChunk_StandaloneParity(t *testing.T) {
 			FileData:  types.FileData{Type: types.FileDataTypeURL, URL: "https://example.com/file.txt"},
 		},
 	}, UIMessageStreamResultOptions{})
-	if !ok || urlFile["url"] != "data:text/plain;base64,https://example.com/file.txt" {
+	// An unresolved URL file (StreamText downloads them first) keeps its URL
+	// instead of being embedded as fake base64 in a data URL.
+	if !ok || urlFile["url"] != "https://example.com/file.txt" {
 		t.Fatalf("url file chunk = %#v, %v", urlFile, ok)
+	}
+
+	// Inline bytes win over a leftover URL mirror.
+	both, ok := ToUIMessageChunk(provider.StreamChunk{
+		Type: provider.ChunkTypeFile,
+		GeneratedFileContent: &types.GeneratedFileContent{
+			MediaType: "text/plain",
+			Data:      []byte("Hello"),
+			URL:       "https://example.com/file.txt",
+		},
+	}, UIMessageStreamResultOptions{})
+	if !ok || both["url"] != "data:text/plain;base64,SGVsbG8=" {
+		t.Fatalf("file with data and url chunk = %#v, %v", both, ok)
 	}
 
 	emptyToolDelta, ok := ToUIMessageChunk(provider.StreamChunk{

@@ -2,6 +2,8 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // TestGenerateObject_Telemetry covers H3 item 1: GenerateObject previously
@@ -266,4 +269,67 @@ func attrValueTelemetry(span sdktrace.ReadOnlySpan, key string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// TS OpenTelemetry handles generateObject with onObjectStepStart/End: the
+// "chat" span sits directly under the root (no "step 1" agent_step span),
+// declares gen_ai.output.type json, and carries the object text as its
+// output message, without client performance or cache-creation attributes.
+func TestGenerateObject_GenAISpansMatchObjectStepShape(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tp.Tracer("genai")})
+	model := &testutil.MockLanguageModel{
+		ProviderName: "openai.chat", ModelName: "gpt-4", StructuredSupport: true,
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: `{"answer":"Hello"}`, FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	answerSchema := schema.NewSimpleJSONSchema(map[string]interface{}{
+		"type": "object", "properties": map[string]interface{}{"answer": map[string]interface{}{"type": "string"}},
+	})
+	seed := 3
+	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model: model, System: "Return a greeting", Prompt: "Hello", Schema: answerSchema, Seed: &seed,
+		Telemetry: &telemetry.Options{RecordInputs: true, RecordOutputs: true, Integrations: []telemetry.TelemetryIntegration{integration}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	byName := map[string]sdktrace.ReadOnlySpan{}
+	for _, s := range rec.Ended() {
+		byName[s.Name()] = s
+	}
+	root, chat := byName["invoke_agent gpt-4"], byName["chat gpt-4"]
+	if root == nil || chat == nil || len(byName) != 2 {
+		t.Fatalf("spans = %v, want exactly the root and chat spans", byName)
+	}
+	if chat.Parent().SpanID() != root.SpanContext().SpanID() {
+		t.Fatal("chat span must be a child of the root span")
+	}
+	attrs := map[string]interface{}{}
+	for _, kv := range chat.Attributes() {
+		attrs[string(kv.Key)] = kv.Value.AsInterface()
+	}
+	if attrs["gen_ai.output.type"] != "json" {
+		t.Errorf("gen_ai.output.type = %v", attrs["gen_ai.output.type"])
+	}
+	for _, absent := range []string{"gen_ai.client.operation.duration", "gen_ai.request.seed"} {
+		if v, ok := attrs[absent]; ok {
+			t.Errorf("%s = %v, want absent", absent, v)
+		}
+	}
+	for key, want := range map[string]string{
+		"gen_ai.output.messages":     `[{"role":"assistant","parts":[{"type":"text","content":"{\"answer\":\"Hello\"}"}],"finish_reason":"stop"}]`,
+		"gen_ai.system_instructions": `[{"type":"text","content":"Return a greeting"}]`,
+	} {
+		got, _ := attrs[key].(string)
+		var gotV, wantV interface{}
+		_ = json.Unmarshal([]byte(got), &gotV)
+		_ = json.Unmarshal([]byte(want), &wantV)
+		if !reflect.DeepEqual(gotV, wantV) {
+			t.Errorf("%s = %s, want %s", key, got, want)
+		}
+	}
 }

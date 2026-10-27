@@ -161,17 +161,20 @@ func parseWHATWGIPv4Host(host string) (net.IP, string, bool, bool) {
 	if len(parts) > 1 && parts[len(parts)-1] == "" {
 		parts = parts[:len(parts)-1]
 	}
-	if len(parts) == 0 || len(parts) > 4 {
-		return nil, "", false, numericLikeHost(host)
+	// WHATWG "ends in a number": only such hosts go through the IPv4 parser,
+	// and for them every parse failure makes the URL invalid ("foo.1",
+	// "1.2.3.4.5" and "09.1" throw in TS new URL).
+	if strings.Contains(host, ":") || len(parts) == 0 || !endsInIPv4Number(parts[len(parts)-1]) { // IPv6 literals are not IPv4 hosts
+		return nil, "", false, false
+	}
+	if len(parts) > 4 {
+		return nil, "", false, true
 	}
 	numbers := make([]uint64, len(parts))
 	for i, part := range parts {
 		n, ok := parseWHATWGIPv4Number(part)
 		if !ok {
-			if numericLikeHost(host) {
-				return nil, "", false, true
-			}
-			return nil, "", false, false
+			return nil, "", false, true
 		}
 		numbers[i] = n
 	}
@@ -212,21 +215,11 @@ func parseWHATWGIPv4Number(part string) (uint64, bool) {
 	return n, err == nil
 }
 
-func numericLikeHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	for _, part := range strings.Split(host, ".") {
-		if !numericLikeIPv4Part(part) {
-			return false
-		}
-	}
-	return true
-}
-
-func numericLikeIPv4Part(part string) bool {
+// endsInIPv4Number is the WHATWG "ends in a number" test on the last host
+// label: all ASCII digits, or "0x"/"0X" followed by hex digits only.
+func endsInIPv4Number(part string) bool {
 	if part == "" {
-		return true
+		return false
 	}
 	if len(part) >= 2 && part[0] == '0' && (part[1] == 'x' || part[1] == 'X') {
 		for _, r := range part[2:] {
@@ -242,6 +235,26 @@ func numericLikeIPv4Part(part string) bool {
 		}
 	}
 	return true
+}
+
+// CanonicalIPHost returns the WHATWG serialization of an IP host: IPv4 in
+// any form the URL parser accepts ("127.1", "0x7f.0.0.1", "2130706433")
+// becomes dotted decimal, and a bracketed IPv6 literal is compressed and
+// lowercased. ok is false for a domain name; invalid is true for a host that
+// ends in a number but is not a valid IPv4 address, which TS new URL rejects.
+func CanonicalIPHost(host string) (canonical string, ok bool, invalid bool) {
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		ip := net.ParseIP(host[1 : len(host)-1])
+		if ip == nil || strings.Contains(host, "%") {
+			return "", false, true
+		}
+		return canonicalIPv6Hostname(ip), true, false
+	}
+	_, display, isIPv4, invalid := parseWHATWGIPv4Host(host)
+	if invalid {
+		return "", false, true
+	}
+	return display, isIPv4, false
 }
 
 // IsBlockedIP reports whether ip is in a private, loopback, link-local,

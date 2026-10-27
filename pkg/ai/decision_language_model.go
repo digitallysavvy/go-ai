@@ -315,13 +315,20 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		}
 	}
 
+	// TS response: result.response, body included. Go language models
+	// report the parsed response body as RawResponse (as GenerateText's
+	// step response reads it); ResponseMetadata.Body is used when set.
 	var responseInfo *provider.DecisionResponseInfo
-	if genResult.ResponseMetadata != nil {
-		responseInfo = &provider.DecisionResponseInfo{
-			ID:        genResult.ResponseMetadata.ID,
-			Timestamp: genResult.ResponseMetadata.Timestamp,
-			ModelID:   genResult.ResponseMetadata.ModelID,
-			Headers:   genResult.ResponseMetadata.Headers,
+	if meta := genResult.ResponseMetadata; meta != nil || genResult.RawResponse != nil {
+		responseInfo = &provider.DecisionResponseInfo{Body: genResult.RawResponse}
+		if meta != nil {
+			responseInfo.ID = meta.ID
+			responseInfo.Timestamp = meta.Timestamp
+			responseInfo.ModelID = meta.ModelID
+			responseInfo.Headers = meta.Headers
+			if meta.Body != nil {
+				responseInfo.Body = meta.Body
+			}
 		}
 	}
 

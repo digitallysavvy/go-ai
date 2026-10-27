@@ -139,13 +139,8 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 		location := resp.Header.Get("Location")
 		if isRedirectStatus(resp.StatusCode) && location != "" {
 			drainAndClose(resp)
-			// Absolute locations are percent-decoded in the host like the
-			// WHATWG parser does, so the guards below see the real host.
-			if normalized, nerr := fileutil.NormalizeEscapedURLHost(whatwgPreprocess(location)); nerr == nil {
-				location = normalized
-			}
-			next, err := currentURL.Parse(location)
-			if err != nil {
+			next, ok := resolveRedirect(currentURL, location)
+			if !ok {
 				return fetchResult{errCode: errNetwork, message: "A redirect could not be validated and was blocked."}, nil
 			}
 			current = next.String()
@@ -180,6 +175,41 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 		return fetchResult{finalURL: current, contentType: resp.Header.Get("Content-Type"), body: body}, nil
 	}
 	return fetchResult{errCode: errTooManyRedirects, message: fmt.Sprintf("The URL exceeded the maximum of %d redirects.", maxRedirects)}, nil
+}
+
+// resolveRedirect is TS new URL(location, currentUrl): an absolute location
+// is canonicalized like the requested URL (host percent-decoded, IPv4 forms,
+// dot segments, encoding), so the guards see the real host; a relative one is
+// resolved against the current URL first. ok is false when TS would throw.
+func resolveRedirect(current *url.URL, location string) (*url.URL, bool) {
+	location = whatwgPreprocess(strings.TrimFunc(location, func(r rune) bool { return r <= 0x20 }))
+	// "http:path" with the current scheme and without "//" is relative.
+	if prefix := current.Scheme + ":"; len(location) >= len(prefix) && strings.EqualFold(location[:len(prefix)], prefix) &&
+		!strings.HasPrefix(location[len(prefix):], "//") {
+		location = location[len(prefix):]
+	}
+	// The fragment is not sent but stays in the URL (TS finalUrl keeps it).
+	fragment := ""
+	if i := strings.IndexByte(location, '#'); i >= 0 {
+		fragment = percentEncode(location[i+1:], inFragmentSet)
+	}
+	next, ok := canonicalURL(location)
+	if !ok || !next.IsAbs() {
+		if hasURLScheme(location) {
+			return nil, false
+		}
+		relative, err := url.Parse(escapeStrayPercents(location))
+		if err != nil {
+			return nil, false
+		}
+		if next, ok = canonicalURL(current.ResolveReference(relative).String()); !ok {
+			return nil, false
+		}
+	}
+	if strings.Contains(location, "#") {
+		next.Fragment, next.RawFragment = unescapeLenient(fragment), fragment
+	}
+	return next, true
 }
 
 // isSizeLimitError reports the "exceeded maximum size" DownloadError that

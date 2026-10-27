@@ -20,6 +20,7 @@ var (
 		fl("input_tokens", zNum),
 		fl("input_tokens_details", zNullish(zObj(
 			fl("cached_tokens", nNum), fl("cache_write_tokens", nNum),
+			fl("cache_write_tokens_details", zNullish(zObj(fl("ttl_30m_tokens", nNum), fl("ttl_12h_tokens", nNum)))),
 			fl("orchestration_input_tokens", nNum), fl("orchestration_input_cached_tokens", nNum)))),
 		fl("output_tokens", zNum),
 		fl("output_tokens_details", zNullish(zObj(fl("reasoning_tokens", nNum), fl("orchestration_output_tokens", nNum)))),

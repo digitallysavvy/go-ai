@@ -303,18 +303,21 @@ func (i LegacyOpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEve
 			span.SetAttributes(attr)
 		}
 	}
-	if attrs := runtimeContextAttributes(e.RuntimeContext); len(attrs) > 0 {
-		span.SetAttributes(attrs...)
-		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, attrs)
+	runtimeCtxAttrs := runtimeContextAttributes(e.RuntimeContext)
+	if len(runtimeCtxAttrs) > 0 {
+		span.SetAttributes(runtimeCtxAttrs...)
+		ctx = context.WithValue(ctx, runtimeContextAttrsKey{}, runtimeCtxAttrs)
 	}
-	// H5: record this integration's own root span by CallID, so
-	// OnDecideEnd/OnDecisionModelCallStart can find it instead of relying
-	// on trace.SpanFromContext(ctx), which only ever resolves the single
-	// "current" span and would break with a second integration registered.
+	// H5: record this integration's own root span (and the attributes the
+	// nested doDecide span inherits) by CallID, so OnDecideEnd/
+	// OnDecisionModelCallStart can find them instead of relying on ctx,
+	// which only carries the last registered integration's values.
 	if e.CallID != "" {
 		st := legacyState(e.CallID)
 		st.mu.Lock()
 		st.rootSpan = span
+		st.baseAttrs = baseAttrs
+		st.runtimeCtxAttrs = runtimeCtxAttrs
 		st.mu.Unlock()
 	}
 	return ctx
@@ -324,6 +327,7 @@ func (i LegacyOpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEve
 // (resolved by CallID, embedded by OnDecideStart) and ends it, mirroring
 // TS's onDecideOperationEnd.
 func (i LegacyOpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
+	defer legacyDeleteState(e.CallID)
 	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
@@ -356,9 +360,7 @@ func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e Dec
 		functionID = e.Settings.FunctionID
 	}
 	span.SetAttributes(legacyOperationNameAttrs(e.OperationID, functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		span.SetAttributes(baseAttrs...)
-	}
+	span.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
 	if e.Settings == nil || e.Settings.RecordInputs {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
@@ -473,6 +475,7 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 // OnDecideEnd sets output attributes on the root decide span (resolved
 // by CallID) and ends it, mirroring TS's onDecideOperationEnd.
 func (i OpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
+	defer genAIDeleteState(e.CallID)
 	span := genAIRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return

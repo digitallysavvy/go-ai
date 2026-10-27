@@ -16,6 +16,8 @@ func TestValidateResponsesChunk(t *testing.T) {
 		{"created no created_at", `{"type":"response.created","response":{"id":"r","model":"m"}}`, true},
 		{"completed", `{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cached_tokens":null}}}}`, false},
 		{"completed usage string", `{"type":"response.completed","response":{"usage":{"input_tokens":"1","output_tokens":2}}}`, true},
+		{"completed cache write ttl", `{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cache_write_tokens":3,"cache_write_tokens_details":{"ttl_30m_tokens":1,"ttl_12h_tokens":2}}}}}`, false},
+		{"completed cache write ttl string", `{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2,"input_tokens_details":{"cache_write_tokens_details":{"ttl_12h_tokens":"2"}}}}}`, true},
 		{"failed needs sequence", `{"type":"response.failed","response":{}}`, true},
 		{"unmodeled type passes", `{"type":"response.queued","anything":5}`, false},
 		{"no type", `{"foo":1}`, true},

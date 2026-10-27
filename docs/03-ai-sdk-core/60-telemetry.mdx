@@ -28,7 +28,7 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-When telemetry is enabled, you can control whether to record input values and output values. By default, both are enabled. You can disable them for privacy, data transfer, or performance reasons:
+When telemetry is enabled, you can control whether to record input values and output values. `RecordInputs` and `RecordOutputs` are plain booleans, so an `Options` value records inputs and outputs only when you set them to `true` (`telemetry.DefaultSettings()` sets both). This differs from TypeScript, where omitting `recordInputs` or `recordOutputs` records them. Leave them `false` for privacy, data transfer, or performance reasons:
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{

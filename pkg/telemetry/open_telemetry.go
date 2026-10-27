@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -210,6 +211,10 @@ type genAICallState struct {
 	// OnEmbedEnd/OnRerankEnd doesn't leak them.
 	embedSpans map[string]trace.Span
 	rerankSpan trace.Span
+	// operationType is the root operation ("ai.generateObject", ...). TS
+	// generateObject/streamObject use onObjectStepStart/End, which open the
+	// chat span directly under the root, with no agent_step span.
+	operationType string
 }
 
 var genAICallStates sync.Map // map[string]*genAICallState, keyed by CallID
@@ -406,6 +411,24 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 			span.SetAttributes(attribute.String("ai.settings.output", e.SettingsOutput))
 		}
 	}
+	// TS onEmbedOperationStart / onRerankOperationStart: the embedding and
+	// reranking supplemental inputs on the root span (ai.value for embed,
+	// ai.values for embedMany, ai.documents for rerank), input-gated.
+	if i.opts.Embedding && recordInputs {
+		switch e.OperationType {
+		case "ai.embed":
+			span.SetAttributes(attribute.String("ai.value", legacyJSONOrEmpty(e.Prompt)))
+		case "ai.embedMany":
+			if values := legacyJSONEachElement(e.Values); len(values) > 0 {
+				span.SetAttributes(attribute.StringSlice("ai.values", values))
+			}
+		}
+	}
+	if i.opts.Reranking && recordInputs && e.OperationType == "ai.rerank" {
+		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
+		}
+	}
 	// TS baseSupplementalAttributes: the runtime-context and header
 	// attributes of the root span, reused by the step, embeddings and
 	// reranking child spans (not by chat or tool spans).
@@ -429,9 +452,22 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st.rootSpan = span
 		st.baseSupp = baseSupp
 		st.tracer = tracer
+		st.operationType = e.OperationType
 		st.mu.Unlock()
 	}
 	return ctx
+}
+
+// genAIIsObjectCall reports whether callID's root is generateObject or
+// streamObject.
+func genAIIsObjectCall(callID string) bool {
+	if v, ok := genAICallStates.Load(callID); ok && callID != "" {
+		st := v.(*genAICallState)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return isLegacyObjectOperation(st.operationType)
+	}
+	return false
 }
 
 // requestSettingAttributes returns the gen_ai.request.* attributes for the
@@ -490,6 +526,11 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	if !rootSpan.IsRecording() {
 		return ctx
 	}
+	// TS onObjectStepStart creates no step span for generateObject/
+	// streamObject: the chat span sits directly under the root.
+	if isLegacyObjectOperation(e.OperationType) || genAIIsObjectCall(e.CallID) {
+		return ctx
+	}
 	tracer := genAIChildTracer(e.CallID, rootSpan)
 	// Explicitly rebase ctx onto our own root span before creating the step
 	// span, so it nests correctly under this integration's root even if
@@ -540,11 +581,17 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	// every step's DoStream call, so st.stepSpan is always set by the time
 	// this runs and the fallback is dead — removed to match TS exactly (see
 	// TestStreamTextGenAIChatSpanNestsUnderStepSpanForFirstStep).
+	// generateObject/streamObject (TS onObjectStepStart) parent the chat span
+	// under the root instead.
 	var parent trace.Span
+	isObject := genAIIsObjectCall(e.CallID)
 	if e.CallID != "" {
 		if st := genAIState(e.CallID); st != nil {
 			st.mu.Lock()
 			parent = st.stepSpan
+			if isObject {
+				parent = st.rootSpan
+			}
 			st.mu.Unlock()
 		}
 	}
@@ -587,11 +634,12 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	if e.FrequencyPenalty != nil {
 		attrs = setFiniteFloat64(attrs, "gen_ai.request.frequency_penalty", *e.FrequencyPenalty)
 	}
-	if len(e.StopSequences) > 0 {
+	// TS chat spans carry no gen_ai.request.seed (only the root does), and
+	// the object chat span declares its JSON output and no stop sequences.
+	if isObject {
+		attrs = append(attrs, attribute.String("gen_ai.output.type", "json"))
+	} else if len(e.StopSequences) > 0 {
 		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", e.StopSequences))
-	}
-	if e.Seed != nil {
-		attrs = append(attrs, attribute.Int("gen_ai.request.seed", *e.Seed))
 	}
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if recordInputs && e.System != "" {
@@ -611,6 +659,10 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		if b, err := jsonstr.Marshal(toolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
+	}
+	if isObject {
+		// TS onObjectStepStart spreads state.baseSupplementalAttributes.
+		attrs = append(attrs, genAIBaseSupplemental(e.CallID)...)
 	}
 	span.SetAttributes(attrs...)
 	if e.CallID != "" {
@@ -740,12 +792,16 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		entry.span.SetStatus(codes.Error, "")
 	}
 	content := contentParts(e.Content)
+	// generateObject/streamObject end their chat span in TS onObjectStepEnd:
+	// no provider re-record, cache-creation tokens or client performance
+	// attributes, and the object text as the output message.
+	isObject := genAIIsObjectCall(e.CallID)
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
 	// TS re-records the provider on the chat span at call end, since the
 	// responding provider can differ from the requested one.
-	if e.ModelProvider != "" {
+	if e.ModelProvider != "" && !isObject {
 		attrs = append(attrs, attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)))
 	}
 	if e.ResponseID != "" {
@@ -754,23 +810,35 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	if e.ModelID != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.model", e.ModelID))
 	}
-	attrs = append(attrs, baseUsageAttrs(e.Usage, true)...)
+	attrs = append(attrs, baseUsageAttrs(e.Usage, !isObject)...)
 	if i.opts.Usage {
 		attrs = append(attrs, detailedUsageAttrs(e.Usage)...)
 	}
-	attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.duration", msToSeconds(e.Performance.ResponseTimeMs))
-	if e.Performance.TimeToFirstOutputMs != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_to_first_chunk", msToSeconds(*e.Performance.TimeToFirstOutputMs))
-	}
-	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
-		// TS: msToSeconds(performance.timeBetweenOutputChunksMs?.avg).
-		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
+	if !isObject {
+		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.duration", msToSeconds(e.Performance.ResponseTimeMs))
+		if e.Performance.TimeToFirstOutputMs != nil {
+			attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_to_first_chunk", msToSeconds(*e.Performance.TimeToFirstOutputMs))
+		}
+		if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
+			// TS: msToSeconds(performance.timeBetweenOutputChunksMs?.avg).
+			attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
+		}
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 	// TS records gen_ai.output.messages for every call, an empty response
 	// included ([{role, parts: [], finish_reason}]); only an event that carries
 	// no content at all (nil) skips it.
-	if recordOutputs && e.Content != nil {
+	if recordOutputs && isObject {
+		var objectText strings.Builder
+		for _, c := range content {
+			if t, ok := c.(types.TextContent); ok {
+				objectText.WriteString(t.Text)
+			}
+		}
+		if b, err := jsonstr.Marshal(formatObjectOutputMessages(objectText.String(), e.FinishReason)); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
+		}
+	} else if recordOutputs && e.Content != nil {
 		if b, err := jsonstr.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
@@ -1035,9 +1103,10 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
 	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
+	// TS event.documents.map(d => JSON.stringify(d)): text and object documents.
 	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordInputs) {
-		if docs, ok := e.Documents.([]string); ok && len(docs) > 0 {
-			span.SetAttributes(attribute.StringSlice("ai.documents", jsonStringifyEach(docs)))
+		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
 		}
 	}
 	if callID != "" {
@@ -1273,6 +1342,9 @@ func (i OpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEvent) { i
 // double count fixed in c0a42bc — that count already lives on the
 // embeddings request span from OnEmbedEnd.
 func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
+	// The end is terminal for the call: its state goes even when no span is
+	// recording, so a late event cannot leave an entry behind.
+	defer genAIDeleteState(e.CallID)
 	// H5: resolve OUR OWN root span by CallID rather than
 	// trace.SpanFromContext(ctx), which — with a second integration also
 	// registered — would silently resolve to that other integration's span
@@ -1492,6 +1564,9 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 // span left open by OnDecisionModelCallStart for this CallID, since
 // OnDecisionModelCallEnd is never notified on an error path.
 func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
+	// Terminal for the call (also when it arrives after OnEnd): never leave
+	// state behind.
+	defer genAIDeleteState(e.CallID)
 	if e.CallID != "" {
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
@@ -1576,6 +1651,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 // alone), so this closes the right spans even when another integration is
 // also registered.
 func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	defer genAIDeleteState(e.CallID)
 	if e.CallID != "" {
 		// TS onAbort also ends an in-flight decision model-call span.
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {

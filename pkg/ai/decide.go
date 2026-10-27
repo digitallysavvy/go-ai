@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"time"
 
@@ -147,7 +146,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 			Message: "maxOutputTokens must be >= 1",
 		}
 	}
-	if err := validateDecisionInput(opts.State, opts.Questions); err != nil {
+	if err := validateDecisionInput(opts.State, opts.Questions, opts.QuestionOrder); err != nil {
 		return nil, err
 	}
 
@@ -155,7 +154,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 	for _, t := range model.SupportedQuestionTypes() {
 		supported[t] = struct{}{}
 	}
-	for _, id := range sortedQuestionIDs(opts.Questions) {
+	for _, id := range orderedQuestionIDs(opts.Questions, opts.QuestionOrder) {
 		q := opts.Questions[id]
 		if _, ok := supported[q.Type]; !ok {
 			return nil, &providererrors.DecisionUnsupportedQuestionTypeError{
@@ -268,21 +267,21 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		return nil, err
 	}
 
-	if err := validateDecisionAnswers(opts.Questions, result.Answers, result.Rounding); err != nil {
+	if err := validateDecisionAnswers(opts.Questions, opts.QuestionOrder, result.Answers, result.Rounding); err != nil {
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
 		return nil, err
 	}
 
 	// Refusals are valid answers for the model but not for the caller: fail
 	// without retrying, before the model-call end event (mirrors decide.ts).
+	// TS Object.keys(questions) order: QuestionOrder, then the rest sorted.
 	var refused []string
-	for id := range opts.Questions {
+	for _, id := range orderedQuestionIDs(opts.Questions, opts.QuestionOrder) {
 		if result.Answers[id].Type == "refusal" {
 			refused = append(refused, id)
 		}
 	}
 	if len(refused) > 0 {
-		sort.Strings(refused)
 		err := &providererrors.DecisionRefusalError{QuestionIDs: refused, Provider: model.Provider(), ModelID: model.ModelID()}
 		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, Error: err, CallID: callID})
 		return nil, err
@@ -501,7 +500,7 @@ func invalidDecisionInput(field string, message string) error {
 }
 
 // validateDecisionInput mirrors TypeScript's validateDecisionInput.
-func validateDecisionInput(state interface{}, questions map[string]provider.DecisionQuestion) error {
+func validateDecisionInput(state interface{}, questions map[string]provider.DecisionQuestion, order []string) error {
 	if err := validateDecisionState(state); err != nil {
 		return err
 	}
@@ -509,7 +508,7 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 		return invalidDecisionInput("questions", "must be a nonempty question map")
 	}
 
-	for _, id := range sortedQuestionIDs(questions) {
+	for _, id := range orderedQuestionIDs(questions, order) {
 		q := questions[id]
 		field := fmt.Sprintf("questions.%s", id)
 		// Instructions may be omitted (nil) for choice, score and boolean
@@ -621,7 +620,7 @@ func validateDecisionDistribution(dist map[string]float64, keys []string, answer
 }
 
 // validateDecisionAnswers mirrors TypeScript's validateDecisionAnswers.
-func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, answers map[string]provider.DecisionAnswer, rounding *provider.DecisionRounding) error {
+func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, order []string, answers map[string]provider.DecisionAnswer, rounding *provider.DecisionRounding) error {
 	var probError, scoreError float64
 	var err error
 	if rounding != nil {
@@ -644,7 +643,7 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 		}
 	}
 
-	for _, id := range sortedQuestionIDs(questions) {
+	for _, id := range orderedQuestionIDs(questions, order) {
 		q := questions[id]
 		answer := answers[id]
 		if answer.Type == "refusal" {
@@ -718,16 +717,11 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 	return nil
 }
 
-// sortedQuestionIDs returns the question IDs in sorted order so the first
-// failing question is reported deterministically (TS reports the first in
-// insertion order; Go maps have no order).
-func sortedQuestionIDs(questions map[string]provider.DecisionQuestion) []string {
-	ids := make([]string, 0, len(questions))
-	for id := range questions {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
+// orderedQuestionIDs returns the question IDs in TS insertion order as far as
+// DecideOptions.QuestionOrder records it, then the rest sorted, so the first
+// failing question and refusal lists match TS (Go maps have no order).
+func orderedQuestionIDs(questions map[string]provider.DecisionQuestion, order []string) []string {
+	return provider.OrderedKeys(questions, order)
 }
 
 func isFiniteFloat(v float64) bool {

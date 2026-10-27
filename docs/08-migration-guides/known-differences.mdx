@@ -79,6 +79,15 @@ Two details differ:
   with a `ProtocolError`. TypeScript waits for the execution timeout.
 - `MaxInFlightBridgeRequests` counts the calls in an approval batch.
 
+## Telemetry: RecordInputs and RecordOutputs are plain booleans
+
+`telemetry.Options.RecordInputs` and `RecordOutputs` are `bool` fields (kept
+from earlier releases), so an `Options` literal that does not set them
+records neither inputs nor outputs. In TypeScript an omitted `recordInputs`
+or `recordOutputs` means `true`. Set both to `true`, or start from
+`telemetry.DefaultSettings()`, to match the TypeScript default. A nil
+`*Options` records both.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime

@@ -451,7 +451,7 @@ func uiPartIssue(raw interface{}) string {
 
 	switch {
 	case partType == "text":
-		return checks(str("text"), optState, optPM("providerMetadata"))
+		return checks(str("text"), func() string { return citationsIssue(part) }, optState, optPM("providerMetadata"))
 	case partType == "reasoning":
 		return checks(optStr("id"), str("text"), optState, optPM("providerMetadata"))
 	case partType == "custom":
@@ -494,6 +494,68 @@ func uiPartIssue(raw interface{}) string {
 		return uiToolPartIssue(part)
 	}
 	return fmt.Sprintf("Invalid input: unsupported part type %q", partType)
+}
+
+// citationsIssue checks a text part's optional citations against the TS
+// citationSchema: a url or document source and optional non-negative integer
+// offsets and cited text.
+func citationsIssue(part map[string]interface{}) string {
+	raw, exists := part["citations"]
+	if !exists {
+		return ""
+	}
+	citations, ok := raw.([]interface{})
+	if !ok {
+		return "Invalid input: expected array for citations"
+	}
+	for i, rawCitation := range citations {
+		prefix := fmt.Sprintf("citations[%d].", i)
+		citation, ok := rawCitation.(map[string]interface{})
+		if !ok {
+			return fmt.Sprintf("Invalid input: expected object for citations[%d]", i)
+		}
+		source, ok := citation["source"].(map[string]interface{})
+		if !ok {
+			return "Invalid input: expected object for " + prefix + "source"
+		}
+		if source["type"] != "source" {
+			return `Invalid input: expected "source" for ` + prefix + "source.type"
+		}
+		var msg string
+		switch source["sourceType"] {
+		case "url":
+			msg = firstIssue(requireString(source, "id"), requireString(source, "url"), optionalString(source, "title"),
+				optionalProviderMetadata(source, "providerMetadata"))
+		case "document":
+			msg = firstIssue(requireString(source, "id"), requireString(source, "mediaType"), requireString(source, "title"),
+				optionalString(source, "filename"), optionalProviderMetadata(source, "providerMetadata"))
+		default:
+			return `Invalid option: expected one of "url"|"document" for ` + prefix + "source.sourceType"
+		}
+		if msg != "" {
+			return strings.Replace(msg, " for ", " for "+prefix+"source.", 1)
+		}
+		for _, key := range []string{"startIndex", "endIndex"} {
+			if v, exists := citation[key]; exists {
+				if n, ok := v.(float64); !ok || n != float64(int64(n)) || n < 0 {
+					return "Invalid input: expected non-negative integer for " + prefix + key
+				}
+			}
+		}
+		if msg := optionalString(citation, "citedText"); msg != "" {
+			return strings.Replace(msg, " for ", " for "+prefix, 1)
+		}
+	}
+	return ""
+}
+
+func firstIssue(issues ...string) string {
+	for _, issue := range issues {
+		if issue != "" {
+			return issue
+		}
+	}
+	return ""
 }
 
 func uiToolPartIssue(part map[string]interface{}) string {
