@@ -560,7 +560,11 @@ func (z *authorizer) save(ctx context.Context, spec *subscriptionSpec, next *Cre
 	if !z.markSaved(next, sessionID) {
 		return nil
 	}
-	return z.auth.OnCredentials(ctx, *next, CredentialRequest{Provider: spec.provider, SessionID: sessionID})
+	// The refresh token is already spent: saving its replacement must not
+	// stop because the request that triggered it was canceled, or a
+	// keyring write is killed and the host is left holding a dead refresh
+	// token. libfx's onCredentials takes no signal either.
+	return z.auth.OnCredentials(context.WithoutCancel(ctx), *next, CredentialRequest{Provider: spec.provider, SessionID: sessionID})
 }
 
 func (z *authorizer) supplied(ctx context.Context, spec *subscriptionSpec, sessionID string) (*Credentials, error) {

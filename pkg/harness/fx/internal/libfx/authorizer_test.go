@@ -675,3 +675,42 @@ func TestAllowlistFetchRefusesCredentialedCrossOriginRedirects(t *testing.T) {
 		t.Fatalf("body %q", body)
 	}
 }
+
+// A request canceled once its refresh has spent the old refresh token must
+// still let the host save the rotated credentials: a keyring write runs
+// under the context it is given.
+func TestAuthorizerSavesRotationAfterRequestCancel(t *testing.T) {
+	store := &hostStore{creds: Credentials{AccessToken: "old-access", RefreshToken: "old-refresh", AccountID: "account", ExpiresAt: authNow.UnixMilli()}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	n := &authNetwork{rotated: jwt(map[string]any{"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "account"}})}
+	auth := store.auth()
+	var saveErr error
+	auth.OnCredentials = func(ctx context.Context, next Credentials, _ CredentialRequest) error {
+		saveErr = ctx.Err()
+		store.mu.Lock()
+		store.saved = append(store.saved, next)
+		store.mu.Unlock()
+		return ctx.Err()
+	}
+	z := newTestAuthorizer(t, auth, n)
+	fetch := func(req *http.Request) (*http.Response, error) {
+		resp, err := n.fetch(req)
+		if strings.HasSuffix(req.URL.Path, "/oauth/token") {
+			cancel() // the turn is aborted while the token response arrives
+		}
+		return resp, err
+	}
+	z.fetch = fetch
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, codexResponsesEndpoint, strings.NewReader("{}"))
+	req.Header.Set("session-id", "s")
+	_, _ = z.do(codexSubscription, codexResponsesEndpoint, fetch, req, []byte("{}"))
+	if saveErr != nil {
+		t.Fatalf("OnCredentials ran with a canceled context: %v", saveErr)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.saved) != 1 || store.saved[0].AccessToken != n.rotated {
+		t.Fatalf("saved = %d rotations", len(store.saved))
+	}
+}
