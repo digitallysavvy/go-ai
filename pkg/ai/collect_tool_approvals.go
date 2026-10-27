@@ -66,7 +66,8 @@ type CollectToolApprovalsResult struct {
 // message when it is a tool message. Approved responses whose tool call
 // already has a result are skipped; denied responses are skipped only when an
 // existing result is not an execution-denied output (so a client denial can
-// override an earlier synthetic denial). Mirrors TS collectToolApprovals.
+// override an earlier synthetic denial). Only the first response per tool call
+// is collected; later ones are ignored. Mirrors TS collectToolApprovals.
 func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult, error) {
 	var result CollectToolApprovalsResult
 	if len(messages) == 0 || messages[len(messages)-1].Role != types.RoleTool {
@@ -137,6 +138,7 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 		}
 	}
 
+	collectedToolCallIDs := map[string]bool{}
 	for _, part := range lastMessage.Content {
 		var response types.ToolApprovalResponseContent
 		switch p := part.(type) {
@@ -172,6 +174,15 @@ func CollectToolApprovals(messages []types.Message) (CollectToolApprovalsResult,
 				ApprovalID: request.ApprovalID,
 			}
 		}
+
+		// Only the first response for a tool call is collected. Later
+		// responses (replays, conflicting decisions, or responses to another
+		// approval of the same call) would otherwise execute the tool twice
+		// or both execute and deny it (TS #23791).
+		if collectedToolCallIDs[toolCall.ID] {
+			continue
+		}
+		collectedToolCallIDs[toolCall.ID] = true
 
 		approval := CollectedToolApproval{
 			ApprovalRequest:    request,

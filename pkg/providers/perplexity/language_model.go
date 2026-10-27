@@ -605,7 +605,7 @@ func newPerplexityAgentStream(reader io.ReadCloser, warnings []types.Warning, in
 		textStates:        map[string]*perplexityTextState{},
 		emittedSourceURLs: map[string]bool{},
 		pendingSources:    map[string]types.SourceContent{},
-		finishReason:      types.FinishReasonOther,
+		finishReason:      types.FinishReasonInterrupted,
 	}
 }
 
@@ -757,6 +757,10 @@ func (s *perplexityAgentStream) processEvent(data string) {
 			}
 			s.finishReason = mapPerplexityFinishReason(chunk.Response.Status, incompleteReason, s.hasFunctionCall)
 			s.rawFinishReason = raw
+		} else if s.finishReason == types.FinishReasonInterrupted {
+			// The terminal event arrived without response details.
+			s.finishReason = types.FinishReasonOther
+			s.rawFinishReason = ""
 		}
 
 	case "response.failed":

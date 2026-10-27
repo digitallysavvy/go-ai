@@ -1182,7 +1182,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 		responseHeaders:      providerutils.ExtractHeaders(resp.Header),
 		requestID:            resp.Header.Get("x-amzn-requestid"),
 		contentBlocks:        map[int]*bedrockStreamContentBlock{},
-		finishReason:         types.FinishReasonOther,
+		finishReason:         types.FinishReasonInterrupted,
 		requestBody:          args.Body,
 		includeRawChunks:     opts.IncludeRawChunks,
 	}

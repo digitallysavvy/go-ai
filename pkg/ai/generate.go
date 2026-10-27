@@ -474,6 +474,20 @@ type GenerateTextOptions struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStart func(ctx context.Context, e OnStepStartEvent)
 
+	// ExperimentalSteering adds user messages to the generation at the next
+	// step boundary. Create it with NewSteering before the call; it can be
+	// used for one generation only. A message waiting when the model finishes
+	// its answer keeps the loop going for another step unless a stop condition
+	// is met. Experimental (TS experimental_steering, #23813).
+	ExperimentalSteering *Steering
+
+	// OnStepError is called when a step that started fails before it produces
+	// a step result: the provider call fails or an error occurs while the step
+	// runs. OnStepEnd is not called for such a step. In GenerateText an abort
+	// or timeout also ends the step here (the event's Error is the abort or
+	// timeout error). The call then returns the error. Additive (TS #23758).
+	OnStepError func(ctx context.Context, e OnStepErrorEvent)
+
 	// OnToolExecutionStart is called just before each tool's Execute function runs.
 	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
 
@@ -588,6 +602,14 @@ type PrepareStepOptions struct {
 
 	// Current step number
 	StepNumber int
+
+	// ExperimentalSteeringMessages are the steering user messages added to
+	// Messages for this step; nil when the step received none. Messages
+	// already contains them. A PrepareStep that rebuilds Messages from other
+	// fields must add them back, together with the steering messages of
+	// earlier steps (Steps[i].ExperimentalSteeringMessages), or they are
+	// reported as not delivered (SteeringRemovedByPrepareStep).
+	ExperimentalSteeringMessages []types.Message
 
 	// Steps contains completed step results before this step.
 	Steps []types.StepResult
@@ -879,10 +901,33 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// named result, which would otherwise hide them.
 	var liveResult *GenerateTextResult
 
+	steeringRun, steeringErr := startSteeringRun(opts.ExperimentalSteering)
+	if steeringErr != nil {
+		return nil, steeringErr
+	}
+	// steeringEndReason says why waiting steering messages are not delivered
+	// when the loop ends.
+	steeringEndReason := SteeringFinished
+
+	// openStep is the step that has started but not ended; it is reported to
+	// OnStepError when the call fails before the step produces a result.
+	var openStep *OnStepStartEvent
+
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
 	defer func() {
 		if err != nil {
+			// A call that fails ends the steering run (a no-op after the loop).
+			steeringRun.end(steeringEndReasonFor(ctx, err))
+		}
+		if err != nil {
+			// GenerateText has no OnAbort for a failing step, so aborts and
+			// timeouts also end the open step here.
+			if openStep != nil {
+				step := *openStep
+				openStep = nil
+				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, opts.OnStepError)
+			}
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
 				if liveResult != nil {
@@ -1035,6 +1080,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepModel := opts.Model
 		stepSystem := instructionsForNextStep
 		stepInstructionMessages := instructionMessagesForNextStep
+		steeringMessages := steeringRun.takeMessages()
+		if len(steeringMessages) > 0 {
+			currentMessages = append(append([]types.Message(nil), currentMessages...), steeringMessages...)
+		}
 		stepMessages := currentMessages
 		stepSandbox := opts.ExperimentalSandbox
 		stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
@@ -1059,36 +1108,37 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		accumulatedResponseMessages := responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		if opts.PrepareStep != nil {
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
-				Model:                      stepModel,
-				System:                     stepSystem,
-				Instructions:               &stepSystem,
-				InitialInstructions:        &initialInstructions,
-				InstructionMessages:        cloneInstructionMessages(stepInstructionMessages),
-				InitialInstructionMessages: cloneInstructionMessages(instructionMessages),
-				Messages:                   append([]types.Message(nil), stepMessages...),
-				InitialMessages:            append([]types.Message(nil), initialMessages...),
-				ResponseMessages:           accumulatedResponseMessages,
-				UserContext:                runtimeContext,
-				RuntimeContext:             runtimeContext,
-				ToolsContext:               toolsContext,
-				StepNumber:                 stepIndex,
-				Steps:                      append([]types.StepResult(nil), result.Steps...),
-				Tools:                      stepTools,
-				ToolChoice:                 stepToolChoice,
-				ActiveTools:                opts.ActiveTools,
-				ToolOrder:                  stepToolOrder,
-				ProviderOptions:            stepProviderOptions,
-				ExperimentalSandbox:        stepSandbox,
-				AccumulatedUsage:           result.Usage,
-				MaxOutputTokens:            stepMaxTokens,
-				Temperature:                stepTemperature,
-				TopP:                       stepTopP,
-				TopK:                       stepTopK,
-				PresencePenalty:            stepPresencePenalty,
-				FrequencyPenalty:           stepFrequencyPenalty,
-				StopSequences:              stepStopSequences,
-				Seed:                       stepSeed,
-				Reasoning:                  stepReasoningLevel,
+				Model:                        stepModel,
+				System:                       stepSystem,
+				Instructions:                 &stepSystem,
+				InitialInstructions:          &initialInstructions,
+				InstructionMessages:          cloneInstructionMessages(stepInstructionMessages),
+				InitialInstructionMessages:   cloneInstructionMessages(instructionMessages),
+				Messages:                     append([]types.Message(nil), stepMessages...),
+				InitialMessages:              append([]types.Message(nil), initialMessages...),
+				ResponseMessages:             accumulatedResponseMessages,
+				UserContext:                  runtimeContext,
+				RuntimeContext:               runtimeContext,
+				ToolsContext:                 toolsContext,
+				StepNumber:                   stepIndex,
+				Steps:                        append([]types.StepResult(nil), result.Steps...),
+				ExperimentalSteeringMessages: append([]types.Message(nil), steeringMessages...),
+				Tools:                        stepTools,
+				ToolChoice:                   stepToolChoice,
+				ActiveTools:                  opts.ActiveTools,
+				ToolOrder:                    stepToolOrder,
+				ProviderOptions:              stepProviderOptions,
+				ExperimentalSandbox:          stepSandbox,
+				AccumulatedUsage:             result.Usage,
+				MaxOutputTokens:              stepMaxTokens,
+				Temperature:                  stepTemperature,
+				TopP:                         stepTopP,
+				TopK:                         stepTopK,
+				PresencePenalty:              stepPresencePenalty,
+				FrequencyPenalty:             stepFrequencyPenalty,
+				StopSequences:                stepStopSequences,
+				Seed:                         stepSeed,
+				Reasoning:                    stepReasoningLevel,
 			})
 			if prepared.Model != nil {
 				stepModel = prepared.Model
@@ -1172,6 +1222,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepMessages = AppendToolCallerMessages(stepMessages, toolCallerMessages)
 		}
 
+		// Steering messages are delivered when they are part of the messages
+		// sent to the model after PrepareStep.
+		deliveredSteeringMessages := steeringRun.resolveTakenMessages(stepIndex, stepMessages)
+
 		stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 		stepTools = orderStepTools(stepTools, stepToolOrder)
 		stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
@@ -1203,7 +1257,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 		// Emit OnStepStartEvent.
-		Notify(ctx, OnStepStartEvent{
+		stepStartEvent := OnStepStartEvent{
 			CallID:              callID,
 			StepNumber:          stepIndex,
 			Provider:            stepModel.Provider(),
@@ -1223,7 +1277,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ExperimentalContext: runtimeContext,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
-		}, opts.OnStepStart)
+		}
+		Notify(ctx, stepStartEvent, opts.OnStepStart)
+		openStep = &stepStartEvent
 
 		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back to Output's format.
 		responseFormat := opts.ResponseFormat
@@ -1354,13 +1410,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Parse (validate / repair) the tool calls of this model call before
 		// the language-model-call-end event (TS parseToolCall).
+		// With tool choice none every tool call is rejected below, so user
+		// repair/refine callbacks must not process them (TS #23843).
+		parseRepair, parseRefine := repairToolCall, opts.ExperimentalRefineToolInput
+		if stepToolChoice.Type == types.ToolChoiceNone {
+			parseRepair, parseRefine = nil, nil
+		}
 		parsedToolCalls, preRefinementCalls, parseErr := parseToolCalls(stepCtx, genResult.ToolCalls, ParseToolCallOptions{
 			Tools:               stepTools,
-			RepairToolCall:      repairToolCall,
+			RepairToolCall:      parseRepair,
 			Instructions:        stepSystem,
 			InstructionMessages: stepInstructionMessages,
 			Messages:            stepMessages,
-			RefineToolInput:     opts.ExperimentalRefineToolInput,
+			RefineToolInput:     parseRefine,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
 		})
@@ -1454,25 +1516,26 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Create step result
 		stepResult := types.StepResult{
-			CallID:           callID,
-			StepNumber:       stepIndex,
-			Model:            types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
-			Content:          genResult.Content,
-			Text:             genResult.Text,
-			Reasoning:        stepReasoning,
-			ReasoningText:    stepReasoningText,
-			Files:            stepFiles,
-			ToolCalls:        genResult.ToolCalls,
-			StaticToolCalls:  filterStaticToolCalls(genResult.ToolCalls),
-			DynamicToolCalls: filterDynamicToolCalls(genResult.ToolCalls),
-			ToolResults:      []types.ToolResult{},
-			FinishReason:     genResult.FinishReason,
-			RawFinishReason:  stepRawFinishReason,
-			Usage:            genResult.Usage,
-			Performance:      performance,
-			Warnings:         genResult.Warnings,
-			Sources:          stepSources,
-			Request:          stepRequest,
+			CallID:                       callID,
+			ExperimentalSteeringMessages: deliveredSteeringMessages,
+			StepNumber:                   stepIndex,
+			Model:                        types.StepModel{Provider: stepModel.Provider(), ModelID: stepModel.ModelID()},
+			Content:                      genResult.Content,
+			Text:                         genResult.Text,
+			Reasoning:                    stepReasoning,
+			ReasoningText:                stepReasoningText,
+			Files:                        stepFiles,
+			ToolCalls:                    genResult.ToolCalls,
+			StaticToolCalls:              filterStaticToolCalls(genResult.ToolCalls),
+			DynamicToolCalls:             filterDynamicToolCalls(genResult.ToolCalls),
+			ToolResults:                  []types.ToolResult{},
+			FinishReason:                 genResult.FinishReason,
+			RawFinishReason:              stepRawFinishReason,
+			Usage:                        genResult.Usage,
+			Performance:                  performance,
+			Warnings:                     genResult.Warnings,
+			Sources:                      stepSources,
+			Request:                      stepRequest,
 			Response: types.StepResponse{
 				ID:        stepResp.ID,
 				Timestamp: stepResp.Timestamp,
@@ -1713,6 +1776,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.FinalStep = stepResult
 
+		openStep = nil
+
 		// Call step finish callback (v6.0: with user context)
 		if onStepEnd != nil {
 			safeInvoke(func() { onStepEnd(ctx, stepResult, runtimeContext) })
@@ -1807,6 +1872,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// tool-approval-request content, not as a finish reason.
 			result.Text = stepResult.Text
 			result.FinishReason = stepResult.FinishReason
+			steeringEndReason = SteeringWaitingForToolResults
+			break
+		}
+
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778).
+		if genResult.FinishReason == types.FinishReasonInterrupted {
 			break
 		}
 
@@ -1821,14 +1893,23 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 		}
 		hasPendingDeferred := len(pendingDeferredToolCalls) > 0
-		if !hasLocalToolCalls && !hasPendingDeferred && !injectedProviderResult {
-			break
-		}
 		// Continue only after every local tool call has an output or was
 		// denied (TS: clientToolOutputs + denied === clientToolCalls). Calls
 		// left unexecuted because of an unsafe finish reason stop the loop.
 		if hasUnresolvedLocalToolCalls(genResult.ToolCalls, toolsByName, rawStepToolResults) {
+			steeringEndReason = SteeringWaitingForToolResults
 			break
+		}
+		if !hasLocalToolCalls && !hasPendingDeferred && !injectedProviderResult {
+			// A waiting steering message keeps the loop going for another
+			// step, unless the step failed.
+			if !steeringRun.hasPendingMessages() {
+				break
+			}
+			if genResult.FinishReason == types.FinishReasonError {
+				steeringEndReason = SteeringError
+				break
+			}
 		}
 
 		// TS evaluates stop conditions only when the loop would otherwise
@@ -1845,6 +1926,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				lastStep := result.Steps[len(result.Steps)-1]
 				result.Text = lastStep.Text
 				result.FinishReason = lastStep.FinishReason
+				steeringEndReason = SteeringStopCondition
 				break
 			}
 		}
@@ -1857,6 +1939,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			return nil, wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 		}
 	}
+
+	steeringRun.end(steeringEndReason)
 
 	// Populate TotalUsage and final shortcuts before finish callbacks observe the result.
 	result.TotalUsage = result.Usage

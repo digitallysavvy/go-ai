@@ -966,7 +966,7 @@ func deepseekStreamErrorText(raw json.RawMessage) string {
 }
 
 // queueEnd mirrors TS flush(): close the reasoning block, finalize tool calls
-// and enqueue the terminal finish part (reason "other" when no finish_reason
+// and enqueue the terminal finish part (reason "interrupted" when no finish_reason
 // arrived, "error" after a parse/error chunk). It reports whether it queued
 // anything; it queues at most once.
 func (s *deepseekStream) queueEnd() bool {
@@ -982,7 +982,7 @@ func (s *deepseekStream) queueEnd() bool {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
 	if s.finishRaw != "" {
 		finish.FinishReason = mapDeepSeekFinishReason(s.finishRaw)
 		finish.RawFinishReason = s.finishRaw

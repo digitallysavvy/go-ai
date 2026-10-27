@@ -29,7 +29,7 @@ func TestResponsesStreamFinishesAtEndWithoutTerminalEvent(t *testing.T) {
 					finish = c
 				}
 			}
-			if finish == nil || finish.FinishReason != types.FinishReasonOther || finish.Usage == nil {
+			if finish == nil || finish.FinishReason != types.FinishReasonInterrupted || finish.Usage == nil {
 				t.Fatalf("finish = %+v", finish)
 			}
 			if !strings.Contains(string(finish.ProviderMetadata), `"responseId":"resp_1"`) {

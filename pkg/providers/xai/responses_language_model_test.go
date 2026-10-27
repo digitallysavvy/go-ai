@@ -125,11 +125,11 @@ data: [DONE]
 		t.Fatalf("timestamp = %d, want 1741269019", got)
 	}
 
-	// TS flush(): finish is always enqueued at the end of the stream (other,
+	// TS flush(): finish is always enqueued at the end of the stream (interrupted,
 	// zero usage when no terminal response event arrived).
 	chunk, err = stream.Next()
-	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonOther {
-		t.Fatalf("second Next = %#v, %v, want finish(other)", chunk, err)
+	if err != nil || chunk.Type != provider.ChunkTypeFinish || chunk.FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("second Next = %#v, %v, want finish(interrupted)", chunk, err)
 	}
 	if chunk.Usage == nil || chunk.Usage.InputTokens == nil || *chunk.Usage.InputTokens != 0 {
 		t.Fatalf("finish usage = %#v, want zero usage", chunk.Usage)

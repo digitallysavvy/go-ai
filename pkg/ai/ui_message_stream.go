@@ -1580,6 +1580,12 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	}
 	if toolName != "" && part["type"] == "dynamic-tool" {
 		part["toolName"] = toolName
+	} else if toolName != "" && !dynamic {
+		// A static part adopts the completed tool name (TS #23583): when
+		// repairToolCall renamed the tool after input started streaming, the
+		// part type must follow so convertToModelMessages rebuilds the
+		// repaired name and signed approvals keep verifying.
+		part["type"] = "tool-" + toolName
 	}
 	// TS updateToolPart/updateDynamicToolPart assign output, errorText, rawInput
 	// and preliminary on every update, so a field the update does not carry is

@@ -127,6 +127,16 @@ func resolveAgentToolExecutionEnd(opts AgentGenerateOptions) func(context.Contex
 
 // mergeListener returns a single listener that calls both a and b in order.
 // If either is nil, returns the other. If both are nil, returns nil.
+// mergeErrorHandlers runs the config-level handler first, then the per-call one.
+func mergeErrorHandlers(a, b func(ctx context.Context, err error)) func(ctx context.Context, err error) {
+	return mergeListener(a, b)
+}
+
+// mergeAbortHandlers runs the config-level handler first, then the per-call one.
+func mergeAbortHandlers(a, b func(ctx context.Context, steps []types.StepResult)) func(ctx context.Context, steps []types.StepResult) {
+	return mergeListener(a, b)
+}
+
 func mergeListener[E any](a, b func(ctx context.Context, e E)) func(ctx context.Context, e E) {
 	if a == nil {
 		return b
@@ -285,7 +295,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		onStepFinish:     resolveAgentOnStepEnd(opts),
 		onFinish:         resolveAgentOnEnd(opts),
 	})
-	return ai.GenerateText(ctx, ai.GenerateTextOptions{
+	result, genErr := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:                          callConfig.Model,
 		Prompt:                         prompt,
 		Messages:                       messages,
@@ -334,11 +344,20 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		Internal:                       callConfig.Internal,
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
+		OnStepError:                    config.OnStepError,
+		ExperimentalSteering:           opts.ExperimentalSteering,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
 		OnStepEndEvent:                 cbs.onStepFinish,
 		OnEndEvent:                     cbs.onFinish,
 	})
+	// GenerateText has no error callback, so report the error before it is
+	// returned. Aborts and timeouts are not reported, like in Stream.
+	if genErr != nil && config.ErrorHandler != nil && ctx.Err() == nil &&
+		!errors.Is(genErr, context.Canceled) && !errors.Is(genErr, context.DeadlineExceeded) {
+		config.ErrorHandler(ctx, genErr)
+	}
+	return result, genErr
 }
 
 // GenerateAgent preserves the Go-specific AgentResult loop shape. Prefer
@@ -451,10 +470,12 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		OnChunk:                        opts.OnChunk,
 		InitialStreamChunks:            opts.InitialStreamChunks,
 		ExperimentalTransform:          opts.ExperimentalTransform,
-		OnError:                        opts.OnError,
-		OnAbortEvent:                   agentAbortEvent(opts.OnAbort),
+		OnError:                        mergeErrorHandlers(config.ErrorHandler, opts.OnError),
+		OnAbortEvent:                   agentAbortEvent(mergeAbortHandlers(config.AbortHandler, opts.OnAbort)),
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
+		OnStepError:                    config.OnStepError,
+		ExperimentalSteering:           opts.ExperimentalSteering,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
 		OnStepEndEvent:                 cbs.onStepFinish,
@@ -884,6 +905,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// tool-approval-request (MCP) pauses the loop until the caller
 		// answers; TS WorkflowAgent returns on providerApprovalRequests.
 		if agentHasProviderApprovalRequest(stepResult.Content) {
+			shouldContinue = false
+		}
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778).
+		if stepResult.FinishReason == types.FinishReasonInterrupted {
 			shouldContinue = false
 		}
 		// TS stepTimeMs spans the model call and the tool execution.
@@ -1441,9 +1467,15 @@ func resolveAgentStepTools(ctx context.Context, tools []types.Tool, toolsContext
 // here and calls to unknown tools or with schema-invalid input were never
 // marked Invalid. Mirrors ai.parseToolCalls (unexported; pkg/agent can only
 // reach the single-call ai.ParseToolCall).
-func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message) ([]types.ToolCall, error) {
+func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message, skipRepair bool) ([]types.ToolCall, error) {
 	if len(calls) == 0 {
 		return calls, nil
+	}
+	repair := callConfig.RepairToolCall
+	if skipRepair {
+		// With tool choice none every tool call is rejected, so the user's
+		// repair callback must not process them (TS #23843).
+		repair = nil
 	}
 	parsed := make([]types.ToolCall, len(calls))
 	for i, call := range calls {
@@ -1458,7 +1490,7 @@ func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig
 		result, err := ai.ParseToolCall(ctx, ai.ParseToolCallOptions{
 			ToolCall:            call,
 			Tools:               callConfig.Tools,
-			RepairToolCall:      callConfig.RepairToolCall,
+			RepairToolCall:      repair,
 			Instructions:        callConfig.System,
 			InstructionMessages: callConfig.InstructionMessages,
 			Messages:            messages,
@@ -1718,7 +1750,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if callConfig.Include != nil {
 		include = *callConfig.Include
 	}
-	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages)
+	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}

@@ -62,7 +62,7 @@ data: {"type":"response.completed","response":{"object":"response","output":[],"
 	if got := strings.Join(xaiChunkTypes(chunks), ","); got != "text-start,text,text-end,finish" {
 		t.Fatalf("no-terminal chunks = %s", got)
 	}
-	if chunks[3].FinishReason != types.FinishReasonOther {
+	if chunks[3].FinishReason != types.FinishReasonInterrupted {
 		t.Fatalf("finish = %+v", chunks[3])
 	}
 }
@@ -155,5 +155,23 @@ data: {"type":"response.completed","response":{"object":"response","output":[],"
 	got := strings.Join(xaiChunkTypes(chunks), ",")
 	if !strings.HasPrefix(got, "reasoning-start,reasoning,reasoning-start,reasoning") {
 		t.Fatalf("chunks = %s", got)
+	}
+}
+
+// TS #23814: a terminal event without a recognized status reports other, and
+// a bare error event reports error.
+func TestXAIResponsesStreamCompletedWithoutStatusIsOther(t *testing.T) {
+	chunks := drainXAIResponses(t, `data: {"type":"response.completed","response":{"object":"response","output":[],"status":"","usage":null}}`+"\n\n")
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonOther {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+func TestXAIResponsesStreamErrorEventFinishesWithError(t *testing.T) {
+	chunks := drainXAIResponses(t, `data: {"type":"error","code":"boom","message":"failed"}`+"\n\n")
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish = %+v", last)
 	}
 }

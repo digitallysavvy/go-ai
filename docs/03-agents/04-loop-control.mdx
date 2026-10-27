@@ -175,6 +175,73 @@ ai.GenerateTextOptions{StopWhen: []ai.StopCondition{ai.IsStepCount(5)}}
 
 ---
 
+## Steering
+
+Steering is experimental. It adds a user message to a running loop, for example when a user sends a correction or a follow-up while the agent is still working. The message is added at the next step boundary, after the current step and its tool calls are done, so running tools are never interrupted.
+
+Create a steering object with `ai.NewSteering()`, pass it as `ExperimentalSteering`, and call `Steer` while the loop runs. It works with `ai.GenerateText`, `ai.StreamText` and `ToolLoopAgent.Generate`/`Stream` (and `CreateAgentUIStream`), because you create the steering object before the call starts:
+
+```go
+steering := ai.NewSteering()
+
+result, err := ai.StreamText(ctx, ai.StreamTextOptions{
+    Model:                model,
+    Tools:                tools,
+    StopWhen:             []ai.StopCondition{ai.IsStepCount(10)},
+    Prompt:               "What is the weather in Paris?",
+    ExperimentalSteering: steering,
+})
+
+// e.g. when the user sends another message while the agent is running:
+handle := steering.Steer("I meant Paris, Texas.")
+outcome := handle.Outcome() // blocks until the outcome is known
+
+if outcome.Delivered {
+    fmt.Println("added to step", outcome.StepNumber)
+} else {
+    // not added, for example send it as a new message instead
+    fmt.Println(outcome.Reason, outcome.Message)
+}
+```
+
+With the agent, set `ExperimentalSteering` on `agent.AgentGenerateOptions` (and on `AgentStreamOptions`, which embeds it). The legacy `Execute`/`GenerateAgent` loop ignores it.
+
+### How Steering Messages Are Delivered
+
+- Messages are added in the order they are sent. Each message is its own user message.
+- If the model finishes its answer while a message is waiting, the loop continues for another step. A step that finished with `error` does not continue.
+- Stop conditions still apply. `GenerateText` and `StreamText` stop after one step by default, so set `StopWhen` to steer them.
+- Messages sent before the call starts are added to the first step.
+- `PrepareStep` and `OnStepStart` receive the steering messages as part of `Messages`. `PrepareStepOptions.ExperimentalSteeringMessages` lists the ones added for the current step.
+- A steering object can only be used for one call. Reusing it returns an error. Create a new one for each call.
+
+`Messages` already contains the steering messages in the right place. If `PrepareStep` returns a `Messages` override rebuilt from other fields, for example `InitialMessages` and `ResponseMessages`, the steering messages are dropped and the outcome reports `ai.SteeringRemovedByPrepareStep`. Build overrides from `Messages`, or add the steering messages of every step back in order (`step.ExperimentalSteeringMessages`).
+
+### Handling the Outcome
+
+`Steer` returns an `*ai.SteerHandle` and never fails. `Outcome()` blocks until the outcome is known, `Wait(ctx)` also stops when `ctx` ends, and `Done()` is closed once it is known. `SteerMessage` takes a full `types.Message` and returns an error for any role other than user. A message is delivered when it is part of the messages sent to the model, after `PrepareStep`. Otherwise `outcome.Reason` is one of:
+
+- `ai.SteeringFinished`: the loop ended before the message could be added. A `Steer` after the loop ended resolves with this right away.
+- `ai.SteeringRemovedByPrepareStep`: `PrepareStep` returned messages without it.
+- `ai.SteeringStopCondition`: a stop condition ended the loop.
+- `ai.SteeringWaitingForToolResults`: the loop ended to wait for tool results, for example a tool approval or a tool without an `Execute` function.
+- `ai.SteeringAborted`: the loop was aborted.
+- `ai.SteeringError`: the loop failed.
+
+Pass `ai.WithSteerID(id)` to make retries safe: sending a message again with the same id returns the handle of the first message.
+
+### Saving Steering Messages
+
+Steering messages are not part of the response messages. Each step lists the ones added to it in `ExperimentalSteeringMessages`, so you can rebuild the conversation in order:
+
+```go
+messages := append([]types.Message(nil), initialMessages...)
+for _, step := range result.Steps {
+    messages = append(messages, step.ExperimentalSteeringMessages...)
+    messages = append(messages, step.ResponseMessages...)
+}
+```
+
 ## PrepareCall
 
 `PrepareCall` is called immediately before each generation step. Use it to adjust the system

@@ -375,7 +375,7 @@ func TestMoonshotStream_FinalizesAtEOFWithoutDone(t *testing.T) {
 		t.Fatalf("expected a text-end chunk, got %#v", chunks)
 	}
 	finishes := moonshotChunksOfType(chunks, provider.ChunkTypeFinish)
-	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonOther {
-		t.Fatalf("expected one finish chunk with reason other, got %#v", finishes)
+	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("expected one finish chunk with reason interrupted, got %#v", finishes)
 	}
 }

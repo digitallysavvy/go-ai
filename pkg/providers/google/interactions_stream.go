@@ -36,13 +36,17 @@ type interactionsStream struct {
 	open             map[int]*interactionOpenBlock
 	startEmitted     bool
 	completed        bool
-	finishStatus     string
-	usage            *interactionsUsage
-	serviceTier      string
-	hasFunction      bool
-	lastEventID      string
-	resumable        bool
-	finished         bool
+	// hasCompletionEvent is set only by interaction.completed (TS
+	// hasCompletionEvent); a stream that ends without it and without a
+	// terminal status is reported as interrupted (TS #23814).
+	hasCompletionEvent bool
+	finishStatus       string
+	usage              *interactionsUsage
+	serviceTier        string
+	hasFunction        bool
+	lastEventID        string
+	resumable          bool
+	finished           bool
 
 	// attempt and receivedEvent mirror streamGoogleInteractionEvents'
 	// consecutive-failure accounting (stream-google-interactions.ts):
@@ -681,6 +685,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		}
 	case "interaction.completed":
 		s.completed = true
+		s.hasCompletionEvent = true
 		if event.Interaction != nil {
 			if event.Interaction.Status != "" {
 				s.finishStatus = event.Interaction.Status
@@ -772,10 +777,14 @@ func (s *interactionsStream) appendFinish() {
 		return
 	}
 	s.finished = true
+	finishReason, rawFinishReason := mapInteractionsFinishReason(s.finishStatus, s.hasFunction), s.finishStatus
+	if !s.hasCompletionEvent && (s.finishStatus == "" || s.finishStatus == InteractionStatusInProgress) {
+		finishReason, rawFinishReason = types.FinishReasonInterrupted, ""
+	}
 	s.buffer = append(s.buffer, &provider.StreamChunk{
 		Type:             provider.ChunkTypeFinish,
-		FinishReason:     mapInteractionsFinishReason(s.finishStatus, s.hasFunction),
-		RawFinishReason:  s.finishStatus,
+		FinishReason:     finishReason,
+		RawFinishReason:  rawFinishReason,
 		Usage:            usagePtr(convertInteractionsUsage(s.usage)),
 		ProviderMetadata: finishMetadata(s.interactionID, s.serviceTier, s.usage),
 	})

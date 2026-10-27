@@ -269,6 +269,27 @@ type StreamTextOptions struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStart func(ctx context.Context, e OnStepStartEvent)
 
+	// ExperimentalSteering adds user messages to the generation at the next
+	// step boundary. Create it with NewSteering before the call; it can be
+	// used for one generation only. A message waiting when the model finishes
+	// its answer keeps the loop going for another step unless a stop condition
+	// is met. Experimental (TS experimental_steering, #23813).
+	ExperimentalSteering *Steering
+
+	// lowMemory is set by StreamTextLowMemory: single-consumer streaming
+	// without a replay buffer; collectContent says whether complete content
+	// must still be collected (tools, output, callbacks, telemetry).
+	lowMemory      bool
+	collectContent bool
+
+	// OnStepError is called when a step that started fails before it produces
+	// a step result: the provider call fails, or the model stream ends
+	// without output (NoOutputGeneratedError). OnStepEnd is not called for
+	// such a step. A provider error chunk does not fail the step: it still
+	// ends with OnStepEnd and finish reason "error". Aborts and timeouts end
+	// the step with OnAbort instead. Additive (TS #23758).
+	OnStepError func(ctx context.Context, e OnStepErrorEvent)
+
 	// OnToolExecutionStart is called just before each tool's Execute function runs.
 	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
 
@@ -683,6 +704,25 @@ type StreamTextResult struct {
 	// ToUIMessageStream uses as its step boundary. Nil for StreamText results.
 	uiChunkBuf *chunkBuffer
 
+	// openStep is the step that has started but not ended (set and cleared by
+	// the goroutine that runs bootstrapAndStream and processStream); it is
+	// reported to OnStepError when the stream fails before the step produces
+	// a result.
+	openStep *OnStepStartEvent
+
+	// steering is the run side of StreamTextOptions.ExperimentalSteering, and
+	// stepSteering the steering messages delivered to the current step.
+	steering     *steeringRun
+	stepSteering []types.Message
+
+	// singleConsumer is set by StreamTextLowMemory: the chunk buffer drops
+	// consumed chunks and the first stream accessor claims the only cursor.
+	// skipTextAccumulation additionally skips collecting generated text when
+	// nothing needs the complete content.
+	singleConsumer       bool
+	streamClaimed        bool // guarded by mu
+	skipTextAccumulation bool
+
 	processingDone chan struct{}
 
 	// cancelBootstrap cancels bootstrapAndStream's context. It lets Close()
@@ -742,8 +782,14 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		return nil, err
 	}
 
+	steeringRun, err := startSteeringRun(opts.ExperimentalSteering)
+	if err != nil {
+		return nil, err
+	}
+
 	bootstrapCtx, cancelBootstrap := context.WithCancel(ctx)
 	result := &StreamTextResult{
+		steering:            steeringRun,
 		status:              StreamStatusSubmitted, // actively streaming; set before any chunks arrive
 		timeout:             opts.Timeout,
 		cancelBootstrap:     cancelBootstrap,
@@ -752,6 +798,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 		requestTools:        opts.Tools,
 	}
 	result.chunkBuf = newChunkBuffer()
+	if opts.lowMemory {
+		result.chunkBuf = newSingleConsumerChunkBuffer()
+		result.singleConsumer = true
+		result.skipTextAccumulation = !opts.collectContent
+	}
 	result.processingDone = make(chan struct{})
 
 	go result.bootstrapAndStream(bootstrapCtx, opts, instructionMessages)
@@ -981,6 +1032,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	if len(initialResponseMessages) > 0 {
 		stepMessages = append(append([]types.Message(nil), prompt.Messages...), initialResponseMessages...)
 	}
+	// Messages sent before the run starts land in the first step.
+	steeringMessages := r.steering.takeMessages()
+	if len(steeringMessages) > 0 {
+		stepMessages = append(append([]types.Message(nil), stepMessages...), steeringMessages...)
+	}
 	stepTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 	stepActiveTools := opts.ActiveTools
 	stepToolChoice := opts.ToolChoice
@@ -1003,35 +1059,36 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepReasoningLevel := opts.Reasoning
 	if opts.PrepareStep != nil {
 		prepared := opts.PrepareStep(ctx, PrepareStepOptions{
-			Model:                      stepModel,
-			System:                     stepSystem,
-			Instructions:               &stepSystem,
-			InitialInstructions:        &system,
-			InstructionMessages:        cloneInstructionMessages(stepInstructionMessages),
-			InitialInstructionMessages: cloneInstructionMessages(instructionMessages),
-			Messages:                   append([]types.Message(nil), stepMessages...),
-			InitialMessages:            append([]types.Message(nil), prompt.Messages...),
-			ResponseMessages:           responseMessagesWithInitial(initialResponseMessages, nil),
-			UserContext:                runtimeContext,
-			RuntimeContext:             runtimeContext,
-			ToolsContext:               toolsContext,
-			StepNumber:                 0,
-			Steps:                      nil,
-			Tools:                      stepTools,
-			ToolChoice:                 stepToolChoice,
-			ActiveTools:                opts.ActiveTools,
-			ToolOrder:                  stepToolOrder,
-			ProviderOptions:            stepProviderOptions,
-			ExperimentalSandbox:        stepSandbox,
-			MaxOutputTokens:            stepMaxTokens,
-			Temperature:                stepTemperature,
-			TopP:                       stepTopP,
-			TopK:                       stepTopK,
-			PresencePenalty:            stepPresencePenalty,
-			FrequencyPenalty:           stepFrequencyPenalty,
-			StopSequences:              stepStopSequences,
-			Seed:                       stepSeed,
-			Reasoning:                  stepReasoningLevel,
+			Model:                        stepModel,
+			System:                       stepSystem,
+			Instructions:                 &stepSystem,
+			InitialInstructions:          &system,
+			InstructionMessages:          cloneInstructionMessages(stepInstructionMessages),
+			InitialInstructionMessages:   cloneInstructionMessages(instructionMessages),
+			ExperimentalSteeringMessages: append([]types.Message(nil), steeringMessages...),
+			Messages:                     append([]types.Message(nil), stepMessages...),
+			InitialMessages:              append([]types.Message(nil), prompt.Messages...),
+			ResponseMessages:             responseMessagesWithInitial(initialResponseMessages, nil),
+			UserContext:                  runtimeContext,
+			RuntimeContext:               runtimeContext,
+			ToolsContext:                 toolsContext,
+			StepNumber:                   0,
+			Steps:                        nil,
+			Tools:                        stepTools,
+			ToolChoice:                   stepToolChoice,
+			ActiveTools:                  opts.ActiveTools,
+			ToolOrder:                    stepToolOrder,
+			ProviderOptions:              stepProviderOptions,
+			ExperimentalSandbox:          stepSandbox,
+			MaxOutputTokens:              stepMaxTokens,
+			Temperature:                  stepTemperature,
+			TopP:                         stepTopP,
+			TopK:                         stepTopK,
+			PresencePenalty:              stepPresencePenalty,
+			FrequencyPenalty:             stepFrequencyPenalty,
+			StopSequences:                stepStopSequences,
+			Seed:                         stepSeed,
+			Reasoning:                    stepReasoningLevel,
 		})
 		if prepared.Model != nil {
 			stepModel = prepared.Model
@@ -1114,6 +1171,10 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		stepMessages = AppendToolCallerMessages(stepMessages, toolCallerMessages)
 	}
 
+	// Steering messages are delivered when they are part of the messages sent
+	// to the model after PrepareStep.
+	r.stepSteering = r.steering.resolveTakenMessages(0, stepMessages)
+
 	stepTools = resolveStepTools(ctx, stepTools, toolsContext, stepSandbox)
 	stepTools = orderStepTools(stepTools, stepToolOrder)
 	stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
@@ -1164,7 +1225,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 	// TS converts the step prompt before it fires onStepStart.
-	Notify(stepCtx, OnStepStartEvent{
+	firstStepStart := OnStepStartEvent{
 		CallID:              callID,
 		StepNumber:          0,
 		Provider:            stepModel.Provider(),
@@ -1183,7 +1244,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
-	}, opts.OnStepStart)
+	}
+	Notify(stepCtx, firstStepStart, opts.OnStepStart)
+	r.openStep = &firstStepStart
 
 	// Build generate options
 	genOpts := &provider.GenerateOptions{
@@ -1309,6 +1372,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
 		} else {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		// TS reports the doStream failure itself, without wrapper text, after
@@ -1420,8 +1484,19 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 // same way a mid-stream failure does (processStream's own deferred cleanup),
 // so Err()/ReadAll()/Stream() behave identically regardless of which phase
 // produced the error.
+// notifyStepError reports the open step, if any, to OnStepError and closes it.
+func (r *StreamTextResult) notifyStepError(ctx context.Context, onStepError func(context.Context, OnStepErrorEvent), err error) {
+	if r.openStep == nil {
+		return
+	}
+	step := *r.openStep
+	r.openStep = nil
+	Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, onStepError)
+}
+
 func (r *StreamTextResult) fail(err error) {
 	r.err = err
+	r.steering.end(steeringEndReasonFor(context.TODO(), err))
 	r.mu.Lock()
 	r.status = StreamStatusDone
 	r.mu.Unlock()
@@ -1487,7 +1562,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// results haven't arrived yet. Key = toolCallID, value = toolName.
 	pendingDeferredToolCalls := make(map[string]string)
 
+	// Safety net: every return path resolves waiting steering messages (end is
+	// a no-op once the run has ended).
+	defer func() { r.steering.end(steeringEndReasonFor(ctx, r.err)) }()
+
 	var allSteps []types.StepResult
+	// steeringEndReason says why waiting steering messages are not delivered
+	// when the loop ends.
+	steeringEndReason := SteeringFinished
 	// currentToolChoice tracks the tool choice actually used to open each
 	// step's stream (bootstrapAndStream's resolved value, including any
 	// PrepareStep override, for step 1; then whatever PrepareStep resolves
@@ -1824,6 +1906,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 				continue
 			}
+			// Tool choice none rejects every tool call when the model call
+			// finishes. Withhold tool parts so consumers (for example
+			// client-side tools) cannot act on them before the rejection, and
+			// skip the user callbacks that would repair or refine them (TS
+			// #23843).
+			withholdToolParts := currentToolChoice.Type == types.ToolChoiceNone
+			if withholdToolParts {
+				switch chunk.Type {
+				case provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd:
+					continue
+				}
+			}
 			if bufferToolParts && !replayed {
 				if chunk.Type == provider.ChunkTypeFinish && len(heldChunks) > 0 {
 					replayQueue, heldChunks = append(heldChunks, chunk), nil
@@ -1878,6 +1972,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// metadata (e.g. a Gemini thought signature).
 			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" && len(chunk.ProviderMetadata) == 0 {
 				forwardChunk = false
+			}
+			// Tool parts are withheld with tool choice none (TS #23843).
+			if withholdToolParts {
+				switch chunk.Type {
+				case provider.ChunkTypeToolCall, provider.ChunkTypeToolApprovalRequest, provider.ChunkTypeToolResult:
+					forwardChunk = false
+				}
 			}
 			// The raw provider finish chunk is never forwarded to the
 			// consumer directly (mirrors TS's 'model-call-end', which is
@@ -1955,20 +2056,22 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// immediately following another one (e.g. an Anthropic compaction
 			// block followed by plain text) doesn't merge into the previous
 			// block's part and inherit its providerMetadata.
-			if chunk.Type == provider.ChunkTypeTextStart {
+			if chunk.Type == provider.ChunkTypeTextStart && !r.skipTextAccumulation {
 				stepContent = stepBlocks.openText(stepContent, chunk.ID, chunk.ProviderMetadata)
 			}
 
 			// A text-end boundary: attach its providerMetadata and citations to the text part.
-			if chunk.Type == provider.ChunkTypeTextEnd {
+			if chunk.Type == provider.ChunkTypeTextEnd && !r.skipTextAccumulation {
 				stepContent = stepBlocks.closeText(stepContent, chunk.ID, chunk.ProviderMetadata, chunk.Citations)
 			}
 
 			// Accumulate text
 			if chunk.Type == provider.ChunkTypeText {
-				stepTextParts = append(stepTextParts, chunk.Text)
-				accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
-				stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
+				if !r.skipTextAccumulation {
+					stepTextParts = append(stepTextParts, chunk.Text)
+					accumulatedTextParts = append(accumulatedTextParts, chunk.Text)
+					stepContent = stepBlocks.textDelta(stepContent, chunk.ID, chunk.Text, chunk.ProviderMetadata)
+				}
 
 				// Update partial output after each text chunk (with deduplication).
 				// Only publishes when the JSON representation of the partial changes,
@@ -2025,14 +2128,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// forwarded chunk itself.
 			if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
 				enriched := enrichToolCallMetadata([]types.ToolCall{*chunk.ToolCall}, stepTools)[0]
+				parseRepair, parseRefine := repairToolCall, opts.ExperimentalRefineToolInput
+				if withholdToolParts {
+					parseRepair, parseRefine = nil, nil
+				}
 				refined, parsed, parseErr := parseAndRefineToolCall(stepCtx, ParseToolCallOptions{
 					ToolCall:            enriched,
 					Tools:               stepTools,
-					RepairToolCall:      repairToolCall,
+					RepairToolCall:      parseRepair,
 					Instructions:        stepInstructions,
 					InstructionMessages: stepInstructionMessages,
 					Messages:            currentMessages,
-					RefineToolInput:     opts.ExperimentalRefineToolInput,
+					RefineToolInput:     parseRefine,
 					RuntimeContext:      r.cbRuntimeCtx,
 					ToolsContext:        r.cbToolsCtx,
 				})
@@ -2049,10 +2156,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				chunk.ToolCall = &refined
 				stepToolCalls = append(stepToolCalls, refined)
 				stepContent = append(stepContent, toolCallContentOf(refined))
-				if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret); handled {
-					eagerApprovals[refined.ID] = pre
-					stepContent = append(stepContent, approvalParts...)
-					pendingApprovalChunks = approvalChunks
+				// With tool choice none the call is rejected at the end of the
+				// model call, so no approval is requested for it.
+				if !withholdToolParts {
+					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret); handled {
+						eagerApprovals[refined.ID] = pre
+						stepContent = append(stepContent, approvalParts...)
+						pendingApprovalChunks = approvalChunks
+					}
 				}
 			}
 
@@ -2061,7 +2172,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// belongs to and is part of the step's content (TS
 			// stream-language-model-call tool-approval-request). One without a
 			// matching call is an error part.
-			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil && chunk.ToolApprovalRequest.ToolCall.ID == "" {
+			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil && chunk.ToolApprovalRequest.ToolCall.ID == "" && !withholdToolParts {
 				request := *chunk.ToolApprovalRequest
 				var matched *types.ToolCall
 				for i := range stepToolCalls {
@@ -2406,6 +2517,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Notify tool input lifecycle callbacks (OnInputStart/OnInputDelta/
 			// OnInputAvailable) after the chunk has been forwarded, mirroring
 			// TS invokeToolCallbacksFromStream's ordering.
+			if withholdToolParts {
+				if transformStopped {
+					break
+				}
+				continue
+			}
 			if err := toolInputCallbacks.handle(stepCtx, *chunk); err != nil {
 				r.err = err
 				if isAbortErr(ctx, err) {
@@ -2500,9 +2617,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			violation = checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepResponseModelID, stepContent)
 		}
 		if violation != nil {
-			r.err = violation
-			cancelStep()
-			break
+			// TS model-call-end carries finishReason "error" for a tool-choice
+			// violation (usage and metadata are preserved). The step is still
+			// recorded and ends with OnStepEnd, not OnStepError; its tool calls
+			// are not executed and the call fails with the violation.
+			r.finishReason = types.FinishReasonError
 		}
 
 		// Execute accumulated tool calls after stream is fully consumed.
@@ -2512,6 +2631,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		skipStepTools := stepSawErrorChunk && opts.Internal != nil && opts.Internal.StopOnStreamError
 		workflowBlocked := workflowBlockedToolStep(opts.Internal, r.finishReason, stepContent)
 		skipStepTools = skipStepTools || workflowBlocked
+		skipStepTools = skipStepTools || violation != nil
 		// With no tools at all only invalid client calls are answered (TS
 		// emits their tool-error whatever the tool set).
 		callsToExecute := stepToolCalls
@@ -2718,25 +2838,26 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepSources := append([]types.SourceContent(nil), r.sources[stepSourcesStart:]...)
 		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
 		stepResult := types.StepResult{
-			CallID:             r.cbCallID,
-			StepNumber:         stepIndex,
-			Model:              types.StepModel{Provider: stepProvider, ModelID: stepModelID},
-			Text:               stepText,
-			Content:            stepContent,
-			Reasoning:          stepReasoning,
-			ReasoningText:      buildReasoningText(stepReasoning),
-			ToolCalls:          stepToolCalls,
-			StaticToolCalls:    filterStaticToolCalls(stepToolCalls),
-			DynamicToolCalls:   filterDynamicToolCalls(stepToolCalls),
-			ToolResults:        publicStepToolResults,
-			StaticToolResults:  filterStaticToolResults(publicStepToolResults),
-			DynamicToolResults: filterDynamicToolResults(publicStepToolResults),
-			FinishReason:       r.finishReason,
-			RawFinishReason:    stepRawFinishReason,
-			Usage:              stepUsage,
-			Performance:        performance,
-			Sources:            stepSources,
-			Files:              stepFiles,
+			CallID:                       r.cbCallID,
+			ExperimentalSteeringMessages: r.stepSteering,
+			StepNumber:                   stepIndex,
+			Model:                        types.StepModel{Provider: stepProvider, ModelID: stepModelID},
+			Text:                         stepText,
+			Content:                      stepContent,
+			Reasoning:                    stepReasoning,
+			ReasoningText:                buildReasoningText(stepReasoning),
+			ToolCalls:                    stepToolCalls,
+			StaticToolCalls:              filterStaticToolCalls(stepToolCalls),
+			DynamicToolCalls:             filterDynamicToolCalls(stepToolCalls),
+			ToolResults:                  publicStepToolResults,
+			StaticToolResults:            filterStaticToolResults(publicStepToolResults),
+			DynamicToolResults:           filterDynamicToolResults(publicStepToolResults),
+			FinishReason:                 r.finishReason,
+			RawFinishReason:              stepRawFinishReason,
+			Usage:                        stepUsage,
+			Performance:                  performance,
+			Sources:                      stepSources,
+			Files:                        stepFiles,
 			Request: types.StepRequest{
 				Body:     streamRequestBody(r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
@@ -2872,6 +2993,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 
+		// The step produced its result: it is no longer open for OnStepError.
+		r.openStep = nil
+
 		// Populate ResponseMessages on the step that just completed.
 		responseCalls, responseContent := stepResult.ToolCalls, stepResult.Content
 		if workflowBlocked {
@@ -2939,7 +3063,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		logModelWarnings(stepWarnings, stepProvider, stepModelID)
 		cancelStep()
 
+		if violation != nil {
+			r.err = violation
+			steeringEndReason = SteeringError
+			break
+		}
 		if hasUserApproval || skipStepTools {
+			steeringEndReason = SteeringWaitingForToolResults
+			break
+		}
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778).
+		if r.finishReason == types.FinishReasonInterrupted {
 			break
 		}
 
@@ -2952,12 +3087,21 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				break
 			}
 		}
-		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 && !injectedProviderResult {
-			break
-		}
 		// Tool calls left unexecuted (unsafe finish reason) stop the loop.
 		if hasUnresolvedLocalToolCalls(stepToolCalls, toolsByName, stepToolResults) {
+			steeringEndReason = SteeringWaitingForToolResults
 			break
+		}
+		if !hasLocalToolCalls && len(pendingDeferredToolCalls) == 0 && !injectedProviderResult {
+			// A waiting steering message keeps the loop going for another
+			// step, unless the step failed.
+			if !r.steering.hasPendingMessages() {
+				break
+			}
+			if r.finishReason == types.FinishReasonError {
+				steeringEndReason = SteeringError
+				break
+			}
 		}
 
 		// TS evaluates stop conditions only when the loop would otherwise
@@ -2970,6 +3114,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if reason := EvaluateStopConditions(stopConditions, state); reason != "" {
 				r.stopReason = reason
+				steeringEndReason = SteeringStopCondition
 				break
 			}
 		}
@@ -2986,6 +3131,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextModel := r.cbModel
 		nextSystem := r.cbSystem
 		nextMessages := currentMessages
+		nextSteering := r.steering.takeMessages()
+		if len(nextSteering) > 0 {
+			nextMessages = append(append([]types.Message(nil), nextMessages...), nextSteering...)
+		}
 		nextTools := FilterActiveTools(opts.Tools, opts.ActiveTools)
 		nextActiveTools := opts.ActiveTools
 		nextToolChoice := opts.ToolChoice
@@ -3007,36 +3156,37 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if opts.PrepareStep != nil {
 			initialSystem := r.cbInitialSystem
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
-				Model:                      nextModel,
-				System:                     nextSystem,
-				Instructions:               &nextSystem,
-				InitialInstructions:        &initialSystem,
-				InstructionMessages:        cloneInstructionMessages(nextInstructionMessages),
-				InitialInstructionMessages: cloneInstructionMessages(r.cbInitialInstructionMessages),
-				Messages:                   append([]types.Message(nil), nextMessages...),
-				InitialMessages:            append([]types.Message(nil), r.cbInitialMessages...),
-				ResponseMessages:           responseMessagesWithInitial(r.initialResponseMessages, allSteps),
-				UserContext:                r.cbRuntimeCtx,
-				RuntimeContext:             r.cbRuntimeCtx,
-				ToolsContext:               r.cbToolsCtx,
-				StepNumber:                 stepNum,
-				Steps:                      append([]types.StepResult(nil), allSteps...),
-				Tools:                      nextTools,
-				ToolChoice:                 nextToolChoice,
-				ActiveTools:                opts.ActiveTools,
-				ToolOrder:                  nextToolOrder,
-				ProviderOptions:            nextProviderOptions,
-				ExperimentalSandbox:        nextSandbox,
-				AccumulatedUsage:           r.usage,
-				MaxOutputTokens:            nextMaxTokens,
-				Temperature:                nextTemperature,
-				TopP:                       nextTopP,
-				TopK:                       nextTopK,
-				PresencePenalty:            nextPresencePenalty,
-				FrequencyPenalty:           nextFrequencyPenalty,
-				StopSequences:              nextStopSequences,
-				Seed:                       nextSeed,
-				Reasoning:                  nextReasoningLevel,
+				Model:                        nextModel,
+				System:                       nextSystem,
+				Instructions:                 &nextSystem,
+				InitialInstructions:          &initialSystem,
+				InstructionMessages:          cloneInstructionMessages(nextInstructionMessages),
+				InitialInstructionMessages:   cloneInstructionMessages(r.cbInitialInstructionMessages),
+				ExperimentalSteeringMessages: append([]types.Message(nil), nextSteering...),
+				Messages:                     append([]types.Message(nil), nextMessages...),
+				InitialMessages:              append([]types.Message(nil), r.cbInitialMessages...),
+				ResponseMessages:             responseMessagesWithInitial(r.initialResponseMessages, allSteps),
+				UserContext:                  r.cbRuntimeCtx,
+				RuntimeContext:               r.cbRuntimeCtx,
+				ToolsContext:                 r.cbToolsCtx,
+				StepNumber:                   stepNum,
+				Steps:                        append([]types.StepResult(nil), allSteps...),
+				Tools:                        nextTools,
+				ToolChoice:                   nextToolChoice,
+				ActiveTools:                  opts.ActiveTools,
+				ToolOrder:                    nextToolOrder,
+				ProviderOptions:              nextProviderOptions,
+				ExperimentalSandbox:          nextSandbox,
+				AccumulatedUsage:             r.usage,
+				MaxOutputTokens:              nextMaxTokens,
+				Temperature:                  nextTemperature,
+				TopP:                         nextTopP,
+				TopK:                         nextTopK,
+				PresencePenalty:              nextPresencePenalty,
+				FrequencyPenalty:             nextFrequencyPenalty,
+				StopSequences:                nextStopSequences,
+				Seed:                         nextSeed,
+				Reasoning:                    nextReasoningLevel,
 			})
 			if prepared.Model != nil {
 				nextModel = prepared.Model
@@ -3125,6 +3275,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// announcement instead of dropping it after one step.
 		currentMessages = nextMessages
 
+		// Steering messages are delivered when they are part of the messages
+		// sent to the model after PrepareStep.
+		r.stepSteering = r.steering.resolveTakenMessages(stepNum, nextMessages)
+
 		nextTools = resolveStepTools(ctx, nextTools, r.cbToolsCtx, nextSandbox)
 		nextTools = orderStepTools(nextTools, nextToolOrder)
 		nextExecutionTools = resolveStepTools(ctx, nextExecutionTools, r.cbToolsCtx, nextSandbox)
@@ -3158,7 +3312,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)
-		Notify(nextStepCtx, OnStepStartEvent{
+		nextStepStart := OnStepStartEvent{
 			CallID:              r.cbCallID,
 			StepNumber:          stepNum,
 			Provider:            nextModel.Provider(),
@@ -3178,7 +3332,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ExperimentalContext: r.cbExperimentalCtx,
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
-		}, opts.OnStepStart)
+		}
+		Notify(nextStepCtx, nextStepStart, opts.OnStepStart)
+		r.openStep = &nextStepStart
 		nextGenOpts := &provider.GenerateOptions{
 			Prompt:                nextPrompt,
 			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
@@ -3303,6 +3459,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.setStream(newStream)
 	}
 
+	if r.err != nil {
+		r.steering.end(steeringEndReasonFor(ctx, r.err))
+	} else {
+		r.steering.end(steeringEndReason)
+	}
+
 	// Push the call-level ChunkTypeFinish exactly once, after the loop above
 	// has stopped continuing to a further step (no error, no abort — those
 	// paths leave r.err set and skip this), mirroring TS's single top-level
@@ -3354,6 +3516,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if r.err != nil {
 		if isAbortErr(ctx, r.err) {
 			fireAbort(r.err)
+		} else {
+			// A step that started without producing a result has failed;
+			// report it before the call error (aborts end with OnAbort).
+			r.notifyStepError(ctx, opts.OnStepError, r.err)
 		}
 		if opts.OnError != nil && !isAbortErr(ctx, r.err) {
 			safeInvoke(func() { opts.OnError(ctx, r.err) })
@@ -3680,6 +3846,13 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.chunkBufReader == nil {
+		if r.singleConsumer {
+			// A single-consumer result hands out its only cursor once.
+			if r.streamClaimed {
+				return alreadyConsumedStream{}
+			}
+			r.streamClaimed = true
+		}
 		r.chunkBufReader = r.chunkBuf.reader()
 	}
 	return r.chunkBufReader
@@ -3694,6 +3867,15 @@ func (r *StreamTextResult) Stream() provider.TextStream {
 func (r *StreamTextResult) NewStream() provider.TextStream {
 	if r.chunkBuf == nil {
 		return r.stream
+	}
+	if r.singleConsumer {
+		r.mu.Lock()
+		claimed := r.chunkBufReader != nil
+		r.mu.Unlock()
+		if claimed {
+			return alreadyConsumedStream{}
+		}
+		return r.Stream()
 	}
 	return r.chunkBuf.reader()
 }
@@ -4099,6 +4281,10 @@ func (r *StreamTextResult) ensureConsumed() error {
 func (r *StreamTextResult) Close() error {
 	if r.cancelBootstrap != nil {
 		r.cancelBootstrap()
+	}
+	if r.singleConsumer && r.chunkBuf != nil {
+		// Nobody will read what is left: release a blocked producer.
+		r.chunkBuf.detach()
 	}
 	r.mu.Lock()
 	if !r.closedFlag {

@@ -152,6 +152,16 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### Interrupted finish reason
+
+`types.FinishReasonInterrupted` (`"interrupted"`) means the provider stream ended without a completion signal, so the output may be incomplete. The partial text and tool calls are preserved, but the step never executes tools, never raises a `ToolChoiceViolationError` for a required tool choice, and never continues the tool loop. Check for it when you need to distinguish a cut-off response from a normal `stop`.
+
+```go
+if result.FinishReason == types.FinishReasonInterrupted {
+    fmt.Println("response was cut off:", result.Text)
+}
+```
+
 ### ToolOrder
 
 `ToolOrder` controls the order tools are sent to providers after active-tool filtering, middleware transforms, and `PrepareStep` updates. Listed names are sent first in the provided order; unlisted tools follow alphabetically.
@@ -353,6 +363,41 @@ for chunk := range result.Chunks() {
 }
 completeText := builder.String()
 ```
+
+### Low-Memory Streaming
+
+`ai.StreamTextLowMemory` is an experimental variant of `StreamText` for output you consume once. It uses the same options and execution engine, but keeps no replay buffer: a chunk is released as soon as you read it, and the producer waits for the consumer (backpressure). For plain text streaming it also avoids accumulating the complete generated text. Content is still collected where its contract needs it: tools, tool choice, structured output, `PrepareStep`, stop conditions, completion callbacks and telemetry.
+
+```go
+res, err := ai.StreamTextLowMemory(ctx, ai.StreamTextOptions{
+    Model:  model,
+    Prompt: "Describe the history of astronomy.",
+})
+if err != nil {
+    return err
+}
+
+stream, err := res.Stream()
+if err != nil {
+    return err
+}
+defer stream.Close()
+for {
+    chunk, err := stream.Next()
+    if err != nil {
+        break
+    }
+    if chunk.Type == provider.ChunkTypeText {
+        fmt.Print(chunk.Text)
+    }
+}
+
+fmt.Println(res.TotalUsage()) // completion metadata does not consume the stream
+```
+
+The result (`*ai.StreamTextSingleConsumerResult`) has `Stream`, `ConsumeStream`, `ToUIMessageStream`, `ToUIMessageStreamResponse`, `PipeUIMessageStreamToResponse`, `ToTextStreamResponse`, `PipeTextStreamToResponse`, `FinishReason`, `RawFinishReason`, `Usage`, `TotalUsage`, `PartialOutput` (latest partial structured output), `Err` and `Close`. `ai.ElementStreamSingleConsumer` is the single-consumer form of `ai.ElementStream`. Final-content accessors such as `Text`, `Content`, `Steps`, `ResponseMessages` and `Output` are not available; use `StreamText` when you need them or independent readers.
+
+Choose **one** stream accessor, response helper or `ConsumeStream` call. A second attempt fails with `ai.ErrStreamAlreadyConsumed`, and there is no replay after completion. Start a consumer before you read completion metadata, because the generation only finishes while its output is consumed. Closing the stream (or the result) cancels the generation.
 
 ### Context Cancellation
 

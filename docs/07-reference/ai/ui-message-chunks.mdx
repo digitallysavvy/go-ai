@@ -46,7 +46,7 @@ Ends the message. Sent once, when `SendFinish` is not false.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `finishReason` | `string` | Why generation ended: `stop`, `length`, `content-filter`, `tool-calls`, `user-approval`, `error` or `other`. |
+| `finishReason` | `string` | Why generation ended: `stop`, `length`, `content-filter`, `tool-calls`, `user-approval`, `error`, `interrupted` (the provider stream ended without a completion signal) or `other`. |
 | `messageMetadata` | `object` | Optional. Result of the `MessageMetadata` callback for the `finish` part. |
 
 ### `abort`

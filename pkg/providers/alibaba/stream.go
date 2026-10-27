@@ -20,6 +20,9 @@ type alibabaStream struct {
 	toolCallTracker *streaming.StreamingToolCallTracker
 	// Finish reason captured from final chunk
 	finishReason string
+	// finishErrored mirrors TS finishReason={unified:"error"} after a parse
+	// error chunk (TS #23814); a later finish_reason overrides it.
+	finishErrored bool
 	// Usage captured from final chunk
 	usage *types.Usage
 	// flushQueue holds fully-assembled chunks to emit before reading more SSE events.
@@ -124,6 +127,8 @@ func (s *alibabaStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 		if perr != nil {
+			s.finishReason = ""
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
@@ -179,6 +184,7 @@ func (s *alibabaStream) processChunk(chunk *alibabaStreamChunk) (*provider.Strea
 	// Capture finish reason if present
 	if choice.FinishReason != "" {
 		s.finishReason = choice.FinishReason
+		s.finishErrored = false
 	}
 
 	// Capture usage if present
@@ -229,8 +235,8 @@ func (s *alibabaStream) accumulateToolCall(tc alibabaToolCallDelta) {
 }
 
 // queueEnd mirrors TS flush(): close the reasoning block, finalize tool calls
-// and enqueue the terminal finish part (reason "other" when no finish_reason
-// arrived). It reports whether it queued anything and queues at most once.
+// and enqueue the terminal finish part (reason "interrupted" when no finish_reason
+// arrived, "error" after a parse/error chunk). It reports whether it queued anything and queues at most once.
 func (s *alibabaStream) queueEnd() bool {
 	if s.endQueued {
 		return false
@@ -250,9 +256,13 @@ func (s *alibabaStream) queueEnd() bool {
 
 // buildFinishChunk creates a finish chunk with accumulated data
 func (s *alibabaStream) buildFinishChunk() *provider.StreamChunk {
-	reason := types.FinishReasonOther
+	// A clean end without the provider's completion signal is interrupted
+	// (TS #23814).
+	reason := types.FinishReasonInterrupted
 	if s.finishReason != "" {
 		reason = providerutils.MapOpenAIFinishReason(s.finishReason)
+	} else if s.finishErrored {
+		reason = types.FinishReasonError
 	}
 	return &provider.StreamChunk{
 		Type:            provider.ChunkTypeFinish,

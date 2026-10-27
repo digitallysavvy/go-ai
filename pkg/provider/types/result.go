@@ -382,6 +382,12 @@ type StepResult struct {
 	// Step number (0-indexed), matching the TypeScript SDK.
 	StepNumber int `json:"stepNumber"`
 
+	// ExperimentalSteeringMessages are the user messages sent with
+	// ExperimentalSteering that were added to the input of this step. Empty
+	// when the step received no steering messages. They are not part of the
+	// step's response messages (TS experimental_steeringMessages).
+	ExperimentalSteeringMessages []Message `json:"experimentalSteeringMessages,omitempty"`
+
 	// Model identifies the provider and model ID that produced this step.
 	Model StepModel `json:"model"`
 

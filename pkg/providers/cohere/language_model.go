@@ -650,7 +650,7 @@ func (s *cohereV2Stream) queueFinishAtEnd() bool {
 		return false
 	}
 	s.finishQueued = true
-	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
 	if s.finishSeen {
 		finish.FinishReason = mapCohereV2FinishReason(s.finishRaw)
 		finish.RawFinishReason = s.finishRaw

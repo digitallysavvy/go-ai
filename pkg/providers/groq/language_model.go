@@ -806,7 +806,7 @@ func groqStreamErrorText(raw json.RawMessage) string {
 }
 
 // queueFinishAtEnd mirrors TS's flush(): when the stream ends without a
-// finish_reason the terminal finish part is still emitted (reason "other", or
+// finish_reason the terminal finish part is still emitted (reason "interrupted", or
 // "error" after a parse/error chunk). It reports whether it queued anything.
 func (s *groqStream) queueFinishAtEnd() bool {
 	if s.finishEmitted {
@@ -821,7 +821,7 @@ func (s *groqStream) queueFinishAtEnd() bool {
 		c := chunk
 		s.flushQueue = append(s.flushQueue, &c)
 	}
-	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
 	if s.finishRaw != "" {
 		finish.FinishReason = providerutils.MapOpenAIFinishReason(s.finishRaw)
 		finish.RawFinishReason = s.finishRaw

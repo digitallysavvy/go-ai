@@ -316,3 +316,24 @@ func TestCompletionModelDoStreamMidStreamErrorFrameCarriesStreamProviderError(t 
 		return
 	}
 }
+
+// TS #23814: a completion stream that ends without finish_reason reports
+// interrupted.
+func TestCompletionStreamInterruptedWithoutFinishReason(t *testing.T) {
+	stream := newCompletionStream(io.NopCloser(strings.NewReader(
+		`data: {"id":"cmpl_1","model":"gpt-3.5-turbo-instruct","choices":[{"index":0,"text":"hi"}]}`+"\n\n",
+	)), false)
+	defer stream.Close() //nolint:errcheck
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatalf("stream ended before finish: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeFinish {
+			if chunk.FinishReason != types.FinishReasonInterrupted {
+				t.Fatalf("finish reason = %q", chunk.FinishReason)
+			}
+			return
+		}
+	}
+}

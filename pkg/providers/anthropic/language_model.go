@@ -1598,6 +1598,15 @@ type anthropicStream struct {
 
 	// generateID creates source ids (Config.GenerateID); nil uses a random id.
 	generateID func() string
+
+	// hasOutput / hasStreamError / lastFinish drive the interrupted-finish
+	// fallback in Next (TS #23814 / #23816): a clean end of the body after
+	// output but without a finish chunk synthesizes an `interrupted` finish.
+	// hasOutput resets on every response-metadata and finish chunk, so only
+	// output of the unfinished trailing message counts.
+	hasOutput      bool
+	hasStreamError bool
+	lastFinish     *provider.StreamChunk
 }
 
 func (s *anthropicStream) newID() string {
@@ -1656,8 +1665,51 @@ func (s *anthropicStream) RequestBody() interface{} {
 	return s.requestBody
 }
 
-// Next returns the next chunk in the stream
+// Next returns the next chunk in the stream. A body that ends cleanly after
+// partial output, without a message_stop finish, ends with a synthesized
+// `interrupted` finish chunk that reuses the usage and provider metadata of
+// the last finish. A stream with no output keeps its empty-stream error path
+// (NoOutputGeneratedError), and a stream that reported an error keeps its
+// existing error path (TS #23814, #23816).
 func (s *anthropicStream) Next() (*provider.StreamChunk, error) {
+	chunk, err := s.nextEvent()
+	if chunk != nil {
+		switch chunk.Type {
+		case provider.ChunkTypeResponseMetadata:
+			s.hasOutput = false
+		case provider.ChunkTypeFinish:
+			s.hasOutput = false
+			s.lastFinish = chunk
+		case provider.ChunkTypeError:
+			s.hasStreamError = true
+		case provider.ChunkTypeText, provider.ChunkTypeReasoning, provider.ChunkTypeToolInputDelta:
+			if chunk.Text != "" || chunk.Reasoning != "" {
+				s.hasOutput = true
+			}
+		case provider.ChunkTypeToolCall:
+			s.hasOutput = true
+		}
+		return chunk, err
+	}
+	if err == io.EOF && s.hasOutput && !s.hasStreamError {
+		s.hasOutput = false
+		finish := &provider.StreamChunk{
+			Type:         provider.ChunkTypeFinish,
+			FinishReason: types.FinishReasonInterrupted,
+		}
+		if s.lastFinish != nil {
+			finish.Usage = s.lastFinish.Usage
+			finish.ProviderMetadata = s.lastFinish.ProviderMetadata
+		} else {
+			finish.Usage = &types.Usage{}
+		}
+		s.err = io.EOF
+		return finish, nil
+	}
+	return chunk, err
+}
+
+func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 	for {
 		if s.err != nil {
 			return nil, s.err
