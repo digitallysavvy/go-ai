@@ -202,6 +202,27 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		})
 	}
 
+	// These are ignored with warnings (TS reports them before the input
+	// conversion warnings).
+	if opts.StopSequences != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "stopSequences",
+		})
+	}
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "topK",
+		})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "seed",
+		})
+	}
+
 	// Convert messages to Open Responses format
 	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
 	if err != nil {
@@ -239,26 +260,6 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	if opts.FrequencyPenalty != nil {
 		body["frequency_penalty"] = *opts.FrequencyPenalty
-	}
-
-	// These are ignored with warnings
-	if opts.StopSequences != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "stopSequences",
-		})
-	}
-	if opts.TopK != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "topK",
-		})
-	}
-	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "seed",
-		})
 	}
 
 	// Convert tools. Provider-defined tools are encoded via a registered
