@@ -2491,9 +2491,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 				stepSawTerminal = true
 				stepSawErrorChunk = true
-				if r.finishReason == "" {
-					r.finishReason = types.FinishReasonError
-				}
+				// TS: an error part sets stepFinishReason = 'error', also after
+				// a finish part and whatever an earlier step finished with.
+				r.finishReason = types.FinishReasonError
 				// Keep the error for Err(): TS rejects the result promises
 				// with the stream's error (original object, typed).
 				r.mu.Lock()
@@ -4568,9 +4568,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		}
 		if chunk.Type == provider.ChunkTypeError {
 			sawTerminal = true
-			if r.finishReason == "" {
-				r.finishReason = types.FinishReasonError
-			}
+			r.finishReason = types.FinishReasonError
 		}
 	}
 
