@@ -15,7 +15,7 @@ type ExecutionPolicy struct {
 	// (TimeoutMs, by contrast, includes tool waits). Only takes effect when
 	// lower than TimeoutMs. Each continuation resume starts with a fresh
 	// budget. Exceeding it fails with *CPUTimeoutError. Counts thread CPU time
-	// on Linux and sandbox wall time elsewhere. Default: 10_000.
+	// on Linux and macOS and sandbox wall time elsewhere. Default: 10_000.
 	CPUTimeoutMs int
 
 	// MemoryLimitBytes bounds the sandbox's WASM linear memory. Default:

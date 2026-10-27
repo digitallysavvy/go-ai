@@ -3,6 +3,7 @@ package codemode
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -126,9 +127,12 @@ func TestRunInSandboxInterruptionDoesNotHideExceededCPUBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := withCPUBudget(context.Background(), newCPUBudget(policy.CPUTimeoutMs))
+	budget := newCPUBudget(policy.CPUTimeoutMs)
+	ctx := withCPUBudget(context.Background(), budget)
 	_, _, interrupted, err := runInSandbox(ctx, policy, func(*qjs.Context) (string, bool, bool, error) {
-		time.Sleep(50 * time.Millisecond) // guest time past the 10 ms budget
+		// Guest CPU past the 10 ms budget (busy, since the budget counts the
+		// sandbox thread's CPU time where the OS allows it).
+		spinUntil(budget.exceeded)
 		return "", false, true, nil
 	})
 	var cpuErr *CPUTimeoutError
@@ -147,7 +151,16 @@ func TestRunInSandboxInterruptionDoesNotHideExceededCPUBudget(t *testing.T) {
 	}
 }
 
+// spinUntil burns CPU until cond holds, for at most 5 s of wall time.
+func spinUntil(cond func() bool) {
+	for deadline := time.Now().Add(5 * time.Second); !cond() && time.Now().Before(deadline); {
+	}
+}
+
 func TestCPUBudgetExceededCountsRunningTime(t *testing.T) {
+	// The meter reads the thread start runs on; keep the test on it.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	b := newCPUBudget(20)
 	b.start(func() {})
 	defer b.stop()
@@ -160,7 +173,7 @@ func TestCPUBudgetExceededCountsRunningTime(t *testing.T) {
 		t.Fatal("paused time counted toward the budget")
 	}
 	b.resume()
-	time.Sleep(40 * time.Millisecond)
+	spinUntil(b.exceeded)
 	if !b.exceeded() {
 		t.Fatal("running time past the limit not reported")
 	}
