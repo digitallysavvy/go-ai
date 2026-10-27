@@ -362,3 +362,21 @@ func TestR25NilTemplatePrepareReturnsError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+// Values from node: "ai-sdk-harness-v2-" + sha256(JSON.stringify([2,
+// identity, selection])).subarray(0, 12).hex.
+func TestR42DeriveTemplateNameMatchesTS(t *testing.T) {
+	for _, tc := range []struct {
+		identity string
+		params   CreateParams
+		want     string
+	}{
+		{"recipe <a&b>", CreateParams{Runtime: "node24"}, "ai-sdk-harness-v2-1d251363f895133876030fe9"},
+		{"r x", CreateParams{Image: "img"}, "ai-sdk-harness-v2-75a03a17b61e2c2c3adc1eba"},
+		{"plain", CreateParams{Source: &SnapshotSource{Type: "snapshot", SnapshotID: "snap_1"}}, "ai-sdk-harness-v2-f1039cba3347d4dd00f66d27"},
+	} {
+		if got := deriveTemplateName(tc.identity, tc.params); got != tc.want {
+			t.Errorf("%q: %s, want %s", tc.identity, got, tc.want)
+		}
+	}
+}

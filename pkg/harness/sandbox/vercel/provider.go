@@ -25,7 +25,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -33,6 +32,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -217,10 +217,9 @@ func SessionFromNativeSandbox(sandbox *Sandbox) providerutils.SandboxSession {
 // deriveTemplateName computes the stable, content-addressed template
 // snapshot name for (identity, environment selection). Mirrors TS's
 // `ai-sdk-harness-v2-${sha256(material).slice(0,12).hex}` derivation in
-// `createVercelNetworkSandboxSession`. The exact hash algorithm need not
-// match TS byte-for-byte (each runs in its own process and only compares
-// against its own prior calls); determinism and injectivity in (identity,
-// selection) are what matters.
+// `createVercelNetworkSandboxSession`. The material is encoded like
+// JSON.stringify (no HTML escaping, U+2028/U+2029 raw), so Go and TS hosts
+// sharing a Vercel project resolve the same template snapshot.
 func deriveTemplateName(identity string, baseParams CreateParams) string {
 	var selection interface{}
 	switch {
@@ -231,7 +230,7 @@ func deriveTemplateName(identity string, baseParams CreateParams) string {
 	default:
 		selection = map[string]string{"runtime": baseParams.Runtime}
 	}
-	material, _ := json.Marshal([]interface{}{2, identity, selection})
+	material, _ := jsstr.Marshal([]interface{}{2, identity, selection})
 	digest := sha256.Sum256(material)
 	return "ai-sdk-harness-v2-" + hex.EncodeToString(digest[:12])
 }
