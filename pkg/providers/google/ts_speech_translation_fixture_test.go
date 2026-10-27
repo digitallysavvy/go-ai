@@ -42,11 +42,39 @@ func TestSpeechTranslationModel_RecordedFixture(t *testing.T) {
 	}
 	defer result.Stream.Close() //nolint:errcheck
 
-	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, time.Second)
-	for _, m := range messages {
+	// Drain concurrently: the stream emits parts (stream-start first) only
+	// as they are read, and it handles setupComplete only after that.
+	type drained struct {
+		parts []*provider.SpeechTranslationStreamPart
+		err   error
+	}
+	done := make(chan drained, 1)
+	go func() {
+		parts, err := drainUntilTranslationFinishOrError(t, result.Stream)
+		done <- drained{parts, err}
+	}()
+
+	server.waitFor(t, func(m map[string]interface{}) bool { _, ok := m["setup"]; return ok }, 10*time.Second)
+	// The trailing silence only finishes the stream once the end of the
+	// input audio is known (TS reads the audio to its end before the replayed
+	// messages arrive). Send setupComplete, which releases the audio pump,
+	// and wait for audioStreamEnd before replaying the rest; otherwise a
+	// loaded run can read the final silence first and wait forever.
+	if _, ok := messages[0]["setupComplete"]; !ok {
+		t.Fatalf("fixture must start with setupComplete, got %v", messages[0])
+	}
+	server.toSend <- messages[0]
+	server.waitFor(t, hasRealtimeInputKey("audioStreamEnd"), 10*time.Second)
+	for _, m := range messages[1:] {
 		server.toSend <- m
 	}
-	parts, err := drainUntilTranslationFinishOrError(t, result.Stream)
+	var d drained
+	select {
+	case d = <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("stream did not finish")
+	}
+	parts, err := d.parts, d.err
 	if err != nil {
 		t.Fatal(err)
 	}
