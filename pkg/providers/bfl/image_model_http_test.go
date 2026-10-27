@@ -572,3 +572,30 @@ func TestBFLImageModel_PollBodyIsValidatedLikeBflPollSchema(t *testing.T) {
 		})
 	}
 }
+
+// TS getFromApi with createStatusCodeErrorResponseHandler: a failed image
+// download is an APICallError whose message is the HTTP status text.
+func TestBFLImageModel_FailedDownloadIsStatusTextProviderError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/flux-pro":
+			_, _ = w.Write([]byte(`{"id":"r","polling_url":"http://` + r.Host + `/poll"}`))
+		case "/poll":
+			_, _ = w.Write([]byte(`{"status":"Ready","result":{"sample":"http://` + r.Host + `/img.png"}}`))
+		default:
+			http.Error(w, "gone", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	m := NewImageModel(New(Config{APIKey: "k", BaseURL: server.URL}), "flux-pro")
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt:          "x",
+		ProviderOptions: map[string]interface{}{"blackForestLabs": map[string]interface{}{"pollIntervalMillis": 1}},
+	})
+	// Unwrapped, like TS (getFromApi errors propagate unchanged).
+	pe, ok := err.(*providerrors.ProviderError)
+	if !ok || pe.StatusCode != 404 || pe.Message != "Not Found" {
+		t.Fatalf("err = %v (%#v)", err, pe)
+	}
+}

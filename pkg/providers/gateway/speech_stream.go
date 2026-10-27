@@ -238,7 +238,8 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 		cancelText(err)
 	}
 
-	conn, err := wsutil.Dial(s.Context(), cfg.url, wsutil.DialOptions{Headers: cfg.headers, Protocols: cfg.protocols})
+	closeInfo := &wsutil.CloseInfo{}
+	conn, err := wsutil.Dial(s.Context(), cfg.url, wsutil.DialOptions{Headers: cfg.headers, Protocols: cfg.protocols, WrapConn: closeInfo.Wrap})
 	if err != nil {
 		fail(err)
 		return
@@ -293,7 +294,7 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 				case hasServerError:
 					fail(gatewayStreamServerError(lastServerError, cfg.authMethod, "speech"))
 				default:
-					fail(errors.New("AI Gateway speech stream closed before a finish part was received.")) //nolint:staticcheck // matches TS SDK's exact error text
+					fail(errors.New("AI Gateway speech stream closed before a finish part was received" + closeInfo.Suffix() + ".")) //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				return
 			}

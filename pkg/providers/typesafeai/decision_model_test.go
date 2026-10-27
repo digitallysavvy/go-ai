@@ -360,6 +360,20 @@ func TestDecisionModel_AcceptsNullOptionalMetadata(t *testing.T) {
 	}
 }
 
+// TS `response.model ?? this.modelId` keeps an empty string model.
+func TestDecisionModel_EmptyResponseModelIsKept(t *testing.T) {
+	server := newTestServer(t, `{"model":"","answers":{"topic":{"type":"choice","choice":"a","probabilities":{"a":1}}}}`)
+	p := New(Config{APIKey: "k", BaseURL: server.URL})
+	model, _ := p.DecisionModel("jev-latest")
+	result, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "test", Questions: nativeQuestions()})
+	if err != nil {
+		t.Fatalf("DoDecide: %v", err)
+	}
+	if result.Response.ModelID != "" {
+		t.Fatalf("modelID = %q, want the empty response model", result.Response.ModelID)
+	}
+}
+
 func typeSafeDecideWithState(t *testing.T, state interface{}) (map[string]interface{}, error) {
 	t.Helper()
 	var got map[string]interface{}

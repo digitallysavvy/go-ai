@@ -164,7 +164,8 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 
 	imageData, contentType, err := m.downloadImage(ctx, imageURL)
 	if err != nil {
-		return nil, fmt.Errorf("luma: failed to download generated image: %w", err)
+		// TS getFromApi with createStatusCodeErrorResponseHandler.
+		return nil, providerutils.StatusCodeDownloadError("luma", err)
 	}
 
 	mimeType := contentType

@@ -19,6 +19,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // RunWire replays every test of one recording through the Go provider the
@@ -53,6 +54,10 @@ type WireSuite struct {
 	// recorded TS model (class, id and plain settings such as modelFamily).
 	LanguageFor func(p provider.Provider, m WireModel) (provider.LanguageModel, error)
 	Skip        map[string]string
+	// ReplayNoHTTPErrors replays TS tests that make no HTTP request and expect
+	// every call to throw (validation before HTTP): Go must throw the same
+	// error and send nothing.
+	ReplayNoHTTPErrors bool
 	// rootBase passes the bare server URL as the base URL for Go providers
 	// whose default base is the host root (the paths carry the API version).
 	RootBase bool
@@ -149,7 +154,7 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			skip(why)
 		}
 	}
-	if len(w.Calls) == 0 || len(w.HTTP) == 0 {
+	if len(w.Calls) == 0 || (len(w.HTTP) == 0 && (!s.ReplayNoHTTPErrors || !allCallsThrow(w.Calls))) {
 		skip("no replayable call or HTTP exchange in the TS test")
 	}
 	for _, h := range w.HTTP {
@@ -219,7 +224,14 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			b, _ := json.Marshal(got)
 			t.Logf("call %d (%s) err=%v got=%s", i, c.Method, err, trim(string(b)))
 		}
-		if ds := CompareWireResult(srv, s, c, got, err); len(ds) > 0 {
+		ds := CompareWireResult(srv, s, c, got, err)
+		if len(w.HTTP) == 0 && len(ds) == 0 && err != nil {
+			// A replayed no-HTTP error case (ReplayNoHTTPErrors) is pure Go
+			// validation: the error text must match TS, so an unrelated Go
+			// failure cannot pass for the expected one.
+			ds = wireErrorTextDiff(c.Error, err)
+		}
+		if len(ds) > 0 {
 			for _, d := range ds {
 				diffs = append(diffs, fmt.Sprintf("call %d (%s): %s", i, c.Method, d))
 			}
@@ -521,6 +533,18 @@ func wireErrSummary(e interface{}) string {
 
 // wireErrorDiff compares error messages: Go wraps errors in different ways,
 // so the TS message must appear in the Go error text.
+// wireErrorTextDiff reports a TS error message that the Go error does not
+// contain, whatever TSWIRE_ERRORS says.
+func wireErrorTextDiff(tsErr interface{}, goErr error) []string {
+	m, _ := tsErr.(map[string]interface{})
+	em, _ := m["$error"].(map[string]interface{})
+	msg, _ := em["message"].(string)
+	if msg == "" || strings.Contains(goErr.Error(), msg) {
+		return nil
+	}
+	return []string{fmt.Sprintf("error text TS=%q Go=%q", trim(msg), trim(goErr.Error()))}
+}
+
 func wireErrorDiff(tsErr interface{}, goErr error) []string {
 	m, _ := tsErr.(map[string]interface{})
 	em, _ := m["$error"].(map[string]interface{})
@@ -1208,6 +1232,34 @@ func hasFn(v interface{}) bool {
 	return false
 }
 
+// decideStateValues returns the recorded text of each state part's `value`
+// (nil where absent), keeping the TS object key order that the decoded arg
+// maps lose.
+func decideStateValues(c WireCall) []json.RawMessage {
+	var args []struct {
+		State []struct {
+			Value json.RawMessage `json:"value"`
+		} `json:"state"`
+	}
+	if json.Unmarshal(c.argsRaw, &args) != nil || len(args) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, len(args[0].State))
+	for i, p := range args[0].State {
+		out[i] = p.Value
+	}
+	return out
+}
+
+func allCallsThrow(calls []WireCall) bool {
+	for _, c := range calls {
+		if c.Error == nil {
+			return false
+		}
+	}
+	return true
+}
+
 func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]interface{}, c WireCall) (map[string]interface{}, error) {
 	opts := provider.DecisionCallOptions{
 		Headers:         strMap(arg["headers"]),
@@ -1225,14 +1277,20 @@ func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]in
 	switch st := arg["state"].(type) {
 	case []interface{}:
 		var parts []provider.DecisionStatePart
-		for _, pv := range st {
+		rawValues := decideStateValues(c)
+		for i, pv := range st {
 			pm, _ := pv.(map[string]interface{})
 			switch pm["type"] {
 			case "text":
 				txt, _ := pm["text"].(string)
 				parts = append(parts, provider.DecisionTextPart(txt))
 			case "json":
-				parts = append(parts, provider.DecisionJSONPart(pm["value"]))
+				value := pm["value"]
+				if i < len(rawValues) && len(rawValues[i]) > 0 {
+					// A TS object keeps insertion order; a Go map would sort.
+					value = providerutils.OrderLike(value, rawValues[i])
+				}
+				parts = append(parts, provider.DecisionJSONPart(value))
 			case "file":
 				fd, ok := fileDataFromTS(pm["data"])
 				if !ok {

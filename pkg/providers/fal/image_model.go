@@ -414,7 +414,8 @@ func (m *ImageModel) convertBody(ctx context.Context, raw []byte) (*types.ImageR
 		}
 		data, err := m.downloadImage(ctx, url)
 		if err != nil {
-			return nil, fmt.Errorf("failed to download image: %w", err)
+			// TS getFromApi with createStatusCodeErrorResponseHandler.
+			return nil, providerutils.StatusCodeDownloadError("fal", err)
 		}
 		images = append(images, data)
 

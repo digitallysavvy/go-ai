@@ -368,7 +368,7 @@ func TestSpeechStream_ErrorsWhenSocketClosesBeforeIsFinal(t *testing.T) {
 	server.waitForCount(t, 3, 2*time.Second)
 	server.closeConnection()
 	_, err := collectSpeech(t, result.Stream)
-	if err == nil || !strings.HasPrefix(err.Error(), "ElevenLabs speech stream closed before completion") {
+	if err == nil || err.Error() != "ElevenLabs speech stream closed before completion (code 1000)." {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -579,5 +579,29 @@ func TestSpeechGenerate_WarnsAboutStreamingAndDialogueOptions(t *testing.T) {
 		warnings[1].Feature != "providerOptions.elevenlabs.dialogue" ||
 		warnings[1].Details != "Dialogue options apply only to streaming speech (ExperimentalStreamSpeech) and were ignored." {
 		t.Fatalf("warnings = %+v", warnings)
+	}
+}
+
+// TS reports a non-string `error` as JSON.stringify(raw.error): wire key
+// order and no HTML escaping.
+func TestSpeechStream_ObjectErrorTextKeepsWireOrder(t *testing.T) {
+	text := `{"error":{"type":"quota","detail":"a<b>&c","code":7}}`
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatal(err)
+	}
+	ev := (&singleContextProtocol{}).decodeEvent(raw)
+	got := orderedErrorText(raw, text, ev.err)
+	if want := `{"type":"quota","detail":"a<b>&c","code":7}`; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestToElevenLabsStreamOutputFormat_ErrorQuotesLikeJSONStringify(t *testing.T) {
+	_, err := toElevenLabsStreamOutputFormat(&provider.AudioFormat{Type: "audio/x<é>\t\x01\u2028"})
+	// JSON.stringify: \u0001 (Go %q would write \x01), U+2028 raw, no HTML escaping.
+	want := "ElevenLabs streaming speech does not support the output format {\"type\":\"audio/x<é>\\t\\u0001\u2028\"}."
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want it to contain %s", err, want)
 	}
 }

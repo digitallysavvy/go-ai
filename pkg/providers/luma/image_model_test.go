@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 func newTestImageModel(t *testing.T, handler http.HandlerFunc) (*ImageModel, *httptest.Server) {
@@ -405,5 +406,27 @@ func TestDoGenerate_MediaTypeFromSignatureTables(t *testing.T) {
 				t.Errorf("MimeType = %q, want %q", res.MimeType, tc.want)
 			}
 		})
+	}
+}
+
+// TS getFromApi with createStatusCodeErrorResponseHandler: a failed image
+// download is an APICallError whose message is the HTTP status text.
+func TestDoGenerate_FailedDownloadIsStatusTextProviderError(t *testing.T) {
+	model, server := newTestImageModel(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":"g1","state":"queued"}`))
+		case strings.HasSuffix(r.URL.Path, "/g1"):
+			_, _ = w.Write([]byte(`{"id":"g1","state":"completed","assets":{"image":"http://` + r.Host + `/img.jpg"}}`))
+		default:
+			http.Error(w, "gone", http.StatusNotFound)
+		}
+	})
+	defer server.Close()
+	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
+	// Unwrapped, like TS (getFromApi errors propagate unchanged).
+	pe, ok := err.(*providererrors.ProviderError)
+	if !ok || pe.StatusCode != 404 || pe.Message != "Not Found" {
+		t.Fatalf("err = %v (%#v)", err, pe)
 	}
 }

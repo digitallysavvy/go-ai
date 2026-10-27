@@ -5,6 +5,10 @@ const (
 	// ModelScribeV1 is ElevenLabs' first-generation batch transcription model.
 	ModelScribeV1 = "scribe_v1"
 
+	// ModelScribeV1Experimental is the experimental build of scribe_v1 (TS
+	// ElevenLabsTranscriptionModelId).
+	ModelScribeV1Experimental = "scribe_v1_experimental"
+
 	// ModelScribeV2 is ElevenLabs' second-generation batch transcription model.
 	ModelScribeV2 = "scribe_v2"
 
