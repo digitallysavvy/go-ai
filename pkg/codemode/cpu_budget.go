@@ -13,7 +13,7 @@ import (
 // the budget is paused for the whole of a host tool call, so time spent
 // waiting on tools never counts.
 //
-// Where the OS allows it (Linux, darwin) the sandbox goroutine is pinned to its OS
+// Where the OS allows it (Linux, darwin, Windows) the sandbox goroutine is pinned to its OS
 // thread and the budget counts that thread's real CPU time, like TS's runner,
 // which counts guest CPU only; a loaded machine then does not use the budget
 // up faster. Elsewhere the budget falls back to the wall-clock reading
