@@ -143,6 +143,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   now fails the call with `*ai.ToolChoiceViolationError` (check it with
   `ai.IsToolChoiceViolationError`) instead of running the tool. Any tool-choice
   violation ends the step with finish reason `error`.
+- **`StreamText` keeps the request body only when asked.** As in TS
+  (`include.requestBody` defaults to false), the step request, the
+  `start-step` chunk and `Request()` no longer carry the provider's request
+  body unless `Include: &ai.IncludeOptions{RequestBody: true}` is set, the
+  same default `GenerateText` already had. The `GenerateText` step-end
+  event's request and response bodies follow `Include` the same way.
 - **Truncated streams finish with `interrupted`.** A provider stream that ends
   before its finish event reports `types.FinishReasonInterrupted` instead of
   `FinishReasonOther`. Check for `FinishReasonInterrupted` if you detect

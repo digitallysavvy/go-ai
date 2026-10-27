@@ -2019,7 +2019,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					startStepWarnings = []types.Warning{}
 				}
 				startStepRequest := types.StepRequest{
-					Body:     streamRequestBody(r.currentStream()),
+					Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 					Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 				}
 				forwardThroughTransformChain(0, []provider.StreamChunk{{
@@ -2868,7 +2868,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Sources:                      stepSources,
 			Files:                        stepFiles,
 			Request: types.StepRequest{
-				Body:     streamRequestBody(r.currentStream()),
+				Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 			},
 			Response: types.StepResponse{
@@ -4615,7 +4615,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		Sources:            r.sources,
 		Files:              r.files,
 		Request: types.StepRequest{
-			Body:     streamRequestBody(r.currentStream()),
+			Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 			Messages: includedRequestMessages(r.cbInclude.RequestMessages, r.cbMessages),
 		},
 		Response: types.StepResponse{
@@ -4903,6 +4903,16 @@ func isAbortErr(ctx context.Context, err error) bool {
 // false suppresses them.
 func shouldSuppressReasoningBoundaries(sendReasoning *bool) bool {
 	return sendReasoning != nil && !*sendReasoning
+}
+
+// includedRequestBody is the step request body when Include.RequestBody is
+// set, else nil (TS getStepRequest: include.requestBody ? request?.body :
+// undefined; requestBody defaults to false).
+func includedRequestBody(include bool, s provider.TextStream) interface{} {
+	if !include {
+		return nil
+	}
+	return streamRequestBody(s)
 }
 
 func includedRequestMessages(include bool, messages []types.Message) []types.Message {

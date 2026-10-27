@@ -1820,14 +1820,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Files:              stepResult.Files,
 			ProviderMetadata:   stepResult.ProviderMetadata,
 			ResponseHeaders:    genResult.ResponseHeaders,
-			Request:            GenerateStepRequest{Body: genResult.RawRequest},
+			// The step's request/response, so the bodies follow Include as
+			// in TS (the step-end event is the StepResult).
+			Request: GenerateStepRequest{Body: stepResult.Request.Body},
 			Response: GenerateStepResponse{
 				ID:        stepResult.Response.ID,
 				Timestamp: stepResult.Response.Timestamp,
 				ModelID:   stepResult.Response.ModelID,
 				Headers:   stepResult.Response.Headers,
 				Messages:  stepResult.ResponseMessages,
-				Body:      genResult.RawResponse,
+				Body:      stepResult.Response.Body,
 			},
 			ExperimentalContext: runtimeContext,
 			RuntimeContext:      runtimeContext,
