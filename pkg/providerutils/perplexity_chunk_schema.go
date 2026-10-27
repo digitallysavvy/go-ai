@@ -80,3 +80,18 @@ func CheckPerplexityAgentChunk(data string) (string, error) {
 	}
 	return "", nil
 }
+
+// ValidatePerplexityAgentResponse validates a complete Perplexity Agent API
+// response body against TS perplexityAgentResponseSchema (the schema that
+// createJsonResponseHandler applies to a non-streaming response). It returns
+// nil when the body is accepted.
+func ValidatePerplexityAgentResponse(body []byte) error {
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return err
+	}
+	if bad := zPplxResponse(value, true, nil); bad != nil {
+		return bad
+	}
+	return nil
+}

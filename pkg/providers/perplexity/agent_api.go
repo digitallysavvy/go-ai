@@ -3,6 +3,8 @@ package perplexity
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // This file mirrors the TS SDK's perplexity-agent-api.ts: the wire shapes for
@@ -246,7 +248,9 @@ func validatePerplexityAgentResponse(raw []byte) error {
 			return err
 		}
 	}
-	return nil
+	// The full zod schema: member types, the required usage counts, a message
+	// content part's type, and the error message.
+	return providerutils.ValidatePerplexityAgentResponse(raw)
 }
 
 // validatePerplexityOutputItem enforces the required title/url fields on
