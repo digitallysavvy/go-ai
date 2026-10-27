@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -1556,45 +1557,57 @@ func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value
 	if value == nil {
 		return attrs
 	}
-	if nested, ok := value.(map[string]interface{}); ok {
+	if nested, ok := runtimeContextObject(value); ok {
 		for nestedKey, nestedValue := range nested {
 			attrs = appendRuntimeContextAttribute(attrs, key+"."+nestedKey, nestedValue)
 		}
 		return attrs
 	}
-	switch v := value.(type) {
-	case string:
-		return append(attrs, attribute.String(key, v))
-	case bool:
-		return append(attrs, attribute.Bool(key, v))
-	case int:
-		return append(attrs, attribute.Int(key, v))
-	case int64:
-		return append(attrs, attribute.Int64(key, v))
-	case float64:
-		if kv, ok := finiteFloat64Attr(key, v); ok {
-			return append(attrs, kv)
-		}
-		return attrs
-	case []string:
-		return append(attrs, attribute.StringSlice(key, v))
-	case []bool:
-		return append(attrs, attribute.BoolSlice(key, v))
-	case []int:
-		return append(attrs, attribute.IntSlice(key, v))
-	case []int64:
-		return append(attrs, attribute.Int64Slice(key, v))
-	case []float64:
-		if finite, ok := finiteFloat64Slice(v); ok {
-			return append(attrs, attribute.Float64Slice(key, finite))
-		}
-		return attrs
-	default:
-		if b, err := jsonstr.Marshal(v); err == nil {
-			return append(attrs, attribute.String(key, string(b)))
-		}
-		return attrs
+	// Arrays and primitives are kept as they are, then sanitized like every
+	// TS attribute value (selectAttributes -> sanitizeAttributeValue).
+	if kv, ok := enrichAttribute(key, value); ok {
+		return append(attrs, kv)
 	}
+	return attrs
+}
+
+// runtimeContextObject returns the entries of a value TS treats as an object
+// to flatten (typeof 'object', not an array): any string-keyed map, or a
+// struct by its JSON fields.
+func runtimeContextObject(value interface{}) (map[string]interface{}, bool) {
+	if m, ok := value.(map[string]interface{}); ok {
+		return m, true
+	}
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.Map:
+		if rv.Type().Key().Kind() != reflect.String {
+			return nil, false
+		}
+		out := make(map[string]interface{}, rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out[iter.Key().String()] = iter.Value().Interface()
+		}
+		return out, true
+	case reflect.Struct:
+		b, err := json.Marshal(rv.Interface())
+		if err != nil {
+			return nil, false
+		}
+		var out map[string]interface{}
+		if json.Unmarshal(b, &out) != nil {
+			return nil, false
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // stepSpanFor resolves this integration's open step span for callID from its

@@ -52,3 +52,36 @@ func TestEnrichSpanValuesSanitizedLikeTS(t *testing.T) {
 		t.Errorf("plain_bool = %v", v.Emit())
 	}
 }
+
+// TS addRuntimeContextAttribute keeps arrays and primitives (then sanitizes
+// them) and flattens every non-array object.
+func TestRuntimeContextAttributesFlattenLikeTS(t *testing.T) {
+	type nested struct {
+		Plan string `json:"plan"`
+	}
+	got := map[string]attribute.Value{}
+	for _, kv := range runtimeContextAttributes(map[string]interface{}{
+		"tags":   []interface{}{"a", "b"},
+		"labels": map[string]string{"env": "prod"},
+		"user":   nested{Plan: "pro"},
+		"n":      int32(3),
+		"mixed":  []interface{}{"a", 1.0},
+	}) {
+		got[string(kv.Key)] = kv.Value
+	}
+	if v := got["ai.settings.context.tags"]; v.Type() != attribute.STRINGSLICE || len(v.AsStringSlice()) != 2 {
+		t.Errorf("tags = %v", v.Emit())
+	}
+	if v := got["ai.settings.context.labels.env"]; v.AsString() != "prod" {
+		t.Errorf("labels.env = %v (all %v)", v.Emit(), got)
+	}
+	if v := got["ai.settings.context.user.plan"]; v.AsString() != "pro" {
+		t.Errorf("user.plan = %v", v.Emit())
+	}
+	if v := got["ai.settings.context.n"]; v.Type() != attribute.INT64 || v.AsInt64() != 3 {
+		t.Errorf("n = %v", v.Emit())
+	}
+	if _, ok := got["ai.settings.context.mixed"]; ok {
+		t.Error("mixed-type array kept")
+	}
+}
