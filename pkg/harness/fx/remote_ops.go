@@ -714,7 +714,6 @@ func classRune(r rune) string {
 // literal). single is the class's only character when it is a plain
 // one-character class, else -1.
 func parseGlobClass(rs []rune, start int) (tok globToken, single rune, end int, ok, uflag bool, err error) {
-	single = -1
 	i := start + 1
 	if i < len(rs) && (rs[i] == '!' || rs[i] == '^') {
 		tok.negate = true
