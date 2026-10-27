@@ -958,6 +958,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				_ = d.joinOutstandingExecutions()
 				return false, false, d.ctx.Err()
 			}
+			// TS awaits waitForOutstandingHostToolExecutions once the stream
+			// ends: a failed host execution fails the turn.
+			if err := d.joinOutstandingExecutions(); err != nil {
+				return false, false, err
+			}
 			if !finished {
 				// The adapter ended the turn (closed its stream) without
 				// ever emitting `finish`. TS reports onTurnFailed and then
