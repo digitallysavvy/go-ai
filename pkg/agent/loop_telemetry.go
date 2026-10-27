@@ -197,8 +197,16 @@ func telemetryUsage(u types.Usage) telemetry.TelemetryUsage {
 	return out
 }
 
+// isAbort reports whether err ends the run as an abort: a cancellation or a
+// timeout, as GenerateText classifies them (TS timeouts are abort signals).
 func isAbort(ctx context.Context, err error) bool {
-	return err != nil && (errors.Is(err, context.Canceled) || (ctx != nil && ctx.Err() != nil && errors.Is(ctx.Err(), context.Canceled)))
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return ctx != nil && ctx.Err() != nil
 }
 
 // beginLoopTelemetry opens the root span unless the caller already did.
