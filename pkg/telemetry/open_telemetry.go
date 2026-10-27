@@ -291,7 +291,9 @@ func (i OpenTelemetry) stepSpanFor(ctx context.Context, callID string) (trace.Sp
 // child spans use the same (possibly caller-supplied) tracer as TS's
 // this.tracer; it falls back to the parent span's provider.
 func genAIChildTracer(callID string, parent trace.Span) trace.Tracer {
-	if st := genAIState(callID); st != nil {
+	// Load, not genAIState: a lookup must not create (and so leak) state.
+	if v, ok := genAICallStates.Load(callID); ok && callID != "" {
+		st := v.(*genAICallState)
 		st.mu.Lock()
 		t := st.tracer
 		st.mu.Unlock()

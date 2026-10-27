@@ -65,3 +65,26 @@ func TestTwoInstancesOfAnIntegrationKeepTheirOwnCallState(t *testing.T) {
 		})
 	}
 }
+
+// The Legacy doDecide span used the GenAI tracer helper, which created a
+// GenAI call state for the Legacy call that nothing deleted.
+func TestLegacyDecideLeavesNoGenAICallState(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	legacy := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")})
+	settings := &Settings{IsEnabled: Bool(true), Integrations: []TelemetryIntegration{legacy}}
+	callID := "legacy-decide-genai-state"
+	ctx := FireOnDecideStart(context.Background(), DecideStartEvent{Settings: settings, CallID: callID, OperationID: "ai.decide"})
+	FireOnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{Settings: settings, CallID: callID, OperationID: "ai.decide.doDecide"})
+	FireOnDecisionModelCallEnd(ctx, DecisionModelCallEndEvent{DecisionModelCallStartEvent: DecisionModelCallStartEvent{Settings: settings, CallID: callID}})
+	FireOnDecideEnd(ctx, DecideEndEvent{DecideStartEvent: DecideStartEvent{Settings: settings, CallID: callID}})
+	for _, key := range []string{callID, legacy.stateKey(callID)} {
+		if _, ok := genAICallStates.Load(key); ok {
+			t.Fatalf("GenAI call state left for %q", key)
+		}
+	}
+	if len(rec.Ended()) != 2 {
+		t.Fatalf("ended %d spans, want 2", len(rec.Ended()))
+	}
+}

@@ -353,7 +353,9 @@ func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e Dec
 	if !parent.IsRecording() {
 		return
 	}
-	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
+	// Like the other Legacy child spans: the root span's provider. (The GenAI
+	// helper created a GenAI call state here that nothing deleted.)
+	tracer := parent.TracerProvider().Tracer("go-ai")
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), e.OperationID)
 	functionID := ""
 	if e.Settings != nil {
