@@ -72,9 +72,16 @@ func TestUnseenCallEventsLeaveNoStateAndCtxSpanAlone(t *testing.T) {
 			in.OnDecisionModelCallEnd(ctx, DecisionModelCallEndEvent{DecisionModelCallStartEvent: DecisionModelCallStartEvent{Settings: settings, CallID: id}})
 			in.OnStepEnd(sctx, TelemetryStepEndEvent{Settings: settings, CallID: id})
 			in.OnStepError(sctx, TelemetryErrorEvent{Settings: settings, CallID: id, Error: errors.New("boom")})
+			// OnDecideEnd, OnError and OnAbort end an operation and delete the
+			// call's state, so check what the earlier handlers left first.
+			checkNoState(t, id, "before OnDecideEnd")
 			in.OnDecideEnd(ctx, DecideEndEvent{DecideStartEvent: DecideStartEvent{Settings: settings, CallID: id}})
 			in.OnError(ctx, TelemetryErrorEvent{Settings: settings, CallID: id, Error: errors.New("boom")})
 			in.OnAbort(ctx, TelemetryAbortEvent{Settings: settings, CallID: id})
+			// Checked before OnEnd too: OnEnd deletes the call's state, so state
+			// a handler created would otherwise be gone by the final check
+			// (the leak is state that only the call's end event removes).
+			checkNoState(t, id, "before OnEnd")
 			in.OnEnd(ctx, TelemetryFinishEvent{Settings: settings, CallID: id})
 
 			var names []string
@@ -87,15 +94,21 @@ func TestUnseenCallEventsLeaveNoStateAndCtxSpanAlone(t *testing.T) {
 			if n := len(rec.Ended()); n != 0 {
 				t.Errorf("the integration ended %d span(s) it does not own", n)
 			}
-			for name, states := range map[string]*sync.Map{"GenAI": &genAICallStates, "legacy": &legacyCallStates} {
-				states.Range(func(key, _ interface{}) bool {
-					if strings.HasSuffix(key.(string), id) {
-						// only the unseen id; otherID's state is the other instance's
-						t.Errorf("events created %s call state %q", name, key)
-					}
-					return true
-				})
+			checkNoState(t, id, "after OnEnd")
+		})
+	}
+}
+
+// checkNoState fails if any integration holds call state for id (only the
+// unseen id; another instance's call has its own id).
+func checkNoState(t *testing.T, id, when string) {
+	t.Helper()
+	for name, states := range map[string]*sync.Map{"GenAI": &genAICallStates, "legacy": &legacyCallStates} {
+		states.Range(func(key, _ interface{}) bool {
+			if strings.HasSuffix(key.(string), id) {
+				t.Errorf("%s: events created %s call state %q", when, name, key)
 			}
+			return true
 		})
 	}
 }

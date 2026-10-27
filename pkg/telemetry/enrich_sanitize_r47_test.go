@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -64,6 +65,8 @@ func TestRuntimeContextAttributesFlattenLikeTS(t *testing.T) {
 		"tags":   []interface{}{"a", "b"},
 		"labels": map[string]string{"env": "prod"},
 		"user":   nested{Plan: "pro"},
+		"owner":  &nested{Plan: "team"},
+		"none":   (*nested)(nil),
 		"n":      int32(3),
 		"mixed":  []interface{}{"a", 1.0},
 	}) {
@@ -77,6 +80,16 @@ func TestRuntimeContextAttributesFlattenLikeTS(t *testing.T) {
 	}
 	if v := got["ai.settings.context.user.plan"]; v.AsString() != "pro" {
 		t.Errorf("user.plan = %v", v.String())
+	}
+	// A pointer is followed to the object it points at (TS has no pointers;
+	// the value is that object); a nil pointer is null and dropped.
+	if v := got["ai.settings.context.owner.plan"]; v.AsString() != "team" {
+		t.Errorf("owner.plan = %v (all %v)", v.String(), got)
+	}
+	for k := range got {
+		if strings.HasPrefix(k, "ai.settings.context.none") {
+			t.Errorf("nil pointer recorded as %q", k)
+		}
 	}
 	if v := got["ai.settings.context.n"]; v.Type() != attribute.INT64 || v.AsInt64() != 3 {
 		t.Errorf("n = %v", v.String())
