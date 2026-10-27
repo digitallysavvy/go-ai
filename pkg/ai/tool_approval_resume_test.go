@@ -1490,3 +1490,58 @@ func TestMessagesForModel_PreservesProviderOptionsOfEmptyApprovalToolMessage(t *
 		t.Fatalf("providerOptions = %#v, want %#v", last.ProviderOptions, approvalOpts)
 	}
 }
+
+// TS collect-tool-approvals.test.ts "only one approval decision per tool call"
+// (#23791).
+func TestCollectToolApprovals_OneDecisionPerToolCall(t *testing.T) {
+	call := types.ToolCallContent{ToolCallID: "call-1", ToolName: "tool1"}
+	req := func(approvalID string) types.ToolApprovalRequestContent {
+		return types.ToolApprovalRequestContent{ApprovalID: approvalID, ToolCallID: "call-1"}
+	}
+	resp := func(approvalID string, approved bool) types.ToolApprovalResponseContent {
+		return types.ToolApprovalResponseContent{ApprovalID: approvalID, Approved: approved}
+	}
+	collect := func(parts ...types.ContentPart) CollectToolApprovalsResult {
+		t.Helper()
+		got, err := CollectToolApprovals([]types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{call, req("a1"), req("a2")}},
+			{Role: types.RoleTool, Content: parts},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	t.Run("identical replay", func(t *testing.T) {
+		got := collect(resp("a1", true), resp("a1", true))
+		if len(got.ApprovedToolApprovals) != 1 || len(got.DeniedToolApprovals) != 0 {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("conflicting decisions keep the first", func(t *testing.T) {
+		got := collect(resp("a1", true), resp("a1", false))
+		if len(got.ApprovedToolApprovals) != 1 || len(got.DeniedToolApprovals) != 0 {
+			t.Fatalf("got %+v", got)
+		}
+		got = collect(resp("a1", false), resp("a1", true))
+		if len(got.ApprovedToolApprovals) != 0 || len(got.DeniedToolApprovals) != 1 {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("another approval id for the same call", func(t *testing.T) {
+		got := collect(resp("a1", true), resp("a2", false))
+		if len(got.ApprovedToolApprovals) != 1 || len(got.DeniedToolApprovals) != 0 {
+			t.Fatalf("got %+v", got)
+		}
+	})
+	t.Run("unknown approval id still errors", func(t *testing.T) {
+		_, err := CollectToolApprovals([]types.Message{
+			{Role: types.RoleAssistant, Content: []types.ContentPart{call, req("a1")}},
+			{Role: types.RoleTool, Content: []types.ContentPart{resp("a1", true), resp("nope", true)}},
+		})
+		if !IsInvalidToolApprovalError(err) {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
