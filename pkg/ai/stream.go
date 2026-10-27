@@ -1496,7 +1496,7 @@ func (r *StreamTextResult) notifyStepError(ctx context.Context, onStepError func
 
 func (r *StreamTextResult) fail(err error) {
 	r.err = err
-	r.steering.end(steeringEndReasonFor(nil, err))
+	r.steering.end(steeringEndReasonFor(context.TODO(), err))
 	r.mu.Lock()
 	r.status = StreamStatusDone
 	r.mu.Unlock()
