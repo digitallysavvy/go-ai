@@ -60,6 +60,16 @@ type moonshotModelOptions struct {
 	// present, so an empty string is still forwarded (TS `!= null`).
 	HasPromptCacheKey   bool
 	HasSafetyIdentifier bool
+
+	// PromptCacheOptions is providerOptions.moonshotai.promptCacheOptions
+	// (Kimi K3 context caching), sent as prompt_cache_options.
+	PromptCacheOptions *moonshotPromptCacheOptions
+}
+
+// moonshotPromptCacheOptions mirrors { mode?: 'implicit'; ttl?: '5m' | '1h' }.
+type moonshotPromptCacheOptions struct {
+	Mode string // "implicit" (default)
+	TTL  string // "5m" | "1h" | "" (omitted: Moonshot uses 5m)
 }
 
 func invalidMoonshotProviderOptions(cause error) error {
@@ -169,6 +179,25 @@ func parseMoonshotModelOptions(opts map[string]interface{}) (moonshotModelOption
 	if v, ok := providerutils.OpenAICompatibleStringOption(opts, "promptCacheKey"); ok {
 		result.PromptCacheKey = v
 		result.HasPromptCacheKey = true
+	}
+	if v, ok := opts["promptCacheOptions"]; ok {
+		cache, isObject := v.(map[string]interface{})
+		if !isObject {
+			return result, invalidMoonshotProviderOptions(nil)
+		}
+		parsed := &moonshotPromptCacheOptions{Mode: "implicit"}
+		if mode, ok := cache["mode"]; ok {
+			if s, isString := mode.(string); !isString || s != "implicit" {
+				return result, invalidMoonshotProviderOptions(nil)
+			}
+		}
+		if ttl, ok := cache["ttl"]; ok {
+			if s, isString := ttl.(string); !isString || (s != "5m" && s != "1h") {
+				return result, invalidMoonshotProviderOptions(nil)
+			}
+			parsed.TTL = ttl.(string)
+		}
+		result.PromptCacheOptions = parsed
 	}
 	if v, ok := providerutils.OpenAICompatibleStringOption(opts, "safetyIdentifier"); ok {
 		result.SafetyIdentifier = v

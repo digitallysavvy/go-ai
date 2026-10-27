@@ -126,3 +126,20 @@ for the mechanism.
 Native `json_schema` structured output is now used for every Moonshot model ID, including unknown or future IDs (for example `kimi-next`), instead of falling back to `json_object` for IDs outside the known `kimi-k*` and `moonshot-v1-*` families.
 
 Tool and response schemas whose root is a union of objects (`anyOf`/`oneOf` of object schemas with no root `type`, as emitted for Zod-style unions) are now accepted and sent with `type: "object"` beside the union; `type` is no longer moved into the branches at the root. Unions with any non-object branch (including nullable objects and non-local `$ref`s) still fail with `tool and response schemas must be a JSON Schema object with type "object" for moonshotai (MFJS)`.
+
+### Prompt cache options and cache write tokens
+
+`providerOptions.moonshotai.promptCacheOptions` (`{mode?: "implicit", ttl?: "5m" | "1h"}`) is sent as `prompt_cache_options` for Kimi K3 context caching; `ttl` selects the cache write tier and Moonshot uses `5m` when it is omitted. A cached prefix keeps the TTL it was first written with. Cache writes are reported in `Usage.InputDetails.CacheWriteTokens` (and excluded from `NoCacheTokens`), and the split by TTL is added to `ProviderMetadata["moonshotai"]["cacheWriteTokens"]` as `{ttl5m, ttl1h}` when Moonshot returns the `msh-usage-cache-write-tokens-*` headers.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    System: longReferenceDocument,
+    Prompt: "Summarize the key conclusions.",
+    ProviderOptions: map[string]interface{}{
+        "moonshotai": map[string]interface{}{
+            "promptCacheOptions": map[string]interface{}{"ttl": "1h"},
+        },
+    },
+})
+```
