@@ -1,7 +1,6 @@
 package klingai
 
 import (
-	"fmt"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 
@@ -98,10 +97,8 @@ func (p *Provider) ImageModel(modelID string) (provider.ImageModel, error) {
 
 // VideoModel returns a video generation model by ID
 func (p *Provider) VideoModel(modelID string) (provider.VideoModelV3, error) {
-	if modelID == "" {
-		return nil, fmt.Errorf("model ID is required")
-	}
-
+	// Like TS, an unknown model ID is reported by DoStart (NoSuchModelError),
+	// not here.
 	return newVideoModel(p, modelID)
 }
 

@@ -29,10 +29,10 @@ type VideoModel struct {
 
 // newVideoModel creates a new KlingAI video generation model
 func newVideoModel(prov *Provider, modelID string) (*VideoModel, error) {
-	mode, err := detectMode(modelID)
-	if err != nil {
-		return nil, err
-	}
+	// TS resolves the mode (and throws NoSuchModelError) in doStart, not at
+	// construction, so an unknown model ID still yields a model here and
+	// DoStart reports the error. The error return is kept for v0.5.2 callers.
+	mode, _ := detectMode(modelID)
 
 	return &VideoModel{
 		prov:    prov,
@@ -76,6 +76,10 @@ type klingaiOperation struct {
 // (TS KlingAIVideoModel#doStart).
 func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3StartOptions) (*provider.VideoModelV3OperationStartResult, error) {
 	currentDate := time.Now() // TS: taken before the request is built and sent
+	// TS: const mode = detectMode(this.modelId) is the first fallible step.
+	if _, err := detectMode(m.modelID); err != nil {
+		return nil, err
+	}
 	if err := validateProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
 	}

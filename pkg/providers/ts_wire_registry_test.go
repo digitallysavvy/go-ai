@@ -277,7 +277,15 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return heygen.New(heygen.Config{APIKey: k, BaseURL: b, Headers: h, PollIntervalMillis: 1, PollTimeoutMillis: 5000})
 	})},
 	"typesafe-ai": {ReplayNoHTTPErrors: true, Skip: map[string]string{
-		"restores authentication from the environment when no headers are serialized": "depends on process environment variables set by the TS test",
+		"restores authentication from the environment when no headers are serialized":                      "depends on process environment variables set by the TS test; replayed natively by typesafeai TestSerialization_RestoresAuthFromEnvironment",
+		"forwards cancellation to fetch":                                                                   "the TS test aborts inside a fetch mock; replayed natively by typesafeai TestDecisionModel_ForwardsCancellationToHTTP",
+		"TypeSafe provider > provides the experimental decision capability":                                "factory-only case with no HTTP; replayed natively by typesafeai TestProvider_ProvidesDecisionCapability",
+		"TypeSafe provider > retains the deprecated factory alias":                                         "factory-only case with no HTTP; replayed natively by typesafeai TestProvider_RetainsDeprecatedEvaluationFactoryAlias",
+		"TypeSafe provider > rejects unsupported languageModel factories":                                  "factory-only case with no HTTP; replayed natively by typesafeai TestProvider_UnsupportedFactoriesAreNoSuchModelError",
+		"TypeSafe provider > rejects unsupported embeddingModel factories":                                 "factory-only case with no HTTP; replayed natively by typesafeai TestProvider_UnsupportedFactoriesAreNoSuchModelError",
+		"TypeSafe provider > rejects unsupported imageModel factories":                                     "factory-only case with no HTTP; replayed natively by typesafeai TestProvider_UnsupportedFactoriesAreNoSuchModelError",
+		"TypeSafe provider > configures the default provider from TYPESAFE_AI_BASE_URL at import time":     "Known difference: TS builds a module-level singleton at import time; Go has no import-time default provider (TYPESAFE_AI_BASE_URL is read by New, covered by TestNew_BaseURLFromEnvironment)",
+		"lazy schema initialization > defers schema construction until first use and caches the validator": "Known difference: TS-only lazy zod construction; Go validates with static code",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return typesafeai.New(typesafeai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},

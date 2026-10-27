@@ -1,9 +1,14 @@
 package klingai
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // clearKlingAICredentialEnv resets all three KlingAI credential environment
@@ -207,17 +212,17 @@ func TestProviderMethods(t *testing.T) {
 		}
 	})
 
-	t.Run("VideoModel returns error for empty ID", func(t *testing.T) {
-		_, err := prov.VideoModel("")
-		if err == nil {
-			t.Error("expected error for empty model ID")
-		}
-	})
-
-	t.Run("VideoModel returns error for invalid suffix", func(t *testing.T) {
-		_, err := prov.VideoModel("kling-v2.6-invalid")
-		if err == nil {
-			t.Error("expected error for invalid model ID suffix")
+	t.Run("VideoModel defers unknown IDs to DoStart", func(t *testing.T) {
+		for _, id := range []string{"", "kling-v2.6-invalid"} {
+			m, err := prov.VideoModel(id)
+			if err != nil || m == nil {
+				t.Fatalf("VideoModel(%q) = %v, %v; want model, nil", id, m, err)
+			}
+			_, err = m.(provider.VideoModelStarter).DoStart(context.Background(), &provider.VideoModelV3StartOptions{})
+			var nsm *providererrors.NoSuchModelError
+			if !errors.As(err, &nsm) || nsm.ModelID != id || nsm.ModelType != "videoModel" {
+				t.Fatalf("DoStart(%q) err = %v, want NoSuchModelError", id, err)
+			}
 		}
 	})
 

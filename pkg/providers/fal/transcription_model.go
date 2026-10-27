@@ -231,10 +231,9 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 		return nil, m.handleError(err)
 	}
 
-	if submitResp.RequestID == "" {
-		return nil, providererrors.NewInvalidResponseDataError(submitResp, "fal transcription queue response missing request_id")
-	}
-
+	// TS: encodePathSegment(queueResponse.request_id ?? '') — a missing
+	// request_id is not an error; the result URL is polled with an empty
+	// segment.
 	resultPath := fmt.Sprintf("%s/fal-ai/%s/requests/%s", m.provider.queueHost, m.modelID, providerutils.EncodePathSegment(submitResp.RequestID))
 
 	result, responseHeaders, rawBody, err := m.pollForResult(ctx, resultPath, opts.Headers)
