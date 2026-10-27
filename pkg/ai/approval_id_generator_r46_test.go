@@ -7,6 +7,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -118,4 +119,49 @@ func TestDefaultGeneratedIDPrefixesLikeTS(t *testing.T) {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
 	check("StreamText response", stream.Response().ID, "aitxt")
+}
+
+// TS generateObject/streamObject default generateId is
+// createIdGenerator({prefix: 'aiobj', size: 24}): a response without an id
+// gets an aiobj- id.
+func TestDefaultObjectResponseIDPrefixLikeTS(t *testing.T) {
+	t.Parallel()
+	objSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
+	want := func(name, id string) {
+		if !strings.HasPrefix(id, "aiobj-") || len(id) != len("aiobj-")+24 {
+			t.Errorf("%s response id = %q, want aiobj- plus 24 characters", name, id)
+		}
+	}
+	gen, err := GenerateObject(context.Background(), GenerateObjectOptions{
+		Model: &testutil.MockLanguageModel{
+			StructuredSupport: true,
+			DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+				return &types.GenerateResult{Text: `{"a":1}`, FinishReason: types.FinishReasonStop}, nil
+			},
+		},
+		Prompt: "hi",
+		Schema: objSchema,
+	})
+	if err != nil {
+		t.Fatalf("GenerateObject() error = %v", err)
+	}
+	want("GenerateObject", gen.Response.ID)
+
+	stream, err := StreamObject(context.Background(), StreamObjectOptions{
+		Model: &testutil.MockLanguageModel{
+			StructuredSupport: true,
+			DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeText, Text: `{"a":1}`},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				}), nil
+			},
+		},
+		Prompt: "hi",
+		Schema: objSchema,
+	})
+	if err != nil {
+		t.Fatalf("StreamObject() error = %v", err)
+	}
+	want("StreamObject", stream.Response.ID)
 }
