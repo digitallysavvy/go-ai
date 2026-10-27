@@ -11,6 +11,7 @@ const BridgeConfigurationEnv = "AI_SDK_ACP_BRIDGE_CONFIGURATION"
 // vars, not in this JSON blob) configuration the host hands the bridge.
 // Mirrors TS `ACPBridgeConfiguration`.
 type bridgeConfiguration struct {
+	Agent                         agentLaunch          `json:"agent"`
 	Authentication                *Authentication      `json:"authentication,omitempty"`
 	ProviderAuthentication        *bridgeProviderAuth  `json:"providerAuthentication,omitempty"`
 	ProviderEnvironment           *map[string]string   `json:"providerEnvironment,omitempty"` // pointer: an empty map must still serialize as {}
@@ -27,6 +28,7 @@ type bridgeConfiguration struct {
 // empty sessionMeta becomes `_meta: {}` on session/new).
 func (c bridgeConfiguration) MarshalJSON() ([]byte, error) {
 	type wire struct {
+		Agent                         agentLaunch           `json:"agent"`
 		Authentication                *Authentication       `json:"authentication,omitempty"`
 		ProviderAuthentication        *bridgeProviderAuth   `json:"providerAuthentication,omitempty"`
 		ProviderEnvironment           *map[string]string    `json:"providerEnvironment,omitempty"`
@@ -37,7 +39,7 @@ func (c bridgeConfiguration) MarshalJSON() ([]byte, error) {
 		NonTextContentTypes           *[]NonTextContentType `json:"nonTextContentTypes,omitempty"`
 	}
 	w := wire{
-		Authentication: c.Authentication, ProviderAuthentication: c.ProviderAuthentication,
+		Agent: c.Agent.withArgs(), Authentication: c.Authentication, ProviderAuthentication: c.ProviderAuthentication,
 		ProviderEnvironment: c.ProviderEnvironment, AskUserQuestionsRequestMethod: c.AskUserQuestionsRequestMethod,
 		HostToolMCPTransport: c.HostToolMCPTransport,
 	}
@@ -67,4 +69,13 @@ func createBridgeEnvironment(cfg bridgeConfiguration) map[string]string {
 		panic(err)
 	}
 	return map[string]string{BridgeConfigurationEnv: string(data)}
+}
+
+// withArgs returns the launch with a non-nil Args, so the wire carries `[]`
+// like TS (`args: z.array(z.string())` is required).
+func (a agentLaunch) withArgs() agentLaunch {
+	if a.Args == nil {
+		a.Args = []string{}
+	}
+	return a
 }

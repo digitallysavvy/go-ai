@@ -25,7 +25,7 @@ type sessionParams struct {
 	instructionMapping           *InstructionMapping
 	outputSchemaMapping          *OutputSchemaMapping
 	askUserQuestions             *AskUserQuestionsSettings
-	implementationIdentity       string
+	agentIdentity                string
 	authenticationProfile        authenticationProfileIdentity
 	builtinTools                 []BuiltinToolMapping
 	permissionMode               harness.PermissionMode
@@ -885,7 +885,7 @@ func (s *session) createLifecycleData(coords *bridgeCoords, includeTurnStartConf
 	defer s.mu.Unlock()
 	guidanceApplied := s.initialGuidanceApplied
 	data := resumeStateData{
-		ImplementationIdentity: s.p.implementationIdentity, AuthenticationProfile: &s.p.authenticationProfile,
+		AgentIdentity: s.p.agentIdentity, AuthenticationProfile: &s.p.authenticationProfile,
 		SandboxCredentialEnvironment: s.p.sandboxCredentialEnvironment, ACPSessionID: s.latestACPSessionID,
 		Bridge: coords, InitialGuidanceApplied: &guidanceApplied,
 		InstructionsFingerprint: s.instructionsFingerprint, SkillsDirectory: s.p.skillsDirectory,

@@ -72,7 +72,7 @@ func TestPermissionModeMapping_PartialWireAndIdentity(t *testing.T) {
 	// The identity covers the partial mapping (TS hashes the raw setting) and
 	// differs from both "none" and the complete mapping.
 	id := func(m *PermissionModeMapping) string {
-		return createImplementationIdentity(implementationIdentityInput{PermissionModeMapping: m})
+		return createAgentIdentity(agentIdentityInput{PermissionModeMapping: m})
 	}
 	if id(&partial) == id(nil) || id(&partial) == id(&PermissionModeMapping{AllowAll: target}) {
 		t.Fatal("identity ignores partial mapping")

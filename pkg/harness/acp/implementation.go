@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
@@ -42,7 +43,8 @@ func newImplementation(s Settings) implementation {
 	}
 }
 
-// validateImplementation mirrors TS `validateACPV1Implementation`.
+// validateImplementation mirrors TS `validateACPV1Settings`'s source,
+// executable and environment checks.
 func validateImplementation(impl implementation) error {
 	switch impl.Source.Type {
 	case SourceNPMLocked:
@@ -56,6 +58,8 @@ func validateImplementation(impl implementation) error {
 			return fmt.Errorf("ACP source.pnpmWorkspaceYaml must not be empty.") //nolint:staticcheck // matches TS SDK's exact error text
 		}
 	case SourceNPMSimple:
+		// TS removed `npm-simple`. It keeps working here as an install-command
+		// shim (see effectiveSource); the package spec is still validated.
 		if !packageNameRegexp.MatchString(impl.Source.PackageName) {
 			return fmt.Errorf("ACP npm package name is invalid: %s.", jsonString(impl.Source.PackageName)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
@@ -70,20 +74,21 @@ func validateImplementation(impl implementation) error {
 	if !executableNameRegexp.MatchString(impl.Executable) {
 		return fmt.Errorf("ACP executable must be a bare command name without a path; received %s.", jsonString(impl.Executable)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	if err := validateForwardEnvironment(impl.ForwardEnv); err != nil {
-		return err
-	}
-	if err := validateForwardEnvironment(impl.CredentialEnv); err != nil {
-		return err
-	}
-	if err := validateEnvironment(impl.Env); err != nil {
-		return err
-	}
 	forwarded := toSet(impl.ForwardEnv)
 	credential := toSet(impl.CredentialEnv)
-	// JS iterates the credential Set in configuration order; the conflict named
-	// by the error must not depend on Go's map order.
-	for _, k := range impl.CredentialEnv {
+	// JS iterates the Sets in configuration order; the error named must not
+	// depend on Go's map order.
+	for _, name := range uniqueInOrder(impl.ForwardEnv) {
+		if err := validateEnvironmentVariableName(name); err != nil {
+			return err
+		}
+	}
+	for _, name := range uniqueInOrder(impl.CredentialEnv) {
+		if err := validateEnvironmentVariableName(name); err != nil {
+			return err
+		}
+	}
+	for _, k := range uniqueInOrder(impl.CredentialEnv) {
 		if forwarded[k] {
 			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and credentialEnv.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
@@ -94,6 +99,12 @@ func validateImplementation(impl implementation) error {
 	}
 	sort.Strings(envKeys)
 	for _, k := range envKeys {
+		if err := validateEnvironmentVariableName(k); err != nil {
+			return err
+		}
+		if strings.Contains(impl.Env[k], "\x00") {
+			return fmt.Errorf("ACP runtime environment value for %s contains NUL.", k) //nolint:staticcheck // matches TS SDK's exact error text
+		}
 		if forwarded[k] {
 			return fmt.Errorf("ACP runtime environment key %s cannot be configured in both forwardEnv and env.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
 		}
@@ -104,32 +115,23 @@ func validateImplementation(impl implementation) error {
 	return nil
 }
 
-func validateEnvironment(env map[string]string) error {
-	// Go maps have no insertion order; sort so the reported key is stable.
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		v := env[k]
-		if !envVarNameRegexp.MatchString(k) {
-			return fmt.Errorf("ACP environment variable name is invalid: %s.", jsonString(k)) //nolint:staticcheck // matches TS SDK's exact error text
-		}
-		if strings.Contains(v, "\x00") {
-			return fmt.Errorf("ACP runtime environment value for %s contains NUL.", k) //nolint:staticcheck // matches TS SDK's exact error text
-		}
+func validateEnvironmentVariableName(name string) error {
+	if !envVarNameRegexp.MatchString(name) {
+		return fmt.Errorf("ACP environment variable name is invalid: %s.", jsonString(name)) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
 }
 
-func validateForwardEnvironment(names []string) error {
-	for _, name := range names {
-		if !envVarNameRegexp.MatchString(name) {
-			return fmt.Errorf("ACP environment variable name is invalid: %s.", jsonString(name)) //nolint:staticcheck // matches TS SDK's exact error text
+func uniqueInOrder(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
 		}
 	}
-	return nil
+	return out
 }
 
 func toSet(values []string) map[string]bool {
@@ -140,68 +142,58 @@ func toSet(values []string) map[string]bool {
 	return out
 }
 
-// createImplementationManifest mirrors TS `createImplementationManifest`.
-func createImplementationManifest(impl implementation) *string {
-	switch impl.Source.Type {
-	case SourceInstallCommand:
-		return nil
-	case SourceNPMLocked:
-		return &impl.Source.PackageJSON
-	default:
-		version := impl.Source.PackageVersion
-		if version == "" {
-			version = "latest"
-		}
-		payload := struct {
-			Name         string            `json:"name"`
-			Version      string            `json:"version"`
-			Private      bool              `json:"private"`
-			Type         string            `json:"type"`
-			Dependencies map[string]string `json:"dependencies"`
-		}{"harness-acp-implementation", "0.0.0", true, "module", map[string]string{impl.Source.PackageName: version}}
-		s := marshalIndentNoEscape(payload) + "\n"
-		return &s
+// effectiveSource returns the source the bootstrap and identity are built
+// from. The deprecated npm-simple source (removed from TS) is translated into
+// an equivalent install command that installs the package into the agent's
+// private home; every other source is returned unchanged.
+func effectiveSource(src Source) Source {
+	if src.Type != SourceNPMSimple {
+		return src
+	}
+	version := src.PackageVersion
+	if version == "" {
+		version = "latest"
+	}
+	return Source{
+		Type:    SourceInstallCommand,
+		Command: "npm install --global --prefix \"$HOME/.local\" " + harnessutil.ShellQuote(src.PackageName+"@"+version),
 	}
 }
 
-// getImplementationLockfile mirrors TS `getImplementationLockfile`.
-func getImplementationLockfile(impl implementation) *string {
-	if impl.Source.Type == SourceNPMLocked {
-		return &impl.Source.PnpmLockYAML
-	}
-	return nil
+// agentLaunch is the launch command of the ACP agent inside the sandbox. Home
+// is set for agents acquired with an install command, which run with a private
+// HOME below the harness bootstrap directory. Mirrors TS `ACPAgentLaunch`.
+type agentLaunch struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	Home    string   `json:"home,omitempty"`
 }
 
-// getImplementationWorkspaceFile mirrors TS `getImplementationWorkspaceFile`.
-func getImplementationWorkspaceFile(impl implementation) *string {
-	if impl.Source.Type == SourceNPMLocked && impl.Source.PnpmWorkspaceYAML != "" {
-		return &impl.Source.PnpmWorkspaceYAML
+// resolveAgentLaunch mirrors TS `resolveACPAgentLaunch`.
+func resolveAgentLaunch(bootstrapDirectory string, impl implementation) agentLaunch {
+	args := append(make([]string, 0, len(impl.Args)), impl.Args...)
+	if effectiveSource(impl.Source).Type == SourceInstallCommand {
+		home := bootstrapDirectory + "/home"
+		return agentLaunch{Command: home + "/.local/bin/" + impl.Executable, Args: args, Home: home}
 	}
-	return nil
+	return agentLaunch{Command: bootstrapDirectory + "/node_modules/.bin/" + impl.Executable, Args: args}
 }
 
-// createImplementationDescriptor mirrors TS `createImplementationDescriptor`.
-func createImplementationDescriptor(impl implementation) string {
-	executablePath := "node_modules/.bin/" + impl.Executable
-	if impl.Source.Type == SourceInstallCommand {
-		executablePath = "home/.local/bin/" + impl.Executable
-	}
-	args := impl.Args
-	if args == nil {
-		args = []string{}
-	}
-	payload := struct {
-		ExecutablePath string   `json:"executablePath"`
-		PrivateHome    bool     `json:"privateHome"`
-		Args           []string `json:"args"`
-		EnvKeys        []string `json:"envKeys"`
-	}{executablePath, impl.Source.Type == SourceInstallCommand, args, implementationEnvironmentKeys(impl)}
-	data := marshalIndentNoEscape(payload)
-	return data + "\n"
+// createInstallScript mirrors TS `createInstallScript`: it runs an install
+// command with HOME pointed at a private home below the bootstrap directory.
+func createInstallScript(command string) string {
+	return "#!/usr/bin/env bash\n" +
+		"set -euo pipefail\n\n" +
+		`ACP_BOOTSTRAP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` + "\n" +
+		`export HOME="$ACP_BOOTSTRAP_DIR/home"` + "\n" +
+		`export PATH="$HOME/.local/bin:$PATH"` + "\n\n" +
+		`mkdir -p "$HOME/.local/bin"` + "\n" +
+		`cd "$HOME"` + "\n\n" +
+		command + "\n"
 }
 
-// implementationIdentityInput is the input of createImplementationIdentity.
-type implementationIdentityInput struct {
+// agentIdentityInput is the input of createAgentIdentity.
+type agentIdentityInput struct {
 	HarnessID              string
 	Implementation         implementation
 	ClientApp              ClientApp
@@ -212,39 +204,37 @@ type implementationIdentityInput struct {
 	NonTextContentTypes    []NonTextContentType
 }
 
-// createImplementationIdentity mirrors TS `createImplementationIdentity`: a
-// stable sha256 digest over the non-secret launch configuration, used to
-// detect an incompatible resume.
-func createImplementationIdentity(in implementationIdentityInput) string {
+// createAgentIdentity mirrors TS `createACPAgentIdentity`: a stable sha256
+// digest over every non-secret input that determines how the ACP agent is
+// installed, launched and configured. Lifecycle state produced under one
+// identity cannot be resumed under another.
+func createAgentIdentity(in agentIdentityInput) string {
 	impl := in.Implementation
+	src := effectiveSource(impl.Source)
 	var sourceIdentity map[string]any
-	switch impl.Source.Type {
+	switch src.Type {
 	case SourceNPMLocked:
 		sourceIdentity = map[string]any{
-			"type": impl.Source.Type, "packageJson": impl.Source.PackageJSON,
-			"pnpmLockYaml": impl.Source.PnpmLockYAML,
+			"type": src.Type, "packageJson": src.PackageJSON, "pnpmLockYaml": src.PnpmLockYAML,
 		}
-		// JSON.stringify drops an undefined workspace file.
-		if impl.Source.PnpmWorkspaceYAML != "" {
-			sourceIdentity["pnpmWorkspaceYaml"] = impl.Source.PnpmWorkspaceYAML
-		}
-	case SourceNPMSimple:
-		sourceIdentity = map[string]any{"type": impl.Source.Type, "packageName": impl.Source.PackageName}
-		if impl.Source.PackageVersion != "" {
-			sourceIdentity["packageVersion"] = impl.Source.PackageVersion
+		// An undefined workspace file is dropped by the canonical fingerprint.
+		if src.PnpmWorkspaceYAML != "" {
+			sourceIdentity["pnpmWorkspaceYaml"] = src.PnpmWorkspaceYAML
 		}
 	default:
-		sourceIdentity = map[string]any{"type": impl.Source.Type, "command": impl.Source.Command}
-	}
-	forwarded := sortedUnique(impl.ForwardEnv)
-	credential := sortedUnique(impl.CredentialEnv)
-	literal := map[string]any{}
-	for k, v := range impl.Env {
-		literal[k] = map[string]string{"value": v}
+		sourceIdentity = map[string]any{"type": src.Type, "command": src.Command}
 	}
 	args := impl.Args
 	if args == nil {
 		args = []string{}
+	}
+	literal := map[string]any{}
+	for k, v := range impl.Env {
+		literal[k] = v
+	}
+	names := make([]string, len(in.NonTextContentTypes))
+	for i, t := range in.NonTextContentTypes {
+		names[i] = string(t)
 	}
 	payload := map[string]any{
 		"harnessId": in.HarnessID, "acpVersion": "v1", "source": sourceIdentity,
@@ -253,61 +243,20 @@ func createImplementationIdentity(in implementationIdentityInput) string {
 		"clientCapabilities": in.ClientCapabilities,
 		"modelMapping":       map[string]any{"type": in.ModelMapping.Type, "path": in.ModelMapping.Path},
 		"environment": map[string]any{
-			"forwarded": forwarded, "credential": credential, "literal": literal,
+			"forwarded": sortedUnique(impl.ForwardEnv), "credential": sortedUnique(impl.CredentialEnv), "literal": literal,
 		},
 		"providerAuthentication": in.ProviderAuthentication,
 		"permissionModeMapping":  in.PermissionModeMapping,
+		"nonTextContentTypes":    sortedUnique(names),
 	}
-	if len(in.NonTextContentTypes) > 0 {
-		// Only present when declared, so identities of implementations that
-		// declare none are unchanged. Deduplicated and sorted like TS.
-		names := make([]string, len(in.NonTextContentTypes))
-		for i, t := range in.NonTextContentTypes {
-			names[i] = string(t)
-		}
-		payload["nonTextContentTypes"] = sortedUnique(names)
-	}
-	sum := sha256.Sum256([]byte(stableStringify(payload)))
+	sum := sha256.Sum256([]byte(stableStringifyCodeUnit(payload)))
 	return hex.EncodeToString(sum[:])
 }
 
-// createImplementationInstallCommand mirrors TS
-// `createImplementationInstallCommand`.
-func createImplementationInstallCommand(implementationDir, storeDir string, impl implementation) string {
-	if impl.Source.Type == SourceInstallCommand {
-		return "bash implementation/install.sh"
-	}
-	cmd := "pnpm --dir " + implementationDir + " install"
-	if impl.Source.Type == SourceNPMLocked {
-		cmd += " --frozen-lockfile"
-	}
-	cmd += " --prod --store-dir " + storeDir
-	return cmd
-}
-
-// getImplementationInstallScript mirrors TS `getImplementationInstallScript`.
-func getImplementationInstallScript(impl implementation) *string {
-	if impl.Source.Type != SourceInstallCommand {
-		return nil
-	}
-	script := "#!/usr/bin/env bash\n" +
-		"set -euo pipefail\n\n" +
-		`ACP_IMPLEMENTATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` + "\n" +
-		`ACP_INSTALL_HOME="$ACP_IMPLEMENTATION_DIR/home"` + "\n" +
-		`export HOME="$ACP_INSTALL_HOME"` + "\n" +
-		`export PATH="$ACP_INSTALL_HOME/.local/bin:$PATH"` + "\n\n" +
-		`mkdir -p "$ACP_INSTALL_HOME/.local/bin"` + "\n" +
-		`cd "$ACP_IMPLEMENTATION_DIR"` + "\n\n" +
-		impl.Source.Command + "\n"
-	return &script
-}
-
 // resolveImplementationEnvironment mirrors TS
-// `resolveImplementationEnvironment`.
+// `resolveACPAgentEnvironment`. Credential variables are read only from
+// credentialEnv, never from env.
 func resolveImplementationEnvironment(impl implementation, env, credentialEnv map[string]string) map[string]string {
-	if credentialEnv == nil {
-		credentialEnv = env
-	}
 	out := map[string]string{}
 	for _, name := range impl.ForwardEnv {
 		if v, ok := env[name]; ok && v != "" {
@@ -323,33 +272,6 @@ func resolveImplementationEnvironment(impl implementation, env, credentialEnv ma
 		out[k] = v
 	}
 	return out
-}
-
-func implementationEnvironmentKeys(impl implementation) []string {
-	set := map[string]bool{}
-	var keys []string
-	add := func(name string) {
-		if !set[name] {
-			set[name] = true
-			keys = append(keys, name)
-		}
-	}
-	for _, n := range impl.ForwardEnv {
-		add(n)
-	}
-	for _, n := range impl.CredentialEnv {
-		add(n)
-	}
-	envKeys := make([]string, 0, len(impl.Env))
-	for k := range impl.Env {
-		envKeys = append(envKeys, k)
-	}
-	sort.Strings(envKeys)
-	for _, n := range envKeys {
-		add(n)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func sortedUnique(values []string) []string {

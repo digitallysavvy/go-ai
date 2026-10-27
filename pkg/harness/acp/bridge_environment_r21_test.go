@@ -11,12 +11,12 @@ func TestCreateBridgeEnvironment_EmptyDefinedValuesKept(t *testing.T) {
 		ClientCapabilities:  map[string]any{},
 		NonTextContentTypes: []NonTextContentType{},
 	})
-	want := `{"authentication":{"methodId":"m","meta":{},"clientCapabilities":{}},"sessionMeta":{},"clientCapabilities":{},"nonTextContentTypes":[]}`
+	want := `{"agent":{"command":"","args":[]},"authentication":{"methodId":"m","meta":{},"clientCapabilities":{}},"sessionMeta":{},"clientCapabilities":{},"nonTextContentTypes":[]}`
 	if got := env[BridgeConfigurationEnv]; got != want {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 	env = createBridgeEnvironment(bridgeConfiguration{Authentication: &Authentication{MethodID: "m"}})
-	if got, want := env[BridgeConfigurationEnv], `{"authentication":{"methodId":"m"}}`; got != want {
+	if got, want := env[BridgeConfigurationEnv], `{"agent":{"command":"","args":[]},"authentication":{"methodId":"m"}}`; got != want {
 		t.Fatalf("nil values must stay omitted: got %s want %s", got, want)
 	}
 }

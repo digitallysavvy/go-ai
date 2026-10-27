@@ -183,7 +183,7 @@ func TestTSReplay_LifecycleCompatibilityRejections(t *testing.T) {
 		err   string
 	}{
 		{"harness", func() *harness.ResumeSessionState { s := *state; s.HarnessID = "other-acp"; return &s }(), h, "produced by harness"},
-		{"implementation", clone(func(d map[string]any) { d["implementationIdentity"] = "other-implementation" }), h, "configured implementation"},
+		{"agent", clone(func(d map[string]any) { d["agentIdentity"] = "other-agent" }), h, "configured agent"},
 		{"authentication profile", clone(func(d map[string]any) { d["authenticationProfile"].(map[string]any)["digest"] = "other-authentication" }), h, "authentication profile"},
 		{"sandbox", clone(func(d map[string]any) { d["bridge"].(map[string]any)["sandboxId"] = "sandbox-2" }), h, "belongs to sandbox"},
 	}

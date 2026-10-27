@@ -12,7 +12,7 @@ import (
 func TestValidateEnvironmentReportsKeyDeterministically(t *testing.T) {
 	env := map[string]string{"1bad": "x", "2bad": "y", "3bad": "z", "4bad": "w", "OK": "v"}
 	for i := 0; i < 50; i++ {
-		err := validateEnvironment(env)
+		err := validateImplementation(implementation{Source: Source{Type: SourceInstallCommand, Command: "x"}, Executable: "x", Env: env})
 		if err == nil || err.Error() != `ACP environment variable name is invalid: "1bad".` {
 			t.Fatalf("err = %v", err)
 		}

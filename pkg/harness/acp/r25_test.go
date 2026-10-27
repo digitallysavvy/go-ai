@@ -235,7 +235,7 @@ func TestValidateLifecycleStateDataChecksStartConfigShape(t *testing.T) {
 	}
 	v := h.(*acpHarness)
 	good := `{"version":1,"configurationFingerprint":"f","prompt":[{"type":"text","text":"hi"}],"permissionMode":"allow-all"}`
-	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","turnStartConfig":` + good + `}`)); err != nil {
+	if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","turnStartConfig":` + good + `}`)); err != nil {
 		t.Fatalf("valid state rejected: %v", err)
 	}
 	for name, cfg := range map[string]string{
@@ -247,15 +247,15 @@ func TestValidateLifecycleStateDataChecksStartConfigShape(t *testing.T) {
 		"non-text block":      `{"version":1,"configurationFingerprint":"f","prompt":[{"type":"image"}],"permissionMode":"allow-all"}`,
 		"null tools":          `{"version":1,"configurationFingerprint":"f","prompt":[],"permissionMode":"allow-all","tools":null}`,
 	} {
-		if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","turnStartConfig":` + cfg + `}`)); err == nil {
+		if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","turnStartConfig":` + cfg + `}`)); err == nil {
 			t.Errorf("%s: turnStartConfig accepted", name)
 		}
 	}
 	cold := `{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all"}`
-	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","coldSession":` + cold + `}`)); err != nil {
+	if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","coldSession":` + cold + `}`)); err != nil {
 		t.Fatalf("valid coldSession rejected: %v", err)
 	}
-	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","coldSession":{"version":1,"permissionMode":"allow-all"}}`)); err == nil {
+	if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","coldSession":{"version":1,"permissionMode":"allow-all"}}`)); err == nil {
 		t.Error("coldSession without a fingerprint accepted")
 	}
 }

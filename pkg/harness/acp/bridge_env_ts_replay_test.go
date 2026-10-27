@@ -74,6 +74,7 @@ func TestTSReplay_LaunchEnvironment(t *testing.T) {
 func TestTSReplay_BridgeEnvironmentWireShape(t *testing.T) {
 	providerEnv := map[string]string{"AI_GATEWAY_API_KEY": "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL": "https://gateway.example/v1"}
 	env := createBridgeEnvironment(bridgeConfiguration{
+		Agent:          agentLaunch{Command: "/bridge/node_modules/.bin/agent", Args: []string{"stdio"}},
 		Authentication: &Authentication{MethodID: "api-key", Meta: map[string]any{"apiKey": "direct-secret"}},
 		ProviderAuthentication: &bridgeProviderAuth{Type: "ai-gateway", Env: map[string]any{
 			"AI_GATEWAY_API_KEY": map[string]any{"$source": "gateway-api-key"}, "CLIENT_APP": map[string]any{"$source": "client-app"}}},
@@ -86,6 +87,7 @@ func TestTSReplay_BridgeEnvironmentWireShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
+		"agent":          map[string]any{"command": "/bridge/node_modules/.bin/agent", "args": []any{"stdio"}},
 		"authentication": map[string]any{"methodId": "api-key", "meta": map[string]any{"apiKey": "direct-secret"}},
 		"providerAuthentication": map[string]any{"type": "ai-gateway", "env": map[string]any{
 			"AI_GATEWAY_API_KEY": map[string]any{"$source": "gateway-api-key"}, "CLIENT_APP": map[string]any{"$source": "client-app"}}},
@@ -107,7 +109,7 @@ func TestTSReplay_BridgeEnvironmentWireShape(t *testing.T) {
 	}
 }
 
-// Replays TS implementation-install-script.test.ts by running the generated script.
+// Replays TS acp-v1-bootstrap.test.ts by running the generated script.
 func TestTSReplay_InstallScriptRuns(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash is not available")
@@ -119,7 +121,7 @@ func TestTSReplay_InstallScriptRuns(t *testing.T) {
 		"pwd > \"$HOME/install-working-directory.txt\""
 	impl := implementation{Source: Source{Type: SourceInstallCommand, Command: command}, Executable: "acp-agent"}
 	tmp := t.TempDir()
-	implDir := filepath.Join(tmp, ".harness-bootstrap", "example-acp", "implementation")
+	implDir := filepath.Join(tmp, ".harness-bootstrap", "example-acp")
 	ambientHome := filepath.Join(tmp, "ambient-home")
 	if err := os.MkdirAll(implDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -128,7 +130,7 @@ func TestTSReplay_InstallScriptRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := filepath.Join(implDir, "install.sh")
-	if err := os.WriteFile(script, []byte(*getImplementationInstallScript(impl)), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(createInstallScript(impl.Source.Command)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("bash", script)
@@ -146,9 +148,9 @@ func TestTSReplay_InstallScriptRuns(t *testing.T) {
 		t.Fatalf("symlink resolves to %s, want %s", target, want)
 	}
 	wd, _ := os.ReadFile(filepath.Join(home, "install-working-directory.txt"))
-	realImplDir, _ := filepath.EvalSymlinks(implDir)
-	if string(wd) != realImplDir+"\n" && string(wd) != implDir+"\n" {
-		t.Fatalf("working directory = %q, want %q", wd, implDir)
+	realHome, _ := filepath.EvalSymlinks(home)
+	if string(wd) != realHome+"\n" && string(wd) != home+"\n" {
+		t.Fatalf("working directory = %q, want %q", wd, home)
 	}
 	if _, err := os.Stat(filepath.Join(ambientHome, ".local", "bin", "acp-agent")); !os.IsNotExist(err) {
 		t.Fatalf("the installer touched the ambient HOME: %v", err)
@@ -157,7 +159,7 @@ func TestTSReplay_InstallScriptRuns(t *testing.T) {
 	// A failing download side of a pipeline fails the installer.
 	failing := implementation{Source: Source{Type: SourceInstallCommand, Command: "false | true"}, Executable: "acp-agent"}
 	fs := filepath.Join(tmp, "fail.sh")
-	_ = os.WriteFile(fs, []byte(*getImplementationInstallScript(failing)), 0o755)
+	_ = os.WriteFile(fs, []byte(createInstallScript(failing.Source.Command)), 0o755)
 	if err := exec.Command("bash", fs).Run(); err == nil {
 		t.Fatal("the installer must fail when the left side of a pipeline fails")
 	}

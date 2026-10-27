@@ -39,7 +39,7 @@ func TestValidateLifecycleStateDataAcceptsImagePromptBlocks(t *testing.T) {
 	}
 	v := h.(*acpHarness)
 	cfg := func(block string) string {
-		return `{"implementationIdentity":"i","turnStartConfig":{"version":1,"configurationFingerprint":"f","prompt":[` + block + `],"permissionMode":"allow-all"}}`
+		return `{"agentIdentity":"i","turnStartConfig":{"version":1,"configurationFingerprint":"f","prompt":[` + block + `],"permissionMode":"allow-all"}}`
 	}
 	if err := v.ValidateLifecycleStateData([]byte(cfg(`{"type":"image","data":"AQID","mimeType":"image/png"}`))); err != nil {
 		t.Fatalf("image block rejected: %v", err)
