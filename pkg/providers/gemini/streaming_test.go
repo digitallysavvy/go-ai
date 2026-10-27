@@ -2,6 +2,7 @@ package gemini
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1041,5 +1042,56 @@ func TestStream_InStreamError(t *testing.T) {
 				t.Fatalf("usage = %+v", finish.Usage)
 			}
 		})
+	}
+}
+
+// TS emits the thrown continuation error itself as the error part, so callers
+// can still match its type; it must not be wrapped in a generic stream error.
+func TestStreamContinuationFailureKeepsErrorType(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"CONTINUATION","continuationToken":"tok"}]}`))
+	cause := providererrors.NewProviderError("google", 503, "", "overloaded", nil)
+	s.continueFn = func(token string) (io.ReadCloser, error) { return nil, cause }
+	chunks := drainChunks(t, s)
+	var errChunk *provider.StreamChunk
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeError {
+			errChunk = c
+		}
+	}
+	if errChunk == nil {
+		t.Fatal("no error chunk")
+	}
+	var pe *providererrors.ProviderError
+	if !errors.As(errChunk.Err, &pe) || pe != cause {
+		t.Fatalf("error chunk Err = %#v, want the original ProviderError", errChunk.Err)
+	}
+	if last := chunks[len(chunks)-1]; last.FinishReason != types.FinishReasonLength {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+// TS records the candidate's safetyRatings, finishMessage and grounding
+// before the confirmed-prompt-block check, so a block chunk that also carries
+// them still reports them in the finish provider metadata.
+func TestStreamConfirmedPromptBlockKeepsCandidateMetadata(t *testing.T) {
+	s := newTestStream(sseStream(
+		`{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[{"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT"}],"finishMessage":"blocked"}]}`,
+		`{"candidates":[{"content":{"parts":[{"text":"ignored"}]},"groundingMetadata":{"webSearchQueries":["q"]}}]}`,
+	))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonContentFilter {
+		t.Fatalf("finish = %+v", last)
+	}
+	meta := string(last.ProviderMetadata)
+	for _, want := range []string{`"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT"}]`, `"finishMessage":"blocked"`, `"webSearchQueries":["q"]`} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("finish metadata missing %s: %s", want, meta)
+		}
+	}
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeText {
+			t.Fatalf("content after a confirmed prompt block must be dropped: %+v", c)
+		}
 	}
 }

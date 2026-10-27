@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	stdhttp "net/http"
 	"os"
 	"path/filepath"
@@ -506,5 +505,5 @@ func instanceRoleCredentials(ctx context.Context) (awsCredentials, error) {
 
 func readAndClose(resp *stdhttp.Response) ([]byte, error) {
 	defer resp.Body.Close() //nolint:errcheck
-	return io.ReadAll(resp.Body)
+	return readResponseBody(resp.Body)
 }
