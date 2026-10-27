@@ -103,12 +103,11 @@ func ToUIMessageChunk(part ModelCallStreamPart) (ai.UIMessageChunk, bool) {
 		if part.ToolCall == nil {
 			return nil, false
 		}
+		// TS workflow toUIMessageChunk forwards only id, toolName and
+		// providerExecuted here (no title, dynamic or inputEncoding).
 		c := ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": part.ToolCall.ID, "toolName": part.ToolCall.ToolName}
-		if part.ToolCall.InputEncoding != "" {
-			c["inputEncoding"] = part.ToolCall.InputEncoding
-		}
-		if part.ToolCall.ProviderExecuted {
-			c["providerExecuted"] = true
+		if part.ToolCall.ProviderExecuted || part.ToolCall.ProviderExecutedSet {
+			c["providerExecuted"] = part.ToolCall.ProviderExecuted
 		}
 		return c, true
 	case provider.ChunkTypeToolInputDelta:
@@ -133,8 +132,8 @@ func ToUIMessageChunk(part ModelCallStreamPart) (ai.UIMessageChunk, bool) {
 			}, true
 		}
 		c := ai.UIMessageChunk{"type": "tool-input-available", "toolCallId": tc.ID, "toolName": tc.ToolName, "input": tc.Arguments}
-		if tc.ProviderExecuted {
-			c["providerExecuted"] = true
+		if tc.ProviderExecuted || tc.ProviderExecutedSet {
+			c["providerExecuted"] = tc.ProviderExecuted
 		}
 		if len(tc.ProviderMetadata) > 0 {
 			c["providerMetadata"] = tc.ProviderMetadata

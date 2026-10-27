@@ -280,3 +280,36 @@ func TestToUIMessageChunkMapping(t *testing.T) {
 		})
 	}
 }
+
+// TS forwards providerExecuted whenever it is not undefined, so an explicit
+// false reaches the UI chunk; unset stays absent. inputEncoding is not
+// forwarded by the TS workflow converter.
+func TestToUIMessageChunkProviderExecutedExplicitFalse(t *testing.T) {
+	cases := []struct {
+		name string
+		tc   types.ToolCall
+		want interface{}
+		has  bool
+	}{
+		{"unset", types.ToolCall{ID: "c1", ToolName: "t"}, nil, false},
+		{"explicit false", types.ToolCall{ID: "c1", ToolName: "t", ProviderExecutedSet: true}, false, true},
+		{"true", types.ToolCall{ID: "c1", ToolName: "t", ProviderExecuted: true}, true, true},
+	}
+	for _, tt := range cases {
+		for _, ct := range []provider.ChunkType{provider.ChunkTypeToolInputStart, provider.ChunkTypeToolCall} {
+			tc := tt.tc
+			tc.InputEncoding = "text"
+			c, ok := ToUIMessageChunk(provider.StreamChunk{Type: ct, ToolCall: &tc})
+			if !ok {
+				t.Fatalf("%s/%s: no chunk", tt.name, ct)
+			}
+			got, has := c["providerExecuted"]
+			if has != tt.has || got != tt.want {
+				t.Fatalf("%s/%s: providerExecuted = %#v (present %v), want %#v (present %v)", tt.name, ct, got, has, tt.want, tt.has)
+			}
+			if _, has := c["inputEncoding"]; has {
+				t.Fatalf("%s/%s: inputEncoding forwarded: %#v", tt.name, ct, c)
+			}
+		}
+	}
+}
