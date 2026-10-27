@@ -3012,8 +3012,24 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			trimmed := bytes.TrimSpace(peek.Choices)
 			isArray = len(trimmed) > 0 && trimmed[0] == '['
 			if isArray {
-				s.err = providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
-				return nil, s.err
+				// TS delivers this as an error part (an APICallError carrying
+				// the offending chunk as responseBody) and finishes the stream
+				// with finish reason "error".
+				notRetryable := false
+				mismatch := providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
+				mismatch.ResponseBody = event.Data
+				mismatch.Retryable = &notRetryable
+				s.queueRawChunk(event.Data)
+				s.hadDecodeError = true
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: chatCompletionsMismatchMessage,
+					Err:  mismatch,
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
 			}
 		}
 		// TS openaiResponsesChunkSchema: a modeled event whose members fail its

@@ -2676,12 +2676,21 @@ func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
-	_, err := stream.Next()
-	if err == nil {
-		t.Fatal("expected an error for a Chat Completions-shaped chunk")
+	// TS delivers the mismatch as an error part, then finishes with "error".
+	chunk, err := stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("first chunk = %+v err=%v, want an error part", chunk, err)
 	}
-	if !strings.Contains(err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
-		t.Fatalf("error = %v, want the Chat Completions mismatch message", err)
+	if !strings.Contains(chunk.Err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
+		t.Fatalf("error = %v, want the Chat Completions mismatch message", chunk.Err)
+	}
+	var perr *providererrors.ProviderError
+	if !errors.As(chunk.Err, &perr) || !strings.Contains(perr.ResponseBody, `"chatcmpl-1"`) {
+		t.Fatalf("error should carry the offending chunk as ResponseBody: %#v", chunk.Err)
+	}
+	finish, err := stream.Next()
+	if err != nil || finish.Type != provider.ChunkTypeFinish || finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish = %+v err=%v, want finish reason error", finish, err)
 	}
 }
 

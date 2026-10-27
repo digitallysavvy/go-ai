@@ -29,8 +29,6 @@ func TestTSWire(t *testing.T) {
 			"OpenAI batch service > creates a Responses batch from prepared JSONL requests":                                                           "provider headers are not captured in the batch recording config; JSONL line key order is semantically irrelevant (covered by batch unit tests)",
 			"OpenAI batch service > warns when a provider tool can return unsupported batch output":                                                   "typed Go hosted tools are named by their id, so the warning feature text differs from the TS tool name; covered by TestBatchWarnsForUnsupportedHostedTool",
 			"OpenAIResponsesLanguageModel > doGenerate > basic text response > should replay a regular function named tool_search as a function call": "the TS tool-call input is an object whose key order Go maps cannot carry; Go sends the Input string it is given as is",
-			"OpenAIResponsesLanguageModel > doStream > should return helpful error when Chat Completions stream is received":                          "TS delivers this as an error part; Go ends the stream with the same error from Next",
-			"OpenAIResponsesLanguageModel > doGenerate > should not include unsupported web search sources":                                           "needs the supportsWebSearchSourcesInclude provider setting, which the recording does not carry",
 		},
 		Provider: func(base string, m tsfixture.WireModel) (provider.Provider, error) {
 			headers := map[string]string{}
@@ -43,6 +41,9 @@ func TestTSWire(t *testing.T) {
 			}
 			cfg := Config{APIKey: "test-api-key", BaseURL: base, Headers: headers,
 				HTTPClient: &http.Client{Transport: tsfixture.GuardTransport{Next: http.DefaultTransport}}}
+			if v, ok := m.Config["supportsWebSearchSourcesInclude"].(bool); ok {
+				cfg.SupportsWebSearchSourcesInclude = &v
+			}
 			// Tests that build a model under another provider name (for example
 			// "azure.responses") select name-dependent behavior.
 			switch {
