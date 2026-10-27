@@ -165,7 +165,8 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 	// used in tests); every other origin is still fully validated.
 	audioData, err := fileutil.Download(ctx, jsonResp.Audio.URL, fileutil.TrustedOriginDownloadOptions(requestPath, nil))
 	if err != nil {
-		return nil, fmt.Errorf("failed to download fal speech audio: %w", err)
+		// TS getFromApi with createStatusCodeErrorResponseHandler.
+		return nil, providerutils.StatusCodeDownloadError("fal", err)
 	}
 
 	var rawResponse interface{}
