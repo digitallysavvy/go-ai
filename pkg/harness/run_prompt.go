@@ -1680,7 +1680,10 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	}
 	var toolResult types.ToolResult
 	if tr.IsError {
-		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Error: fmt.Errorf("%v", tr.Result), ProviderExecuted: ok && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
+		// TS keeps the raw wire value as the tool-error's error
+		// (`error: value.result`); ErrorFromValue carries it, with
+		// getErrorMessage text.
+		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Error: ErrorFromValue(tr.Result), ProviderExecuted: ok && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
 		if toolResult.ProviderExecuted {
 			toolResult.Result = tr.Result
 		}
