@@ -1356,7 +1356,7 @@ func (d *turnDriver) translateOpts() TranslateOptions {
 			if !ok {
 				return ToolCallInfo{}, false
 			}
-			return ToolCallInfo{Input: call.Arguments, ProviderExecuted: call.ProviderExecuted}, true
+			return ToolCallInfo{Input: call.Arguments, ProviderExecuted: call.ProviderExecuted, ProviderExecutedSet: call.ProviderExecutedSet}, true
 		},
 	}
 }
@@ -2167,6 +2167,8 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 		})
 		d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
 			ApprovalID: approvalID, ToolCallID: raw.ToolCallID, ToolCall: call, Approved: false, Reason: decision.Reason,
+			// TS enqueueAutomaticApprovalResponse({..., providerExecuted: false}).
+			ProviderExecutedSet: true,
 		}})
 		output := executionDeniedOutput(decision.Reason)
 		// TS publishes the execution start before submitting the denial and
@@ -2182,9 +2184,12 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	case CustomToolApprovalRequest:
 		pending := d.pendingApprovalsByToolCallID[raw.ToolCallID]
 		if pending == nil {
+			// TS records a custom approval with `providerExecuted: false`.
+			notProviderExecuted := false
 			pending = &PendingToolApproval{
 				ApprovalID: generateApprovalID(), ToolCallID: raw.ToolCallID, ToolName: raw.ToolName,
-				Input: raw.Input, Kind: PendingToolApprovalCustom, NativeName: raw.NativeName,
+				Input: raw.Input, Kind: PendingToolApprovalCustom, ProviderExecuted: &notProviderExecuted,
+				NativeName: raw.NativeName,
 			}
 			d.pendingApprovalsByApprovalID[pending.ApprovalID] = pending
 			d.pendingApprovalsByToolCallID[pending.ToolCallID] = pending
@@ -2656,8 +2661,10 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
 		ApprovalID: approval.ApprovalID, ToolCallID: approval.ToolCallID, ToolCall: call,
 		Approved: continuation.Approved, Reason: continuation.Reason,
-		// TS: `approval.providerExecuted` (true for a builtin approval).
-		ProviderExecuted: approval.ProviderExecuted != nil && *approval.ProviderExecuted,
+		// TS: `approval.providerExecuted` when it is defined (true for a
+		// builtin approval, false for a custom one).
+		ProviderExecuted:    approval.ProviderExecuted != nil && *approval.ProviderExecuted,
+		ProviderExecutedSet: approval.ProviderExecuted != nil,
 	}})
 	if d.in.OnToolApprovalSettled != nil {
 		d.in.OnToolApprovalSettled(approval.ApprovalID)

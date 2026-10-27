@@ -622,6 +622,9 @@ func responseToolApprovalResponseContent(part types.ToolApprovalResponseContent)
 		Approved:         part.Approved,
 		Reason:           part.Reason,
 		ProviderExecuted: part.ProviderExecuted,
+		// TS to-response-messages copies part.providerExecuted, an
+		// explicit false included.
+		ProviderExecutedSet: part.ProviderExecutedSet,
 	}
 }
 

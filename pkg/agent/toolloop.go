@@ -2012,8 +2012,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				// TS approval parts carry toolCall.providerExecuted.
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			})
 			if a.config.OnToolError != nil {
 				a.config.OnToolError(call, rejectionErr)
@@ -2021,15 +2023,16 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			return results, nil
 		case types.ToolApprovalStatusUserApproval:
 			results = append(results, types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
-				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              map[string]interface{}{"type": "tool-approval-request", "approvalId": call.ID, "toolCall": call},
+				ApprovalStatus:      types.ToolApprovalStatusUserApproval,
+				ProviderExecuted:    providerExecuted,
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			})
 			return results, nil
 		}
@@ -2042,17 +2045,18 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			}
 
 			result := types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           nil,
-				Error:            nil,
-				ApprovalStatus:   approval.Status,
-				ApprovalReason:   approval.Reason,
-				ProviderExecuted: true,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              nil,
+				Error:               nil,
+				ApprovalStatus:      approval.Status,
+				ApprovalReason:      approval.Reason,
+				ProviderExecuted:    true,
+				ProviderExecutedSet: true,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 			results = append(results, result)
 
@@ -2460,14 +2464,15 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
 			result.ApprovalStatus == types.ToolApprovalStatusDenied {
 			toolCall := types.ToolCall{
-				ID:               result.ToolCallID,
-				ToolName:         result.ToolName,
-				Title:            result.Title,
-				Arguments:        result.Input,
-				ProviderExecuted: result.ProviderExecuted,
-				ProviderMetadata: result.ProviderMetadata,
-				ToolMetadata:     result.ToolMetadata,
-				Dynamic:          result.Dynamic,
+				ID:                  result.ToolCallID,
+				ToolName:            result.ToolName,
+				Title:               result.Title,
+				Arguments:           result.Input,
+				ProviderExecuted:    result.ProviderExecuted,
+				ProviderExecutedSet: result.ProviderExecutedSet,
+				ProviderMetadata:    result.ProviderMetadata,
+				ToolMetadata:        result.ToolMetadata,
+				Dynamic:             result.Dynamic,
 			}
 			signature := ""
 			if secret != nil {
@@ -2501,6 +2506,8 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				Approved:         result.ApprovalStatus == types.ToolApprovalStatusApproved,
 				Reason:           reason,
 				ProviderExecuted: result.ProviderExecuted,
+				// TS: providerExecuted: toolCall.providerExecuted.
+				ProviderExecutedSet: result.ProviderExecutedSet,
 			})
 			if result.ProviderExecuted || result.ApprovalStatus == types.ToolApprovalStatusDenied {
 				continue

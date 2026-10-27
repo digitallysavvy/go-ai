@@ -2402,23 +2402,26 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ApprovalID:       approvalID,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				// TS approval parts carry toolCall.providerExecuted.
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 			continue
 		case types.ToolApprovalStatusUserApproval:
 			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           map[string]interface{}{"type": "tool-approval-request", "approvalId": approvalID, "toolCall": call},
-				ApprovalStatus:   types.ToolApprovalStatusUserApproval,
-				ApprovalReason:   approval.Reason,
-				ApprovalID:       approvalID,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              map[string]interface{}{"type": "tool-approval-request", "approvalId": approvalID, "toolCall": call},
+				ApprovalStatus:      types.ToolApprovalStatusUserApproval,
+				ApprovalReason:      approval.Reason,
+				ApprovalID:          approvalID,
+				ProviderExecuted:    providerExecuted,
+				ProviderExecutedSet: call.ProviderExecutedSet,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 			continue
 		}
@@ -2426,18 +2429,19 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			// Provider-executed tool: result will come from provider in next response
 			// We don't execute locally, just mark as pending
 			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Result:           nil,
-				Error:            nil,
-				ApprovalStatus:   approval.Status,
-				ApprovalID:       approvalID,
-				ApprovalReason:   approval.Reason,
-				ProviderExecuted: true,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				ToolCallID:          call.ID,
+				ToolName:            call.ToolName,
+				Title:               call.Title,
+				Input:               call.Arguments,
+				Result:              nil,
+				Error:               nil,
+				ApprovalStatus:      approval.Status,
+				ApprovalID:          approvalID,
+				ApprovalReason:      approval.Reason,
+				ProviderExecuted:    true,
+				ProviderExecutedSet: true,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 		} else {
 			if callbacks.executionBlocked || tool.Execute == nil {
@@ -2597,8 +2601,11 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 				ApprovalID:       approvalID,
 				ApprovalReason:   approvalReason,
 				ProviderExecuted: false,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
+				// Only the automatic approval response reads the call's
+				// explicit false; the local output has no providerExecuted.
+				ProviderExecutedSet: call.ProviderExecutedSet && approvalStatus == types.ToolApprovalStatusApproved,
+				ProviderMetadata:    providerMetadata,
+				ToolMetadata:        call.ToolMetadata,
 			}
 
 			// Fire telemetry OnToolCallFinish so integrations can record errors.

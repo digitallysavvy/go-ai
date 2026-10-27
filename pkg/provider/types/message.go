@@ -757,6 +757,12 @@ type ToolApprovalResponseContent struct {
 	// forwarded to the provider.
 	Reason           string `json:"reason,omitempty"`
 	ProviderExecuted bool   `json:"providerExecuted,omitempty"`
+	// ProviderExecutedSet marks ProviderExecuted as explicitly set, so an
+	// explicit `providerExecuted: false` is kept (in the UI chunk and in the
+	// marshaled part) where TS sends one, for example on an automatic denial
+	// of a tool call that carried an explicit false. It follows
+	// ToolCall.ProviderExecutedSet.
+	ProviderExecutedSet bool `json:"-"`
 }
 
 func (t ToolApprovalResponseContent) ContentType() string {
@@ -772,14 +778,17 @@ func (t ToolApprovalResponseContent) MarshalJSON() ([]byte, error) {
 		ToolCall         *ToolCallContent `json:"toolCall,omitempty"`
 		Approved         bool             `json:"approved"`
 		Reason           string           `json:"reason,omitempty"`
-		ProviderExecuted bool             `json:"providerExecuted,omitempty"`
+		ProviderExecuted *bool            `json:"providerExecuted,omitempty"`
 	}
 	out := toolApprovalResponseContentJSON{
-		Type:             t.ContentType(),
-		ApprovalID:       t.ApprovalID,
-		Approved:         t.Approved,
-		Reason:           t.Reason,
-		ProviderExecuted: t.ProviderExecuted,
+		Type:       t.ContentType(),
+		ApprovalID: t.ApprovalID,
+		Approved:   t.Approved,
+		Reason:     t.Reason,
+	}
+	if t.ProviderExecuted || t.ProviderExecutedSet {
+		providerExecuted := t.ProviderExecuted
+		out.ProviderExecuted = &providerExecuted
 	}
 	if !toolCallIsZero(t.ToolCall) {
 		toolCall := toolCallContentFromToolCall(t.ToolCall)

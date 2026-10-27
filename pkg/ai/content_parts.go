@@ -353,9 +353,12 @@ func toolCallForToolResult(tr types.ToolResult) types.ToolCall {
 		Title:            tr.Title,
 		Arguments:        tr.Input,
 		ProviderExecuted: tr.ProviderExecuted,
-		ProviderMetadata: tr.ProviderMetadata,
-		ToolMetadata:     tr.ToolMetadata,
-		Dynamic:          tr.Dynamic,
+		// TS keeps the parsed tool call's providerExecuted, explicit false
+		// included.
+		ProviderExecutedSet: tr.ProviderExecutedSet,
+		ProviderMetadata:    tr.ProviderMetadata,
+		ToolMetadata:        tr.ToolMetadata,
+		Dynamic:             tr.Dynamic,
 	}
 }
 
@@ -387,6 +390,9 @@ func toolApprovalResponseFromToolResult(tr types.ToolResult) types.ToolApprovalR
 		Approved:         tr.ApprovalStatus == types.ToolApprovalStatusApproved,
 		Reason:           reason,
 		ProviderExecuted: tr.ProviderExecuted,
+		// TS: providerExecuted: toolCall.providerExecuted, so an explicit
+		// false on the call reaches the response.
+		ProviderExecutedSet: tr.ProviderExecutedSet,
 	}
 }
 
