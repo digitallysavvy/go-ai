@@ -2163,16 +2163,18 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 // openAIResponsesReasoningMetadataWithEncrypted mirrors the TS reasoning
 // providerMetadata {itemId, reasoningEncryptedContent: encrypted_content ?? null}.
 func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, encrypted string) json.RawMessage {
-	if itemID == "" {
-		return nil
-	}
+	// TS always builds {itemId: part.id, reasoningEncryptedContent:
+	// part.encrypted_content ?? null}; an item without an id drops itemId
+	// from the JSON but still carries reasoningEncryptedContent: null.
 	var enc interface{}
 	if encrypted != "" {
 		enc = encrypted
 	}
-	raw, _ := json.Marshal(map[string]interface{}{
-		providerName: map[string]interface{}{"itemId": itemID, "reasoningEncryptedContent": enc},
-	})
+	meta := map[string]interface{}{"reasoningEncryptedContent": enc}
+	if itemID != "" {
+		meta["itemId"] = itemID
+	}
+	raw, _ := json.Marshal(map[string]interface{}{providerName: meta})
 	return raw
 }
 
@@ -3978,7 +3980,16 @@ func openAIResponsesRawChunk(data string) *provider.StreamChunk {
 // For compaction items it emits a ChunkTypeCustom.
 // All other item types were emitted incrementally and need no action here.
 func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
+	// TS dispatches output_item.done on the done item's own type, not the
+	// type recorded at output_item.added; the recorded type is only a
+	// fallback for a done item that omits its type.
 	itemType := s.itemTypes[e.OutputIndex]
+	var doneType struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(e.Item, &doneType) == nil && doneType.Type != "" {
+		itemType = doneType.Type
+	}
 	if responsesItemIsFunctionCall(itemType, e.Item, true) {
 		s.hasFunctionCall = true
 	}
@@ -3987,7 +3998,21 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "function_call":
 		accum, ok := s.toolAccum[e.OutputIndex]
 		if !ok {
-			return nil, false
+			// No function_call was recorded at output_item.added (the
+			// added item had another type, or none arrived): TS still emits
+			// the call from the done item alone.
+			var seed responses.FunctionCallItem
+			if err := json.Unmarshal(e.Item, &seed); err != nil {
+				return nil, false
+			}
+			accum = &responsesToolAccum{
+				id:                     seed.CallID,
+				itemID:                 seed.ID,
+				name:                   seed.Name,
+				namespace:              seed.Namespace,
+				async:                  seed.Async,
+				suppressInputStreaming: responses.IsUndeclaredParallelToolCall(seed.Name, s.tools),
+			}
 		}
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
