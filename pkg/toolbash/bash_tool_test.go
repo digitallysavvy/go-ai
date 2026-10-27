@@ -246,7 +246,9 @@ func TestBashToolTimeout(t *testing.T) {
 	for _, withCallerContext := range []bool{false, true} {
 		t.Run("caller context "+strconv.FormatBool(withCallerContext), func(t *testing.T) {
 			sb, workDir := newSandbox(t)
-			tool, err := CreateBashTool(context.Background(), Options{Sandbox: sb, TimeoutMs: intPtr(100)})
+			// 1 s leaves a loaded machine time to start the shell and print
+			// "before" before the timeout; the command would run 20 s.
+			tool, err := CreateBashTool(context.Background(), Options{Sandbox: sb, TimeoutMs: intPtr(1000)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -257,14 +259,14 @@ func TestBashToolTimeout(t *testing.T) {
 				defer cancel()
 			}
 			start := time.Now()
-			out, err := tool.Execute(ctx, map[string]interface{}{"command": "echo before; sleep 5; echo finished > marker.txt"}, types.ToolExecutionOptions{})
+			out, err := tool.Execute(ctx, map[string]interface{}{"command": "echo before; sleep 20; echo finished > marker.txt"}, types.ToolExecutionOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := out.(Output); got.ExitCode != TimeoutExitCode || got.Stdout != "before\n" {
 				t.Fatalf("got %+v", got)
 			}
-			if time.Since(start) > 4*time.Second {
+			if time.Since(start) > 15*time.Second {
 				t.Fatal("the timeout did not stop the command")
 			}
 			if _, err := os.Stat(filepath.Join(workDir, "marker.txt")); !os.IsNotExist(err) {
