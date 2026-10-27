@@ -135,8 +135,10 @@ func TestOpenTelemetryLanguageModelCallStartRequestParams(t *testing.T) {
 	if v, ok := attrValue(span, "gen_ai.request.max_tokens"); !ok || v.(int64) != 512 {
 		t.Fatalf("expected gen_ai.request.max_tokens=512, got %v ok=%v", v, ok)
 	}
-	if v, ok := attrValue(span, "gen_ai.request.seed"); !ok || v.(int64) != 42 {
-		t.Fatalf("expected gen_ai.request.seed=42, got %v ok=%v", v, ok)
+	// TS onLanguageModelCallStart records no seed on the chat span; only
+	// the root span carries gen_ai.request.seed.
+	if v, ok := attrValue(span, "gen_ai.request.seed"); ok {
+		t.Fatalf("chat span must not carry gen_ai.request.seed, got %v", v)
 	}
 	if v, ok := attrValue(span, "gen_ai.response.finish_reasons"); !ok {
 		t.Fatalf("expected gen_ai.response.finish_reasons to be set, ok=%v val=%v", ok, v)

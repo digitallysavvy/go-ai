@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -210,6 +211,10 @@ type genAICallState struct {
 	// OnEmbedEnd/OnRerankEnd doesn't leak them.
 	embedSpans map[string]trace.Span
 	rerankSpan trace.Span
+	// operationType is the root operation ("ai.generateObject", ...). TS
+	// generateObject/streamObject use onObjectStepStart/End, which open the
+	// chat span directly under the root, with no agent_step span.
+	operationType string
 }
 
 var genAICallStates sync.Map // map[string]*genAICallState, keyed by CallID
@@ -429,9 +434,22 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st.rootSpan = span
 		st.baseSupp = baseSupp
 		st.tracer = tracer
+		st.operationType = e.OperationType
 		st.mu.Unlock()
 	}
 	return ctx
+}
+
+// genAIIsObjectCall reports whether callID's root is generateObject or
+// streamObject.
+func genAIIsObjectCall(callID string) bool {
+	if v, ok := genAICallStates.Load(callID); ok && callID != "" {
+		st := v.(*genAICallState)
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		return isLegacyObjectOperation(st.operationType)
+	}
+	return false
 }
 
 // requestSettingAttributes returns the gen_ai.request.* attributes for the
@@ -490,6 +508,11 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	if !rootSpan.IsRecording() {
 		return ctx
 	}
+	// TS onObjectStepStart creates no step span for generateObject/
+	// streamObject: the chat span sits directly under the root.
+	if isLegacyObjectOperation(e.OperationType) || genAIIsObjectCall(e.CallID) {
+		return ctx
+	}
 	tracer := genAIChildTracer(e.CallID, rootSpan)
 	// Explicitly rebase ctx onto our own root span before creating the step
 	// span, so it nests correctly under this integration's root even if
@@ -540,11 +563,17 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	// every step's DoStream call, so st.stepSpan is always set by the time
 	// this runs and the fallback is dead — removed to match TS exactly (see
 	// TestStreamTextGenAIChatSpanNestsUnderStepSpanForFirstStep).
+	// generateObject/streamObject (TS onObjectStepStart) parent the chat span
+	// under the root instead.
 	var parent trace.Span
+	isObject := genAIIsObjectCall(e.CallID)
 	if e.CallID != "" {
 		if st := genAIState(e.CallID); st != nil {
 			st.mu.Lock()
 			parent = st.stepSpan
+			if isObject {
+				parent = st.rootSpan
+			}
 			st.mu.Unlock()
 		}
 	}
@@ -587,11 +616,12 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	if e.FrequencyPenalty != nil {
 		attrs = setFiniteFloat64(attrs, "gen_ai.request.frequency_penalty", *e.FrequencyPenalty)
 	}
-	if len(e.StopSequences) > 0 {
+	// TS chat spans carry no gen_ai.request.seed (only the root does), and
+	// the object chat span declares its JSON output and no stop sequences.
+	if isObject {
+		attrs = append(attrs, attribute.String("gen_ai.output.type", "json"))
+	} else if len(e.StopSequences) > 0 {
 		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", e.StopSequences))
-	}
-	if e.Seed != nil {
-		attrs = append(attrs, attribute.Int("gen_ai.request.seed", *e.Seed))
 	}
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if recordInputs && e.System != "" {
@@ -611,6 +641,10 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		if b, err := jsonstr.Marshal(toolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
+	}
+	if isObject {
+		// TS onObjectStepStart spreads state.baseSupplementalAttributes.
+		attrs = append(attrs, genAIBaseSupplemental(e.CallID)...)
 	}
 	span.SetAttributes(attrs...)
 	if e.CallID != "" {
@@ -740,12 +774,16 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		entry.span.SetStatus(codes.Error, "")
 	}
 	content := contentParts(e.Content)
+	// generateObject/streamObject end their chat span in TS onObjectStepEnd:
+	// no provider re-record, cache-creation tokens or client performance
+	// attributes, and the object text as the output message.
+	isObject := genAIIsObjectCall(e.CallID)
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
 	// TS re-records the provider on the chat span at call end, since the
 	// responding provider can differ from the requested one.
-	if e.ModelProvider != "" {
+	if e.ModelProvider != "" && !isObject {
 		attrs = append(attrs, attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)))
 	}
 	if e.ResponseID != "" {
@@ -754,23 +792,35 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	if e.ModelID != "" {
 		attrs = append(attrs, attribute.String("gen_ai.response.model", e.ModelID))
 	}
-	attrs = append(attrs, baseUsageAttrs(e.Usage, true)...)
+	attrs = append(attrs, baseUsageAttrs(e.Usage, !isObject)...)
 	if i.opts.Usage {
 		attrs = append(attrs, detailedUsageAttrs(e.Usage)...)
 	}
-	attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.duration", msToSeconds(e.Performance.ResponseTimeMs))
-	if e.Performance.TimeToFirstOutputMs != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_to_first_chunk", msToSeconds(*e.Performance.TimeToFirstOutputMs))
-	}
-	if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
-		// TS: msToSeconds(performance.timeBetweenOutputChunksMs?.avg).
-		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
+	if !isObject {
+		attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.duration", msToSeconds(e.Performance.ResponseTimeMs))
+		if e.Performance.TimeToFirstOutputMs != nil {
+			attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_to_first_chunk", msToSeconds(*e.Performance.TimeToFirstOutputMs))
+		}
+		if stats := e.Performance.TimeBetweenOutputChunksMs; stats != nil {
+			// TS: msToSeconds(performance.timeBetweenOutputChunksMs?.avg).
+			attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
+		}
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
 	// TS records gen_ai.output.messages for every call, an empty response
 	// included ([{role, parts: [], finish_reason}]); only an event that carries
 	// no content at all (nil) skips it.
-	if recordOutputs && e.Content != nil {
+	if recordOutputs && isObject {
+		var objectText strings.Builder
+		for _, c := range content {
+			if t, ok := c.(types.TextContent); ok {
+				objectText.WriteString(t.Text)
+			}
+		}
+		if b, err := jsonstr.Marshal(formatObjectOutputMessages(objectText.String(), e.FinishReason)); err == nil {
+			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
+		}
+	} else if recordOutputs && e.Content != nil {
 		if b, err := jsonstr.Marshal(formatOutputMessagesFromContent(content, e.FinishReason)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.output.messages", string(b)))
 		}
