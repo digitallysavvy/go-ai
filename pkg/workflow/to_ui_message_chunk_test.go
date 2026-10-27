@@ -313,3 +313,34 @@ func TestToUIMessageChunkProviderExecutedExplicitFalse(t *testing.T) {
 		}
 	}
 }
+
+// TS workflow toUIMessageChunk builds tool-output-available and
+// tool-output-error from toolCallId plus output/errorText only, so a
+// provider-executed result (true or explicit false) carries no
+// providerExecuted, providerMetadata or dynamic key, unlike the core
+// converter.
+func TestToUIMessageChunkToolOutputOmitsProviderExecuted(t *testing.T) {
+	for _, tr := range []types.ToolResult{
+		{ToolCallID: "c1", ToolName: "t", Result: "ok", ProviderExecuted: true, ProviderExecutedSet: true, Dynamic: true},
+		{ToolCallID: "c1", ToolName: "t", Result: "ok", ProviderExecutedSet: true},
+		{ToolCallID: "c1", ToolName: "t", Error: errors.New("boom"), ProviderExecuted: true, ProviderExecutedSet: true},
+		{ToolCallID: "c1", ToolName: "t", Error: errors.New("boom"), ProviderExecutedSet: true},
+	} {
+		tr := tr
+		c, ok := ToUIMessageChunk(provider.StreamChunk{
+			Type:             provider.ChunkTypeToolResult,
+			ToolResult:       &tr,
+			ProviderMetadata: []byte(`{"p":{"k":1}}`),
+		})
+		if !ok {
+			t.Fatalf("no chunk for %+v", tr)
+		}
+		want := ai.UIMessageChunk{"type": "tool-output-available", "toolCallId": "c1", "output": "ok"}
+		if tr.Error != nil {
+			want = ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": "c1", "errorText": "boom"}
+		}
+		if !reflect.DeepEqual(c, want) {
+			t.Fatalf("chunk = %#v, want %#v", c, want)
+		}
+	}
+}
