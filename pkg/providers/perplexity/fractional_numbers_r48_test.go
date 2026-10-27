@@ -1,6 +1,7 @@
 package perplexity
 
 import (
+	"encoding/json"
 	"errors"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"io"
@@ -104,5 +105,22 @@ func TestR48_EmbeddingFractionalPromptTokensAndOptionValidation(t *testing.T) {
 		if !errors.As(err, &ia) {
 			t.Fatalf("%v: err = %v", bad, err)
 		}
+	}
+}
+
+// An int64 dimensions option is forwarded like an int.
+func TestR48_EmbeddingInt64DimensionsForwarded(t *testing.T) {
+	var body map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"data":[{"embedding":"AQI="}],"usage":{"prompt_tokens":1}}`))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{BaseURL: srv.URL, APIKey: "k"}), "pplx-embed-v1-4b")
+	if _, err := m.DoEmbedMany(t.Context(), []string{"a"}, &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"perplexity": map[string]interface{}{"dimensions": int64(256)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if body["dimensions"] != float64(256) {
+		t.Fatalf("dimensions = %v, want 256", body["dimensions"])
 	}
 }

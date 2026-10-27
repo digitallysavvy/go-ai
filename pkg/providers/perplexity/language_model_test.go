@@ -1224,7 +1224,6 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 	}
 }
 
-
 // TS: "preserves citation annotations from output items and %s" (it.each over
 // response.completed / response.incomplete). A message with a citation is
 // first surfaced via response.output_item.done (so its source is already
