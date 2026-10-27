@@ -20,6 +20,7 @@ type JSONResponseToolStream struct {
 
 	responseToolIDs         map[string]bool
 	responseToolsWithDeltas map[string]bool
+	exactArguments          bool
 	hasResponseTool         bool
 	hasApplicationTool      bool
 	queue                   []*provider.StreamChunk
@@ -34,6 +35,14 @@ func NewJSONResponseToolStream(inner provider.TextStream, toolName string) *JSON
 		responseToolIDs:         map[string]bool{},
 		responseToolsWithDeltas: map[string]bool{},
 	}
+}
+
+// WithExactArguments makes a tool-call without streamed deltas emit its raw
+// argument string as is, including the empty string, as TS does
+// (`delta: part.input`). By default an empty string becomes "{}".
+func (s *JSONResponseToolStream) WithExactArguments() *JSONResponseToolStream {
+	s.exactArguments = true
+	return s
 }
 
 func chunkToolInputID(chunk *provider.StreamChunk) string {
@@ -107,10 +116,14 @@ func (s *JSONResponseToolStream) convert(chunk *provider.StreamChunk) {
 		if chunk.ToolCall != nil && chunk.ToolCall.ToolName == s.toolName {
 			id := chunk.ToolCall.ID
 			if !s.responseToolsWithDeltas[id] {
+				text := providerutils.JSONResponseToolText(*chunk.ToolCall)
+				if s.exactArguments {
+					text = chunk.ToolCall.RawArguments
+				}
 				s.queue = append(s.queue, &provider.StreamChunk{
 					Type:             provider.ChunkTypeText,
 					ID:               id,
-					Text:             providerutils.JSONResponseToolText(*chunk.ToolCall),
+					Text:             text,
 					ProviderMetadata: chunk.ProviderMetadata,
 				})
 			}
