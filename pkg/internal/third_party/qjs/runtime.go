@@ -102,7 +102,7 @@ func compileInto(ctx context.Context, wrt wazero.Runtime, qjsBytes []byte) (*sha
 // compiling on first use or when the module bytes or runtime config change.
 // A replaced shared runtime is not closed: runs still using it keep working
 // and it is collected once they are closed.
-func sharedRuntimeFor(ctx context.Context, closeOnContextDone bool, cacheDir string, qjsBytes []byte) (*sharedRuntime, error) {
+func sharedRuntimeFor(closeOnContextDone bool, cacheDir string, qjsBytes []byte) (*sharedRuntime, error) {
 	compilationMutex.Lock()
 	defer compilationMutex.Unlock()
 
@@ -117,11 +117,15 @@ func sharedRuntimeFor(ctx context.Context, closeOnContextDone bool, cacheDir str
 	if err != nil {
 		return nil, err
 	}
-	// The runtime outlives the ctx of the run that first creates it.
-	wrt := wazero.NewRuntimeWithConfig(context.WithoutCancel(ctx), cfg)
-	s, err := compileInto(context.WithoutCancel(ctx), wrt, qjsBytes)
+	// The runtime outlives the run that first creates it, and its compiled
+	// code serves every later run, so it is built from a bare context: a
+	// value in that run's ctx (wazero reads an experimental function
+	// listener factory at compile time) must not reach other runs.
+	bare := context.Background()
+	wrt := wazero.NewRuntimeWithConfig(bare, cfg)
+	s, err := compileInto(bare, wrt, qjsBytes)
 	if err != nil {
-		_ = wrt.Close(context.WithoutCancel(ctx))
+		_ = wrt.Close(bare)
 		return nil, err
 	}
 	shared, sharedKey = s, key
@@ -179,7 +183,7 @@ func New(options ...Option) (runtime *Runtime, err error) {
 			return nil, err
 		}
 		runtime.ownedRuntime = wrt
-	} else if sr, err = sharedRuntimeFor(option.Context, option.CloseOnContextDone, option.CacheDir, qjsBytes); err != nil {
+	} else if sr, err = sharedRuntimeFor(option.CloseOnContextDone, option.CacheDir, qjsBytes); err != nil {
 		return nil, fmt.Errorf("failed to create global compiled module: %w", err)
 	}
 	// Release whatever was instantiated if a later step fails or panics
