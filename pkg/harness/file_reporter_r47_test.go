@@ -144,3 +144,17 @@ func TestR47RuntimeToolErrorKeepsWireValue(t *testing.T) {
 		t.Fatalf("tool-end = %q", toolEnd)
 	}
 }
+
+// A harness turn's TS messages carry the prompt text as a string
+// (`content: promptToText(prompt)`), not a content-part array.
+func TestR47FileReporterHarnessMessagesHaveStringContent(t *testing.T) {
+	r, dir := newTestReporter(t, false)
+	e := reporterStart("c")
+	e.Settings = reporterSettings()
+	r.OnStart(context.Background(), e)
+	r.OnEnd(context.Background(), telemetry.TelemetryFinishEvent{CallID: "c"})
+	lines := reporterRawLines(t, dir)
+	if !strings.Contains(lines[0], `"input":{"messages":[{"role":"user","content":"what is 2+2?"}],"instructions":"be terse"}}`) {
+		t.Fatalf("turn-start = %s", lines[0])
+	}
+}

@@ -353,11 +353,7 @@ func (r *FileReporter) OnStart(ctx context.Context, e telemetry.TelemetryStartEv
 	rec.set("provider", e.ModelProvider)
 	rec.set("modelId", e.ModelID)
 	if recordInputs(e.Settings) {
-		msgs := e.Messages
-		if msgs == nil {
-			msgs = []types.Message{}
-		}
-		in := (&orderedRecord{}).set("messages", msgs)
+		in := (&orderedRecord{}).set("messages", reporterMessages(e))
 		if e.System != "" {
 			in.set("instructions", e.System)
 		}
@@ -365,6 +361,35 @@ func (r *FileReporter) OnStart(ctx context.Context, e telemetry.TelemetryStartEv
 	}
 	r.record(e.CallID, false, rec)
 	return ctx
+}
+
+// reporterMessages renders the start event's messages. A harness turn's
+// messages are TS `[{ role: 'user', content: promptToText(prompt) }]`, whose
+// content is a string, so each is written as {role, content: text} rather
+// than as a content-part array.
+func reporterMessages(e telemetry.TelemetryStartEvent) interface{} {
+	if e.OperationType != "ai.harness" {
+		if e.Messages == nil {
+			return []types.Message{}
+		}
+		return e.Messages
+	}
+	out := make([]interface{}, 0, len(e.Messages))
+	for _, m := range e.Messages {
+		var text strings.Builder
+		for _, part := range m.Content {
+			switch c := part.(type) {
+			case types.TextContent:
+				text.WriteString(c.Text)
+			case *types.TextContent:
+				if c != nil {
+					text.WriteString(c.Text)
+				}
+			}
+		}
+		out = append(out, (&orderedRecord{}).set("role", string(m.Role)).set("content", text.String()))
+	}
+	return out
 }
 
 // OnStepStart records a step-start line.
