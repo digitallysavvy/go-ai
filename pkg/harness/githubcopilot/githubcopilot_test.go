@@ -297,3 +297,14 @@ func TestBuildConfig_GatewayModelFallback(t *testing.T) {
 		t.Fatalf("COPILOT_MODEL = %v", cfg.ProviderAuthentication.GatewayEnv["COPILOT_MODEL"])
 	}
 }
+
+// TS #23686: image tool output (`toModelOutput()`) is declared as supported.
+func TestBuildConfig_DeclaresImageToolOutput(t *testing.T) {
+	cfg, err := BuildConfig(Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.NonTextContentTypes, []acp.NonTextContentType{acp.NonTextContentImage}) {
+		t.Fatalf("NonTextContentTypes = %v", cfg.NonTextContentTypes)
+	}
+}

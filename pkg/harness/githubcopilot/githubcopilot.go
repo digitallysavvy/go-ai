@@ -131,7 +131,11 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
-		HostToolMCPTransport:   acp.HostToolMCPHTTP,
+		HostToolMCPTransport: acp.HostToolMCPHTTP,
+		// Images from tool outputs are only processed with direct GitHub Copilot
+		// authentication: with AI Gateway the CLI does not fetch the model
+		// catalog and passes only the text of a tool output.
+		NonTextContentTypes:    []acp.NonTextContentType{acp.NonTextContentImage},
 		ForwardEnv:             []string{"COPILOT_GH_HOST", "GH_HOST"},
 		CredentialEnv:          []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
 		CredentialBrokering:    CredentialBrokering,
