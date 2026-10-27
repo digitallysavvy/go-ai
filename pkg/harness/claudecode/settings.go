@@ -16,11 +16,10 @@
 // (`submitUserMessage`) is wired whenever the bridge advertises
 // `experimental_userMessageResponses` on its hello.
 //
-// Deferred versus TS (see the Sep-23-2026 WG7 report for the full rationale):
-//   - Native subscription credential discovery reads `~/.claude/.credentials.json`
-//     (or `$CLAUDE_CONFIG_DIR`) and, on macOS with the default config dir, the
-//     "Claude Code-credentials" Keychain item, refreshing and writing back as
-//     TS does (subscription.go).
+// Native subscription credential discovery matches TS: it reads
+// `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR`) and, on macOS with
+// the default config dir, the "Claude Code-credentials" Keychain item,
+// refreshing and writing back as TS does (subscription.go).
 package claudecode
 
 import (

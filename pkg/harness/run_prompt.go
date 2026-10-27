@@ -399,8 +399,11 @@ type turnDriver struct {
 	activeToolSet  map[string]struct{}
 	stripToolInput func(part StreamPart) []StreamPart
 
-	// execToolCallsByID holds the *unstripped* tool-call event for host tool
-	// execution (execution needs the real absolute paths); toolCallsByID
+	// rawToolCallsByID holds each tool-call event as the consumer sees it
+	// (work-dir-stripped), like TS `rawToolCallsByToolCallId`, which stores
+	// the display value: builtin approval records, builtin approval
+	// continuations and suspended results take their input from it. Host
+	// tool execution uses the unstripped event directly. toolCallsByID
 	// holds the parsed, display (work-dir-stripped) public tool call used
 	// for approvals, classification and callbacks. validatedHostCallsByID
 	// holds the schema-validated call with *unstripped* Arguments actually
@@ -411,7 +414,7 @@ type turnDriver struct {
 	// Go's driver revisits a call's validation result from separate
 	// functions (handleHostToolCall, processApprovalContinuation) rather
 	// than a single closure scope.
-	execToolCallsByID      map[string]*ToolCallPart
+	rawToolCallsByID       map[string]*ToolCallPart
 	toolCallsByID          map[string]types.ToolCall
 	validatedHostCallsByID map[string]*types.ToolCall
 	providerExecByID       map[string]bool
@@ -620,7 +623,7 @@ func (d *turnDriver) logError(context string, err any) {
 }
 
 func (d *turnDriver) run() {
-	d.execToolCallsByID = map[string]*ToolCallPart{}
+	d.rawToolCallsByID = map[string]*ToolCallPart{}
 	d.toolCallsByID = map[string]types.ToolCall{}
 	d.validatedHostCallsByID = map[string]*types.ToolCall{}
 	d.providerExecByID = map[string]bool{}
@@ -788,6 +791,7 @@ func (d *turnDriver) run() {
 			return
 		}
 		d.publishSuspendedOutcomes()
+		d.publishUnechoedHostExecutions()
 		// Results buffered for the step (e.g. a rejected host call) reach the
 		// consumer's stream even though the step itself is dropped.
 		d.flushBufferedResultChunks()
@@ -1153,8 +1157,8 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 
 		if tc, isCall := display.(*ToolCallPart); isCall {
 			rawTC := part.(*ToolCallPart)
-			d.execToolCallsByID[tc.ToolCallID] = rawTC
-			d.rememberCall(rawTC.ToolCallID, rawTC.ToolName, rawTC.Input, true)
+			d.rawToolCallsByID[tc.ToolCallID] = tc
+			d.rememberCall(tc.ToolCallID, tc.ToolName, tc.Input, true)
 			displayCall, hostCall, verr := d.classifyAndValidateToolCall(rawTC, tc)
 			if verr != nil {
 				_ = d.joinOutstandingExecutions()
@@ -1265,13 +1269,15 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// and the later lifecycle.error is a no-op.
 			d.telEnd(d.completedSteps, *usage)
 			if d.stepOpen {
-				// TS calls onTurnFinished for the terminal finish and only
-				// then result.finish() rejects the unclosed step, whose
-				// catch settles the failure and fires onTurnFailed too.
+				// TS calls onTurnFinished for the terminal finish and then
+				// result.finish() fails the result in place (an error part):
+				// it does not throw, so no onTurnFailed, no "harness turn
+				// failed" log and no lifecycle error follow.
 				if !d.suspending() && d.in.OnTurnFinished != nil {
 					d.in.OnTurnFinished()
 				}
-				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
+				d.fail(errors.New(unclosedStepErrorMessage)) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
+				return false, true, nil
 			}
 			// Deferred, not pushed here — see turnDriver.pendingFinishChunk's
 			// doc. run() pushes it once OnTurnFinished has been called.
@@ -1689,7 +1695,40 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	if hostRan {
 		toolResult = hostOutcomeResult(call, host)
 	}
+	// TS publishes the end only for a tool execution this step tracks (`if
+	// (execution != null)`): a result for a call from an earlier step or
+	// slice, such as a continued builtin approval's result, fires no
+	// tool-execution callbacks.
+	if !d.isStepToolCall(tr.ToolCallID) {
+		return
+	}
 	d.publishToolExecutionEnd(tr.ToolCallID, tr.ToolName, call, toolResult)
+}
+
+// isStepToolCall reports whether the current step saw the tool call (TS
+// `toolExecutions.has(toolCallId)`).
+func (d *turnDriver) isStepToolCall(toolCallID string) bool {
+	for _, c := range d.stepToolCalls {
+		if c.ID == toolCallID {
+			return true
+		}
+	}
+	return false
+}
+
+// publishUnechoedHostExecutions publishes the tool-execution end of every host
+// tool in the current step whose outcome is known but whose result the
+// runtime has not echoed back. TS `publishToolExecutions` publishes each
+// execution that has a toolOutput at the step boundary, at a pause and at a
+// suspension.
+func (d *turnDriver) publishUnechoedHostExecutions() {
+	for _, call := range d.stepToolCalls {
+		o, ok := d.takeHostOutcome(call.ID)
+		if !ok {
+			continue
+		}
+		d.publishToolExecutionEnd(call.ID, call.ToolName, call, hostOutcomeResult(call, o))
+	}
 }
 
 // hostOutcomeResult builds the types.ToolResult for a host tool's outcome.
@@ -1738,6 +1777,7 @@ func (d *turnDriver) publishToolExecutionEnd(toolCallID, toolName string, call t
 // doc), pushes the step boundary chunk, and advances stepNumber.
 func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metadata Metadata) {
 	d.languageModelCallEnd(finishReason, usage, metadata)
+	d.publishUnechoedHostExecutions()
 	d.flushBufferedResultChunks()
 
 	// The local view of the step, used if the result does not report one.
@@ -1821,6 +1861,7 @@ func (d *turnDriver) pauseForHostInput() error {
 	if err := d.joinOutstandingExecutions(); err != nil {
 		return err
 	}
+	d.publishUnechoedHostExecutions()
 	d.flushBufferedResultChunks()
 	return d.finishForHostInputPause()
 }
@@ -1904,13 +1945,15 @@ func (d *turnDriver) releasePendingStopBoundary() {
 // DoSuspendTurn): when it succeeds, the turn is genuinely suspended — OnTurn-
 // Finished is NOT called, so the session stays in its "suspended" state
 // (HasUnfinishedTurn() true) instead of returning to idle, and a caller can
-// continue it with ContinueGenerate/ContinueStream. When it's unavailable or
-// fails (nil OnStopConditionMet — e.g. a bare runPrompt call outside an
-// Agent/AgentSession — or the adapter can't honor DoSuspendTurn), this falls
-// back to WG4's original behavior: a hard finish, OnTurnFinished fires, and
-// the session returns to idle. Mirrors TS `runPrompt`'s early-stop branch
-// (`input.onStopConditionMet?.()` then `lifecycle.end`/`result.finish()`,
-// with no `onTurnFinished` call in that branch either).
+// continue it with ContinueGenerate/ContinueStream. When it fails (the
+// adapter's DoSuspendTurn returned an error, CapabilityUnsupportedError
+// included), the turn fails with that error like TS, whose catch settles it
+// with an error part (OnTurnFailed is skipped while the session still reports
+// the turn as suspending, as in TS). Without an OnStopConditionMet (a bare
+// runPrompt call outside an Agent/AgentSession) the turn hard-finishes and
+// OnTurnFinished fires. Mirrors TS `runPrompt`'s early-stop branch
+// (`await input.onStopConditionMet?.()` then `lifecycle.end`/
+// `result.finish()`, with no `onTurnFinished` call in that branch).
 //
 // Implemented (WG13): (1) TS's "one event of lookahead" refinement — a
 // finish-step whose step might satisfy a StopCondition only sets
@@ -1930,9 +1973,17 @@ func (d *turnDriver) releasePendingStopBoundary() {
 func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason) {
 	suspended := false
 	if d.in.OnStopConditionMet != nil {
-		if _, err := d.in.OnStopConditionMet(d.ctx); err == nil {
-			suspended = true
+		if _, err := d.in.OnStopConditionMet(d.ctx); err != nil {
+			// TS awaits onStopConditionMet inside the turn's try block: a
+			// failed suspension fails the turn ("harness turn failed").
+			_ = d.joinOutstandingExecutions()
+			if d.ctx.Err() == nil || !errors.Is(err, d.ctx.Err()) {
+				d.logError("harness turn failed", err)
+			}
+			d.settleFailure(err)
+			return
 		}
+		suspended = true
 	}
 	// TS's StopConditions early-stop path ends the root telemetry span with
 	// the usage of every completed step summed (TS #22259; previously only
@@ -2050,7 +2101,7 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 	if !ok {
 		return false, fmt.Errorf("Harness '%s' emitted approval request '%s' for unknown tool call '%s'.", d.in.Harness.HarnessID(), part.ApprovalID, part.ToolCallID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	raw := d.execToolCallsByID[part.ToolCallID]
+	raw := d.rawToolCallsByID[part.ToolCallID]
 	toolName := call.ToolName
 	if raw != nil {
 		toolName = raw.ToolName
@@ -2124,6 +2175,10 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 
 	if _, active := d.activeToolSet[raw.ToolName]; !isClientExecutedBuiltin && !active {
 		output := executionDeniedOutput(BuiltinToolFilteringDenialReason(raw.ToolName))
+		// TS sets the execution's toolOutput to this host-side denial, so the
+		// tool-execution-end callback reports it rather than the runtime's
+		// echoed copy.
+		d.setHostOutcome(raw.ToolCallID, hostToolOutcome{output: output})
 		d.markAwaitingEcho(raw.ToolCallID)
 		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
 			return false, err
@@ -2182,9 +2237,13 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	case CustomToolApprovalRequest:
 		pending := d.pendingApprovalsByToolCallID[raw.ToolCallID]
 		if pending == nil {
+			// TS records a custom approval with an explicit
+			// `providerExecuted: false`: it is persisted in lifecycle state and
+			// copied onto the rebuilt tool call when the approval continues.
+			providerExecuted := false
 			pending = &PendingToolApproval{
 				ApprovalID: generateApprovalID(), ToolCallID: raw.ToolCallID, ToolName: raw.ToolName,
-				Input: raw.Input, Kind: PendingToolApprovalCustom, NativeName: raw.NativeName,
+				Input: raw.Input, Kind: PendingToolApprovalCustom, ProviderExecuted: &providerExecuted, NativeName: raw.NativeName,
 			}
 			d.pendingApprovalsByApprovalID[pending.ApprovalID] = pending
 			d.pendingApprovalsByToolCallID[pending.ToolCallID] = pending
@@ -2559,7 +2618,25 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 			display = tr
 		}
 		d.recordToolResult(display)
+		// TS enqueueHostToolOutcome: a failed host tool is a tool-error
+		// carrying the submitted output, never a successful tool-result
+		// (TranslatePart only turns provider-executed failures into errors).
+		// A successful one reports the cached model output, as the echoed
+		// results in consumeLoop do.
+		d.execMu.Lock()
+		modelOutput, hasModelOutput := d.toolModelOutputs[display.ToolCallID]
+		d.execMu.Unlock()
 		for _, c := range TranslatePart(display, d.translateOpts()) {
+			if c.ToolResult != nil && c.ToolResult.Error == nil {
+				result := *c.ToolResult
+				if display.IsError {
+					result.Error = fmt.Errorf("%v", display.Result)
+				} else if hasModelOutput {
+					mo := modelOutput
+					result.ModelOutput = &mo
+				}
+				c.ToolResult = &result
+			}
 			d.stream.push(c)
 		}
 	}
@@ -2617,7 +2694,7 @@ func approvalAsToolCallPart(approval PendingToolApproval) ToolCallPart {
 func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, continuation types.ToolApprovalResponseContent) (turnOutcome, error) {
 	rawToolCall := approvalAsToolCallPart(approval)
 	if approval.Kind == PendingToolApprovalBuiltin {
-		if r := d.execToolCallsByID[approval.ToolCallID]; r != nil {
+		if r := d.rawToolCallsByID[approval.ToolCallID]; r != nil {
 			rawToolCall = *r
 		}
 	}

@@ -55,14 +55,12 @@
 // window for even a zero-latency bridge response to race. No Go port is
 // needed; this is a concrete architectural reason; not a scope omission.
 //
-// Deferred versus TS (see the claudecode package doc for the shared
-// rationale, and the Sep-23-2026 WG8 report):
-//   - Native subscription credential discovery mirrors TS: `auth.json` and the
-//     OS keyring (macOS Keychain, Linux Secret Service, Windows Credential
-//     Manager) chosen by `cli_auth_credentials_store` (CodexConfig, else
-//     config.toml, else "file"), OAuth refresh with write-back, and the
-//     `ChatGPT-Account-ID` header added to the brokered credential
-//     transformation (subscription.go).
+// Native subscription credential discovery matches TS: `auth.json` and the
+// OS keyring (macOS Keychain, Linux Secret Service, Windows Credential
+// Manager) chosen by `cli_auth_credentials_store` (CodexConfig, else
+// config.toml, else "file"), OAuth refresh with write-back, and the
+// `ChatGPT-Account-ID` header added to the brokered credential
+// transformation (subscription.go).
 
 package codex
 
