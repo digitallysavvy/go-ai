@@ -52,11 +52,7 @@ func (m *DecisionModel) SupportedQuestionTypes() []string {
 
 // DoDecide decides every question against the same state in one request.
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
-	ids := make([]string, 0, len(opts.Questions))
-	for id := range opts.Questions {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := opts.QuestionIDs()
 	if len(ids) == 0 || len(ids) > 128 {
 		return nil, &providererrors.InvalidArgumentError{
 			Field:   "questions",
@@ -64,7 +60,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 	}
 
-	nativeQuestions := make(map[string]interface{}, len(ids))
+	nativeQuestions := providerutils.OrderedMap{Keys: ids, Vals: make(map[string]interface{}, len(ids))}
 	for _, id := range ids {
 		if id == "" {
 			return nil, &providererrors.InvalidArgumentError{
@@ -93,7 +89,11 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 				}
 			}
 			wire["type"] = "choice"
-			wire["criteria"] = q.Criteria
+			if order := opts.CriteriaOrder[id]; len(order) > 0 {
+				wire["criteria"] = providerutils.OrderedMap{Keys: provider.OrderedKeys(criteria, order), Vals: criteria}
+			} else {
+				wire["criteria"] = q.Criteria
+			}
 		case "score":
 			criteria, _ := q.Criteria.([]interface{})
 			invalid := len(criteria) == 0 || len(criteria) > 10
@@ -115,7 +115,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 				QuestionID: id, QuestionType: q.Type, Provider: m.Provider(), ModelID: m.modelID,
 			}
 		}
-		nativeQuestions[id] = wire
+		nativeQuestions.Vals[id] = wire
 	}
 
 	state, err := convertToPerplexityDecisionState(provider.DecisionStateParts(opts.State))
