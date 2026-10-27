@@ -3,6 +3,7 @@ package google
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -45,5 +46,19 @@ func TestR48_BatchEmptyResponsesFileWinsOverFallback(t *testing.T) {
 	}{Output: &googleBatchOutputWire{ResponsesFile: &empty}}
 	if got, ok := op.responsesFile(); !ok || got != "" {
 		t.Fatalf("responsesFile = %q, %v", got, ok)
+	}
+}
+
+// The displayName suffix has the 16 characters of the TS generateId default,
+// so the creation body size that decides inline versus file input matches TS.
+func TestR48_BatchDisplayNameSuffixIs16AlphanumericChars(t *testing.T) {
+	a, b := generateGoogleBatchDisplayNameSuffix(), generateGoogleBatchDisplayNameSuffix()
+	if len(a) != 16 || a == b {
+		t.Fatalf("suffixes = %q, %q", a, b)
+	}
+	for _, c := range a {
+		if !strings.ContainsRune(googleBatchIDAlphabet, c) {
+			t.Fatalf("unexpected character %q in %q", c, a)
+		}
 	}
 }

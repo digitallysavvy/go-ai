@@ -108,17 +108,18 @@ func TestR47_BatchInlineThresholdIgnoresHTMLEscaping(t *testing.T) {
 	}
 }
 
-// TS inlines while inlineInputBytes < 20_000_000, where inlineInputBytes sums
-// each inlined request's JSON.stringify bytes plus one per separator. It does
-// not count the batch wrapper or displayName. The sizes here are computed
-// with that formula independently of the provider code, and the prompt is
-// padded so the total is exactly the limit minus one (inline) or the limit
-// (file upload).
-func TestR47_BatchInlineThresholdCountsOnlyInlinedRequests(t *testing.T) {
+// TS inlines while inlineInputBytes < 20_000_000, where inlineInputBytes
+// starts at the JSON.stringify bytes of the creation body with an empty
+// request list (batch wrapper and a 16-character generateId displayName) and
+// adds each inlined request's bytes plus one per separator. The sizes here
+// are computed with that formula independently of the provider code, and the
+// prompt is padded so the total is exactly the limit minus one (inline) or the
+// limit (file upload).
+func TestR47_BatchInlineThresholdCountsTheWholeCreationBody(t *testing.T) {
 	const model = "gemini-2.5-flash"
 	p := New(Config{APIKey: "k"})
 	tsBytes := func(reqs []provider.BatchV4Request) int {
-		total := 0
+		total := len(`{"batch":{"displayName":"ai-sdk-batch-0123456789abcdef","inputConfig":{"requests":{"requests":[]}}}}`)
 		for i, r := range reqs {
 			body, _, err := NewLanguageModel(p, model).PrepareBatchRequestBody(&r.Text.Options)
 			if err != nil {

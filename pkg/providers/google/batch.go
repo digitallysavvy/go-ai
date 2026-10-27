@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -21,7 +22,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gemini"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
-	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // googleBatchInputFileMaxBytes is the maximum size Google accepts for a batch
@@ -131,7 +131,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		"requests": map[string]interface{}{"requests": inlinedRequests},
 	}
 	requestBody := map[string]interface{}{"batch": inlineBody}
-	if googleBatchInlineInputBytes(inlinedRequests) < googleBatchInlineCreationMaxBytes {
+	if googleBatchInlineInputBytes(requestBody) < googleBatchInlineCreationMaxBytes {
 		var operation googleBatchOperationWire
 		if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
 			ValidateResponse: googleValidator(zGoogleBatchOperation),
@@ -524,10 +524,23 @@ func getGoogleBatchModelID(requests []provider.BatchV4Request) (string, error) {
 	return modelID, nil
 }
 
-// generateGoogleBatchDisplayNameSuffix returns a short random identifier for
-// batch displayName values.
+// googleBatchIDAlphabet is the alphabet of the TS generateId default.
+const googleBatchIDAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// generateGoogleBatchDisplayNameSuffix returns a 16-character random
+// identifier like the TS default generateId, so displayName (and with it the
+// inline creation body size that decides inline versus file input) has the
+// same length as in TS.
 func generateGoogleBatchDisplayNameSuffix() string {
-	return streaming.GenerateID()
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return strings.Repeat("0", len(raw))
+	}
+	out := make([]byte, len(raw))
+	for i, v := range raw {
+		out[i] = googleBatchIDAlphabet[int(v)%len(googleBatchIDAlphabet)]
+	}
+	return string(out)
 }
 
 // --- Wire types -------------------------------------------------------
@@ -999,16 +1012,17 @@ func googleBatchLineError(line []byte) error {
 func (s *googleBatchFileResultsStream) Err() error   { return s.err }
 func (s *googleBatchFileResultsStream) Close() error { return s.body.Close() }
 
-// googleBatchInlineInputBytes is TS's inlineInputBytes: the sum of each
-// inlined request's JSON.stringify byte length, plus one per separator
-// between requests. It counts only the inlined requests, not the batch
-// wrapper or displayName. JSON.stringify leaves <, > and & unescaped. The
-// encoded array is "[" + requests joined by "," + "]" + a trailing newline,
-// so dropping those three bytes gives TS's count (0 for no requests).
-func googleBatchInlineInputBytes(inlinedRequests []map[string]interface{}) int {
+// googleBatchInlineInputBytes is TS's inlineInputBytes. TS starts from the
+// JSON.stringify byte length of the whole creation body (batch wrapper,
+// displayName and webhookConfig, with an empty request list) and adds each
+// inlined request's bytes plus one per separator, which is exactly the byte
+// length of the complete creation body. JSON.stringify leaves <, > and &
+// unescaped, so HTML escaping is off; the encoder's trailing newline is not
+// counted.
+func googleBatchInlineInputBytes(requestBody map[string]interface{}) int {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(inlinedRequests)
-	return max(buf.Len()-3, 0)
+	_ = enc.Encode(requestBody)
+	return max(buf.Len()-1, 0)
 }
