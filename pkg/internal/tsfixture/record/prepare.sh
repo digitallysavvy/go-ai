@@ -17,15 +17,24 @@ for p in provider provider-utils test-server anthropic anthropic-aws amazon-bedr
   [ -d "$AI/packages/$p" ] && rsync -a --exclude node_modules --exclude dist "$AI/packages/$p" "$W/packages/"
 done
 rsync -a --exclude node_modules "$AI/tools/tsconfig" "$W/tools/"
-cp "$AI/tools/tsdown-config.mts" "$W/tools/"
+# tools/tsdown-config is a workspace package (@vercel/ai-tsdown-config) since
+# TS e64ed82f27; older checkouts have a single tools/tsdown-config.mts file.
+TSDOWN_WS=""
+if [ -d "$AI/tools/tsdown-config" ]; then
+  rsync -a --exclude node_modules "$AI/tools/tsdown-config" "$W/tools/"
+  TSDOWN_WS="  - 'tools/tsdown-config'"
+elif [ -f "$AI/tools/tsdown-config.mts" ]; then
+  cp "$AI/tools/tsdown-config.mts" "$W/tools/"
+fi
 # the packages import 'ai' only in a few tests; drop the workspace dependency
 perl -ni -e 'print unless /"ai": "workspace:\*"/' "$W"/packages/*/package.json
-cat > "$W/pnpm-workspace.yaml" <<'YAML'
-packages:
-  - 'packages/*'
-  - 'tools/tsconfig'
-allowBuilds: {}
-YAML
+{
+  echo "packages:"
+  echo "  - 'packages/*'"
+  echo "  - 'tools/tsconfig'"
+  [ -n "$TSDOWN_WS" ] && echo "$TSDOWN_WS"
+  echo "allowBuilds: {}"
+} > "$W/pnpm-workspace.yaml"
 cat > "$W/package.json" <<'JSON'
 { "name": "ai-repo", "private": true, "type": "module", "devDependencies": { "vitest": "4.1.11", "typescript": "6.0.3" } }
 JSON
