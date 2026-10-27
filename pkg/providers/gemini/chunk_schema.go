@@ -87,7 +87,15 @@ var (
 		fl("candidatesTokensDetails", zTokenDetail), fl("toolUsePromptTokensDetails", zTokenDetail),
 	)
 
+	// getGoogleErrorSchema (google-error.ts): the `error` object of an in-stream
+	// error frame; `code` is required but nullable.
+	zGoogleError = zObj(
+		fl("code", zodlite.Nullable(zNum)), fl("message", zStr), fl("status", zStr),
+		fl("details", zNullish(zArr(zAny))),
+	)
+
 	zChunk = zObj(
+		fl("error", zNullish(zGoogleError)),
 		fl("responseId", zNullish(zStr)),
 		fl("candidates", zNullish(zArr(zObj(
 			fl("content", zNullish(zObj(fl("parts", zNullish(zArr(zPart)))))),

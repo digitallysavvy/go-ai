@@ -307,6 +307,20 @@ func (s *stream) finalizeOnce() bool {
 // s.chunkBuffer. Mirrors the TS SDK TransformStream transform handler; the
 // 'finish' chunk itself is only enqueued once, from flush (see Next/EOF).
 func (s *stream) processSSEEvent(chunkData Response) {
+	// An in-stream error frame (TS: value.error != null): surface it as a
+	// provider stream error and finish with reason "error".
+	if chunkData.Error != nil {
+		s.finishReason = types.FinishReasonError
+		s.rawFinishReason = ""
+		s.hasFinished = true
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: chunkData.Error.Message,
+			Err:  s.newStreamError(chunkData.Error),
+		})
+		return
+	}
+
 	// TS emits response-metadata on the first chunk that carries a
 	// responseId. Go also emits one on the first chunk without an id (it
 	// carries the model id and headers), so a responseId that only shows up
@@ -430,6 +444,26 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		s.continuedUsage = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
 		s.lastUsageMetadata = nil
 	}
+}
+
+// newStreamError mirrors TS createProviderStreamError for a Google in-stream
+// error: type is the Google status, code/statusCode the numeric code, and the
+// error is retryable for 408/409/429/5xx.
+func (s *stream) newStreamError(e *StreamError) *providererrors.StreamProviderError {
+	var code interface{}
+	var statusCode *int
+	retryable := false
+	if e.Code != nil {
+		c := int(*e.Code)
+		code = *e.Code
+		statusCode = &c
+		retryable = c == 408 || c == 409 || c == 429 || c >= 500
+	}
+	var data interface{}
+	if raw, err := json.Marshal(e); err == nil {
+		_ = json.Unmarshal(raw, &data)
+	}
+	return providererrors.NewStreamProviderError(e.Message, s.cfg.ProviderName, e.Status, code, statusCode, &retryable, data)
 }
 
 // buildFinishChunk builds the single 'finish' chunk emitted at end-of-stream

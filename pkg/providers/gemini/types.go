@@ -29,6 +29,9 @@ type Candidate struct {
 
 // Response represents the Gemini API response body.
 type Response struct {
+	// Error is an in-stream error frame (TS chunkSchema `error`): Google can
+	// send one mid-stream after partial content was already sent.
+	Error          *StreamError    `json:"error,omitempty"`
 	Candidates     []Candidate     `json:"candidates"`
 	UsageMetadata  *UsageMetadata  `json:"usageMetadata,omitempty"`
 	PromptFeedback json.RawMessage `json:"promptFeedback,omitempty"`
@@ -37,6 +40,15 @@ type Response struct {
 	// ServiceTier is kept for compatibility with older responses. Current
 	// Gemini API responses report it inside usageMetadata.
 	ServiceTier string `json:"serviceTier,omitempty"`
+}
+
+// StreamError is the error object of an in-stream error frame
+// (TS getGoogleErrorSchema).
+type StreamError struct {
+	Code    *float64        `json:"code"`
+	Message string          `json:"message"`
+	Status  string          `json:"status"`
+	Details json.RawMessage `json:"details,omitempty"`
 }
 
 // tokenDetail is one entry of a *TokensDetails array (modality + token count).
