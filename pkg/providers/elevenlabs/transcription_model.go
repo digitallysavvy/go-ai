@@ -85,8 +85,13 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			End:   end,
 		})
 	}
-	// TS: response.words?.at(-1)?.end ?? undefined (only the last word counts).
-	if n := len(response.Words); n > 0 && response.Words[n-1].End != nil {
+	// TS: response.audio_duration_secs ?? response.words?.at(-1)?.end ??
+	// undefined. The reported audio duration includes trailing silence and a
+	// reported zero is preserved; only the last word's end is the fallback.
+	if response.AudioDurationSecs != nil {
+		d := *response.AudioDurationSecs
+		durationInSeconds = &d
+	} else if n := len(response.Words); n > 0 && response.Words[n-1].End != nil {
 		e := *response.Words[n-1].End
 		durationInSeconds = &e
 	}
@@ -216,6 +221,7 @@ func durationValue(duration *float64) float64 {
 }
 
 type elevenlabsTranscriptionResponse struct {
+	AudioDurationSecs   *float64         `json:"audio_duration_secs"`
 	LanguageCode        string           `json:"language_code"`
 	LanguageProbability float64          `json:"language_probability"`
 	Text                string           `json:"text"`
