@@ -249,6 +249,12 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	case err := <-ready:
 		stopWatch()
 		if err != nil {
+			if t.isStaleStream(gen) {
+				// Close ran while Connect waited: it already reset the
+				// transport (and a later Connect may own it now), and TS
+				// reports nothing once aborted.
+				return err
+			}
 			t.closeWithoutCallback()
 			t.reportError(err)
 			return err
@@ -485,8 +491,12 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 				}
 			}
 			t.mu.Unlock()
-			if !readySent && !aborted {
-				ready <- NewMCPClientError(0, "MCP SSE Transport Error: Connection closed before endpoint event was received", nil)
+			if !readySent {
+				if aborted {
+					ready <- errSSEClosedDuringConnect()
+				} else {
+					ready <- NewMCPClientError(0, "MCP SSE Transport Error: Connection closed before endpoint event was received", nil)
+				}
 			}
 			// TS processEvents: a stream that ends after the endpoint event
 			// throws into its catch, which reports through onerror (an
@@ -506,7 +516,11 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 			}
 			t.mu.Unlock()
 			if !readySent {
-				ready <- NewTransportError("failed to read SSE event", err)
+				if aborted {
+					ready <- errSSEClosedDuringConnect()
+				} else {
+					ready <- NewTransportError("failed to read SSE event", err)
+				}
 			} else if !aborted {
 				t.reportError(NewTransportError("failed to read SSE event", err))
 			}
@@ -514,6 +528,9 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 		}
 
 		if t.isStaleStream(gen) {
+			if !readySent {
+				ready <- errSSEClosedDuringConnect()
+			}
 			return
 		}
 		if event.Event == "endpoint" {
@@ -543,6 +560,9 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 			t.mu.Lock()
 			if t.streamGen != gen {
 				t.mu.Unlock()
+				if !readySent {
+					ready <- errSSEClosedDuringConnect()
+				}
 				return
 			}
 			t.endpoint = endpoint
@@ -566,6 +586,13 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 		}
 		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
+}
+
+// errSSEClosedDuringConnect is what Connect returns when Close ends the
+// stream before its endpoint event. TS start() never settles in that case
+// (the aborted reader returns silently); a blocking Connect has to return.
+func errSSEClosedDuringConnect() error {
+	return NewMCPClientError(0, "MCP SSE Transport Error: Transport closed before endpoint event was received", nil)
 }
 
 // isStaleStream reports whether the stream gen belongs to has been closed or
