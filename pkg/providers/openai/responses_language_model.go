@@ -252,6 +252,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				promptCacheRetention = v
 			}
 			if v, ok := openaiOpts["promptCacheOptions"]; ok {
+				if err := validateResponsesPromptCacheOptions(v, providerOptionsName); err != nil {
+					return nil, store, nil, err
+				}
 				promptCacheOptions = v
 			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
@@ -4600,4 +4603,40 @@ func sliceHas(values []string, want string) bool {
 // search as a tool error (TS: status === 'failed' || 'incomplete').
 func isFailedWebSearchStatus(status string) bool {
 	return status == "failed" || status == "incomplete"
+}
+
+// validateResponsesPromptCacheOptions mirrors the TS Responses option schema
+// z.object({mode: z.enum(['implicit','explicit']).optional(),
+// ttl: z.enum(['30m','12h']).optional(), prewarm: z.boolean().optional()}).
+func validateResponsesPromptCacheOptions(value interface{}, providerOptionsName string) error {
+	field := "providerOptions." + providerOptionsName + ".promptCacheOptions"
+	invalid := func(sub, message string) error {
+		if sub != "" {
+			field += "." + sub
+		}
+		return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	}
+	if value == nil {
+		return nil
+	}
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return invalid("", "must be an object")
+	}
+	if v, ok := m["mode"]; ok {
+		if s, isString := v.(string); !isString || (s != "implicit" && s != "explicit") {
+			return invalid("mode", `must be one of "implicit", "explicit"`)
+		}
+	}
+	if v, ok := m["ttl"]; ok {
+		if s, isString := v.(string); !isString || (s != "30m" && s != "12h") {
+			return invalid("ttl", `must be one of "30m", "12h"`)
+		}
+	}
+	if v, ok := m["prewarm"]; ok {
+		if _, isBool := v.(bool); !isBool {
+			return invalid("prewarm", "must be a boolean")
+		}
+	}
+	return nil
 }

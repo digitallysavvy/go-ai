@@ -2513,7 +2513,7 @@ func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
 		}},
 		ProviderOptions: map[string]interface{}{
 			"openai": map[string]interface{}{
-				"promptCacheOptions": map[string]interface{}{"mode": "manual", "ttl": "24h"},
+				"promptCacheOptions": map[string]interface{}{"mode": "explicit", "ttl": "12h", "prewarm": true},
 			},
 		},
 	}, false)
@@ -2521,7 +2521,7 @@ func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
 	opts, ok := body["prompt_cache_options"].(map[string]interface{})
-	if !ok || opts["mode"] != "manual" || opts["ttl"] != "24h" {
+	if !ok || opts["mode"] != "explicit" || opts["ttl"] != "12h" || opts["prewarm"] != true {
 		t.Fatalf("prompt_cache_options = %#v, want passthrough", body["prompt_cache_options"])
 	}
 }
