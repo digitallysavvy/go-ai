@@ -116,10 +116,15 @@ func splitFrames(body string) []string {
 	}
 }
 
-// transportProtocol is the provider-specific part of the transport. Only the
-// Gateway protocol exists yet; codex and grok subscriptions add theirs.
+// transportProtocol is the provider-specific part of the transport (TS
+// FxTransportProtocol): the Gateway protocol, or the Responses protocol of
+// the codex and grok subscriptions.
 type transportProtocol interface {
 	label() string
+	// preserveRejected returns a rejected model response to libfx without
+	// recording it, so its authorizer can refresh and retry and mask
+	// credentials the body repeats.
+	preserveRejected() bool
 	isGatewayRequest(u *url.URL) bool
 	rewriteURL(u *url.URL, baseURL string) (*url.URL, error)
 	isModelRequest(u *url.URL, gateway bool) bool
@@ -135,6 +140,8 @@ type gatewayProtocol struct{}
 func originOf(u *url.URL) string { return u.Scheme + "://" + u.Host }
 
 func (gatewayProtocol) label() string { return "Gateway" }
+
+func (gatewayProtocol) preserveRejected() bool { return false }
 
 func (gatewayProtocol) isGatewayRequest(u *url.URL) bool { return originOf(u) == defaultGatewayOrigin }
 
@@ -377,13 +384,30 @@ func (t *transport) collectToolCallsLocked(record *fxModelRecord, index int) {
 		}
 		id, idOK := part["toolCallId"].(string)
 		name, nameOK := part["toolName"].(string)
-		if part.typ() == "tool-call" && part["providerExecuted"] != true && idOK && nameOK {
-			call := fxToolCall{ToolCallID: id, ToolName: name, Input: part["input"]}
-			if i, ok := pos[id]; ok {
+		set := func(call fxToolCall) {
+			if i, ok := pos[call.ToolCallID]; ok {
 				calls[i] = call
 			} else {
-				pos[id] = len(calls)
+				pos[call.ToolCallID] = len(calls)
 				calls = append(calls, call)
+			}
+		}
+		if part.typ() == "tool-call" && part["providerExecuted"] != true && idOK && nameOK {
+			set(fxToolCall{ToolCallID: id, ToolName: name, Input: part["input"]})
+		}
+		if part.typ() == "response.completed" || part.typ() == "response.done" {
+			response, _ := part["response"].(map[string]any)
+			status, hasStatus := response["status"]
+			output, isList := response["output"].([]any)
+			if response != nil && (!hasStatus || status == nil || status == "completed") && isList {
+				for _, raw := range output {
+					item, _ := raw.(map[string]any)
+					callID, idOK := item["call_id"].(string)
+					name, nameOK := item["name"].(string)
+					if item != nil && item["type"] == "function_call" && idOK && nameOK {
+						set(fxToolCall{ToolCallID: callID, ToolName: name, Input: item["arguments"]})
+					}
+				}
 			}
 		}
 	}
@@ -596,6 +620,13 @@ func (t *transport) fetch(req *http.Request) (*http.Response, error) {
 	t.o.mu.Lock()
 	record.Status = resp.StatusCode
 	t.o.mu.Unlock()
+	if p.preserveRejected() && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		t.o.mu.Lock()
+		t.rejected[index] = rejectedResponse{modelID: modelID, status: resp.StatusCode}
+		t.o.mu.Unlock()
+		undo(previous)
+		return resp, nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || resp.Body == nil || resp.Body == http.NoBody {
 		var data []byte
 		if resp.Body != nil {
@@ -827,4 +858,122 @@ func (t *transport) completeRecord(ctx context.Context, record *fxModelRecord, p
 	record.Complete = true
 	t.o.mu.Unlock()
 	return t.o.save(ctx)
+}
+
+// responsesProtocol is the codex and grok subscriptions' Responses API
+// protocol: no Gateway rewrite or headers, the model from the body, and
+// function-call frames held with the tool frames.
+type responsesProtocol struct {
+	provider string
+}
+
+func (p responsesProtocol) endpoint() string {
+	if p.provider == "codex" {
+		return "https://chatgpt.com/backend-api/codex/responses"
+	}
+	return "https://cli-chat-proxy.grok.com/v1/responses"
+}
+
+func (p responsesProtocol) label() string { return p.provider }
+
+func (responsesProtocol) preserveRejected() bool { return true }
+
+func (responsesProtocol) isGatewayRequest(*url.URL) bool { return false }
+
+func (responsesProtocol) rewriteURL(u *url.URL, _ string) (*url.URL, error) { return u, nil }
+
+func (p responsesProtocol) isModelRequest(u *url.URL, _ bool) bool {
+	return libfx.EndpointOf(u) == p.endpoint()
+}
+
+func (responsesProtocol) prepareBody(body []byte, responseFormat json.RawMessage) ([]byte, error) {
+	var rf struct {
+		Type        string          `json:"type"`
+		Schema      json.RawMessage `json:"schema"`
+		Name        *string         `json:"name"`
+		Description *string         `json:"description"`
+	}
+	if len(responseFormat) == 0 || json.Unmarshal(responseFormat, &rf) != nil || rf.Type != "json" {
+		return body, nil
+	}
+	if err := securejson.Check(body); err != nil {
+		return nil, err
+	}
+	parsed, ok := jsonorder.Parse(body)
+	obj, isObj := parsed.(*jsonorder.Object)
+	if !ok || !isObj {
+		return nil, errors.New("fx model request body is not a JSON object")
+	}
+	text := jsonorder.New()
+	if existing, ok := obj.Get("text"); ok {
+		if prev, isObj := existing.(*jsonorder.Object); isObj {
+			for _, k := range prev.Keys() {
+				v, _ := prev.Get(k)
+				text.Set(k, v)
+			}
+		}
+	}
+	format := jsonorder.New()
+	schema, _ := jsonorder.Parse(rf.Schema)
+	if len(rf.Schema) == 0 || string(rf.Schema) == "null" {
+		format.Set("type", "json_object")
+	} else {
+		format.Set("type", "json_schema")
+		name := "response"
+		if rf.Name != nil {
+			name = *rf.Name
+		}
+		format.Set("name", name)
+		if rf.Description != nil {
+			format.Set("description", *rf.Description)
+		}
+		format.Set("schema", schema)
+		format.Set("strict", true)
+	}
+	text.Set("format", format)
+	obj.Set("text", text)
+	return []byte(jsonorder.Stringify(obj)), nil
+}
+
+func (responsesProtocol) modelID(_ http.Header, body []byte) *string {
+	var v struct {
+		Model *string `json:"model"`
+	}
+	if securejson.Unmarshal(body, &v) != nil {
+		return nil
+	}
+	return v.Model
+}
+
+func (p responsesProtocol) fingerprint(u *url.URL, h http.Header, body []byte) any {
+	var model *string
+	if v := h.Values("ai-language-model-id"); len(v) > 0 {
+		s := strings.Join(v, ", ")
+		model = &s
+	}
+	return struct {
+		Path     string  `json:"path"`
+		Model    *string `json:"model"`
+		Provider string  `json:"provider"`
+		Origin   string  `json:"origin"`
+		Body     string  `json:"body"`
+	}{u.EscapedPath(), model, p.provider, libfx.OriginOf(u), string(body)}
+}
+
+func (responsesProtocol) isTerminal(p gatewayPart) bool {
+	switch p.typ() {
+	case "response.completed", "response.done", "response.incomplete", "response.failed":
+		return true
+	}
+	return false
+}
+
+func (responsesProtocol) shouldHold(p gatewayPart, terminal bool) bool {
+	if p == nil {
+		return false
+	}
+	item, _ := p["item"].(map[string]any)
+	return strings.HasPrefix(p.typ(), "tool-") || terminal ||
+		strings.HasPrefix(p.typ(), "response.function_call_arguments.") ||
+		(item != nil && item["type"] == "function_call")
 }

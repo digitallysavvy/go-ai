@@ -150,13 +150,16 @@ type subscriptionSpec struct {
 	authorize func(h http.Header, endpoint string, c *Credentials)
 }
 
-// endpointOf is `${url.origin}${url.pathname}`: the scheme and host
+// EndpointOf is `${url.origin}${url.pathname}`: the scheme and host
 // lowercased, a default port dropped.
-func endpointOf(u *url.URL) string {
-	return urlOrigin(u) + u.EscapedPath()
+func EndpointOf(u *url.URL) string {
+	return OriginOf(u) + u.EscapedPath()
 }
 
-func urlOrigin(u *url.URL) string {
+func endpointOf(u *url.URL) string { return EndpointOf(u) }
+
+// OriginOf is a URL's origin as WHATWG URL serializes it.
+func OriginOf(u *url.URL) string {
 	scheme := strings.ToLower(u.Scheme)
 	host := strings.ToLower(u.Hostname())
 	port := u.Port()
