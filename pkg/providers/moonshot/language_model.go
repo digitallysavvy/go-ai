@@ -966,7 +966,9 @@ func (s *moonshotStream) buildFlushChunks() []*provider.StreamChunk {
 
 	finishReason := s.finishReason
 	if finishReason == "" {
-		finishReason = types.FinishReasonOther
+		// A clean end without the provider's completion signal is
+		// interrupted (TS #23814).
+		finishReason = types.FinishReasonInterrupted
 	}
 
 	usageRaw := s.topLevelUsage

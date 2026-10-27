@@ -443,7 +443,7 @@ func newCompletionStreamWithMetadata(reader io.ReadCloser, includeRawChunks bool
 		reader:           reader,
 		parser:           streaming.NewSSEParser(reader),
 		includeRawChunks: includeRawChunks,
-		finishReason:     types.FinishReasonOther,
+		finishReason:     types.FinishReasonInterrupted,
 		providerMetadata: map[string]interface{}{"openai": map[string]interface{}{}},
 		providerName:     providerName,
 		responseHeaders:  headers,

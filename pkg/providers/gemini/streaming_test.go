@@ -921,3 +921,47 @@ func TestStream_ServiceTierComesFromFinalUsage(t *testing.T) {
 		t.Fatalf("tier = %s", got)
 	}
 }
+
+// TS #23814: a stream that ends without a candidate finishReason reports
+// interrupted; an unparsable chunk reports error until a finishReason arrives.
+func TestStreamInterruptedWithoutFinishReason(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+func TestStreamParseErrorReportsErrorFinish(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}`, `{"candidates":"nope"}`))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+func TestStreamFinishReasonSurvivesParseError(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":"nope"}`, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish = %+v", last)
+	}
+}
+
+// TS #23814 (continuation-start): when the continuation response is empty or
+// cut off, the stream reports interrupted rather than the prior response's
+// length finish reason.
+func TestStreamContinuationResetsFinishReason(t *testing.T) {
+	s := newTestStream(sseStream(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"CONTINUATION","continuationToken":"tok"}]}`))
+	s.continueFn = func(token string) (io.ReadCloser, error) {
+		return sseStream(`{"candidates":[{"content":{"parts":[{"text":" more"}]}}]}`), nil
+	}
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonInterrupted {
+		t.Fatalf("finish = %+v", last)
+	}
+}

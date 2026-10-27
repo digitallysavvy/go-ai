@@ -1092,7 +1092,7 @@ func newXAIResponsesStream(r io.ReadCloser, includeRawChunks ...bool) *xaiRespon
 		activeReasoning:  make(map[string]struct{}),
 		includeRawChunks: emitRaw,
 		textSeen:         make(map[string]bool),
-		finishReason:     types.FinishReasonOther,
+		finishReason:     types.FinishReasonInterrupted,
 	}
 }
 
@@ -1175,6 +1175,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		var peek responses.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
 			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
@@ -1190,6 +1191,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		// not list, or a listed one whose members do not match, fails the
 		// parse and becomes an error part (the stream keeps going).
 		if msg, perr := providerutils.CheckXAIResponsesChunk(event.Data); perr != nil {
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
@@ -1495,6 +1497,9 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 					s.finishReason = mapXAIResponsesFinishReason(e.Response.Status, nil)
 				}
 				s.rawFinishReason = e.Response.Status
+			} else if s.finishReason == types.FinishReasonInterrupted {
+				// The terminal event arrived, but supplied no recognized reason.
+				s.finishReason, s.rawFinishReason = types.FinishReasonOther, ""
 			}
 			s.recordMetadata(e.Response.Usage, e.Response.ServiceTier, e.Response.PromptCacheKey, e.Response.SafetyIdentifier)
 			continue
@@ -1556,6 +1561,7 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			streamErr := &XAIStreamError{Code: e.Code, Message: e.Message}
+			s.finishReason, s.rawFinishReason = types.FinishReasonError, ""
 			var data interface{}
 			_ = json.Unmarshal([]byte(event.Data), &data)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{

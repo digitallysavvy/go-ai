@@ -1185,7 +1185,7 @@ func newOpenResponsesStream(reader io.ReadCloser, warnings []types.Warning, prov
 		providerName:            name,
 		toolCallsByItemID:       make(map[string]*toolCallState),
 		customToolCallsByItemID: make(map[string]*toolCallState),
-		finishReason:            types.FinishReasonOther,
+		finishReason:            types.FinishReasonInterrupted,
 		extensionState:          make(map[string]interface{}),
 	}
 }
@@ -1248,6 +1248,8 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 		var streamEvent StreamEvent
 		if err := json.Unmarshal([]byte(eventData), &streamEvent); err != nil {
 			msg, perr := providerutils.ChunkParseFailure(eventData, err)
+			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = ""
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,

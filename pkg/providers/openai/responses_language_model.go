@@ -2767,11 +2767,11 @@ func (s *responsesStream) Err() error {
 // skipping those superseded by retrieval data (TS flush()).
 // queueEOFFinish is TS flush() for a stream that ended without a terminal
 // response event: the source fallbacks, then `finish` with the default
-// finish reason (other, or error after a decode failure) and responseId
+// finish reason (interrupted, or error after a decode failure) and responseId
 // metadata, and the end of the stream.
 func (s *responsesStream) queueEOFFinish() {
 	s.queueFallbackSources()
-	finishReason := types.FinishReasonOther
+	finishReason := types.FinishReasonInterrupted
 	if s.hadDecodeError {
 		finishReason = types.FinishReasonError
 	}

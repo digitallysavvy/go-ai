@@ -50,7 +50,7 @@ func newHFStream(reader io.ReadCloser, warnings []types.Warning, providerName st
 		parser:       streaming.NewSSEParser(reader),
 		warnings:     warnings,
 		providerName: providerName,
-		finishReason: types.FinishReasonOther,
+		finishReason: types.FinishReasonInterrupted,
 	}
 }
 

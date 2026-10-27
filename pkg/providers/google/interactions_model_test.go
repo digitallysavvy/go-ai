@@ -1248,3 +1248,36 @@ func TestInteractionsReplayedToolArgumentsKeepKeyOrder(t *testing.T) {
 		t.Fatalf("want 2 ordered arguments objects, got %d in %s", got, b)
 	}
 }
+
+// TS #23814: an interactions stream that ends without interaction.completed
+// and without a terminal status reports interrupted.
+func TestInteractionsStreamInterruptedWithoutCompletion(t *testing.T) {
+	t.Parallel()
+
+	finishOf := func(body string) *provider.StreamChunk {
+		stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
+		defer func() { _ = stream.Close() }()
+		var finish *provider.StreamChunk
+		for {
+			chunk, err := stream.Next()
+			if err != nil {
+				break
+			}
+			if chunk.Type == provider.ChunkTypeFinish {
+				finish = chunk
+			}
+		}
+		if finish == nil {
+			t.Fatal("no finish chunk")
+		}
+		return finish
+	}
+	cut := finishOf(`data: {"event_type":"interaction.created","interaction":{"id":"v1","status":"in_progress","model":"gemini-2.5-flash"}}` + "\n\n")
+	if cut.FinishReason != types.FinishReasonInterrupted || cut.RawFinishReason != "" {
+		t.Fatalf("cut finish = %+v", cut)
+	}
+	done := finishOf(`data: {"event_type":"interaction.completed","interaction":{"id":"v1","status":"completed"}}` + "\n\n")
+	if done.FinishReason != types.FinishReasonStop {
+		t.Fatalf("completed finish = %+v", done)
+	}
+}

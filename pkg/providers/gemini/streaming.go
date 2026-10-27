@@ -143,7 +143,7 @@ func newStream(reader io.ReadCloser, cfg Config, tnm toolNameMapping, httpHeader
 		tnm:          tnm,
 		httpHeaders:  httpHeaders,
 		modelID:      modelID,
-		finishReason: types.FinishReasonOther,
+		finishReason: types.FinishReasonInterrupted,
 	}
 }
 
@@ -216,6 +216,7 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 		// TS validates each parsed frame against chunkSchema; a mismatch is a
 		// TypeValidationError `error` part and the stream keeps reading.
 		if message := chunkValidationMessage(event.Data); message != "" {
+			s.markParseError()
 			errChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: message,
@@ -236,6 +237,7 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			// chunk and the transform CONTINUES reading, it does not terminate
 			// the stream. Previously Go returned this as a terminal Next()
 			// error, ending the stream outright (P1-1c part 2).
+			s.markParseError()
 			var chunkErr error
 			if !json.Valid([]byte(event.Data)) {
 				var probe interface{}
@@ -257,6 +259,14 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 		}
 
 		s.processSSEEvent(chunkData)
+	}
+}
+
+// markParseError records TS `finishReason = error` for an unparsable chunk,
+// unless the response already reported a finish reason (TS #23814).
+func (s *stream) markParseError() {
+	if !s.hasFinished {
+		s.finishReason, s.rawFinishReason, s.hasFinished = types.FinishReasonError, "", true
 	}
 }
 
@@ -286,6 +296,10 @@ func (s *stream) continueStream() bool {
 	_ = s.reader.Close()
 	s.reader = next
 	s.parser = streaming.NewSSEParser(next)
+	// The new response starts without a completion signal (TS resets in
+	// stream order via continuation-start, #23814): if it is empty or cut off,
+	// the stream reports interrupted rather than the prior response's reason.
+	s.finishReason, s.rawFinishReason, s.hasFinished = types.FinishReasonInterrupted, "", false
 	return true
 }
 
@@ -437,7 +451,9 @@ func (s *stream) processSSEEvent(chunkData Response) {
 func (s *stream) buildFinishChunk() *provider.StreamChunk {
 	fr := s.finishReason
 	if !s.hasFinished {
-		fr = types.FinishReasonOther
+		// A clean end without the provider's completion signal is
+		// interrupted (TS #23814).
+		fr = types.FinishReasonInterrupted
 	}
 	s.lastUsageMetadata = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
 	s.continuedUsage = nil

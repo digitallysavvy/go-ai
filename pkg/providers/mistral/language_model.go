@@ -622,7 +622,10 @@ type mistralStream struct {
 	finishRaw    string
 	finishSeen   bool
 	finishQueued bool
-	pendingUsage json.RawMessage
+	// finishErrored mirrors TS finishReason={unified:"error"} after a parse
+	// error chunk (TS #23814); a later finish_reason overrides it.
+	finishErrored bool
+	pendingUsage  json.RawMessage
 	// requestBody is the raw request body this stream was opened with,
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
@@ -726,6 +729,8 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 		if perr != nil {
+			s.finishSeen = false
+			s.finishErrored = true
 			errorChunk := &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
@@ -844,6 +849,7 @@ func (s *mistralStream) Next() (*provider.StreamChunk, error) {
 		// finish part is emitted when the stream ends (TS flush()).
 		if choice.FinishReason != "" {
 			s.finishSeen = true
+			s.finishErrored = false
 			s.finishRaw = choice.FinishReason
 		}
 
@@ -864,17 +870,19 @@ func (s *mistralStream) closeReasoningAndTools() {
 }
 
 // queueFinishAtEnd queues the terminal finish part (TS flush(): reason
-// "other" when none arrived, usage from the last chunk that carried it).
+// "interrupted" when none arrived, usage from the last chunk that carried it).
 func (s *mistralStream) queueFinishAtEnd() bool {
 	if s.finishQueued {
 		return false
 	}
 	s.finishQueued = true
 	s.closeReasoningAndTools()
-	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther}
+	finish := &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonInterrupted}
 	if s.finishSeen {
 		finish.FinishReason = mapMistralFinishReason(s.finishRaw)
 		finish.RawFinishReason = s.finishRaw
+	} else if s.finishErrored {
+		finish.FinishReason = types.FinishReasonError
 	}
 	if len(s.pendingUsage) > 0 {
 		u := convertMistralUsage(s.pendingUsage)

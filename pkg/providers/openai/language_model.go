@@ -1682,6 +1682,11 @@ func (s *openAIStream) endStream() {
 			FinishReason:    providerutils.MapOpenAIFinishReason(s.finishRaw),
 			RawFinishReason: s.finishRaw,
 		}
+		if !s.compat && !s.finishSeen {
+			// A clean end without the provider's completion signal is
+			// interrupted (TS #23814); OpenAI-compatible keeps its error.
+			finish.FinishReason = types.FinishReasonInterrupted
+		}
 		if s.finishErrored {
 			finish.FinishReason, finish.RawFinishReason = types.FinishReasonError, ""
 		}
