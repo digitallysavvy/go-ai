@@ -290,11 +290,6 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 		return creds, nil
 	}
 
-	now := time.Now()
-	if p.creds.valid() && (p.credExp.IsZero() || now.Before(p.credExp.Add(-5*time.Minute))) {
-		return p.creds, nil
-	}
-
 	if p.config.AWSAccessKeyID != "" || p.config.AWSSecretAccessKey != "" || p.config.SessionToken != "" {
 		creds := awsCredentials{
 			AccessKeyID:     firstNonEmpty(p.config.AWSAccessKeyID, os.Getenv("AWS_ACCESS_KEY_ID")),
@@ -307,18 +302,25 @@ func (p *Provider) resolveCredentials(ctx context.Context) (awsCredentials, erro
 		if !creds.valid() {
 			return awsCredentials{}, missingSigV4CredentialsError(creds.AccessKeyID, creds.SecretAccessKey)
 		}
-		p.creds, p.credsFrom, p.credExp = creds, "config", time.Time{}
+		p.credsFrom = "config"
 		return creds, nil
 	}
 	if creds := envCredentials(); creds.valid() {
-		p.creds, p.credsFrom, p.credExp = creds, "env", creds.Expiration
+		p.credsFrom = "env"
 		return creds, nil
 	}
 	if creds, err := sharedFileCredentials(p.config.SharedCredentialsFile, p.config.Profile); err == nil && creds.valid() {
-		p.creds, p.credsFrom, p.credExp = creds, "shared-credentials", creds.Expiration
+		p.credsFrom = "shared-credentials"
 		return creds, nil
 	} else if err != nil && p.config.SharedCredentialsFile != "" {
 		return awsCredentials{}, err
+	}
+	// Environment and shared-file credentials are re-read on every request
+	// (TS loadSetting reads the environment per request), so rotated STS
+	// credentials are picked up. Only the instance-role lookup, a network
+	// round trip, is cached until shortly before it expires.
+	if p.credsFrom == "instance-role" && p.creds.valid() && time.Now().Before(p.credExp.Add(-5*time.Minute)) {
+		return p.creds, nil
 	}
 	if creds, err := instanceRoleCredentials(ctx); err == nil && creds.valid() {
 		p.creds, p.credsFrom, p.credExp = creds, "instance-role", creds.Expiration
