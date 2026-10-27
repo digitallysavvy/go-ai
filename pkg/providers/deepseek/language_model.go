@@ -315,11 +315,13 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
-	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok && m.provider.supportsThinking() {
+	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok {
 		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
 			mappedType := thinkingType
 			if thinkingType == "adaptive" {
 				mappedType = "enabled"
+				// TS warns whether or not the endpoint accepts `thinking`
+				// (Azure sets supportsThinking: false).
 				warnings = append(warnings, types.Warning{
 					Type:    "compatibility",
 					Feature: "thinking.type",
@@ -327,7 +329,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 					Message: `thinking.type "adaptive" is not a canonical DeepSeek value. mapped to "enabled".`,
 				})
 			}
-			body["thinking"] = map[string]interface{}{"type": mappedType}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": mappedType}
+			}
 		}
 	}
 	if effort, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort"); ok {
