@@ -485,7 +485,8 @@ func uiPartIssue(raw interface{}) string {
 		return optionalString(part, "id")
 	case partType == "dynamic-tool":
 		return checks(str("toolName"), func() string {
-			if v, ok := part["dynamic"]; ok && v != nil && v != false {
+			// TS z.literal(false).optional(): a present null is rejected too.
+			if v, ok := part["dynamic"]; ok && v != false {
 				return "Invalid input: dynamic must be false"
 			}
 			return ""
