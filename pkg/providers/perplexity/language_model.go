@@ -325,10 +325,9 @@ func (m *LanguageModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
 	}
-	if parsed := parsePerplexityHTTPError(err); parsed != nil {
-		if pe, ok := parsed.(*providererrors.ProviderError); ok {
-			return pe
-		}
+	if pe, ok := perplexityHTTPError(err, "perplexity").(*providererrors.ProviderError); ok {
+		pe.Cause = err
+		return pe
 	}
 	return providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)
 }

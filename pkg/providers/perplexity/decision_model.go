@@ -1,10 +1,8 @@
 package perplexity
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -295,31 +293,9 @@ func validatePerplexityDecisionResponse(statusCode int, headers http.Header, bod
 }
 
 // handlePerplexityDecisionError turns a failed HTTP response into a
-// ProviderError carrying the status, response headers and body. A body that is
-// not a JSON object gives the HTTP status text as the message (TS
-// createJsonErrorResponseHandler). Transport failures, cancellation and the
-// schema failure pass through unchanged.
+// ProviderError (see perplexityHTTPError).
 func handlePerplexityDecisionError(err error) error {
-	var statusErr *internalhttp.HTTPStatusError
-	if !errors.As(err, &statusErr) {
-		return err
-	}
-	message := http.StatusText(statusErr.StatusCode)
-	var raw map[string]interface{}
-	if trimmed := bytes.TrimSpace(statusErr.Body); len(trimmed) > 0 && trimmed[0] == '{' && json.Unmarshal(statusErr.Body, &raw) == nil {
-		var envelope perplexityErrorEnvelope
-		if json.Unmarshal(statusErr.Body, &envelope) == nil {
-			message = perplexityErrorToMessage(envelope)
-		}
-	}
-	return &providererrors.ProviderError{
-		Provider:        decisionProviderName,
-		StatusCode:      statusErr.StatusCode,
-		Message:         message,
-		ResponseHeaders: lowerHeaders(providerutils.ExtractHeaders(statusErr.Headers)),
-		ResponseBody:    string(statusErr.Body),
-		Data:            raw,
-	}
+	return perplexityHTTPError(err, decisionProviderName)
 }
 
 // lowerHeaders lowercases header names, as the TS SDK's response headers are.
