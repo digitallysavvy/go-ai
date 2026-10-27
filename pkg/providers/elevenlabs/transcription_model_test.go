@@ -232,3 +232,50 @@ func TestElevenLabsAudioExtensionMatchesMediaTypeToExtension(t *testing.T) {
 		}
 	}
 }
+
+// TS: durationInSeconds is response.audio_duration_secs ??
+// response.words?.at(-1)?.end ?? undefined (#23804).
+func TestElevenLabsTranscription_Duration(t *testing.T) {
+	words := []map[string]interface{}{{"text": "Hello", "type": "word", "start": 0.0, "end": 2.06}}
+	f := func(v float64) *float64 { return &v }
+	cases := []struct {
+		name          string
+		audioDuration interface{} // nil omits the key; "null" sends JSON null
+		words         interface{}
+		want          *float64
+	}{
+		{"includes trailing silence", 4.24, words, f(4.24)},
+		{"does not require word timestamps", 4.24, nil, f(4.24)},
+		{"preserves a reported zero", 0.0, words, f(0)},
+		{"falls back when audio duration is absent", nil, words, f(2.06)},
+		{"falls back when audio duration is null", "null", words, f(2.06)},
+		{"no duration anywhere", nil, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := map[string]interface{}{"language_code": "en", "language_probability": 1, "text": "Hello", "words": tc.words}
+				switch v := tc.audioDuration.(type) {
+				case nil:
+				case string:
+					body["audio_duration_secs"] = nil
+				default:
+					body["audio_duration_secs"] = v
+				}
+				_ = json.NewEncoder(w).Encode(body)
+			}))
+			defer srv.Close()
+			m, _ := New(Config{APIKey: "k", BaseURL: srv.URL}).TranscriptionModel(ModelScribeV1)
+			result, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte("a"), MimeType: "audio/wav"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case tc.want == nil && result.DurationInSeconds != nil:
+				t.Fatalf("duration = %v, want nil", *result.DurationInSeconds)
+			case tc.want != nil && (result.DurationInSeconds == nil || *result.DurationInSeconds != *tc.want):
+				t.Fatalf("duration = %v, want %v", result.DurationInSeconds, *tc.want)
+			}
+		})
+	}
+}

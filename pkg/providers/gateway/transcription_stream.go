@@ -304,10 +304,18 @@ var gatewayServerErrorStatusCodes = map[string]int{
 	"rate_limit_exceeded":   429,
 }
 
-// gatewayTranscriptionServerError maps a server error-part payload
+// gatewayTranscriptionServerError maps a server error-part payload for a
+// transcription stream; see gatewayStreamServerError.
+func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
+	return gatewayStreamServerError(payload, authMethod, "transcription")
+}
+
+// gatewayStreamServerError maps a server error-part payload
 // ({message, type}) to the typed Gateway error class for its type, mirroring
 // TS createErrorFromServerErrorPart; unknown shapes keep the generic message.
-func gatewayTranscriptionServerError(payload interface{}, authMethod string) error {
+// streamLabel names the stream in the generic message ("transcription",
+// "speech").
+func gatewayStreamServerError(payload interface{}, authMethod, streamLabel string) error {
 	m, ok := payload.(map[string]interface{})
 	msg, hasMsg := "", false
 	if ok {
@@ -319,7 +327,7 @@ func gatewayTranscriptionServerError(payload interface{}, authMethod string) err
 					"error": map[string]interface{}{"message": msg, "type": errType},
 				})
 				if marshalErr == nil {
-					return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "AI Gateway transcription stream failed", nil, authMethod)
+					return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "AI Gateway "+streamLabel+" stream failed", nil, authMethod)
 				}
 			}
 		}
@@ -340,7 +348,7 @@ func gatewayTranscriptionServerError(payload interface{}, authMethod string) err
 			}
 		}
 	}
-	return fmt.Errorf("AI Gateway transcription stream failed: %s", msg)
+	return fmt.Errorf("AI Gateway %s stream failed: %s", streamLabel, msg)
 }
 
 // pumpAudio reads chunks from audio and forwards them as binary frames (split

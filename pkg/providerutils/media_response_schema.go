@@ -326,7 +326,7 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 				fl("start", zNum), fl("end", zNum), fl("score", nNum), fl("speaker_id", nStr))))),
 			fl("usage", zNullish(zObj(fl("prompt_tokens", nNum), fl("completion_tokens", nNum), fl("total_tokens", nNum),
 				fl("prompt_audio_seconds", nNum), fl("request_count", nNum))))),
-		SchemaElevenLabsTr: zObj(fl("language_code", zStr), fl("language_probability", zNum), fl("text", zStr),
+		SchemaElevenLabsTr: zObj(fl("audio_duration_secs", nNum), fl("language_code", zStr), fl("language_probability", zNum), fl("text", zStr),
 			fl("words", zNullish(zArr(zObj(fl("text", zStr), fl("type", zodlite.Enum("word", "spacing", "audio_event")),
 				fl("start", nNum), fl("end", nNum), fl("speaker_id", nStr),
 				fl("characters", zNullish(zArr(zObj(fl("text", zStr), fl("start", nNum), fl("end", nNum)))))))))),

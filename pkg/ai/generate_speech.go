@@ -93,7 +93,14 @@ type Experimental_SpeechResult = GenerateSpeechResult
 // NoSpeechGeneratedError is returned when a speech model returns no audio.
 type NoSpeechGeneratedError struct {
 	Responses []SpeechModelResponseMetadata
+
+	// Cause is the provider error that preceded the failure, when a speech
+	// stream reported one before ending without audio.
+	Cause error
 }
+
+// Unwrap returns the underlying cause, if any.
+func (e *NoSpeechGeneratedError) Unwrap() error { return e.Cause }
 
 func (e *NoSpeechGeneratedError) Error() string {
 	return "No speech audio generated."
