@@ -315,11 +315,13 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 		}
 	}
 
-	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok && m.provider.supportsThinking() {
+	if thinking, ok := deepseekOptions["thinking"].(map[string]interface{}); ok {
 		if thinkingType, ok := providerutils.OpenAICompatibleStringOption(thinking, "type"); ok {
 			mappedType := thinkingType
 			if thinkingType == "adaptive" {
 				mappedType = "enabled"
+				// TS warns whether or not the endpoint accepts `thinking`
+				// (Azure sets supportsThinking: false).
 				warnings = append(warnings, types.Warning{
 					Type:    "compatibility",
 					Feature: "thinking.type",
@@ -327,7 +329,9 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 					Message: `thinking.type "adaptive" is not a canonical DeepSeek value. mapped to "enabled".`,
 				})
 			}
-			body["thinking"] = map[string]interface{}{"type": mappedType}
+			if m.provider.supportsThinking() {
+				body["thinking"] = map[string]interface{}{"type": mappedType}
+			}
 		}
 	}
 	if effort, ok := providerutils.OpenAICompatibleStringOption(deepseekOptions, "reasoningEffort"); ok {
@@ -506,7 +510,10 @@ func (m *LanguageModel) convertResponse(response deepseekResponse) (*types.Gener
 	if response.Object != "" {
 		meta["responseObject"] = response.Object
 	}
-	meta["choiceIndex"] = choice.Index
+	// TS: `choice.index != null` (the schema makes index nullish).
+	if choice.Index != nil {
+		meta["choiceIndex"] = *choice.Index
+	}
 	if choice.Message.Role != "" {
 		meta["messageRole"] = choice.Message.Role
 	}
@@ -631,7 +638,7 @@ type deepseekResponse struct {
 	Model             string `json:"model"`
 	SystemFingerprint string `json:"system_fingerprint"`
 	Choices           []struct {
-		Index        int    `json:"index"`
+		Index        *int   `json:"index"`
 		FinishReason string `json:"finish_reason"`
 		Message      struct {
 			Role             string `json:"role"`
@@ -697,7 +704,7 @@ type deepseekStreamChunk struct {
 	SystemFingerprint string          `json:"system_fingerprint"`
 	Error             json.RawMessage `json:"error,omitempty"`
 	Choices           []struct {
-		Index        int    `json:"index"`
+		Index        *int   `json:"index"`
 		FinishReason string `json:"finish_reason"`
 		Delta        struct {
 			Role             string `json:"role"`
@@ -889,8 +896,10 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		if len(chunkData.Choices) > 0 {
 			choice := chunkData.Choices[0]
 
-			idx := choice.Index
-			s.choiceIndex = &idx
+			if choice.Index != nil {
+				idx := *choice.Index
+				s.choiceIndex = &idx
+			}
 			if choice.Delta.Role != "" {
 				s.messageRole = choice.Delta.Role
 			}
@@ -1047,9 +1056,8 @@ func (s *deepseekStream) attachFinishMetadata(chunk *provider.StreamChunk) {
 	if s.systemFingerprint != "" {
 		meta["systemFingerprint"] = s.systemFingerprint
 	}
-	if len(meta) == 0 {
-		return
-	}
+	// TS always attaches providerMetadata[name] to the finish part, even when
+	// every entry is undefined.
 	providerOptionsName := s.providerOptionsName
 	if providerOptionsName == "" {
 		providerOptionsName = "deepseek"

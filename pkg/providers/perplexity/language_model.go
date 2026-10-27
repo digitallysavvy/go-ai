@@ -676,6 +676,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 	}
 	if perr != nil {
 		s.finishReason = types.FinishReasonError
+		s.rawFinishReason = "" // TS: { unified: 'error', raw: undefined }
 		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: msg, Err: perr})
 		return
 	}

@@ -736,6 +736,9 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		if err := json.Unmarshal([]byte(event.Data), &ev); err != nil {
 			// TS: a chunk that fails parsing becomes an error part and the
 			// finish reason turns to "error".
+			// TS finishReason is last-writer-wins: a bad chunk after
+			// message-end replaces the finish reason with "error".
+			s.finishSeen = false
 			s.finishErrored = true
 			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			return &provider.StreamChunk{
@@ -746,6 +749,9 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 		}
 
 		if err := validateCohereChunk([]byte(event.Data)); err != nil {
+			// TS finishReason is last-writer-wins: a bad chunk after
+			// message-end replaces the finish reason with "error".
+			s.finishSeen = false
 			s.finishErrored = true
 			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			return &provider.StreamChunk{

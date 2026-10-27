@@ -221,6 +221,18 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	compatibleOptions, warnings := providerutils.ResolveOpenAICompatibleProviderOptions("groq", opts.ProviderOptions)
 	warnings = append(topKWarnings, warnings...)
 	warnings = append(warnings, providerutils.OpenAICompatibleCommonOptionWarnings(compatibleOptions)...)
+	// Response format (TS groq-chat-language-model.ts): structuredOutputs and
+	// strictJsonSchema both default to true; a dropped schema is warned about.
+	// TS reports that warning before the reasoning warnings, so it is computed
+	// first.
+	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
+		StructuredOutputs:         providerutils.BoolOption(compatibleOptions, "structuredOutputs", true),
+		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
+		WarnWhenSchemaUnsupported: true,
+	})
+	if jsonResponseTool == nil {
+		warnings = append(warnings, formatWarnings...)
+	}
 	// Map top-level Reasoning to Groq reasoning_effort. An explicit
 	// providerOptions.groq.reasoningEffort always wins (applied below via
 	// ApplyOpenAICompatibleCommonRequestOptions, which runs after this).
@@ -252,18 +264,8 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 			}
 		}
 	}
-	// Response format (TS groq-chat-language-model.ts): structuredOutputs and
-	// strictJsonSchema both default to true; a dropped schema is warned about.
-	responseFormat, formatWarnings := providerutils.ChatResponseFormat(opts.ResponseFormat, providerutils.ChatResponseFormatOptions{
-		StructuredOutputs:         providerutils.BoolOption(compatibleOptions, "structuredOutputs", true),
-		StrictJSONSchema:          providerutils.BoolOption(compatibleOptions, "strictJsonSchema", true),
-		WarnWhenSchemaUnsupported: true,
-	})
-	if jsonResponseTool == nil {
-		if responseFormat != nil {
-			body["response_format"] = responseFormat
-		}
-		warnings = append(warnings, formatWarnings...)
+	if jsonResponseTool == nil && responseFormat != nil {
+		body["response_format"] = responseFormat
 	}
 	providerutils.ApplyOpenAICompatibleCommonRequestOptions(body, compatibleOptions)
 	// Groq performance service tier: on_demand/flex/auto/performance.
