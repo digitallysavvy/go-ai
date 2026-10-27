@@ -276,9 +276,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	}
 
 	channelOpts := bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.Dial(ctx, launched.Endpoint, bridge.DialOptions{Name: "codex bridge"})
-		},
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "codex bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
 		Reconnect:     settings.Reconnect,
 		OnDiagnostic:  onDiagnostic,
 		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
@@ -356,9 +354,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 		return nil
 	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.Dial(ctx, attachEndpoint, bridge.DialOptions{Name: "codex bridge"})
-		},
+		Connect:                bridge.NewBridgeConnectFunc(attachEndpoint, bridge.BridgeConnectOptions{Name: "codex bridge"}),
 		Reconnect:              opts.settings.Reconnect,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,

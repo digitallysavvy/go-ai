@@ -352,7 +352,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 		return nil, false
 	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:                bridge.NewConnectFunc(endpoint, bridge.DialOptions{Name: "deepagents bridge"}),
+		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge"}),
 		InitialLastSeenEventID: coords.LastSeenEventID,
 		OnBridgeError:          onBridgeErr,
 		OnDiagnostic:           onDiagnostic,

@@ -327,12 +327,11 @@ func OpenBridgeWebSocket(ctx context.Context, endpoint harness.PortEndpoint, opt
 	if ctx.Err() != nil {
 		return nil, abortError(ctx)
 	}
-	lastMsg := "undefined"
-	if lastErr != nil {
-		lastMsg = lastErr.Error()
-	}
-	return nil, fmt.Errorf("%s did not complete WebSocket handshake within %dms after %d attempt(s). Last error: %s",
-		name, opts.Timeout.Milliseconds(), attempt, lastMsg)
+	// Like TS, the message omits the last error (it can carry connection
+	// details); it is the error's cause.
+	return nil, harness.NewHarnessError(
+		fmt.Sprintf("The harness bridge did not complete the WebSocket handshake within %dms after %d attempt(s).",
+			opts.Timeout.Milliseconds(), attempt), lastErr)
 }
 
 // Sleep waits for d or until ctx ends, whichever is first. It never returns

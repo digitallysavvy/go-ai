@@ -305,8 +305,8 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 
 	var supportsUserMessageResponses atomic.Bool
 	channelOpts := bridge.ChannelOptions{
-		Connect: bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{
-			Name: "OpenCode bridge", WaitForHello: true, HelloTimeout: helloTimeout,
+		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
+			Name: "OpenCode bridge", OpenRetryTimeout: timeout, StartContext: ctx,
 			OnHello: func(h *bridge.Hello) {
 				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
 					supportsUserMessageResponses.Store(*h.Capabilities.ExperimentalUserMessageResponses)

@@ -140,7 +140,8 @@ func newBasicSandbox(srv *bridgetest.Server) basicSandbox {
 // 'uses a basic sandbox session with explicit bridge settings' and
 // 'requires a sandbox id for custom bridge token minting'.
 func TestTSReplay_BasicSandboxSession(t *testing.T) {
-	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
+	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	t.Cleanup(srv.Close)
 	start := func(mut func(*Settings)) (harness.Session, error) {
 		h, err := CreateACP(testSettings(mut))
 		if err != nil {

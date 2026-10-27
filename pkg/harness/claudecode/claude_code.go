@@ -297,16 +297,14 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 
 	var supportsUserMessages atomic.Bool
 	channelOpts := bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.OpenBridgeWebSocket(ctx, launched.Endpoint, bridge.OpenOptions{
-				Name: "claude-code bridge", Timeout: timeout,
-				OnHello: func(h *bridge.Hello) {
-					if h.SupportsUserMessageResponses() {
-						supportsUserMessages.Store(true)
-					}
-				},
-			})
-		},
+		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
+			Name: "claude-code bridge", OpenRetryTimeout: timeout, StartContext: ctx,
+			OnHello: func(h *bridge.Hello) {
+				if h.SupportsUserMessageResponses() {
+					supportsUserMessages.Store(true)
+				}
+			},
+		}),
 		Reconnect:     settings.Reconnect,
 		OnDebug:       settings.OnDebug,
 		OnDiagnostic:  onDiagnostic,
@@ -384,16 +382,14 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 	}
 	var supportsUserMessages atomic.Bool
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect: func(ctx context.Context) (bridge.Conn, error) {
-			return bridge.OpenBridgeWebSocket(ctx, attachEndpoint, bridge.OpenOptions{
-				Name: "claude-code bridge", Timeout: opts.timeout,
-				OnHello: func(h *bridge.Hello) {
-					if h.SupportsUserMessageResponses() {
-						supportsUserMessages.Store(true)
-					}
-				},
-			})
-		},
+		Connect: bridge.NewBridgeConnectFunc(attachEndpoint, bridge.BridgeConnectOptions{
+			Name: "claude-code bridge",
+			OnHello: func(h *bridge.Hello) {
+				if h.SupportsUserMessageResponses() {
+					supportsUserMessages.Store(true)
+				}
+			},
+		}),
 		Reconnect:              opts.settings.Reconnect,
 		OnDebug:                opts.settings.OnDebug,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,

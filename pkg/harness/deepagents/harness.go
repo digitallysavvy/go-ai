@@ -282,7 +282,7 @@ func (h *deepAgentsHarness) DoStart(ctx context.Context, opts harness.StartOptio
 	}
 
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:       bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{Name: "deepagents bridge"}),
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: "deepagents bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
 		OnDiagnostic:  onDiagnostic,

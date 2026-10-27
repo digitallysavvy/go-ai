@@ -1112,7 +1112,7 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 		return nil, err
 	}
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect:                bridge.NewConnectFunc(endpoint, bridge.DialOptions{Name: settings.HarnessID + " ACP bridge"}),
+		Connect:                bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge"}),
 		Decode:                 decodeOutbound,
 		InitialLastSeenEventID: coords.LastSeenEventID, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic, Reconnect: settings.Reconnect,
 	})

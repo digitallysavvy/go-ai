@@ -712,7 +712,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	}
 
 	channelOpts := bridge.ChannelOptions{
-		Connect:       bridge.NewConnectFunc(launched.Endpoint, bridge.DialOptions{Name: settings.HarnessID + " ACP bridge"}),
+		Connect:       bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{Name: settings.HarnessID + " ACP bridge", OpenRetryTimeout: timeout, StartContext: ctx}),
 		Decode:        decodeOutbound,
 		Reconnect:     settings.Reconnect,
 		OnBridgeError: onBridgeErr,
