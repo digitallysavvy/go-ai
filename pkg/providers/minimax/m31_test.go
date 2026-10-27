@@ -763,9 +763,17 @@ func TestMiniMaxM31Sampling(t *testing.T) {
 // HTTP client (one keep-alive connection serves both), and no goroutines or
 // transports left behind by creating models.
 func TestMiniMaxM31TransportIsEquivalentAndLeakFree(t *testing.T) {
-	s := newM31Server(t, false)
+	s := &m31Server{}
 	var mu sync.Mutex
 	newConns := 0
+	s.srv = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		s.mu.Lock()
+		s.headers = append(s.headers, r.Header.Clone())
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, m31JSONBody)
+	}))
 	s.srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
 		if st == http.StateNew {
 			mu.Lock()
@@ -773,6 +781,8 @@ func TestMiniMaxM31TransportIsEquivalentAndLeakFree(t *testing.T) {
 			mu.Unlock()
 		}
 	}
+	s.srv.Start()
+	t.Cleanup(s.srv.Close)
 	p := New(Config{APIKey: "key", BaseURL: s.srv.URL, Headers: map[string]string{"x-custom": "1"}})
 
 	for _, id := range []string{"MiniMax-M2", "MiniMax-M3.1", "MiniMax-M2", "MiniMax-M3.1"} {
