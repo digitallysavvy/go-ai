@@ -143,11 +143,14 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 			optionKeysByIndex[i] = optionKeys
 
 			enumValues := make([]string, len(optionKeys))
-			criteriaWire := make(map[string]interface{}, len(optionKeys))
+			// c0, c1, ... c10 in option order (a Go map would sort c10 before
+			// c2 in the model-visible rubric; TS keeps insertion order).
+			criteriaWire := providerutils.OrderedMap{Keys: make([]string, len(optionKeys)), Vals: make(map[string]interface{}, len(optionKeys))}
 			for j, label := range optionKeys {
 				code := fmt.Sprintf("c%d", j)
 				enumValues[j] = code
-				criteriaWire[code] = providerutils.OrderedMap{
+				criteriaWire.Keys[j] = code
+				criteriaWire.Vals[code] = providerutils.OrderedMap{
 					Keys: []string{"label", "description"},
 					Vals: map[string]interface{}{"label": label, "description": criteria[label]},
 				}
