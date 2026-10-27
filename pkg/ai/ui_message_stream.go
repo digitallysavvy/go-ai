@@ -2668,63 +2668,53 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 	return out
 }
 
+// deriveFileURL is the UI file part url: TS `data:${mediaType};base64,${file.base64}`.
+// StreamText downloads URL-backed files first, so they carry bytes; a file
+// that still holds only a URL (a raw provider stream passed straight to
+// ToUIMessageStream) keeps that URL rather than embedding it in a data URL.
 func deriveFileURL(mediaType string, file *types.GeneratedFileContent) string {
 	if file == nil {
 		return ""
 	}
-	return "data:" + mediaType + ";base64," + generatedFileBase64Data(file)
-}
-
-func generatedFileBase64Data(file *types.GeneratedFileContent) string {
-	if file == nil {
-		return ""
+	if data, ok := inlineFileBase64(file.FileData, file.Data); ok {
+		return "data:" + mediaType + ";base64," + data
+	}
+	if file.FileData.Type == types.FileDataTypeURL && file.FileData.URL != "" {
+		return file.FileData.URL
 	}
 	if file.URL != "" {
 		return file.URL
 	}
-	if file.FileData.Type == "url" && file.FileData.URL != "" {
-		return file.FileData.URL
-	}
-	if file.FileData.Type == "data" {
-		if file.FileData.DataString != "" {
-			return file.FileData.DataString
+	return "data:" + mediaType + ";base64,"
+}
+
+// inlineFileBase64 returns the base64 of a file's inline bytes, if any.
+func inlineFileBase64(fileData types.FileData, data []byte) (string, bool) {
+	if fileData.Type == types.FileDataTypeData {
+		if fileData.DataString != "" {
+			return fileData.DataString, true
 		}
-		if len(file.FileData.Data) > 0 {
-			return base64.StdEncoding.EncodeToString(file.FileData.Data)
+		if len(fileData.Data) > 0 {
+			return base64.StdEncoding.EncodeToString(fileData.Data), true
 		}
 	}
-	if len(file.Data) > 0 {
-		return base64.StdEncoding.EncodeToString(file.Data)
+	if len(data) > 0 {
+		return base64.StdEncoding.EncodeToString(data), true
 	}
-	return ""
+	return "", false
 }
 
 func deriveFileURLFromReasoning(file *types.ReasoningFileContent, mediaType string) string {
 	if file == nil {
 		return ""
 	}
-	return "data:" + mediaType + ";base64," + reasoningFileBase64Data(file)
-}
-
-func reasoningFileBase64Data(file *types.ReasoningFileContent) string {
-	if file == nil {
-		return ""
+	if data, ok := inlineFileBase64(file.FileData, file.Data); ok {
+		return "data:" + mediaType + ";base64," + data
 	}
-	if file.FileData.Type == "url" && file.FileData.URL != "" {
+	if file.FileData.Type == types.FileDataTypeURL && file.FileData.URL != "" {
 		return file.FileData.URL
 	}
-	if file.FileData.Type == "data" {
-		if file.FileData.DataString != "" {
-			return file.FileData.DataString
-		}
-		if len(file.FileData.Data) > 0 {
-			return base64.StdEncoding.EncodeToString(file.FileData.Data)
-		}
-	}
-	if len(file.Data) > 0 {
-		return base64.StdEncoding.EncodeToString(file.Data)
-	}
-	return ""
+	return "data:" + mediaType + ";base64,"
 }
 
 // streamChunkError returns the error carried by an error chunk: chunk.Err when
