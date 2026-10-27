@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -473,11 +474,29 @@ func (s *WireServer) DiffRequests() []string {
 		out = append(out, diffRequest(s.test.HTTP[g.Matched], g)...)
 	}
 	for i, h := range s.test.HTTP {
-		if !seen[i] {
+		if !seen[i] && !isSeenPollRepeat(s.test.HTTP, seen, i) {
 			out = append(out, fmt.Sprintf("TS sent %s %s but Go did not", h.Method, h.Path()))
 		}
 	}
 	return out
+}
+
+// isSeenPollRepeat reports whether recorded request i repeats an earlier
+// recorded request that Go did send: same method, URL, headers and body, and
+// the same served response. How many identical polls fit in a poll timeout
+// depends on the machine's load, so Go sending fewer of them is not a
+// difference; every distinct request (including a poll that got a different
+// response) must still be sent.
+func isSeenPollRepeat(recorded []WireHTTP, seen map[int]bool, i int) bool {
+	h := recorded[i]
+	for j := 0; j < i; j++ {
+		p := recorded[j]
+		if seen[j] && p.Method == h.Method && p.URL == h.URL && p.BodyB64 == h.BodyB64 &&
+			reflect.DeepEqual(p.Headers, h.Headers) && reflect.DeepEqual(p.Response, h.Response) {
+			return true
+		}
+	}
+	return false
 }
 
 func diffRequest(ts WireHTTP, g GotRequest) []string {
