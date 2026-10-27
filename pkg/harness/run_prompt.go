@@ -788,6 +788,7 @@ func (d *turnDriver) run() {
 			return
 		}
 		d.publishSuspendedOutcomes()
+		d.publishUnechoedHostExecutions()
 		// Results buffered for the step (e.g. a rejected host call) reach the
 		// consumer's stream even though the step itself is dropped.
 		d.flushBufferedResultChunks()
@@ -1689,7 +1690,40 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	if hostRan {
 		toolResult = hostOutcomeResult(call, host)
 	}
+	// TS publishes the end only for a tool execution this step tracks (`if
+	// (execution != null)`): a result for a call from an earlier step or
+	// slice, such as a continued builtin approval's result, fires no
+	// tool-execution callbacks.
+	if !d.isStepToolCall(tr.ToolCallID) {
+		return
+	}
 	d.publishToolExecutionEnd(tr.ToolCallID, tr.ToolName, call, toolResult)
+}
+
+// isStepToolCall reports whether the current step saw the tool call (TS
+// `toolExecutions.has(toolCallId)`).
+func (d *turnDriver) isStepToolCall(toolCallID string) bool {
+	for _, c := range d.stepToolCalls {
+		if c.ID == toolCallID {
+			return true
+		}
+	}
+	return false
+}
+
+// publishUnechoedHostExecutions publishes the tool-execution end of every host
+// tool in the current step whose outcome is known but whose result the
+// runtime has not echoed back. TS `publishToolExecutions` publishes each
+// execution that has a toolOutput at the step boundary, at a pause and at a
+// suspension.
+func (d *turnDriver) publishUnechoedHostExecutions() {
+	for _, call := range d.stepToolCalls {
+		o, ok := d.takeHostOutcome(call.ID)
+		if !ok {
+			continue
+		}
+		d.publishToolExecutionEnd(call.ID, call.ToolName, call, hostOutcomeResult(call, o))
+	}
 }
 
 // hostOutcomeResult builds the types.ToolResult for a host tool's outcome.
@@ -1738,6 +1772,7 @@ func (d *turnDriver) publishToolExecutionEnd(toolCallID, toolName string, call t
 // doc), pushes the step boundary chunk, and advances stepNumber.
 func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metadata Metadata) {
 	d.languageModelCallEnd(finishReason, usage, metadata)
+	d.publishUnechoedHostExecutions()
 	d.flushBufferedResultChunks()
 
 	// The local view of the step, used if the result does not report one.
@@ -1821,6 +1856,7 @@ func (d *turnDriver) pauseForHostInput() error {
 	if err := d.joinOutstandingExecutions(); err != nil {
 		return err
 	}
+	d.publishUnechoedHostExecutions()
 	d.flushBufferedResultChunks()
 	return d.finishForHostInputPause()
 }

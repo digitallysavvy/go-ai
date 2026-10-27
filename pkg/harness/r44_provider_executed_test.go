@@ -134,3 +134,108 @@ func TestR44InactiveToolDenialReportsHostOutput(t *testing.T) {
 		t.Fatalf("tool execution end output = %#v, want the host's execution-denied output", ends[0].ToolOutput.Result)
 	}
 }
+
+// A continued builtin approval's tool call is skipped as a settled replay,
+// so its real tool-result arrives without a tracked execution. TS publishes
+// tool-execution callbacks only for tracked executions (`if (execution !=
+// null)`), so neither the start nor the end fires for it.
+func TestR44UntrackedToolResultFiresNoExecutionCallbacks(t *testing.T) {
+	yes := true
+	mock := newMockHarness(mockHarnessOptions{
+		continueScript: func(submit func(string, interface{})) []StreamPart {
+			stop := FinishReason{Unified: FinishReasonStop}
+			return []StreamPart{
+				&StreamStartPart{},
+				mustDecodePart(t, `{"type":"tool-call","toolCallId":"c1","toolName":"bash","input":"{}","providerExecuted":true,"dynamic":true}`),
+				&ToolResultPart{ToolCallID: "c1", ToolName: "bash", Result: "done"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	var mu sync.Mutex
+	var events []string
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Mode: "continue", SandboxSession: testSandbox(),
+		PendingToolApprovals: []PendingToolApproval{{
+			ApprovalID: "a1", ToolCallID: "c1", ToolName: "bash", Input: `{}`,
+			Kind: PendingToolApprovalBuiltin, ProviderExecuted: &yes,
+		}},
+		ToolApprovalContinuations: []types.ToolApprovalResponseContent{{ApprovalID: "a1", ToolCallID: "c1", Approved: true}},
+		Callbacks: Callbacks{
+			OnToolExecutionStart: func(_ context.Context, e ai.OnToolCallStartEvent) {
+				mu.Lock()
+				events = append(events, "start:"+e.ToolCallID)
+				mu.Unlock()
+			},
+			OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+				mu.Lock()
+				events = append(events, "end:"+e.ToolCallID)
+				mu.Unlock()
+			},
+		},
+	})
+	chunks := drainRunPrompt(t, out)
+	<-out.Done
+	if results := chunksOfType(chunks, provider.ChunkTypeToolResult); len(results) != 1 {
+		t.Fatalf("tool results = %+v, want the runtime's result", results)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 0 {
+		t.Fatalf("tool execution callbacks = %v, want none", events)
+	}
+}
+
+// A host tool whose result the runtime never echoes still reports its
+// tool-execution end when the step closes (TS publishToolExecutions at
+// completeStep).
+func TestR44UnechoedHostToolPublishesEndAtStepClose(t *testing.T) {
+	echo := types.Tool{
+		Name:       "echo",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		},
+	}
+	tools := map[string]types.Tool{"echo": echo}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			stop := FinishReason{Unified: FinishReasonStop}
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "echo", Input: `{}`},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	var mu sync.Mutex
+	var ends []ai.OnToolCallFinishEvent
+	stepEnded := false
+	endBeforeStep := false
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Tools: tools, ActiveTools: tools,
+		Callbacks: Callbacks{
+			OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+				mu.Lock()
+				ends = append(ends, e)
+				endBeforeStep = !stepEnded
+				mu.Unlock()
+			},
+			OnStepEnd: func(context.Context, ai.OnStepFinishEvent) {
+				mu.Lock()
+				stepEnded = true
+				mu.Unlock()
+			},
+		},
+	})
+	drainRunPrompt(t, out)
+	<-out.Done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ends) != 1 || ends[0].ToolOutput.Result != "ok" || !endBeforeStep {
+		t.Fatalf("tool execution ends = %+v (before step end: %v), want one with the host output before the step ends", ends, endBeforeStep)
+	}
+}
