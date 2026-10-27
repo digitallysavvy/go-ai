@@ -93,6 +93,19 @@ Two of its limits bound time, and they measure different things:
 continuation resume starts with a fresh CPU budget. A zero field uses its
 default; a negative value is rejected.
 
+The Go sandbox runs on one goroutine, so `CPUTimeoutMs` is measured as the
+wall time the sandbox spends running JavaScript, paused for the whole of each
+host tool call. A heavily loaded machine can therefore consume the budget
+faster than true CPU time would.
+
+<Note>
+  The `CPUTimeoutMs` default (10 seconds) also applies to callers upgrading
+  from v0.5.2, as it does in the TypeScript SDK: a script that spends more than
+  10 seconds in pure JavaScript, which previously ran up to `TimeoutMs`, now
+  fails with `*CPUTimeoutError`. Raise `CPUTimeoutMs` (and `TimeoutMs`) to keep
+  the old behavior.
+</Note>
+
 ```go
 result, err := codemode.RunCodeMode(ctx, codemode.RunInput{
     JS:    `return await tools.slowLookup({})`,
