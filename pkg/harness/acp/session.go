@@ -645,6 +645,17 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 	return c, nil
 }
 
+// instructionsFingerprint mirrors TS `fingerprintValue({ value:
+// options.instructions ?? null })`. Go cannot tell absent instructions from
+// "", so "" fingerprints as null, the value TS persists when no instructions
+// are given.
+func instructionsFingerprint(instructions string) string {
+	if instructions == "" {
+		return fingerprintValue(nil)
+	}
+	return fingerprintValue(instructions)
+}
+
 // deserializeBridgeError mirrors TS `deserializeBridgeError`: it only
 // special-cases the "bridge capability unsupported" marker; every other
 // error passes through unchanged.
@@ -835,7 +846,7 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		OutputSchemaMapping: s.p.outputSchemaMapping, Model: model, ModelMapping: s.p.modelMapping,
 		Debug: s.p.debug,
 	})
-	nextFingerprint := fingerprintValue(instructions)
+	nextFingerprint := instructionsFingerprint(instructions)
 
 	return s.wireTurn(ctx, emit, func() error {
 		s.mu.Lock()
