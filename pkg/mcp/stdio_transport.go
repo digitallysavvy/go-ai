@@ -253,7 +253,11 @@ func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 	t.mu.Unlock()
 
 	if !connected {
-		return NewTransportError("not connected", nil)
+		// TS send() throws MCPClientError("StdioClientTransport not
+		// connected"); *TransportError stays reachable through Cause.
+		err := NewMCPClientError(0, "StdioClientTransport not connected", nil)
+		err.Cause = NewTransportError("not connected", nil)
+		return err
 	}
 
 	// Marshal message to JSON
