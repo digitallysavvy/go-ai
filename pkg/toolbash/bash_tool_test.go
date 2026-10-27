@@ -368,3 +368,18 @@ func TestBoundedOutputByteBudget(t *testing.T) {
 		t.Fatalf("maxBytes for math.MaxInt = %d", got)
 	}
 }
+
+// The character counter must not wrap past 2^31-1 where int is 32 bits, or
+// the truncation notice is lost. Seed it near the limit instead of streaming
+// gigabytes.
+func TestBoundedOutputTotalPastMaxInt32(t *testing.T) {
+	o := newBoundedOutput(3)
+	o.total = math.MaxInt32 - 1
+	if _, err := o.Write([]byte("abcd")); err != nil {
+		t.Fatal(err)
+	}
+	want := "abc\n[Output truncated: 2147483647 characters omitted.]"
+	if got := o.String(); got != want {
+		t.Fatalf("String() = %q, want %q", got, want)
+	}
+}

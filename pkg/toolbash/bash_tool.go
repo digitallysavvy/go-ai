@@ -271,7 +271,7 @@ type boundedOutput struct {
 	maxChars int
 	maxBytes int
 	buf      []byte
-	total    int // characters seen (UTF-8 sequence starts)
+	total    int64 // characters seen (UTF-8 sequence starts); int64 so it cannot wrap where int is 32 bits
 }
 
 // maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER; TS rejects a larger
@@ -312,7 +312,7 @@ func (o *boundedOutput) Write(p []byte) (int, error) {
 func (o *boundedOutput) String() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.total <= o.maxChars {
+	if o.total <= int64(o.maxChars) {
 		return string(o.buf)
 	}
 	text, seen := o.buf, 0
@@ -324,5 +324,5 @@ func (o *boundedOutput) String() string {
 		}
 		seen++
 	}
-	return fmt.Sprintf("%s\n[Output truncated: %d characters omitted.]", text[:end], o.total-o.maxChars)
+	return fmt.Sprintf("%s\n[Output truncated: %d characters omitted.]", text[:end], o.total-int64(o.maxChars))
 }
