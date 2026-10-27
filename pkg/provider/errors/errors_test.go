@@ -835,3 +835,12 @@ func TestInvalidArgumentErrorText(t *testing.T) {
 		t.Fatalf("Error() = %q, want %q", got, want)
 	}
 }
+
+// TS TypeValidationError writes `id: "${entityId}"` without escaping.
+func TestValidationErrorEntityIDIsNotGoQuoted(t *testing.T) {
+	err := NewValidationErrorWithContext(nil, "bad", nil, &ValidationContext{Field: "f", EntityName: "tool", EntityID: `a"b\c`})
+	want := "Type validation failed for f (tool, id: \"a\"b\\c\"):\nError message: bad"
+	if got := err.Error(); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}

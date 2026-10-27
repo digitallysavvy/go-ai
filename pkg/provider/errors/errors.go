@@ -489,7 +489,8 @@ func (e *ValidationError) Error() string {
 				parts = append(parts, e.Context.EntityName)
 			}
 			if e.Context.EntityID != "" {
-				parts = append(parts, fmt.Sprintf("id: %q", e.Context.EntityID))
+				// TS: `id: "${entityId}"` (no escaping).
+				parts = append(parts, `id: "`+e.Context.EntityID+`"`)
 			}
 			for i, part := range parts {
 				if i > 0 {
