@@ -55,6 +55,14 @@ type Options struct {
 	// libfx/hook, ...) in order, on one goroutine. A slow handler applies
 	// backpressure to the core.
 	OnNotification func(method string, params json.RawMessage)
+	// OnGuestNotification, when set, receives core notifications instead of
+	// OnNotification, synchronously on the guest goroutine inside fd_write,
+	// with the size of the line that carried each one. Core output after a
+	// notification is not read until the handler returns, which is the
+	// ordering and backpressure libfx's suspending fd_write gives a JS host:
+	// a notification is handled before the core's next host call. The handler
+	// must return once ctx (the engine's run context) ends.
+	OnGuestNotification func(ctx context.Context, method string, params json.RawMessage, size int)
 	// Stderr receives the core's diagnostics. The last 8 KiB are also kept
 	// for error messages.
 	Stderr io.Writer
@@ -254,10 +262,14 @@ func (e *Engine) run(ctx context.Context, start api.Function) {
 }
 
 // onLine runs on the guest goroutine for each decoded stdout message.
-func (e *Engine) onLine(line []byte, _ int) error {
+func (e *Engine) onLine(line []byte, size int) error {
 	var msg rpcMessage
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return fmt.Errorf("core output is not JSON: %w", err)
+	}
+	if e.opts.OnGuestNotification != nil && msg.Method != "" && len(msg.ID) == 0 {
+		e.opts.OnGuestNotification(e.inst.runCtx, msg.Method, msg.Params, size)
+		return e.inst.runCtx.Err()
 	}
 	select {
 	case e.inbox <- msg:

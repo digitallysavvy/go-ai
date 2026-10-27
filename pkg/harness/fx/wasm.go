@@ -24,7 +24,7 @@ const LibfxWasmSHA256 = libfx.WasmSHA256
 // GO_AI_FX_CACHE_DIR and GO_AI_FX_OFFLINE environment variables; the two
 // source variables apply only when none of Bytes, Path and URL is set.
 //
-// The libfx runtime is a preview: CreateFx does not use it yet, and the
+// The libfx runtime is opt-in (Settings.Runtime = RuntimeLibfx); the
 // sandbox `fx acp` adapter stays the default.
 type WasmSource struct {
 	// Path is a local fx-core.wasm. Nothing is downloaded or cached.

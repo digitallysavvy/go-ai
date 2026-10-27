@@ -1,18 +1,22 @@
-// Package fx is the Go port of the TypeScript `@ai-sdk/harness-fx` package
-// (pinned to ai@7.0.140).
+// Package fx is the Go port of the TypeScript `@ai-sdk/harness-fx` package.
 //
-// Like pkg/harness/cursor, fx is an "ACP-derived" adapter: TS `createFx()`
-// is a thin configuration layer over `createACP()` (`@ai-sdk/harness-acp`).
-// BuildConfig assembles the exact acp.Settings TS's `createFx()` passes to
-// `createACP()`, and CreateFx wires it into a live harness.Harness.
+// CreateFx has two runtimes, chosen with Settings.Runtime:
 //
-// fx is server-side/sandboxable: `fx acp` is spawned inside the sandbox by
-// the shared ACP bridge (pkg/harness/bridges.ACP); this package has no
-// bridge assets of its own.
+//   - RuntimeSandboxACP (the default, go-ai v0.5.x behavior): fx is an
+//     "ACP-derived" adapter. BuildConfig assembles the acp.Settings the
+//     pre-libfx TS `createFx()` passed to `createACP()`, and `fx acp` runs
+//     inside the sandbox through the shared ACP bridge.
+//   - RuntimeLibfx (opt-in): the libfx core, fx-core.wasm, runs in the host
+//     process on wazero, as TS @ai-sdk/harness-fx (pinned to ai e64ed82f27)
+//     does. Its built-in tools (LibfxBuiltinTools) run as commands in the
+//     session sandbox; the host makes the model requests. AI Gateway
+//     authentication only for now.
 package fx
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -39,31 +43,73 @@ const (
 // AuthenticationMode is TS `FxAuthenticationMode`.
 type AuthenticationMode = harness.Authentication
 
-// Settings configures the fx harness adapter. Mirrors TS `FxHarnessSettings`.
+// Settings configures the fx harness adapter. Mirrors TS `FxHarnessSettings`
+// plus the go-ai v0.5.x sandbox-ACP settings.
 type Settings struct {
-	Auth                 AuthenticationMode
+	Auth AuthenticationMode
+	// CredentialForwarding, Port, PortEndpoint, StartupTimeoutMS, Reconnect
+	// and MintBridgeToken configure the sandbox-ACP runtime; the libfx
+	// runtime ignores them.
 	CredentialForwarding harness.CredentialForwarding
 	Port                 *int
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
 	Reconnect            *bridge.ReconnectOptions
-	MCPServers           map[string]any
-	MintBridgeToken      harness.MintBridgeTokenCallback
+	// MCPServers configures MCP servers. The libfx runtime does not support
+	// them yet: CreateFx returns a *harness.CapabilityUnsupportedError.
+	MCPServers      map[string]any
+	MintBridgeToken harness.MintBridgeTokenCallback
+
+	// Runtime selects the fx runtime; the zero value is RuntimeSandboxACP.
+	Runtime Runtime
+
+	// The settings below apply to RuntimeLibfx only.
+
+	// Headers are added to AI Gateway requests (TS headers).
+	Headers map[string]string
+	// Effort is the reasoning effort passed to libfx (TS effort).
+	Effort string
+	// ServiceTier is "", "default", "fast" or "ultrafast" (TS serviceTier).
+	ServiceTier string
+	// Backend is "", "auto" or "wasm". Go always runs libfx's wasm backend;
+	// "native" (the Node addon) returns a *harness.CapabilityUnsupportedError.
+	Backend string
+	// Wasm says where fx-core.wasm comes from; nil downloads and caches the
+	// pinned module on first use (see WasmSource).
+	Wasm *WasmSource
+	// MemoryLimitBytes caps each core's memory; 0 means 1 GiB.
+	MemoryLimitBytes int64
+	// HTTPClient sends the core's model requests. nil uses an SSRF-safe
+	// client. Either way only the AI Gateway base origin and libfx's default
+	// provider origins are reachable.
+	HTTPClient *http.Client
 }
 
-// CreateFx returns the fx harness-v1 adapter, wiring BuildConfig's
-// acp.Settings into a live harness.Harness via acp.CreateACP. Mirrors TS
-// `createFx()`.
+// CreateFx returns the fx harness-v1 adapter. With the default
+// RuntimeSandboxACP it wires BuildConfig's acp.Settings into a live
+// harness.Harness via acp.CreateACP, as go-ai v0.5.x did; with RuntimeLibfx
+// it returns the libfx harness, the port of TS `createFx()`.
 func CreateFx(settings ...Settings) (harness.Harness, error) {
 	s := Settings{}
 	if len(settings) > 0 {
 		s = settings[0]
 	}
-	return acp.CreateACP(BuildConfig(s))
+	switch s.Runtime {
+	case "", RuntimeSandboxACP:
+		h, err := acp.CreateACP(BuildConfig(s))
+		if err != nil {
+			return nil, err
+		}
+		return legacyHarness{h}, nil
+	case RuntimeLibfx:
+		return newLibfxHarness(s)
+	}
+	return nil, fmt.Errorf("fx: unknown runtime %q", s.Runtime)
 }
 
-// BuildConfig assembles the acp.Settings `createFx()` builds (TS
-// `ACPHarnessSettings` as passed to `createACP()`).
+// BuildConfig assembles the acp.Settings the pre-libfx `createFx()` built
+// (TS `ACPHarnessSettings` as passed to `createACP()`). It configures the
+// RuntimeSandboxACP runtime only.
 func BuildConfig(settings Settings) acp.Settings {
 	mcpToolTitlePrefixes := make([]string, 0, len(settings.MCPServers))
 	for name := range settings.MCPServers {
