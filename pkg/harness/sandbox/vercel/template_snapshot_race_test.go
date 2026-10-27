@@ -143,3 +143,31 @@ func TestEnsureTemplateSnapshotOtherCreateErrorsPropagate(t *testing.T) {
 		t.Fatalf("err=%v lists=%d", err, f.listSnapshots)
 	}
 }
+
+// The list endpoint of the real @vercel/sandbox API takes `project` (not
+// `projectId`) and an opaque string `cursor`; pagination.next is a string.
+func TestListSnapshotsUsesRealQueryAndStringCursor(t *testing.T) {
+	f := newFakeServer()
+	defer f.Close()
+	client := NewAPIClient(f.URL(), testCreds())
+	f.snapshotPageSize = 1
+	f.snapshots = []fakeSnapshot{
+		{ID: "snap_1", Name: "t", Status: "created", CreationMethod: "manual"},
+		{ID: "snap_2", Name: "t", Status: "created", CreationMethod: "automatic"},
+		{ID: "snap_3", Name: "t", Status: "created", CreationMethod: "manual"},
+	}
+	got, err := client.ListSnapshots(context.Background(), "t")
+	if err != nil || len(got) != 3 || got[0].ID != "snap_3" || got[2].ID != "snap_1" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if len(f.snapshotListQueries) != 3 {
+		t.Fatalf("expected 3 page requests, got %d", len(f.snapshotListQueries))
+	}
+	q := f.snapshotListQueries[0]
+	if q.Get("project") != testCreds().ProjectID || q.Get("projectId") != "" || q.Get("sortOrder") != "desc" || q.Get("name") != "t" {
+		t.Fatalf("query = %v", q)
+	}
+	if f.snapshotListQueries[1].Get("cursor") != "cur_1" {
+		t.Fatalf("second page query = %v", f.snapshotListQueries[1])
+	}
+}

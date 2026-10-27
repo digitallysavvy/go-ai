@@ -228,20 +228,20 @@ const maxSnapshotListPages = 20
 // iterated with `for await`).
 func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotWire, error) {
 	var all []snapshotWire
-	until := ""
+	cursor := ""
 	for page := 0; page < maxSnapshotListPages; page++ {
 		var out listSnapshotsResponse
 		if err := c.http.DoJSON(ctx, httpinternal.Request{
 			Method: http.MethodGet, Path: "/v2/sandboxes/snapshots", Headers: c.headers(nil),
-			Query: c.query(map[string]string{"projectId": c.credentials.ProjectID, "name": name, "sortOrder": "desc", "until": until}),
+			Query: c.query(map[string]string{"project": c.credentials.ProjectID, "name": name, "sortOrder": "desc", "cursor": cursor}),
 		}, &out); err != nil {
 			return nil, toAPIError(err)
 		}
 		all = append(all, out.Snapshots...)
-		if out.Pagination.Next == nil || len(out.Snapshots) == 0 {
+		if out.Pagination.Next == nil || *out.Pagination.Next == "" || len(out.Snapshots) == 0 {
 			break
 		}
-		until = strconv.FormatInt(*out.Pagination.Next, 10)
+		cursor = *out.Pagination.Next
 	}
 	return all, nil
 }

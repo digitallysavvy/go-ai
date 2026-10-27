@@ -119,7 +119,7 @@ type createSnapshotResponse struct {
 type listSnapshotsResponse struct {
 	Snapshots  []snapshotWire `json:"snapshots"`
 	Pagination struct {
-		Next *int64 `json:"next"`
+		Next *string `json:"next"`
 	} `json:"pagination"`
 }
 

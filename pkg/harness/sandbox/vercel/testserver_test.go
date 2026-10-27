@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -81,6 +82,11 @@ type fakeServer struct {
 	// onListSnapshots, when set, runs at each list call (under no lock) so a
 	// test can publish a snapshot mid-poll.
 	onListSnapshots func(call int)
+	// snapshotPageSize, when >0, paginates the list response with the real
+	// API's string `cursor` / `pagination.next`.
+	snapshotPageSize int
+	// snapshotListQueries records the query of each list call.
+	snapshotListQueries []url.Values
 
 	// forceCreateError, when set, makes every create request fail with this
 	// error instead of creating a sandbox.
@@ -524,11 +530,24 @@ func (f *fakeServer) handleListSnapshots(w http.ResponseWriter, r *http.Request)
 	name := r.URL.Query().Get("name")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := []fakeSnapshot{}
+	f.snapshotListQueries = append(f.snapshotListQueries, r.URL.Query())
+	all := []fakeSnapshot{}
 	for i := len(f.snapshots) - 1; i >= 0; i-- { // newest first (sortOrder=desc)
 		if f.snapshots[i].Name == name {
-			out = append(out, f.snapshots[i])
+			all = append(all, f.snapshots[i])
 		}
 	}
-	writeJSON(w, 200, map[string]interface{}{"snapshots": out, "pagination": map[string]interface{}{"count": len(out), "next": nil}})
+	// Real @vercel/sandbox: `project` query param, opaque string `cursor`,
+	// `pagination.next` is a string or null.
+	start := 0
+	if c := r.URL.Query().Get("cursor"); c != "" {
+		fmt.Sscanf(c, "cur_%d", &start)
+	}
+	out := all[min(start, len(all)):]
+	var next interface{}
+	if f.snapshotPageSize > 0 && len(out) > f.snapshotPageSize {
+		out = out[:f.snapshotPageSize]
+		next = fmt.Sprintf("cur_%d", start+f.snapshotPageSize)
+	}
+	writeJSON(w, 200, map[string]interface{}{"snapshots": out, "pagination": map[string]interface{}{"count": len(out), "next": next}})
 }
