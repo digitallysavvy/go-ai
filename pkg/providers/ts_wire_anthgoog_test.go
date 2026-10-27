@@ -60,7 +60,9 @@ func init() {
 		BatchPrefix:     "/v1beta",
 		LanguageResults: true,
 		Skip: map[string]string{
-			"~starts a batch with inline requests when the creation body is under 20 MB": "the TS test mocks generateId (display name) and sets provider-level headers the recording does not carry",
+			"~long decode continuation > should resend the same request with the continuation token on CONTINUATION":       "the recording predates TS #23513, which adds providerMetadata.google.groundingMetadataPerRequest to continued responses (covered by google/continuation_grounding_test.go); re-record at e64ed82f27",
+			"~long decode continuation > should return the continuation token when the budget is used up after continuing": "the recording predates TS #23513, which adds providerMetadata.google.groundingMetadataPerRequest to continued responses (covered by google/continuation_grounding_test.go); re-record at e64ed82f27",
+			"~starts a batch with inline requests when the creation body is under 20 MB":                                   "the TS test mocks generateId (display name) and sets provider-level headers the recording does not carry",
 			"~async headers handling":                                                       "the TS test configures headers as (async) functions, which the recording does not carry",
 			"~GoogleBatch > starts an inline image generation batch":                        "the TS test mocks generateId (batch display name)",
 			"~GoogleBatch > omits webhook configuration for inline input":                   "the TS test mocks generateId (batch display name)",
