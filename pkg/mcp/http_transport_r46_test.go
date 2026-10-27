@@ -73,3 +73,36 @@ func TestSSETransportConnectFailureUsesServerReasonPhrase(t *testing.T) {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
+
+// A status line without a reason phrase gives fetch statusText "", so TS
+// reports "503 " with no canonical text.
+func TestSSETransportConnectFailureWithoutReasonPhrase(t *testing.T) {
+	url := rawStatusServer(t, "HTTP/1.1 503")
+	transport := NewSSETransport(SSETransportConfig{URL: url})
+	err := transport.Connect(context.Background())
+	if err == nil {
+		_ = transport.Close()
+		t.Fatal("expected an error")
+	}
+	if !strings.HasPrefix(err.Error(), "MCP SSE Transport Error: 503 ") || strings.Contains(err.Error(), "Service Unavailable") {
+		t.Fatalf("error = %q", err.Error())
+	}
+}
+
+func TestResponseStatusText(t *testing.T) {
+	cases := []struct {
+		status string
+		code   int
+		want   string
+	}{
+		{"503 Busy Right Now", 503, "Busy Right Now"},
+		{"503", 503, ""},
+		{"Service Unavailable", 503, "Service Unavailable"}, // custom SSEClient
+		{"", 404, "Not Found"},
+	}
+	for _, c := range cases {
+		if got := responseStatusText(&http.Response{Status: c.status, StatusCode: c.code}); got != c.want {
+			t.Errorf("responseStatusText(%q, %d) = %q, want %q", c.status, c.code, got, c.want)
+		}
+	}
+}
