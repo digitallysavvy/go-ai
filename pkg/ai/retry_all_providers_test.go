@@ -133,3 +133,30 @@ func TestGenerateText_RetriesSelfClassifiedRetryableErrors(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls)
 	}
 }
+
+type selfRetryable struct{}
+
+func (selfRetryable) Error() string     { return "Cannot connect to API" }
+func (selfRetryable) IsRetryable() bool { return true }
+
+// 400 and 401 are never retried; a status-less ProviderError wrapping a
+// retryable connection failure is; a plain status-less one is not.
+func TestIsGatewayCallRetryableClassification(t *testing.T) {
+	for status, want := range map[int]bool{400: false, 401: false, 403: false, 404: false, 408: true, 409: true, 429: true, 500: true, 503: true} {
+		if got := isGatewayCallRetryable(providererrors.NewProviderError("acme", status, "", "x", nil)); got != want {
+			t.Errorf("status %d: retryable=%v want %v", status, got, want)
+		}
+	}
+	if !isGatewayCallRetryable(providererrors.NewProviderError("acme", 0, "", "x", selfRetryable{})) {
+		t.Error("ProviderError wrapping a retryable connection failure must be retried")
+	}
+	if isGatewayCallRetryable(providererrors.NewProviderError("acme", 0, "", "bad input", errors.New("boom"))) {
+		t.Error("status-less ProviderError must not be retried")
+	}
+	no := false
+	e := providererrors.NewProviderError("acme", 503, "", "x", nil)
+	e.Retryable = &no
+	if isGatewayCallRetryable(e) {
+		t.Error("Retryable=false must be honoured")
+	}
+}

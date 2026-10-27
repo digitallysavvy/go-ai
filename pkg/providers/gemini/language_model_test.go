@@ -1047,3 +1047,29 @@ func TestAudioResponseModalities(t *testing.T) {
 		t.Fatalf("file = %#v", result.Content[1])
 	}
 }
+
+// A functionCall without an id gets a generated id, not the tool name, so
+// parallel calls to one tool do not collide (v0.5.3 regression test).
+func TestConvertResponse_IdlessFunctionCallsGetUniqueIDs(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	resp := Response{
+		Candidates: []Candidate{{
+			Content: struct {
+				Parts []Part `json:"parts"`
+				Role  string `json:"role"`
+			}{Parts: []Part{
+				{FunctionCall: &FunctionCall{Name: "weather"}},
+				{FunctionCall: &FunctionCall{Name: "weather"}},
+			}},
+			FinishReason: "STOP",
+		}},
+	}
+	result := m.convertResponse(resp, nil)
+	if len(result.ToolCalls) != 2 {
+		t.Fatalf("tool calls = %d", len(result.ToolCalls))
+	}
+	a, b := result.ToolCalls[0].ID, result.ToolCalls[1].ID
+	if a == "" || b == "" || a == b || a == "weather" {
+		t.Fatalf("ids = %q, %q", a, b)
+	}
+}

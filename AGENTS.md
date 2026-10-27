@@ -19,7 +19,7 @@ use the rest of this file. Instead:
   The guide at `docs/02-getting-started/04-using-go-ai-with-coding-agents.mdx`
   has a snippet to paste into your own AGENTS.md or CLAUDE.md.
 - Reference app (useChat frontend, Go backend, approval-gated tool, coding-agent
-  harness): <https://github.com/digitallysavvy/go-ai-demo>.
+  harness): <https://github.com/digitallysavvy/go-ai-shipyard>.
 
 ## What this is
 

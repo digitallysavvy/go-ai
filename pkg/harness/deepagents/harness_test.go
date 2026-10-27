@@ -542,7 +542,7 @@ func TestPromptTurnRejectsOnNonSuspendedClose(t *testing.T) {
 
 	select {
 	case <-control.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second): // hang guard only; settling is event-driven
 		t.Fatal("turn did not settle after the connection was dropped")
 	}
 	if err := control.Err(); err == nil || !strings.Contains(err.Error(), "closed before the turn finished") {

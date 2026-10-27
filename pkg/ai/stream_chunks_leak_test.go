@@ -125,3 +125,17 @@ func TestChunksContext_CancelLeavesStreamUsable(t *testing.T) {
 		t.Fatal("Stream() after ChunksContext cancel did not reach the finish chunk")
 	}
 }
+
+// A consumer that reads every chunk still sees the whole stream (v0.5.3).
+func TestChunks_FullConsumerSeesAllChunks(t *testing.T) {
+	res := manyChunkResult(t)
+	text := 0
+	for c := range res.Chunks() {
+		if c.Type == provider.ChunkTypeText {
+			text++
+		}
+	}
+	if text != 100 {
+		t.Fatalf("text chunks = %d, want 100", text)
+	}
+}
