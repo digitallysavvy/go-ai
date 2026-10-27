@@ -81,20 +81,20 @@ func catalogs() map[string][]string {
 
 func TestGatewayModelIDCatalogsExposeAllModelKinds(t *testing.T) {
 	want := map[string]int{
-		"language":      313,
+		"language":      318,
 		"embedding":     28,
-		"image":         38,
+		"image":         37,
 		"video":         39,
-		"reranking":     7,
-		"speech":        13,
-		"transcription": 10,
+		"reranking":     9,
+		"speech":        14,
+		"transcription": 12,
 		"realtime":      9,
-		"decision":      7,
+		"decision":      14,
 	}
 	got := catalogs()
 	for kind, n := range want {
 		if len(got[kind]) != n {
-			t.Errorf("%s catalog length = %d, want %d (TS ai@7.0.140)", kind, len(got[kind]), n)
+			t.Errorf("%s catalog length = %d, want %d (TS ai@7.0.153)", kind, len(got[kind]), n)
 		}
 	}
 }
@@ -162,7 +162,7 @@ func TestGatewayModelIDCatalogIncludesSep23Additions(t *testing.T) {
 	want := map[string][]string{
 		"language":      {"openai/gpt-6-luna", "spacexai/grok-4.7", "xiaomi/mimo-v2.6-pro", "mixedbread/toast-1", "inference-net/schematron-v2-small"},
 		"embedding":     {"perplexity/pplx-embed-v1-0.6b", "perplexity/pplx-embed-v1-4b"},
-		"image":         {"bytedance/seedream-5.0-pro", "quiverai/arrow-1.1", "spacexai/grok-imagine-image-2.0"},
+		"image":         {"bytedance/seedream-5.0-pro", "spacexai/grok-imagine-image-2.0"},
 		"video":         {"alibaba/wan-v3.0-video", "google/veo-3.1-lite-generate-001", "minimax/minimax-h3"},
 		"speech":        {"fish-audio/s2.1-pro", "google/gemini-3.8-flash-tts"},
 		"transcription": {"fish-audio/transcribe-1", "openai/gpt-realtime-whisper"},
@@ -179,6 +179,41 @@ func TestGatewayModelIDCatalogIncludesSep23Additions(t *testing.T) {
 			if !present[id] {
 				t.Errorf("%s catalog missing %q", kind, id)
 			}
+		}
+	}
+}
+
+// TS ai@7.0.153 settings: new ids are suggested, removed ids stay as
+// deprecated constants (so v0.5.2 callers compile) but leave the catalogs.
+func TestGatewayModelIDCatalogOct27Changes(t *testing.T) {
+	all := catalogs()
+	has := func(kind, id string) bool {
+		for _, v := range all[kind] {
+			if v == id {
+				return true
+			}
+		}
+		return false
+	}
+	for kind, ids := range map[string][]string{
+		"language":      {"moonshotai/kimi-k3.1-pro", "moonshotai/kimi-k3.1-pro-highspeed", "minimax/minimax-m3.1-flash"},
+		"speech":        {"mistral/voxtral-mini-tts-3"},
+		"transcription": {"mistral/voxtral-mini-transcribe-3", "mistral/voxtral-small-transcribe-3"},
+	} {
+		for _, id := range ids {
+			if !has(kind, id) {
+				t.Errorf("%s catalog missing %q", kind, id)
+			}
+		}
+	}
+	for _, removed := range []struct{ kind, id string }{
+		{"language", string(GatewayLanguageModelAnthropicClaudeSonnet4)},
+		{"language", string(GatewayLanguageModelOpenaiGpt4Turbo)},
+		{"image", string(GatewayImageModelQuiveraiArrow11)},
+		{"realtime", string(GatewayRealtimeModelSpacexaiGrokVoiceThinkFast10)},
+	} {
+		if has(removed.kind, removed.id) {
+			t.Errorf("%s catalog still lists removed %q", removed.kind, removed.id)
 		}
 	}
 }
