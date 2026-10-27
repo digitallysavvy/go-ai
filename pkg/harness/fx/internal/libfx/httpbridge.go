@@ -29,6 +29,8 @@ var DefaultAllowedOrigins = []string{
 	"https://chatgpt.com",
 	"https://cli-chat-proxy.grok.com",
 	"https://api.x.ai",
+	// The grok provider reads the current Grok CLI version here.
+	"https://x.ai",
 	"https://auth.openai.com",
 	"https://auth.x.ai",
 }
