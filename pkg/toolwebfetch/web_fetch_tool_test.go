@@ -749,8 +749,9 @@ func TestDoubleEncodedHostIsNotFetched(t *testing.T) {
 		t.Fatalf("initial: requests = %d, out = %v", ft.count(), out)
 	}
 	rt := fixed(307, "", "Location", target)
-	run(t, newTool(t, Options{Transport: rt}), "https://example.com/", 0)
-	if rt.count() != 1 {
+	// The decoded host keeps a "%", so TS new URL throws: the call fails.
+	_, err := newTool(t, Options{Transport: rt}).Execute(context.Background(), map[string]interface{}{"url": "https://example.com/"}, types.ToolExecutionOptions{ToolCallID: "c"})
+	if err == nil || rt.count() != 1 {
 		t.Fatalf("redirect: requests = %d, want 1 (the target must not be requested)", rt.count())
 	}
 }
