@@ -228,6 +228,9 @@ func newLibfxHarness(s Settings) (*libfxHarness, error) {
 	default:
 		return nil, fmt.Errorf("fx: unknown serviceTier %q", s.ServiceTier)
 	}
+	if s.MemoryLimitBytes < 0 || s.MemoryLimitBytes > libfx.MaxMemoryLimitPages*65536 {
+		return nil, fmt.Errorf("fx: MemoryLimitBytes must be between 0 and 4 GiB (the wasm32 maximum), got %d", s.MemoryLimitBytes)
+	}
 	h := &libfxHarness{settings: s}
 	h.newEngine = h.startAgent
 	h.resolve = func(ctx context.Context, auth AuthenticationMode, required string) (fxAuthentication, error) {

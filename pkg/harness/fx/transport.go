@@ -29,7 +29,7 @@ import (
 // published, and applies structured output.
 //
 // Go hardening beyond TS: the Gateway credential never enters the core. The
-// core sends a per-turn placeholder, which the transport replaces with the
+// core sends a per-session placeholder, which the transport replaces with the
 // real credential on Gateway requests only, and the real credential is
 // redacted from every response body before the core or the state file sees
 // it.

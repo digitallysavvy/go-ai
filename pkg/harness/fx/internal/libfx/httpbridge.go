@@ -40,19 +40,24 @@ var DefaultAllowedOrigins = []string{
 // AllowlistFetch returns a FetchFunc that sends requests whose origin is in
 // origins through client and refuses every other origin. An entry with a
 // path ("https://host/path") allows only that endpoint (scheme, host and
-// path, any query).
+// path, any query). Origins compare as WHATWG serializes them: scheme and
+// host lowercased, a default port dropped.
 func AllowlistFetch(client *http.Client, origins []string) FetchFunc {
 	allowed := map[string]bool{}
 	endpoints := map[string]bool{}
 	for _, o := range origins {
-		if u, err := url.Parse(o); err == nil && u.Scheme != "" && u.Host != "" && u.Path != "" && u.Path != "/" {
-			endpoints[u.Scheme+"://"+u.Host+u.EscapedPath()] = true
+		u, err := url.Parse(o)
+		if err != nil || u.Scheme == "" || u.Host == "" {
 			continue
 		}
-		allowed[o] = true
+		if u.Path != "" && u.Path != "/" {
+			endpoints[OriginOf(u)+u.EscapedPath()] = true
+			continue
+		}
+		allowed[OriginOf(u)] = true
 	}
 	permitted := func(u *url.URL) bool {
-		origin := u.Scheme + "://" + u.Host
+		origin := OriginOf(u)
 		return allowed[origin] || endpoints[origin+u.EscapedPath()]
 	}
 	// Redirects are held to the same allowlist; the caller's client is

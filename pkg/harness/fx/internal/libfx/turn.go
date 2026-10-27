@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 )
 
 // This file ports the part of libfx's createFxEngine (fx-sdk.js:2252-3494)
@@ -456,7 +458,6 @@ func hostToolContent(v any) (string, bool, error) {
 			return "", false, errors.New("invalid typed tool result")
 		}
 		images := make([]ToolImage, 0, len(typed.Images))
-		total := 0
 		for _, img := range typed.Images {
 			if img.Type != "image" || img.MimeType == "" || len(img.MimeType) > 128 || (img.Data == "" && img.SourceRef == "") || (len(img.Data) > maxToolImageDataBytes && img.SourceRef == "") {
 				return "", false, errors.New("invalid tool image")
@@ -464,16 +465,28 @@ func hostToolContent(v any) (string, bool, error) {
 			if len(img.Data) > maxToolImageDataBytes {
 				img.Data = ""
 			}
-			total += len(img.Data)
 			images = append(images, img)
 		}
-		if total > maxToolImagesDataBytes {
+		// libfx's order: drop the data of referenced images when the images
+		// or the encoded result are over the limit, and only then fail.
+		if imageDataBytes(images) > maxToolImagesDataBytes {
 			images = omitReferencedImageData(images)
 		}
-		content, _ := json.Marshal(struct {
-			Text   string      `json:"text"`
-			Images []ToolImage `json:"images"`
-		}{typed.Text, images})
+		if imageDataBytes(images) > maxToolImagesDataBytes {
+			return "", false, errors.New("tool images exceed the result limit")
+		}
+		encode := func() []byte {
+			content, _ := jsstr.Marshal(struct {
+				Text   string      `json:"text"`
+				Images []ToolImage `json:"images"`
+			}{typed.Text, images})
+			return content
+		}
+		content := encode()
+		if len(content) > maxToolImagesDataBytes {
+			images = omitReferencedImageData(images)
+			content = encode()
+		}
 		if len(content) > maxToolImagesDataBytes {
 			return "", false, errors.New("typed tool result exceeds the result limit")
 		}
@@ -490,6 +503,15 @@ func hostToolContent(v any) (string, bool, error) {
 		return "null", false, nil
 	}
 	return string(data), false, nil
+}
+
+// imageDataBytes is libfx promptImageDataBytes for base64 image data.
+func imageDataBytes(images []ToolImage) int {
+	total := 0
+	for _, img := range images {
+		total += len(img.Data)
+	}
+	return total
 }
 
 func omitReferencedImageData(images []ToolImage) []ToolImage {

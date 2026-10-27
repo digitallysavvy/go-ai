@@ -761,6 +761,36 @@ func TestAllowlistFetch(t *testing.T) {
 	resp.Body.Close() //nolint:errcheck
 }
 
+// Origins compare as WHATWG serializes them, so a Gateway base URL written
+// with capitals (allowlisted lowercased by the harness) or a request with
+// the default port is still allowed, and nothing else is.
+func TestAllowlistFetchNormalizesOrigins(t *testing.T) {
+	var hits []string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		hits = append(hits, req.URL.String())
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: http.Header{}, Request: req}, nil
+	})}
+	fetch := AllowlistFetch(client, []string{"https://my-proxy.example.com", "https://X.AI/cli/stable"})
+	for _, u := range []string{"https://My-Proxy.Example.com/v1/ai/language-model", "https://my-proxy.example.com:443/v1", "HTTPS://MY-PROXY.EXAMPLE.COM/x", "https://x.ai/cli/stable", "https://x.ai:443/cli/stable"} {
+		req, _ := http.NewRequest("GET", u, nil)
+		resp, err := fetch(req)
+		if err != nil {
+			t.Errorf("%s refused: %v", u, err)
+			continue
+		}
+		resp.Body.Close() //nolint:errcheck
+	}
+	for _, u := range []string{"https://my-proxy.example.com:8443/x", "http://my-proxy.example.com/x", "https://x.ai/CLI/stable", "https://proxy.example.com/x"} {
+		req, _ := http.NewRequest("GET", u, nil)
+		if _, err := fetch(req); err == nil {
+			t.Errorf("%s allowed", u)
+		}
+	}
+	if len(hits) != 5 {
+		t.Fatalf("requests sent = %v", hits)
+	}
+}
+
 // An allowlist entry with a path allows that endpoint only: the grok
 // core's GET https://x.ai/cli/stable must not open all of https://x.ai,
 // directly or through a redirect.

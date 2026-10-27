@@ -20,6 +20,9 @@ import (
 // declares no maximum, which would otherwise allow 4 GiB.
 const DefaultMemoryLimitPages = 16384
 
+// MaxMemoryLimitPages is the largest limit a wasm32 memory can have (4 GiB).
+const MaxMemoryLimitPages = 65536
+
 // ErrWasmInterface is matched (errors.Is) by *InterfaceError: the module's
 // imports or exports differ from the interface this host implements.
 var ErrWasmInterface = errors.New("libfx: fx-core.wasm does not match the pinned host interface")
@@ -160,6 +163,10 @@ var compileHook func(interpreter bool)
 func loadHost(ctx context.Context, mod *Module, limitPages uint32) (*host, error) {
 	if limitPages == 0 {
 		limitPages = DefaultMemoryLimitPages
+	}
+	if limitPages > MaxMemoryLimitPages {
+		// wazero panics on a limit past the wasm32 maximum.
+		return nil, fmt.Errorf("fx runtime: memory limit of %d pages exceeds the wasm32 maximum of %d (4 GiB)", limitPages, MaxMemoryLimitPages)
 	}
 	key := hostKey{mod.SHA256, limitPages}
 	hostsMu.Lock()

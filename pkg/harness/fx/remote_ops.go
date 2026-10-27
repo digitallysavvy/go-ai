@@ -343,67 +343,158 @@ func limitStrings(values []string, limit *float64, def int) []string {
 	return values[:end]
 }
 
-// globRegexp compiles a glob (`*`, `?`, `**`, `[...]`, `{a,b}`) to a
-// regular expression over slash-separated relative paths, the subset of
-// Node's path.matchesGlob the fx glob tool relies on.
-func globRegexp(pattern string) (*regexp.Regexp, error) {
+// globPattern is a compiled glob (`*`, `?`, `**`, `[...]`, `{a,b}`) over
+// slash-separated relative paths: the subset of Node's path.matchesGlob
+// (minimatch without the dot option) the fx glob tool relies on. As there,
+// a wildcard never matches a path segment that starts with "." unless the
+// pattern segment itself starts with ".", so `**/*` skips .git and other
+// dot directories.
+type globPattern struct {
+	alternatives [][]globSegment
+}
+
+// globSegment is one slash-separated pattern segment.
+type globSegment struct {
+	globstar bool           // the whole segment is **
+	dot      bool           // the segment starts with a literal "."
+	re       *regexp.Regexp // anchored; nil for globstar
+}
+
+func globRegexp(pattern string) (*globPattern, error) {
+	g := &globPattern{}
+	for _, alt := range expandBraces(pattern) {
+		var segs []globSegment
+		for _, part := range strings.Split(alt, "/") {
+			if part == "**" {
+				segs = append(segs, globSegment{globstar: true})
+				continue
+			}
+			re, err := regexp.Compile("^" + globSegmentRegexp(part) + "$")
+			if err != nil {
+				return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+			}
+			segs = append(segs, globSegment{dot: strings.HasPrefix(part, "."), re: re})
+		}
+		g.alternatives = append(g.alternatives, segs)
+	}
+	return g, nil
+}
+
+// MatchString reports whether path matches the pattern.
+func (g *globPattern) MatchString(path string) bool {
+	parts := strings.Split(path, "/")
+	for _, segs := range g.alternatives {
+		if matchGlobSegments(segs, parts) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchGlobSegments(segs []globSegment, parts []string) bool {
+	if len(segs) == 0 {
+		return len(parts) == 0
+	}
+	s := segs[0]
+	if s.globstar {
+		// A trailing ** needs at least one segment (minimatch: "a/**" does
+		// not match "a"); elsewhere it matches zero or more. It never
+		// crosses a dot segment.
+		min := 0
+		if len(segs) == 1 {
+			min = 1
+		}
+		for n := 0; n <= len(parts); n++ {
+			if n > 0 && strings.HasPrefix(parts[n-1], ".") {
+				return false
+			}
+			if n >= min && matchGlobSegments(segs[1:], parts[n:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(parts) == 0 {
+		return false
+	}
+	if strings.HasPrefix(parts[0], ".") && !s.dot {
+		return false
+	}
+	return s.re.MatchString(parts[0]) && matchGlobSegments(segs[1:], parts[1:])
+}
+
+// globSegmentRegexp translates one segment's wildcards to a regexp.
+func globSegmentRegexp(part string) string {
 	var b strings.Builder
-	b.WriteString("^")
-	depth := 0
-	for i := 0; i < len(pattern); i++ {
-		c := pattern[i]
+	for i := 0; i < len(part); i++ {
+		c := part[i]
 		switch c {
 		case '*':
-			if i+1 < len(pattern) && pattern[i+1] == '*' {
+			for i+1 < len(part) && part[i+1] == '*' {
 				i++
-				atStart := i == 1 || pattern[i-2] == '/'
-				if atStart && i+1 < len(pattern) && pattern[i+1] == '/' {
-					i++
-					b.WriteString("(?:.*/)?")
-				} else {
-					b.WriteString(".*")
-				}
-				continue
 			}
 			b.WriteString("[^/]*")
 		case '?':
 			b.WriteString("[^/]")
 		case '[':
-			end := strings.IndexByte(pattern[i+1:], ']')
+			end := strings.IndexByte(part[i+1:], ']')
 			if end < 0 {
 				b.WriteString(`\[`)
 				continue
 			}
-			class := pattern[i+1 : i+1+end]
+			class := part[i+1 : i+1+end]
 			if strings.HasPrefix(class, "!") {
 				class = "^" + class[1:]
 			}
 			b.WriteString("[" + strings.ReplaceAll(class, `\`, `\\`) + "]")
 			i += end + 1
-		case '{':
-			depth++
-			b.WriteString("(?:")
-		case '}':
-			if depth > 0 {
-				depth--
-				b.WriteString(")")
-			} else {
-				b.WriteString(`\}`)
-			}
-		case ',':
-			if depth > 0 {
-				b.WriteString("|")
-			} else {
-				b.WriteString(",")
-			}
 		default:
 			b.WriteString(regexp.QuoteMeta(string(c)))
 		}
 	}
-	b.WriteString("$")
-	re, err := regexp.Compile(b.String())
-	if err != nil {
-		return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+	return b.String()
+}
+
+// expandBraces expands {a,b} alternatives (nested braces included); a
+// brace without a matching close, or without a comma, is literal.
+func expandBraces(pattern string) []string {
+	open := strings.IndexByte(pattern, '{')
+	for open >= 0 {
+		depth, commas, closeAt := 0, []int{}, -1
+		for i := open; i < len(pattern) && closeAt < 0; i++ {
+			switch pattern[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					closeAt = i
+				}
+			case ',':
+				if depth == 1 {
+					commas = append(commas, i)
+				}
+			}
+		}
+		if closeAt < 0 {
+			return []string{pattern}
+		}
+		if len(commas) == 0 {
+			next := strings.IndexByte(pattern[open+1:], '{')
+			if next < 0 {
+				return []string{pattern}
+			}
+			open += 1 + next
+			continue
+		}
+		prefix, suffix := pattern[:open], pattern[closeAt+1:]
+		var out []string
+		start := open + 1
+		for _, c := range append(commas, closeAt) {
+			out = append(out, expandBraces(prefix+pattern[start:c]+suffix)...)
+			start = c + 1
+		}
+		return out
 	}
-	return re, nil
+	return []string{pattern}
 }

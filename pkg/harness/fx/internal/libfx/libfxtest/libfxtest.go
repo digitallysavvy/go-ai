@@ -18,9 +18,7 @@ import (
 // if needed and fails when it cannot be prepared; "0" skips the tests.
 const EnvWasmTest = "GOAI_FX_WASM_TEST"
 
-// Prepare makes the pinned module available. offline forbids the network;
-// unavailable reports whether an error means the module is simply not
-// cached.
+// Prepare makes the pinned module available; offline forbids the network.
 type Prepare func(ctx context.Context, offline bool) error
 
 // Mode is how RequireWasm treats a missing module.
@@ -50,7 +48,8 @@ func CurrentMode() Mode {
 }
 
 // RequireWasm prepares the pinned fx-core.wasm or skips or fails t, as
-// CurrentMode says. After it returns the module is cached, so tests can
+// CurrentMode says; unavailable reports whether an error means the module
+// is simply not cached. After it returns the module is cached, so tests can
 // load it offline.
 func RequireWasm(t testing.TB, version string, prepare Prepare, unavailable func(error) bool) {
 	t.Helper()

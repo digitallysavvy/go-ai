@@ -826,4 +826,12 @@ func TestLibfxRejectsNativeBackendAcceptsMCP(t *testing.T) {
 	if _, err := CreateFx(Settings{Runtime: "other"}); err == nil {
 		t.Error("unknown runtime accepted")
 	}
+	for _, n := range []int64{-1, 4<<30 + 1, 8 << 30} {
+		if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, MemoryLimitBytes: n}); err == nil || !strings.Contains(err.Error(), "MemoryLimitBytes") {
+			t.Errorf("MemoryLimitBytes %d = %v", n, err)
+		}
+	}
+	if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, MemoryLimitBytes: 4 << 30}); err != nil {
+		t.Errorf("MemoryLimitBytes 4 GiB = %v", err)
+	}
 }
