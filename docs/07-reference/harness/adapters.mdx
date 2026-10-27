@@ -213,6 +213,34 @@ Each adapter is its own package under `pkg/harness`. Every adapter has a `Harnes
 | `harness/grokbuild` | `grokbuild.CreateGrokBuild(...Settings) (harness.Harness, error)` | Grok Build, through ACP. |
 | `harness/acp` | `acp.CreateACP(Settings) (harness.Harness, error)` | Any runtime that speaks the Agent Client Protocol. The Cursor, GitHub Copilot and Grok Build adapters are configurations of it. |
 
+### Image input
+
+User messages can carry inline images next to text. `harnessutil.ExtractPromptContent` normalizes a `harness.Prompt` into plain text (a bare string, or a message whose parts are all text, joined with a blank line) or into ordered text and base64 image parts. Claude Code, Codex, OpenCode, Deep Agents and the ACP-based adapters use it.
+
+Pass an image as an `types.ImageContent`, or as a `types.FileContent` whose media type starts with `image`. The data can be bytes, a base64 string, or a base64 `data:` URL. When the media type is only `image` or `image/*`, it is taken from the `data:` URL or detected from the bytes.
+
+The helper rejects these inputs with a `*harness.CapabilityUnsupportedError`, before any turn starts:
+
+- remote image URLs
+- provider file references
+- `data:` URLs that are not base64 encoded
+- images whose media type cannot be detected
+- files that are not images
+- content parts other than text, image and file
+
+```go
+msg := types.Message{
+	Role: types.RoleUser,
+	Content: []types.ContentPart{
+		types.TextContent{Text: "What is in this image?"},
+		types.FileContent{MediaType: "image/png", Data: pngBytes},
+	},
+}
+result, err := agent.ExecuteWithMessages(ctx, []types.Message{msg})
+```
+
+See `examples/harness/image-input` for a runnable program.
+
 ### Adapter notes
 
 - **ACP image tool output.** `acp.Settings.NonTextContentTypes` declares the non-text tool model output the runtime can deliver to its model. Text is always supported. The only value is `acp.NonTextContentImage`, which the Cursor and Grok Build adapters set. For a runtime that does not declare it, image content from a tool's `toModelOutput` transformation is omitted and the bridge writes a warning to stderr. The fx adapter does not declare it, so it receives text only.
