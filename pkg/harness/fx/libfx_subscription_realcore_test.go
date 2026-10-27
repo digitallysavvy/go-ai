@@ -277,7 +277,17 @@ func TestLibfxRealCoreSubscriptionParsedOutputColdReplay(t *testing.T) {
 			fixtures := responsesFixtures(t, provider, true)
 			fixture := fixtures[len(fixtures)-1]
 			sub := &memSubscription{creds: libfx.Credentials{AccessToken: "test-token", RefreshToken: "test-refresh", AccountID: "account", ExpiresAt: 2_000_000_000_000}}
-			network := &subscriptionNetwork{t: t, model: func(int) *http.Response { return sseBody(fixture) }}
+			// The transport has recorded the whole response once the body is
+			// closed. TS serves it in a single chunk, so its suspension can
+			// never land mid-record; waiting for the close keeps that true
+			// here, where the pump reads 32 KiB at a time.
+			recorded := make(chan struct{})
+			var recordedOnce sync.Once
+			network := &subscriptionNetwork{t: t, model: func(int) *http.Response {
+				resp := sseBody(fixture)
+				resp.Body = &closeSignal{ReadCloser: resp.Body, fire: func() { recordedOnce.Do(func() { close(recorded) }) }}
+				return resp
+			}}
 			h := newSubscriptionHarness(t, provider, sub, network)
 			sb := newFakeSandbox()
 			ctx := context.Background()
@@ -293,7 +303,14 @@ func TestLibfxRealCoreSubscriptionParsedOutputColdReplay(t *testing.T) {
 			before := &partLog{}
 			before.on = func(p harness.StreamPart) {
 				if p.PartType() == harness.PartTypeTextDelta {
-					once.Do(func() { suspended <- suspendFromEmit(t, session) })
+					once.Do(func() {
+						select {
+						case <-recorded:
+						case <-time.After(30 * time.Second):
+							t.Error("the response was never fully recorded")
+						}
+						suspended <- suspendFromEmit(t, session)
+					})
 				}
 			}
 			control, err := session.DoPromptTurn(ctx, harness.PromptTurnOptions{TurnSettings: opts, Prompt: harness.TextPrompt("Reply."), Emit: before.emit})
@@ -373,4 +390,15 @@ func derefAny[T any](p *T) any {
 		return nil
 	}
 	return *p
+}
+
+type closeSignal struct {
+	io.ReadCloser
+	fire func()
+}
+
+func (c *closeSignal) Close() error {
+	err := c.ReadCloser.Close()
+	c.fire()
+	return err
 }

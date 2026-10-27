@@ -816,11 +816,11 @@ func TestResolveFxEnvModes(t *testing.T) {
 	}
 }
 
-func TestLibfxRejectsNativeBackendAndMCP(t *testing.T) {
+func TestLibfxRejectsNativeBackendAcceptsMCP(t *testing.T) {
 	if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, Backend: "native"}); !harness.IsCapabilityUnsupportedError(err) {
 		t.Errorf("native backend = %v", err)
 	}
-	if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, MCPServers: map[string]any{"s": map[string]any{"url": "https://x"}}}); !harness.IsCapabilityUnsupportedError(err) {
+	if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, MCPServers: map[string]any{"s": map[string]any{"url": "https://x"}}}); err != nil {
 		t.Errorf("mcp = %v", err)
 	}
 	if _, err := CreateFx(Settings{Runtime: "other"}); err == nil {

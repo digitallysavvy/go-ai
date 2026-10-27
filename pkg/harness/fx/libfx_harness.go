@@ -27,8 +27,8 @@ const (
 	// RuntimeLibfx runs the libfx core (fx-core.wasm) in the host process,
 	// the runtime TS @ai-sdk/harness-fx uses. Built-in tools run as
 	// commands in the session sandbox; the host makes the model requests.
-	// It supports AI Gateway authentication; codex and grok subscriptions
-	// and MCP servers are not supported yet.
+	// It authenticates with AI Gateway or a codex or grok subscription and
+	// connects HTTP and SSE MCP servers from the host.
 	RuntimeLibfx Runtime = "libfx"
 )
 
@@ -227,9 +227,6 @@ func newLibfxHarness(s Settings) (*libfxHarness, error) {
 	case "", ServiceTierDefault, ServiceTierFast, ServiceTierUltrafast:
 	default:
 		return nil, fmt.Errorf("fx: unknown serviceTier %q", s.ServiceTier)
-	}
-	if len(s.MCPServers) > 0 {
-		return nil, harness.NewCapabilityUnsupportedError("MCP servers are not supported by the Go fx libfx runtime yet; use fx.RuntimeSandboxACP.", HarnessID, nil)
 	}
 	h := &libfxHarness{settings: s}
 	h.newEngine = h.startAgent

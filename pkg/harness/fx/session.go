@@ -415,6 +415,8 @@ type activeTurn struct {
 	runtimeTurn    fxTurn
 	transport      *transport
 	credentialFail error
+	mcp            *fxMCPRuntime
+	mcpTools       []fxMCPTool
 	results        map[string]harness.ToolResultSubmission
 	approvals      map[string]fxApproval
 	registered     map[string]registeredTool
@@ -827,9 +829,18 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 					}
 				}
 				s.mu.Lock()
-				if execErr != nil {
+				var richErr *libfx.ToolResultError
+				if execErr != nil && errors.As(execErr, &richErr) {
+					// A failure carrying a rich result (TS error.toolResult).
+					current.Result = fromTypedResult(richErr.Result)
+					current.Result.IsError = boolPtr(true)
+					current.Output = jsonValue(current.Result.Text)
+				} else if execErr != nil {
 					current.Result = &fxToolResult{Type: "libfx.tool-result", Text: execErr.Error(), Images: []fxToolImage{}, IsError: boolPtr(true)}
 					current.Output = jsonValue(current.Result.Text)
+				} else if rich, ok := output.(*libfx.TypedToolResult); ok && rich != nil && rich.Type == "libfx.tool-result" {
+					current.Result = fromTypedResult(*rich)
+					current.Output = jsonValue(current.Result)
 				} else {
 					current.Output = jsonValue(output)
 					if text, ok := output.(string); ok {
@@ -868,6 +879,15 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 		return nil, &libfx.ToolResultError{Result: *typed}
 	}
 	return typed, nil
+}
+
+// fromTypedResult converts a host tool's rich result for the record.
+func fromTypedResult(r libfx.TypedToolResult) *fxToolResult {
+	out := &fxToolResult{Type: r.Type, Text: r.Text, Images: make([]fxToolImage, len(r.Images)), IsError: r.IsError}
+	for i, img := range r.Images {
+		out.Images[i] = fxToolImage(img)
+	}
+	return out
 }
 
 // suspend freezes the turn (TS active.suspend).
@@ -945,8 +965,39 @@ func (a *activeTurn) buildTools(ctx context.Context) ([]libfx.Tool, error) {
 			},
 		})
 	}
+	for _, tool := range a.mcpTools {
+		name := tool.name
+		for suffix := 2; hasTool(tools, name); suffix++ {
+			name = fmt.Sprintf("%s_%d", truncate(tool.name, 58), suffix)
+		}
+		toolName := name
+		impl := tool.execute
+		a.registered[toolName] = registeredTool{providerExecuted: true, kind: harness.BuiltinToolUseKindBash}
+		tools = append(tools, libfx.Tool{
+			Name: toolName, Description: tool.description, InputSchema: tool.inputSchema,
+			Execute: func(callCtx context.Context, input json.RawMessage) (any, error) {
+				run := func(ctx context.Context, input json.RawMessage) (any, error) {
+					ctx, cancel := context.WithCancel(ctx)
+					defer cancel()
+					stop := context.AfterFunc(callCtx, cancel)
+					defer stop()
+					return impl(ctx, input)
+				}
+				return a.executeTool(toolName, run, true, harness.BuiltinToolUseKindBash, input)
+			},
+		})
+	}
 	_ = ctx
 	return tools, nil
+}
+
+func hasTool(tools []libfx.Tool, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *activeTurn) run() {
@@ -994,6 +1045,13 @@ func (a *activeTurn) cleanup() error {
 	if tr != nil {
 		tr.stop()
 	}
+	a.s.mu.Lock()
+	mcpRuntime := a.mcp
+	a.mcp = nil
+	a.s.mu.Unlock()
+	if err := mcpRuntime.close(); err != nil && first == nil {
+		first = err
+	}
 	if err := a.s.save(context.Background()); err != nil && first == nil {
 		first = err
 	}
@@ -1009,6 +1067,14 @@ func (a *activeTurn) runBody() error {
 	if err != nil {
 		return err
 	}
+	mcpRuntime, err := createFxMCPRuntime(a.ctx, s.h.settings.MCPServers)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	a.mcp = mcpRuntime
+	a.mcpTools = mcpRuntime.tools
+	s.mu.Unlock()
 	tools, err := a.buildTools(a.ctx)
 	if err != nil {
 		return err
@@ -1089,7 +1155,7 @@ func (a *activeTurn) runBody() error {
 		return err
 	}
 	instructions := []string{}
-	for _, part := range []string{a.settings.Instructions, skills, fmt.Sprintf("All filesystem and shell tools operate in the sandbox workspace %s.", s.start.SessionWorkDir)} {
+	for _, part := range []string{a.settings.Instructions, skills, mcpRuntime.instructions, fmt.Sprintf("All filesystem and shell tools operate in the sandbox workspace %s.", s.start.SessionWorkDir)} {
 		if part != "" {
 			instructions = append(instructions, part)
 		}

@@ -55,8 +55,11 @@ type Settings struct {
 	PortEndpoint         *harness.PortEndpoint
 	StartupTimeoutMS     *int
 	Reconnect            *bridge.ReconnectOptions
-	// MCPServers configures MCP servers. The libfx runtime does not support
-	// them yet: CreateFx returns a *harness.CapabilityUnsupportedError.
+	// MCPServers configures MCP servers. Under RuntimeLibfx each entry is
+	// {url, type?: "http"|"sse"|"streamableHttp", headers?, disabled?}; the
+	// host connects to it and its tools reach the model as
+	// mcp_<server>_<tool>. A command (stdio) server fails the turn with a
+	// *harness.CapabilityUnsupportedError.
 	MCPServers      map[string]any
 	MintBridgeToken harness.MintBridgeTokenCallback
 
