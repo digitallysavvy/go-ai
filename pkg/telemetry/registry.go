@@ -1426,8 +1426,9 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	switch e.OperationType {
 	case "ai.embed":
 		// TS onEmbedOperationStart sets ai.value (not ai.prompt) for a
-		// single embed call, input-gated and JSON-encoded.
-		if recordInputs && e.Prompt != "" {
+		// single embed call, input-gated and JSON-encoded. An empty value
+		// is recorded too (TS JSON.stringify("") is `""`).
+		if recordInputs {
 			span.SetAttributes(attribute.String("ai.value", legacyJSONOrEmpty(e.Prompt)))
 		}
 	case "ai.embedMany":
