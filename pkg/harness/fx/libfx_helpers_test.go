@@ -58,6 +58,8 @@ func (f *fakeSandbox) Run(ctx context.Context, opts providerutils.SandboxProcess
 		return providerutils.SandboxRunResult{}, nil
 	case strings.HasPrefix(opts.Command, "mkdir -p --"):
 		return providerutils.SandboxRunResult{}, nil
+	case opts.Command == "pwd":
+		return providerutils.SandboxRunResult{Stdout: "/workspace"}, nil
 	}
 	if handle != nil {
 		return handle(ctx, opts)
