@@ -568,10 +568,10 @@ func TestDecisionModel_KeepsTSQuestionAndCriteriaOrder(t *testing.T) {
 	opts.CriteriaOrder = map[string][]string{"sentiment": {"positive", "negative", "mixed"}}
 	_, _ = m.DoDecide(context.Background(), opts)
 	body := string(raw)
-	if !(strings.Index(body, `"severity"`) < strings.Index(body, `"sentiment"`) && strings.Index(body, `"sentiment"`) < strings.Index(body, `"defect"`)) {
+	if strings.Index(body, `"severity"`) >= strings.Index(body, `"sentiment"`) || strings.Index(body, `"sentiment"`) >= strings.Index(body, `"defect"`) {
 		t.Fatalf("question order not kept: %s", body)
 	}
-	if !(strings.Index(body, `"positive"`) < strings.Index(body, `"negative"`) && strings.Index(body, `"negative"`) < strings.Index(body, `"mixed"`)) {
+	if strings.Index(body, `"positive"`) >= strings.Index(body, `"negative"`) || strings.Index(body, `"negative"`) >= strings.Index(body, `"mixed"`) {
 		t.Fatalf("criteria order not kept: %s", body)
 	}
 }
