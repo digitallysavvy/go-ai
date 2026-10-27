@@ -3,6 +3,7 @@ package google
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -821,8 +822,15 @@ func TestParseGoogleBatchCountStrictLikeTS(t *testing.T) {
 			t.Errorf("parseGoogleBatchCount(%#v) = %d, want nil", bad, *got)
 		}
 	}
-	for in, want := range map[interface{}]int{"007": 7, "12": 12, float64(4): 4, "9007199254740991": 9007199254740991} {
-		if got := parseGoogleBatchCount(in); got == nil || *got != want {
+	for in, want := range map[interface{}]int64{"007": 7, "12": 12, float64(4): 4, "9007199254740991": 9007199254740991, float64(1<<53 - 1): 1<<53 - 1} {
+		got := parseGoogleBatchCount(in)
+		if want > math.MaxInt { // 32-bit: the count does not fit an int
+			if got != nil {
+				t.Errorf("parseGoogleBatchCount(%#v) = %d, want nil on a 32-bit platform", in, *got)
+			}
+			continue
+		}
+		if got == nil || int64(*got) != want {
 			t.Errorf("parseGoogleBatchCount(%#v) = %v, want %d", in, got, want)
 		}
 	}

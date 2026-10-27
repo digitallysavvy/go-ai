@@ -146,11 +146,12 @@ jobs:
         run: go build -v ./...
 
       # int is 32 bits on these targets, so an untyped constant above
-      # 2^31-1 used as int fails to compile there.
-      - name: Cross-build for 32-bit (linux/386, linux/arm)
+      # 2^31-1 used as int fails to compile there. vet also compiles the
+      # test files, which go build skips.
+      - name: Cross-compile and vet for 32-bit (linux/386, linux/arm)
         run: |
-          GOOS=linux GOARCH=386 go build ./...
-          GOOS=linux GOARCH=arm go build ./...
+          GOOS=linux GOARCH=386 go vet ./...
+          GOOS=linux GOARCH=arm go vet ./...
 
   build-examples:
     name: Build Examples

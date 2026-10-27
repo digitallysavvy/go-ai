@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -683,13 +684,14 @@ func parseGoogleBatchCount(v interface{}) *int {
 		if t == "" || strings.Trim(t, "0123456789") != "" {
 			return nil
 		}
-		if n, err := strconv.ParseInt(t, 10, 64); err == nil && n <= maxSafeJSInteger {
+		// A count past math.MaxInt (only possible on 32-bit) is unrepresentable.
+		if n, err := strconv.ParseInt(t, 10, 64); err == nil && n <= maxSafeJSInteger && n <= math.MaxInt {
 			v := int(n)
 			return &v
 		}
 		return nil
 	case float64:
-		if t >= 0 && t <= maxSafeJSInteger && t == float64(int64(t)) {
+		if t >= 0 && t <= maxSafeJSInteger && t == float64(int64(t)) && int64(t) <= math.MaxInt {
 			n := int(t)
 			return &n
 		}

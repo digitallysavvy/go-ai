@@ -118,10 +118,10 @@ func TestDownloadWithMetadataReturnsDataURLMediaType(t *testing.T) {
 func TestDownload_DefaultLimit2GiB(t *testing.T) {
 	opts := insecureDownloadOptions()
 	if opts.MaxSize != DefaultMaxDownloadSize {
-		t.Fatalf("expected default max size %d, got %d", DefaultMaxDownloadSize, opts.MaxSize)
+		t.Fatalf("expected default max size %d, got %d", int64(DefaultMaxDownloadSize), opts.MaxSize)
 	}
 	if opts.MaxSize != 2*1024*1024*1024 {
-		t.Fatalf("expected 2 GiB (%d), got %d", 2*1024*1024*1024, opts.MaxSize)
+		t.Fatalf("expected 2 GiB (%d), got %d", int64(2*1024*1024*1024), opts.MaxSize)
 	}
 }
 

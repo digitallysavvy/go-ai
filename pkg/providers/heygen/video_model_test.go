@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -356,7 +357,7 @@ func TestDoStart_RejectsInvalidInputsBeforeSubmitting(t *testing.T) {
 		{"long duration", func(o *provider.VideoModelV3CallOptions) { o.Duration = dur(16) }},
 		{"fractional duration", func(o *provider.VideoModelV3CallOptions) { o.Duration = dur(5.5) }},
 		{"negative seed", func(o *provider.VideoModelV3CallOptions) { o.Seed = seed(-1) }},
-		{"large seed", func(o *provider.VideoModelV3CallOptions) { o.Seed = seed(4294967296) }},
+		{"large seed", func(o *provider.VideoModelV3CallOptions) { o.Seed = seed(aboveUint32Seed()) }},
 		{"unknown resolution", func(o *provider.VideoModelV3CallOptions) { o.Resolution = "1920x1080" }},
 		{"text adaptive ratio", func(o *provider.VideoModelV3CallOptions) { o.AspectRatio = "adaptive" }},
 		{"unsupported ratio", func(o *provider.VideoModelV3CallOptions) { o.AspectRatio = "2:1" }},
@@ -438,6 +439,9 @@ func TestDoStart_RejectsInvalidInputsBeforeSubmitting(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "large seed" && int64(math.MaxInt) < 1<<32 {
+				t.Skip("no int reaches 2^32 on a 32-bit platform")
+			}
 			ts := newTestServer(t)
 			_, err := newModel(ts).DoStart(context.Background(), opts(tc.mutate))
 			if !providererrors.IsInvalidArgumentError(err) {
@@ -717,4 +721,14 @@ func TestDoGenerate_ReportsFailureAndTimeout(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "timed out") || time.Since(start) > 5*time.Second {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// aboveUint32Seed is 2^32, the first seed HeyGen rejects as too large. On a
+// 32-bit platform no int reaches it and the case is skipped.
+func aboveUint32Seed() int {
+	v := int64(1) << 32
+	if v > math.MaxInt {
+		return math.MaxInt
+	}
+	return int(v)
 }
