@@ -99,7 +99,10 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 			ToolCall: &types.ToolCall{
 				ID: p.ID, ToolName: p.ToolName, Title: p.Title,
 				ProviderExecuted: p.ProviderExecuted, Dynamic: p.Dynamic,
-				ProviderMetadata: convertProviderMetadata(p.ProviderMetadata),
+				// TS forwards the event unchanged: an explicit
+				// `providerExecuted: false` stays set.
+				ProviderExecutedSet: p.ProviderExecuted || !p.ProviderExecutedOmitted,
+				ProviderMetadata:    convertProviderMetadata(p.ProviderMetadata),
 			},
 		}}
 

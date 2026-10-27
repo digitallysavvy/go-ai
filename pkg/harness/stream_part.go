@@ -236,6 +236,11 @@ type ToolInputStartPart struct {
 	ProviderExecuted bool             `json:"providerExecuted,omitempty"`
 	Dynamic          bool             `json:"dynamic,omitempty"`
 	Title            string           `json:"title,omitempty"`
+	// ProviderExecutedOmitted is set by DecodeStreamPart when the wire frame
+	// carried no `providerExecuted` key. TS forwards the part unchanged, so
+	// an explicit false stays visible to consumers that forward
+	// `providerExecuted` whenever it is defined. Never serialized.
+	ProviderExecutedOmitted bool `json:"-"`
 }
 
 // ToolInputDeltaPart is the `tool-input-delta` part (V4 primitive).
@@ -606,9 +611,13 @@ func DecodeStreamPart(data []byte) (StreamPart, error) {
 			return nil, err
 		}
 	}
-	if tc, ok := part.(*ToolCallPart); ok {
+	switch p := part.(type) {
+	case *ToolCallPart:
 		_, present := fields["providerExecuted"]
-		tc.ProviderExecutedOmitted = !present
+		p.ProviderExecutedOmitted = !present
+	case *ToolInputStartPart:
+		_, present := fields["providerExecuted"]
+		p.ProviderExecutedOmitted = !present
 	}
 	return part, nil
 }
