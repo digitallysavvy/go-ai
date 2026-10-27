@@ -253,6 +253,18 @@ func agentHeaders(headers map[string]string) map[string]string {
 	return version.WithUserAgentSuffix(headers, "ai-sdk-agent/tool-loop")
 }
 
+// loopHeaders is the header set the legacy loop's model calls send: for a
+// direct call, agentHeaders plus the ai/<version> suffix GenerateText adds.
+// A caller that already tagged the request with its own agent segment
+// (WorkflowAgent's ai-sdk-agent/workflow; TS streamLanguageModelCall adds no
+// ai/<version>) keeps its headers as they are.
+func loopHeaders(headers map[string]string) map[string]string {
+	if hasAgentUserAgentSegment(headers) {
+		return headers
+	}
+	return version.WithUserAgentSuffix(agentHeaders(headers), version.UserAgent())
+}
+
 func hasAgentUserAgentSegment(headers map[string]string) bool {
 	for k, v := range headers {
 		if strings.EqualFold(k, "user-agent") {
@@ -1724,12 +1736,14 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		RuntimeContext:        callConfig.RuntimeContext,
 		ToolsContext:          callConfig.ToolsContext,
 		Seed:                  callConfig.Seed,
-		Headers:               callConfig.Headers,
-		Reasoning:             callConfig.Reasoning,
-		SendReasoning:         callConfig.SendReasoning,
-		ProviderOptions:       callConfig.ProviderOptions,
-		Telemetry:             callConfig.Telemetry,
-		ResponseFormat:        responseFormat,
+		// The same tags Generate sends: the agent segment, then GenerateText's
+		// ai/<version> (TS ToolLoopAgent always runs through generateText).
+		Headers:         loopHeaders(callConfig.Headers),
+		Reasoning:       callConfig.Reasoning,
+		SendReasoning:   callConfig.SendReasoning,
+		ProviderOptions: callConfig.ProviderOptions,
+		Telemetry:       callConfig.Telemetry,
+		ResponseFormat:  responseFormat,
 	}
 
 	// Call the model with step context, retrying transient Gateway failures

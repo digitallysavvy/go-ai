@@ -106,7 +106,7 @@ func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySett
 		Settings:         settings,
 		System:           sys,
 		Messages:         messages,
-		Headers:          a.config.Headers,
+		Headers:          loopHeaders(a.config.Headers),
 		MaxOutputTokens:  a.config.MaxTokens,
 		Temperature:      a.config.Temperature,
 		TopP:             a.config.TopP,
