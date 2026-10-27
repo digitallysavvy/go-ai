@@ -131,8 +131,10 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 		if opts.GetToolCall != nil {
 			call, hasCall = opts.GetToolCall(p.ToolCallID)
 		}
+		// TS `toolCall?.providerExecuted ?? isProviderExecuted?.(id) ?? true`:
+		// a call that leaves providerExecuted undefined falls back too.
 		providerExecuted := opts.isProviderExecuted(p.ToolCallID)
-		if hasCall {
+		if hasCall && (call.ProviderExecuted || call.ProviderExecutedSet) {
 			providerExecuted = call.ProviderExecuted
 		}
 		if p.IsError && providerExecuted {

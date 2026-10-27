@@ -958,6 +958,11 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 				_ = d.joinOutstandingExecutions()
 				return false, false, d.ctx.Err()
 			}
+			// TS awaits waitForOutstandingHostToolExecutions once the stream
+			// ends: a failed host execution fails the turn.
+			if err := d.joinOutstandingExecutions(); err != nil {
+				return false, false, err
+			}
 			if !finished {
 				// The adapter ended the turn (closed its stream) without
 				// ever emitting `finish`. TS reports onTurnFailed and then
@@ -2631,6 +2636,9 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 		for _, c := range TranslatePart(display, d.translateOpts()) {
 			if c.ToolResult != nil && c.ToolResult.Error == nil {
 				result := *c.ToolResult
+				// enqueueHostToolOutcome sets no providerExecuted, unlike a
+				// translated echo of the call.
+				result.ProviderExecuted, result.ProviderExecutedSet = false, false
 				if display.IsError {
 					result.Error = fmt.Errorf("%v", display.Result)
 				} else if hasModelOutput {

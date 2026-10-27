@@ -375,8 +375,9 @@ func credentialsFromDocument(value *jsonorder.Object, format credentialFormat) *
 		raw, _ := record.Get("expires_at")
 		switch v := raw.(type) {
 		case string:
-			if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
-				expiresAt = t.UnixMilli()
+			// TS Date.parse.
+			if ms, ok := harnessutil.ParseJSDate(v); ok {
+				expiresAt = ms
 			}
 		case json.Number:
 			if f := numberValue(v); !math.IsNaN(f) && !math.IsInf(f, 0) {

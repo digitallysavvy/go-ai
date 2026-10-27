@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -503,5 +504,102 @@ func TestLegacyRuntimeDoStartRejectsLibfxState(t *testing.T) {
 		if _, err := old.DoStart(context.Background(), opts); !errors.As(err, &inc) || !strings.Contains(err.Error(), "RuntimeLibfx") {
 			t.Errorf("%s: %v", name, err)
 		}
+	}
+}
+
+// TestGlobHostCase checks the glob tool against Node's path.matchesGlob on
+// each host: minimatch with nocase off (Linux), nocase on (macOS), and
+// nocase on with the win32 platform (Windows), all with nocaseMagicOnly and
+// windowsPathsNoEscape. Expected values come from node v24's bundled
+// minimatch (`node --expose-internals`, internal/deps/minimatch).
+func TestGlobHostCase(t *testing.T) {
+	cases := []struct {
+		pattern, path          string
+		linux, darwin, windows bool
+	}{
+		{"src/*.ts", "src/A.TS", false, true, true},
+		{"src/*.ts", "SRC/a.ts", false, false, false},
+		{"**/*.ts", "SRC/a.ts", true, true, true},
+		{"readme.md", "README.md", false, false, false},
+		{"readme.*", "README.md", false, true, true},
+		{"README.md", "README.md", true, true, true},
+		{"a/b/*", "a/B/c.txt", false, false, false},
+		{"a/?/*", "a/B/c.txt", true, true, true},
+		{"a/[b]/*", "a/B/c.txt", false, false, false},
+		{"a/[a-c]/*", "a/B/c.txt", false, true, true},
+		{"{a,x}/b", "A/b", false, false, false},
+		{"*.{js,ts}", "Foo.JS", false, true, true},
+		{"a[b]", "AB", false, false, false},
+		{"[a]?", "aB", true, true, true},
+		{"[!B]", "b", true, false, false},
+		{"[^a]", "b", true, true, true},
+		{"[bc]", "B", false, true, true},
+		{"[K]*", "k", false, false, false},
+		{"k*", "K", false, false, false},
+		{"s*", "ſ", false, false, false},
+		{"[ſ]?", "S", false, false, false},
+		{"[r-t]*", "S", false, true, true},
+		{"[É]*", "é", false, true, true},
+		{"[à-ê]*", "É", false, true, true},
+		{"ẞ*", "ß", false, false, false},
+		{"ǅ*", "ǆ", false, true, true},
+		{"FF*", "ﬀ", false, false, false},
+		{"[[:upper:]]", "s", false, true, true},
+		{"[[:alpha:]]", "é", true, true, true},
+		{"[[:alpha:]]", "1", false, false, false},
+		{"[[:graph:]]", "x", true, true, true},
+		{"[[:graph:]]", " ", false, false, false},
+		{"[![:graph:]]", "a", false, false, false},
+		{"[[:digit:]a]", "a", true, true, true},
+		{"[a-]", "-", true, true, true},
+		{"[]]", "]", true, true, true},
+		{"[]a]]", "a]", true, true, true},
+		{"[]a]", "b", false, false, false},
+		{"[x", "[x", true, true, true},
+		{"[*", "[", true, true, true},
+		{"a\\b", "a/b", true, true, true},
+		{"a/b", "a\\b", false, false, true},
+		{"a/*", "a\\b", false, false, true},
+		{"*", "a\\b", true, true, false},
+		{"x\\*.GO", "x/Y.go", false, true, true},
+		{"?", "😀", false, false, false},
+		{"A*", "a😀", false, true, true},
+		{"**/*", "**/*", true, true, true},
+		{"**/*", ".git/config", false, false, false},
+		{"dir/*", "Dir/.Hidden", false, false, false},
+		{"*/*.go", "DIR/x.Go", false, true, true},
+		{"{src,lib}/**/*.GO", "lib/X/Y.go", false, true, true},
+		{"[[:alpha:]]?", "a😀", true, true, true},
+		{"[[:alpha:]]k", "kK", false, true, true},
+		{"[[:alpha:]]ſ", "kS", false, true, true},
+		{"[😀]", "😀", false, false, false},
+		{"??x", "😀x", true, true, true},
+		{"[[:alpha:]]", "ß", true, true, true},
+		{"[[:alpha:]]ẞ", "xß", false, true, true},
+		{"[[:ascii:]]", "a", true, true, true},
+		{"[[:xdigit:]]", "A", true, true, true},
+		{"[[:xdigit:]]", "g", false, false, false},
+	}
+	modes := []struct {
+		name          string
+		noCase, win32 bool
+	}{{"linux", false, false}, {"darwin", true, false}, {"windows", true, true}}
+	for _, m := range modes {
+		for _, c := range cases {
+			g, err := compileGlob(c.pattern, m.noCase, m.win32)
+			if err != nil {
+				t.Fatalf("%s: %s: %v", m.name, c.pattern, err)
+			}
+			want := map[string]bool{"linux": c.linux, "darwin": c.darwin, "windows": c.windows}[m.name]
+			if got := g.MatchString(c.path); got != want {
+				t.Errorf("%s: %q ~ %q = %v, want %v", m.name, c.pattern, c.path, got, want)
+			}
+		}
+	}
+}
+
+func TestGlobHostDefaults(t *testing.T) {
+	if globNoCase != (runtime.GOOS == "darwin" || runtime.GOOS == "windows") || globWin32Paths != (runtime.GOOS == "windows") {
+		t.Fatalf("glob host flags = %v, %v on %s", globNoCase, globWin32Paths, runtime.GOOS)
 	}
 }

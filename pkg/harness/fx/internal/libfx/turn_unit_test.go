@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -179,5 +180,39 @@ func TestTurnPushBackpressure(t *testing.T) {
 	tr.mu.Unlock()
 	if _, err := tr.Next(context.Background()); !errors.Is(err, io.EOF) {
 		t.Errorf("next after finish = %v", err)
+	}
+}
+
+// libfx normalizeImageSourceRef: a tool image's sourceRef is at most 512
+// bytes of UTF-8 without ASCII controls, or the result fails.
+func TestHostToolContentChecksSourceRef(t *testing.T) {
+	result := func(ref string) TypedToolResult {
+		return TypedToolResult{Type: "libfx.tool-result", Images: []ToolImage{{Type: "image", MimeType: "image/png", SourceRef: ref}}}
+	}
+	for ref, want := range map[string]string{
+		strings.Repeat("r", 513): "tool image sourceRef exceeds the 512 byte libfx limit",
+		"ref\x00x":               "tool image sourceRef must be valid UTF-8 without ASCII controls",
+		"ref\x7f":                "tool image sourceRef must be valid UTF-8 without ASCII controls",
+		"ref\xff":                "tool image sourceRef must be valid UTF-8 without ASCII controls",
+	} {
+		if _, _, err := hostToolContent(result(ref)); err == nil || err.Error() != want {
+			t.Errorf("sourceRef %q: %v, want %q", ref, err, want)
+		}
+	}
+	if got, _, err := hostToolContent(result(strings.Repeat("r", 512))); err != nil || !strings.Contains(got, `"sourceRef"`) {
+		t.Errorf("a 512-byte sourceRef: %s, %v", got, err)
+	}
+}
+
+func TestTurnUsageKeepsSafeIntegers(t *testing.T) {
+	raw := map[string]json.RawMessage{
+		"inputTokens": json.RawMessage(`12`), "outputTokens": json.RawMessage(`3.0`),
+		"cacheReadTokens": json.RawMessage(`1e2`), "cacheWriteTokens": json.RawMessage(`1.5`),
+		"reasoningTokens": json.RawMessage(`9007199254740992`), "other": json.RawMessage(`4`),
+	}
+	got := turnUsage(raw)
+	want := map[string]int64{"inputTokens": 12, "outputTokens": 3, "cacheReadTokens": 100}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("turnUsage = %v, want %v", got, want)
 	}
 }

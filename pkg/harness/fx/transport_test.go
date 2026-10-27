@@ -520,3 +520,27 @@ func TestCredentialBrokerRedactsResponseHeaders(t *testing.T) {
 	}
 	tr.stop()
 }
+
+// TS compares url.origin, so a Gateway URL with a capitalized host or the
+// default port is still the Gateway: rewritten, with the Gateway headers.
+func TestTransportGatewayOriginIsWHATWG(t *testing.T) {
+	for _, raw := range []string{"https://AI-Gateway.Vercel.sh/v4/other", "https://ai-gateway.vercel.sh:443/v4/other"} {
+		h := &transportHarness{turn: newTurnState()}
+		var forwarded *http.Request
+		o := h.options(func(req *http.Request) (*http.Response, error) {
+			forwarded = req
+			return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+		})
+		o.baseURL = "https://gateway.example/proxy"
+		o.headers = map[string]string{"x-client-app": "adapter"}
+		tr := newTransport(o)
+		req, _ := http.NewRequest(http.MethodGet, raw, nil)
+		if _, err := readAll(t, tr, req); err != nil {
+			t.Fatal(err)
+		}
+		if forwarded.URL.String() != "https://gateway.example/proxy/v4/other" || forwarded.Header.Get("x-client-app") != "adapter" {
+			t.Errorf("%s: forwarded to %s with %v", raw, forwarded.URL, forwarded.Header)
+		}
+		tr.stop()
+	}
+}

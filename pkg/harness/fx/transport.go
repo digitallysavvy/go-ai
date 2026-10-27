@@ -137,7 +137,9 @@ type transportProtocol interface {
 
 type gatewayProtocol struct{}
 
-func originOf(u *url.URL) string { return u.Scheme + "://" + u.Host }
+// originOf is the WHATWG origin TS compares (url.origin): lowercase, with
+// the default port dropped.
+func originOf(u *url.URL) string { return libfx.OriginOf(u) }
 
 func (gatewayProtocol) label() string { return "Gateway" }
 

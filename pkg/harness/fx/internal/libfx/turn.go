@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -41,6 +42,7 @@ const (
 	maxPromptImagesBytes   = (8 << 20) / 4 * 3
 	maxToolImageDataBytes  = 5 << 20
 	maxToolImagesDataBytes = 8 << 20
+	maxImageSourceRefBytes = 512
 )
 
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -459,7 +461,13 @@ func hostToolContent(v any) (string, bool, error) {
 		}
 		images := make([]ToolImage, 0, len(typed.Images))
 		for _, img := range typed.Images {
-			if img.Type != "image" || img.MimeType == "" || len(img.MimeType) > 128 || (img.Data == "" && img.SourceRef == "") || (len(img.Data) > maxToolImageDataBytes && img.SourceRef == "") {
+			if img.Type != "image" {
+				return "", false, errors.New("invalid tool image")
+			}
+			if err := checkImageSourceRef(img.SourceRef); err != nil {
+				return "", false, err
+			}
+			if img.MimeType == "" || len(img.MimeType) > 128 || (img.Data == "" && img.SourceRef == "") || (len(img.Data) > maxToolImageDataBytes && img.SourceRef == "") {
 				return "", false, errors.New("invalid tool image")
 			}
 			if len(img.Data) > maxToolImageDataBytes {
@@ -503,6 +511,21 @@ func hostToolContent(v any) (string, bool, error) {
 		return "null", false, nil
 	}
 	return string(data), false, nil
+}
+
+// checkImageSourceRef is libfx normalizeImageSourceRef for a tool image:
+// at most 512 bytes of valid UTF-8 without ASCII controls.
+func checkImageSourceRef(ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if len(ref) > maxImageSourceRefBytes {
+		return fmt.Errorf("tool image sourceRef exceeds the %d byte libfx limit", maxImageSourceRefBytes)
+	}
+	if !utf8.ValidString(ref) || strings.ContainsFunc(ref, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return errors.New("tool image sourceRef must be valid UTF-8 without ASCII controls")
+	}
+	return nil
 }
 
 // imageDataBytes is libfx promptImageDataBytes for base64 image data.
@@ -952,15 +975,20 @@ func (a *Agent) sendPrompt(sessionID, turnID string, prompt []map[string]any, im
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return TurnResult{}, fmt.Errorf("fx session/prompt returned an invalid result: %w", err)
 	}
+	return TurnResult{StopReason: res.StopReason, Usage: turnUsage(res.Usage)}, nil
+}
+
+// turnUsage is libfx normalizeTurnUsage: the five counters that are safe
+// integers (Number.isSafeInteger), so 12, 12.0 and 1.2e1 all count.
+func turnUsage(raw map[string]json.RawMessage) map[string]int64 {
 	usage := map[string]int64{}
 	for _, key := range []string{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens"} {
-		if v, ok := res.Usage[key]; ok {
-			if n, err := strconv.ParseInt(string(v), 10, 64); err == nil && n >= -(1<<53-1) && n <= 1<<53-1 {
-				usage[key] = n
-			}
+		var f float64
+		if v, ok := raw[key]; ok && json.Unmarshal(v, &f) == nil && f == math.Trunc(f) && math.Abs(f) <= 1<<53-1 {
+			usage[key] = int64(f)
 		}
 	}
-	return TurnResult{StopReason: res.StopReason, Usage: usage}, nil
+	return usage
 }
 
 // preparePrompt validates blocks and splits image bytes out as attachments
