@@ -32,8 +32,8 @@ func TestKlingAIProviderUnsupportedMethodsAndClient(t *testing.T) {
 	if _, err := p.RerankingModel("x"); err == nil {
 		t.Fatal("RerankingModel should be unsupported")
 	}
-	if _, err := p.VideoModel(""); err == nil {
-		t.Fatal("VideoModel should require model ID")
+	if _, err := p.VideoModel(""); err != nil {
+		t.Fatalf("VideoModel(\"\") must not error at construction (TS raises at doStart): %v", err)
 	}
 	if p.Client() != nil {
 		t.Fatal("Client() should be nil on zero-value provider")

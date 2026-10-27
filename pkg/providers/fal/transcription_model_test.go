@@ -401,26 +401,36 @@ func TestFalTranscriptionModel_ErrorResponse(t *testing.T) {
 	}
 }
 
-// TestFalTranscriptionModel_MissingRequestID verifies a queue submit
-// response without a request_id surfaces an error rather than polling a
-// malformed URL forever.
+// TestFalTranscriptionModel_MissingRequestID: TS reads
+// `queueResponse.request_id ?? ''`, so a queue submit response without a
+// request_id is not an error; the result is polled at `.../requests/`.
 func TestFalTranscriptionModel_MissingRequestID(t *testing.T) {
+	var polled bool
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fal-ai/wizper", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte(`{}`))
 	})
+	mux.HandleFunc("/fal-ai/wizper/requests/", func(w http.ResponseWriter, r *http.Request) {
+		polled = r.URL.EscapedPath() == "/fal-ai/wizper/requests/"
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"text":"hi","chunks":[]}`))
+	})
 
 	m, srv := newTestTranscriptionModel(t, mux)
 	defer srv.Close()
 
-	_, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+	res, err := m.DoTranscribe(context.Background(), &provider.TranscriptionOptions{
 		Audio:    []byte("a"),
 		MimeType: "audio/wav",
 	})
-	if err == nil {
-		t.Fatal("expected error for missing request_id")
+	if err != nil {
+		t.Fatalf("missing request_id must not error locally: %v", err)
+	}
+	if !polled || res.Text != "hi" {
+		t.Fatalf("polled=%v text=%q", polled, res.Text)
 	}
 }
 
