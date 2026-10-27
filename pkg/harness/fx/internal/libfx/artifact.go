@@ -451,3 +451,6 @@ func extractWasm(r io.Reader) ([]byte, error) {
 // defaultFetchClient is the HTTP client model and OAuth requests use when the
 // caller supplies no Fetch: SSRF-safe dialing.
 var defaultFetchClient = &http.Client{Transport: fileutil.SafeTransport()}
+
+// DefaultFetchClient is the SSRF-safe client used when no Fetch is given.
+func DefaultFetchClient() *http.Client { return defaultFetchClient }
