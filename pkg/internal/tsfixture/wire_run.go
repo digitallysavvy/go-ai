@@ -154,7 +154,7 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			skip(why)
 		}
 	}
-	if len(w.Calls) == 0 || (len(w.HTTP) == 0 && !(s.ReplayNoHTTPErrors && allCallsThrow(w.Calls))) {
+	if len(w.Calls) == 0 || (len(w.HTTP) == 0 && (!s.ReplayNoHTTPErrors || !allCallsThrow(w.Calls))) {
 		skip("no replayable call or HTTP exchange in the TS test")
 	}
 	for _, h := range w.HTTP {
