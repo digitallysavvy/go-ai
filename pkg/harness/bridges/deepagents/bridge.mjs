@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import path, { dirname } from "node:path";
 import { argv, env, pid, stdout } from "node:process";
 import { rgPath } from "@vscode/ripgrep";
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { WebSocketServer } from "ws";
 import { ChatAnthropic } from "@langchain/anthropic";
@@ -1142,6 +1142,38 @@ function encodeBytes(value) {
 function decodeBytes(value) {
 	return Buffer.from(value, "base64");
 }
+function getLatestCheckpointId(checkpoints) {
+	return Object.keys(checkpoints).sort((a, b) => b.localeCompare(a))[0];
+}
+function getCheckpointStorageKey({ threadId, namespace, checkpointId }) {
+	return JSON.stringify([
+		threadId,
+		namespace,
+		checkpointId
+	]);
+}
+function pruneMemorySaver({ saver }) {
+	const retainedCheckpointKeys = /* @__PURE__ */ new Set();
+	for (const [threadId, namespaces] of Object.entries(saver.storage)) {
+		for (const [namespace, checkpoints] of Object.entries(namespaces)) {
+			const latestCheckpointId = getLatestCheckpointId(checkpoints);
+			if (latestCheckpointId === void 0) {
+				delete namespaces[namespace];
+				continue;
+			}
+			for (const checkpointId of Object.keys(checkpoints)) if (checkpointId !== latestCheckpointId) delete checkpoints[checkpointId];
+			const latestCheckpoint = checkpoints[latestCheckpointId];
+			if (latestCheckpoint !== void 0) latestCheckpoint[2] = void 0;
+			retainedCheckpointKeys.add(getCheckpointStorageKey({
+				threadId,
+				namespace,
+				checkpointId: latestCheckpointId
+			}));
+		}
+		if (Object.keys(namespaces).length === 0) delete saver.storage[threadId];
+	}
+	for (const key of Object.keys(saver.writes)) if (!retainedCheckpointKeys.has(key)) delete saver.writes[key];
+}
 async function loadMemorySaver({ path, saver }) {
 	let snapshot;
 	try {
@@ -1187,30 +1219,57 @@ async function loadMemorySaver({ path, saver }) {
 	}
 	saver.storage = storage;
 	saver.writes = writes;
+	pruneMemorySaver({ saver });
 }
 async function saveMemorySaver({ path, saver }) {
-	const lines = [SNAPSHOT_HEADER];
-	for (const [threadId, namespaces] of Object.entries(saver.storage)) for (const [namespace, checkpoints] of Object.entries(namespaces)) for (const [checkpointId, [checkpoint, metadata, parentCheckpointId]] of Object.entries(checkpoints)) lines.push([
-		"S",
-		encodeString(threadId),
-		encodeString(namespace),
-		encodeString(checkpointId),
-		encodeBytes(checkpoint),
-		encodeBytes(metadata),
-		parentCheckpointId == null ? "" : encodeString(parentCheckpointId)
-	].join("	"));
-	for (const [key, indexedWrites] of Object.entries(saver.writes)) for (const [index, [taskId, channel, value]] of Object.entries(indexedWrites)) lines.push([
-		"W",
-		encodeString(key),
-		encodeString(index),
-		encodeString(taskId),
-		encodeString(channel),
-		encodeBytes(value)
-	].join("	"));
 	await mkdir(dirname(path), { recursive: true });
 	const temporaryPath = `${path}.${process.pid}.tmp`;
-	await writeFile(temporaryPath, `${lines.join("\n")}\n`, "utf8");
-	await rename(temporaryPath, path);
+	const retainedCheckpointKeys = /* @__PURE__ */ new Set();
+	try {
+		const file = await open(temporaryPath, "w");
+		try {
+			const writeLine = async (line) => {
+				await file.writeFile(`${line}\n`, "utf8");
+			};
+			await writeLine(SNAPSHOT_HEADER);
+			for (const [threadId, namespaces] of Object.entries(saver.storage)) for (const [namespace, checkpoints] of Object.entries(namespaces)) {
+				const checkpointId = getLatestCheckpointId(checkpoints);
+				if (checkpointId === void 0) continue;
+				retainedCheckpointKeys.add(getCheckpointStorageKey({
+					threadId,
+					namespace,
+					checkpointId
+				}));
+				const [checkpoint, metadata] = checkpoints[checkpointId];
+				await writeLine([
+					"S",
+					encodeString(threadId),
+					encodeString(namespace),
+					encodeString(checkpointId),
+					encodeBytes(checkpoint),
+					encodeBytes(metadata),
+					""
+				].join("	"));
+			}
+			for (const [key, indexedWrites] of Object.entries(saver.writes)) {
+				if (!retainedCheckpointKeys.has(key)) continue;
+				for (const [index, [taskId, channel, value]] of Object.entries(indexedWrites)) await writeLine([
+					"W",
+					encodeString(key),
+					encodeString(index),
+					encodeString(taskId),
+					encodeString(channel),
+					encodeBytes(value)
+				].join("	"));
+			}
+		} finally {
+			await file.close();
+		}
+		await rename(temporaryPath, path);
+	} catch (error) {
+		await rm(temporaryPath, { force: true }).catch(() => void 0);
+		throw error;
+	}
 }
 async function removeMemorySaverSnapshot(path) {
 	await rm(path, { force: true });
@@ -1518,7 +1577,11 @@ async function runTurn(start, turn) {
 	};
 	let resumeInput = { messages: [{
 		role: "user",
-		content: start.prompt
+		content: typeof start.prompt === "string" ? start.prompt : start.prompt.map((part) => part.type === "text" ? part : {
+			type: "image",
+			mimeType: part.mediaType,
+			data: part.data
+		})
 	}] };
 	let emittedStructuredOutput = false;
 	while (true) {
@@ -1637,7 +1700,13 @@ async function runTurn(start, turn) {
 await runBridge({
 	bridgeType: "deepagents",
 	bridgeStateDir,
-	onStart: runTurn,
+	onStart: async (start, turn) => {
+		try {
+			await runTurn(start, turn);
+		} finally {
+			pruneMemorySaver({ saver: checkpointer });
+		}
+	},
 	onStop: async () => {
 		await closeMcpClient();
 		await saveMemorySaver({
