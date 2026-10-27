@@ -135,6 +135,18 @@ These details differ:
   connected, and their tools listed, in server-name order unless
   `Settings.MCPServerOrder` gives the TS object's key order. Structured MCP
   tool output is serialized with sorted object keys.
+- **Edge cases only the core or a crafted request reaches.**
+  - The Gateway transport's model-request check uses Go's decoded URL path,
+    where TS uses the WHATWG `pathname` (percent-encoded, dot segments
+    removed).
+  - The Responses endpoint check ignores the URL's userinfo and fragment,
+    which TS `href.split('?')[0]` keeps.
+  - A host tool image with `data: ""` and no `sourceRef` is rejected as an
+    invalid tool image; TS keeps it. Go's `ToolImage` cannot tell an empty
+    string from an absent one.
+  - The `toolStartInput` size limit measures the raw wire bytes, where TS
+    measures `JSON.stringify(rawInput)`. They differ only near the 64 KiB
+    limit.
 
 ## Features that are TypeScript-only (not ported)
 

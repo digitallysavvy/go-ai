@@ -389,6 +389,11 @@ These match TS and are unlikely to need code changes, but can change output.
 - **With `AgentSettings.Telemetry` unset, the harness agent fires no
   telemetry**, even to globally registered integrations.
 - **`harness.Agent.Generate(...).Usage` is the turn total.**
+- **A harness host call for a builtin name is denied, not a turn failure.**
+  As in TS, a host tool call is checked against the active user tools only.
+  A host call that names a builtin other than `askUserQuestions` gets an
+  `execution-denied` result with the builtin-filtering reason and the turn
+  continues; before, the turn failed with "could not validate host tool".
 
 ---
 
