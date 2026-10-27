@@ -69,6 +69,9 @@ and the [v0.5 to v0.6 migration guide](./docs/08-migration-guides/from-v0.5-to-v
   default request timeout.
 - An OPA HTTP policy response without `result` is not-applicable instead of
   denied.
+- Generated response, approval and UI message IDs use the TS formats
+  (`aitxt-`/`aiobj-` plus 24 characters, or 16 for UI messages) instead of
+  `call-` plus 24; approval IDs come from `InternalOptions.GenerateID`.
 - Code mode runs on wazero v1.12.0 and compiles QuickJS once per process
   (faster startup).
 
@@ -96,6 +99,9 @@ and the [v0.5 to v0.6 migration guide](./docs/08-migration-guides/from-v0.5-to-v
   Vercel, Vertex MaaS, Azure delegates) read only their own API key.
 - A failed harness `DoSuspendTurn` after a `StopWhen` condition fails the
   turn.
+- `StreamText` exposes the provider request body only with
+  `Include.RequestBody`; the `GenerateText` step-end event bodies follow
+  `Include`.
 - MCP OAuth rejects pre-registered confidential clients without an
   `Issuer`; `ToolChoice: none` is enforced with
   `*ai.ToolChoiceViolationError`; truncated streams finish with

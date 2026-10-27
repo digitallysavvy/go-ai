@@ -276,6 +276,14 @@ Each item has before/after code in the
   instead of `FinishReasonOther`, and the step runs no tools.
   **Migration:** check `FinishReasonInterrupted` if you detect truncation by
   finish reason.
+- **`StreamText` keeps the provider request body only when asked.** As in
+  TS (`include.requestBody` defaults to false), the step request, the
+  `start-step` chunk and `Request()` carry the body only with
+  `Include: &ai.IncludeOptions{RequestBody: true}`, the default
+  `GenerateText` already had. The `GenerateText` step-end event's request
+  and response bodies follow `Include` the same way.
+  **Migration:** set `Include.RequestBody` (and `ResponseBody`) where you
+  read the bodies.
 - **An OPA HTTP policy response without `result` is not-applicable, not
   denied**, as TS. A tool call that no rule decides falls through to the
   other approval rules.
@@ -290,6 +298,14 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Core
 
+- **Generated IDs use the TS formats.** Approval IDs come from the call's
+  ID generator (`InternalOptions.GenerateID`), and the defaults are TS's:
+  `aitxt-` plus 24 characters for text calls and the agent loop, `aiobj-`
+  plus 24 for object calls, and 16 characters for `CreateUIMessageStream`
+  message IDs. v0.5.x used `call-` plus 24 characters. Code that matches
+  the `call-` prefix on these IDs must change; telemetry call IDs keep it.
+- **A `StreamText` step that ends in an error part finishes with `error`**,
+  also after a finish part or when an earlier step finished otherwise.
 - **Tools in a step run concurrently by default** (TS `Promise.all`) in
   `GenerateText`, `StreamText`, `ToolLoopAgent` (including the legacy
   `Execute`/`GenerateAgent` loop), approval resumes and `WorkflowAgent`.
