@@ -20,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/providers/openai/responses"
 	openaitool "github.com/digitallysavvy/go-ai/pkg/providers/openai/tool"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
@@ -2384,7 +2385,8 @@ func nonEmptyOrNil(s string) interface{} {
 // progressive tool-input-delta streaming. Mirrors TS's escapeJSONDelta
 // (`JSON.stringify(delta).slice(1, -1)`).
 func escapeJSONDelta(delta string) string {
-	raw, err := json.Marshal(delta)
+	// jsonstr keeps <, > and & literal like JSON.stringify.
+	raw, err := jsonstr.Marshal(delta)
 	if err != nil || len(raw) < 2 {
 		return delta
 	}
