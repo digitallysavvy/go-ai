@@ -2986,3 +2986,24 @@ func TestCreateUIMessageStreamOnErrorPanicFailsStreamInsteadOfCrashing(t *testin
 		t.Fatalf("err = %v, want onError failed", err)
 	}
 }
+
+// TS process-ui-message-stream.test.ts "static tool name changes" (#23583): an
+// existing streamed static part adopts the completed tool name so signed
+// approvals still verify after repairToolCall renamed the tool.
+func TestUIMessageCallbackStateStaticToolPartAdoptsRepairedName(t *testing.T) {
+	s := newUIMessageCallbackState(nil, "m1")
+	for _, c := range []UIMessageChunk{
+		{"type": "start-step"},
+		{"type": "tool-input-start", "toolCallId": "tool-call-0", "toolName": "originalTool"},
+		{"type": "tool-input-delta", "toolCallId": "tool-call-0", "inputTextDelta": `{"value":"test"}`},
+		{"type": "tool-input-available", "toolCallId": "tool-call-0", "toolName": "renamedTool", "input": map[string]interface{}{"value": "test"}},
+		{"type": "tool-approval-request", "toolCallId": "tool-call-0", "approvalId": "approval-0"},
+	} {
+		s.apply(c, nil)
+	}
+	parts := uiParts(s.responseMessage())
+	part := asUIPartChunk(parts[1])
+	if part["type"] != "tool-renamedTool" || part["state"] != "approval-requested" {
+		t.Fatalf("part = %#v", part)
+	}
+}
