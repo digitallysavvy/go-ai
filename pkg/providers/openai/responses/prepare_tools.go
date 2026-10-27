@@ -730,7 +730,8 @@ func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
 	if t.Type == types.ToolTypeProviderDefined {
 		return allowedToolResolution{
 			supported: false,
-			reason:    fmt.Sprintf("OpenAI does not support %s tools in tool_choice.allowed_tools", toolID),
+			// TS uses the wire tool type (tool_search), not the provider id.
+			reason: fmt.Sprintf("OpenAI does not support %s tools in tool_choice.allowed_tools", normalizeOpenAIToolName(toolID)),
 		}
 	}
 	if functionToolOmitFromRequestTools(t.ProviderOptions) {
