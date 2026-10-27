@@ -602,7 +602,7 @@ func (a *activeTurn) toolRecordLocked(id, name string, value json.RawMessage) (*
 	for _, r := range a.turn.Tools {
 		if r.ID == id {
 			if r.Name != name || !sameJSON(r.Input, value) {
-				return nil, errors.New("fx continuation changed a recorded tool call.")
+				return nil, errors.New("fx continuation changed a recorded tool call.") //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			return r, nil
 		}
@@ -723,7 +723,7 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 	a.callbackIndex++
 	if identity == nil || identity.name != name {
 		s.mu.Unlock()
-		return nil, errors.New("fx tool callback could not be matched to its original call ID.")
+		return nil, errors.New("fx tool callback could not be matched to its original call ID.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	current, err := a.toolRecordLocked(identity.id, name, value)
 	if err != nil {
@@ -1229,7 +1229,7 @@ func (a *activeTurn) drain(rt fxTurn) error {
 					}
 					return fmt.Errorf("fx %s model request %s failed with HTTP %d.", s.auth.Provider, model, rej.status) //nolint:staticcheck // matches TS SDK's exact error text
 				}
-				return errors.New("fx parsed output could not be matched to its model request.")
+				return errors.New("fx parsed output could not be matched to its model request.") //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			if !a.suspending {
 				kind := "text"

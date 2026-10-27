@@ -36,7 +36,7 @@ import (
 
 const defaultGatewayOrigin = "https://ai-gateway.vercel.sh"
 
-var errTurnSuspended = errors.New("fx turn is suspended.")
+var errTurnSuspended = errors.New("fx turn is suspended.") //nolint:staticcheck // matches TS SDK's exact error text
 
 // gatewayPart is one parsed stream event.
 type gatewayPart map[string]any
@@ -640,12 +640,6 @@ func jsString(v any) string {
 	}
 	b, _ := json.Marshal(v)
 	return string(b)
-}
-
-func (t *transport) recordAt(index int) *fxModelRecord {
-	t.o.mu.Lock()
-	defer t.o.mu.Unlock()
-	return t.recordAtLocked(index)
 }
 
 func (t *transport) recordAtLocked(index int) *fxModelRecord {

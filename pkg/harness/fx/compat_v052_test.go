@@ -15,6 +15,7 @@ import (
 // at go-ai v0.5.2 (a0f9d3f9) with its v0.5.2 type. It fails to compile if
 // one is removed or retyped.
 func TestV052APICompiles(t *testing.T) {
+	//nolint:staticcheck // the explicit v0.5.2 types are what this test checks
 	var (
 		_ string = fx.ClientAppName
 		_ string = fx.ClientAppVersion
@@ -35,7 +36,7 @@ func TestV052APICompiles(t *testing.T) {
 		_ func(env, sandboxEnv map[string]string, brokering bool) []acp.AuthenticationFile                = fx.CreateSubscriptionAuthenticationFiles
 		_ func(env, sandboxEnv map[string]string) []fx.RequestCredential                                  = fx.GetSubscriptionRequestCredentials
 	)
-	var auth fx.AuthenticationMode = harness.Authentication{}
+	var auth fx.AuthenticationMode = harness.Authentication{} //nolint:staticcheck // checks the v0.5.2 alias
 	_ = fx.Settings{
 		Auth:                 auth,
 		CredentialForwarding: harness.CredentialForwarding(nil),

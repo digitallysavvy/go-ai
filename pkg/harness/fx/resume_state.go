@@ -362,7 +362,7 @@ func newStateStore(ctx context.Context, sandbox providerutils.SandboxSession, se
 	directory := posixpath.Join(harness.SessionDataDirectoryPath(harness.StateDirectoryPath(homeDir), sessionID), "fx")
 	rel := posixRelative(workDir, directory)
 	if rel == "" || (!strings.HasPrefix(rel, "../") && !posixpath.IsAbs(rel)) {
-		return nil, errors.New("fx private state must be outside sessionWorkDir.")
+		return nil, errors.New("fx private state must be outside sessionWorkDir.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	fileName := stateFileName
 	if fileName == "" {

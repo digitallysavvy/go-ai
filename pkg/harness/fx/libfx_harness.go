@@ -217,18 +217,17 @@ func resolveAuthentication(auth AuthenticationMode, requiredProvider string, pro
 		return fxAuthentication{}, fmt.Errorf("Cannot resume fx: no %s subscription credentials are available.", requiredProvider) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if gateway.APIKey == "" {
-		return fxAuthentication{}, errors.New(errNoGatewayCredential)
+		return fxAuthentication{}, errors.New(errNoGatewayCredential) //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return fxAuthentication{Provider: "gateway", APIKey: gateway.APIKey, BaseURL: gateway.BaseURL}, nil
 }
 
 // libfxHarness is CreateFx under RuntimeLibfx (TS createFx).
 type libfxHarness struct {
-	settings   Settings
-	newEngine  engineFactory
-	resolve    func(auth AuthenticationMode, requiredProvider string) (fxAuthentication, error)
-	network    libfx.FetchFunc
-	allowedNet []string
+	settings  Settings
+	newEngine engineFactory
+	resolve   func(auth AuthenticationMode, requiredProvider string) (fxAuthentication, error)
+	network   libfx.FetchFunc
 }
 
 func newLibfxHarness(s Settings) (*libfxHarness, error) {
