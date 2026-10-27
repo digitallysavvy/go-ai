@@ -248,7 +248,10 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 	gatewayVideoData := zodlite.Union(
 		zodlite.Typed("url", fl("url", zStr), fl("mediaType", zStr)),
 		zodlite.Typed("base64", fl("data", zStr), fl("mediaType", zStr)))
-	gatewayVideoMeta := zNullish(zRec(zodlite.Record))
+	// gatewayVideoMetaEntry is providerMetadataEntrySchema in
+	// gateway-video-model.ts: {videos?: unknown[]} plus any other keys.
+	gatewayVideoMetaEntry := zObj(fl("videos", zOptional(zArr(zAny))))
+	gatewayVideoMeta := zNullish(zRec(gatewayVideoMetaEntry))
 	gatewayVideoWarnings := zNullish(zArr(gatewayWarning))
 	gatewayVideoStatusVariants := map[string]zNode{
 		"pending":   zObj(fl("warnings", gatewayVideoWarnings), fl("providerMetadata", gatewayVideoMeta)),
@@ -270,7 +273,7 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 	}
 	gatewayVideoEvent := zDiscType(map[string]zNode{
 		"result": zodlite.Typed("result", fl("videos", zArr(gatewayVideoData)), fl("warnings", zOptional(zArr(gatewayWarning))),
-			fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
+			fl("providerMetadata", zOptional(zRec(gatewayVideoMetaEntry)))),
 		"error": zodlite.Typed("error", fl("message", zStr), fl("errorType", zStr), fl("statusCode", zNum), fl("param", zAny)),
 	})
 	word := zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum))

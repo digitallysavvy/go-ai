@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -210,10 +211,16 @@ func CreateWebFetchTool(opts Options) (types.Tool, error) {
 				if i, isInt := v.(int); isInt {
 					f, isNumber = float64(i), true
 				}
-				if !isNumber || f < 0 || f != float64(int(f)) {
+				// TS z.number().int().min(0): a non-negative safe integer.
+				if !isNumber || f < 0 || f != math.Trunc(f) || f > float64(maxSafeInteger) {
 					return nil, fmt.Errorf("webFetch: input.offset must be a non-negative integer")
 				}
-				offset = int(f)
+				// Where int is 32 bits, an offset past math.MaxInt is past
+				// the end of any content this tool can hold.
+				offset = math.MaxInt
+				if f <= float64(math.MaxInt) {
+					offset = int(f)
+				}
 			}
 			return w.execute(ctx, rawURL, offset, options.Messages)
 		},

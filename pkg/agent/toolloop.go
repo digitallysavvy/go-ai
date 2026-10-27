@@ -1821,7 +1821,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		}
 	}
 	stepResponse := types.StepResponse{
-		ID:        ai.GenerateID(),
+		ID:        newTextResponseID(),
 		Timestamp: time.Now(),
 		ModelID:   stepModel.ModelID(),
 		Headers:   genResult.ResponseHeaders,

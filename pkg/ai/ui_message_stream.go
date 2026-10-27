@@ -311,7 +311,8 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 
 		generateID := options.GenerateMessageID
 		if generateID == nil {
-			generateID = newCallID
+			// TS default: the built-in generateId (16 alphanumerics, no prefix).
+			generateID = GenerateID
 		}
 		uiState := newUIMessageCallbackState(options.OriginalMessages, generateID())
 

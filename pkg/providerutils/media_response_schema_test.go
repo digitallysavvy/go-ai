@@ -140,6 +140,13 @@ func TestMediaResponseSchemas(t *testing.T) {
 			[]string{`{"id":"f","object":"batch"}`, `{"id":"f","bytes":-1}`, `{"id":"f","bytes":1.5}`, `{"id":"f","purpose":"assistants"}`}},
 		{SchemaGatewayBatchStart, []string{`{"status":"pending","batchId":"b","warnings":[{"warning":1}]}`}, []string{`{"status":"pending"}`, `{"status":"done","batchId":"b"}`}},
 		{SchemaGatewayBatchState, []string{`{"status":"completed","requestCounts":{"total":1},"providerMetadata":{"a":{"b":1}}}`}, []string{`{"status":"running"}`, `{"status":"failed","error":{}}`}},
+		// providerMetadataEntrySchema: {videos?: unknown[]} with other keys passing.
+		{SchemaGatewayVideoStart,
+			[]string{`{"operation":{"id":"o"},"providerMetadata":{"fal":{"videos":[{"seed":1}],"x":1}}}`, `{"providerMetadata":null}`},
+			[]string{`{"providerMetadata":{"fal":{"videos":"v"}}}`, `{"providerMetadata":{"fal":1}}`}},
+		{SchemaGatewayVideoStatus,
+			[]string{`{"status":"pending","providerMetadata":{"fal":{"videos":[]}}}`, `{"status":"cancelled"}`},
+			[]string{`{"status":"completed","videos":[],"providerMetadata":{"fal":{"videos":{}}}}`, `{"status":"done"}`}},
 		{SchemaXAIVideoCreate, []string{`{}`, `{"request_id":"r"}`}, []string{`{"request_id":1}`}},
 		{SchemaXAIVideoStatus, []string{`{"status":"done","video":{"url":"u","file_output":{"file_id":"f","filename":"n"}}}`}, []string{`{"video":{"file_output":{}}}`, `{"progress":"1"}`}},
 		{SchemaHeyGenVideoCreate, []string{`{"data":{"video_id":"v"}}`}, []string{`{"data":{"video_id":""}}`, `{}`}},
@@ -177,6 +184,28 @@ func TestCohereEmbeddingResponseValidator(t *testing.T) {
 	} {
 		if err := validate(200, http.Header{}, []byte(body)); !IsInvalidJSONResponse(err) {
 			t.Errorf("%s accepted: %v", body, err)
+		}
+	}
+}
+
+// gatewayVideoEventSchema: a result event's providerMetadata entries follow
+// providerMetadataEntrySchema ({videos?: unknown[]}, other keys pass).
+func TestGatewayVideoEventSchemaProviderMetadata(t *testing.T) {
+	parse := MediaSchemaParser(SchemaGatewayVideoEvent)
+	for _, body := range []string{
+		`{"type":"result","videos":[],"providerMetadata":{"fal":{"videos":[1],"x":1}}}`,
+		`{"type":"error","message":"m","errorType":"t","statusCode":500,"param":null}`,
+	} {
+		if err := parse(200, nil, []byte(body)); err != nil {
+			t.Errorf("%s rejected: %v", body, err)
+		}
+	}
+	for _, body := range []string{
+		`{"type":"result","videos":[],"providerMetadata":{"fal":{"videos":"v"}}}`,
+		`{"type":"result","videos":[],"providerMetadata":{"fal":1}}`,
+	} {
+		if err := parse(200, nil, []byte(body)); err == nil {
+			t.Errorf("%s accepted", body)
 		}
 	}
 }

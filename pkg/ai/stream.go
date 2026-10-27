@@ -1737,8 +1737,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepProvider := r.cbModel.Provider()
 		stepModelID := r.cbModel.ModelID()
 		stepResponseModelID := stepModelID
+		// TS createStepResponse: a step whose stream reports no response id
+		// or timestamp gets a generated id and the step's start time.
+		// stepResponseID holds only a provider-reported id.
 		var stepResponseID string
-		var stepResponseTimestamp time.Time
+		stepDefaultResponseID := remapGenerateID()
+		stepResponseTimestamp := time.Now()
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
 		stepTools := append([]types.Tool(nil), currentTools...)
@@ -2017,7 +2021,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					startStepWarnings = []types.Warning{}
 				}
 				startStepRequest := types.StepRequest{
-					Body:     streamRequestBody(r.currentStream()),
+					Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 					Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 				}
 				forwardThroughTransformChain(0, []provider.StreamChunk{{
@@ -2169,7 +2173,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// With tool choice none the call is rejected at the end of the
 				// model call, so no approval is requested for it.
 				if !withholdToolParts {
-					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret); handled {
+					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret, remapGenerateID); handled {
 						eagerApprovals[refined.ID] = pre
 						stepContent = append(stepContent, approvalParts...)
 						pendingApprovalChunks = approvalChunks
@@ -2234,6 +2238,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					responseID := stepResponseID
 					if responseID == "" {
 						responseID = responseIDFromMetadata(chunk.ResponseMetadata)
+					}
+					if responseID == "" {
+						responseID = stepDefaultResponseID
 					}
 					Notify(stepCtx, LanguageModelCallEndEvent{
 						CallID:           r.cbCallID,
@@ -2439,7 +2446,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					outputChunkGapsMs = nil
 					stepResponseModelID = stepModelID
 					stepResponseID = ""
-					stepResponseTimestamp = time.Time{}
+					stepDefaultResponseID = remapGenerateID()
+					stepResponseTimestamp = time.Now()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					preRefinementCalls = nil
 					stepTextParts = nil
@@ -2483,9 +2491,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 				stepSawTerminal = true
 				stepSawErrorChunk = true
-				if r.finishReason == "" {
-					r.finishReason = types.FinishReasonError
-				}
+				// TS: an error part sets stepFinishReason = 'error', also after
+				// a finish part and whatever an earlier step finished with.
+				r.finishReason = types.FinishReasonError
 				// Keep the error for Err(): TS rejects the result promises
 				// with the stream's error (original object, typed).
 				r.mu.Lock()
@@ -2664,6 +2672,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				telemetrySettings:   r.telemetrySettings,
 				experimentalSandbox: opts.ExperimentalSandbox,
 				toolExecutionMs:     toolExecutionMs,
+				generateID:          remapGenerateID,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(r.finishReason),
 				preApprovals:        eagerApprovals,
 				onPreliminary: func(result types.ToolResult) {
@@ -2866,11 +2875,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Sources:                      stepSources,
 			Files:                        stepFiles,
 			Request: types.StepRequest{
-				Body:     streamRequestBody(r.currentStream()),
+				Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 			},
 			Response: types.StepResponse{
-				ID:        stepResponseID,
+				ID:        firstNonEmptyString(stepResponseID, stepDefaultResponseID),
 				ModelID:   stepResponseModelID,
 				Timestamp: stepResponseTimestamp,
 				Headers:   stepHeaders,
@@ -3624,8 +3633,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	})
 
 	// Mark stream as done before firing callbacks so callers that check
-	// Status() inside callbacks observe the terminal state.
+	// Status() inside callbacks observe the terminal state. Request() and
+	// Response() are set first: once the status is done they no longer wait
+	// for processing to finish.
 	r.mu.Lock()
+	if len(allSteps) > 0 {
+		r.stepRequest = allSteps[len(allSteps)-1].Request
+		r.stepResponse = allSteps[len(allSteps)-1].Response
+	}
 	r.status = StreamStatusDone
 	r.mu.Unlock()
 
@@ -4559,9 +4574,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		}
 		if chunk.Type == provider.ChunkTypeError {
 			sawTerminal = true
-			if r.finishReason == "" {
-				r.finishReason = types.FinishReasonError
-			}
+			r.finishReason = types.FinishReasonError
 		}
 	}
 
@@ -4613,7 +4626,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		Sources:            r.sources,
 		Files:              r.files,
 		Request: types.StepRequest{
-			Body:     streamRequestBody(r.currentStream()),
+			Body:     includedRequestBody(r.cbInclude.RequestBody, r.currentStream()),
 			Messages: includedRequestMessages(r.cbInclude.RequestMessages, r.cbMessages),
 		},
 		Response: types.StepResponse{
@@ -4901,6 +4914,16 @@ func isAbortErr(ctx context.Context, err error) bool {
 // false suppresses them.
 func shouldSuppressReasoningBoundaries(sendReasoning *bool) bool {
 	return sendReasoning != nil && !*sendReasoning
+}
+
+// includedRequestBody is the step request body when Include.RequestBody is
+// set, else nil (TS getStepRequest: include.requestBody ? request?.body :
+// undefined; requestBody defaults to false).
+func includedRequestBody(include bool, s provider.TextStream) interface{} {
+	if !include {
+		return nil
+	}
+	return streamRequestBody(s)
 }
 
 func includedRequestMessages(include bool, messages []types.Message) []types.Message {

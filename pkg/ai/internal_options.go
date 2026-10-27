@@ -91,7 +91,7 @@ func internalGenerateID(internal *InternalOptions) IDGenerator {
 	if internal != nil && internal.GenerateID != nil {
 		return internal.GenerateID
 	}
-	return newCallID
+	return newTextID
 }
 
 func internalGenerateCallID(internal *InternalOptions) IDGenerator {

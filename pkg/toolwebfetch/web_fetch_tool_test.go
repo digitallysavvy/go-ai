@@ -397,6 +397,21 @@ func TestReturnsEmptyContentPastTheEnd(t *testing.T) {
 	}
 }
 
+// The largest safe integer offset is valid input and reads past the end.
+func TestLargestSafeOffsetReadsPastTheEnd(t *testing.T) {
+	ft := fixed(200, "short", "Content-Type", "text/plain")
+	tool := newTool(t, Options{Transport: ft})
+	out, err := tool.Execute(context.Background(), map[string]interface{}{
+		"url": "https://example.com/", "offset": 9007199254740991.0,
+	}, types.ToolExecutionOptions{})
+	if err != nil {
+		t.Fatalf("offset 2^53-1: %v", err)
+	}
+	if d := doc(t, out); d.Content != "" || d.TotalLength != 5 || d.NextOffset != nil {
+		t.Fatalf("document = %+v", d)
+	}
+}
+
 func TestURLValidation(t *testing.T) {
 	cases := []struct{ url, code string }{
 		{"not a url", "invalid_url"},
@@ -730,6 +745,9 @@ func TestInvalidToolInput(t *testing.T) {
 		{"url": "https://example.com/", "offset": -1.0},
 		{"url": "https://example.com/", "offset": 1.5},
 		{"url": "https://example.com/", "offset": "1"},
+		// TS z.number().int() accepts only safe integers.
+		{"url": "https://example.com/", "offset": 9007199254740992.0},
+		{"url": "https://example.com/", "offset": 1e300},
 	} {
 		if _, err := tool.Execute(context.Background(), input, types.ToolExecutionOptions{}); err == nil {
 			t.Fatalf("input %v: expected an error", input)

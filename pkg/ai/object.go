@@ -194,30 +194,42 @@ func normalizeObjectMaxRetries(maxRetries *int) (int, error) {
 }
 
 func responseMetadataFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) *types.ResponseMetadata {
-	return responseMetadataFromGenerateResultWithID(model, result, newCallID)
+	return responseMetadataFromGenerateResultWithID(model, result, newObjectID)
 }
 
 func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) *types.ResponseMetadata {
 	if result == nil {
 		return nil
 	}
-	if result.ResponseMetadata != nil {
-		return result.ResponseMetadata
+	meta := result.ResponseMetadata
+	if meta != nil && meta.ID != "" && !meta.Timestamp.IsZero() && meta.ModelID != "" {
+		return meta
 	}
 	if generateID == nil {
-		generateID = newCallID
+		generateID = newTextID
 	}
-	result.ResponseMetadata = &types.ResponseMetadata{
-		ID:        generateID(),
-		Timestamp: time.Now(),
-		ModelID:   model.ModelID(),
-		Headers:   result.ResponseHeaders,
+	// TS responseData: each field the provider left out gets its default
+	// (id ?? generateId(), timestamp ?? new Date(), modelId ?? model.modelId).
+	// The provider's struct is copied, not modified.
+	filled := types.ResponseMetadata{Headers: result.ResponseHeaders}
+	if meta != nil {
+		filled = *meta
 	}
+	if filled.ID == "" {
+		filled.ID = generateID()
+	}
+	if filled.Timestamp.IsZero() {
+		filled.Timestamp = time.Now()
+	}
+	if filled.ModelID == "" {
+		filled.ModelID = model.ModelID()
+	}
+	result.ResponseMetadata = &filled
 	return result.ResponseMetadata
 }
 
 func generateStepResponseFromGenerateResult(model provider.LanguageModel, result *types.GenerateResult) GenerateStepResponse {
-	return generateStepResponseFromGenerateResultWithID(model, result, newCallID)
+	return generateStepResponseFromGenerateResultWithID(model, result, newObjectID)
 }
 
 func generateStepResponseFromGenerateResultWithID(model provider.LanguageModel, result *types.GenerateResult, generateID IDGenerator) GenerateStepResponse {
@@ -904,11 +916,9 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 			Text:             result.Text,
 			Object:           objectResultValue(opts.OutputMode, result),
 			ProviderMetadata: result.ProviderMetadata,
-			Usage: telemetry.TelemetryUsage{
-				InputTokens:  result.Usage.InputTokens,
-				OutputTokens: result.Usage.OutputTokens,
-				TotalTokens:  result.Usage.TotalTokens,
-			},
+			// The whole usage, as StreamObject: TS onObjectOperationEnd also
+			// records ai.usage.reasoningTokens and ai.usage.cachedInputTokens.
+			Usage: telemetryUsageFromUsage(result.Usage),
 		})
 	}
 
@@ -1885,7 +1895,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 
 	// Response metadata fields updated by ChunkTypeResponseMetadata chunks.
 	streamResMeta := GenerateStepResponse{
-		ID:        newCallID(),
+		ID:        newObjectID(),
 		Timestamp: time.Now(),
 		ModelID:   opts.Model.ModelID(),
 	}
