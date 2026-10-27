@@ -49,14 +49,14 @@ func TestCompatImageURLResponses(t *testing.T) {
 		return res.Images, res.Base64Images, nil
 	}
 
-	t.Run("downloads URL-only images without credentials", func(t *testing.T) {
+	t.Run("downloads same-origin URL-only images with provider and call headers", func(t *testing.T) {
 		imgs, _, err := gen(`{"data":[{"b64_json":null,"url":"` + srv.URL + `/img.png"}]}`)
 		if err != nil || len(imgs) != 1 || !bytes.Equal(imgs[0], png) {
 			t.Fatalf("imgs=%v err=%v", imgs, err)
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		if downloads != 1 || downloadAuth != "" || downloadKey != "" {
+		if downloads != 1 || downloadAuth != "Bearer test-key" || downloadKey != "custom" {
 			t.Fatalf("downloads=%d auth=%q key=%q", downloads, downloadAuth, downloadKey)
 		}
 	})
@@ -103,4 +103,30 @@ func TestCompatImageURLResponses(t *testing.T) {
 			t.Fatal("expected error")
 		}
 	})
+}
+
+// TS fetchUntrustedUrl: provider credentials reach only the configured API
+// origin; any other host gets the non-credential allowlist.
+func TestCompatDownloadHeadersWithholdCredentialsFromOtherOrigins(t *testing.T) {
+	p := New(Config{APIKey: "test-key", Name: "acme", BaseURL: "https://api.example.com/v1", OpenAICompatible: true})
+	m := NewImageModel(p, "m")
+	call := map[string]string{"x-api-key": "custom", "Traceparent": "00-abc", "Content-Type": "application/json"}
+
+	same := m.compatDownloadHeaders("https://api.example.com/files/a.png", call)
+	if same["authorization"] != "Bearer test-key" || same["x-api-key"] != "custom" {
+		t.Fatalf("same-origin headers = %v", same)
+	}
+	other := m.compatDownloadHeaders("https://cdn.example.com/a.png", call)
+	if _, ok := other["authorization"]; ok {
+		t.Fatalf("authorization leaked to another origin: %v", other)
+	}
+	if _, ok := other["x-api-key"]; ok {
+		t.Fatalf("x-api-key leaked to another origin: %v", other)
+	}
+	if other["Traceparent"] != "00-abc" {
+		t.Fatalf("traceparent should be forwarded: %v", other)
+	}
+	if _, ok := other["Content-Type"]; ok {
+		t.Fatalf("content-type should not be forwarded: %v", other)
+	}
 }
