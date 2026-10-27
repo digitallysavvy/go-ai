@@ -395,7 +395,8 @@ func TestURLValidation(t *testing.T) {
 		{"https://metadata.google.internal./", "url_not_allowed"},
 		{"http://ｌｏｃａｌｈｏｓｔ/", "url_not_allowed"},
 		{"http://127。0。0。1/", "url_not_allowed"},
-		{"http://%6c%6f%63%61%6c%68%6f%73%74/", "invalid_url"},
+		{"http://%6c%6f%63%61%6c%68%6f%73%74/", "url_not_allowed"},
+		{"http://%2f/", "invalid_url"},
 		{"http://metadata.google.ｉｎｔｅｒｎａｌ/", "url_not_allowed"},
 	}
 	for _, tt := range cases {
@@ -552,7 +553,7 @@ func TestRedirects(t *testing.T) {
 		}
 	})
 	t.Run("blocks redirects to private addresses", func(t *testing.T) {
-		for _, target := range []string{"http://169.254.169.254/", "http://localhost/", "http://metadata.internal/", "http://[::1]/", "http://ｌｏｃａｌｈｏｓｔ/", "http://metadata.google.ｉｎｔｅｒｎａｌ/"} {
+		for _, target := range []string{"http://169.254.169.254/", "http://localhost/", "http://metadata.internal/", "http://[::1]/", "http://ｌｏｃａｌｈｏｓｔ/", "http://metadata.google.ｉｎｔｅｒｎａｌ/", "http://%6c%6f%63%61%6c%68%6f%73%74/"} {
 			ft := fixed(307, "", "Location", target)
 			errOut(t, run(t, newTool(t, Options{Transport: ft}), "https://example.com/", 0), "url_not_allowed")
 			if ft.count() != 1 {
@@ -585,6 +586,46 @@ func TestRedirects(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestPercentEncodedHostIsDecodedLikeWHATWG(t *testing.T) {
+	var hosts []string
+	ft := serve(func(req *http.Request) *http.Response {
+		hosts = append(hosts, req.URL.Host)
+		return response(200, "ok", "Content-Type", "text/plain")
+	})
+	d := doc(t, run(t, newTool(t, Options{Transport: ft}), "http://ex%61mple.com/", 0))
+	if len(hosts) != 1 || hosts[0] != "example.com" || d.FinalURL != "http://example.com/" {
+		t.Fatalf("hosts = %v, final = %q", hosts, d.FinalURL)
+	}
+	// requireUrlInUserMessage compares the decoded forms.
+	tool := newTool(t, Options{Transport: ft, RequireURLInUserMessage: true})
+	doc(t, run(t, tool, "http://ex%61mple.com/", 0, userMessage("see http://example.com/")))
+}
+
+func TestEmptyCredentialsAreNotCredentials(t *testing.T) {
+	// WHATWG: "https://@example.com/" has an empty username and password.
+	ft := fixed(200, "ok", "Content-Type", "text/plain")
+	d := doc(t, run(t, newTool(t, Options{Transport: ft}), "https://@example.com/", 0))
+	if d.FinalURL != "https://example.com/" {
+		t.Fatalf("final = %q", d.FinalURL)
+	}
+	errOut(t, run(t, newTool(t, Options{Transport: ft}), "https://:p@example.com/", 0), "url_not_allowed")
+}
+
+func TestWHATWGBackslashAndControlCharacters(t *testing.T) {
+	var urls []string
+	ft := serve(func(req *http.Request) *http.Response {
+		urls = append(urls, req.URL.String())
+		return response(200, "ok", "Content-Type", "text/plain")
+	})
+	tool := newTool(t, Options{Transport: ft})
+	doc(t, run(t, tool, "https://example.com\\docs\\a?x=1\\2", 0))
+	doc(t, run(t, tool, "https://exam\nple.com/\tp", 0))
+	if len(urls) != 2 || urls[0] != "https://example.com/docs/a?x=1\\2" || urls[1] != "https://example.com/p" {
+		t.Fatalf("urls = %q", urls)
+	}
+	errOut(t, run(t, tool, "http://localhost\\@example.com/", 0), "url_not_allowed")
 }
 
 func TestHTTPErrors(t *testing.T) {
@@ -687,5 +728,29 @@ func TestDefaultTransportBlocksLoopbackAtConnectTime(t *testing.T) {
 	out := run(t, tool, "http://localtest.invalid/", 0)
 	if e, ok := out.(ErrorOutput); !ok || (e.ErrorCode != "network_error" && e.ErrorCode != "url_not_allowed") {
 		t.Fatalf("output = %#v", out)
+	}
+}
+
+func TestUserMessageURLEndsAtJavaScriptWhitespace(t *testing.T) {
+	ft := fixed(200, "ok", "Content-Type", "text/plain")
+	tool := newTool(t, Options{Transport: ft, RequireURLInUserMessage: true})
+	for _, sep := range []string{"\u00a0", "\u2003", "\u3000", "\u000b", "\ufeff"} {
+		msg := userMessage("read https://example.com/docs" + sep + "please")
+		doc(t, run(t, tool, "https://example.com/docs", 0, msg))
+	}
+}
+
+// The host is decoded once, as WHATWG does: a double-encoded private host
+// ("%256c" -> "%6c") is never fetched, as the initial URL or as a redirect.
+func TestDoubleEncodedHostIsNotFetched(t *testing.T) {
+	const target = "http://%256c%256f%2563%2561%256c%2568%256f%2573%2574/"
+	ft := fixed(200, "ok", "Content-Type", "text/plain")
+	if out := run(t, newTool(t, Options{Transport: ft}), target, 0); ft.count() != 0 {
+		t.Fatalf("initial: requests = %d, out = %v", ft.count(), out)
+	}
+	rt := fixed(307, "", "Location", target)
+	run(t, newTool(t, Options{Transport: rt}), "https://example.com/", 0)
+	if rt.count() != 1 {
+		t.Fatalf("redirect: requests = %d, want 1 (the target must not be requested)", rt.count())
 	}
 }
