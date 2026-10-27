@@ -249,10 +249,7 @@ func (d *turnDriver) telStepContent() []types.ContentPart {
 	// TS buildModelCallContent also carries the provider-executed tool
 	// results of the step. Host tool results are not part of the model call:
 	// TS ends the model call before publishing them.
-	for _, tr := range d.stepToolResults {
-		if !tr.ProviderExecuted {
-			continue
-		}
+	for _, tr := range d.stepProviderToolResults {
 		part := types.ToolResultContent{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: tr.Input, Result: tr.Result}
 		if tr.Error != nil {
 			part.Error = tr.Error.Error()
