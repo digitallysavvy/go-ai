@@ -514,6 +514,24 @@ type FunctionCallOutputItem struct {
 	Caller *ToolCaller `json:"caller,omitempty"`
 }
 
+// AdditionalToolsItem loads extra function definitions immediately after an
+// ordinary function tool result (TS `additional_tools` input item), for tools
+// a result discovered at runtime (providerOptions.openai.additionalTools).
+type AdditionalToolsItem struct {
+	Type  string              `json:"type"` // "additional_tools"
+	Role  string              `json:"role"` // "developer"
+	Tools []AdditionalToolDef `json:"tools"`
+}
+
+// AdditionalToolDef is one function definition inside an AdditionalToolsItem.
+type AdditionalToolDef struct {
+	Type        string                 `json:"type"` // "function"
+	Name        string                 `json:"name"`
+	Description *string                `json:"description,omitempty"`
+	Parameters  map[string]interface{} `json:"parameters"`
+	Strict      *bool                  `json:"strict,omitempty"`
+}
+
 // ImageGenerationCallItem represents a hosted image_generation tool call
 // output item. Result (the base64-encoded generated image) is only present
 // on the output_item.done / non-streaming shape.

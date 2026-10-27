@@ -7,7 +7,7 @@ description: Setup and usage guide for TypeSafe AI decision models with Go AI SD
 
 TypeSafe AI provides decision models for use with the experimental
 `ai.ExperimentalDecide` API — judging free-form output against a set of
-questions (choice, score, or boolean) rather than generating text. It's
+questions (choice, score, boolean, or box) rather than generating text. It's
 the only capability this provider implements: `LanguageModel`,
 `EmbeddingModel`, `ImageModel`, `SpeechModel`, and `TranscriptionModel` all
 return errors.
@@ -80,6 +80,10 @@ for id, answer := range result.Answers {
 instance (or a model ID string, resolved via `Provider`, falling back to
 the AI Gateway when `Provider` is nil) — you are not limited to
 TypeSafe AI as the judge model.
+
+### Box questions
+
+A `box` question (`Type: "box"`, `Instructions` only) asks where something is in an image. The answer's `Box` holds normalized `Top`, `Bottom`, `Left` and `Right` edges in `[0, 1]`. The model sends `TypeSafe-Danger-Zone-Images: true` for requests with a box question, and the per-question confidence is reported in `ProviderMetadata["typesafe"]["confidence"]`.
 
 ## Workflow Serialization
 

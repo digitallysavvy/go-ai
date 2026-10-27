@@ -118,6 +118,10 @@ ct := openaitool.NewCustomTool(
 tool := ct.ToTool("sentiment-analyzer")
 ```
 
+### Streaming Input
+
+While streaming, a custom tool's input deltas are the raw text the model produced (not JSON-encoded). The `tool-input-start` chunk sets `ToolCall.InputEncoding` to `"text"` so UI message streams accumulate the deltas as a string; the final tool call input is still JSON-encoded.
+
 ### Wire Format
 
 When `ct.ToTool("name")` is passed through `responses.PrepareTools()`, it serializes to:

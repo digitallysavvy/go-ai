@@ -441,6 +441,16 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 		"http://localhost./file",
 		"http://app.localhost/file",
 		"http://example.local/file",
+		"http://metadata.google.internal/file",
+		"https://service.namespace.internal/file",
+		"https://SERVICE.INTERNAL/file",
+		"https://service.internal./file",
+		"http://service.internal:8080/file",
+		"http://metadata.google.internal/file",
+		"https://service.namespace.internal/file",
+		"https://SERVICE.INTERNAL/file",
+		"https://service.internal./file",
+		"http://service.internal:8080/file",
 		"http://127.0.0.1/file",
 		"http://10.0.0.1/file",
 		"http://172.16.0.1/file",
@@ -502,6 +512,10 @@ func TestValidateDownloadURLBlocksUnsafeHosts(t *testing.T) {
 	allowed := []string{
 		"https://example.com/image.png",
 		"http://example.com:8080/file",
+		"https://internal.example.com/file",
+		"https://service.internal.example.com/file",
+		"https://service.notinternal/file",
+		"https://example.com/service.internal",
 		"data:text/plain;base64,aGVsbG8=",
 		"http://172.15.0.1/file",
 		"http://172.32.0.1/file",
@@ -896,5 +910,22 @@ func TestDownloadDataURLPercentAndForgivingBase64(t *testing.T) {
 		if _, err := DownloadWithMetadata(context.Background(), u, insecureDownloadOptions()); err == nil {
 			t.Errorf("%s: want a download error", u)
 		}
+	}
+}
+
+func TestValidateDownloadURLBlocksIDNInternalForms(t *testing.T) {
+	for _, u := range []string{
+		"https://a.internal。/x",
+		"https://a.ｉｎｔｅｒｎａｌ/x",
+		"https://a.internal．/x",
+		"https://ＬＯＣＡＬＨＯＳＴ/x",
+		"https://a.INTERNAL./x",
+	} {
+		if err := ValidateDownloadURL(u); err == nil {
+			t.Errorf("%q should be rejected", u)
+		}
+	}
+	if err := ValidateDownloadURL("https://internal.example.com/x"); err != nil {
+		t.Errorf("unexpected: %v", err)
 	}
 }

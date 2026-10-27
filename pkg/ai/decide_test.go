@@ -175,11 +175,11 @@ func TestExperimentalDecide_RejectsInvalidScoreCriteria(t *testing.T) {
 		Model: mock,
 		State: "s",
 		Questions: map[string]provider.DecisionQuestion{
-			"q": {Type: "score", Instructions: "i", Criteria: []interface{}{"only-one"}},
+			"q": {Type: "score", Instructions: "i", Criteria: []interface{}{}},
 		},
 	})
 	if !isInvalidArgumentError(err) {
-		t.Fatalf("err = %v, want InvalidArgumentError (score criteria too short)", err)
+		t.Fatalf("err = %v, want InvalidArgumentError (no score levels)", err)
 	}
 }
 

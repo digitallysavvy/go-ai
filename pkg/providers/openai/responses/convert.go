@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1557,6 +1558,9 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 				Output: toolResultOutputWithOptions(p, opts),
 				Caller: toolResultCaller(p, openAIProviderOptionsName(opts)),
 			})
+			if err := appendAdditionalTools(&items, p, opts); err != nil {
+				return nil, err
+			}
 		case *types.ToolResultContent:
 			if p != nil {
 				if handled, err := appendParallelToolResult(&items, *p, opts); handled {
@@ -1595,10 +1599,81 @@ func convertToolItems(msg types.Message, options ...ConvertOptions) ([]interface
 					Output: toolResultOutputWithOptions(*p, opts),
 					Caller: toolResultCaller(*p, openAIProviderOptionsName(opts)),
 				})
+				if err := appendAdditionalTools(&items, *p, opts); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
 	return items, nil
+}
+
+// appendAdditionalTools appends an `additional_tools` item right after the
+// function_call_output of part when providerOptions.<name>.additionalTools
+// lists function definitions (TS openaiResponsesToolResultOptionsSchema). The
+// option is validated like the TS strict schema: every entry needs
+// type "function", a non-empty name and a parameters object; description and
+// strict are optional; unknown keys are rejected.
+func appendAdditionalTools(items *[]interface{}, part types.ToolResultContent, opts ConvertOptions) error {
+	providerName := openAIProviderOptionsName(opts)
+	openaiOptions, ok := part.ProviderOptions[providerName].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	raw, present := openaiOptions["additionalTools"]
+	if !present {
+		return nil
+	}
+	field := "providerOptions." + providerName + ".additionalTools"
+	invalid := func(message string) error {
+		return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	}
+	if raw == nil {
+		return invalid("expected an array of function tool definitions")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return invalid(err.Error())
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(encoded, &entries); err != nil {
+		return invalid("expected an array of function tool definitions")
+	}
+	tools := make([]AdditionalToolDef, 0, len(entries))
+	for i, entry := range entries {
+		var def struct {
+			Type        *string                `json:"type"`
+			Name        *string                `json:"name"`
+			Description *string                `json:"description"`
+			Parameters  map[string]interface{} `json:"parameters"`
+			Strict      *bool                  `json:"strict"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(entry))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&def); err != nil {
+			return invalid(fmt.Sprintf("entry %d is not a valid function tool definition: %v", i, err))
+		}
+		switch {
+		case def.Type == nil || *def.Type != "function":
+			return invalid(fmt.Sprintf("entry %d: type must be \"function\"", i))
+		case def.Name == nil || *def.Name == "":
+			return invalid(fmt.Sprintf("entry %d: name must be a non-empty string", i))
+		case def.Parameters == nil:
+			return invalid(fmt.Sprintf("entry %d: parameters must be an object", i))
+		}
+		tools = append(tools, AdditionalToolDef{
+			Type:        "function",
+			Name:        *def.Name,
+			Description: def.Description,
+			Parameters:  def.Parameters,
+			Strict:      def.Strict,
+		})
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+	*items = append(*items, AdditionalToolsItem{Type: "additional_tools", Role: "developer", Tools: tools})
+	return nil
 }
 
 // appendParallelToolResult reports whether part belongs to a complete

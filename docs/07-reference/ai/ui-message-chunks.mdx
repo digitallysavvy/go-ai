@@ -165,13 +165,14 @@ The model started writing a tool call. Sent when the provider streams tool input
 | `toolName` | `string` | Tool name. |
 | `providerExecuted` | `bool` | Optional. True when the provider runs the tool. |
 | `dynamic` | `bool` | Optional. True for dynamic tools. |
+| `inputEncoding` | `string` | Optional. `"json"` (default) or `"text"`. With `"text"` the deltas are raw text (for example OpenAI custom tools) and the UI input is the accumulated string instead of partial JSON. |
 | `title` | `string` | Optional. Tool title. |
 | `toolMetadata` | `object` | Optional. Tool metadata from `types.Tool.Metadata`. |
 | `providerMetadata` | `object` | Optional. |
 
 ### `tool-input-delta`
 
-A piece of the raw JSON tool input.
+A piece of the raw tool input (partial JSON unless `tool-input-start` set `inputEncoding` to `"text"`).
 
 | Field | Type | Description |
 | --- | --- | --- |

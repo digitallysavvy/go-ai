@@ -25,7 +25,7 @@ func TestProvider_ProvidesDecisionCapability(t *testing.T) {
 	if model.ModelID() != "jev-latest" {
 		t.Fatalf("ModelID = %q", model.ModelID())
 	}
-	want := []string{"choice", "score", "boolean"}
+	want := []string{"choice", "score", "boolean", "box"}
 	got := model.SupportedQuestionTypes()
 	if len(got) != len(want) {
 		t.Fatalf("SupportedQuestionTypes = %v", got)

@@ -218,7 +218,7 @@ func (r *fakeDNSResolver) LookupIPAddr(_ context.Context, host string) ([]net.IP
 func TestBFLImageModel_TrustedRedirectToForeignHostIsDNSPinned(t *testing.T) {
 	// Not parallel: overrides the package-level downloadTransport.
 	oldDownloadTransport := downloadTransport
-	resolver := &fakeDNSResolver{answers: map[string][]string{"evil.internal": {"169.254.169.254"}}}
+	resolver := &fakeDNSResolver{answers: map[string][]string{"evil.example": {"169.254.169.254"}}}
 	downloadTransport = func() http.RoundTripper {
 		return fileutil.NewSafeTransport(fileutil.SafeDialOptions{Resolver: resolver})
 	}
@@ -234,7 +234,7 @@ func TestBFLImageModel_TrustedRedirectToForeignHostIsDNSPinned(t *testing.T) {
 			// it is trusted, but the server redirects it to a foreign host.
 			_, _ = w.Write([]byte(`{"status":"Ready","result":{"sample":"` + server.URL + `/redirect"}}`))
 		case "/redirect":
-			http.Redirect(w, r, "http://evil.internal/image.png", http.StatusFound)
+			http.Redirect(w, r, "http://evil.example/image.png", http.StatusFound)
 		default:
 			http.NotFound(w, r)
 		}

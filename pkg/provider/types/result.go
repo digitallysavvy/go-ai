@@ -99,6 +99,14 @@ type GenerateResult struct {
 	// subsequent message history to round-trip thinking blocks through the API.
 	Content []ContentPart `json:"content,omitempty"`
 
+	// StructuredOutputText is the text to parse for structured JSON output when
+	// it differs from the concatenation of all text parts (for example drafts
+	// followed by a final answer). It does not replace or remove any generated
+	// content. nil means consumers use Text; a pointer to an empty string is an
+	// explicit selection and must not fall back to Text. Mirrors TS
+	// LanguageModelV4GenerateResult.structuredOutputText.
+	StructuredOutputText *string `json:"structuredOutputText,omitempty"`
+
 	// Tool calls made by the model (if any)
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
 

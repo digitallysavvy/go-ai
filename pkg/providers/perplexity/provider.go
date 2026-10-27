@@ -119,3 +119,9 @@ func (p *Provider) RerankingModel(modelID string) (provider.RerankingModel, erro
 func (p *Provider) Client() *http.Client {
 	return p.client
 }
+
+// DecisionModel returns an experimental decision model backed by the
+// Perplexity Decisions API. Mirrors TS PerplexityProvider.decisionModel.
+func (p *Provider) DecisionModel(modelID string) (provider.DecisionModel, error) {
+	return NewDecisionModel(p, modelID), nil
+}

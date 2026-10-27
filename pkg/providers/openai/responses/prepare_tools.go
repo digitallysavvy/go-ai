@@ -130,6 +130,12 @@ func convertTool(t types.Tool) interface{} {
 		if t.Type == types.ToolTypeProviderDefined {
 			return nil
 		}
+		// A function tool supplied in history through additionalTools stays
+		// active in the SDK (validation and execution) but is left out of the
+		// request's tools array (TS omitFromRequestTools).
+		if functionToolOmitFromRequestTools(t.ProviderOptions) {
+			return nil
+		}
 		return convertFunctionTool(t)
 	}
 }
@@ -526,6 +532,43 @@ func functionToolDeferLoading(providerOptions interface{}) (bool, bool) {
 	return deferLoading, ok
 }
 
+// functionToolOmitFromRequestTools reports providerOptions.openai
+// .omitFromRequestTools === true.
+func functionToolOmitFromRequestTools(providerOptions interface{}) bool {
+	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
+	if !ok {
+		return false
+	}
+	omit, _ := openaiOptions["omitFromRequestTools"].(bool)
+	return omit
+}
+
+// CheckOmittedToolChoice rejects forcing (toolChoice type "tool") a function
+// tool that is omitted from the request tools array: the API never receives
+// its definition, so only automatic tool choice works for history-loaded
+// tools (TS prepareResponsesTools UnsupportedFunctionalityError).
+func CheckOmittedToolChoice(tools []types.Tool, toolChoice types.ToolChoice) error {
+	if toolChoice.Type != types.ToolChoiceTool {
+		return nil
+	}
+	for _, t := range tools {
+		if t.Name != toolChoice.ToolName || t.Type == types.ToolTypeProviderDefined {
+			continue
+		}
+		if _, isCustom := t.ProviderOptions.(openaitool.CustomTool); isCustom {
+			continue
+		}
+		if functionToolOmitFromRequestTools(t.ProviderOptions) {
+			functionality := fmt.Sprintf("forcing tool %q omitted from the request tools array; use automatic tool choice for history-loaded tools", t.Name)
+			return &providererrors.UnsupportedFunctionalityError{
+				Functionality: functionality,
+				Message:       fmt.Sprintf("'%s' functionality not supported.", functionality),
+			}
+		}
+	}
+	return nil
+}
+
 func functionToolAsync(providerOptions interface{}) (bool, bool) {
 	openaiOptions, ok := functionToolOpenAIOptions(providerOptions)
 	if !ok {
@@ -645,6 +688,12 @@ func resolveAllowedToolForTool(t types.Tool) allowedToolResolution {
 		return allowedToolResolution{
 			supported: false,
 			reason:    fmt.Sprintf("OpenAI does not support %s tools in tool_choice.allowed_tools", toolID),
+		}
+	}
+	if functionToolOmitFromRequestTools(t.ProviderOptions) {
+		return allowedToolResolution{
+			supported: false,
+			reason:    "tools omitted from the request tools array cannot be allow-listed",
 		}
 	}
 	if _, ok := functionToolNamespace(t.ProviderOptions); ok {

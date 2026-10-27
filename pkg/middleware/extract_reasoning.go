@@ -100,14 +100,17 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 			// is replaced by a reasoning part followed by the remaining text.
 			pattern := fmt.Sprintf(`(?s)%s(.*?)%s`, regexp.QuoteMeta(openingTag), regexp.QuoteMeta(closingTag))
 			re := regexp.MustCompile(pattern)
-			mapGenerateTextParts(result, func(part types.TextContent) []types.ContentPart {
-				text := part.Text
+			// extractReasoning splits one text into its reasoning and the
+			// remaining text (TS extractReasoning); ok is false when the
+			// text has no reasoning section.
+			extractReasoning := func(input string) (text string, reasoning string, ok bool) {
+				text = input
 				if options.StartWithReasoning {
-					text = openingTag + text
+					text = openingTag + input
 				}
 				matches := re.FindAllStringSubmatchIndex(text, -1)
 				if len(matches) == 0 {
-					return []types.ContentPart{part}
+					return input, "", false
 				}
 				reasoningParts := make([]string, len(matches))
 				for i, m := range matches {
@@ -124,11 +127,24 @@ func ExtractReasoningMiddleware(options *ExtractReasoningOptions) *LanguageModel
 					}
 					textWithoutReasoning = beforeMatch + separator + afterMatch
 				}
+				return textWithoutReasoning, strings.Join(reasoningParts, options.Separator), true
+			}
+			mapGenerateTextParts(result, func(part types.TextContent) []types.ContentPart {
+				text, reasoning, ok := extractReasoning(part.Text)
+				if !ok {
+					return []types.ContentPart{part}
+				}
 				return []types.ContentPart{
-					types.ReasoningContent{Text: strings.Join(reasoningParts, options.Separator)},
-					types.TextContent{Text: textWithoutReasoning},
+					types.ReasoningContent{Text: reasoning},
+					types.TextContent{Text: text},
 				}
 			})
+			// The provider-selected structured output text loses its
+			// reasoning sections too (TS extractReasoning(structuredOutputText).text).
+			if result.StructuredOutputText != nil {
+				text, _, _ := extractReasoning(*result.StructuredOutputText)
+				result.StructuredOutputText = &text
+			}
 
 			return result, nil
 		},

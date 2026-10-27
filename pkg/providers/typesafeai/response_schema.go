@@ -18,7 +18,12 @@ var typesafeResponseNode = func() zodlite.Node {
 		zodlite.F("answers", zodlite.RecordOf(zodlite.Disc(map[string]zodlite.Node{
 			"choice": zodlite.Typed("choice", zodlite.F("choice", zodlite.String), zodlite.F("probabilities", probabilities), zodlite.F("confidence", nullishNum)),
 			"score":  zodlite.Typed("score", zodlite.F("score", zodlite.Number), zodlite.F("probabilities", probabilities), zodlite.F("confidence", nullishNum)),
-			"noul":   zodlite.Typed("noul", zodlite.F("noul", zodlite.Number)),
+			"box": zodlite.Typed("box",
+				zodlite.F("box", zodlite.Object(
+					zodlite.F("top", zodlite.Number), zodlite.F("bottom", zodlite.Number),
+					zodlite.F("left", zodlite.Number), zodlite.F("right", zodlite.Number))),
+				zodlite.F("confidence", nullishNum)),
+			"noul": zodlite.Typed("noul", zodlite.F("noul", zodlite.Number)),
 		}))),
 		zodlite.F("usage", zodlite.Nullish(zodlite.Object(
 			zodlite.F("input_tokens", nullishNum), zodlite.F("output_tokens", nullishNum)))),

@@ -445,3 +445,92 @@ func TestTypesafeErrorMessageFollowsTSHandler(t *testing.T) {
 		}
 	}
 }
+
+// TS #23412: box questions are sent as {type, instructions}, enable the
+// images header, and the box answer plus its confidence are preserved.
+func TestDecisionModel_BoxQuestion(t *testing.T) {
+	var gotBody map[string]interface{}
+	var gotImages string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotImages = r.Header.Get("TypeSafe-Danger-Zone-Images")
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev","answers":{"target":{"type":"box","box":{"top":0.25,"bottom":0.82,"left":0.44,"right":0.84},"confidence":0.92}}}`))
+	}))
+	defer server.Close()
+	model, _ := New(Config{APIKey: "k", BaseURL: server.URL}).DecisionModel("jev-latest")
+
+	result, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
+		State:     "a mug",
+		Questions: map[string]provider.DecisionQuestion{"target": {Type: "box", Instructions: "The mug", Criteria: map[string]interface{}{"ignored": true}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotImages != "true" {
+		t.Fatalf("images header = %q", gotImages)
+	}
+	want := map[string]interface{}{"type": "box", "instructions": "The mug"}
+	if got := gotBody["questions"].(map[string]interface{})["target"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("question = %#v, want %#v", got, want)
+	}
+	answer := result.Answers["target"]
+	if answer.Type != "box" || answer.Box == nil || *answer.Box != (provider.DecisionBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}) {
+		t.Fatalf("answer = %#v", answer)
+	}
+	meta := result.ProviderMetadata["typesafe"].(map[string]interface{})["confidence"].(map[string]float64)
+	if meta["target"] != 0.92 {
+		t.Fatalf("confidence = %v", meta)
+	}
+}
+
+func TestDecisionModel_NoImagesHeaderWithoutBox(t *testing.T) {
+	var gotImages string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotImages = r.Header.Get("TypeSafe-Danger-Zone-Images")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(nativeResponseJSON))
+	}))
+	defer server.Close()
+	model, _ := New(Config{APIKey: "k", BaseURL: server.URL}).DecisionModel("jev-latest")
+	if _, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{State: "x", Questions: nativeQuestions()}); err != nil {
+		t.Fatal(err)
+	}
+	if gotImages != "" {
+		t.Fatalf("images header = %q, want none", gotImages)
+	}
+}
+
+func TestDecisionModel_MalformedBoxAnswer(t *testing.T) {
+	server := newTestServer(t, `{"answers":{"target":{"type":"box","box":{"top":0.1}}}}`)
+	model, _ := New(Config{APIKey: "k", BaseURL: server.URL}).DecisionModel("jev-latest")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
+		State: "x", Questions: map[string]provider.DecisionQuestion{"target": {Type: "box", Instructions: "i"}},
+	})
+	if err == nil {
+		t.Fatal("expected an invalid response error")
+	}
+}
+
+// TS #23470: criteria-only questions are sent without instructions.
+func TestDecisionModel_CriteriaOnlyQuestionOmitsInstructions(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{"requestsRefund":{"type":"noul","noul":0.9}}}`))
+	}))
+	defer server.Close()
+	model, _ := New(Config{APIKey: "k", BaseURL: server.URL}).DecisionModel("jev-latest")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
+		State:     "x",
+		Questions: map[string]provider.DecisionQuestion{"requestsRefund": {Type: "boolean", Criteria: map[string]interface{}{"true": "Refund"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := gotBody["questions"].(map[string]interface{})["requestsRefund"].(map[string]interface{})
+	if _, ok := q["instructions"]; ok || q["type"] != "noul" {
+		t.Fatalf("question = %#v", q)
+	}
+}

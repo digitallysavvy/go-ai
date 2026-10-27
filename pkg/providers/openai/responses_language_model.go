@@ -99,6 +99,9 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
+		result.StructuredOutputText = responsesStructuredOutputText(resp.Output)
+	}
 	if responsesLogprobsRequested(opts.ProviderOptions, m.provider.responsesProviderOptionsName()) {
 		if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
 			if pm, ok := result.ProviderMetadata[m.provider.responsesProviderOptionsName()].(map[string]interface{}); ok {
@@ -740,6 +743,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				body["tool_choice"] = *allowedTools
 			}
 		} else if opts.ToolChoice.Type != "" {
+			if err := responses.CheckOmittedToolChoice(opts.Tools, opts.ToolChoice); err != nil {
+				return nil, false, warnings, err
+			}
 			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice, opts.Tools)
 		}
 	}
@@ -1312,6 +1318,35 @@ func responsesWebSearchToolName(tools []types.Tool) string {
 // ─────────────────────────────────────────────────────────────────────────────
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
+
+// responsesStructuredOutputText returns the text of the last "final_answer"
+// message in output (all of its content parts joined), or nil when there is
+// none. A Responses API response can hold several assistant messages with
+// JSON; concatenating them breaks structured-output parsing, so JSON output
+// is parsed from the last final answer only while every message stays in
+// the generated content (TS structuredOutputText, #23895).
+func responsesStructuredOutputText(output []json.RawMessage) *string {
+	var selected *string
+	for _, rawItem := range output {
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(rawItem, &peek) != nil || peek.Type != "message" {
+			continue
+		}
+		var item responses.AssistantMessageItem
+		if json.Unmarshal(rawItem, &item) != nil || item.Phase == nil || *item.Phase != "final_answer" {
+			continue
+		}
+		var text strings.Builder
+		for _, part := range item.Content {
+			text.WriteString(part.Text)
+		}
+		joined := text.String()
+		selected = &joined
+	}
+	return selected
+}
 
 func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, tools []types.Tool, approvalFromPrompt map[string]string, providerOptionsName ...string) (*types.GenerateResult, error) {
 	providerName := "openai"
@@ -3188,12 +3223,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						ToolCall: &types.ToolCall{
 							ID:       e.Item.CallID,
 							ToolName: e.Item.Name,
+							// Custom tool deltas are raw text; the final tool
+							// call input stays JSON-encoded (TS #23407).
+							InputEncoding: "text",
 						},
 					},
-					// Custom tool input is a string, so stream its JSON
-					// encoding consistently with the final tool call input
-					// (TS #22535).
-					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: e.Item.CallID, Text: `"`},
 				)
 				continue
 			case "apply_patch_call":
@@ -3478,7 +3512,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
 					ID:   toolCall.toolCallID,
-					Text: escapeJSONDelta(e.Delta),
+					Text: e.Delta,
 				})
 				if ok {
 					return chunk, nil
@@ -4215,7 +4249,6 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			return nil, false
 		}
 		s.flushQueue = append(s.flushQueue,
-			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: item.CallID, Text: `"`},
 			&provider.StreamChunk{
 				Type:     provider.ChunkTypeToolInputEnd,
 				ToolCall: &types.ToolCall{ID: item.CallID},

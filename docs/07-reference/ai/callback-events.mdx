@@ -261,6 +261,8 @@ These events wrap each provider call inside a step.
 | `ModelID` | `string` |  |
 | `State` | `interface{}` |  |
 | `Questions` | `map[string]provider.DecisionQuestion` |  |
+| `MaxOutputTokens` | `*int` | MaxOutputTokens is the maximum number of output tokens requested. |
+| `Reasoning` | `*types.ReasoningLevel` | Reasoning is the reasoning effort requested. |
 | `MaxRetries` | `int` |  |
 | `Headers` | `map[string]string` |  |
 | `ProviderOptions` | `map[string]interface{}` |  |

@@ -499,6 +499,12 @@ type ToolCall struct {
 	// Title is a short, human-readable title for the tool call.
 	Title string `json:"title,omitempty"`
 
+	// InputEncoding is the encoding of the tool-input-delta chunks that follow
+	// a tool-input-start chunk: "json" (the default when empty) or "text".
+	// Text deltas concatenate to a raw string; the final tool call input is
+	// still JSON-encoded. Mirrors TS tool-input-start `inputEncoding`.
+	InputEncoding string `json:"inputEncoding,omitempty"`
+
 	// Arguments to pass to the tool
 	Arguments map[string]interface{} `json:"arguments"`
 

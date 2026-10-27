@@ -286,7 +286,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
 	downloadOpts.Headers = internalhttp.MergeHeaders(m.prov.reqHeaders, opts.Headers)
 
-	pollURL := strings.TrimRight(m.prov.config.BaseURL, "/") + "/contents/generations/tasks/" + operation.TaskID
+	pollURL := strings.TrimRight(m.prov.config.BaseURL, "/") + "/contents/generations/tasks/" + providerutils.EncodePathSegment(operation.TaskID)
 
 	result, err := fileutil.DownloadWithMetadata(ctx, pollURL, downloadOpts)
 	if err != nil {

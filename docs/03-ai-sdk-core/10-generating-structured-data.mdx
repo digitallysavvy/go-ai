@@ -202,6 +202,10 @@ if err := streamResult.Err(); err != nil {
 }
 ```
 
+### Multiple Messages from OpenAI Responses
+
+The OpenAI Responses API can return several assistant messages (for example a `commentary` draft followed by a `final_answer`). For JSON output, `GenerateText` and `GenerateObject` parse only the last `final_answer` message, which the provider reports in `GenerateResult.StructuredOutputText`. `result.Text`, the content parts and the response messages still contain every message. `ExtractJSONMiddleware` and `ExtractReasoningMiddleware` apply their transforms to `StructuredOutputText` as well. Streaming is unchanged.
+
 ## SchemaFor Helper
 
 `ai.SchemaFor[T]()` generates a JSON Schema from a Go struct's field types and `json` tags. Use it instead of writing schemas by hand:

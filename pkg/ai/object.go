@@ -1026,14 +1026,14 @@ func generateObjectMode(ctx context.Context, opts GenerateObjectOptions, cc obje
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	obj, _, _, err := parseGenerateObjectResult(genResult, ObjectModeObject, opts.Schema, nil, opts.Model)
+	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeObject, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			obj, _, _, err = parseObjectResult(&repairedResult, ObjectModeObject, opts.Schema, nil, opts.Model)
@@ -1192,14 +1192,14 @@ func generateArrayMode(ctx context.Context, opts GenerateObjectOptions, cc objec
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	_, arr, _, err := parseGenerateObjectResult(genResult, ObjectModeArray, opts.Schema, nil, opts.Model)
+	_, arr, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeArray, opts.Schema, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			_, arr, _, err = parseObjectResult(&repairedResult, ObjectModeArray, opts.Schema, nil, opts.Model)
@@ -1349,14 +1349,14 @@ func generateEnumMode(ctx context.Context, opts GenerateObjectOptions, cc object
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	_, _, selectedValue, err := parseGenerateObjectResult(genResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
+	_, _, selectedValue, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeEnum, nil, opts.EnumValues, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			_, _, selectedValue, err = parseObjectResult(&repairedResult, ObjectModeEnum, nil, opts.EnumValues, opts.Model)
@@ -1500,14 +1500,14 @@ func generateNoSchemaMode(ctx context.Context, opts GenerateObjectOptions, cc ob
 		ProviderMetadata: genResult.ProviderMetadata,
 	}, resolveObjectOnStepEnd(opts.OnStepEnd, opts.OnStepFinish))
 
-	obj, _, _, err := parseGenerateObjectResult(genResult, ObjectModeNoSchema, nil, nil, opts.Model)
+	obj, _, _, err := parseGenerateObjectResult(structuredParseResult(genResult), ObjectModeNoSchema, nil, nil, opts.Model)
 	repairTextFn := effectiveRepairText(opts.RepairText, opts.ExperimentalRepairText)
 	if err != nil && repairTextFn != nil {
-		repairedText, repairErr := attemptRepair(ctx, repairTextFn, genResult.Text, err)
+		repairedText, repairErr := attemptRepair(ctx, repairTextFn, structuredParseText(genResult), err)
 		if repairErr != nil {
 			return nil, repairErr
 		}
-		if repairedText != nil && *repairedText != genResult.Text {
+		if repairedText != nil && *repairedText != structuredParseText(genResult) {
 			repairedResult := *genResult
 			repairedResult.Text = *repairedText
 			obj, _, _, err = parseObjectResult(&repairedResult, ObjectModeNoSchema, nil, nil, opts.Model)
@@ -2259,6 +2259,31 @@ func validateObjectGenerationInput(mode ObjectOutputMode, hasSchema bool, schema
 		return invalid("output", "Invalid output type.")
 	}
 	return nil
+}
+
+// structuredParseText returns the text a non-streaming response is parsed
+// from: the provider's StructuredOutputText when set, otherwise Text (TS
+// generateObject `generateResult.structuredOutputText ?? text`).
+func structuredParseText(result *types.GenerateResult) string {
+	if result != nil && result.StructuredOutputText != nil {
+		return *result.StructuredOutputText
+	}
+	if result == nil {
+		return ""
+	}
+	return result.Text
+}
+
+// structuredParseResult returns result, or a shallow copy whose Text is the
+// structured output text when the provider supplied one. The original result
+// (and the text exposed to callers) is never modified.
+func structuredParseResult(result *types.GenerateResult) *types.GenerateResult {
+	if result == nil || result.StructuredOutputText == nil {
+		return result
+	}
+	parsed := *result
+	parsed.Text = *result.StructuredOutputText
+	return &parsed
 }
 
 // parseGenerateObjectResult is parseObjectResult for a non-streaming model

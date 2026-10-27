@@ -39,10 +39,10 @@ func (m *DecisionModel) Provider() string { return "typesafe.decision" }
 // ModelID returns the model ID.
 func (m *DecisionModel) ModelID() string { return m.modelID }
 
-// SupportedQuestionTypes reports that TypeSafe AI accepts all three question
-// types.
+// SupportedQuestionTypes reports that TypeSafe AI accepts choice, score,
+// boolean and box questions.
 func (m *DecisionModel) SupportedQuestionTypes() []string {
-	return []string{"choice", "score", "boolean"}
+	return []string{"choice", "score", "boolean", "box"}
 }
 
 // DoDecide decides every question against the same state via TypeSafe
@@ -93,15 +93,28 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 	}
 
+	if opts.MaxOutputTokens != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "maxOutputTokens"})
+	}
+	if opts.Reasoning != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning"})
+	}
+
 	requestQuestions := make(map[string]interface{}, len(opts.Questions))
 	for id, q := range opts.Questions {
 		wireType := q.Type
 		if wireType == "boolean" {
 			wireType = "noul"
 		}
-		entry := map[string]interface{}{
-			"type":         wireType,
-			"instructions": q.Instructions,
+		entry := map[string]interface{}{"type": wireType}
+		// Instructions are optional for criteria-only questions.
+		if q.Instructions != nil {
+			entry["instructions"] = q.Instructions
+		}
+		if q.Type == "box" {
+			// A box question is sent as {type, instructions} only.
+			requestQuestions[id] = entry
+			continue
 		}
 		if q.Criteria != nil {
 			entry["criteria"] = q.Criteria
@@ -123,6 +136,14 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	headers, err := m.provider.resolveHeaders()
 	if err != nil {
 		return nil, err
+	}
+	// Box answers are image regions, so box questions turn on TypeSafe's
+	// images mode (TS TypeSafe-Danger-Zone-Images).
+	for _, q := range opts.Questions {
+		if q.Type == "box" {
+			headers = internalhttp.MergeHeaders(headers, map[string]string{"TypeSafe-Danger-Zone-Images": "true"})
+			break
+		}
 	}
 	headers = internalhttp.MergeHeaders(headers, opts.Headers)
 
@@ -222,6 +243,15 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 			if c, ok := fields["confidence"].(float64); ok {
 				confidence[id] = c
 			}
+		case "box":
+			box, ok := toBox(fields["box"])
+			if !ok {
+				return nil, nil, providererrors.NewInvalidResponseDataError(fields, fmt.Sprintf("TypeSafe AI returned a malformed box answer for %q.", id))
+			}
+			answers[id] = provider.DecisionAnswer{Type: "box", Box: box}
+			if c, ok := fields["confidence"].(float64); ok {
+				confidence[id] = c
+			}
 		case "noul":
 			noul, ok := fields["noul"].(float64)
 			if !ok {
@@ -234,6 +264,21 @@ func convertTypesafeAnswers(raw map[string]json.RawMessage) (map[string]provider
 	}
 
 	return answers, confidence, nil
+}
+
+func toBox(v interface{}) (*provider.DecisionBox, bool) {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil, false
+	}
+	top, ok1 := m["top"].(float64)
+	bottom, ok2 := m["bottom"].(float64)
+	left, ok3 := m["left"].(float64)
+	right, ok4 := m["right"].(float64)
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return nil, false
+	}
+	return &provider.DecisionBox{Top: top, Bottom: bottom, Left: left, Right: right}, true
 }
 
 func toFloatMap(v interface{}) (map[string]float64, bool) {

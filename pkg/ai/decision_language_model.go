@@ -214,8 +214,12 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 	}
 
 	reasoning := types.ReasoningNone
+	if opts.Reasoning != nil {
+		reasoning = *opts.Reasoning
+	}
 	genResult, err := e.model.DoGenerate(ctx, &provider.GenerateOptions{
 		Reasoning: &reasoning,
+		MaxTokens: opts.MaxOutputTokens,
 		Prompt: types.Prompt{
 			System: decisionLanguageModelSystemPrompt,
 			Messages: []types.Message{
@@ -347,8 +351,14 @@ func isImageMediaType(mediaType string) bool {
 // (id, type, instructions, criteria).
 func decisionRubric(id, questionType string, instructions, criteria interface{}, withCriteria bool) providerutils.OrderedMap {
 	r := providerutils.OrderedMap{
-		Keys: []string{"id", "type", "instructions"},
-		Vals: map[string]interface{}{"id": id, "type": questionType, "instructions": instructions},
+		Keys: []string{"id", "type"},
+		Vals: map[string]interface{}{"id": id, "type": questionType},
+	}
+	// A criteria-only question carries no instructions key (TS leaves an
+	// undefined instructions out of the JSON prompt).
+	if instructions != nil {
+		r.Keys = append(r.Keys, "instructions")
+		r.Vals["instructions"] = instructions
 	}
 	if withCriteria {
 		r.Keys = append(r.Keys, "criteria")

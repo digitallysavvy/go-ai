@@ -1024,6 +1024,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// a subsequent response (SupportsDeferredResults=true). Key = toolCallID, value = toolName.
 	pendingDeferredToolCalls := make(map[string]string)
 
+	// lastStructuredOutputText is the last model response's StructuredOutputText
+	// (TS currentModelResponse.structuredOutputText).
+	var lastStructuredOutputText *string
+
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
 		stepStart := time.Now()
@@ -1343,6 +1347,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: stepErr})
 			return nil, err
 		}
+		lastStructuredOutputText = genResult.StructuredOutputText
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
 		performance := stepPerformance(modelCallStart, genResult.Usage, nil, nil)
@@ -1880,8 +1885,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	var outputParseErr error
 	if op, ok := opts.Output.(outputProcessor); ok && len(result.Steps) > 0 && shouldParseFinalOutput(result.FinalStep.FinishReason, result.FinalStep.Text) {
 		lastUsage := result.FinalStep.Usage
+		// Select the structured output without changing the complete response
+		// content, text or messages exposed to callers (TS textForOutput).
+		textForOutput := result.FinalStep.Text
+		if lastStructuredOutputText != nil {
+			if rf, rfErr := op.ResponseFormat(ctx); rfErr == nil && rf != nil && rf.Type == "json" {
+				textForOutput = *lastStructuredOutputText
+			}
+		}
 		parsed, parseErr := op.parseCompleteOutput(ctx, ParseCompleteOutputOptions{
-			Text:         result.FinalStep.Text,
+			Text:         textForOutput,
 			FinishReason: result.FinalStep.FinishReason,
 			Usage:        &lastUsage,
 		})

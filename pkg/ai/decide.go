@@ -39,11 +39,15 @@ type DecideOnStartEvent struct {
 	// OperationID is the canonical operation name ("ai.decide").
 	OperationID string
 	// RuntimeContext is the user-defined runtime context passed via options.
-	RuntimeContext  interface{}
-	Provider        string
-	ModelID         string
-	State           interface{}
-	Questions       map[string]provider.DecisionQuestion
+	RuntimeContext interface{}
+	Provider       string
+	ModelID        string
+	State          interface{}
+	Questions      map[string]provider.DecisionQuestion
+	// MaxOutputTokens is the maximum number of output tokens requested.
+	MaxOutputTokens *int
+	// Reasoning is the reasoning effort requested.
+	Reasoning       *types.ReasoningLevel
 	MaxRetries      int
 	Headers         map[string]string
 	ProviderOptions map[string]interface{}
@@ -95,6 +99,14 @@ type DecideOptions struct {
 	// Questions maps question ID -> question.
 	Questions map[string]provider.DecisionQuestion
 
+	// MaxOutputTokens is the maximum number of output tokens for models that
+	// support it. Must be an integer >= 1.
+	MaxOutputTokens *int
+
+	// Reasoning is the reasoning effort for models that support it.
+	// Language-model adapters default to none.
+	Reasoning *types.ReasoningLevel
+
 	// MaxRetries is the maximum number of retries for transient provider
 	// failures. Defaults to 2.
 	MaxRetries      *int
@@ -122,6 +134,12 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		return nil, err
 	}
 
+	if opts.MaxOutputTokens != nil && *opts.MaxOutputTokens < 1 {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "maxOutputTokens",
+			Message: "maxOutputTokens must be >= 1",
+		}
+	}
 	if err := validateDecisionInput(opts.State, opts.Questions); err != nil {
 		return nil, err
 	}
@@ -158,6 +176,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		ModelID:         model.ModelID(),
 		State:           opts.State,
 		Questions:       opts.Questions,
+		MaxOutputTokens: opts.MaxOutputTokens,
+		Reasoning:       opts.Reasoning,
 		MaxRetries:      resolvedMaxRetries,
 		Headers:         opts.Headers,
 		ProviderOptions: opts.ProviderOptions,
@@ -213,6 +233,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		res, callErr := model.DoDecide(callCtx, provider.DecisionCallOptions{
 			State:           preparedState,
 			Questions:       opts.Questions,
+			MaxOutputTokens: opts.MaxOutputTokens,
+			Reasoning:       opts.Reasoning,
 			Headers:         headers,
 			ProviderOptions: opts.ProviderOptions,
 		})
@@ -481,11 +503,16 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 	for _, id := range sortedQuestionIDs(questions) {
 		q := questions[id]
 		field := fmt.Sprintf("questions.%s", id)
-		if !isDecisionInput(q.Instructions) {
+		// Instructions may be omitted (nil) for choice, score and boolean
+		// questions when the provider supports criteria-only questions; a box
+		// question always needs them (TS #23470).
+		if (q.Type == "box" || q.Instructions != nil) && !isDecisionInput(q.Instructions) {
 			return invalidDecisionInput(field, "instructions must be a JSON-compatible string, object, or array")
 		}
 
 		switch q.Type {
+		case "box":
+			// A box question has instructions only (TS `continue`).
 		case "choice":
 			criteria, ok := isDecisionRecord(q.Criteria)
 			if !ok || len(criteria) == 0 {
@@ -498,8 +525,8 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 			}
 		case "score":
 			criteria, ok := q.Criteria.([]interface{})
-			if !ok || len(criteria) < 2 {
-				return invalidDecisionInput(field, "score criteria must contain at least two ordered levels")
+			if !ok || len(criteria) == 0 {
+				return invalidDecisionInput(field, "score criteria must contain at least one ordered level")
 			}
 			for _, v := range criteria {
 				if v != nil && !isDecisionInput(v) {
@@ -507,6 +534,21 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 				}
 			}
 		case "boolean":
+			if q.Instructions == nil {
+				criteria, ok := isDecisionRecord(q.Criteria)
+				described := false
+				if ok {
+					for _, v := range criteria {
+						if v != nil {
+							described = true
+							break
+						}
+					}
+				}
+				if !described {
+					return invalidDecisionInput(field, "boolean questions require instructions or at least one non-null criterion")
+				}
+			}
 			if q.Criteria != nil {
 				criteria, ok := isDecisionRecord(q.Criteria)
 				if !ok {
@@ -522,7 +564,7 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 				}
 			}
 		default:
-			return invalidDecisionInput(field, "question type must be choice, score, or boolean")
+			return invalidDecisionInput(field, "question type must be choice, score, boolean, or box")
 		}
 	}
 	return nil
@@ -649,6 +691,14 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ans
 				if math.Abs(mean-*answer.Score) > decisionTolerance+meanRoundingError+scoreError {
 					return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q score must equal the probability-weighted mean within the declared rounding precision.", id))
 				}
+			}
+		case "box":
+			box := answer.Box
+			if box == nil ||
+				!isDecisionProbability(box.Left) || !isDecisionProbability(box.Right) ||
+				!isDecisionProbability(box.Top) || !isDecisionProbability(box.Bottom) ||
+				!(box.Left < box.Right) || !(box.Top < box.Bottom) {
+				return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q must return box edges in [0, 1] with left < right and top < bottom.", id))
 			}
 		case "boolean":
 			if answer.Probability == nil || !isDecisionProbability(*answer.Probability) {

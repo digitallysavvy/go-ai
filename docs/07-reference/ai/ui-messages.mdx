@@ -90,6 +90,7 @@ When `ValidateUIMessages` converts a static tool part into a `dynamic-tool` part
 | `Input` | `interface{}` | Input is the tool input. For input-streaming and output-error nil means absent; for other states nil is serialized as null. |
 | `Output` | `interface{}` | Output is the tool output (output-available). |
 | `RawInput` | `interface{}` | RawInput serves two purposes depending on State: - input-streaming: the accumulated raw (partial-JSON) tool input text received so far. Used to continue input streaming when a message is persisted and later resumed (see seedPartialToolCalls). - output-error: the deprecated raw input of an output-error part. Deprecated: for output-error, use Input instead. |
+| `InputEncoding` | `string` | InputEncoding is the encoding of RawInput on an input-streaming part: "json" (the default when empty) or "text" (raw text deltas, e.g. OpenAI custom tools). |
 | `ErrorText` | `string` |  |
 | `Preliminary` | `*bool` |  |
 | `CallProviderMetadata` | `map[string]interface{}` |  |

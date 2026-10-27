@@ -617,3 +617,23 @@ func TestDecisionModel_JSONStateStringKeepsQuotesAndSkipsHTMLEscaping(t *testing
 		t.Fatalf("input = %v", input)
 	}
 }
+
+// TS #23590: maxOutputTokens and reasoning warn and are never sent.
+func TestDecisionModel_WarnsAboutUnsupportedMaxOutputTokensAndReasoning(t *testing.T) {
+	p, rec := newDecisionProvider(t, decisionFixture, 200)
+	opts := decisionTestOptions()
+	n, level := 512, types.ReasoningHigh
+	opts.MaxOutputTokens, opts.Reasoning = &n, &level
+	result, err := decide(t, p, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 2 || result.Warnings[0].Feature != "maxOutputTokens" || result.Warnings[1].Feature != "reasoning" {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+	for _, k := range []string{"maxOutputTokens", "max_output_tokens", "reasoning", "reasoning_effort"} {
+		if _, ok := rec.body[k]; ok {
+			t.Errorf("%s must not be sent", k)
+		}
+	}
+}
