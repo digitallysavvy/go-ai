@@ -89,7 +89,8 @@ func TestStdioTransportAlreadyConnected(t *testing.T) {
 	defer func() { _ = transport.Close() }()
 
 	err := transport.Connect(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "already connected") {
+	var ce *MCPClientError
+	if !errors.As(err, &ce) || err.Error() != "StdioMCPTransport already started." {
 		t.Fatalf("second Connect() error = %v", err)
 	}
 }

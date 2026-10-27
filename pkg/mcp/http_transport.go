@@ -387,12 +387,18 @@ func isInitializeMessage(message *MCPMessage) bool {
 	return message != nil && message.Method == "initialize"
 }
 
+// errHTTPTransportAlreadyStarted is TS HttpMCPTransport.start()'s error for a
+// transport that is already started.
+func errHTTPTransportAlreadyStarted() *MCPClientError {
+	return NewMCPClientError(0, "MCP HTTP Transport Error: Transport already started. Note: client.connect() calls start() automatically.", nil)
+}
+
 // Connect establishes a connection to the HTTP server
 func (t *HTTPTransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
 	if t.connected {
 		t.mu.Unlock()
-		return fmt.Errorf("already connected")
+		return errHTTPTransportAlreadyStarted()
 	}
 	hasOAuth := t.oauth != nil
 	t.mu.Unlock()
@@ -409,7 +415,7 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
 	if t.connected {
 		t.mu.Unlock()
-		return fmt.Errorf("already connected")
+		return errHTTPTransportAlreadyStarted()
 	}
 	t.connected = true
 	t.mu.Unlock()

@@ -75,7 +75,7 @@ var (
 // resolveExecutionPolicy's doc comment for the same reasoning).
 func SetMaxWorkers(n int) error {
 	if n < 0 {
-		return fmt.Errorf("codemode: maxWorkers must be a positive integer, got %d", n)
+		return runTypeError("maxWorkers must be a positive integer.") // TS run setMaxWorkers text
 	}
 	maxWorkersMu.Lock()
 	defer maxWorkersMu.Unlock()

@@ -43,10 +43,11 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	if options != nil {
 		policyInput = options.ExecutionPolicy
 	}
-	policy, perr := resolveExecutionPolicy(policyInput)
-	if perr != nil {
-		return nil, perr
-	}
+	// TS resolves the policy's defaults first and leaves validating it to
+	// the runner, after the source-size check and prepareContinuation (a
+	// partially resolved continuation returns its next interrupt without
+	// running, so it never validates).
+	policy := defaultExecutionPolicy(policyInput)
 
 	if err := assertSourceSize(input.JS, policy.MaxSourceBytes); err != nil {
 		return nil, err
@@ -64,6 +65,9 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	}
 	if prepared.nextInterrupt != nil {
 		return prepared.nextInterrupt, nil
+	}
+	if verr := validateExecutionPolicy(policy); verr != nil {
+		return nil, verr
 	}
 
 	var outerToolCall string
@@ -161,10 +165,18 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		// anyway. Mirrors TypeScript's CodeModeDetachedBridgeRequestError
 		// (code-mode/src/errors.ts), translated from the underlying `run`
 		// package's RUN_DETACHED_BRIDGE_REQUEST in toCodeModeRuntimeError.
+		// The message and the inFlightBridgeRequests/totalBridgeRequests
+		// details are `run`'s (manager.js); toolName/toolCallId name the
+		// first detached call for Go callers.
 		first := batch[0]
 		return nil, NewDetachedBridgeRequestError(
-			"Code mode requested a host bridge interruption that was never observed: the sandboxed script must not let the interruption go undetected and complete anyway.",
-			map[string]interface{}{"toolName": first.ToolName, "toolCallId": first.ToolCallID},
+			fmt.Sprintf("JavaScript runtime returned while %d bridge request(s) were still in flight.", len(batch)),
+			map[string]interface{}{
+				"inFlightBridgeRequests": len(batch),
+				"totalBridgeRequests":    bridge.requestTotal(),
+				"toolName":               first.ToolName,
+				"toolCallId":             first.ToolCallID,
+			},
 		)
 	}
 
@@ -178,9 +190,14 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 	return fromJSONPayload(resultJSON)
 }
 
+// assertSourceSize mirrors TS assertSourceSize: an invalid limit is left for
+// the policy validation to report.
 func assertSourceSize(source string, maxBytes int) error {
+	if !isValidRunLimit(maxBytes) {
+		return nil
+	}
 	bytes := len([]byte(source))
-	if maxBytes > 0 && bytes > maxBytes {
+	if bytes > maxBytes {
 		return NewSourceTooLargeError(bytes, maxBytes)
 	}
 	return nil

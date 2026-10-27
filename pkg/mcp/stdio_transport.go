@@ -141,7 +141,8 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 	defer t.mu.Unlock()
 
 	if t.connected {
-		return fmt.Errorf("already connected")
+		// TS StdioMCPTransport.start()'s error.
+		return NewMCPClientError(0, "StdioMCPTransport already started.", nil)
 	}
 
 	if err := validateStdioCommandForWindows(t.command, t.args); err != nil {
