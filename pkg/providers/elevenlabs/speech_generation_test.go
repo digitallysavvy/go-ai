@@ -307,3 +307,20 @@ func TestSpeechStream_WarnsAboutHTTPOnlyGenerationOptions(t *testing.T) {
 		})
 	}
 }
+
+// TS #23933: structured options replace the text, so callers pass an empty
+// text and must not be warned that it was ignored.
+func TestSpeechGenerate_NoIgnoredTextWarningForEmptyText(t *testing.T) {
+	p, calls := genServer(t)
+	r, err := gen(t, p, "eleven_v3", &provider.SpeechGenerateOptions{Text: "", ProviderOptions: el("inputs", dlgInputs)})
+	if err != nil || len(r.Warnings) != 0 {
+		t.Fatalf("dialogue warnings = %+v err = %v", r.Warnings, err)
+	}
+	r, err = gen(t, p, "music_v2_5", &provider.SpeechGenerateOptions{Text: "", ProviderOptions: el("compositionPlan", m("chunks", []interface{}{}))})
+	if err != nil || len(r.Warnings) != 0 {
+		t.Fatalf("composition plan warnings = %+v err = %v", r.Warnings, err)
+	}
+	if !reflect.DeepEqual((*calls)[1].body, m("composition_plan", m("chunks", []interface{}{}), "model_id", "music_v2_5")) {
+		t.Fatalf("body = %#v", (*calls)[1].body)
+	}
+}
