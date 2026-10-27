@@ -78,10 +78,13 @@ var jsdKeywords = []struct {
 	{[3]rune{'t', 0, 0}, jsdKwTimeSeparator, 0},
 }
 
-// jsdIsWhiteSpace is V8's IsWhiteSpaceOrLineTerminator.
+// jsdIsWhiteSpace is the white space the date parser skips in Node: the
+// Zs characters, tab, vertical tab, form feed, NBSP, BOM, LF and CR. U+2028
+// and U+2029 are not white space here; they read as word characters
+// (Date.parse("1\u2028Jan 2000") is NaN in Node).
 func jsdIsWhiteSpace(c rune) bool {
 	switch c {
-	case '\t', '\v', '\f', ' ', 0xA0, 0xFEFF, '\n', '\r', 0x2028, 0x2029:
+	case '\t', '\v', '\f', ' ', 0xA0, 0xFEFF, '\n', '\r':
 		return true
 	}
 	return unicode.Is(unicode.Zs, c)
@@ -97,6 +100,11 @@ type jsdTokenizer struct {
 func newJSDTokenizer(s string) *jsdTokenizer {
 	var in []rune
 	for _, r := range s {
+		if r == 0 {
+			// V8's InputReader ends the input at the first NUL code unit
+			// (IsEnd is ch_ == 0), so nothing after it is read.
+			break
+		}
 		if r > 0xFFFF {
 			// Two code units, neither of which V8 reads as anything but a
 			// word character.
@@ -288,7 +296,9 @@ func (z *jsdZone) write() (offset int64, local, ok bool) {
 	}
 	total := uint64(uint32(h))*3600 + uint64(uint32(m))*60
 	total &= math.MaxUint32
-	if total > 1<<30-1 {
+	// Smi::kMaxValue: Node builds V8 without pointer compression, so Smis
+	// are 32 bits wide.
+	if total > math.MaxInt32 {
 		return 0, false, false
 	}
 	offset = int64(total)
@@ -350,7 +360,7 @@ func (d *jsdDay) write() (year, month, day int, ok bool) {
 			year += 1900
 		}
 	}
-	if year < -(1<<30) || year > 1<<30-1 || !jsdBetween(month, 1, 12) || !isDay(day) {
+	if year < math.MinInt32 || year > math.MaxInt32 || !jsdBetween(month, 1, 12) || !isDay(day) {
 		return 0, 0, 0, false
 	}
 	return year, month, day, true

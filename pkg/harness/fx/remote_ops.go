@@ -443,6 +443,7 @@ type globSegment struct {
 	// [:ascii:] and [:xdigit:]). Without it the JavaScript regexp sees
 	// UTF-16 code units, so `?` matches half of a character outside the BMP.
 	unicode bool
+	never   bool   // a class that matches nothing (minimatch `$.`)
 	literal string // the text a segment without magic must equal exactly
 	tokens  []globToken
 }
@@ -462,7 +463,7 @@ type globToken struct {
 	r    rune // globTokenLiteral
 	// globTokenClass, built like minimatch's parseClass: ranges holds the
 	// listed characters, ranges and posix classes; negs the negated posix
-	// classes ([:graph:], [:print:]). Either may be nil.
+	// class [:graph:]. Either may be nil.
 	ranges, negs *regexp.Regexp
 	negate       bool
 }
@@ -540,6 +541,9 @@ func (g *globPattern) matchSegments(segs []globSegment, parts []string) bool {
 // matchSegment matches one path segment. Without magic the segment is a
 // string compared exactly even when case is ignored (nocaseMagicOnly).
 func (g *globPattern) matchSegment(s globSegment, name string) bool {
+	if s.never {
+		return false
+	}
 	if !s.magic {
 		return name == s.literal
 	}
@@ -701,7 +705,7 @@ var globPosixClasses = map[string]struct {
 	"[:ascii:]": {`\x00-\x7f`, false, false}, "[:blank:]": {`\p{Zs}\t`, true, false},
 	"[:cntrl:]": {`\p{Cc}`, true, false}, "[:digit:]": {`\p{Nd}`, true, false},
 	"[:graph:]": {`\p{Z}\p{C}`, true, true}, "[:lower:]": {`\p{Ll}`, true, false},
-	"[:print:]": {`\p{C}`, true, true}, "[:punct:]": {`\p{P}`, true, false},
+	"[:print:]": {`\p{C}`, true, false}, "[:punct:]": {`\p{P}`, true, false},
 	"[:space:]": {`\p{Z}\t\r\n\v\f`, true, false}, "[:upper:]": {`\p{Lu}`, true, false},
 	"[:word:]": {`\p{L}\p{Nl}\p{Nd}\p{Pc}`, true, false}, "[:xdigit:]": {`A-Fa-f0-9`, false, false},
 }
@@ -723,9 +727,14 @@ func parseGlobSegment(part string) (globSegment, error) {
 			seg.magic = true
 			seg.tokens = append(seg.tokens, globToken{kind: globTokenAny})
 		case '[':
-			tok, single, end, ok, uflag, err := parseGlobClass(rs, i)
+			tok, single, end, ok, never, uflag, err := parseGlobClass(rs, i)
 			if err != nil {
 				return globSegment{}, err
+			}
+			if never {
+				// minimatch's `$.`: the segment matches nothing.
+				seg.magic, seg.never = true, true
+				return seg, nil
 			}
 			if !ok {
 				literal.WriteRune(c)
@@ -772,69 +781,142 @@ func classRune(r rune) string {
 	return regexp.QuoteMeta(string(r))
 }
 
-// parseGlobClass parses the class opening at rs[start]. It returns the
-// closing index, or ok=false when the class never closes (the "[" is then
-// literal). single is the class's only character when it is a plain
-// one-character class, else -1.
-func parseGlobClass(rs []rune, start int) (tok globToken, single rune, end int, ok, uflag bool, err error) {
+// parseGlobClass ports minimatch's parseClass for the class opening at
+// rs[start]. It returns the index of the class's last character, or
+// ok=false when the class never closes (the "[" is then literal). single
+// is the class's only character when it is a plain one-character class
+// ([_], [a-a]), else -1. never reports a class that cannot match anything
+// (minimatch's `$.`, which also swallows the rest of the segment): every
+// range out of order, or a range ending in a posix class ([a-[:digit:]]).
+// An out-of-order range is dropped while the others still match.
+func parseGlobClass(rs []rune, start int) (tok globToken, single rune, end int, ok, never, uflag bool, err error) {
+	var ranges, negs []string
 	i := start + 1
-	if i < len(rs) && (rs[i] == '!' || rs[i] == '^') {
-		tok.negate = true
-		i++
-	}
-	var ranges, negs strings.Builder
-	var items []string
-	first := i
-	for ; i < len(rs); i++ {
+	sawStart := false
+	endPos := start
+	rangeStart := rune(-1)
+	// A `\` never reaches here (it is a separator), so there is no
+	// escaping state.
+outer:
+	for i < len(rs) {
 		c := rs[i]
-		if c == ']' && i > first {
+		if (c == '!' || c == '^') && i == start+1 {
+			tok.negate = true
+			i++
+			continue
+		}
+		if c == ']' && sawStart {
+			endPos = i + 1
 			break
 		}
-		if c == '[' && i+1 < len(rs) && rs[i+1] == ':' {
-			if closeAt := strings.Index(string(rs[i:]), ":]"); closeAt > 0 {
-				name := string(rs[i:])[:closeAt+2]
-				if pc, known := globPosixClasses[name]; known {
-					uflag = uflag || pc.unicode
-					if pc.negate {
-						negs.WriteString(pc.body)
-					} else {
-						ranges.WriteString(pc.body)
-					}
-					items = append(items, name)
-					i += utf8.RuneCountInString(name) - 1
+		sawStart = true
+		if c == '[' {
+			for _, name := range globPosixClassOrder {
+				if !hasRunePrefix(rs[i:], name) {
 					continue
 				}
+				if rangeStart >= 0 {
+					return globToken{}, -1, len(rs) - 1, true, true, false, nil
+				}
+				pc := globPosixClasses[name]
+				i += len(name)
+				if pc.negate {
+					negs = append(negs, pc.body)
+				} else {
+					ranges = append(ranges, pc.body)
+				}
+				uflag = uflag || pc.unicode
+				continue outer
 			}
 		}
-		if i+2 < len(rs) && rs[i+1] == '-' && rs[i+2] != ']' {
-			ranges.WriteString(classRune(c) + "-" + classRune(rs[i+2]))
-			items = append(items, string(rs[i:i+3]))
+		if rangeStart >= 0 {
+			// Runes compare like minimatch's UTF-16 code units except for a
+			// range end outside the BMP.
+			switch {
+			case c > rangeStart:
+				ranges = append(ranges, classRune(rangeStart)+"-"+classRune(c))
+			case c == rangeStart:
+				ranges = append(ranges, classRune(c))
+			}
+			rangeStart = -1
+			i++
+			continue
+		}
+		if i+2 < len(rs) && rs[i+1] == '-' && rs[i+2] == ']' {
+			ranges = append(ranges, classRune(c)+classRune('-'))
 			i += 2
 			continue
 		}
-		ranges.WriteString(classRune(c))
-		items = append(items, string(c))
+		if i+1 < len(rs) && rs[i+1] == '-' {
+			rangeStart = c
+			i += 2
+			continue
+		}
+		ranges = append(ranges, classRune(c))
+		i++
 	}
-	if i >= len(rs) {
-		return globToken{}, -1, 0, false, false, nil
+	if endPos < i {
+		return globToken{}, -1, 0, false, false, false, nil
 	}
-	if !tok.negate && len(items) == 1 && negs.Len() == 0 {
-		if r := []rune(items[0]); len(r) == 1 && r[0] <= 0xFFFF {
-			return globToken{}, r[0], i, true, false, nil
+	end = endPos - 1
+	if len(ranges) == 0 && len(negs) == 0 {
+		return globToken{}, -1, len(rs) - 1, true, true, false, nil
+	}
+	if len(negs) == 0 && len(ranges) == 1 && !tok.negate {
+		// minimatch /^\\?.$/: one escaped or plain character other than a
+		// line terminator, as a single UTF-16 code unit.
+		if r, ok := classSingleRune(ranges[0]); ok {
+			return globToken{}, r, end, true, false, false, nil
 		}
 	}
 	tok.kind = globTokenClass
-	if ranges.Len() > 0 {
-		if tok.ranges, err = regexp.Compile("^[" + ranges.String() + "]$"); err != nil {
-			return globToken{}, -1, 0, false, false, err
+	if len(ranges) > 0 {
+		if tok.ranges, err = regexp.Compile("^[" + strings.Join(ranges, "") + "]$"); err != nil {
+			return globToken{}, -1, 0, false, false, false, err
 		}
 	}
-	if negs.Len() > 0 {
-		if tok.negs, err = regexp.Compile("^[" + negs.String() + "]$"); err != nil {
-			return globToken{}, -1, 0, false, false, err
+	if len(negs) > 0 {
+		if tok.negs, err = regexp.Compile("^[" + strings.Join(negs, "") + "]$"); err != nil {
+			return globToken{}, -1, 0, false, false, false, err
 		}
 	}
-	return tok, -1, i, true, uflag, nil
+	return tok, -1, end, true, false, uflag, nil
+}
+
+// globPosixClassOrder is minimatch's posixClasses key order.
+var globPosixClassOrder = []string{
+	"[:alnum:]", "[:alpha:]", "[:ascii:]", "[:blank:]", "[:cntrl:]", "[:digit:]", "[:graph:]",
+	"[:lower:]", "[:print:]", "[:punct:]", "[:space:]", "[:upper:]", "[:word:]", "[:xdigit:]",
+}
+
+func hasRunePrefix(rs []rune, prefix string) bool {
+	i := 0
+	for _, p := range prefix {
+		if i >= len(rs) || rs[i] != p {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
+// classSingleRune reports the character of a class item built by classRune
+// for one character, unless it is a line terminator (which `.` does not
+// match) or outside the BMP (two code units).
+func classSingleRune(item string) (rune, bool) {
+	rs := []rune(item)
+	if len(rs) == 2 && rs[0] == '\\' {
+		rs = rs[1:]
+	}
+	if len(rs) != 1 {
+		return 0, false
+	}
+	switch r := rs[0]; {
+	case r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029 || r > 0xFFFF:
+		return 0, false
+	default:
+		return r, true
+	}
 }
 
 // expandBraces expands {a,b} alternatives (nested braces included); a

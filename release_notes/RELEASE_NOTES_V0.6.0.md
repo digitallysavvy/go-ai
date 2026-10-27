@@ -512,7 +512,12 @@ in v0.5.3.
   integer number of milliseconds up to 4294967295) instead of overflowing
   for a huge value.
 - Harness date parsing reads a local time skipped by a daylight-saving
-  change with the offset before the change, as V8 does.
+  change with the offset before the change, as V8 does. Like Node, it also
+  stops at a NUL character, reads U+2028/U+2029 as word characters, and
+  accepts a UTC offset of up to 2^31-1 seconds.
+- fx `glob` parses character classes like minimatch: an out-of-order range
+  such as `[z-a]` matches nothing instead of failing the tool, `[a-a]` is
+  the literal `a`, and `[[:print:]]` is no longer negated.
 - The harness file reporter writes TS's record shapes: usage detail
   objects, an empty `modelId`, the prompt text as a string message, and a
   runtime tool error's value.

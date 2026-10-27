@@ -162,6 +162,12 @@ These details differ:
     returns for a cancelled context (usually `context deadline exceeded`);
     TS gets the sandbox's rejection for a `TimeoutError` ("The operation was
     aborted due to timeout").
+  - The `glob` tool does not support minimatch extglobs (`@(a|b)`,
+    `!(a)`, `+(a)`, `*(a)`, `?(a)`); their characters match literally.
+  - Where Node's `path.matchesGlob` throws "Invalid regular expression ...
+    Invalid escape" (a segment with a Unicode posix class such as
+    `[[:alpha:]]` next to a literal `-`, `,`, `#` or space), Go matches the
+    segment instead of failing the tool.
 
 ## Harness file reporter
 
