@@ -327,6 +327,7 @@ func (i LegacyOpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEve
 // (resolved by CallID, embedded by OnDecideStart) and ends it, mirroring
 // TS's onDecideOperationEnd.
 func (i LegacyOpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
+	defer legacyDeleteState(e.CallID)
 	span := legacyRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return
@@ -474,6 +475,7 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 // OnDecideEnd sets output attributes on the root decide span (resolved
 // by CallID) and ends it, mirroring TS's onDecideOperationEnd.
 func (i OpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
+	defer genAIDeleteState(e.CallID)
 	span := genAIRootSpanFor(e.CallID, ctx)
 	if !span.IsRecording() {
 		return

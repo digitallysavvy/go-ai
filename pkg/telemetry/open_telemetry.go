@@ -1342,6 +1342,9 @@ func (i OpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEvent) { i
 // double count fixed in c0a42bc — that count already lives on the
 // embeddings request span from OnEmbedEnd.
 func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
+	// The end is terminal for the call: its state goes even when no span is
+	// recording, so a late event cannot leave an entry behind.
+	defer genAIDeleteState(e.CallID)
 	// H5: resolve OUR OWN root span by CallID rather than
 	// trace.SpanFromContext(ctx), which — with a second integration also
 	// registered — would silently resolve to that other integration's span
@@ -1561,6 +1564,9 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 // span left open by OnDecisionModelCallStart for this CallID, since
 // OnDecisionModelCallEnd is never notified on an error path.
 func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
+	// Terminal for the call (also when it arrives after OnEnd): never leave
+	// state behind.
+	defer genAIDeleteState(e.CallID)
 	if e.CallID != "" {
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
@@ -1645,6 +1651,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 // alone), so this closes the right spans even when another integration is
 // also registered.
 func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	defer genAIDeleteState(e.CallID)
 	if e.CallID != "" {
 		// TS onAbort also ends an in-flight decision model-call span.
 		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {

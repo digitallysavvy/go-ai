@@ -2281,6 +2281,9 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 // gen_ai.system/gen_ai.request.model from the root span for the same
 // reason: TS's onXEnd methods never set gen_ai.* on the root span at all).
 func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
+	// The end is terminal for the call: its state goes even when no span is
+	// recording, so a late event cannot leave an entry behind.
+	defer legacyDeleteState(e.CallID)
 	// H5: resolve OUR OWN root span by CallID instead of
 	// trace.SpanFromContext(ctx), which — with a second integration also
 	// registered — would silently resolve to that other integration's span
@@ -2450,6 +2453,9 @@ func (i LegacyOpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEven
 // OnDecisionModelCallEnd is never notified on an error path (mirrors
 // decide.ts, where onDecisionModelCallEnd only fires on success).
 func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
+	// Terminal for the call (also when it arrives after OnEnd, as for a
+	// generateText output parse failure): never leave state behind.
+	defer legacyDeleteState(e.CallID)
 	if e.CallID != "" {
 		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID)); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
@@ -2527,6 +2533,7 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 // trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this closes
 // the right spans even when another integration is also registered.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	defer legacyDeleteState(e.CallID)
 	if e.CallID != "" {
 		// TS onAbort also ends an in-flight decision model-call span.
 		if value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID)); ok {

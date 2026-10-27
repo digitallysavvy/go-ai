@@ -448,3 +448,35 @@ func TestLegacyNestedSpansInheritRuntimeContextAttributes(t *testing.T) {
 		}
 	}
 }
+
+// An error reported after the call already ended (generateText's output
+// parse failure fires onEnd, then onError, as in TS) must not leave call
+// state behind: OnError and OnAbort are terminal for the call.
+func TestTerminalEventsAfterEndDoNotLeakCallState(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	settings := &Settings{IsEnabled: Bool(true)}
+	legacy := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")})
+	genAI := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai")})
+	for _, terminal := range []string{"error", "abort"} {
+		callID := "after-end-" + terminal
+		start := TelemetryStartEvent{CallID: callID, OperationType: "ai.generateText", Settings: settings}
+		end := TelemetryFinishEvent{CallID: callID, OperationType: "ai.generateText", Settings: settings, FinishReason: "stop"}
+		for _, integration := range []TelemetryIntegration{legacy, genAI} {
+			ctx := integration.OnStart(context.Background(), start)
+			integration.(endHandler).OnEnd(ctx, end)
+			if terminal == "error" {
+				integration.OnError(ctx, TelemetryErrorEvent{CallID: callID, Settings: settings, Error: errors.New("output parse failed")})
+			} else {
+				integration.(abortHandler).OnAbort(ctx, TelemetryAbortEvent{CallID: callID, Settings: settings})
+			}
+		}
+		if _, ok := legacyCallStates.Load(callID); ok {
+			t.Errorf("%s: legacy call state leaked", terminal)
+		}
+		if _, ok := genAICallStates.Load(callID); ok {
+			t.Errorf("%s: GenAI call state leaked", terminal)
+		}
+	}
+}
