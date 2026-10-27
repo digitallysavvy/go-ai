@@ -173,6 +173,18 @@ func (l *partLog) ofType(typ string) []harness.StreamPart {
 	return out
 }
 
+// waitFor waits until at least n parts of typ have been emitted.
+func (l *partLog) waitFor(t *testing.T, typ string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for len(l.ofType(typ)) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d %s parts", n, typ)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (l *partLog) text() string {
 	var b strings.Builder
 	for _, p := range l.ofType(harness.PartTypeTextDelta) {

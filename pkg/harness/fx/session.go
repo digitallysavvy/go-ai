@@ -310,9 +310,12 @@ func (s *libfxSession) runTurn(ctx context.Context, settings harness.TurnSetting
 		return nil, errors.New("fx session has been stopped.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	if active := s.active; active != nil && s.state.Turn == nil {
-		s.mu.Unlock()
-		<-active.done
-		s.mu.Lock()
+		_ = active.controlWaitLocked(func() error {
+			s.mu.Unlock()
+			<-active.settled
+			s.mu.Lock()
+			return nil
+		})
 	}
 	fast, ultrafast := s.serviceTier()
 	signature := s.turnSignature(settings, responseFormat, fast, ultrafast)
@@ -401,12 +404,27 @@ type activeTurn struct {
 	caller context.Context
 	ctx    context.Context
 	cancel context.CancelCauseFunc
-	done   chan struct{}
-	err    error
+	// settled closes when the turn body and its cleanup have finished;
+	// suspend and the next turn wait for it. done (PromptControl.Done)
+	// closes after that, once every queued part has been delivered.
+	settled chan struct{}
+	done    chan struct{}
+	err     error
 
+	// Parts reach emitTarget from one dispatcher goroutine, in order, so no
+	// goroutine that runs the turn ever blocks in the caller's Emit. An Emit
+	// may therefore call DoSuspendTurn, DoStop or DoPromptTurn synchronously
+	// (TS emit is synchronous and those calls return promises).
 	emitTarget harness.EmitFunc
-	emitQueue  []harness.StreamPart
-	emitMu     sync.Mutex // held by the goroutine delivering emitQueue
+	emitQueue  []queuedPart
+	emitSignal chan struct{} // capacity 1: wakes the dispatcher
+	emitClosed bool          // set once settled; the dispatcher then drains and closes done
+	enqueued   int           // parts queued so far
+	delivered  int           // parts the dispatcher has handed to Emit
+	// controlWaiters counts control calls blocked on turn progress. While
+	// one waits, producers stop waiting for delivery, since that call may
+	// be running inside Emit.
+	controlWaiters int
 
 	suspending     bool
 	emitted        map[string]bool
@@ -433,8 +451,8 @@ func newActiveTurn(ctx context.Context, s *libfxSession, turn *fxTurnState, emit
 	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
 	a := &activeTurn{
 		s: s, turn: turn, settings: settings, fast: fast, ultrafast: ultrafast,
-		caller: ctx, ctx: tctx, cancel: cancel, done: make(chan struct{}),
-		emitTarget: emit, emitted: map[string]bool{},
+		caller: ctx, ctx: tctx, cancel: cancel, settled: make(chan struct{}), done: make(chan struct{}),
+		emitTarget: emit, emitSignal: make(chan struct{}, 1), emitted: map[string]bool{},
 		results: map[string]harness.ToolResultSubmission{}, approvals: map[string]fxApproval{},
 		registered: map[string]registeredTool{}, toolRequests: map[string]int{},
 		wake: make(chan struct{}), seenIdentities: map[string]bool{},
@@ -445,17 +463,30 @@ func newActiveTurn(ctx context.Context, s *libfxSession, turn *fxTurnState, emit
 	}
 	a.translator = newTranslator(turn.ID, a.emitLocked, a.emitOnceLocked)
 	go func() {
-		<-a.done
+		<-a.settled
 		stop()
 	}()
+	go a.dispatch()
 	return a
+}
+
+// queuedPart is a part waiting for the dispatcher, with the emitted key
+// that emitOnceLocked recorded for it.
+type queuedPart struct {
+	part harness.StreamPart
+	key  string
 }
 
 // emitLocked queues a part; the caller holds s.mu and calls deliver after
 // unlocking.
 func (a *activeTurn) emitLocked(part harness.StreamPart) {
+	a.enqueueLocked(part, "")
+}
+
+func (a *activeTurn) enqueueLocked(part harness.StreamPart, key string) {
 	if !a.suspending {
-		a.emitQueue = append(a.emitQueue, part)
+		a.emitQueue = append(a.emitQueue, queuedPart{part, key})
+		a.enqueued++
 	}
 }
 
@@ -465,38 +496,102 @@ func (a *activeTurn) emitOnceLocked(key string, part harness.StreamPart) {
 	}
 	a.emitted[key] = true
 	a.turn.EmittedKeys = append(a.turn.EmittedKeys, key)
-	a.emitLocked(part)
+	a.enqueueLocked(part, key)
 }
 
-// deliver hands queued parts to the caller in order. A goroutine that finds
-// another delivering returns at once; that one delivers the new parts too.
-// The caller must not hold s.mu.
+// discardQueueLocked drops the parts the caller has not received when the
+// turn starts suspending, as TS drops every emit after `suspending = true`.
+// Their keys are unrecorded so the continuation emits them again.
+func (a *activeTurn) discardQueueLocked() {
+	dropped := map[string]bool{}
+	for _, q := range a.emitQueue {
+		if q.key != "" {
+			dropped[q.key] = true
+			delete(a.emitted, q.key)
+		}
+	}
+	a.emitQueue = nil
+	if len(dropped) == 0 {
+		return
+	}
+	keys := a.turn.EmittedKeys[:0]
+	for _, k := range a.turn.EmittedKeys {
+		if !dropped[k] {
+			keys = append(keys, k)
+		}
+	}
+	a.turn.EmittedKeys = keys
+}
+
+// deliver wakes the dispatcher. It never blocks.
 func (a *activeTurn) deliver() {
+	select {
+	case a.emitSignal <- struct{}{}:
+	default:
+	}
+}
+
+// deliverWait wakes the dispatcher and waits until it has handed every part
+// queued so far to Emit, so the turn does not move on before the caller
+// has seen its parts (TS emit is synchronous; an emit handler that suspends
+// stops the turn before the core continues). The wait ends early once the
+// turn is suspending or aborted, or while a control call is waiting on the
+// turn, so an Emit that calls back into the session cannot deadlock. The
+// caller must not hold s.mu.
+func (a *activeTurn) deliverWait() {
+	a.deliver()
+	s := a.s
+	s.mu.Lock()
+	seq := a.enqueued
+	for a.delivered < seq && !a.suspending && a.controlWaiters == 0 && a.ctx.Err() == nil {
+		wake := a.wake
+		s.mu.Unlock()
+		select {
+		case <-wake:
+		case <-a.ctx.Done():
+		}
+		s.mu.Lock()
+	}
+	s.mu.Unlock()
+}
+
+// controlWaitLocked marks a control call as waiting on the turn for the
+// duration of wait (see controlWaiters). Called and returns with s.mu held.
+func (a *activeTurn) controlWaitLocked(wait func() error) error {
+	a.controlWaiters++
+	a.notifyLocked()
+	defer func() { a.controlWaiters-- }()
+	return wait()
+}
+
+// dispatch hands queued parts to the caller in order, then closes done
+// once the turn has settled and the queue is empty.
+func (a *activeTurn) dispatch() {
+	s := a.s
 	for {
-		if !a.emitMu.TryLock() {
-			return
-		}
-		for {
-			a.s.mu.Lock()
-			if len(a.emitQueue) == 0 {
-				a.s.mu.Unlock()
-				break
+		s.mu.Lock()
+		if len(a.emitQueue) == 0 {
+			closed := a.emitClosed
+			s.mu.Unlock()
+			if closed {
+				close(a.done)
+				return
 			}
-			part := a.emitQueue[0]
-			a.emitQueue = a.emitQueue[1:]
-			target, suspending := a.emitTarget, a.suspending
-			a.s.mu.Unlock()
-			if !suspending && target != nil {
-				target(part)
-			}
+			<-a.emitSignal
+			continue
 		}
-		a.emitMu.Unlock()
-		a.s.mu.Lock()
-		more := len(a.emitQueue) > 0
-		a.s.mu.Unlock()
-		if !more {
-			return
+		q := a.emitQueue[0]
+		a.emitQueue[0] = queuedPart{}
+		a.emitQueue = a.emitQueue[1:]
+		target := a.emitTarget
+		s.mu.Unlock()
+		if target != nil {
+			target(q.part)
 		}
+		s.mu.Lock()
+		a.delivered++
+		a.notifyLocked()
+		s.mu.Unlock()
 	}
 }
 
@@ -705,7 +800,7 @@ func (a *activeTurn) publishToolBatch(ctx context.Context, requestIndex int) err
 		}
 	}
 	s.mu.Unlock()
-	a.deliver()
+	a.deliverWait()
 	return nil
 }
 
@@ -733,7 +828,7 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 	a.emitToolCallLocked(current, providerExecuted)
 	status := current.Status
 	s.mu.Unlock()
-	a.deliver()
+	a.deliverWait()
 
 	if status != toolCompleted {
 		if err := s.save(a.ctx); err != nil {
@@ -749,7 +844,7 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 				a.earlyStepLocked(current)
 			}
 			s.mu.Unlock()
-			a.deliver()
+			a.deliverWait()
 			s.mu.Lock()
 			var submission harness.ToolResultSubmission
 			if err := a.waitForLocked(func() bool {
@@ -781,7 +876,7 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 					a.earlyStepLocked(current)
 				}
 				s.mu.Unlock()
-				a.deliver()
+				a.deliverWait()
 				if err := s.save(a.ctx); err != nil {
 					return nil, err
 				}
@@ -853,7 +948,7 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 	a.emitToolResultLocked(current)
 	result := current.Result
 	s.mu.Unlock()
-	a.deliver()
+	a.deliverWait()
 	if err := s.save(a.ctx); err != nil {
 		return nil, err
 	}
@@ -875,6 +970,7 @@ func (a *activeTurn) suspend() {
 	s := a.s
 	s.mu.Lock()
 	a.suspending = true
+	a.discardQueueLocked()
 	rt := a.runtimeTurn
 	a.notifyLocked()
 	s.mu.Unlock()
@@ -882,7 +978,7 @@ func (a *activeTurn) suspend() {
 	if rt != nil {
 		rt.Cancel()
 	}
-	<-a.done
+	<-a.settled
 }
 
 func (a *activeTurn) buildTools(ctx context.Context) ([]libfx.Tool, error) {
@@ -974,9 +1070,11 @@ func (a *activeTurn) run() {
 	if s.active == a {
 		s.active = nil
 	}
+	a.emitClosed = true
 	s.mu.Unlock()
 	a.cancel(context.Canceled)
-	close(a.done)
+	close(a.settled)
+	a.deliver()
 }
 
 // cleanup closes the runtime and the transport and saves (TS finally).
@@ -1047,7 +1145,7 @@ func (a *activeTurn) runBody() error {
 			}
 			a.emitOnceLocked("start", part)
 			s.mu.Unlock()
-			a.deliver()
+			a.deliverWait()
 		},
 		beforeRelease: func(ctx context.Context, requestIndex int, _ bool) error {
 			if err := a.publishToolBatch(ctx, requestIndex); err != nil {
@@ -1177,7 +1275,7 @@ func (a *activeTurn) runBody() error {
 		finishReason = step.finishReason
 	}
 	s.mu.Unlock()
-	a.deliver()
+	a.deliverWait()
 	cp, err := engine.Checkpoint(context.WithoutCancel(a.ctx))
 	if err != nil {
 		return err
@@ -1243,12 +1341,12 @@ func (a *activeTurn) drain(rt fxTurn) error {
 			a.recordSteerLocked(ev.Text)
 		}
 		s.mu.Unlock()
-		a.deliver()
+		a.deliverWait()
 	}
 	s.mu.Lock()
 	a.flushOutputLocked()
 	s.mu.Unlock()
-	a.deliver()
+	a.deliverWait()
 	return nil
 }
 
@@ -1409,8 +1507,10 @@ func (a *activeTurn) SubmitToolApproval(ctx context.Context, approval harness.To
 func (a *activeTurn) SubmitUserMessage(ctx context.Context, text string) error {
 	s := a.s
 	s.mu.Lock()
-	err := a.waitForLocked(func() bool {
-		return a.runtimeTurn != nil && a.transport != nil && a.transport.requestIndex >= len(a.turn.Models)-1
+	err := a.controlWaitLocked(func() error {
+		return a.waitForLocked(func() bool {
+			return a.runtimeTurn != nil && a.transport != nil && a.transport.requestIndex >= len(a.turn.Models)-1
+		})
 	})
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()

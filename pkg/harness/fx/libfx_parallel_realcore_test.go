@@ -77,6 +77,9 @@ func TestLibfxRealCoreLaterCustomResultPersistsBeforeCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The echo reaches Emit from the turn's dispatcher, after the result
+	// is durable (TS emits it before submitToolResult resolves).
+	events.waitFor(t, harness.PartTypeToolResult, 1)
 	if ids := toolCallIDs(events.ofType(harness.PartTypeToolResult)); len(ids) != 1 || ids[0] != tokyo {
 		t.Fatalf("tool results = %v", ids)
 	}
