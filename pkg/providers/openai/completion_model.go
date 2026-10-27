@@ -255,7 +255,7 @@ func convertToCompletionPrompt(prompt types.Prompt) (string, []string, error) {
 	for _, message := range messages {
 		switch message.Role {
 		case types.RoleSystem:
-			return "", nil, fmt.Errorf("unexpected system message in prompt")
+			return "", nil, fmt.Errorf("unexpected system message in prompt: %s", completionTextContent(message.Content))
 		case types.RoleUser:
 			text += "user:\n" + completionTextContent(message.Content) + "\n\n"
 		case types.RoleAssistant:

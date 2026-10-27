@@ -134,6 +134,9 @@ func TestCompletionModelWarningsAndPromptErrorsMatchTypeScript(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unexpected system message error")
 	}
+	if !strings.Contains(err.Error(), "unexpected system message in prompt: late") {
+		t.Fatalf("error should include system content, got %q", err.Error())
+	}
 
 	_, _, err = convertToCompletionPrompt(types.Prompt{
 		Messages: []types.Message{
