@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,14 +78,7 @@ func (p *Provider) GetSpeechToken(ctx context.Context, modelID string, opts *Spe
 // modelID (TS toGatewaySpeechUrl): the HTTP(S) base is upgraded to WS(S) and
 // the model id is passed as the "ai-model-id" query parameter.
 func ToGatewaySpeechURL(baseURL string, modelID string) string {
-	u, err := url.Parse(strings.Replace(baseURL, "http", "ws", 1) + "/speech-model")
-	if err != nil {
-		return ""
-	}
-	query := u.Query()
-	query.Set("ai-model-id", modelID)
-	u.RawQuery = query.Encode()
-	return u.String()
+	return gatewayWebSocketURL(baseURL, "/speech-model", modelID)
 }
 
 // splitSpeechTextDelta splits a long text delta into pieces of at most
