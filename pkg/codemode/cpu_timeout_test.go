@@ -112,7 +112,7 @@ func TestExecutionPolicyCPUTimeoutDefaultsAndValidation(t *testing.T) {
 	if _, err := resolveExecutionPolicy(&ExecutionPolicy{CPUTimeoutMs: -1}); err == nil || !strings.Contains(err.Error(), "executionPolicy.cpuTimeoutMs must be a positive integer") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := resolveExecutionPolicy(&ExecutionPolicy{CPUTimeoutMs: 2_147_483_648}); err == nil {
+	if _, err := resolveExecutionPolicy(&ExecutionPolicy{CPUTimeoutMs: aboveRunLimit}); aboveRunLimit != 0 && err == nil {
 		t.Fatal("expected a limit above the run maximum to be rejected")
 	}
 }

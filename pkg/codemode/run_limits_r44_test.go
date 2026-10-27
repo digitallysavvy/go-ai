@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -20,10 +21,13 @@ func TestExecutionPolicyValidationMatchesRunOrderAndText(t *testing.T) {
 		{ExecutionPolicy{TimeoutMs: -1, CPUTimeoutMs: -1}, "executionPolicy.cpuTimeoutMs must be a positive integer."},
 		{ExecutionPolicy{TimeoutMs: -1, MemoryLimitBytes: -1}, "executionPolicy.memoryLimitBytes must be a positive integer."},
 		{ExecutionPolicy{MaxSourceBytes: -1, MaxToolInputBytes: -1}, "executionPolicy.maxToolInputBytes must be a positive integer."},
-		{ExecutionPolicy{MaxResultBytes: 1 << 40}, "executionPolicy.maxResultBytes must be at most 2147483647."},
-		{ExecutionPolicy{TimeoutMs: 2_147_483_648}, "executionPolicy.timeoutMs must be at most 2147483647."},
+		{ExecutionPolicy{MaxResultBytes: aboveRunLimit}, "executionPolicy.maxResultBytes must be at most 2147483647."},
+		{ExecutionPolicy{TimeoutMs: aboveRunLimit}, "executionPolicy.timeoutMs must be at most 2147483647."},
 	}
 	for _, c := range cases {
+		if aboveRunLimit == 0 && c.policy.CPUTimeoutMs == 0 && c.policy.MemoryLimitBytes == 0 && c.policy.MaxToolInputBytes == 0 {
+			continue // 32-bit: no int exceeds the run limit
+		}
 		p := c.policy
 		_, err := RunCodeMode(context.Background(), RunInput{JS: "return 1;", Options: &Options{ExecutionPolicy: &p}})
 		if err == nil || err.Error() != c.want {
@@ -196,3 +200,13 @@ func TestInterruptInputIsTheSandboxArgument(t *testing.T) {
 		t.Fatalf("host Interrupt.Input = %#v", pending.(*Interrupt).Input)
 	}
 }
+
+// aboveRunLimit is maxRunLimit+1, or 0 where int is 32 bits and cannot exceed
+// the run limit (computed at run time so the package compiles on 386/arm).
+var aboveRunLimit = func() int {
+	v := int64(maxRunLimit) + 1
+	if v > math.MaxInt {
+		return 0
+	}
+	return int(v)
+}()
