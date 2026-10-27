@@ -113,9 +113,13 @@ type HTTPTransport struct {
 	sseClosing           bool
 	sseConnCancel        context.CancelFunc
 	sseReconnectAttempts int
-	sseReconnectTimer    *time.Timer
-	lastInboundEventID   string
-	sseWG                sync.WaitGroup
+	// sseReconnectTimers holds every pending reconnect timer. Two inbound
+	// GETs can be in flight at once (the one Connect opens and one a 202
+	// starts before the first has a response), so more than one can be
+	// scheduled; Close must stop all of them, not wait for one to fire.
+	sseReconnectTimers map[*time.Timer]struct{}
+	lastInboundEventID string
+	sseWG              sync.WaitGroup
 
 	// postSSEWG tracks background goroutines draining a text/event-stream
 	// POST response (readMCPHTTPSSEMessages), so Close() can wait for them to
@@ -1020,14 +1024,17 @@ func (t *HTTPTransport) stopInboundSSE() {
 	if t.sseLifecycleCancel != nil {
 		t.sseLifecycleCancel()
 	}
-	timer := t.sseReconnectTimer
-	t.sseReconnectTimer = nil
+	timers := t.sseReconnectTimers
+	t.sseReconnectTimers = nil
 	t.sseMu.Unlock()
 
-	if timer != nil && timer.Stop() {
-		// The timer's callback (which would have called sseWG.Done() itself)
-		// will now never run, so account for its earlier sseWG.Add(1) here.
-		t.sseWG.Done()
+	for timer := range timers {
+		if timer.Stop() {
+			// The timer's callback (which would have called sseWG.Done()
+			// itself) will now never run, so account for its earlier
+			// sseWG.Add(1) here.
+			t.sseWG.Done()
+		}
 	}
 
 	t.sseWG.Wait()
@@ -1102,9 +1109,13 @@ func (t *HTTPTransport) scheduleInboundSSEReconnection() {
 	resumeToken := t.lastInboundEventID
 	lifecycleCtx := t.sseLifecycleCtx
 	t.sseWG.Add(1)
-	t.sseReconnectTimer = time.AfterFunc(delay, func() {
+	var timer *time.Timer
+	// The callback takes sseMu before reading timer, and timer is assigned
+	// below while sseMu is still held, so the callback always sees it.
+	timer = time.AfterFunc(delay, func() {
 		defer t.sseWG.Done()
 		t.sseMu.Lock()
+		delete(t.sseReconnectTimers, timer)
 		closing := t.sseClosing
 		t.sseMu.Unlock()
 		if closing || lifecycleCtx == nil || lifecycleCtx.Err() != nil {
@@ -1112,6 +1123,10 @@ func (t *HTTPTransport) scheduleInboundSSEReconnection() {
 		}
 		t.openInboundSSE(lifecycleCtx, false, resumeToken)
 	})
+	if t.sseReconnectTimers == nil {
+		t.sseReconnectTimers = make(map[*time.Timer]struct{})
+	}
+	t.sseReconnectTimers[timer] = struct{}{}
 	t.sseMu.Unlock()
 }
 

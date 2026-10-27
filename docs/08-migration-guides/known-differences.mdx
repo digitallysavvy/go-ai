@@ -99,6 +99,11 @@ These details differ:
 - `Connect` after `Close` starts the transport again, as in v0.5.
   TypeScript's HTTP transport fails with "Transport already started", and
   its stdio transport never finishes starting.
+- After a stdio server process exits on its own, `StdioTransport.Send`
+  fails with a `*TransportError` for the closed pipe. TypeScript clears the
+  process on its `close` event and throws "StdioClientTransport not
+  connected". Go learns of the exit only through `Close`, which waits on
+  the process.
 
 ## fx: libfx runtime
 
