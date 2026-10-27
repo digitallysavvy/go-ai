@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -43,8 +44,8 @@ func TestRunPrompt_SettledReplayOpensStep(t *testing.T) {
 }
 
 // TS: a terminal finish with an unclosed step calls onTurnFinished, then
-// result.finish() rejects and the catch calls onTurnFailed.
-func TestRunPrompt_FinishWithUnclosedStepFiresFinishedAndFailed(t *testing.T) {
+// result.finish() fails the result with an error part.
+func TestRunPrompt_FinishWithUnclosedStepFiresFinishedOnly(t *testing.T) {
 	mock := newMockHarness(mockHarnessOptions{
 		script: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
@@ -54,6 +55,7 @@ func TestRunPrompt_FinishWithUnclosedStepFiresFinishedAndFailed(t *testing.T) {
 			}
 		},
 	})
+	logs := captureTurnLogs(t)
 	var finished, failed atomic.Int32
 	out := runPrompt(context.Background(), runPromptInput{
 		Harness: mock.harness, Session: mock.session,
@@ -61,9 +63,17 @@ func TestRunPrompt_FinishWithUnclosedStepFiresFinishedAndFailed(t *testing.T) {
 		OnTurnFinished: func() { finished.Add(1) },
 		OnTurnFailed:   func() { failed.Add(1) },
 	})
-	drainRunPrompt(t, out)
-	if finished.Load() != 1 || failed.Load() != 1 {
-		t.Fatalf("finished=%d failed=%d, want 1 and 1", finished.Load(), failed.Load())
+	chunks := drainRunPrompt(t, out)
+	// TS result.finish() fails the result in place without throwing: only
+	// onTurnFinished runs, and nothing is logged.
+	if finished.Load() != 1 || failed.Load() != 0 {
+		t.Fatalf("finished=%d failed=%d, want 1 and 0", finished.Load(), failed.Load())
+	}
+	if errs := chunksOfType(chunks, provider.ChunkTypeError); len(errs) != 1 || errs[0].Err == nil || errs[0].Err.Error() != unclosedStepErrorMessage {
+		t.Fatalf("error chunks = %+v, want the unclosed step error", errs)
+	}
+	if got := logs(); len(got) != 0 {
+		t.Fatalf("turn logs = %q, want none", got)
 	}
 }
 
@@ -141,8 +151,11 @@ func TestRunPrompt_SettledReplayThenBareFinishIsUnclosedStep(t *testing.T) {
 		OnTurnFinished: func() { finished.Add(1) },
 		OnTurnFailed:   func() { failed.Add(1) },
 	})
-	drainRunPrompt(t, out)
-	if finished.Load() != 1 || failed.Load() != 1 {
-		t.Fatalf("finished=%d failed=%d, want 1 and 1 (replay-only step left open)", finished.Load(), failed.Load())
+	chunks := drainRunPrompt(t, out)
+	if finished.Load() != 1 || failed.Load() != 0 {
+		t.Fatalf("finished=%d failed=%d, want 1 and 0 (replay-only step left open)", finished.Load(), failed.Load())
+	}
+	if errs := chunksOfType(chunks, provider.ChunkTypeError); len(errs) != 1 || errs[0].Err == nil || errs[0].Err.Error() != unclosedStepErrorMessage {
+		t.Fatalf("error chunks = %+v, want the unclosed step error", errs)
 	}
 }

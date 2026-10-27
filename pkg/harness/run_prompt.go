@@ -1269,13 +1269,15 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// and the later lifecycle.error is a no-op.
 			d.telEnd(d.completedSteps, *usage)
 			if d.stepOpen {
-				// TS calls onTurnFinished for the terminal finish and only
-				// then result.finish() rejects the unclosed step, whose
-				// catch settles the failure and fires onTurnFailed too.
+				// TS calls onTurnFinished for the terminal finish and then
+				// result.finish() fails the result in place (an error part):
+				// it does not throw, so no onTurnFailed, no "harness turn
+				// failed" log and no lifecycle error follow.
 				if !d.suspending() && d.in.OnTurnFinished != nil {
 					d.in.OnTurnFinished()
 				}
-				return false, false, errors.New(unclosedStepErrorMessage) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
+				d.fail(errors.New(unclosedStepErrorMessage)) //nolint:staticcheck // invalidToolInputMessage/unclosedStepErrorMessage are exact TS parity strings
+				return false, true, nil
 			}
 			// Deferred, not pushed here — see turnDriver.pendingFinishChunk's
 			// doc. run() pushes it once OnTurnFinished has been called.
