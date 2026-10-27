@@ -6,6 +6,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
 // TS ToolLoopAgent has one path, through generateText, so every model call
@@ -53,5 +54,30 @@ func TestLegacyLoopSendsTheSameUserAgentAsGenerate(t *testing.T) {
 	}
 	if workflowUA != "ai-sdk-agent/workflow" {
 		t.Fatalf("workflow user-agent = %q", workflowUA)
+	}
+}
+
+// The legacy loop's start event carries the headers its model calls send, as
+// TS generateText's onStart reports headersWithUserAgent.
+func TestLegacyLoopStartEventCarriesTaggedHeaders(t *testing.T) {
+	var sent map[string]string
+	model := &functionalAgentLanguageModel{
+		doGenerate: func(_ context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			sent = opts.Headers
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	rec := &startEventRecorder{}
+	a := NewToolLoopAgent(AgentConfig{Model: model, Headers: map[string]string{"x-user": "custom"},
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}}})
+	if _, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.starts) != 1 {
+		t.Fatalf("start events = %d, want 1", len(rec.starts))
+	}
+	got := rec.starts[0].Headers
+	if got["user-agent"] == "" || got["user-agent"] != sent["user-agent"] || got["x-user"] != "custom" {
+		t.Fatalf("start event headers %#v, model call headers %#v", got, sent)
 	}
 }
