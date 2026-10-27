@@ -92,8 +92,15 @@ Two details differ:
   in the core's environment. Go gives the core a placeholder and swaps in
   the real key on the host, only for AI Gateway requests, and removes the
   key from responses.
-- **Origin allowlist.** The core's requests may reach only the AI Gateway
-  base URL and libfx's provider origins; TS's fetch allows any URL.
+- **Origin allowlist.** The core's requests, and the redirects they follow,
+  may reach only the AI Gateway base URL and libfx's provider origins; TS's
+  fetch allows any URL. A Gateway request path that is itself a URL stays a
+  path on the base URL, where TS's `new URL(path, base)` would resolve it to
+  that other origin.
+- **Asynchronous tool-result echo.** Turn parts reach `Emit` from one
+  goroutine per turn. TS emits the echo of `submitToolResult` before its
+  promise resolves; Go's `SubmitToolResult` returns once the result is saved,
+  and the echo follows on `Emit`.
 - **Not yet ported.** Codex and grok subscription authentication and MCP
   servers on the libfx runtime are still to come. Until then, use the default
   runtime for them.
