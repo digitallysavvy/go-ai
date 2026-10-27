@@ -300,6 +300,8 @@ result, _ := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+When `ToolChoice` is `none`, the SDK keeps the tool definitions in the request but rejects any tool call the model returns anyway. `GenerateText` and `StreamText` fail with an `ai.ToolChoiceViolationError` (`"Model response contained a tool call even though tool choice was none."`) and never execute the tool or run its `OnInputStart`, `OnInputDelta` and `OnInputAvailable` callbacks. With `StreamText`, tool parts are also withheld from the stream, so client-side tools cannot act on them, and `RepairToolCall` and `ExperimentalRefineToolInput` are not invoked for the rejected calls. A `PrepareStep` override that replaces `none` with another choice lifts the restriction for that step.
+
 ## Tool Execution Options
 
 When tools are called, they receive the context and input parameters. You can use the context for cancellation, timeouts, and passing request-scoped values.

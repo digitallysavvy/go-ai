@@ -1446,9 +1446,15 @@ func resolveAgentStepTools(ctx context.Context, tools []types.Tool, toolsContext
 // here and calls to unknown tools or with schema-invalid input were never
 // marked Invalid. Mirrors ai.parseToolCalls (unexported; pkg/agent can only
 // reach the single-call ai.ParseToolCall).
-func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message) ([]types.ToolCall, error) {
+func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig PrepareCallConfig, messages []types.Message, skipRepair bool) ([]types.ToolCall, error) {
 	if len(calls) == 0 {
 		return calls, nil
+	}
+	repair := callConfig.RepairToolCall
+	if skipRepair {
+		// With tool choice none every tool call is rejected, so the user's
+		// repair callback must not process them (TS #23843).
+		repair = nil
 	}
 	parsed := make([]types.ToolCall, len(calls))
 	for i, call := range calls {
@@ -1463,7 +1469,7 @@ func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig
 		result, err := ai.ParseToolCall(ctx, ai.ParseToolCallOptions{
 			ToolCall:            call,
 			Tools:               callConfig.Tools,
-			RepairToolCall:      callConfig.RepairToolCall,
+			RepairToolCall:      repair,
 			Instructions:        callConfig.System,
 			InstructionMessages: callConfig.InstructionMessages,
 			Messages:            messages,
@@ -1723,7 +1729,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if callConfig.Include != nil {
 		include = *callConfig.Include
 	}
-	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages)
+	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}

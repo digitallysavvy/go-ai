@@ -1824,6 +1824,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 				continue
 			}
+			// Tool choice none rejects every tool call when the model call
+			// finishes. Withhold tool parts so consumers (for example
+			// client-side tools) cannot act on them before the rejection, and
+			// skip the user callbacks that would repair or refine them (TS
+			// #23843).
+			withholdToolParts := currentToolChoice.Type == types.ToolChoiceNone
+			if withholdToolParts {
+				switch chunk.Type {
+				case provider.ChunkTypeToolInputStart, provider.ChunkTypeToolInputDelta, provider.ChunkTypeToolInputEnd:
+					continue
+				}
+			}
 			if bufferToolParts && !replayed {
 				if chunk.Type == provider.ChunkTypeFinish && len(heldChunks) > 0 {
 					replayQueue, heldChunks = append(heldChunks, chunk), nil
@@ -1878,6 +1890,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// metadata (e.g. a Gemini thought signature).
 			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" && len(chunk.ProviderMetadata) == 0 {
 				forwardChunk = false
+			}
+			// Tool parts are withheld with tool choice none (TS #23843).
+			if withholdToolParts {
+				switch chunk.Type {
+				case provider.ChunkTypeToolCall, provider.ChunkTypeToolApprovalRequest, provider.ChunkTypeToolResult:
+					forwardChunk = false
+				}
 			}
 			// The raw provider finish chunk is never forwarded to the
 			// consumer directly (mirrors TS's 'model-call-end', which is
@@ -2025,14 +2044,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// forwarded chunk itself.
 			if chunk.Type == provider.ChunkTypeToolCall && chunk.ToolCall != nil {
 				enriched := enrichToolCallMetadata([]types.ToolCall{*chunk.ToolCall}, stepTools)[0]
+				parseRepair, parseRefine := repairToolCall, opts.ExperimentalRefineToolInput
+				if withholdToolParts {
+					parseRepair, parseRefine = nil, nil
+				}
 				refined, parsed, parseErr := parseAndRefineToolCall(stepCtx, ParseToolCallOptions{
 					ToolCall:            enriched,
 					Tools:               stepTools,
-					RepairToolCall:      repairToolCall,
+					RepairToolCall:      parseRepair,
 					Instructions:        stepInstructions,
 					InstructionMessages: stepInstructionMessages,
 					Messages:            currentMessages,
-					RefineToolInput:     opts.ExperimentalRefineToolInput,
+					RefineToolInput:     parseRefine,
 					RuntimeContext:      r.cbRuntimeCtx,
 					ToolsContext:        r.cbToolsCtx,
 				})
@@ -2049,10 +2072,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				chunk.ToolCall = &refined
 				stepToolCalls = append(stepToolCalls, refined)
 				stepContent = append(stepContent, toolCallContentOf(refined))
-				if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret); handled {
-					eagerApprovals[refined.ID] = pre
-					stepContent = append(stepContent, approvalParts...)
-					pendingApprovalChunks = approvalChunks
+				// With tool choice none the call is rejected at the end of the
+				// model call, so no approval is requested for it.
+				if !withholdToolParts {
+					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret); handled {
+						eagerApprovals[refined.ID] = pre
+						stepContent = append(stepContent, approvalParts...)
+						pendingApprovalChunks = approvalChunks
+					}
 				}
 			}
 
@@ -2061,7 +2088,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// belongs to and is part of the step's content (TS
 			// stream-language-model-call tool-approval-request). One without a
 			// matching call is an error part.
-			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil && chunk.ToolApprovalRequest.ToolCall.ID == "" {
+			if chunk.Type == provider.ChunkTypeToolApprovalRequest && chunk.ToolApprovalRequest != nil && chunk.ToolApprovalRequest.ToolCall.ID == "" && !withholdToolParts {
 				request := *chunk.ToolApprovalRequest
 				var matched *types.ToolCall
 				for i := range stepToolCalls {
@@ -2406,6 +2433,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Notify tool input lifecycle callbacks (OnInputStart/OnInputDelta/
 			// OnInputAvailable) after the chunk has been forwarded, mirroring
 			// TS invokeToolCallbacksFromStream's ordering.
+			if withholdToolParts {
+				if transformStopped {
+					break
+				}
+				continue
+			}
 			if err := toolInputCallbacks.handle(stepCtx, *chunk); err != nil {
 				r.err = err
 				if isAbortErr(ctx, err) {
@@ -2500,6 +2533,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			violation = checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepResponseModelID, stepContent)
 		}
 		if violation != nil {
+			// TS model-call-end carries finishReason "error" for a tool-choice
+			// violation (usage and metadata are preserved).
+			r.finishReason = types.FinishReasonError
 			r.err = violation
 			cancelStep()
 			break

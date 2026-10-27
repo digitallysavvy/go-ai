@@ -1349,13 +1349,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Parse (validate / repair) the tool calls of this model call before
 		// the language-model-call-end event (TS parseToolCall).
+		// With tool choice none every tool call is rejected below, so user
+		// repair/refine callbacks must not process them (TS #23843).
+		parseRepair, parseRefine := repairToolCall, opts.ExperimentalRefineToolInput
+		if stepToolChoice.Type == types.ToolChoiceNone {
+			parseRepair, parseRefine = nil, nil
+		}
 		parsedToolCalls, preRefinementCalls, parseErr := parseToolCalls(stepCtx, genResult.ToolCalls, ParseToolCallOptions{
 			Tools:               stepTools,
-			RepairToolCall:      repairToolCall,
+			RepairToolCall:      parseRepair,
 			Instructions:        stepSystem,
 			InstructionMessages: stepInstructionMessages,
 			Messages:            stepMessages,
-			RefineToolInput:     opts.ExperimentalRefineToolInput,
+			RefineToolInput:     parseRefine,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
 		})

@@ -13,7 +13,7 @@ import (
 // 36b3364 / ccf98e7, WG3).
 type ToolChoiceViolationError struct {
 	// ToolChoice is the enforced tool choice the response did not satisfy.
-	// Type is always ToolChoiceRequired or ToolChoiceTool.
+	// Type is always ToolChoiceNone, ToolChoiceRequired or ToolChoiceTool.
 	ToolChoice types.ToolChoice
 
 	// FinishReason is why the model finished generating the response.
@@ -32,6 +32,9 @@ type ToolChoiceViolationError struct {
 }
 
 func (e *ToolChoiceViolationError) Error() string {
+	if e.ToolChoice.Type == types.ToolChoiceNone {
+		return "Model response contained a tool call even though tool choice was none."
+	}
 	if e.ToolChoice.Type == types.ToolChoiceRequired {
 		return "Model response did not contain a tool call even though tool choice was required."
 	}
@@ -44,10 +47,11 @@ func IsToolChoiceViolationError(err error) bool {
 	return errors.As(err, &target)
 }
 
-// enforcedToolChoice returns choice when its type requires the model to make
-// a (specific) tool call, or the zero value otherwise.
+// enforcedToolChoice returns choice when its type constrains the model's tool
+// calls: "none" forbids every call, "required" and "tool" require a (specific)
+// call. It returns the zero value otherwise.
 func enforcedToolChoice(choice types.ToolChoice) (types.ToolChoice, bool) {
-	if choice.Type == types.ToolChoiceRequired || choice.Type == types.ToolChoiceTool {
+	if choice.Type == types.ToolChoiceNone || choice.Type == types.ToolChoiceRequired || choice.Type == types.ToolChoiceTool {
 		return choice, true
 	}
 	return types.ToolChoice{}, false
@@ -70,11 +74,26 @@ func toolChoiceSatisfied(enforced types.ToolChoice, toolCalls []types.ToolCall) 
 }
 
 // checkToolChoiceViolation returns a *ToolChoiceViolationError when choice
-// enforces a tool call that toolCalls does not satisfy, else nil.
+// is violated by toolCalls (a call with tool choice none, or a missing
+// required call), else nil.
 func checkToolChoiceViolation(choice types.ToolChoice, toolCalls []types.ToolCall, finishReason types.FinishReason, provider, modelID string, content []types.ContentPart) error {
 	enforced, ok := enforcedToolChoice(choice)
 	if !ok {
 		return nil
+	}
+	// With tool choice none any tool call, provider-executed ones included, is
+	// a violation, whatever the finish reason (TS #23843).
+	if enforced.Type == types.ToolChoiceNone {
+		if len(toolCalls) == 0 {
+			return nil
+		}
+		return &ToolChoiceViolationError{
+			ToolChoice:   enforced,
+			FinishReason: finishReason,
+			Provider:     provider,
+			ModelID:      modelID,
+			Content:      content,
+		}
 	}
 	// An interrupted stream ended without a completion signal: its partial
 	// output is preserved without raising a required-tool error (TS #23778).
