@@ -417,11 +417,12 @@ func (s *gatewayTextStream) convertChunk(chunk *gatewayStreamChunk) (*provider.S
 			ID:               chunk.part.ID,
 			ProviderMetadata: chunk.part.ProviderMetadata,
 			ToolCall: &types.ToolCall{
-				ID:               chunk.part.ID,
-				ToolName:         chunk.part.ToolName,
-				ProviderExecuted: chunk.part.ProviderExecuted,
-				Dynamic:          chunk.part.Dynamic,
-				Title:            chunk.part.Title,
+				ID:                  chunk.part.ID,
+				ToolName:            chunk.part.ToolName,
+				ProviderExecuted:    chunk.part.ProviderExecuted != nil && *chunk.part.ProviderExecuted,
+				ProviderExecutedSet: chunk.part.ProviderExecuted != nil,
+				Dynamic:             chunk.part.Dynamic,
+				Title:               chunk.part.Title,
 			},
 		}, nil, true
 
