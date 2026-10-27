@@ -2567,14 +2567,15 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 					// ToModelOutput implementations still reading it.
 					Result: toolResult, //nolint:staticcheck
 					ToolCall: &types.ToolCall{
-						ID:               call.ID,
-						ToolName:         call.ToolName,
-						Title:            call.Title,
-						Arguments:        call.Arguments,
-						ProviderExecuted: call.ProviderExecuted,
-						ProviderMetadata: call.ProviderMetadata,
-						ToolMetadata:     call.ToolMetadata,
-						Dynamic:          call.Dynamic,
+						ID:                  call.ID,
+						ToolName:            call.ToolName,
+						Title:               call.Title,
+						Arguments:           call.Arguments,
+						ProviderExecuted:    call.ProviderExecuted,
+						ProviderExecutedSet: call.ProviderExecutedSet,
+						ProviderMetadata:    call.ProviderMetadata,
+						ToolMetadata:        call.ToolMetadata,
+						Dynamic:             call.Dynamic,
 					},
 					Usage: usage,
 				})

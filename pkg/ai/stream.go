@@ -1480,12 +1480,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.processStream(ctx, combinedOnChunk, onEnd)
 }
 
-// fail records a failure that happened before the per-step stream loop ever
-// started (prompt normalization, resuming approved tool calls, PrepareStep,
-// or making the first provider stream request) and finalizes the result the
-// same way a mid-stream failure does (processStream's own deferred cleanup),
-// so Err()/ReadAll()/Stream() behave identically regardless of which phase
-// produced the error.
 // notifyStepError reports the open step, if any, to OnStepError and closes it.
 func (r *StreamTextResult) notifyStepError(ctx context.Context, onStepError func(context.Context, OnStepErrorEvent), err error) {
 	if r.openStep == nil {
@@ -1496,6 +1490,12 @@ func (r *StreamTextResult) notifyStepError(ctx context.Context, onStepError func
 	Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, onStepError)
 }
 
+// fail records a failure that happened before the per-step stream loop ever
+// started (prompt normalization, resuming approved tool calls, PrepareStep,
+// or making the first provider stream request) and finalizes the result the
+// same way a mid-stream failure does (processStream's own deferred cleanup),
+// so Err()/ReadAll()/Stream() behave identically regardless of which phase
+// produced the error.
 func (r *StreamTextResult) fail(err error) {
 	r.err = err
 	r.steering.end(steeringEndReasonFor(context.TODO(), err))

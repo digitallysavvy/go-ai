@@ -71,6 +71,10 @@ type decisionLanguageModelEntry struct {
 // DoDecide prompts the wrapped language model once for every question and
 // parses its structured JSON response into typed answers.
 func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
+	// TS abortSignal?.throwIfAborted() before any work.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	stateParts := provider.DecisionStateParts(opts.State)
 	for _, part := range stateParts {
 		if part.Type != "file" {
@@ -234,6 +238,10 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		ProviderOptions: opts.ProviderOptions,
 	})
 	if err != nil {
+		return nil, err
+	}
+	// TS abortSignal?.throwIfAborted() after the model call.
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if genResult.FinishReason != types.FinishReasonStop {

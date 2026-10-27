@@ -564,8 +564,9 @@ func TestToUIMessageChunk_StandaloneParity(t *testing.T) {
 	if !ok || sourceDocument["type"] != "source-document" {
 		t.Fatalf("source document chunk = %#v, %v", sourceDocument, ok)
 	}
-	if _, ok := sourceDocument["title"]; ok {
-		t.Fatalf("source document title should be omitted when unset: %#v", sourceDocument)
+	// A document source's title is a required string (TS SourceDocument).
+	if title, ok := sourceDocument["title"]; !ok || title != "" {
+		t.Fatalf("source document title should be kept even when empty: %#v", sourceDocument)
 	}
 	if _, ok := sourceDocument["filename"]; ok {
 		t.Fatalf("source document filename should be omitted when unset: %#v", sourceDocument)

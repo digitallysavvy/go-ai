@@ -599,6 +599,10 @@ func uiToolPartIssue(part map[string]interface{}) string {
 		if v, exists := part["inputEncoding"]; exists && v != "json" && v != "text" {
 			return "Invalid input: inputEncoding must be json or text"
 		}
+		// TS: rawInput: z.string().optional() in this state only.
+		if msg := optionalString(part, "rawInput"); msg != "" {
+			return msg
+		}
 		return never("output", "errorText", "approval")
 	case ToolStateInputAvailable:
 		if msg := required("input"); msg != "" {

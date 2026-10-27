@@ -24,13 +24,7 @@ const maxDOMDepth = 512
 // navigation, footers and other page chrome, prefers <main>, <article> or an
 // explicit contentSelector, and resolves relative links against pageURL.
 func htmlToMarkdown(source string, pageURL *url.URL, contentSelector string) (title string, content string, err error) {
-	truncated := false
-	if len(source) > maxHTMLLength {
-		if runes := []rune(source); len(runes) > maxHTMLLength {
-			source = string(runes[:maxHTMLLength])
-			truncated = true
-		}
-	}
+	source, truncated := truncateUTF16(source, maxHTMLLength)
 
 	doc, err := html.Parse(strings.NewReader(source))
 	if err != nil {
@@ -41,7 +35,8 @@ func htmlToMarkdown(source string, pageURL *url.URL, contentSelector string) (ti
 	}
 
 	if documentDepth(doc) > maxDOMDepth {
-		title = documentTitle(doc, nil)
+		// TS: `document.title || undefined`, without defuddle's heuristics.
+		title = plainDocumentTitle(doc)
 		content = plainText(doc)
 	} else {
 		root := selectMainContent(doc, contentSelector)
@@ -51,6 +46,43 @@ func htmlToMarkdown(source string, pageURL *url.URL, contentSelector string) (ti
 	}
 
 	return title, finishContent(content, truncated), nil
+}
+
+// truncateUTF16 keeps the first limit UTF-16 code units of s (JS
+// `html.slice(0, limit)` when html.length > limit). A surrogate pair that
+// would be split is dropped whole.
+func truncateUTF16(s string, limit int) (string, bool) {
+	if len(s) <= limit {
+		return s, false // each UTF-16 unit takes at least one UTF-8 byte
+	}
+	units := 0
+	for i, r := range s {
+		n := 1
+		if r >= 0x10000 {
+			n = 2
+		}
+		if units+n > limit {
+			return s[:i], true
+		}
+		units += n
+	}
+	return s, false
+}
+
+// plainDocumentTitle is DOM document.title: the first <title> element's text
+// with ASCII white space stripped and collapsed.
+func plainDocumentTitle(doc *html.Node) string {
+	titleNode := findFirst(doc, func(n *html.Node) bool { return n.DataAtom == atom.Title })
+	if titleNode == nil {
+		return ""
+	}
+	return collapseASCIISpace(textOf(titleNode))
+}
+
+func collapseASCIISpace(s string) string {
+	return strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\f' || r == '\r'
+	}), " ")
 }
 
 func finishContent(content string, truncated bool) string {
@@ -70,7 +102,7 @@ func tokenText(source string) (title, content string) {
 	for {
 		switch z.Next() {
 		case html.ErrorToken:
-			return collapseSpace(titleText.String()), normalizeWhitespace(text.String())
+			return collapseASCIISpace(titleText.String()), normalizeWhitespace(text.String())
 		case html.StartTagToken:
 			name, _ := z.TagName()
 			switch string(name) {

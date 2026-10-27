@@ -2340,13 +2340,13 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			break
 		}
 		if chunk.SourceContent.SourceType == "document" {
+			// A document source's title is a required string (TS writes
+			// it even when empty; the UI message schema requires it).
 			part := map[string]interface{}{
 				"type":      "source-document",
 				"sourceId":  chunk.SourceContent.ID,
 				"mediaType": chunk.SourceContent.MediaType,
-			}
-			if chunk.SourceContent.Title != "" {
-				part["title"] = chunk.SourceContent.Title
+				"title":     chunk.SourceContent.Title,
 			}
 			if chunk.SourceContent.Filename != "" {
 				part["filename"] = chunk.SourceContent.Filename
@@ -2403,8 +2403,8 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				"input":      InvalidToolCallInput(*chunk.ToolCall),
 				"errorText":  opts.OnError(chunk.ToolCall.Error),
 			}
-			if chunk.ToolCall.ProviderExecuted {
-				part["providerExecuted"] = true
+			if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
+				part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 			}
 			if len(chunk.ToolCall.ToolMetadata) > 0 {
 				part["toolMetadata"] = chunk.ToolCall.ToolMetadata
@@ -2428,8 +2428,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"toolName":   chunk.ToolCall.ToolName,
 			"input":      chunk.ToolCall.Arguments,
 		}
-		if chunk.ToolCall.ProviderExecuted {
-			part["providerExecuted"] = true
+		// TS forwards providerExecuted whenever it is not undefined, so an
+		// explicit false (ProviderExecutedSet) is kept.
+		if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
+			part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 		}
 		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
@@ -2457,8 +2459,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolCall.InputEncoding != "" {
 			part["inputEncoding"] = chunk.ToolCall.InputEncoding
 		}
-		if chunk.ToolCall.ProviderExecuted {
-			part["providerExecuted"] = true
+		// TS forwards providerExecuted whenever it is not undefined, so an
+		// explicit false (ProviderExecutedSet) is kept.
+		if chunk.ToolCall.ProviderExecuted || chunk.ToolCall.ProviderExecutedSet {
+			part["providerExecuted"] = chunk.ToolCall.ProviderExecuted
 		}
 		if len(chunk.ToolCall.ToolMetadata) > 0 {
 			part["toolMetadata"] = chunk.ToolCall.ToolMetadata
