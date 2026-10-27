@@ -872,15 +872,11 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			}
 
 		case "reasoning":
-			// Include reasoning parts when the item has an ID or encrypted_content (#12869).
-			// Previously these were skipped when ItemID was absent; now we include them
-			// as long as either the ID or EncryptedContent is non-empty.
 			// TS emits one reasoning part per reasoning_text content part, or a
-			// single part with the joined summary when there is no content.
+			// single part with the joined summary when there is no content,
+			// for every reasoning item (including one with no id and no
+			// encrypted_content).
 			itemCopy := item
-			if item.ID == "" && item.EncryptedContent == "" {
-				break // nothing to replay (the API always sends an id)
-			}
 			if len(item.Content) > 0 {
 				for _, cp := range item.Content {
 					one := itemCopy
