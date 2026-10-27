@@ -1864,10 +1864,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				ToolResults:      stepResult.ToolResults,
 				Files:            stepTelFiles,
 				ProviderMetadata: genResult.ProviderMetadata,
-				Performance:      languageModelCallPerformance(performance),
-				Settings:         telemetrySettings,
-				RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-				ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
+				// TS onStepEnd records event.response.id/modelId/timestamp.
+				ResponseID:        stepResult.Response.ID,
+				ResponseModelID:   stepResult.Response.ModelID,
+				ResponseTimestamp: stepResult.Response.Timestamp,
+				Performance:       languageModelCallPerformance(performance),
+				Settings:          telemetrySettings,
+				RuntimeContext:    telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+				ToolsContext:      telemetryToolsContext(telemetrySettings, toolsContext),
 			})
 		}
 

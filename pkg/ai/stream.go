@@ -2983,20 +2983,26 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.mu.Unlock()
 			telemetry.FireOnStepEnd(telemetryStepCtx, telemetry.TelemetryStepEndEvent{
-				CallID:         r.cbCallID,
-				OperationType:  "ai.streamText",
-				StepNumber:     stepIndex,
-				FinishReason:   string(r.finishReason),
-				Usage:          stepTelUsage,
-				Text:           stepText,
-				Reasoning:      telemetry.JoinReasoning(stepResult.Reasoning),
-				ToolCalls:      stepResult.ToolCalls,
-				ToolResults:    publicStepToolResults,
-				Files:          stepFiles,
-				Performance:    languageModelCallPerformance(performance),
-				Settings:       r.telemetrySettings,
-				RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-				ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+				CallID:        r.cbCallID,
+				OperationType: "ai.streamText",
+				StepNumber:    stepIndex,
+				FinishReason:  string(r.finishReason),
+				Usage:         stepTelUsage,
+				Text:          stepText,
+				Reasoning:     telemetry.JoinReasoning(stepResult.Reasoning),
+				ToolCalls:     stepResult.ToolCalls,
+				ToolResults:   publicStepToolResults,
+				Files:         stepFiles,
+				// TS onStepEnd records event.providerMetadata and
+				// event.response.id/modelId/timestamp.
+				ProviderMetadata:  stepResult.ProviderMetadata,
+				ResponseID:        stepResult.Response.ID,
+				ResponseModelID:   stepResult.Response.ModelID,
+				ResponseTimestamp: stepResult.Response.Timestamp,
+				Performance:       languageModelCallPerformance(performance),
+				Settings:          r.telemetrySettings,
+				RuntimeContext:    telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+				ToolsContext:      telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 			})
 		}
 

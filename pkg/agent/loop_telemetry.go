@@ -293,10 +293,15 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
+		Files:            step.Files,
 		ProviderMetadata: step.ProviderMetadata,
-		Settings:         s.lt.settings,
-		RuntimeContext:   telemetryRuntimeContextFor(s.lt.settings, rc),
-		ToolsContext:     telemetryToolsContextFor(s.lt.settings, tc),
+		// TS onStepEnd records event.response.id/modelId/timestamp.
+		ResponseID:        step.Response.ID,
+		ResponseModelID:   step.Response.ModelID,
+		ResponseTimestamp: step.Response.Timestamp,
+		Settings:          s.lt.settings,
+		RuntimeContext:    telemetryRuntimeContextFor(s.lt.settings, rc),
+		ToolsContext:      telemetryToolsContextFor(s.lt.settings, tc),
 	})
 }
 
