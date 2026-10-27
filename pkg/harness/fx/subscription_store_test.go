@@ -581,3 +581,28 @@ func containsEnv(env []string, kv string) bool {
 	}
 	return false
 }
+
+// TS credentialsFromDocument reads a Grok `expires_at` string with
+// Date.parse and a number as seconds below 1e10, else milliseconds.
+func TestGrokCredentialExpiresAtFormats(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int64
+	}{
+		{`"2026-10-27T10:00:00.000Z"`, 1793095200000},
+		{`"2026-10-27T10:00:00+0200"`, 1793088000000},
+		{`"2026-10-27"`, 1793059200000},
+		{`"Tue, 27 Oct 2026 10:00:00 GMT"`, 1793095200000},
+		{`"Oct 27 2026 10:00 GMT+05:30"`, 1793075400000},
+		{`"not a date"`, 0},
+		{`1793095200`, 1793095200000},
+		{`1793095200123`, 1793095200123},
+	}
+	for _, c := range cases {
+		doc := parseCredentialDocument([]byte(`{"` + grokCredentialScope + `":{"key":"k","refresh_token":"r","user_id":"u","expires_at":` + c.raw + `}}`))
+		cred := credentialsFromDocument(doc, formatGrok)
+		if cred == nil || cred.ExpiresAt != c.want {
+			t.Errorf("expires_at %s: got %+v, want %d", c.raw, cred, c.want)
+		}
+	}
+}

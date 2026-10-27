@@ -236,19 +236,8 @@ func normalizeExpiresAt(value any) (int64, bool) {
 		}
 		return int64(v), true
 	case string:
-		// TS Date.parse: ISO forms, date-only (UTC) and offset-less
-		// date-times (local time).
-		for _, layout := range []string{time.RFC3339, "2006-01-02", time.RFC1123Z, time.RFC1123} {
-			if t, err := time.Parse(layout, v); err == nil {
-				return t.UnixMilli(), true
-			}
-		}
-		for _, layout := range []string{"2006-01-02T15:04:05.999999999", "2006-01-02T15:04", "2006-01-02 15:04:05"} {
-			if t, err := time.ParseInLocation(layout, v, time.Local); err == nil {
-				return t.UnixMilli(), true
-			}
-		}
-		return 0, false
+		// TS Date.parse.
+		return harnessutil.ParseJSDate(v)
 	}
 	return 0, false
 }

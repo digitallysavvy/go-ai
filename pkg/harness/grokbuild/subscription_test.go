@@ -247,3 +247,25 @@ func TestReadSubscription_RejectsForbiddenPrototypeKey(t *testing.T) {
 		t.Fatalf("got %v, %v", got, err)
 	}
 }
+
+// TS normalizeExpiresAt reads a string with Date.parse.
+func TestNormalizeExpiresAtUsesDateParse(t *testing.T) {
+	cases := []struct {
+		in   any
+		want int64
+		ok   bool
+	}{
+		{"2026-10-27T10:00:00.000Z", 1793095200000, true},
+		{"2026-10-27T10:00:00+0200", 1793088000000, true},
+		{"Tue, 27 Oct 2026 10:00:00 GMT", 1793095200000, true},
+		{"2026-10-27T10:00:00.5+05:30", 1793075400500, true},
+		{"2026-10-27T10:00:00 Z", 0, false},
+		{float64(1793095200), 1793095200000, true},
+	}
+	for _, c := range cases {
+		got, ok := normalizeExpiresAt(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("normalizeExpiresAt(%v) = %d, %v; want %d, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
