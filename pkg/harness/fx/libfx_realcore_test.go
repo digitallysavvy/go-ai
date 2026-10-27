@@ -16,7 +16,7 @@ import (
 
 // Real-core session tests: ports of TS fx-session-native.test.ts (Gateway
 // cases) run on fx-core.wasm. They skip when the pinned module is not
-// cached; GOAI_FX_WASM_TEST=1 downloads it.
+// cached; GOAI_FX_WASM_TEST=1 (or CI) downloads it and makes it required.
 
 func bashEffects(sb *fakeSandbox, effects *[]string, mu *sync.Mutex, match func(string) bool, stdout string) {
 	sb.handle = func(_ context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {

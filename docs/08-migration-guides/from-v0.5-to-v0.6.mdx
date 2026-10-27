@@ -120,8 +120,14 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   That runtime has other built-in tools (`fx.LibfxBuiltinTools`: `read`,
   `write`, `edit`, `bash`, `grep`, `glob`, `ls`, `askUserQuestions`), so
   update any `BuiltinToolFiltering` lists and tool-name checks. Its model
-  requests leave from the host process, not the sandbox. For now it
-  supports AI Gateway authentication only. Sessions do not move between
+  requests leave from the host process, not the sandbox. It authenticates
+  with AI Gateway or, as in TS, a codex or grok subscription found on the
+  host (`~/.fx`, `$CODEX_HOME` or the OS keyring, `$GROK_HOME`), and it
+  connects HTTP and SSE `MCPServers` from the host; command (stdio) MCP
+  servers are not supported on it. The first session downloads the pinned
+  `fx-core.wasm` (about 2.6 MB) into `os.UserCacheDir()/go-ai/fx/`; on a
+  host without network access, pre-seed that cache or set
+  `fx.WasmSource.Path`, then set `GO_AI_FX_OFFLINE=1`. Sessions do not move between
   runtimes. A v0.5.x sandbox-ACP session resumed under `RuntimeLibfx`, or a
   libfx session resumed under the default runtime, returns
   `*fx.IncompatibleStateError`. Finish or drop open sessions before you

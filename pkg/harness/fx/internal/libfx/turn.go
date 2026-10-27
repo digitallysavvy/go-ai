@@ -121,7 +121,11 @@ type AgentOptions struct {
 	// OnReceive sees every core notification except hooks, on the guest
 	// goroutine and before the turn queues it (libfx's acp.receive event).
 	OnReceive func(method string, params json.RawMessage)
-	Stderr    io.Writer
+	// Subscription supplies the credentials of a codex or grok agent
+	// (libfx credentials, onCredentials, refreshLock). Required for those
+	// providers and refused for any other.
+	Subscription *SubscriptionAuth
+	Stderr       io.Writer
 }
 
 // Agent is one fx session on one core.
@@ -130,6 +134,7 @@ type Agent struct {
 	opts   AgentOptions
 	tools  map[string]Tool
 	meta   map[string]any
+	auth   *authorizer
 
 	mu               sync.Mutex
 	sessionID        string
@@ -164,6 +169,23 @@ func StartAgent(ctx context.Context, opts AgentOptions) (*Agent, error) {
 	fetch := opts.Fetch
 	if fetch == nil {
 		fetch = AllowlistFetch(defaultFetchClient, DefaultAllowedOrigins)
+	}
+	switch opts.Provider {
+	case "codex", "grok":
+		if opts.Subscription == nil || opts.Subscription.Credentials == nil {
+			return nil, fmt.Errorf("provider %q needs a credentials() function", opts.Provider)
+		}
+		auth, err := newAuthorizer(subscriptionSpecs(opts.Provider), *opts.Subscription, fetch)
+		if err != nil {
+			return nil, err
+		}
+		a.auth = auth
+	case "", "gateway":
+		if opts.Subscription != nil {
+			return nil, errors.New(`credentials needs provider "codex", "grok" or a custom provider`)
+		}
+	default:
+		return nil, errors.New(`provider must be "gateway", "codex", "grok" or a custom provider { name, baseUrl }`)
 	}
 	e, err := Start(ctx, Options{
 		Wasm:                opts.Wasm,
@@ -342,7 +364,13 @@ func (a *Agent) transportFetch(fetch FetchFunc) FetchFunc {
 				clone.ContentLength = int64(len(body))
 				clone.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(string(body))), nil }
 			}
-			resp, err := fetch(clone)
+			var resp *http.Response
+			var err error
+			if spec := a.auth.specFor(endpointOf(req.URL)); spec != nil {
+				resp, err = a.auth.do(spec, endpointOf(req.URL), fetch, clone, body)
+			} else {
+				resp, err = fetch(clone)
+			}
 			if err == nil {
 				return resp, nil
 			}

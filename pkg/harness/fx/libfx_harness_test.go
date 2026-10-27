@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -717,7 +718,18 @@ func TestLibfxFreshPromptAfterFailedColdContinuation(t *testing.T) {
 	}
 }
 
+// isolateHome points subscription discovery at an empty home, as the TS
+// suite mocks os.homedir.
+func isolateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("GROK_HOME", filepath.Join(home, ".grok"))
+}
+
 func TestLibfxGatewayAuthMissingFailsBeforeSandboxAccess(t *testing.T) {
+	isolateHome(t)
 	for _, key := range []string{"unset", ""} {
 		t.Setenv("VERCEL_OIDC_TOKEN", "")
 		t.Setenv("AI_GATEWAY_API_KEY", "")
@@ -781,6 +793,14 @@ func TestLibfxBrokersResolvedCredential(t *testing.T) {
 	}
 }
 
+func resolveAuthentication(auth AuthenticationMode, required string, env map[string]string, home ...string) (fxAuthentication, error) {
+	o := resolveAuthOptions{Auth: auth, Env: env, RequiredProvider: required, HomeDirectory: "/nonexistent-fx-test-home", Keyring: noKeyring{}}
+	if len(home) > 0 {
+		o.HomeDirectory = home[0]
+	}
+	return resolveFxAuthentication(context.Background(), o)
+}
+
 func TestResolveFxEnvModes(t *testing.T) {
 	for _, mode := range []string{"auto", "direct", "ai-gateway"} {
 		got, err := resolveAuthentication(harness.AuthMode(mode), "", map[string]string{"VERCEL_OIDC_TOKEN": "oidc"})
@@ -796,11 +816,11 @@ func TestResolveFxEnvModes(t *testing.T) {
 	}
 }
 
-func TestLibfxRejectsNativeBackendAndMCP(t *testing.T) {
+func TestLibfxRejectsNativeBackendAcceptsMCP(t *testing.T) {
 	if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, Backend: "native"}); !harness.IsCapabilityUnsupportedError(err) {
 		t.Errorf("native backend = %v", err)
 	}
-	if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, MCPServers: map[string]any{"s": map[string]any{"url": "https://x"}}}); !harness.IsCapabilityUnsupportedError(err) {
+	if _, err := CreateFx(Settings{Runtime: RuntimeLibfx, MCPServers: map[string]any{"s": map[string]any{"url": "https://x"}}}); err != nil {
 		t.Errorf("mcp = %v", err)
 	}
 	if _, err := CreateFx(Settings{Runtime: "other"}); err == nil {

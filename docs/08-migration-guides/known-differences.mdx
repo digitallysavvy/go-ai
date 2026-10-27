@@ -110,9 +110,19 @@ or `recordOutputs` means `true`. Set both to `true`, or start from
   goroutine per turn. TS emits the echo of `submitToolResult` before its
   promise resolves; Go's `SubmitToolResult` returns once the result is saved,
   and the echo follows on `Emit`.
-- **Not yet ported.** Codex and grok subscription authentication and MCP
-  servers on the libfx runtime are still to come. Until then, use the default
-  runtime for them.
+- **Subscription hardening.** Like libfx, Go masks the subscription tokens a
+  failed response repeats in its body; it also masks them in response
+  headers of any status, masks both the rejected and the refreshed tokens
+  after a `401` retry, adds credentials only to the selected provider's
+  endpoints (libfx would also authorize Grok endpoints on a codex agent and
+  the reverse), bounds OAuth token responses at 1 MiB, and refuses a
+  redirect that would carry the credentials to another origin. Of `https://x.ai`
+  the core may reach only `https://x.ai/cli/stable`, where the grok provider
+  reads the Grok CLI version without credentials.
+- **MCP server order.** Go maps have no insertion order, so `MCPServers` are
+  connected, and their tools listed, in server-name order unless
+  `Settings.MCPServerOrder` gives the TS object's key order. Structured MCP
+  tool output is serialized with sorted object keys.
 
 ## Features that are TypeScript-only (not ported)
 

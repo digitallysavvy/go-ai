@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 
@@ -83,7 +84,7 @@ func startLibfxSession(ctx context.Context, h *libfxHarness, opts harness.StartO
 	var auth fxAuthentication
 	var authErr error
 	if resume == nil {
-		if auth, authErr = h.resolve(h.settings.Auth, ""); authErr != nil {
+		if auth, authErr = h.resolve(ctx, h.settings.Auth, ""); authErr != nil {
 			return nil, authErr
 		}
 	}
@@ -104,7 +105,7 @@ func startLibfxSession(ctx context.Context, h *libfxHarness, opts harness.StartO
 		if required == "" {
 			required = "gateway"
 		}
-		if auth, err = h.resolve(h.settings.Auth, required); err != nil {
+		if auth, err = h.resolve(ctx, h.settings.Auth, required); err != nil {
 			return nil, err
 		}
 	}
@@ -238,11 +239,24 @@ func (s *libfxSession) turnSignature(settings harness.TurnSettings, responseForm
 		Effort         string                        `json:"effort,omitempty"`
 		Fast           *bool                         `json:"fast,omitempty"`
 		Ultrafast      *bool                         `json:"ultrafast,omitempty"`
+		MCPServerOrder []string                      `json:"mcpServerOrder,omitempty"`
 	}{settings.Model, settings.Skills, settings.Instructions, settings.Tools, responseFormat, s.start.BuiltinToolFiltering,
-		s.start.PermissionMode, s.h.settings.MCPServers, s.h.settings.Effort, fast, ultrafast}
+		s.start.PermissionMode, s.h.settings.MCPServers, s.h.settings.Effort, fast, ultrafast, s.mcpServerOrder()}
 	data, _ := jsstr.Marshal(sig)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// mcpServerOrder is the server order a continued turn must keep: nil
+// while it is the default sorted order, so signatures from before
+// Settings.MCPServerOrder are unchanged.
+func (s *libfxSession) mcpServerOrder() []string {
+	servers := s.h.settings.MCPServers
+	names := mcpServerNames(servers, s.h.settings.MCPServerOrder)
+	if sort.StringsAreSorted(names) {
+		return nil
+	}
+	return names
 }
 
 // promptJSON converts a harness prompt to the libfx prompt (TS toPrompt).
@@ -433,6 +447,8 @@ type activeTurn struct {
 	runtimeTurn    fxTurn
 	transport      *transport
 	credentialFail error
+	mcp            *fxMCPRuntime
+	mcpTools       []fxMCPTool
 	results        map[string]harness.ToolResultSubmission
 	approvals      map[string]fxApproval
 	registered     map[string]registeredTool
@@ -922,9 +938,18 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 					}
 				}
 				s.mu.Lock()
-				if execErr != nil {
+				var richErr *libfx.ToolResultError
+				if execErr != nil && errors.As(execErr, &richErr) {
+					// A failure carrying a rich result (TS error.toolResult).
+					current.Result = fromTypedResult(richErr.Result)
+					current.Result.IsError = boolPtr(true)
+					current.Output = jsonValue(current.Result.Text)
+				} else if execErr != nil {
 					current.Result = &fxToolResult{Type: "libfx.tool-result", Text: execErr.Error(), Images: []fxToolImage{}, IsError: boolPtr(true)}
 					current.Output = jsonValue(current.Result.Text)
+				} else if rich, ok := output.(*libfx.TypedToolResult); ok && rich != nil && rich.Type == "libfx.tool-result" {
+					current.Result = fromTypedResult(*rich)
+					current.Output = jsonValue(current.Result)
 				} else {
 					current.Output = jsonValue(output)
 					if text, ok := output.(string); ok {
@@ -963,6 +988,15 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 		return nil, &libfx.ToolResultError{Result: *typed}
 	}
 	return typed, nil
+}
+
+// fromTypedResult converts a host tool's rich result for the record.
+func fromTypedResult(r libfx.TypedToolResult) *fxToolResult {
+	out := &fxToolResult{Type: r.Type, Text: r.Text, Images: make([]fxToolImage, len(r.Images)), IsError: r.IsError}
+	for i, img := range r.Images {
+		out.Images[i] = fxToolImage(img)
+	}
+	return out
 }
 
 // suspend freezes the turn (TS active.suspend).
@@ -1041,8 +1075,39 @@ func (a *activeTurn) buildTools(ctx context.Context) ([]libfx.Tool, error) {
 			},
 		})
 	}
+	for _, tool := range a.mcpTools {
+		name := tool.name
+		for suffix := 2; hasTool(tools, name); suffix++ {
+			name = fmt.Sprintf("%s_%d", truncate(tool.name, 58), suffix)
+		}
+		toolName := name
+		impl := tool.execute
+		a.registered[toolName] = registeredTool{providerExecuted: true, kind: harness.BuiltinToolUseKindBash}
+		tools = append(tools, libfx.Tool{
+			Name: toolName, Description: tool.description, InputSchema: tool.inputSchema,
+			Execute: func(callCtx context.Context, input json.RawMessage) (any, error) {
+				run := func(ctx context.Context, input json.RawMessage) (any, error) {
+					ctx, cancel := context.WithCancel(ctx)
+					defer cancel()
+					stop := context.AfterFunc(callCtx, cancel)
+					defer stop()
+					return impl(ctx, input)
+				}
+				return a.executeTool(toolName, run, true, harness.BuiltinToolUseKindBash, input)
+			},
+		})
+	}
 	_ = ctx
 	return tools, nil
+}
+
+func hasTool(tools []libfx.Tool, name string) bool {
+	for _, t := range tools {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *activeTurn) run() {
@@ -1092,6 +1157,13 @@ func (a *activeTurn) cleanup() error {
 	if tr != nil {
 		tr.stop()
 	}
+	a.s.mu.Lock()
+	mcpRuntime := a.mcp
+	a.mcp = nil
+	a.s.mu.Unlock()
+	if err := mcpRuntime.close(); err != nil && first == nil {
+		first = err
+	}
 	if err := a.s.save(context.Background()); err != nil && first == nil {
 		first = err
 	}
@@ -1107,6 +1179,14 @@ func (a *activeTurn) runBody() error {
 	if err != nil {
 		return err
 	}
+	mcpRuntime, err := createFxMCPRuntime(a.ctx, s.h.settings.MCPServers, s.h.settings.MCPServerOrder)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	a.mcp = mcpRuntime
+	a.mcpTools = mcpRuntime.tools
+	s.mu.Unlock()
 	tools, err := a.buildTools(a.ctx)
 	if err != nil {
 		return err
@@ -1124,7 +1204,12 @@ func (a *activeTurn) runBody() error {
 	}
 	headers["user-agent"] = clientApp
 	headers["x-client-app"] = clientApp
+	var protocol transportProtocol = gatewayProtocol{}
+	if s.auth.Subscription != nil {
+		protocol = responsesProtocol{provider: s.auth.Provider}
+	}
 	tr := newTransport(transportOptions{
+		protocol:       protocol,
 		baseURL:        s.auth.BaseURL,
 		headers:        headers,
 		responseFormat: a.turn.ResponseFormat,
@@ -1182,7 +1267,7 @@ func (a *activeTurn) runBody() error {
 		return err
 	}
 	instructions := []string{}
-	for _, part := range []string{a.settings.Instructions, skills, fmt.Sprintf("All filesystem and shell tools operate in the sandbox workspace %s.", s.start.SessionWorkDir)} {
+	for _, part := range []string{a.settings.Instructions, skills, mcpRuntime.instructions, fmt.Sprintf("All filesystem and shell tools operate in the sandbox workspace %s.", s.start.SessionWorkDir)} {
 		if part != "" {
 			instructions = append(instructions, part)
 		}
@@ -1196,9 +1281,8 @@ func (a *activeTurn) runBody() error {
 	if err != nil {
 		return fmt.Errorf("invalid saved fx checkpoint: %w", err)
 	}
-	engine, err := s.h.newEngine(a.ctx, runtimeOptions{
+	opts := runtimeOptions{
 		APIKey:       s.broker.placeholder,
-		Provider:     "",
 		Model:        a.settings.Model,
 		Effort:       s.h.settings.Effort,
 		Fast:         a.fast,
@@ -1209,7 +1293,13 @@ func (a *activeTurn) runBody() error {
 		Fetch:        tr.fetch,
 		OnHook:       a.onHook,
 		OnReceive:    a.onReceive,
-	})
+	}
+	if sub := s.auth.Subscription; sub != nil {
+		opts.APIKey = ""
+		opts.Provider = s.auth.Provider
+		opts.Subscription = a.subscriptionAuth(sub)
+	}
+	engine, err := s.h.newEngine(a.ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -1292,6 +1382,34 @@ func (a *activeTurn) runBody() error {
 	s.mu.Unlock()
 	a.deliver()
 	return nil
+}
+
+// subscriptionAuth hands libfx the selected store. A store failure is
+// what the turn reports, rather than libfx's wrapped transport error.
+func (a *activeTurn) subscriptionAuth(sub *fxSubscription) *libfx.SubscriptionAuth {
+	fail := func(err error) error {
+		a.s.mu.Lock()
+		if a.credentialFail == nil {
+			a.credentialFail = err
+		}
+		a.s.mu.Unlock()
+		return err
+	}
+	return &libfx.SubscriptionAuth{
+		Credentials: func(ctx context.Context, _ libfx.CredentialRequest) (libfx.Credentials, error) {
+			c, err := sub.read(ctx)
+			if err != nil {
+				return libfx.Credentials{}, fail(err)
+			}
+			return c, nil
+		},
+		OnCredentials: func(ctx context.Context, next libfx.Credentials, _ libfx.CredentialRequest) error {
+			if err := sub.write(ctx, next); err != nil {
+				return fail(err)
+			}
+			return nil
+		},
+	}
 }
 
 // drain reads the runtime turn's events (TS draining).

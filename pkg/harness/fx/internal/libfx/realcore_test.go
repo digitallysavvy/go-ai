@@ -13,29 +13,18 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/fx/internal/libfx/libfxtest"
 )
 
-// EnvWasmTest opts the real-wasm tests into downloading fx-core.wasm.
-// Without it they run only when the pinned module is already cached.
-const EnvWasmTest = "GOAI_FX_WASM_TEST"
-
-// requireWasm returns a Source for the real pinned module or skips.
+// requireWasm returns a Source for the real pinned module, or skips or
+// fails as libfxtest.RequireWasm decides.
 func requireWasm(t *testing.T) Source {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	if os.Getenv(EnvWasmTest) == "1" {
-		if _, err := Resolve(ctx, Source{}); err != nil {
-			t.Fatalf("%s=1 but fx-core.wasm could not be resolved: %v", EnvWasmTest, err)
-		}
-		return Source{Offline: true}
-	}
-	if _, err := Resolve(ctx, Source{Offline: true}); err != nil {
-		if errors.Is(err, ErrWasmUnavailable) {
-			t.Skipf("fx-core.wasm %s is not cached; set %s=1 to download it: %v", Version, EnvWasmTest, err)
-		}
-		t.Fatal(err)
-	}
+	libfxtest.RequireWasm(t, Version, func(ctx context.Context, offline bool) error {
+		_, err := Resolve(ctx, Source{Offline: offline})
+		return err
+	}, func(err error) bool { return errors.Is(err, ErrWasmUnavailable) })
 	return Source{Offline: true}
 }
 

@@ -761,6 +761,44 @@ func TestAllowlistFetch(t *testing.T) {
 	resp.Body.Close() //nolint:errcheck
 }
 
+// An allowlist entry with a path allows that endpoint only: the grok
+// core's GET https://x.ai/cli/stable must not open all of https://x.ai,
+// directly or through a redirect.
+func TestAllowlistFetchScopesEndpointEntries(t *testing.T) {
+	var hits []string
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		hits = append(hits, req.URL.String())
+		if req.URL.Path == "/cli/stable" && req.URL.Query().Get("redirect") != "" {
+			return &http.Response{StatusCode: 302, Header: http.Header{"Location": {req.URL.Query().Get("redirect")}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("1.0.13\n")), Header: http.Header{}, Request: req}, nil
+	})}
+	fetch := AllowlistFetch(client, DefaultAllowedOrigins)
+	for _, u := range []string{"https://x.ai/", "https://x.ai/api/keys", "https://x.ai/cli/stable/extra", "https://x.ai/cli", "https://x.ai/cli/stable%2F..%2Fother", "http://x.ai/cli/stable", "https://x.ai:8443/cli/stable"} {
+		req, _ := http.NewRequest("GET", u, nil)
+		if _, err := fetch(req); err == nil {
+			t.Errorf("%s allowed", u)
+		}
+	}
+	if len(hits) != 0 {
+		t.Fatalf("refused requests reached the transport: %v", hits)
+	}
+	req, _ := http.NewRequest("GET", "https://x.ai/cli/stable", nil)
+	resp, err := fetch(req)
+	if err != nil {
+		t.Fatalf("cli/stable refused: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+	req, _ = http.NewRequest("GET", "https://x.ai/cli/stable?redirect=https://x.ai/other", nil)
+	if resp, err := fetch(req); err == nil {
+		resp.Body.Close() //nolint:errcheck
+		t.Fatal("a redirect off the allowed endpoint was followed")
+	}
+	if len(hits) != 2 {
+		t.Fatalf("requests sent = %v", hits)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
