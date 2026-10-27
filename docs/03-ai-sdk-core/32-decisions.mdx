@@ -106,7 +106,7 @@ Image support depends on the model:
 - `DecisionLanguageModel` (used by the Anthropic and Google decision models) forwards image parts to the underlying language model and rejects other media types.
 - The OpenAI Decisions model accepts inline PNG, JPEG, WebP, and GIF images. Set `ProviderOptions["openai"]["imageDetail"]` (`low`, `high`, `auto`, or `original`) on a file part to control the image detail.
 - The Gateway sends files as base64 `stateParts`. URL, reference, and text file data are rejected.
-- TypeSafe AI is text-only and rejects file parts.
+- TypeSafe AI accepts inline PNG and JPEG images (see the [TypeSafe AI provider](../05-providers/46-typesafeai.mdx#images)) and rejects other file parts.
 
 ## Refusals
 
@@ -132,7 +132,7 @@ Decision models represent a refusal as an answer of `Type: "refusal"`, which is 
 | Google | `google.Provider.DecisionModel(id)` | Wraps the Gemini model with `ai.NewDecisionLanguageModel`. |
 | AI Gateway | `gateway.Provider.DecisionModel(id)` | Calls `POST /decision-model`. Supports conditional model fallbacks. |
 | Perplexity | `perplexity.Provider.DecisionModel(id)` | Calls `POST /v1/decisions`. Choice, score and boolean; PNG/JPEG/WebP images. |
-| TypeSafe AI | `typesafeai.Provider.DecisionModel(id)` | Text-only. Supports choice, score, boolean and box questions. |
+| TypeSafe AI | `typesafeai.Provider.DecisionModel(id)` | Supports choice, score, boolean and box questions; PNG/JPEG images. |
 
 Pass a model ID string as `Model` to resolve it through `Provider` (or the AI Gateway when `Provider` is nil). The model registry and `registry.NewCustomProvider` resolve decision models through `ResolveDecisionModel` and `CustomProviderOptions.DecisionModels`.
 

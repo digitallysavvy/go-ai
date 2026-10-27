@@ -3,10 +3,14 @@ package typesafeai
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"sort"
 	"strings"
 
@@ -78,6 +82,11 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 	}
 
+	longContext, err := parseLongContext(opts.ProviderOptions)
+	if err != nil {
+		return nil, err
+	}
+
 	var warnings []types.Warning
 	if typesafeOpts, ok := opts.ProviderOptions["typesafe"].(map[string]interface{}); ok {
 		optionKeys := make([]string, 0, len(typesafeOpts))
@@ -86,6 +95,9 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 		sort.Strings(optionKeys)
 		for _, k := range optionKeys {
+			if k == "longContext" {
+				continue
+			}
 			warnings = append(warnings, types.Warning{
 				Type:    "unsupported",
 				Feature: fmt.Sprintf("providerOptions.typesafe.%s", k),
@@ -122,36 +134,59 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		requestQuestions[id] = entry
 	}
 
-	requestState, err := typeSafeRequestState(provider.DecisionStateParts(opts.State))
+	requestState, assets, images, err := typeSafeRequestState(provider.DecisionStateParts(opts.State))
 	if err != nil {
 		return nil, err
 	}
+	hasImages := len(assets) > 0
 
 	body := map[string]interface{}{
 		"model":     m.modelID,
 		"state":     requestState,
 		"questions": requestQuestions,
 	}
+	if hasImages {
+		body["assets"] = assets
+	}
 
 	headers, err := m.provider.resolveHeaders()
 	if err != nil {
 		return nil, err
 	}
-	// Box answers are image regions, so box questions turn on TypeSafe's
-	// images mode (TS TypeSafe-Danger-Zone-Images).
+	// Images and box answers (image regions) turn on TypeSafe's images mode
+	// (TS TypeSafe-Danger-Zone-Images).
+	imagesMode := hasImages
 	for _, q := range opts.Questions {
 		if q.Type == "box" {
-			headers = internalhttp.MergeHeaders(headers, map[string]string{"TypeSafe-Danger-Zone-Images": "true"})
+			imagesMode = true
 			break
 		}
 	}
+	if imagesMode {
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"TypeSafe-Danger-Zone-Images": "true"})
+	}
+	if longContext {
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"TypeSafe-Danger-Zone-Long-Context": "true"})
+	}
 	headers = internalhttp.MergeHeaders(headers, opts.Headers)
+
+	var requestBody interface{} = body
+	if hasImages {
+		// Images are sent as a multipart upload (more efficient than base64):
+		// a JSON "request" part followed by one part per image.
+		multipartBody, contentType, mpErr := buildImageMultipart(body, images)
+		if mpErr != nil {
+			return nil, mpErr
+		}
+		requestBody = multipartBody
+		headers = internalhttp.MergeHeaders(headers, map[string]string{"Content-Type": contentType})
+	}
 
 	var response typesafeResponseWire
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		Method:  http.MethodPost,
 		Path:    "/systemone",
-		Body:    body,
+		Body:    requestBody,
 		Headers: headers,
 		// TS createJsonResponseHandler(typesafeDecisionResponseSchema).
 		ValidateResponse: validateDecisionResponse,
@@ -429,28 +464,256 @@ func (m *DecisionModel) DoEvaluate(ctx context.Context, opts provider.DecisionCa
 	return m.DoDecide(ctx, opts)
 }
 
-// typeSafeRequestState maps ordered state parts to TypeSafe's native state: a
-// single json part is sent as native JSON; otherwise text and json parts are
-// joined with newlines. File parts are rejected because the endpoint is
-// text-only. Mirrors TS DecisionTypeSafeAiModel's requestState.
-func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, error) {
-	if len(parts) == 1 && parts[0].Type == "json" {
-		return parts[0].Value, nil
+// typesafeAsset is one entry of the request's "assets" map.
+type typesafeAsset struct {
+	Type string `json:"type"`
+	Part string `json:"part"`
+}
+
+// typesafeImagePart is one image uploaded alongside the JSON request.
+type typesafeImagePart struct {
+	name      string
+	filename  string
+	mediaType string
+	data      []byte
+}
+
+// parseLongContext validates providerOptions.typesafe (TS
+// typesafeAiDecisionModelOptions) and reports whether longContext is true.
+func parseLongContext(providerOptions map[string]interface{}) (bool, error) {
+	parsed, err := providerutils.ParseProviderOptions("typesafe", providerOptions, providerutils.OptionSchema{
+		"longContext": providerutils.OptBool,
+	})
+	if err != nil {
+		return false, err
 	}
-	texts := make([]string, 0, len(parts))
+	enabled, _ := parsed["longContext"].(bool)
+	return enabled, nil
+}
+
+// typesafeFilePartSchema is typesafeAiFilePartProviderOptions: a non-blank
+// reference and an insertReference flag.
+var typesafeFilePartSchema = providerutils.OptionSchema{
+	"reference": func(path string, v interface{}) error {
+		if err := providerutils.OptString(path, v); err != nil {
+			return err
+		}
+		if s, _ := v.(string); strings.TrimSpace(s) == "" {
+			return fmt.Errorf("invalid input (at %s)", path)
+		}
+		return nil
+	},
+	"insertReference": providerutils.OptBool,
+}
+
+const typesafeIDAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+// typesafeGenerateID returns a random 16 character ID (TS generateId), used
+// as the default image reference so it cannot match request text by accident.
+func typesafeGenerateID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("failed to generate image reference: %w", err)
+	}
+	for i := range b {
+		b[i] = typesafeIDAlphabet[int(b[i])%len(typesafeIDAlphabet)]
+	}
+	return string(b[:]), nil
+}
+
+// jsonStrings collects every string value (not object keys) in a JSON value.
+func jsonStrings(value interface{}) []string {
+	switch v := value.(type) {
+	case nil, bool, float64, float32, int, int64, json.Number:
+		return nil
+	case string:
+		return []string{v}
+	case []interface{}:
+		var out []string
+		for _, item := range v {
+			out = append(out, jsonStrings(item)...)
+		}
+		return out
+	case map[string]interface{}:
+		var out []string
+		for _, item := range v {
+			out = append(out, jsonStrings(item)...)
+		}
+		return out
+	default:
+		// Other Go types (structs, typed slices/maps): look at their JSON form.
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return nil
+		}
+		var generic interface{}
+		if json.Unmarshal(encoded, &generic) != nil {
+			return nil
+		}
+		switch generic.(type) {
+		case string, []interface{}, map[string]interface{}:
+			return jsonStrings(generic)
+		}
+		return nil
+	}
+}
+
+// typeSafeRequestState maps ordered state parts to TypeSafe's native state, the
+// request's image assets and the image parts to upload. Mirrors TS
+// DecisionTypeSafeAiModel's requestState:
+//   - Image file parts (PNG/JPEG inline data) get a reference (the
+//     providerOptions.typesafe.reference of the part, else a random ID) that is
+//     inserted into the state at the file's position unless the state already
+//     contains it (or insertReference is false).
+//   - A single remaining json part is sent as native JSON; otherwise text and
+//     json parts are joined with newlines.
+func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, map[string]typesafeAsset, []typesafeImagePart, error) {
+	var stateStrings []string
 	for _, part := range parts {
 		switch part.Type {
-		case "file":
-			return nil, &providererrors.UnsupportedFunctionalityError{Functionality: "TypeSafe AI decision file input"}
 		case "text":
-			texts = append(texts, part.Text)
-		default:
-			encoded, err := json.Marshal(part.Value)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encode decision state: %w", err)
-			}
-			texts = append(texts, string(encoded))
+			stateStrings = append(stateStrings, part.Text)
+		case "json":
+			stateStrings = append(stateStrings, jsonStrings(part.Value)...)
 		}
 	}
-	return strings.Join(texts, "\n"), nil
+
+	assets := map[string]typesafeAsset{}
+	var images []typesafeImagePart
+	stateParts := make([]provider.DecisionStatePart, 0, len(parts))
+	for index, part := range parts {
+		if part.Type != "file" {
+			stateParts = append(stateParts, part)
+			continue
+		}
+		file := part.File
+		if file == nil {
+			return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{Functionality: "TypeSafe AI decision file input"}
+		}
+		mediaType := file.MediaType
+		if mediaType == "" {
+			mediaType = file.MimeType
+		}
+		if mediaType == "" {
+			mediaType = file.FileData.MediaType
+		}
+		if kind := file.FileData.Type; kind != "" && kind != types.FileDataTypeData {
+			return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: fmt.Sprintf("TypeSafe AI decision file input: %s (%s)", mediaType, kind),
+			}
+		}
+		if mediaType != "image/png" && mediaType != "image/jpeg" {
+			return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{
+				Functionality: fmt.Sprintf("TypeSafe AI decision image media type: %s", mediaType),
+			}
+		}
+		_, data, err := part.InlineData()
+		if err != nil {
+			return nil, nil, nil, &providererrors.InvalidArgumentError{Field: "state", Message: err.Error(), Cause: err}
+		}
+		fileOptions, err := providerutils.ParseProviderOptions("typesafe", file.ProviderOptions, typesafeFilePartSchema)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		explicitRef, hasRef := fileOptions["reference"].(string)
+		insertOpt, hasInsert := fileOptions["insertReference"].(bool)
+		if hasInsert && !insertOpt && !hasRef {
+			return nil, nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions.typesafe.reference",
+				Message: "TypeSafe images with insertReference: false need an explicit reference.",
+			}
+		}
+		// Default to random IDs to avoid accidental text matches, as TypeSafe
+		// recommends as the safest option.
+		reference := explicitRef
+		if !hasRef {
+			if reference, err = typesafeGenerateID(); err != nil {
+				return nil, nil, nil, err
+			}
+		}
+		insertReference := !containsString(stateStrings, reference)
+		if hasInsert {
+			insertReference = insertOpt
+		}
+		if _, dup := assets[reference]; dup {
+			return nil, nil, nil, &providererrors.InvalidArgumentError{
+				Field:   "providerOptions.typesafe.reference",
+				Message: "Duplicate TypeSafe image reference: " + reference,
+			}
+		}
+		partName := fmt.Sprintf("image-%d", index)
+		assets[reference] = typesafeAsset{Type: "image", Part: partName}
+		filename := file.Filename
+		if filename == "" {
+			ext := "jpeg"
+			if mediaType == "image/png" {
+				ext = "png"
+			}
+			filename = partName + "." + ext
+		}
+		images = append(images, typesafeImagePart{name: partName, filename: filename, mediaType: mediaType, data: data})
+		if insertReference {
+			stateParts = append(stateParts, provider.DecisionTextPart(reference))
+		}
+	}
+
+	if len(stateParts) == 1 && stateParts[0].Type == "json" {
+		return stateParts[0].Value, assets, images, nil
+	}
+	texts := make([]string, 0, len(stateParts))
+	for _, part := range stateParts {
+		if part.Type == "text" {
+			texts = append(texts, part.Text)
+			continue
+		}
+		encoded, err := json.Marshal(part.Value)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to encode decision state: %w", err)
+		}
+		texts = append(texts, string(encoded))
+	}
+	return strings.Join(texts, "\n"), assets, images, nil
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildImageMultipart builds the multipart/form-data body: the JSON request as
+// the "request" part, then each image part in state order.
+func buildImageMultipart(body map[string]interface{}, images []typesafeImagePart) (*bytes.Buffer, string, error) {
+	requestJSON, err := json.Marshal(body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	write := func(name, filename, contentType string, data []byte) error {
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": name, "filename": filename}))
+		header.Set("Content-Type", contentType)
+		part, err := w.CreatePart(header)
+		if err != nil {
+			return err
+		}
+		_, err = part.Write(data)
+		return err
+	}
+	if err := write("request", "request.json", "application/json", requestJSON); err != nil {
+		return nil, "", fmt.Errorf("failed to build multipart body: %w", err)
+	}
+	for _, image := range images {
+		if err := write(image.name, image.filename, image.mediaType, image.data); err != nil {
+			return nil, "", fmt.Errorf("failed to build multipart body: %w", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		return nil, "", fmt.Errorf("failed to build multipart body: %w", err)
+	}
+	return &buf, w.FormDataContentType(), nil
 }
