@@ -255,6 +255,16 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				if err := validateResponsesPromptCacheOptions(v, providerOptionsName); err != nil {
 					return nil, store, nil, err
 				}
+				// zod's object schema drops unknown keys before TS sends it.
+				if m, isMap := v.(map[string]interface{}); isMap {
+					known := make(map[string]interface{}, len(m))
+					for _, k := range []string{"mode", "ttl", "prewarm"} {
+						if val, has := m[k]; has {
+							known[k] = val
+						}
+					}
+					v = known
+				}
 				promptCacheOptions = v
 			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {

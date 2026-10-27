@@ -144,3 +144,21 @@ func TestResponsesPrewarmStreamFinishesWithNoContent(t *testing.T) {
 	}
 	checkPrewarmUsage(t, *finish.Usage)
 }
+
+// zod's object schema strips unknown keys, so TS never sends them.
+func TestResponsesPromptCacheOptionsDropsUnknownKeys(t *testing.T) {
+	model := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-6.1-sol")
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: promptCachePrompt(),
+		ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{
+			"promptCacheOptions": map[string]interface{}{"ttl": "30m", "extra": 1},
+		}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(body["prompt_cache_options"])
+	if string(raw) != `{"ttl":"30m"}` {
+		t.Fatalf("prompt_cache_options = %s", raw)
+	}
+}
