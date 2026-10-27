@@ -3,6 +3,7 @@ package perplexity
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -34,5 +35,21 @@ func TestR47_ErrorBodyNotMatchingSchemaFallsBackToStatusText(t *testing.T) {
 		if pe.Message != want || pe.StatusCode != 502 || pe.ResponseBody != body || pe.ResponseHeaders["x-req"] != "7" {
 			t.Fatalf("%s: %+v", body, pe)
 		}
+	}
+}
+
+// The embedding model uses the same createJsonErrorResponseHandler as the
+// language model: the status code and the schema message survive.
+func TestR47_EmbeddingErrorBodyResolvesMessageAndStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"detail":[{"msg":"slow"},{"msg":"down"}]}`))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{BaseURL: srv.URL, APIKey: "k"}), "pplx-embed-v1-4b")
+	_, err := m.DoEmbedMany(t.Context(), []string{"a"}, nil)
+	var pe *providererrors.ProviderError
+	if !errors.As(err, &pe) || pe.StatusCode != 429 || pe.Message != "slow, down" {
+		t.Fatalf("err = %#v", err)
 	}
 }
