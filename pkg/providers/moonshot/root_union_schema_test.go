@@ -132,3 +132,18 @@ func TestBuildRequestBody_RootUnionOfObjectsSentWithTypeObject(t *testing.T) {
 		}
 	}
 }
+
+// TS passes the tool schema to the normalizer unchanged, so a typeless root
+// union with a non-object branch throws instead of being sent as an object.
+func TestBuildRequestBody_TypelessNonObjectRootUnionToolThrows(t *testing.T) {
+	model := newMoonshotTestModel("kimi-k3")
+	_, _, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+		Prompt: textPrompt("Hello"),
+		Tools: []types.Tool{{Name: "bad", Parameters: map[string]interface{}{
+			"anyOf": []interface{}{mfjsCity(), map[string]interface{}{"type": "string"}},
+		}}},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), `type "object" for moonshotai (MFJS)`) {
+		t.Fatalf("err = %v", err)
+	}
+}

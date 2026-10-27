@@ -105,7 +105,7 @@ func prepareMoonshotTools(tools []types.Tool, toolChoice types.ToolChoice, hasTo
 
 // moonshotDefaultObjectSchema mirrors the tool package's defaultObjectSchema:
 // nil parameters become an empty object schema; a schema missing "type" gets
-// "object" injected so the MFJS root-object check passes.
+// "object" injected so the MFJS root-object check passes (root unions excluded).
 func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 	if parameters == nil {
 		return map[string]interface{}{
@@ -114,7 +114,12 @@ func moonshotDefaultObjectSchema(parameters interface{}) interface{} {
 		}
 	}
 	if schema, ok := parameters.(map[string]interface{}); ok {
-		if _, hasType := schema["type"]; !hasType {
+		_, hasType := schema["type"]
+		_, hasAnyOf := schema["anyOf"]
+		_, hasOneOf := schema["oneOf"]
+		// A typeless root union is left for NormalizeJSONSchemaForMFJS: a union
+		// of objects gets type "object", any other union throws like TS.
+		if !hasType && !hasAnyOf && !hasOneOf {
 			copied := make(map[string]interface{}, len(schema)+1)
 			for key, value := range schema {
 				copied[key] = value
