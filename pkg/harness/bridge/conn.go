@@ -101,8 +101,8 @@ func (c *wsConn) Close() error {
 
 // DialOptions configures Dial.
 type DialOptions struct {
-	// Name labels error messages ("claude-code bridge did not send
-	// bridge-hello ..."). Default "bridge".
+	// Name labels the connection. Error texts follow TS ("The harness bridge
+	// ..."), which does not include it; kept for compatibility.
 	Name string
 	// OpenTimeout bounds the WebSocket upgrade (0: only ctx bounds it).
 	OpenTimeout time.Duration
@@ -137,16 +137,11 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 	if err := ctx.Err(); err != nil {
 		return nil, abortError(ctx)
 	}
-	name := opts.Name
-	if name == "" {
-		name = "bridge"
-	}
-
 	dialCtx := ctx
 	if opts.OpenTimeout > 0 {
 		var cancel context.CancelFunc
 		dialCtx, cancel = context.WithTimeoutCause(ctx, opts.OpenTimeout,
-			fmt.Errorf("WebSocket open timed out after %dms", opts.OpenTimeout.Milliseconds()))
+			fmt.Errorf("The harness bridge WebSocket did not open within %dms.", opts.OpenTimeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
 		defer cancel()
 	}
 	var sniffer *closeSniffer
@@ -220,7 +215,7 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 				return fail(abortError(ctx))
 			}
 			if !helloDeadline.IsZero() && !time.Now().Before(helloDeadline) {
-				return fail(fmt.Errorf("%s did not send bridge-hello within %dms", name, helloTimeout.Milliseconds()))
+				return fail(fmt.Errorf("The harness bridge did not send bridge-hello within %dms.", helloTimeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
 			}
 			// x/net reports every close as io.EOF; the sniffer recovered the
 			// close code. Like TS, 1008 is a rejected token and is final.
@@ -259,7 +254,9 @@ func parseHello(msg []byte) (*Hello, bool) {
 		return nil, false
 	}
 	var hello Hello
-	_ = json.Unmarshal(msg, &hello)
+	if json.Unmarshal(msg, &hello) != nil {
+		return nil, false // fails the TS hello schema (wrong field type)
+	}
 	return &hello, true
 }
 
