@@ -52,13 +52,18 @@ type stream struct {
 	lastServerToolCallID string
 
 	// Metadata accumulated across SSE events, emitted on the finish chunk.
-	lastGroundingMetadata  json.RawMessage
-	emittedSourceURLs      map[string]bool
-	lastUrlContextMetadata json.RawMessage
-	lastSafetyRatings      json.RawMessage
-	lastFinishMessage      string
-	lastPromptFeedback     json.RawMessage
-	lastUsageMetadata      *UsageMetadata
+	lastGroundingMetadata json.RawMessage
+	// requestGroundingMetadata is the current request's grounding snapshot;
+	// groundingPerRequest collects the snapshots of the requests that were
+	// continued (TS groundingMetadataPerRequest).
+	requestGroundingMetadata json.RawMessage
+	groundingPerRequest      []json.RawMessage
+	emittedSourceURLs        map[string]bool
+	lastUrlContextMetadata   json.RawMessage
+	lastSafetyRatings        json.RawMessage
+	lastFinishMessage        string
+	lastPromptFeedback       json.RawMessage
+	lastUsageMetadata        *UsageMetadata
 	// lastServiceTier is the last top-level chunk serviceTier (fallback only).
 	lastServiceTier string
 
@@ -283,6 +288,8 @@ func (s *stream) continueStream() bool {
 		})
 		return false
 	}
+	s.groundingPerRequest = append(s.groundingPerRequest, rawOrNull(s.requestGroundingMetadata))
+	s.requestGroundingMetadata = nil
 	_ = s.reader.Close()
 	s.reader = next
 	s.parser = streaming.NewSSEParser(next)
@@ -355,6 +362,10 @@ func (s *stream) processSSEEvent(chunkData Response) {
 			s.rawFinishReason = reason
 			s.hasFinished = true
 		}
+	}
+
+	if len(chunkData.Candidates) > 0 && chunkData.Candidates[0].GroundingMetadata != nil {
+		s.requestGroundingMetadata = chunkData.Candidates[0].GroundingMetadata
 	}
 
 	// A confirmed prompt block is terminal for generated content, but later
@@ -575,6 +586,12 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		"groundingMetadata":  rawOrNull(s.lastGroundingMetadata),
 		"urlContextMetadata": rawOrNull(s.lastUrlContextMetadata),
 		"safetyRatings":      rawOrNull(s.lastSafetyRatings),
+	}
+	if len(s.groundingPerRequest) > 0 {
+		per := append(append([]json.RawMessage{}, s.groundingPerRequest...), rawOrNull(s.requestGroundingMetadata))
+		if gp, err := json.Marshal(per); err == nil {
+			meta["groundingMetadataPerRequest"] = gp
+		}
 	}
 	if s.lastFinishMessage != "" {
 		fm, _ := json.Marshal(s.lastFinishMessage)
