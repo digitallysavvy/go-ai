@@ -420,12 +420,10 @@ func TestLibfxRealCoreSubscriptionColdReplayFromPartialRecord(t *testing.T) {
 			defer session.DoDestroy(ctx) //nolint:errcheck
 			suspended := make(chan (<-chan *harness.ContinueTurnState), 1)
 			var once sync.Once
-			var partial bool
 			before := &partLog{}
 			before.on = func(p harness.StreamPart) {
 				if p.PartType() == harness.PartTypeTextDelta {
 					once.Do(func() {
-						partial = !modelRecordComplete(session)
 						suspended <- suspendFromEmit(t, session)
 					})
 				}
@@ -445,6 +443,14 @@ func TestLibfxRealCoreSubscriptionColdReplayFromPartialRecord(t *testing.T) {
 			if continueFrom == nil {
 				t.Fatal("no continuation")
 			}
+			// Whether the record is partial is read from the state the
+			// continuation saved, not at the text delta: the stream pump can
+			// still reach EOF and complete the record between that delta and
+			// suspend() stopping the transport (the continuation then replays
+			// it without a new request). DoSuspendTurn returns only after
+			// suspend has waited for the pumps and saved, so this is the record
+			// the resumed session loads.
+			partial := !modelRecordComplete(session)
 			requests := network.postCount()
 			resumed, err := h.DoStart(ctx, harness.StartOptions{SandboxSession: sb, SessionID: start.SessionID, SessionWorkDir: start.SessionWorkDir, ContinueFrom: continueFrom})
 			if err != nil {
