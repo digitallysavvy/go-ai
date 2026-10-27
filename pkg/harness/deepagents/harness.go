@@ -300,4 +300,3 @@ func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) strin
 	}
 	return cb(sandboxID)
 }
-
