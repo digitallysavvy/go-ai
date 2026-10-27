@@ -280,7 +280,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 
 	messages := opts.Messages
 	prompt := opts.Prompt
-	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages)
 	if len(callConfig.Messages) > 0 {
 		messages = callConfig.Messages
 		prompt = ""
@@ -405,7 +405,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 	config.CallOptions = defaultedCallOptions
 	messages := opts.Messages
 	prompt := opts.Prompt
-	callConfig := (&ToolLoopAgent{config: config}).prepareStepCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages)
 	if len(callConfig.Messages) > 0 {
 		messages = callConfig.Messages
 		prompt = ""
@@ -1131,7 +1131,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	return result, nil
 }
 
-func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
+// prepareCallConfig builds the call configuration from the agent config and
+// runs PrepareCall on it (TS ToolLoopAgent.prepareCall).
+func (a *ToolLoopAgent) prepareCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
 	callConfig := PrepareCallConfig{
 		StepNumber:                     stepNum,
 		Model:                          a.config.Model,
@@ -1190,17 +1192,39 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 	if callConfig.Model == nil {
 		callConfig.Model = a.config.Model
 	}
-	if len(callConfig.ActiveTools) > 0 {
-		callConfig.Tools = ai.FilterActiveTools(callConfig.Tools, callConfig.ActiveTools)
-	}
-	if a.config.FilterActiveTools != nil {
-		callConfig.Tools = a.config.FilterActiveTools(ctx, stepNum, callConfig.Tools)
-	}
 	if callConfig.RuntimeContext == nil {
 		callConfig.RuntimeContext = a.runtimeContext()
 	}
 	if callConfig.ToolsContext == nil {
 		callConfig.ToolsContext = a.config.ToolsContext
+	}
+	return callConfig
+}
+
+// prepareGenerateCallConfig is prepareCallConfig for Generate and Stream.
+// The Go-only FilterActiveTools callback runs once on the call's tool set;
+// GenerateText/StreamText then apply ActiveTools after PrepareStep.
+func (a *ToolLoopAgent) prepareGenerateCallConfig(ctx context.Context, prompt string, messages []types.Message) PrepareCallConfig {
+	callConfig := a.prepareCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	if a.config.FilterActiveTools != nil {
+		callConfig.Tools = a.config.FilterActiveTools(ctx, 0, callConfig.Tools)
+	}
+	return callConfig
+}
+
+// prepareStepCallConfig is prepareCallConfig plus the per-step tool
+// preparation the Go-only AgentResult loop needs: the tools are narrowed to
+// ActiveTools, their descriptions resolved and their order applied.
+// Generate and Stream use prepareCallConfig instead and leave this to
+// GenerateText/StreamText, which do it per step after PrepareStep (TS
+// ToolLoopAgent passes the full tool set and activeTools to generateText).
+func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
+	callConfig := a.prepareCallConfig(ctx, stepNum, prompt, messages, previousSteps, accumulatedUsage, customData)
+	if len(callConfig.ActiveTools) > 0 {
+		callConfig.Tools = ai.FilterActiveTools(callConfig.Tools, callConfig.ActiveTools)
+	}
+	if a.config.FilterActiveTools != nil {
+		callConfig.Tools = a.config.FilterActiveTools(ctx, stepNum, callConfig.Tools)
 	}
 	callConfig.Tools = resolveAgentStepTools(ctx, callConfig.Tools, callConfig.ToolsContext, callConfig.ExperimentalSandbox)
 	callConfig.Tools = orderAgentStepTools(callConfig.Tools, callConfig.ToolOrder)
