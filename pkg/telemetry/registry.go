@@ -1381,6 +1381,32 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 	return ctx // span is embedded via OTel context propagation
 }
 
+// legacyInheritedAttrs returns the attributes a nested span (doGenerate/
+// doStream step, doEmbed, doRerank, doDecide) copies from its root: TS
+// `...state.baseTelemetryAttributes`, which getBaseTelemetryAttributes builds
+// from the model, settings, headers and the runtime context
+// (ai.settings.context.*). It reads this integration's callID state and falls
+// back to the values OnStart stashed in ctx.
+func legacyInheritedAttrs(ctx context.Context, callID string) []attribute.KeyValue {
+	var base, runtimeCtx []attribute.KeyValue
+	if callID != "" {
+		if v, ok := legacyCallStates.Load(callID); ok {
+			st := v.(*legacyCallState)
+			st.mu.Lock()
+			base, runtimeCtx = st.baseAttrs, st.runtimeCtxAttrs
+			st.mu.Unlock()
+		}
+	}
+	if base == nil {
+		base, _ = ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue)
+	}
+	if runtimeCtx == nil {
+		runtimeCtx, _ = ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue)
+	}
+	out := make([]attribute.KeyValue, 0, len(base)+len(runtimeCtx))
+	return append(append(out, base...), runtimeCtx...)
+}
+
 // runtimeContextAttrsKey is a private context key carrying the root span's
 // flattened ai.settings.context.* attributes down to descendant spans.
 type runtimeContextAttrsKey struct{}
@@ -1563,9 +1589,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		functionID = e.Settings.FunctionID
 	}
 	stepSpan.SetAttributes(legacyOperationNameAttrs(legacyStepOperationID(opType), functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		stepSpan.SetAttributes(baseAttrs...)
-	}
+	stepSpan.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
 	// TS's onStepStart sets 'ai.model.provider'/'ai.model.id' from the
 	// step's own event.provider/event.modelId AFTER spreading
 	// state.baseTelemetryAttributes, so a step whose model differs from the
@@ -1671,9 +1695,7 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	}
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		span.SetAttributes(baseAttrs...)
-	}
+	span.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
 	if (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", legacyJSONEachElement(e.Values)))
 	}
@@ -1768,9 +1790,7 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	}
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
-	if baseAttrs, ok := ctx.Value(legacyBaseAttrsKey{}).([]attribute.KeyValue); ok {
-		span.SetAttributes(baseAttrs...)
-	}
+	span.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
 	if (e.Settings == nil || e.Settings.RecordInputs) && e.Documents != nil {
 		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
 			span.SetAttributes(attribute.StringSlice("ai.documents", docs))

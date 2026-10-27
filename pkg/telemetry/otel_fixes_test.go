@@ -397,3 +397,46 @@ func TestLegacyOpenTelemetryObjectStepSpanOmitsStopSequences(t *testing.T) {
 		t.Error("expected gen_ai.request.stop_sequences to be absent for generateObject")
 	}
 }
+
+// TS legacy nested spans spread state.baseTelemetryAttributes, which
+// getBaseTelemetryAttributes builds with the runtime context, so the
+// doGenerate/doStream, doEmbed, doRerank and doDecide spans carry the same
+// ai.settings.context.* attributes as their root.
+func TestLegacyNestedSpansInheritRuntimeContextAttributes(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("telemetry-test")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	runtimeContext := map[string]interface{}{"userId": "u1"}
+
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "call-gen", OperationType: "ai.generateText", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "call-gen", OperationType: "ai.generateText", Settings: settings})
+
+	ctx = integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "call-embed", OperationType: "ai.embed", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnEmbedStart(ctx, EmbeddingModelCallStartEvent{CallID: "call-embed", EmbedCallID: "e1", OperationID: "ai.embed.doEmbed", Settings: settings})
+
+	ctx = integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "call-rerank", OperationType: "ai.rerank", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{CallID: "call-rerank", OperationID: "ai.rerank.doRerank", Settings: settings})
+
+	ctx = integration.OnDecideStart(context.Background(), DecideStartEvent{
+		CallID: "call-decide", OperationID: "ai.decide", Settings: settings, RuntimeContext: runtimeContext,
+	})
+	integration.OnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{CallID: "call-decide", OperationID: "ai.decide.doDecide", Settings: settings})
+
+	for _, name := range []string{"ai.generateText.doGenerate", "ai.embed.doEmbed", "ai.rerank.doRerank", "ai.decide.doDecide"} {
+		span := findSpan(rec, name)
+		if span == nil {
+			t.Fatalf("no %s span", name)
+		}
+		if v, ok := attrValue(span, "ai.settings.context.userId"); !ok || v != "u1" {
+			t.Errorf("%s: ai.settings.context.userId = %v, %v; want u1", name, v, ok)
+		}
+	}
+}
