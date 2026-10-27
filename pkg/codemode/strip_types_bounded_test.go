@@ -6,38 +6,70 @@ import (
 	"time"
 )
 
-// fillTo repeats unit until the source reaches the default size limit.
-func fillTo(prefix, unit, suffix string) string {
-	n := (DefaultMaxSourceBytes - len(prefix) - len(suffix)) / len(unit)
-	return prefix + strings.Repeat(unit, n) + suffix
+// fillTo repeats unit until the source reaches size bytes.
+func fillTo(size int, unit string) string {
+	return strings.Repeat(unit, size/len(unit))
 }
 
 // The stripper runs on model-written code before the sandbox and outside its
 // timeout. Deeply nested brackets, long comparison lists and unterminated
 // regex candidates cost quadratic time: a source of the default size limit
 // could pin a CPU for tens of seconds.
+//
+// A wall-clock cap alone is flaky on loaded CI runners, so the test checks how
+// the cost grows instead: quadrupling the input must cost well under the 16x of
+// a quadratic scan. Each size takes the fastest of several interleaved runs so
+// load hits both alike. The absolute cap is only a backstop against a hang.
 func TestStripTypeScriptBoundedOnAdversarialInput(t *testing.T) {
-	half := DefaultMaxSourceBytes / 2
-	cases := map[string]string{
-		"nested parens":       strings.Repeat("(", half) + "1" + strings.Repeat(")", half-1),
-		"nested objects":      strings.Repeat("({a: ", DefaultMaxSourceBytes/7) + "1" + strings.Repeat("})", DefaultMaxSourceBytes/7),
-		"nested templates":    strings.Repeat("`${", DefaultMaxSourceBytes/5) + "1" + strings.Repeat("}`", DefaultMaxSourceBytes/5),
-		"comparison list":     fillTo("", "a<b,", ""),
-		"optional calls":      fillTo("", "a?.b<T>?.(1),", ""),
-		"arrow list":          fillTo("", "(a) => (b) => (c) => 1,", ""),
-		"slash-class":         fillTo("", "/[", ""),
-		"assign-slash-class":  fillTo("", "x=/[", ""),
-		"paren-slash-class":   fillTo("", "(/[", ""),
-		"paren-slash":         fillTo("", "(/", ""),
-		"regex class newline": fillTo("", "(/[\n", ""),
+	cases := map[string]func(size int) string{
+		"nested parens": func(size int) string {
+			return strings.Repeat("(", size/2) + "1" + strings.Repeat(")", size/2-1)
+		},
+		"nested objects": func(size int) string {
+			return strings.Repeat("({a: ", size/7) + "1" + strings.Repeat("})", size/7)
+		},
+		"nested templates": func(size int) string {
+			return strings.Repeat("`${", size/5) + "1" + strings.Repeat("}`", size/5)
+		},
+		"comparison list":     func(size int) string { return fillTo(size, "a<b,") },
+		"optional calls":      func(size int) string { return fillTo(size, "a?.b<T>?.(1),") },
+		"arrow list":          func(size int) string { return fillTo(size, "(a) => (b) => (c) => 1,") },
+		"slash-class":         func(size int) string { return fillTo(size, "/[") },
+		"assign-slash-class":  func(size int) string { return fillTo(size, "x=/[") },
+		"paren-slash-class":   func(size int) string { return fillTo(size, "(/[") },
+		"paren-slash":         func(size int) string { return fillTo(size, "(/") },
+		"regex class newline": func(size int) string { return fillTo(size, "(/[\n") },
 	}
-	for name, src := range cases {
-		start := time.Now()
-		_, _ = stripTypeScriptAnnotations(src)
-		d := time.Since(start)
-		t.Logf("%s: %v", name, d)
-		if d > 4*time.Second {
-			t.Errorf("%s: %d bytes took %v", name, len(src), d)
+	const (
+		runs      = 3
+		growthCap = 8.0 // linear is 4x, quadratic 16x
+		noise     = 50 * time.Millisecond
+		backstop  = 2 * time.Minute
+	)
+	for name, gen := range cases {
+		large := gen(DefaultMaxSourceBytes)
+		small := gen(DefaultMaxSourceBytes / 4)
+		bestSmall, bestLarge := time.Duration(1<<62), time.Duration(1<<62)
+		for i := 0; i < runs; i++ {
+			for _, c := range []struct {
+				src  string
+				best *time.Duration
+			}{{small, &bestSmall}, {large, &bestLarge}} {
+				start := time.Now()
+				_, _ = stripTypeScriptAnnotations(c.src)
+				d := time.Since(start)
+				if d > backstop {
+					t.Fatalf("%s: %d bytes took %v", name, len(c.src), d)
+				}
+				if d < *c.best {
+					*c.best = d
+				}
+			}
+		}
+		t.Logf("%s: %d bytes %v, %d bytes %v", name, len(small), bestSmall, len(large), bestLarge)
+		if limit := time.Duration(float64(bestSmall)*growthCap) + noise; bestLarge > limit {
+			t.Errorf("%s: cost grows superlinearly: %d bytes took %v, %d bytes took %v (limit %v)",
+				name, len(small), bestSmall, len(large), bestLarge, limit)
 		}
 	}
 }
