@@ -454,6 +454,12 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	// sseLifecycleCtx, which every in-flight Send()'s derived request context
 	// (see deriveRequestContext) is also watching, so this unblocks in-flight
 	// POST requests and POST-response SSE reads too, not just inbound SSE.
+	t.sseMu.Lock()
+	started := t.sseLifecycleCtx != nil
+	t.sseMu.Unlock()
+	t.mu.Lock()
+	started = started || t.connected
+	t.mu.Unlock()
 	t.stopInboundSSE()
 	t.postSSEWG.Wait()
 
@@ -467,7 +473,10 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	t.connected = false
 	t.mu.Unlock()
 
-	if terminate && sessionID != "" && !t.isModernProtocol() && ctx.Err() == nil {
+	// TS close() only terminates the session of a transport that was started
+	// (`this.abortController`): closing one that never connected (for
+	// example after Connect failed) leaves a resumable session alone.
+	if started && terminate && sessionID != "" && !t.isModernProtocol() && ctx.Err() == nil {
 		// A server that never answers the DELETE must not hang Close. TS has
 		// no deadline of its own but Node's fetch (undici) gives up waiting
 		// for response headers after 5 minutes, so that bounds TS's close();
@@ -832,7 +841,9 @@ func (t *HTTPTransport) queueReceivedMessages(messages []*MCPMessage) {
 func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
-		return nil, nil
+		// TS response.json() rejects an empty body, so the request fails
+		// instead of waiting for a response that never comes.
+		return nil, errors.New("unexpected end of JSON input")
 	}
 	// TS validateJSONRPCMessage runs on the body, or on each element of an
 	// array body, and throws on a message that is not JSON-RPC.
