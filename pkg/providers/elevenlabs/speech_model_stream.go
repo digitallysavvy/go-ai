@@ -45,6 +45,12 @@ func (m *SpeechModel) DoStreamSpeech(ctx context.Context, opts *provider.SpeechS
 }
 
 func (m *SpeechModel) startStream(ctx context.Context, opts *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
+	if isMusicModelID(m.modelID) || isSoundEffectsModelID(m.modelID) {
+		return nil, &providererrors.UnsupportedFunctionalityError{
+			Functionality: "streaming speech with " + m.modelID,
+			Message:       fmt.Sprintf("ElevenLabs %s does not support streaming; use generateSpeech instead.", m.modelID),
+		}
+	}
 	currentDate := time.Now()
 	if err := validateSpeechProviderOptions(opts.ProviderOptions); err != nil {
 		return nil, err
@@ -368,6 +374,9 @@ func streamHTTPOnlyOptions(elOpts SpeechModelOptions) []string {
 	if elOpts.ApplyLanguageTextNormalization != nil {
 		set = append(set, "applyLanguageTextNormalization")
 	}
+	if elOpts.Inputs != nil {
+		set = append(set, "inputs")
+	}
 	if elOpts.NextRequestIDs != nil {
 		set = append(set, "nextRequestIds")
 	}
@@ -379,6 +388,11 @@ func streamHTTPOnlyOptions(elOpts SpeechModelOptions) []string {
 	}
 	if elOpts.PreviousText != "" {
 		set = append(set, "previousText")
+	}
+	for _, option := range append(append([]string{}, musicOnlyOptions...), soundEffectsOnlyOptions...) {
+		if elOpts.isSet(option) {
+			set = append(set, option)
+		}
 	}
 	return set
 }

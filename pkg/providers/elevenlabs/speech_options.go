@@ -66,6 +66,114 @@ func parseDialogueOptions(raw map[string]interface{}) *DialogueOptions {
 	return out
 }
 
+// DialogueInput is one line of a multi-voice dialogue for ai.GenerateSpeech
+// (providerOptions.elevenlabs.inputs).
+type DialogueInput struct {
+	Text    string
+	VoiceID string
+}
+
+func dialogueInputsCheck() providerutils.OptionCheck {
+	return providerutils.OptArray(providerutils.OptObjectWith(providerutils.OptionSchema{
+		"text":    providerutils.OptStringLen(1, -1),
+		"voiceId": providerutils.OptStringLen(1, -1),
+	}, "text", "voiceId"), 1, -1)
+}
+
+func parseDialogueInputs(value interface{}) []DialogueInput {
+	switch v := value.(type) {
+	case []DialogueInput:
+		return v
+	case []interface{}:
+		out := make([]DialogueInput, 0, len(v))
+		for _, item := range v {
+			if im, ok := item.(map[string]interface{}); ok {
+				text, _ := im["text"].(string)
+				voiceID, _ := im["voiceId"].(string)
+				out = append(out, DialogueInput{Text: text, VoiceID: voiceID})
+			}
+		}
+		return out
+	case []map[string]interface{}:
+		out := make([]DialogueInput, 0, len(v))
+		for _, im := range v {
+			text, _ := im["text"].(string)
+			voiceID, _ := im["voiceId"].(string)
+			out = append(out, DialogueInput{Text: text, VoiceID: voiceID})
+		}
+		return out
+	}
+	return nil
+}
+
+// optUnion is a zod union: the value passes when any member passes, else the
+// first member's failure is reported.
+func optUnion(checks ...providerutils.OptionCheck) providerutils.OptionCheck {
+	return func(path string, v interface{}) error {
+		var first error
+		for _, check := range checks {
+			err := check(path, v)
+			if err == nil {
+				return nil
+			}
+			if first == nil {
+				first = err
+			}
+		}
+		return first
+	}
+}
+
+// compositionPlanCheck validates the native (snake_case) composition plan
+// sent as-is in place of the prompt: music_v1 sections or music_v2+ chunks.
+// https://elevenlabs.io/docs/api-reference/music/compose
+func compositionPlanCheck() providerutils.OptionCheck {
+	zero, three, maxDuration := 0, 3000, 120000
+	nonNegative := providerutils.OptInt(&zero, nil)
+	timeRange := providerutils.OptObjectWith(providerutils.OptionSchema{
+		"start_ms": nonNegative, "end_ms": nonNegative,
+	}, "start_ms", "end_ms")
+	audioRefChunk := providerutils.OptObjectWith(providerutils.OptionSchema{
+		"song_id": providerutils.OptString, "range": timeRange,
+	}, "song_id", "range")
+	durationMs := providerutils.OptInt(&three, &maxDuration)
+	styles := providerutils.OptArray(providerutils.OptString, 0, -1)
+
+	// music_v1
+	section := providerutils.OptObjectWith(providerutils.OptionSchema{
+		"section_name":          providerutils.OptStringLen(1, 100),
+		"positive_local_styles": styles,
+		"negative_local_styles": styles,
+		"duration_ms":           durationMs,
+		"lines":                 providerutils.OptArray(providerutils.OptStringMax(200), 0, 30),
+		"source_from": providerutils.OptNullable(providerutils.OptObjectWith(providerutils.OptionSchema{
+			"song_id": providerutils.OptString, "range": timeRange,
+			"negative_ranges": providerutils.OptArray(timeRange, 0, -1),
+		}, "song_id", "range")),
+	}, "section_name", "positive_local_styles", "negative_local_styles", "duration_ms", "lines")
+	musicPrompt := providerutils.OptObjectWith(providerutils.OptionSchema{
+		"positive_global_styles": styles,
+		"negative_global_styles": styles,
+		"sections":               providerutils.OptArray(section, 0, -1),
+	}, "positive_global_styles", "negative_global_styles", "sections")
+
+	// music_v2 and later
+	generationChunk := providerutils.OptObjectWith(providerutils.OptionSchema{
+		"text":               providerutils.OptString,
+		"duration_ms":        durationMs,
+		"positive_styles":    styles,
+		"negative_styles":    styles,
+		"context_adherence":  providerutils.OptEnum("low", "medium", "high"),
+		"conditioning_ref":   providerutils.OptNullable(audioRefChunk),
+		"condition_strength": providerutils.OptNullable(providerutils.OptEnum("low", "medium", "high", "xhigh")),
+	}, "text", "duration_ms", "positive_styles")
+	chunkedPlan := providerutils.OptObjectWith(providerutils.OptionSchema{
+		"chunks": providerutils.OptArray(optUnion(generationChunk, audioRefChunk), 0, -1),
+	}, "chunks")
+
+	return optUnion(musicPrompt, chunkedPlan)
+}
+
 func streamingSpeechOptionsCheck() providerutils.OptionCheck {
 	one, max180 := 1, 180
 	return providerutils.OptObject(providerutils.OptionSchema{
@@ -125,4 +233,56 @@ func floatSlice(value interface{}) ([]float64, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// compositionPlanDurationMs is the total length of a music composition plan:
+// sections (music_v1) or chunks (music_v2 and later). It reports false when
+// the plan has no parts or a part without a positive length.
+func compositionPlanDurationMs(plan map[string]interface{}) (float64, bool) {
+	var parts []float64
+	if sections, ok := plan["sections"]; ok {
+		for _, section := range mapList(sections) {
+			d, _ := numberAsFloat(section["duration_ms"])
+			parts = append(parts, d)
+		}
+	} else {
+		for _, chunk := range mapList(plan["chunks"]) {
+			// Audio reference chunks reuse a time range of an earlier song.
+			if d, ok := numberAsFloat(chunk["duration_ms"]); ok {
+				parts = append(parts, d)
+				continue
+			}
+			rng, _ := chunk["range"].(map[string]interface{})
+			end, _ := numberAsFloat(rng["end_ms"])
+			start, _ := numberAsFloat(rng["start_ms"])
+			parts = append(parts, end-start)
+		}
+	}
+	if len(parts) == 0 {
+		return 0, false
+	}
+	total := 0.0
+	for _, d := range parts {
+		if d <= 0 {
+			return 0, false
+		}
+		total += d
+	}
+	return total, true
+}
+
+func mapList(value interface{}) []map[string]interface{} {
+	switch v := value.(type) {
+	case []map[string]interface{}:
+		return v
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(v))
+		for _, item := range v {
+			if im, ok := item.(map[string]interface{}); ok {
+				out = append(out, im)
+			}
+		}
+		return out
+	}
+	return nil
 }
