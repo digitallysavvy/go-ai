@@ -3,6 +3,7 @@ package vercel
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -115,5 +116,25 @@ func TestR42RunCommandWaitSkipsBlankLines(t *testing.T) {
 	result, err := NewAPIClient(srv.URL, Credentials{Token: "tok"}).RunCommandWait(t.Context(), "s", runCommandRequest{Command: "echo"})
 	if err != nil || result.Stdout != "hi" || result.Command.ExitCode == nil {
 		t.Fatalf("result = %+v, err = %v", result, err)
+	}
+}
+
+// UpdateParams.TimeoutMs is sent as the PATCH body's timeout.
+func TestR42SandboxUpdateSendsTimeout(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		_, _ = w.Write([]byte(`{"sandbox":{"name":"sbx"}}`))
+	}))
+	defer srv.Close()
+	sbx := &Sandbox{client: NewAPIClient(srv.URL, Credentials{Token: "tok"}), name: "sbx"}
+	timeout := int64(120000)
+	if err := sbx.Update(t.Context(), UpdateParams{TimeoutMs: &timeout}); err != nil {
+		t.Fatal(err)
+	}
+	if body["timeout"] != float64(120000) {
+		t.Fatalf("PATCH body = %v, want timeout 120000", body)
 	}
 }

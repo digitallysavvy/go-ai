@@ -202,12 +202,16 @@ func (s *Sandbox) UpdateNetworkPolicy(ctx context.Context, policy NetworkPolicy)
 // included and a session is running, also updating that session's policy.
 // Mirrors TS `Sandbox.update`.
 func (s *Sandbox) Update(ctx context.Context, params UpdateParams) error {
-	resp, err := s.client.UpdateSandbox(ctx, s.name, updateSandboxRequest{
+	req := updateSandboxRequest{
 		Persistent:         params.Persistent,
 		NetworkPolicy:      params.NetworkPolicy,
 		Ports:              params.Ports,
 		SnapshotExpiration: params.SnapshotExpiration,
-	})
+	}
+	if params.TimeoutMs != nil {
+		req.Timeout = *params.TimeoutMs
+	}
+	resp, err := s.client.UpdateSandbox(ctx, s.name, req)
 	if err != nil {
 		return err
 	}
