@@ -40,12 +40,29 @@ func AllowlistFetch(client *http.Client, origins []string) FetchFunc {
 	for _, o := range origins {
 		allowed[o] = true
 	}
+	// Redirects are held to the same allowlist; the caller's client is
+	// copied, not modified.
+	c := *client
+	next := c.CheckRedirect
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		origin := req.URL.Scheme + "://" + req.URL.Host
+		if !allowed[origin] {
+			return fmt.Errorf("fx runtime: redirect to %s is not allowed", origin)
+		}
+		if next != nil {
+			return next(req, via)
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
 	return func(req *http.Request) (*http.Response, error) {
 		origin := req.URL.Scheme + "://" + req.URL.Host
 		if !allowed[origin] {
 			return nil, fmt.Errorf("fx runtime: request to %s is not allowed", origin)
 		}
-		return client.Do(req)
+		return c.Do(req)
 	}
 }
 

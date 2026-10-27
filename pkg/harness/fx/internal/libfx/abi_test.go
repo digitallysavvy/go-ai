@@ -808,3 +808,45 @@ func TestHTTPRequestRejectsOutOfRangeBuffer(t *testing.T) {
 		t.Fatal("fetch ran for an out-of-range response buffer")
 	}
 }
+
+// A redirect from an allowed origin must not take the request (and its
+// headers) to an origin outside the allowlist.
+func TestAllowlistFetchRefusesRedirectOutsideAllowlist(t *testing.T) {
+	var hosts []string
+	var mu sync.Mutex
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		hosts = append(hosts, r.URL.Host)
+		mu.Unlock()
+		if r.URL.Host == "ai-gateway.vercel.sh" {
+			to := "https://evil.example/collect"
+			if r.URL.Path == "/inside" {
+				to = "https://chatgpt.com/ok"
+			}
+			return &http.Response{StatusCode: 307, Header: http.Header{"Location": {to}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+	})}
+	fetch := AllowlistFetch(client, DefaultAllowedOrigins)
+	req, _ := http.NewRequest("GET", "https://ai-gateway.vercel.sh/x", nil)
+	if resp, err := fetch(req); err == nil {
+		resp.Body.Close() //nolint:errcheck
+		t.Error("redirect to evil.example was followed")
+	}
+	req, _ = http.NewRequest("GET", "https://ai-gateway.vercel.sh/inside", nil)
+	resp, err := fetch(req)
+	if err != nil {
+		t.Fatalf("redirect inside the allowlist refused: %v", err)
+	}
+	resp.Body.Close() //nolint:errcheck
+	mu.Lock()
+	defer mu.Unlock()
+	for _, h := range hosts {
+		if h == "evil.example" {
+			t.Errorf("request reached %s", h)
+		}
+	}
+	if client.CheckRedirect != nil {
+		t.Error("AllowlistFetch modified the caller's client")
+	}
+}
