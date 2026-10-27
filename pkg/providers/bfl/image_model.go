@@ -816,10 +816,14 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 			req.Header.Set("X-Key", providerutils.APIKeyOrEnv(m.provider.config.APIKey, "BFL_API_KEY"))
 		}
 	} else {
-		// Like TS, only the SDK user agent travels to delivery hosts.
-		for k, v := range version.WithUserAgentSuffix(nil, version.ProviderUserAgent("black-forest-labs")) {
-			req.Header.Set(k, v)
+		// Like TS ({'user-agent': combinedHeaders['user-agent']}), only the
+		// user agent travels to delivery hosts: the combined provider/call
+		// value (the caller's own agent plus the SDK suffix).
+		userAgent := headers["user-agent"]
+		if userAgent == "" {
+			userAgent = version.WithUserAgentSuffix(nil, version.ProviderUserAgent("black-forest-labs"))["user-agent"]
 		}
+		req.Header.Set("User-Agent", userAgent)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
