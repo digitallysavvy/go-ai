@@ -270,3 +270,36 @@ func TestDeserializeBridgePartKeepsWireKeyOrder(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+// TS acp-v1-bootstrap.ts adds pnpm-workspace.yaml only when the source has
+// one (`source.pnpmWorkspaceYaml == null ? {} : ...`); an explicitly empty
+// value never reaches the bootstrap because validateACPV1Settings rejects it.
+func TestR42BootstrapPnpmWorkspaceYAML(t *testing.T) {
+	has := func(i implementation) (string, bool) {
+		t.Helper()
+		b, err := buildBootstrap("my-agent", i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range b.Files {
+			if f.Path == ".harness-bootstrap/my-agent/pnpm-workspace.yaml" {
+				return f.Content, true
+			}
+		}
+		return "", false
+	}
+	i := tsLocked()
+	i.Source.PnpmWorkspaceYAML = ""
+	if _, ok := has(i); ok {
+		t.Fatal("unset pnpmWorkspaceYaml must not add pnpm-workspace.yaml")
+	}
+	i.Source.PnpmWorkspaceYAML = "x: 1\n"
+	if c, ok := has(i); !ok || c != "x: 1\n" {
+		t.Fatalf("pnpm-workspace.yaml = %q, %v", c, ok)
+	}
+	s := Settings{HarnessID: "my-agent", Source: tsLocked().Source, Executable: "agent"}
+	s.Source.PnpmWorkspaceYAML, s.Source.PnpmWorkspaceYAMLSet = "", true
+	if _, err := CreateACP(s); err == nil || err.Error() != "ACP source.pnpmWorkspaceYaml must not be empty." {
+		t.Fatalf("New err = %v", err)
+	}
+}
