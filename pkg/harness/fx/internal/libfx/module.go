@@ -168,13 +168,13 @@ func loadHost(ctx context.Context, mod *Module, limitPages uint32) (*host, error
 		return h, nil
 	}
 	cache := compilationCacheFor(mod.CacheDir)
-	h, err := newHost(ctx, mod.Bytes, limitPages, cache, false)
+	h, err := newHost(mod.Bytes, limitPages, cache, false)
 	var bug *compilerPanic
 	if errors.As(err, &bug) {
 		// An optimizing-compiler bug degrades to the interpreter instead of
 		// crashing the host (wazero v1.9-v1.11 panic on this module on arm64).
 		fmt.Fprintf(os.Stderr, "go-ai fx: wazero compiler failed on fx-core.wasm (%v); using the interpreter\n", bug.value)
-		h, err = newHost(ctx, mod.Bytes, limitPages, nil, true)
+		h, err = newHost(mod.Bytes, limitPages, nil, true)
 	}
 	if err != nil {
 		return nil, err
@@ -187,7 +187,7 @@ type compilerPanic struct{ value any }
 
 func (p *compilerPanic) Error() string { return fmt.Sprintf("wazero compiler panic: %v", p.value) }
 
-func newHost(ctx context.Context, wasm []byte, limitPages uint32, cache wazero.CompilationCache, interpreter bool) (h *host, err error) {
+func newHost(wasm []byte, limitPages uint32, cache wazero.CompilationCache, interpreter bool) (h *host, err error) {
 	cfg := wazero.NewRuntimeConfigCompiler()
 	if interpreter {
 		cfg = wazero.NewRuntimeConfigInterpreter()
@@ -196,27 +196,31 @@ func newHost(ctx context.Context, wasm []byte, limitPages uint32, cache wazero.C
 	if cache != nil {
 		cfg = cfg.WithCompilationCache(cache)
 	}
-	// The runtime outlives the ctx that first loads it.
-	rt := wazero.NewRuntimeWithConfig(context.WithoutCancel(ctx), cfg)
+	// The host (runtime, compiled module, host modules) is shared by every
+	// later engine, so it is built from a bare context: a value in the first
+	// caller's ctx (wazero reads an experimental function listener factory
+	// when compiling and instantiating) must not reach other runs.
+	bare := context.Background()
+	rt := wazero.NewRuntimeWithConfig(bare, cfg)
 	defer func() {
 		if r := recover(); r != nil {
 			err = &compilerPanic{value: r}
 		}
 		if err != nil {
-			_ = rt.Close(context.WithoutCancel(ctx))
+			_ = rt.Close(bare)
 		}
 	}()
 	if compileHook != nil {
 		compileHook(interpreter)
 	}
-	compiled, err := rt.CompileModule(ctx, wasm)
+	compiled, err := rt.CompileModule(bare, wasm)
 	if err != nil {
 		return nil, fmt.Errorf("fx runtime: compile fx-core.wasm: %w", err)
 	}
 	if err := checkInterface(compiled); err != nil {
 		return nil, err
 	}
-	if err := instantiateHostModules(ctx, rt); err != nil {
+	if err := instantiateHostModules(bare, rt); err != nil {
 		return nil, err
 	}
 	return &host{rt: rt, compiled: compiled, interpreter: interpreter}, nil
