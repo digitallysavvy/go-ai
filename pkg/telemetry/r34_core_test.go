@@ -53,7 +53,7 @@ func TestDecideSpanAttributesAreNotHTMLEscaped(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 	integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings: settings, CallID: "d1", OperationID: "ai.decide",
 		State: map[string]string{"q": "a<b>&c"},

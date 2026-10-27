@@ -238,7 +238,7 @@ func TestFileReporter_WritesUnifiedEventsWithSpansAndDiagnostics(t *testing.T) {
 func TestFileReporter_RecordInputsOutputsFalseSuppressContent(t *testing.T) {
 	r, dir := newTestReporter(t, false)
 	ctx := context.Background()
-	st := &telemetry.Options{} // RecordInputs/RecordOutputs false
+	st := &telemetry.Options{RecordInputs: telemetry.Bool(false), RecordOutputs: telemetry.Bool(false)}
 	e := reporterStart("call-1")
 	e.Settings = st
 	r.OnStart(ctx, e)

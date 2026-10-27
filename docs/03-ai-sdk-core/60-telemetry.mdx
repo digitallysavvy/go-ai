@@ -28,16 +28,16 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
-When telemetry is enabled, you can control whether to record input values and output values. `RecordInputs` and `RecordOutputs` are plain booleans, so an `Options` value records inputs and outputs only when you set them to `true` (`telemetry.DefaultSettings()` sets both). This differs from TypeScript, where omitting `recordInputs` or `recordOutputs` records them. Leave them `false` for privacy, data transfer, or performance reasons:
+When telemetry is enabled, you can control whether to record input values and output values. `RecordInputs` and `RecordOutputs` are `*bool`: leaving one unset (nil) records, as in TypeScript, and `telemetry.Bool(false)` turns it off. Prompts, messages and outputs land in your spans unless you set them to false, so do that for privacy, data transfer, or performance reasons:
 
 ```go
 result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
     Model:  model,
     Prompt: "Write a short story about a cat.",
     Telemetry: &telemetry.Options{
-        IsEnabled: telemetry.Bool(true),
-        RecordInputs:  false, // Don't record sensitive inputs
-        RecordOutputs: true,  // Record outputs
+        IsEnabled:     telemetry.Bool(true),
+        RecordInputs:  telemetry.Bool(false), // Don't record sensitive inputs
+        RecordOutputs: telemetry.Bool(true),  // Record outputs (also the default when unset)
     },
 })
 ```
@@ -343,7 +343,7 @@ Records the following spans:
   - `ai.model.id`: Model identifier
   - `ai.model.provider`: Provider name
   - `ai.prompt`: The prompt used
-  - `ai.response.text`: Generated text (if RecordOutputs is true)
+  - `ai.response.text`: Generated text (unless RecordOutputs is false)
   - `ai.response.finishReason`: Finish reason
   - `ai.usage.promptTokens`: Input tokens used
   - `ai.usage.completionTokens`: Output tokens used
@@ -428,8 +428,8 @@ Records the following spans:
   - `ai.operationId`: `"ai.embed"`
   - `ai.model.id`: Model identifier
   - `ai.model.provider`: Provider name
-  - `ai.value`: Input value (if RecordInputs is true)
-  - `ai.embedding`: Stringified embedding vector (if RecordOutputs is true)
+  - `ai.value`: Input value (unless RecordInputs is false)
+  - `ai.embedding`: Stringified embedding vector (unless RecordOutputs is false)
   - `ai.usage.tokens`: Tokens used
 
 **`ai.embed.doEmbed` span:**
@@ -462,8 +462,8 @@ Records the following spans:
   - `operation.name`: `ai.generateSpeech` + function ID
   - `ai.operationId`: `"ai.generateSpeech"`
   - `gen_ai.output.type`: `"speech"` (GenAI integration only)
-  - `ai.request.text`: Input text (if RecordInputs is true)
-  - `ai.response.audio.size` / `ai.response.audio.mediaType` / `ai.response.audio.format`: Generated audio metadata (if RecordOutputs is true)
+  - `ai.request.text`: Input text (unless RecordInputs is false)
+  - `ai.response.audio.size` / `ai.response.audio.mediaType` / `ai.response.audio.format`: Generated audio metadata (unless RecordOutputs is false)
   - `ai.usage.<key>` / `gen_ai.usage.<key>`: Provider-reported usage, flattened to numeric attributes (e.g. `ai.usage.characters` for Deepgram TTS; see "Provider usage attributes" below)
   - `ai.response.usage`: Raw provider usage object, JSON-encoded
   - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
@@ -474,8 +474,8 @@ Records the following spans:
   - `operation.name`: `ai.transcribe`/`ai.streamTranscribe` + function ID
   - `ai.operationId`: `"ai.transcribe"` / `"ai.streamTranscribe"`
   - `gen_ai.request.stream`: `true` for `ai.streamTranscribe`, `false` for `ai.transcribe` (GenAI integration only)
-  - `ai.request.audio.size` / `ai.request.audio.mediaType`: Input audio metadata (if RecordInputs is true). For `ai.streamTranscribe`, the byte count accumulates as audio chunks are read and is only set once the stream reaches its final part.
-  - `ai.response.text`: Transcript text (if RecordOutputs is true)
+  - `ai.request.audio.size` / `ai.request.audio.mediaType`: Input audio metadata (unless RecordInputs is false). For `ai.streamTranscribe`, the byte count accumulates as audio chunks are read and is only set once the stream reaches its final part.
+  - `ai.response.text`: Transcript text (unless RecordOutputs is false)
   - `ai.usage.<key>` / `gen_ai.usage.<key>`: Provider-reported usage, flattened to numeric attributes
   - `ai.response.usage`: Raw provider usage object, JSON-encoded
   - `ai.response.providerMetadata`: Provider-specific metadata (if enabled)
@@ -551,8 +551,8 @@ func main() {
     // Configure telemetry settings
     telemetrySettings := &telemetry.Options{
         IsEnabled: telemetry.Bool(true),
-        RecordInputs:  true,
-        RecordOutputs: true,
+        RecordInputs:  telemetry.Bool(true),
+        RecordOutputs: telemetry.Bool(true),
         FunctionID:    "story-generator",
     }
 
@@ -604,8 +604,8 @@ Disable input/output recording for sensitive data:
 ```go
 telemetrySettings := &telemetry.Options{
     IsEnabled: telemetry.Bool(true),
-    RecordInputs:  false, // Don't record sensitive prompts
-    RecordOutputs: false, // Don't record sensitive responses
+    RecordInputs:  telemetry.Bool(false), // Don't record sensitive prompts
+    RecordOutputs: telemetry.Bool(false), // Don't record sensitive responses
     FunctionID:    "sensitive-operation",
 }
 ```
@@ -691,8 +691,8 @@ func getTelemetrySettings(env string) *telemetry.Options {
     if env == "production" {
         return &telemetry.Options{
             IsEnabled: telemetry.Bool(true),
-            RecordInputs:  false, // Privacy in production
-            RecordOutputs: false,
+            RecordInputs:  telemetry.Bool(false), // Privacy in production
+            RecordOutputs: telemetry.Bool(false),
             FunctionID:    "prod-operation",
         }
     }
@@ -700,8 +700,8 @@ func getTelemetrySettings(env string) *telemetry.Options {
     // Full telemetry in development
     return &telemetry.Options{
         IsEnabled: telemetry.Bool(true),
-        RecordInputs:  true,
-        RecordOutputs: true,
+        RecordInputs:  telemetry.Bool(true),
+        RecordOutputs: telemetry.Bool(true),
         FunctionID:    "dev-operation",
     }
 }

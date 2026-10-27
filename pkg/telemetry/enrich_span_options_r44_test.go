@@ -27,7 +27,7 @@ func TestOpenTelemetryEnrichSpanOptionsMatchTS(t *testing.T) {
 		seen[o.SpanType] = append(seen[o.SpanType], o)
 		return nil
 	}})
-	settings := &Settings{RecordInputs: true, RecordOutputs: true, Integrations: []TelemetryIntegration{integration}}
+	settings := &Settings{RecordInputs: Bool(true), RecordOutputs: Bool(true), Integrations: []TelemetryIntegration{integration}}
 	callID := "call-enrich-r44"
 	rc := map[string]interface{}{"tenant": "a"}
 	ctx := FireOnStart(context.Background(), TelemetryStartEvent{CallID: callID, OperationType: "ai.streamText", ModelProvider: "p", ModelID: "m", Settings: settings, RuntimeContext: rc})

@@ -43,8 +43,8 @@ func TestGenerateSpeech_Telemetry_OpenTelemetry(t *testing.T) {
 		Text:  "Hello world",
 		Telemetry: &TelemetrySettings{
 			IsEnabled:     telemetry.Bool(true),
-			RecordInputs:  true,
-			RecordOutputs: true,
+			RecordInputs:  telemetry.Bool(true),
+			RecordOutputs: telemetry.Bool(true),
 			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer, Usage: true})},
 		},
 	})
@@ -117,8 +117,8 @@ func TestGenerateSpeech_Telemetry_ErrorStatus(t *testing.T) {
 		Text:  "Hello world",
 		Telemetry: &TelemetrySettings{
 			IsEnabled:     telemetry.Bool(true),
-			RecordInputs:  true,
-			RecordOutputs: true,
+			RecordInputs:  telemetry.Bool(true),
+			RecordOutputs: telemetry.Bool(true),
 			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
@@ -158,8 +158,8 @@ func TestTranscribe_Telemetry_LegacyOpenTelemetry(t *testing.T) {
 		Audio: []byte("RIFF....WAVEfmt "),
 		Telemetry: &TelemetrySettings{
 			IsEnabled:     telemetry.Bool(true),
-			RecordInputs:  true,
-			RecordOutputs: true,
+			RecordInputs:  telemetry.Bool(true),
+			RecordOutputs: telemetry.Bool(true),
 			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer})},
 		},
 	})
@@ -218,8 +218,8 @@ func TestTranscribe_Telemetry_DownloadFailureFiresStartAndError(t *testing.T) {
 		Download: func(context.Context, string) ([]byte, error) { return nil, downloadErr },
 		Telemetry: &TelemetrySettings{
 			IsEnabled:     telemetry.Bool(true),
-			RecordInputs:  true,
-			RecordOutputs: true,
+			RecordInputs:  telemetry.Bool(true),
+			RecordOutputs: telemetry.Bool(true),
 			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})},
 		},
 	})

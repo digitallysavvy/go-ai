@@ -162,7 +162,7 @@ func TestOpenTelemetryProviderMetadataGatedByOptionOnly(t *testing.T) {
 	tracer := tp.Tracer("genai-test")
 
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer, ProviderMetadata: true})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(false)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "call-pm"})
 	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0, CallID: "call-pm"})
@@ -319,7 +319,7 @@ func TestOpenTelemetryOnStartUsesSystemNotPrompt(t *testing.T) {
 	tracer := tp.Tracer("genai-test")
 
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.generateText",
@@ -350,7 +350,7 @@ func TestOpenTelemetryOnStartInputMessages(t *testing.T) {
 	tracer := tp.Tracer("genai-test")
 
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.generateText",
@@ -381,7 +381,7 @@ func TestOpenTelemetryLanguageModelCallOutputMessagesSemConvShape(t *testing.T) 
 	tracer := tp.Tracer("genai-test")
 
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "call-2"})
 	// H5: OnLanguageModelCallStart parents the "chat" span under the
@@ -636,7 +636,7 @@ func TestOpenTelemetryToolDefinitionsShapeAndInputGate(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 		integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test")})
-		settings := &Settings{IsEnabled: Bool(true), RecordInputs: recordInputs, RecordOutputs: true}
+		settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(recordInputs), RecordOutputs: Bool(true)}
 		ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "td", ModelID: "m"})
 		ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "td"})
 		ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "td", ModelID: "m", Tools: tools})
@@ -678,7 +678,7 @@ func TestOpenTelemetryRootAndStepSpanEndAttributes(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), Usage: true})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "end-1", ModelID: "m", ModelProvider: "openai.chat"})
 	stepCtx := integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "end-1", ModelID: "m", ModelProvider: "openai.chat"})
@@ -762,7 +762,7 @@ func TestOpenTelemetryEmbedAndRerankRootEnd(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test"), Embedding: true})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	embedCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.embed", Settings: settings, CallID: "e1", ModelID: "emb"})
 	integration.OnEnd(embedCtx, TelemetryFinishEvent{CallID: "e1", OperationType: "ai.embed", Settings: settings, FinishReason: "stop", Usage: TelemetryUsage{TotalTokens: int64p(5)}, Embedding: []float64{0.1, 0.2}})
@@ -795,7 +795,7 @@ func TestOpenTelemetryObjectRootEndOutputMessages(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-test")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateObject", Settings: settings, CallID: "o1", ModelID: "m"})
 	integration.OnEnd(ctx, TelemetryFinishEvent{
@@ -858,7 +858,7 @@ func TestOpenTelemetryRootSpansCarryEmbeddingAndRerankingInputs(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai"), Embedding: true, Reranking: true})
-	settings := &Settings{RecordInputs: true}
+	settings := &Settings{RecordInputs: Bool(true)}
 
 	for _, start := range []TelemetryStartEvent{
 		{CallID: "root-inputs-embed", OperationType: "ai.embed", ModelID: "emb", Settings: settings, Prompt: "hello"},

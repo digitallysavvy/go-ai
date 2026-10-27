@@ -76,7 +76,7 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySettings, messages []types.Message) telemetry.TelemetryStartEvent {
 	var sys string
 	// A nil *Options records inputs (integrations treat it the same way).
-	if settings == nil || settings.RecordInputs {
+	if settings.ShouldRecordInputs() {
 		sys = a.config.System
 	}
 	maxRetries := 2

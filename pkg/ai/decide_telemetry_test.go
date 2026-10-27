@@ -91,8 +91,8 @@ func TestExperimentalDecide_ExactSpansWithIntegration(t *testing.T) {
 		Questions: questions,
 		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled:     telemetry.Bool(true),
-			RecordInputs:  true,
-			RecordOutputs: true,
+			RecordInputs:  telemetry.Bool(true),
+			RecordOutputs: telemetry.Bool(true),
 			Integrations: []telemetry.TelemetryIntegration{
 				telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tracer}),
 			},
@@ -212,8 +212,8 @@ func TestExperimentalDecide_TelemetryDispatchShape(t *testing.T) {
 
 	settings := &telemetry.Options{
 		IsEnabled:             telemetry.Bool(true),
-		RecordInputs:          true,
-		RecordOutputs:         true,
+		RecordInputs:          telemetry.Bool(true),
+		RecordOutputs:         telemetry.Bool(true),
 		FunctionID:            "decide-test",
 		IncludeRuntimeContext: map[string]bool{"requestId": true},
 		Integrations:          []telemetry.TelemetryIntegration{mock},

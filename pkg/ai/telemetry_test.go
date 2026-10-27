@@ -192,8 +192,8 @@ func TestGenerateText_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "test-function",
 	}
 
@@ -309,8 +309,8 @@ func TestGenerateText_TelemetryRecordInputsDisabled(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  false, // Don't record inputs
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(false), // Don't record inputs
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "test-function",
 	}
 
@@ -349,8 +349,8 @@ func TestEmbed_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "embed-test",
 	}
 
@@ -443,8 +443,8 @@ func TestEmbedMany_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "embed-many-test",
 	}
 

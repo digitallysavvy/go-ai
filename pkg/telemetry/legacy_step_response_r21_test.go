@@ -17,7 +17,7 @@ func TestLegacyOpenTelemetry_StepEndTSShapes(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy-r21")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		CallID: "c1", OperationType: "ai.generateText", ModelProvider: "p", ModelID: "m", Settings: settings,

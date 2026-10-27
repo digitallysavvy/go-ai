@@ -27,7 +27,7 @@ func TestOpenTelemetryExecuteToolSpanRecordsArgumentsAndResult(t *testing.T) {
 			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 			integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
-			settings := &Settings{IsEnabled: Bool(true), RecordInputs: tc.in, RecordOutputs: tc.out}
+			settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(tc.in), RecordOutputs: Bool(tc.out)}
 
 			ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "c1"})
 			ctx = integration.OnToolExecutionStart(ctx, TelemetryToolCallStartEvent{
@@ -63,7 +63,7 @@ func TestOpenTelemetryProviderExecutedToolRecordsArguments(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(false)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "c2"})
 	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "c2"})

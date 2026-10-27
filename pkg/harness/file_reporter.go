@@ -221,8 +221,8 @@ func reporterUsage(u telemetry.TelemetryUsage) *orderedRecord {
 	return out
 }
 
-func recordInputs(s *telemetry.Options) bool  { return s == nil || s.RecordInputs }
-func recordOutputs(s *telemetry.Options) bool { return s == nil || s.RecordOutputs }
+func recordInputs(s *telemetry.Options) bool  { return s.ShouldRecordInputs() }
+func recordOutputs(s *telemetry.Options) bool { return s.ShouldRecordOutputs() }
 
 // turnLocked returns the buffer for callID, creating it if needed.
 func (r *FileReporter) turnLocked(callID string) *reporterTurn {

@@ -25,7 +25,7 @@ func TestTextStepEndTelemetryCarriesResponseMetadata(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	settings := &TelemetrySettings{
-		RecordInputs: true, RecordOutputs: true,
+		RecordInputs: telemetry.Bool(true), RecordOutputs: telemetry.Bool(true),
 		Integrations: []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")})},
 	}
 	meta := json.RawMessage(`{"p":{"k":"v"}}`)

@@ -232,8 +232,9 @@ func Embed(ctx context.Context, opts EmbedOptions) (*EmbedResult, error) {
 	var telRecordInputs, telRecordOutputs bool
 	if opts.ExperimentalTelemetry != nil {
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
-		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
-		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
+		// The event carries TS telemetry?.recordInputs: unset reads as false.
+		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs != nil && *opts.ExperimentalTelemetry.RecordInputs
+		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs != nil && *opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart callback
@@ -541,8 +542,9 @@ func EmbedMany(ctx context.Context, opts EmbedManyOptions) (*EmbedManyResult, er
 	var telRecordInputs, telRecordOutputs bool
 	if opts.ExperimentalTelemetry != nil {
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
-		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
-		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
+		// The event carries TS telemetry?.recordInputs: unset reads as false.
+		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs != nil && *opts.ExperimentalTelemetry.RecordInputs
+		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs != nil && *opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart callback
@@ -661,7 +663,7 @@ func telemetryUsageFromEmbeddingUsage(usage types.EmbeddingUsage) telemetry.Tele
 }
 
 func telemetryInputValue(settings *TelemetrySettings, value interface{}) string {
-	if settings != nil && !settings.RecordInputs {
+	if !settings.ShouldRecordInputs() {
 		return ""
 	}
 	if str, ok := value.(string); ok {

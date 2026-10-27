@@ -46,6 +46,45 @@ result, err := ai.GenerateObject(ctx, ai.GenerateObjectOptions{
 
 If you set `MaxRetries: 0` to get the default, remove the field instead.
 
+### Telemetry: RecordInputs and RecordOutputs are pointers, and unset now records
+
+**Impact:** compile error if you set `RecordInputs` or `RecordOutputs` as a
+plain bool. **Behavior change:** a `telemetry.Options` (or the deprecated
+`telemetry.Settings`) value that leaves them unset now records inputs and
+outputs.
+
+`telemetry.Options.RecordInputs` and `RecordOutputs` changed from `bool` to
+`*bool`, the same way `MaxRetries` did. nil means record, as an omitted
+`recordInputs` / `recordOutputs` does in TS; only an explicit `false` turns
+recording off. `DefaultSettings()`, `WithRecordInputs(bool)` and
+`WithRecordOutputs(bool)` keep their signatures and set the pointer. Read the
+effective value with `ShouldRecordInputs()` / `ShouldRecordOutputs()`.
+
+**Privacy:** in v0.5 a hand-built `telemetry.Options{}` recorded nothing. In
+v0.6 the same literal records prompts, messages, tool arguments, generated
+text, objects and tool results in your spans. If your spans must not contain
+prompts or outputs, set both fields to `false` explicitly.
+
+**Before:**
+
+```go skip-compile
+tel := &telemetry.Options{
+    IsEnabled:     telemetry.Bool(true),
+    RecordInputs:  false,
+    RecordOutputs: true,
+}
+```
+
+**After:**
+
+```go
+tel := &telemetry.Options{
+    IsEnabled:     telemetry.Bool(true),
+    RecordInputs:  telemetry.Bool(false), // keep prompts out of spans
+    RecordOutputs: telemetry.Bool(true),  // or leave unset: nil records
+}
+```
+
 ### Evaluate end-event struct literals use the Decide field names
 
 **Impact:** compile error only if you build these event structs yourself

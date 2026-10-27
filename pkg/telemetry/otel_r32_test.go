@@ -33,7 +33,7 @@ func TestGenAISpanKindsAndSharedTracer(t *testing.T) {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	var names []string
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: countingTracer{tp.Tracer("t"), &names}})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
 		OperationType: "ai.generateText", Settings: settings, CallID: "c1", ModelID: "m", ModelProvider: "p",
@@ -88,7 +88,7 @@ func TestGenAIEmptyTranscriptAndToolErrorStatus(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.transcribe", Settings: settings, CallID: "a", ModelID: "m"})
 	integration.OnEnd(ctx, TelemetryFinishEvent{CallID: "a", OperationType: "ai.transcribe", Settings: settings, Text: ""})
@@ -157,7 +157,7 @@ func TestLegacyEmptyTranscriptRecorded(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.transcribe", Settings: settings, CallID: "l", ModelID: "m"})
 	integration.OnEnd(ctx, TelemetryFinishEvent{CallID: "l", OperationType: "ai.transcribe", Settings: settings})
 	if v, ok := attrValue(findSpan(rec, "ai.transcribe"), "ai.response.text"); !ok || v.(string) != "" {
@@ -201,7 +201,7 @@ func TestLegacyErrorNoHTTPStatusAndAbortEndsDecision(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "e"})
 	integration.OnError(ctx, TelemetryErrorEvent{Settings: settings, CallID: "e", Error: providererrors.NewProviderError("p", 500, "", "boom", nil)})
@@ -259,7 +259,7 @@ func TestGenAIOutputMessagesRecordedForEmptyResponse(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "c2", ModelID: "m"})
 	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "c2", Settings: settings})
 	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{CallID: "c2", Settings: settings, ModelID: "m"})

@@ -799,10 +799,9 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	var isEnabled, recordInputs, recordOutputs *bool
 	if opts.ExperimentalTelemetry != nil {
 		isEnabled = opts.ExperimentalTelemetry.IsEnabled
-		ri := opts.ExperimentalTelemetry.RecordInputs
-		recordInputs = &ri
-		ro := opts.ExperimentalTelemetry.RecordOutputs
-		recordOutputs = &ro
+		// TS telemetry?.recordInputs / recordOutputs: nil when unset.
+		recordInputs = opts.ExperimentalTelemetry.RecordInputs
+		recordOutputs = opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart before any LLM call.
@@ -839,7 +838,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	// an OTel span directly in core (G4/5d0f18e): with no integration
 	// registered this is a no-op, and with one registered it creates exactly
 	// one "ai.generateObject" span instead of a duplicate.
-	telObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
+	telObjectRecordInputs := opts.ExperimentalTelemetry.ShouldRecordInputs()
 	objectMaxRetries := *opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
 		CallID:           callID,
@@ -1740,10 +1739,9 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	var isEnabled, recordInputs, recordOutputs *bool
 	if opts.ExperimentalTelemetry != nil {
 		isEnabled = opts.ExperimentalTelemetry.IsEnabled
-		ri := opts.ExperimentalTelemetry.RecordInputs
-		recordInputs = &ri
-		ro := opts.ExperimentalTelemetry.RecordOutputs
-		recordOutputs = &ro
+		// TS telemetry?.recordInputs / recordOutputs: nil when unset.
+		recordInputs = opts.ExperimentalTelemetry.RecordInputs
+		recordOutputs = opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	// Fire ExperimentalOnStart before any LLM call.
@@ -1779,7 +1777,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// Route telemetry through the shared Fire* dispatch (H3 item 1):
 	// StreamObject previously fired no telemetry spans whatsoever, unlike
 	// GenerateObject/GenerateText/StreamText.
-	streamObjectRecordInputs := opts.ExperimentalTelemetry == nil || opts.ExperimentalTelemetry.RecordInputs
+	streamObjectRecordInputs := opts.ExperimentalTelemetry.ShouldRecordInputs()
 	streamObjectMaxRetries := *opts.MaxRetries
 	startEvent := telemetry.TelemetryStartEvent{
 		CallID:           callID,

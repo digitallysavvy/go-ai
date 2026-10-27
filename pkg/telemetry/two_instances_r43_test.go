@@ -29,7 +29,7 @@ func TestTwoInstancesOfAnIntegrationKeepTheirOwnCallState(t *testing.T) {
 			tpA := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recA))
 			tpB := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recB))
 			t.Cleanup(func() { _ = tpA.Shutdown(context.Background()); _ = tpB.Shutdown(context.Background()) })
-			settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true,
+			settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true),
 				Integrations: []TelemetryIntegration{tc.make(tpA), tc.make(tpB)}}
 			callID := "call-two-instances-" + tc.name
 			ctx := FireOnStart(context.Background(), TelemetryStartEvent{CallID: callID, OperationType: "ai.generateText", ModelProvider: "p", ModelID: "m", Settings: settings})

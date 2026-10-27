@@ -47,8 +47,8 @@ func TestGenerateObject_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "obj-test",
 	}
 
@@ -131,8 +131,8 @@ func TestStreamObject_Telemetry(t *testing.T) {
 
 	telemetrySettings := &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		FunctionID:    "stream-obj-test",
 	}
 
@@ -216,7 +216,7 @@ func TestStreamObject_LanguageModelCallEndContent(t *testing.T) {
 		Schema: testSchema,
 		ExperimentalTelemetry: &telemetry.Options{
 			IsEnabled:     telemetry.Bool(true),
-			RecordOutputs: true,
+			RecordOutputs: telemetry.Bool(true),
 		},
 	})
 	if err != nil {
@@ -292,7 +292,7 @@ func TestGenerateObject_GenAISpansMatchObjectStepShape(t *testing.T) {
 	seed := 3
 	if _, err := GenerateObject(context.Background(), GenerateObjectOptions{
 		Model: model, System: "Return a greeting", Prompt: "Hello", Schema: answerSchema, Seed: &seed,
-		Telemetry: &telemetry.Options{RecordInputs: true, RecordOutputs: true, Integrations: []telemetry.TelemetryIntegration{integration}},
+		Telemetry: &telemetry.Options{RecordInputs: telemetry.Bool(true), RecordOutputs: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{integration}},
 	}); err != nil {
 		t.Fatal(err)
 	}

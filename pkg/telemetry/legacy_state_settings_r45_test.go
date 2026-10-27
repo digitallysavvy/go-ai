@@ -19,7 +19,7 @@ func TestLegacyStepAndToolSpansUseOwnCallStateWithLaterIntegration(t *testing.T)
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	legacy := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")})
 	genAI := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai")})
-	settings := &Settings{RecordInputs: true, RecordOutputs: true, Integrations: []TelemetryIntegration{legacy, genAI}}
+	settings := &Settings{RecordInputs: Bool(true), RecordOutputs: Bool(true), Integrations: []TelemetryIntegration{legacy, genAI}}
 	temperature := 0.25
 	callID := "call-r45-legacy-state"
 	runtimeCtx := map[string]interface{}{"tenant": "acme"}

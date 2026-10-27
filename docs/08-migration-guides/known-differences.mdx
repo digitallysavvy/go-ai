@@ -82,15 +82,6 @@ These details differ:
 - On platforms other than Linux, macOS and Windows, the default worker cap
   is 32, because Go cannot read available memory there without cgo.
 
-## Telemetry: RecordInputs and RecordOutputs are plain booleans
-
-`telemetry.Options.RecordInputs` and `RecordOutputs` are `bool` fields (kept
-from earlier releases), so an `Options` literal that does not set them
-records neither inputs nor outputs. In TypeScript an omitted `recordInputs`
-or `recordOutputs` means `true`. Set both to `true`, or start from
-`telemetry.DefaultSettings()`, to match the TypeScript default. A nil
-`*Options` records both.
-
 ## fx: libfx runtime
 
 - **Opt-in, not the default.** TS `createFx()` always runs libfx. Go keeps

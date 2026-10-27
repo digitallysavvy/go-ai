@@ -295,7 +295,7 @@ func (i LegacyOpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEve
 	span.SetAttributes(baseAttrs...)
 	ctx = context.WithValue(ctx, legacyBaseAttrsKey{}, baseAttrs)
 
-	if e.Settings == nil || e.Settings.RecordInputs {
+	if e.Settings.ShouldRecordInputs() {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
 		}
@@ -332,7 +332,7 @@ func (i LegacyOpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) 
 	if !span.IsRecording() {
 		return
 	}
-	if e.Settings == nil || e.Settings.RecordOutputs {
+	if e.Settings.ShouldRecordOutputs() {
 		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			span.SetAttributes(attr)
 		}
@@ -363,7 +363,7 @@ func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e Dec
 	}
 	span.SetAttributes(legacyOperationNameAttrs(e.OperationID, functionID)...)
 	span.SetAttributes(legacyInheritedAttrs(ctx, i.stateKey(e.CallID))...)
-	if e.Settings == nil || e.Settings.RecordInputs {
+	if e.Settings.ShouldRecordInputs() {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
 		}
@@ -388,7 +388,7 @@ func (i LegacyOpenTelemetry) OnDecisionModelCallEnd(_ context.Context, e Decisio
 	if !ok || !entry.span.IsRecording() {
 		return
 	}
-	if e.Settings == nil || e.Settings.RecordOutputs {
+	if e.Settings.ShouldRecordOutputs() {
 		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			entry.span.SetAttributes(attr)
 		}
@@ -451,7 +451,7 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 		baseSupp = append(baseSupp, headerAttributes(e.Headers)...)
 	}
 	span.SetAttributes(baseSupp...)
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 	if i.opts.experimentalDecision() && recordInputs {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
@@ -484,7 +484,7 @@ func (i OpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
 	if !span.IsRecording() {
 		return
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 	if i.opts.experimentalDecision() && recordOutputs {
 		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			span.SetAttributes(attr)
@@ -522,7 +522,7 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
 	span.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 	if i.opts.experimentalDecision() && recordInputs {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
@@ -560,7 +560,7 @@ func (i OpenTelemetry) OnDecisionModelCallEnd(_ context.Context, e DecisionModel
 	if e.ResponseModelID != "" {
 		entry.span.SetAttributes(attribute.String("gen_ai.response.model", e.ResponseModelID))
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 	if i.opts.experimentalDecision() && recordOutputs {
 		if attr, ok := jsonAttr("ai.decision.answers", e.Answers); ok {
 			entry.span.SetAttributes(attr)

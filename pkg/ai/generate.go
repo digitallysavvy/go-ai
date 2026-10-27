@@ -422,9 +422,9 @@ type GenerateTextOptions struct {
 	//       Model: model,
 	//       Prompt: "Hello",
 	//       ExperimentalTelemetry: &telemetry.Options{
-	//           IsEnabled: true,
-	//           RecordInputs: true,
-	//           RecordOutputs: true,
+	//           IsEnabled:     telemetry.Bool(true),
+	//           RecordInputs:  telemetry.Bool(false), // unset (nil) records
+	//           RecordOutputs: telemetry.Bool(false),
 	//       },
 	//   })
 	//
@@ -857,7 +857,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	telSystem := ""
 	var telMessages []types.Message
 	// A nil *Options records inputs (integrations treat it the same way).
-	if telemetrySettings == nil || telemetrySettings.RecordInputs {
+	if telemetrySettings.ShouldRecordInputs() {
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)

@@ -1328,7 +1328,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		st.mu.Unlock()
 	}
 
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 
 	switch e.OperationType {
 	case "ai.embed":
@@ -1682,7 +1682,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// onObjectStepStart (generateObject/streamObject, ai.prompt.messages
 	// only — object calls never populate StepTools/ToolChoice, so those two
 	// attributes are naturally absent there).
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 	if recordInputs {
 		if len(e.PromptMessages) > 0 {
 			if b, err := jsonstr.Marshal(e.PromptMessages); err == nil {
@@ -1771,7 +1771,7 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
 	span.SetAttributes(legacyInheritedAttrs(ctx, i.stateKey(e.CallID))...)
-	if (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
+	if e.Settings.ShouldRecordInputs() && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", legacyJSONEachElement(e.Values)))
 	}
 	if callID != "" {
@@ -1825,7 +1825,7 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 		entry.span.End()
 		return
 	}
-	if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
+	if e.Settings.ShouldRecordOutputs() && len(e.Embeddings) > 0 {
 		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
 	// ai.usage.tokens is a plain value in TS (not {output: ...}), so it is
@@ -1866,7 +1866,7 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	functionID := settingsFunctionID(e.Settings)
 	span.SetAttributes(legacyOperationNameAttrs(spanName, functionID)...)
 	span.SetAttributes(legacyInheritedAttrs(ctx, i.stateKey(e.CallID))...)
-	if (e.Settings == nil || e.Settings.RecordInputs) && e.Documents != nil {
+	if e.Settings.ShouldRecordInputs() && e.Documents != nil {
 		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
 			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
 		}
@@ -1919,7 +1919,7 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 		return
 	}
 	entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
-	if e.Settings == nil || e.Settings.RecordOutputs {
+	if e.Settings.ShouldRecordOutputs() {
 		if len(e.Ranking) > 0 {
 			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
 		}
@@ -1979,7 +1979,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	// ai.toolCall.args is output-gated in TS (`output: () => ...`), not
 	// input-gated — the model's tool-call arguments are treated as part of
 	// the generation's output.
-	if (e.Settings == nil || e.Settings.RecordOutputs) && e.Args != nil {
+	if e.Settings.ShouldRecordOutputs() && e.Args != nil {
 		if b, err := jsonstr.Marshal(e.Args); err == nil {
 			child.SetAttributes(attribute.String("ai.toolCall.args", string(b)))
 		}
@@ -2043,7 +2043,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e Telemetry
 	span.SetAttributes(attribute.Int64("ai.toolCall.durationMs", e.DurationMs))
 	if e.Error != nil {
 		legacyRecordSpanError(span, e.Error)
-	} else if (e.Settings == nil || e.Settings.RecordOutputs) && e.Result != nil {
+	} else if e.Settings.ShouldRecordOutputs() && e.Result != nil {
 		if b, err := jsonstr.Marshal(e.Result); err == nil {
 			span.SetAttributes(attribute.String("ai.toolCall.result", string(b)))
 		}
@@ -2199,7 +2199,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	if e.FinishReason == string(types.FinishReasonError) {
 		stepSpan.SetStatus(codes.Error, "")
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 
 	stepSpan.SetAttributes(attribute.String("ai.response.finishReason", e.FinishReason))
 
@@ -2385,7 +2385,7 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 	if e.FinishReason == string(types.FinishReasonError) {
 		span.SetStatus(codes.Error, "")
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 
 	switch e.OperationType {
 	case "ai.embed", "ai.embedMany":
@@ -2395,7 +2395,7 @@ func (i LegacyOpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) 
 	case "ai.generateObject", "ai.streamObject":
 		i.legacyOnObjectOperationEnd(span, e, recordOutputs)
 	case "ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
-		recordInputs := e.Settings == nil || e.Settings.RecordInputs
+		recordInputs := e.Settings.ShouldRecordInputs()
 		i.legacyOnAudioOperationEnd(span, e, recordInputs, recordOutputs)
 	default:
 		i.legacyOnGenerateEnd(span, e, recordOutputs)

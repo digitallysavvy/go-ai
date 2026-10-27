@@ -28,8 +28,8 @@ func TestLegacyOpenTelemetryDecideSpans(t *testing.T) {
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{
 		IsEnabled:     Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  Bool(true),
+		RecordOutputs: Bool(true),
 		FunctionID:    "decide-test",
 	}
 
@@ -175,7 +175,7 @@ func TestLegacyOpenTelemetryDecideSpans_RecordInputsFalse(t *testing.T) {
 	tracer := tp.Tracer("decide-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: false, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(false), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings:    settings,
@@ -229,7 +229,7 @@ func TestLegacyOpenTelemetryDecideSpans_RecordOutputsFalse(t *testing.T) {
 	tracer := tp.Tracer("decide-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(false)}
 
 	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings: settings, CallID: "call-1", OperationID: "ai.decide",
@@ -282,7 +282,7 @@ func TestLegacyOpenTelemetryDecideSpans_ErrorClosesNestedSpan(t *testing.T) {
 	tracer := tp.Tracer("decide-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings: settings, CallID: "call-err", OperationID: "ai.decide",
@@ -332,7 +332,7 @@ func TestOpenTelemetryDecideSpans_ExperimentalDecisionGate(t *testing.T) {
 			tracer := tp.Tracer("genai-decide-test")
 
 			integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer, ExperimentalDecision: gated, ProviderMetadata: true})
-			settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+			settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 			ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 				Settings:      settings,
@@ -424,7 +424,7 @@ func TestOpenTelemetryDecideSpans_ProviderMetadataGatedByOptionOnly(t *testing.T
 	tracer := tp.Tracer("genai-decide-test")
 
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer, ProviderMetadata: true})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: false}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(false)}
 
 	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings: settings, CallID: "call-pm", OperationID: "ai.decide", ModelID: "gpt-5",
@@ -492,7 +492,7 @@ func TestOpenTelemetryDecideSpans_RecordsResponseIDAndModel(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai-decide-test")})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings: settings, CallID: "call-1", OperationID: "ai.decide", ModelProvider: "openai.chat", ModelID: "gpt-5",
@@ -530,7 +530,7 @@ func TestOpenTelemetryDecideSpans_DeprecatedExperimentalEvaluationOption(t *test
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t"), ExperimentalEvaluation: true})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings: settings, CallID: "c", OperationID: "ai.decide", ModelProvider: "openai", ModelID: "m", State: "hello",
 	})
@@ -559,7 +559,7 @@ func TestOpenTelemetryDecideSpans_ChildCarriesBaseSupplementalAndEnrich(t *testi
 			return nil
 		},
 	})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 	ctx := integration.OnDecideStart(context.Background(), DecideStartEvent{
 		Settings: settings, CallID: "call-b", OperationID: "ai.decide", ModelProvider: "openai.chat", ModelID: "gpt-5",
 		Headers: map[string]string{"x-a": "1"},

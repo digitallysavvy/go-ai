@@ -232,8 +232,9 @@ func Rerank(ctx context.Context, opts RerankOptions) (*RerankResult, error) {
 	if opts.ExperimentalTelemetry != nil {
 		telEnabled = telemetry.Enabled(opts.ExperimentalTelemetry)
 		telFuncID = opts.ExperimentalTelemetry.FunctionID
-		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs
-		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs
+		// The event carries TS telemetry?.recordInputs: unset reads as false.
+		telRecordInputs = opts.ExperimentalTelemetry.RecordInputs != nil && *opts.ExperimentalTelemetry.RecordInputs
+		telRecordOutputs = opts.ExperimentalTelemetry.RecordOutputs != nil && *opts.ExperimentalTelemetry.RecordOutputs
 	}
 
 	if len(documentsSlice) == 0 {

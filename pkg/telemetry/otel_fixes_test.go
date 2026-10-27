@@ -290,7 +290,7 @@ func TestLegacyOpenTelemetryStepSpanRequestSettingsAttributes(t *testing.T) {
 	tracer := tp.Tracer("legacy-step-request-settings-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	maxTokens := 100
 	temp := 0.5
@@ -363,7 +363,7 @@ func TestLegacyOpenTelemetryObjectStepSpanOmitsStopSequences(t *testing.T) {
 	tracer := tp.Tracer("legacy-object-step-request-settings-test")
 
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tracer})
-	settings := &Settings{IsEnabled: Bool(true), RecordInputs: true, RecordOutputs: true}
+	settings := &Settings{IsEnabled: Bool(true), RecordInputs: Bool(true), RecordOutputs: Bool(true)}
 
 	temp := 0.5
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{

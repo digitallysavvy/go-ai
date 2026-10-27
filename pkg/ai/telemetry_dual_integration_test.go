@@ -46,8 +46,8 @@ func dualIntegrationSettings(t *testing.T) (legacyRec, genAIRec *tracetest.SpanR
 	})
 	settings = &telemetry.Options{
 		IsEnabled:     telemetry.Bool(true),
-		RecordInputs:  true,
-		RecordOutputs: true,
+		RecordInputs:  telemetry.Bool(true),
+		RecordOutputs: telemetry.Bool(true),
 		Integrations: []telemetry.TelemetryIntegration{
 			telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: legacyTP.Tracer("h5-dual-legacy")}),
 			telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: genAITP.Tracer("h5-dual-genai")}),

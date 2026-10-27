@@ -58,7 +58,7 @@ func TestGenerateAgentEndTelemetryCarriesFiles(t *testing.T) {
 		}}},
 		Telemetry: &telemetry.Options{
 			IsEnabled:     telemetry.Bool(true),
-			RecordOutputs: true,
+			RecordOutputs: telemetry.Bool(true),
 			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})},
 		},
 	})

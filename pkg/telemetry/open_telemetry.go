@@ -414,7 +414,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		span.SetAttributes(attribute.String("gen_ai.output.type", "json"))
 	}
 	span.SetAttributes(requestSettingAttributes(e, !isObjectOperation)...)
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 	if recordInputs && e.System != "" {
 		if b, err := jsonstr.Marshal(formatSystemInstructions(e.System)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.system_instructions", string(b)))
@@ -709,7 +709,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	} else if len(e.StopSequences) > 0 {
 		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", e.StopSequences))
 	}
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
+	recordInputs := e.Settings.ShouldRecordInputs()
 	if recordInputs && e.System != "" {
 		if b, err := jsonstr.Marshal(formatSystemInstructions(e.System)); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.system_instructions", string(b)))
@@ -892,7 +892,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			attrs = setFiniteFloat64(attrs, "gen_ai.client.operation.time_per_output_chunk", stats.Avg/1000)
 		}
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 	// TS records gen_ai.output.messages for every call, an empty response
 	// included ([{role, parts: [], finish_reason}]); only an event that carries
 	// no content at all (nil) skips it.
@@ -924,7 +924,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		}
 	}
 	mergedToolDefs, changed := mergeProviderExecutedToolDefs(entry.toolDefs, content)
-	if changed && (e.Settings == nil || e.Settings.RecordInputs) {
+	if changed && e.Settings.ShouldRecordInputs() {
 		if b, err := jsonstr.Marshal(mergedToolDefs); err == nil {
 			attrs = append(attrs, attribute.String("gen_ai.tool.definitions", string(b)))
 		}
@@ -952,7 +952,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			attribute.String("gen_ai.tool.type", "extension"),
 		)
 		// TS: gen_ai.tool.call.arguments is an input (recordInputs gate).
-		if recordInputs := e.Settings == nil || e.Settings.RecordInputs; recordInputs {
+		if recordInputs := e.Settings.ShouldRecordInputs(); recordInputs {
 			if args, ok := toolCallArgumentsJSON(tc); ok {
 				toolSpan.SetAttributes(attribute.String("gen_ai.tool.call.arguments", args))
 			}
@@ -1050,7 +1050,7 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
 	span.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
-	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
+	if i.opts.Embedding && e.Settings.ShouldRecordInputs() && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", jsonStringifyEach(e.Values)))
 	}
 	if callID != "" {
@@ -1117,7 +1117,7 @@ func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEven
 	if tokens, ok := embeddingUsageTokens(e.Usage); ok {
 		entry.span.SetAttributes(attribute.Int64("gen_ai.usage.input_tokens", tokens))
 	}
-	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Embeddings) > 0 {
+	if i.opts.Embedding && e.Settings.ShouldRecordOutputs() && len(e.Embeddings) > 0 {
 		entry.span.SetAttributes(attribute.StringSlice("ai.embeddings", jsonStringifyEach(e.Embeddings)))
 	}
 	entry.span.End()
@@ -1167,7 +1167,7 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 	)
 	span.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
 	// TS event.documents.map(d => JSON.stringify(d)): text and object documents.
-	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordInputs) {
+	if i.opts.Reranking && e.Settings.ShouldRecordInputs() {
 		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
 			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
 		}
@@ -1221,7 +1221,7 @@ func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEve
 		if e.DocumentsType != "" {
 			entry.span.SetAttributes(attribute.String("ai.ranking.type", e.DocumentsType))
 		}
-		if (e.Settings == nil || e.Settings.RecordOutputs) && len(e.Ranking) > 0 {
+		if e.Settings.ShouldRecordOutputs() && len(e.Ranking) > 0 {
 			entry.span.SetAttributes(attribute.StringSlice("ai.ranking", jsonStringifyEach(e.Ranking)))
 		}
 	}
@@ -1269,7 +1269,7 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 		attribute.String("gen_ai.tool.type", "function"),
 	)
 	// TS: gen_ai.tool.call.arguments is an input (recordInputs gate).
-	if e.Settings == nil || e.Settings.RecordInputs {
+	if e.Settings.ShouldRecordInputs() {
 		if b, err := jsonstr.Marshal(e.Args); err == nil {
 			child.SetAttributes(attribute.String("gen_ai.tool.call.arguments", string(b)))
 		}
@@ -1315,7 +1315,7 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 	span.SetAttributes(setFiniteFloat64(nil, "gen_ai.execute_tool.duration", msToSeconds(e.DurationMs))...)
 	if e.Error != nil {
 		RecordErrorOnSpan(span, e.Error)
-	} else if e.Settings == nil || e.Settings.RecordOutputs {
+	} else if e.Settings.ShouldRecordOutputs() {
 		// TS: gen_ai.tool.call.result is an output (recordOutputs gate).
 		if b, err := jsonstr.Marshal(e.Result); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.tool.call.result", string(b)))
@@ -1433,7 +1433,7 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 		genAIDeleteState(i.stateKey(e.CallID))
 		return
 	}
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 	switch e.OperationType {
 	case "ai.embed", "ai.embedMany":
 		i.onEmbedOperationEnd(span, e, recordOutputs)
@@ -1572,8 +1572,8 @@ func formatOutputMessagesFromFinish(e TelemetryFinishEvent) []semConvOutputMessa
 // other operation's providerMetadata attribute in this file).
 func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEvent) {
 	isSpeech := e.OperationType == "ai.generateSpeech"
-	recordInputs := e.Settings == nil || e.Settings.RecordInputs
-	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
+	recordInputs := e.Settings.ShouldRecordInputs()
+	recordOutputs := e.Settings.ShouldRecordOutputs()
 	if !isSpeech && recordInputs {
 		if e.AudioByteLength != nil {
 			span.SetAttributes(attribute.Int64("ai.request.audio.size", *e.AudioByteLength))
