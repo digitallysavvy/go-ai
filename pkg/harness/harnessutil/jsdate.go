@@ -62,20 +62,20 @@ func (t jsdToken) asciiSign() int {
 }
 
 var jsdKeywords = []struct {
-	prefix string
+	prefix [3]rune
 	kw     jsdKeywordType
 	value  int
 }{
-	{"jan", jsdKwMonthName, 1}, {"feb", jsdKwMonthName, 2}, {"mar", jsdKwMonthName, 3},
-	{"apr", jsdKwMonthName, 4}, {"may", jsdKwMonthName, 5}, {"jun", jsdKwMonthName, 6},
-	{"jul", jsdKwMonthName, 7}, {"aug", jsdKwMonthName, 8}, {"sep", jsdKwMonthName, 9},
-	{"oct", jsdKwMonthName, 10}, {"nov", jsdKwMonthName, 11}, {"dec", jsdKwMonthName, 12},
-	{"am\x00", jsdKwAMPM, 0}, {"pm\x00", jsdKwAMPM, 12},
-	{"ut\x00", jsdKwTimeZoneName, 0}, {"utc", jsdKwTimeZoneName, 0}, {"z\x00\x00", jsdKwTimeZoneName, 0},
-	{"gmt", jsdKwTimeZoneName, 0}, {"cdt", jsdKwTimeZoneName, -5}, {"cst", jsdKwTimeZoneName, -6},
-	{"edt", jsdKwTimeZoneName, -4}, {"est", jsdKwTimeZoneName, -5}, {"mdt", jsdKwTimeZoneName, -6},
-	{"mst", jsdKwTimeZoneName, -7}, {"pdt", jsdKwTimeZoneName, -7}, {"pst", jsdKwTimeZoneName, -8},
-	{"t\x00\x00", jsdKwTimeSeparator, 0},
+	{[3]rune{'j', 'a', 'n'}, jsdKwMonthName, 1}, {[3]rune{'f', 'e', 'b'}, jsdKwMonthName, 2}, {[3]rune{'m', 'a', 'r'}, jsdKwMonthName, 3},
+	{[3]rune{'a', 'p', 'r'}, jsdKwMonthName, 4}, {[3]rune{'m', 'a', 'y'}, jsdKwMonthName, 5}, {[3]rune{'j', 'u', 'n'}, jsdKwMonthName, 6},
+	{[3]rune{'j', 'u', 'l'}, jsdKwMonthName, 7}, {[3]rune{'a', 'u', 'g'}, jsdKwMonthName, 8}, {[3]rune{'s', 'e', 'p'}, jsdKwMonthName, 9},
+	{[3]rune{'o', 'c', 't'}, jsdKwMonthName, 10}, {[3]rune{'n', 'o', 'v'}, jsdKwMonthName, 11}, {[3]rune{'d', 'e', 'c'}, jsdKwMonthName, 12},
+	{[3]rune{'a', 'm', 0}, jsdKwAMPM, 0}, {[3]rune{'p', 'm', 0}, jsdKwAMPM, 12},
+	{[3]rune{'u', 't', 0}, jsdKwTimeZoneName, 0}, {[3]rune{'u', 't', 'c'}, jsdKwTimeZoneName, 0}, {[3]rune{'z', 0, 0}, jsdKwTimeZoneName, 0},
+	{[3]rune{'g', 'm', 't'}, jsdKwTimeZoneName, 0}, {[3]rune{'c', 'd', 't'}, jsdKwTimeZoneName, -5}, {[3]rune{'c', 's', 't'}, jsdKwTimeZoneName, -6},
+	{[3]rune{'e', 'd', 't'}, jsdKwTimeZoneName, -4}, {[3]rune{'e', 's', 't'}, jsdKwTimeZoneName, -5}, {[3]rune{'m', 'd', 't'}, jsdKwTimeZoneName, -6},
+	{[3]rune{'m', 's', 't'}, jsdKwTimeZoneName, -7}, {[3]rune{'p', 'd', 't'}, jsdKwTimeZoneName, -7}, {[3]rune{'p', 's', 't'}, jsdKwTimeZoneName, -8},
+	{[3]rune{'t', 0, 0}, jsdKwTimeSeparator, 0},
 }
 
 // jsdIsWhiteSpace is V8's IsWhiteSpaceOrLineTerminator.
@@ -171,8 +171,7 @@ func (t *jsdTokenizer) scan() jsdToken {
 			t.pos++
 		}
 		for _, k := range jsdKeywords {
-			kp := []rune(k.prefix)
-			if prefix[0] == kp[0] && prefix[1] == kp[1] && prefix[2] == kp[2] && (n <= 3 || k.kw == jsdKwMonthName) {
+			if prefix == k.prefix && (n <= 3 || k.kw == jsdKwMonthName) {
 				return jsdToken{kind: jsdKeyword, kw: k.kw, value: k.value, length: n}
 			}
 		}

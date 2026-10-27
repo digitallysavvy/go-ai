@@ -39,25 +39,38 @@ func FuzzParseJSDate(f *testing.F) {
 	})
 }
 
-// A 1 MiB string of each hostile shape parses in well under a second.
+// Each hostile shape parses in linear time: a 1 MiB string takes far less
+// than the 16 times a quarter of it would take if the parser were quadratic.
+// The time grows with the input instead of being capped, so a slow or loaded
+// machine (or -race) cannot fail it.
 func TestParseJSDateHostileInputIsLinear(t *testing.T) {
 	const n = 1 << 20
-	inputs := map[string]string{
-		"open parens":   strings.Repeat("(", n),
-		"nested parens": strings.Repeat("(a", n/2) + strings.Repeat(")", n/2),
-		"digits":        strings.Repeat("9", n),
-		"zeros":         strings.Repeat("0", n) + "1",
-		"words":         strings.Repeat("January ", n/8),
-		"symbols":       strings.Repeat("-+:.", n/4),
-		"whitespace":    strings.Repeat(" \t", n/2) + "2026",
-		"numbers":       strings.Repeat("12 ", n/3),
-		"astral":        strings.Repeat("😀", n/4),
+	inputs := map[string]func(n int) string{
+		"open parens":   func(n int) string { return strings.Repeat("(", n) },
+		"nested parens": func(n int) string { return strings.Repeat("(a", n/2) + strings.Repeat(")", n/2) },
+		"digits":        func(n int) string { return strings.Repeat("9", n) },
+		"zeros":         func(n int) string { return strings.Repeat("0", n) + "1" },
+		"words":         func(n int) string { return strings.Repeat("January ", n/8) },
+		"symbols":       func(n int) string { return strings.Repeat("-+:.", n/4) },
+		"whitespace":    func(n int) string { return strings.Repeat(" \t", n/2) + "2026" },
+		"numbers":       func(n int) string { return strings.Repeat("12 ", n/3) },
+		"astral":        func(n int) string { return strings.Repeat("😀", n/4) },
 	}
-	for name, s := range inputs {
-		start := time.Now()
-		_, _ = ParseJSDate(s)
-		if d := time.Since(start); d > time.Second {
-			t.Errorf("%s: %v for %d bytes", name, d, len(s))
+	measure := func(s string) time.Duration {
+		best := time.Duration(1<<63 - 1)
+		for i := 0; i < 3; i++ {
+			start := time.Now()
+			_, _ = ParseJSDate(s)
+			if d := time.Since(start); d < best {
+				best = d
+			}
+		}
+		return best
+	}
+	for name, build := range inputs {
+		small, large := measure(build(n/4)), measure(build(n))
+		if large > 8*small+50*time.Millisecond {
+			t.Errorf("%s: %v for %d bytes, %v for a quarter of it", name, large, n, small)
 		}
 	}
 }
