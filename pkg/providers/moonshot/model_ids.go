@@ -21,5 +21,7 @@ const (
 	ModelKimiK27Code                 = "kimi-k2.7-code"
 	ModelKimiK27CodeHighspeed        = "kimi-k2.7-code-highspeed"
 	ModelKimiK3                      = "kimi-k3"
+	ModelKimiK31Pro                  = "kimi-k3.1-pro"
+	ModelKimiK31ProHighspeed         = "kimi-k3.1-pro-highspeed"
 	defaultLanguageModelID           = ModelMoonshotV132k
 )

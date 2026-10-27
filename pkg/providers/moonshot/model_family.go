@@ -26,7 +26,7 @@ func GetModelFamily(modelID string) ModelFamily {
 		return FamilyKimiK26
 	case "kimi-k2.7-code", "kimi-k2.7-code-highspeed":
 		return FamilyKimiK27
-	case "kimi-k3":
+	case "kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed":
 		return FamilyKimiK3
 	}
 	if strings.HasPrefix(modelID, "moonshot-v1-") {
