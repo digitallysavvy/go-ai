@@ -15,6 +15,12 @@ import (
 // gained from commit 6da8aa06d6 "for free", without needing separate
 // null-vs-undefined handling.
 
+// pplxNumber is a JSON number as TS zod number() accepts it, including
+// fractions such as 12.5. Usage converters truncate it toward zero because the
+// Go usage types are integral; ids derived from indexes format it the way
+// JS does (see formatPplxNumber).
+type pplxNumber float64
+
 // perplexityAnnotation is one annotation on a message content part (e.g. a
 // url_citation). Mirrors the annotations array in perplexityContentPartSchema.
 type perplexityAnnotation struct {
@@ -80,17 +86,17 @@ type perplexityResponseError struct {
 }
 
 type perplexityInputTokensDetails struct {
-	CachedTokens             *int64 `json:"cached_tokens,omitempty"`
-	CacheCreationInputTokens *int64 `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     *int64 `json:"cache_read_input_tokens,omitempty"`
+	CachedTokens             *pplxNumber `json:"cached_tokens,omitempty"`
+	CacheCreationInputTokens *pplxNumber `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     *pplxNumber `json:"cache_read_input_tokens,omitempty"`
 }
 
 type perplexityOutputTokensDetails struct {
-	ReasoningTokens *int64 `json:"reasoning_tokens,omitempty"`
+	ReasoningTokens *pplxNumber `json:"reasoning_tokens,omitempty"`
 }
 
 type perplexityToolCallDetail struct {
-	Invocation *int64 `json:"invocation,omitempty"`
+	Invocation *pplxNumber `json:"invocation,omitempty"`
 }
 
 type perplexityCost struct {
@@ -107,9 +113,9 @@ type perplexityCost struct {
 // This is a full replacement of the pre-migration Sonar Chat Completions usage
 // shape (input_tokens/output_tokens vs. prompt_tokens/completion_tokens).
 type perplexityUsage struct {
-	InputTokens         int64                               `json:"input_tokens"`
-	OutputTokens        int64                               `json:"output_tokens"`
-	TotalTokens         int64                               `json:"total_tokens"`
+	InputTokens         pplxNumber                          `json:"input_tokens"`
+	OutputTokens        pplxNumber                          `json:"output_tokens"`
+	TotalTokens         pplxNumber                          `json:"total_tokens"`
 	InputTokensDetails  *perplexityInputTokensDetails       `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *perplexityOutputTokensDetails      `json:"output_tokens_details,omitempty"`
 	ToolCallsDetails    map[string]perplexityToolCallDetail `json:"tool_calls_details,omitempty"`
@@ -138,12 +144,12 @@ type perplexityAgentResponse struct {
 // nullish in TS and is a pointer/slice here for the same reason.
 type perplexityAgentChunk struct {
 	Type           string                     `json:"type"`
-	SequenceNumber *int64                     `json:"sequence_number,omitempty"`
+	SequenceNumber *pplxNumber                `json:"sequence_number,omitempty"`
 	Response       *perplexityAgentResponse   `json:"response,omitempty"`
 	Item           *perplexityOutputItem      `json:"item,omitempty"`
-	OutputIndex    *int64                     `json:"output_index,omitempty"`
+	OutputIndex    *pplxNumber                `json:"output_index,omitempty"`
 	ItemID         *string                    `json:"item_id,omitempty"`
-	ContentIndex   *int64                     `json:"content_index,omitempty"`
+	ContentIndex   *pplxNumber                `json:"content_index,omitempty"`
 	Delta          *string                    `json:"delta,omitempty"`
 	Text           *string                    `json:"text,omitempty"`
 	Thought        *string                    `json:"thought,omitempty"`

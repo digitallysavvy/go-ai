@@ -181,7 +181,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 
 	var usage *provider.DecisionUsage
 	if response.Usage != nil {
-		usage = &provider.DecisionUsage{InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens}
+		// zod number() accepts fractions; the Go usage type is integral.
+		usage = &provider.DecisionUsage{InputTokens: pplxNumberToInt(response.Usage.InputTokens), OutputTokens: pplxNumberToInt(response.Usage.OutputTokens)}
 	}
 
 	var warnings []types.Warning
@@ -227,8 +228,8 @@ type perplexityDecisionResponse struct {
 	Model   *string                    `json:"model"`
 	Answers map[string]json.RawMessage `json:"answers"`
 	Usage   *struct {
-		InputTokens  *int `json:"input_tokens"`
-		OutputTokens *int `json:"output_tokens"`
+		InputTokens  *pplxNumber `json:"input_tokens"`
+		OutputTokens *pplxNumber `json:"output_tokens"`
 	} `json:"usage"`
 }
 
@@ -305,4 +306,12 @@ func lowerHeaders(in map[string]string) map[string]string {
 		out[strings.ToLower(k)] = v
 	}
 	return out
+}
+
+func pplxNumberToInt(n *pplxNumber) *int {
+	if n == nil {
+		return nil
+	}
+	v := int(*n)
+	return &v
 }

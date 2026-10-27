@@ -1213,7 +1213,7 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 	usage := &perplexityUsage{
 		InputTokens:         33,
 		OutputTokens:        205342,
-		OutputTokensDetails: &perplexityOutputTokensDetails{ReasoningTokens: int64Ptr(193947)},
+		OutputTokensDetails: &perplexityOutputTokensDetails{ReasoningTokens: pplxNumberPtr(193947)},
 	}
 	got := convertPerplexityUsage(usage, nil)
 	if *got.InputTokens != 33 || *got.InputDetails.NoCacheTokens != 33 {
@@ -1224,7 +1224,6 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 	}
 }
 
-func int64Ptr(v int64) *int64 { return &v }
 
 // TS: "preserves citation annotations from output items and %s" (it.each over
 // response.completed / response.incomplete). A message with a citation is
@@ -1409,3 +1408,4 @@ func TestConvertPerplexityUsageTotalIsInputPlusOutput(t *testing.T) {
 		t.Fatalf("total = %v, want 15 when total_tokens is absent", u.TotalTokens)
 	}
 }
+func pplxNumberPtr(v float64) *pplxNumber { n := pplxNumber(v); return &n }

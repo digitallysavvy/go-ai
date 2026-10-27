@@ -335,9 +335,12 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// passed through verbatim, matching TS's
 	// `openResponsesOptions?.reasoningEffort ?? mapReasoningToProviderEffort(...)`.
 	var reasoningEffort string
+	// TS `??` only skips null/undefined: an empty-string reasoningEffort is a
+	// resolved value and is sent as is.
+	effortOption, effortOptionSet := provOpts.Raw["reasoningEffort"].(string)
 	// TS `reasoningEffort ?? (isCustomReasoning(reasoning) ? map...)`: the
 	// mapping (and its compatibility warning) only runs without the option.
-	if opts.Reasoning != nil && provOpts.ReasoningEffort == "" {
+	if opts.Reasoning != nil && !effortOptionSet {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
 			reasoningEffort = "none"
@@ -365,12 +368,12 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		}
 	}
 	resolvedReasoningSummary := provOpts.ReasoningSummary
-	if provOpts.ReasoningEffort != "" {
-		reasoningEffort = provOpts.ReasoningEffort
+	if effortOptionSet {
+		reasoningEffort = effortOption
 	}
-	if reasoningEffort != "" || resolvedReasoningSummary != "" {
+	if reasoningEffort != "" || effortOptionSet || resolvedReasoningSummary != "" {
 		reasoning := map[string]interface{}{}
-		if reasoningEffort != "" {
+		if reasoningEffort != "" || effortOptionSet {
 			reasoning["effort"] = reasoningEffort
 		}
 		if resolvedReasoningSummary != "" {
@@ -872,14 +875,15 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// Config.StrictResponseInput.
 			itemCopy := item
 			validAnnotations := openResponsesOutputTextAnnotations(item.Raw, item.Content)
+			// TS pushes a text part for EVERY content part, whatever its
+			// type: a refusal part has no `text`, so it becomes an empty
+			// text part that still carries the item id.
 			for i, part := range item.Content {
-				if part.Type == "output_text" {
-					textParts = append(textParts, part.Text)
-					result.Content = append(result.Content, types.TextContent{
-						Text:             part.Text,
-						ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, validAnnotations[i]),
-					})
-				}
+				textParts = append(textParts, part.Text)
+				result.Content = append(result.Content, types.TextContent{
+					Text:             part.Text,
+					ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, validAnnotations[i]),
+				})
 			}
 
 		case "reasoning":
@@ -1444,6 +1448,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			if argsJSON != "" {
 				_ = json.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
 			}
+			// TS toolCallsByItemId.delete(item.id): a repeated done event for
+			// the same item must not reuse the accumulated arguments.
+			delete(s.toolCallsByItemID, event.Item.ID)
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
