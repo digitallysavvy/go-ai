@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
@@ -144,13 +143,12 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 			fmt.Errorf("The harness bridge WebSocket did not open within %dms.", opts.OpenTimeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
 		defer cancel()
 	}
-	var sniffer *closeSniffer
+	// x/net/websocket reports every close as io.EOF; closeInfo reads the
+	// server's close frame off the raw connection.
+	closeInfo := &wsutil.CloseInfo{}
 	ws, err := wsutil.Dial(dialCtx, endpoint.URL, wsutil.DialOptions{
-		Headers: endpoint.Headers,
-		WrapConn: func(c net.Conn) net.Conn {
-			sniffer = newCloseSniffer(c)
-			return sniffer
-		},
+		Headers:  endpoint.Headers,
+		WrapConn: closeInfo.Wrap,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -217,12 +215,10 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 			if !helloDeadline.IsZero() && !time.Now().Before(helloDeadline) {
 				return fail(fmt.Errorf("The harness bridge did not send bridge-hello within %dms.", helloTimeout.Milliseconds())) //nolint:staticcheck // matches TS SDK's exact error text
 			}
-			// x/net reports every close as io.EOF; the sniffer recovered the
-			// close code. Like TS, 1008 is a rejected token and is final.
-			code := 1006
-			if c := sniffer.CloseCode(); c != 0 {
-				code = c
-			}
+			// Like the TS `ws` close event: the server's status code, 1005
+			// for a close frame without one, 1006 for no close frame. Like
+			// TS, 1008 is a rejected token and is final.
+			code := closeInfo.Code()
 			if code == closeCodeUnauthorized {
 				return fail(&UnauthorizedError{Code: code})
 			}
