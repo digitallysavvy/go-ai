@@ -389,29 +389,31 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 
 		data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
 
+		// TS parseJsonEventStream validates each event against
+		// gatewayVideoEventSchema; a malformed event (bad JSON, unknown
+		// type such as a heartbeat, a missing field) is an APICallError
+		// "Failed to parse video SSE event".
+		if bad := providerutils.MediaSchemaParser(providerutils.SchemaGatewayVideoEvent)(http.StatusOK, nil, []byte(data)); bad != nil {
+			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, bad)
+		}
 		var event SSEVideoEvent
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
-			return nil, fmt.Errorf("failed to parse video SSE event: %w", err)
+			return nil, m.sseAPICallError(ctx, http.StatusOK, "Failed to parse video SSE event", nil, err)
 		}
 
-		switch event.Type {
-		case "result":
-			// Current completion format from the gateway SSE spec
-			return m.buildResponseFromSSEEvent(&event)
-
-		case "error":
-			msg := event.Message
-			if msg == "" {
-				msg = "unknown gateway video generation error"
-			}
+		if event.Type == "error" {
+			// TS throws an APICallError carrying data.error {message, type,
+			// param}, which asGatewayError turns into the typed gateway error.
 			statusCode := 0
 			if event.StatusCode != nil {
 				statusCode = *event.StatusCode
 			}
-			return nil, providererrors.NewProviderError("gateway", statusCode, event.ErrorType, msg, nil)
-		default:
-			return nil, fmt.Errorf("failed to parse video SSE event: unsupported event type %q", event.Type)
+			errBody, _ := json.Marshal(map[string]interface{}{
+				"error": map[string]interface{}{"message": event.Message, "type": event.ErrorType, "param": event.Param},
+			})
+			return nil, m.sseAPICallError(ctx, statusCode, event.Message, errBody, nil, event.ErrorType)
 		}
+		return m.buildResponseFromSSEEvent(&event)
 	}
 
 	// Check if the scanner stopped due to context cancellation or a read error
@@ -425,7 +427,35 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 	}
 
 	// Stream ended without a result or error event
-	return nil, fmt.Errorf("SSE stream ended without a data event")
+	return nil, m.sseAPICallError(ctx, http.StatusOK, "SSE stream ended without a data event", nil, nil)
+}
+
+// sseAPICallError converts a failure of the video SSE stream the way TS
+// asGatewayError converts the APICallError its successfulResponseHandler
+// throws: the error's data (or `{}` when it has none) is read as a gateway
+// error response, so an error event becomes the typed gateway error for its
+// errorType and anything malformed becomes a GatewayResponseError with the
+// HTTP status of the stream.
+func (m *VideoModel) sseAPICallError(ctx context.Context, statusCode int, message string, body []byte, cause error, errorType ...string) error {
+	authMethod := ""
+	if m.provider.authResolver != nil {
+		_, authMethod, _ = m.provider.authResolver(ctx)
+	}
+	apiErr := &providererrors.ProviderError{Provider: "gateway", StatusCode: statusCode, Message: message}
+	if len(errorType) > 0 {
+		apiErr.ErrorCode = errorType[0]
+	}
+	if len(body) > 0 {
+		apiErr.ResponseBody = string(body)
+		apiErr.Data = gatewayErrorData(body)
+	}
+	if cause != nil {
+		apiErr.Cause = cause
+	}
+	if body == nil {
+		body = []byte("{}")
+	}
+	return gatewayerrors.CreateGatewayErrorFromResponse(body, statusCode, "Gateway request failed", apiErr, authMethod)
 }
 
 // buildResponseFromSSEEvent converts a result SSEVideoEvent into a VideoModelV3Response.

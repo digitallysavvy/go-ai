@@ -122,6 +122,9 @@ const (
 	// (gatewayVideoStartResponseSchema, gatewayVideoStatusResponseSchema).
 	SchemaGatewayVideoStart  MediaResponseSchema = "gateway-video-start"
 	SchemaGatewayVideoStatus MediaResponseSchema = "gateway-video-status"
+	// SchemaGatewayVideoEvent is gatewayVideoEventSchema: one `data:` event of
+	// the /video-model SSE stream (a result or an error).
+	SchemaGatewayVideoEvent MediaResponseSchema = "gateway-video-event"
 	// SchemaGatewayBatchItem is one /batch/results NDJSON line
 	// (gatewayBatchItemResultLineSchema: type text, id, status; extra keys pass).
 	SchemaGatewayBatchItem MediaResponseSchema = "gateway-batch-item"
@@ -265,6 +268,11 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		}
 		return variant(v, present, path)
 	}
+	gatewayVideoEvent := zDiscType(map[string]zNode{
+		"result": zodlite.Typed("result", fl("videos", zArr(gatewayVideoData)), fl("warnings", zOptional(zArr(gatewayWarning))),
+			fl("providerMetadata", zOptional(zRec(zodlite.Record)))),
+		"error": zodlite.Typed("error", fl("message", zStr), fl("errorType", zStr), fl("statusCode", zNum), fl("param", zAny)),
+	})
 	word := zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum))
 	b64Data := zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))))
 	// compatImageItem is z.object({b64_json: nullish, url: nullish}).refine(
@@ -487,6 +495,7 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 		SchemaGatewayBatchState:  zObj(gatewayBatchStatus...),
 		SchemaGatewayVideoStart:  zObj(fl("operation", zAny), fl("warnings", gatewayVideoWarnings), fl("providerMetadata", gatewayVideoMeta)),
 		SchemaGatewayVideoStatus: gatewayVideoStatus,
+		SchemaGatewayVideoEvent:  gatewayVideoEvent,
 		SchemaGatewayDecision: zObj(
 			fl("answers", zRec(zDiscType(map[string]zNode{
 				"choice":  zodlite.Typed("choice", fl("choice", zStr), fl("probabilities", zOptional(zRec(zNum)))),
