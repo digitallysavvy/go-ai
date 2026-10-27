@@ -379,8 +379,3 @@ func encodeNoEscape(value any) (string, error) {
 	}
 	return string(b), nil
 }
-
-func marshalIndentNoEscape(value any) string {
-	b, _ := jsstr.MarshalIndent(value)
-	return string(b)
-}
