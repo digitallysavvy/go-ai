@@ -581,3 +581,26 @@ func TestSpeechGenerate_WarnsAboutStreamingAndDialogueOptions(t *testing.T) {
 		t.Fatalf("warnings = %+v", warnings)
 	}
 }
+
+// TS reports a non-string `error` as JSON.stringify(raw.error): wire key
+// order and no HTML escaping.
+func TestSpeechStream_ObjectErrorTextKeepsWireOrder(t *testing.T) {
+	text := `{"error":{"type":"quota","detail":"a<b>&c","code":7}}`
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatal(err)
+	}
+	ev := (&singleContextProtocol{}).decodeEvent(raw)
+	got := orderedErrorText(raw, text, ev.err)
+	if want := `{"type":"quota","detail":"a<b>&c","code":7}`; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestToElevenLabsStreamOutputFormat_ErrorQuotesLikeJSONStringify(t *testing.T) {
+	_, err := toElevenLabsStreamOutputFormat(&provider.AudioFormat{Type: "audio/x<é>\t"})
+	want := "ElevenLabs streaming speech does not support the output format {\"type\":\"audio/x<é>\\t\"}."
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("err = %v, want it to contain %s", err, want)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
@@ -437,7 +438,9 @@ func toElevenLabsStreamOutputFormat(format *provider.AudioFormat) (string, error
 			return "opus_48000_64", nil
 		}
 	}
-	desc := fmt.Sprintf(`{"type":%q`, format.Type)
+	// JSON.stringify of the format: no Go-style escapes, no HTML escaping.
+	typeJSON, _ := jsonstr.Marshal(format.Type)
+	desc := `{"type":` + string(typeJSON)
 	if rate != nil {
 		desc += fmt.Sprintf(`,"rate":%d`, *rate)
 	}

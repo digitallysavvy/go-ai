@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -357,7 +358,7 @@ func (s *elevenLabsSpeechStream) handleMessage(cfg speechStreamConfig, text stri
 
 	event := cfg.protocol.decodeEvent(raw)
 	if event.hasErr {
-		return false, fmt.Errorf("ElevenLabs speech stream error: %s", event.err)
+		return false, fmt.Errorf("ElevenLabs speech stream error: %s", orderedErrorText(raw, text, event.err))
 	}
 
 	// Turn boundaries arrive as standalone frames, so they are emitted as
@@ -399,6 +400,26 @@ func (s *elevenLabsSpeechStream) handleMessage(cfg speechStreamConfig, text stri
 		return true, nil
 	}
 	return false, nil
+}
+
+// orderedErrorText is the error text with a non-string `error` value written
+// like JSON.stringify of the received object: keys in wire order, no HTML
+// escaping (raw is a Go map, which sorts keys).
+func orderedErrorText(raw map[string]interface{}, text, fallback string) string {
+	if _, ok := raw["message"].(string); ok {
+		return fallback
+	}
+	if _, ok := raw["error"].(string); ok || raw["error"] == nil {
+		return fallback
+	}
+	tree, ok := jsonorder.Parse([]byte(text))
+	if !ok {
+		return fallback
+	}
+	if v, ok := jsonorder.Get(tree, "error"); ok {
+		return jsonorder.Stringify(v)
+	}
+	return fallback
 }
 
 // pumpText reads the text stream, sends complete words per segment, and ends
