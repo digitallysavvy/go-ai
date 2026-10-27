@@ -552,6 +552,8 @@ func main() {
 
 Every telemetry lifecycle event is also published to a process-wide diagnostics channel. Subscribe with `telemetry.SubscribeDiagnostic`. Each `telemetry.DiagnosticMessage` has the event `Type`, the `Event` payload, and `AIVersion`, the version of the SDK that emitted it. Use `AIVersion` to tell which release produced an event, for example to know whether it filtered runtime and tool context.
 
+The same value is set on the `AIVersion` field of every event struct passed to a `TelemetryIntegration` (`TelemetryStartEvent`, `TelemetryStepStartEvent`, and so on). `ExecuteTool` has no event argument, so read it with `telemetry.AIVersionFromContext(ctx)`.
+
 ```go
 package main
 
