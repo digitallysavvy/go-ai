@@ -29,7 +29,7 @@ func rawCloseServer(t *testing.T, closeFrame []byte) harness.PortEndpoint {
 		if err != nil {
 			return
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 		req, err := http.ReadRequest(bufio.NewReader(c))
 		if err != nil {
 			return
@@ -85,7 +85,7 @@ func TestConnReceive_ReportsPeerCloseCode(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			_, err = conn.Receive()
 			var ce *bridge.CloseError
 			if !errors.As(err, &ce) || ce.Code != tc.code || ce.Reason != tc.reason {
