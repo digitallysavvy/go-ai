@@ -43,6 +43,9 @@ func WebSearch(config WebSearchConfig) types.Tool {
 }
 
 // WebSearchPreview creates an OpenAI provider-executed web_search_preview tool.
+//
+// Deprecated: Use WebSearch instead. The searchContextSize and userLocation
+// options are supported by both tools.
 func WebSearchPreview(config WebSearchPreviewConfig) types.Tool {
 	return types.Tool{
 		Name:             "openai.web_search_preview",

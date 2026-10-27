@@ -26,6 +26,8 @@ func WebSearch(config openaitool.WebSearchConfig) types.Tool {
 }
 
 // WebSearchPreview creates the OpenAI Responses web_search_preview provider tool for Azure OpenAI.
+//
+// Deprecated: Use WebSearch instead.
 func WebSearchPreview(config openaitool.WebSearchPreviewConfig) types.Tool {
 	return openaitool.WebSearchPreview(config)
 }

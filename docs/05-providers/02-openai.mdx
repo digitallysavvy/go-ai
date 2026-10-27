@@ -944,6 +944,10 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### `WebSearchPreview` is deprecated
+
+`tool.WebSearchPreview` (and `azure.WebSearchPreview`) is deprecated. Use `tool.WebSearch` instead; the `SearchContextSize` and `UserLocation` options are supported by both tools. The old name keeps working.
+
 ### Failed web searches are tool errors
 
 A `web_search_call` whose status is `failed` or `incomplete` now produces a tool result with `Result: {"status": "<status>"}` and a non-empty `Error`, instead of a normal result with an empty action. This applies to `Generate`, streaming and batch results.
