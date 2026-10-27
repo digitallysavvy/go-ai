@@ -303,3 +303,33 @@ func TestR42BootstrapPnpmWorkspaceYAML(t *testing.T) {
 		t.Fatalf("New err = %v", err)
 	}
 }
+
+// TS acpToolCallCandidateSchema / acpQuestionRequestSchema /
+// acpQuestionResolvedSchema reject frames without a string requestId or with
+// a tool call lacking string toolCallId and title; the channel then
+// dispatches a validation error instead of the frame.
+func TestR42DecodeOutboundValidatesACPFrames(t *testing.T) {
+	for _, tc := range []struct {
+		frame string
+		ok    bool
+	}{
+		{`{"type":"acp-tool-call-candidate","requestId":"r","toolCall":{"toolCallId":"t","title":"x"}}`, true},
+		{`{"type":"acp-tool-call-candidate","toolCall":{"toolCallId":"t","title":"x"}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":1,"toolCall":{"toolCallId":"t","title":"x"}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":"r","toolCall":{"toolCallId":"t"}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":"r","toolCall":{"toolCallId":"t","title":null}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":"r"}`, false},
+		{`{"type":"acp-question-request","requestId":"r","nativeRequest":{}}`, true},
+		{`{"type":"acp-question-request","requestId":"r"}`, true},
+		{`{"type":"acp-question-request","requestId":"r","nativeToolCall":null}`, false},
+		{`{"type":"acp-question-request","requestId":"r","nativeToolCall":{"toolCallId":"t","title":"x"}}`, true},
+		{`{"type":"acp-question-resolved","requestId":"r"}`, true},
+		{`{"type":"acp-question-resolved"}`, false},
+		{`{"type":"acp-question-resolved","requestId":null}`, false},
+	} {
+		_, _, err := decodeOutbound([]byte(tc.frame))
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", tc.frame, err, tc.ok)
+		}
+	}
+}
