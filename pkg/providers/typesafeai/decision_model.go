@@ -19,6 +19,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // DecisionModel implements provider.DecisionModel for TypeSafe AI's
@@ -170,7 +171,12 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 	headers = internalhttp.MergeHeaders(headers, opts.Headers)
 
-	var requestBody interface{} = body
+	// Serialize like JSON.stringify (no HTML escaping) so the bytes match TS.
+	requestJSON, err := jsonstr.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	var requestBody interface{} = requestJSON
 	if hasImages {
 		// Images are sent as a multipart upload (more efficient than base64):
 		// a JSON "request" part followed by one part per image.
@@ -666,7 +672,8 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, map[
 			texts = append(texts, part.Text)
 			continue
 		}
-		encoded, err := json.Marshal(part.Value)
+		// JSON.stringify keeps <, > and & literal; json.Marshal would escape them.
+		encoded, err := jsonstr.Marshal(part.Value)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to encode decision state: %w", err)
 		}
@@ -687,11 +694,18 @@ func containsString(haystack []string, needle string) bool {
 // buildImageMultipart builds the multipart/form-data body: the JSON request as
 // the "request" part, then each image part in state order.
 func buildImageMultipart(body map[string]interface{}, images []typesafeImagePart) (*bytes.Buffer, string, error) {
-	requestJSON, err := json.Marshal(body)
+	requestJSON, err := jsonstr.Marshal(body)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to marshal request body: %w", err)
 	}
+	// The body holds the request JSON plus one copy of each image; size the
+	// buffer once so building it never reallocates past that bound.
+	size := len(requestJSON) + 512*(len(images)+1)
+	for _, image := range images {
+		size += len(image.data)
+	}
 	var buf bytes.Buffer
+	buf.Grow(size)
 	w := multipart.NewWriter(&buf)
 	write := func(name, filename, contentType string, data []byte) error {
 		header := textproto.MIMEHeader{}

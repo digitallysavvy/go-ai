@@ -462,3 +462,56 @@ func TestModelIDsAreSentUnchanged(t *testing.T) {
 func asInvalidArgument(err error, target **providererrors.InvalidArgumentError) bool {
 	return errors.As(err, target)
 }
+
+// JSON.stringify leaves <, > and & literal; the state text and the request
+// bytes must too (json.Marshal would write < etc.).
+func TestJoinedStateAndRequestKeepHTMLCharactersLiteral(t *testing.T) {
+	value := map[string]interface{}{"note": "a<b>&c"}
+	cases := map[string][]provider.DecisionStatePart{
+		"multipart": {
+			provider.DecisionJSONPart(value),
+			provider.DecisionTextPart("x<y"),
+			imageFile("image/png", "iVBORw==", map[string]interface{}{"reference": "[p]"}),
+		},
+		"json": {
+			provider.DecisionJSONPart(value),
+			provider.DecisionTextPart("x<y"),
+		},
+	}
+	for name, state := range cases {
+		t.Run(name, func(t *testing.T) {
+			var raw []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mediaType, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+				if strings.HasPrefix(mediaType, "multipart/") {
+					mr := multipart.NewReader(r.Body, params["boundary"])
+					for {
+						part, err := mr.NextPart()
+						if err != nil {
+							break
+						}
+						if part.FormName() == "request" {
+							raw, _ = io.ReadAll(part)
+						}
+					}
+				} else {
+					raw, _ = io.ReadAll(r.Body)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"answers":{"q":{"type":"noul","noul":0.5}}}`))
+			}))
+			defer srv.Close()
+			cs := &captureServer{Server: srv}
+			if _, err := cs.decide(t, provider.DecisionCallOptions{State: state}); err != nil {
+				t.Fatal(err)
+			}
+			got := string(raw)
+			if strings.Contains(got, "\\u003c") || strings.Contains(got, "\\u003e") || strings.Contains(got, "\\u0026") {
+				t.Fatalf("request body HTML-escaped: %s", got)
+			}
+			if !strings.Contains(got, `a<b>&c`) || !strings.Contains(got, `x<y`) {
+				t.Fatalf("request body = %s", got)
+			}
+		})
+	}
+}
