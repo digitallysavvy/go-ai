@@ -411,6 +411,24 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 			span.SetAttributes(attribute.String("ai.settings.output", e.SettingsOutput))
 		}
 	}
+	// TS onEmbedOperationStart / onRerankOperationStart: the embedding and
+	// reranking supplemental inputs on the root span (ai.value for embed,
+	// ai.values for embedMany, ai.documents for rerank), input-gated.
+	if i.opts.Embedding && recordInputs {
+		switch e.OperationType {
+		case "ai.embed":
+			span.SetAttributes(attribute.String("ai.value", legacyJSONOrEmpty(e.Prompt)))
+		case "ai.embedMany":
+			if values := legacyJSONEachElement(e.Values); len(values) > 0 {
+				span.SetAttributes(attribute.StringSlice("ai.values", values))
+			}
+		}
+	}
+	if i.opts.Reranking && recordInputs && e.OperationType == "ai.rerank" {
+		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
+		}
+	}
 	// TS baseSupplementalAttributes: the runtime-context and header
 	// attributes of the root span, reused by the step, embeddings and
 	// reranking child spans (not by chat or tool spans).
@@ -1085,9 +1103,10 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
 	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
+	// TS event.documents.map(d => JSON.stringify(d)): text and object documents.
 	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordInputs) {
-		if docs, ok := e.Documents.([]string); ok && len(docs) > 0 {
-			span.SetAttributes(attribute.StringSlice("ai.documents", jsonStringifyEach(docs)))
+		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
+			span.SetAttributes(attribute.StringSlice("ai.documents", docs))
 		}
 	}
 	if callID != "" {

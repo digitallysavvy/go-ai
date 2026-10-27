@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -846,5 +847,45 @@ func TestOpenTelemetryStepSpanReusesRootSupplementalAttributes(t *testing.T) {
 	}
 	if _, ok := attrValue(tool, "ai.settings.context.user"); ok {
 		t.Error("tool span must not carry the runtime context (TS tool spans have none)")
+	}
+}
+
+// TS onEmbedOperationStart / onRerankOperationStart put the embedding and
+// reranking inputs on the root span too (opt-in, input-gated), and the
+// rerank span stringifies object documents as well as text ones.
+func TestOpenTelemetryRootSpansCarryEmbeddingAndRerankingInputs(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai"), Embedding: true, Reranking: true})
+	settings := &Settings{RecordInputs: true}
+
+	trace.SpanFromContext(integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "e1", OperationType: "ai.embed", ModelID: "emb", Settings: settings, Prompt: "hello",
+	})).End()
+	trace.SpanFromContext(integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "e2", OperationType: "ai.embedMany", ModelID: "emb-many", Settings: settings, Values: []string{"a", "b"},
+	})).End()
+	docs := []map[string]interface{}{{"id": 1}}
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		CallID: "r1", OperationType: "ai.rerank", ModelID: "rr", Settings: settings, Documents: docs,
+	})
+	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{CallID: "r1", OperationID: "ai.rerank.doRerank", ModelID: "rr", Settings: settings, Documents: docs})
+	integration.OnRerankEnd(ctx, RerankingModelCallEndEvent{CallID: "r1", OperationID: "ai.rerank.doRerank", Settings: settings})
+	trace.SpanFromContext(ctx).End()
+
+	if v, _ := attrValue(findSpan(rec, "embeddings emb"), "ai.value"); v != `"hello"` {
+		t.Errorf("embed root ai.value = %v", v)
+	}
+	if v, _ := attrValue(findSpan(rec, "embeddings emb-many"), "ai.values"); fmt.Sprint(v) != `["a" "b"]` {
+		t.Errorf("embedMany root ai.values = %v", v)
+	}
+	for _, span := range findSpans(rec, "rerank rr") {
+		if v, _ := attrValue(span, "ai.documents"); fmt.Sprint(v) != `[{"id":1}]` {
+			t.Errorf("%s ai.documents = %v", span.Name(), v)
+		}
+	}
+	if n := len(findSpans(rec, "rerank rr")); n != 2 {
+		t.Fatalf("rerank spans = %d, want root and nested", n)
 	}
 }
