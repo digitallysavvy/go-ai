@@ -17,6 +17,11 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 )
 
+// This file is the v0.5.x subscription support of the sandbox-ACP runtime
+// (RuntimeSandboxACP): brokered environment records and the ~/.fx readers.
+// The libfx runtime discovers subscriptions with TS's newer precedence and
+// stores in subscription_store.go.
+
 // Environment variable names used for fx's brokered subscription records.
 // Mirrors TS constants in fx-subscription.ts.
 const (
