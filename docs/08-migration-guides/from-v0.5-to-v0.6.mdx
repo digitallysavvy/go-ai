@@ -130,7 +130,8 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   4.3 ms per trivial run on an Apple M1). If you pin wazero yourself, move it
   to v1.12.0.
 - **MCP OAuth rejects unbound pre-registered confidential credentials.** Client
-  information with a client secret but no `Issuer` and no stored authorization
+  information with a client secret (or a custom authenticator) but no
+  `Issuer` and no stored authorization
   server information now fails `mcp.Auth` with an authorization-server mismatch
   error. Set `Issuer` to the authorization server the secret was registered
   with, or return it from `OAuthAuthorizationServerInformationStore`.
@@ -145,10 +146,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   violation ends the step with finish reason `error`.
 - **Truncated streams finish with `interrupted`.** A provider stream that ends
   before its finish event reports `types.FinishReasonInterrupted` instead of
-  `FinishReasonOther`. Check for `FinishReasonInterrupted` if you detect
-  truncated streams by the finish reason.
+  `FinishReasonOther`, and the step runs no tools. Check for
+  `FinishReasonInterrupted` if you detect truncated streams by the finish
+  reason.
 - **Prompt validation matches TS.** `GenerateText`, `StreamText`,
-  `GenerateObject`, `StreamObject` and the agent calls return
+  `GenerateObject`, `StreamObject`, batch text requests and the agent calls
+  return
   `*errors.InvalidPromptError` when neither or both of `Prompt` and
   `Messages` are set, or when `Messages` is an empty non-nil slice. Pass
   exactly one of them.
@@ -184,8 +187,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   other way round, because each host computes its own settings signature.
   Finished turns resume on either host.
 - **Wrapper providers no longer fall back to `OPENAI_API_KEY`.** Baseten,
-  Cerebras, DeepInfra, Fireworks, Together, Vertex MaaS and the Azure
-  delegates read only their own API key environment variable.
+  Cerebras, DeepInfra, Fireworks, Together, Vercel, Vertex MaaS and the Azure
+  delegates read only their own API key environment variable, and Azure
+  DeepSeek no longer falls back to `DEEPSEEK_API_KEY`. A missing key fails
+  with `LoadAPIKeyError`. Set the provider's own variable (for example
+  `FIREWORKS_API_KEY`, `TOGETHER_API_KEY`, `CEREBRAS_API_KEY`) or pass
+  `APIKey`.
 - **Failed generated-media downloads in BFL, Luma and fal return
   `*providererrors.ProviderError`.** As in TS, a non-2xx response when the
   provider fetches the generated image or audio is a provider error whose
@@ -203,3 +210,9 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   now fails with that error, as in TS. v0.5.x finished the turn instead, so
   the error went unseen. If you use `StopWhen` with an adapter that cannot
   suspend, handle the error from the turn, or leave out the stop condition.
+- **An OPA HTTP policy response without `result` is not-applicable, not
+  denied**, as in TS. OPA answers an undefined decision (no rule matched) with
+  `{}`; v0.5.x treated that as a deny. A tool call that no rule decides now
+  falls through to the other approval rules. Policies that relied on "no match
+  means deny" must return an explicit deny (for example a Rego `default`
+  rule).
