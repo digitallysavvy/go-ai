@@ -327,7 +327,7 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("usage", zNullish(zObj(fl("num_input_text_tokens", nNum), fl("num_input_image_tokens", nNum), fl("num_output_tokens", nNum)))),
 			fl("data", zArr(zObj(fl("b64_json", zStr))))),
 
-		SchemaOpenAITranscr: zObj(fl("text", zStr), fl("language", nStr), fl("duration", nNum),
+		SchemaOpenAITranscr: zObj(fl("text", zStr), fl("language", nStr), fl("languages", zNullish(zArr(zObj(fl("code", zStr))))), fl("duration", nNum),
 			fl("words", zNullish(zArr(word))),
 			fl("segments", zNullish(zArr(zUnionOf(segmentOpenAI, zObj(fl("type", zodlite.Literal("transcript.text.segment")),
 				fl("id", zStr), fl("start", zNum), fl("end", zNum), fl("text", zStr), fl("speaker", zStr)))))),

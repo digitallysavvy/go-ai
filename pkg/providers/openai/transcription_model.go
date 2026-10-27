@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/textproto"
+	"regexp"
 	"strings"
 	"time"
 
@@ -107,9 +108,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			Body:      rawResponse,
 		},
 	}
-	if code, ok := openaiTranscriptionLanguages[response.Language]; ok {
-		result.Language = code
-	}
+	result.Language = openaiTranscriptionLanguage(response.Language, response.Languages)
 	if response.Duration != nil {
 		d := *response.Duration
 		result.DurationInSeconds = &d
@@ -154,12 +153,21 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 			"speaker":     seg.Speaker,
 		})
 	}
-	if len(diarizedSegments) > 0 {
-		result.ProviderMetadata = map[string]interface{}{
-			"openai": map[string]interface{}{
-				"segments": diarizedSegments,
-			},
+	if len(diarizedSegments) > 0 || response.Languages != nil {
+		openaiMeta := map[string]interface{}{}
+		if len(diarizedSegments) > 0 {
+			openaiMeta["segments"] = diarizedSegments
 		}
+		if response.Languages != nil {
+			// Full detected-language list (multilingual results are not
+			// collapsed to an arbitrary single language).
+			languages := make([]map[string]interface{}, len(response.Languages))
+			for i, l := range response.Languages {
+				languages[i] = map[string]interface{}{"code": l.Code}
+			}
+			openaiMeta["languages"] = languages
+		}
+		result.ProviderMetadata = map[string]interface{}{"openai": openaiMeta}
 	}
 
 	return result, nil
@@ -444,9 +452,14 @@ var openaiTranscriptionLanguages = map[string]string{
 }
 
 type openaiTranscriptionResponse struct {
-	Text     string                 `json:"text"`
-	Duration *float64               `json:"duration"`
-	Language string                 `json:"language,omitempty"`
+	Text     string   `json:"text"`
+	Duration *float64 `json:"duration"`
+	Language string   `json:"language,omitempty"`
+	// Languages is the detected-language list (nil when absent or null; an
+	// empty non-nil slice when the API sent []).
+	Languages []struct {
+		Code string `json:"code"`
+	} `json:"languages"`
 	Usage    map[string]interface{} `json:"usage,omitempty"`
 	Segments []struct {
 		Text    string  `json:"text"`
@@ -593,4 +606,27 @@ func validateTranscriptionProviderOptions(providerOptions map[string]interface{}
 		}
 	}
 	return nil
+}
+
+var openaiLanguageCodeRE = regexp.MustCompile(`^[a-z]{2}$`)
+
+func isOpenAILanguageCode(language string) bool { return openaiLanguageCodeRE.MatchString(language) }
+
+// openaiTranscriptionLanguage mirrors the TS language resolution: a two-letter
+// code is kept, a language name is mapped to its code, and otherwise a single
+// detected language from `languages` is used. Multiple or malformed detected
+// languages leave it empty.
+func openaiTranscriptionLanguage(language string, languages []struct {
+	Code string `json:"code"`
+}) string {
+	if isOpenAILanguageCode(language) {
+		return language
+	}
+	if code, ok := openaiTranscriptionLanguages[language]; ok {
+		return code
+	}
+	if len(languages) == 1 && isOpenAILanguageCode(languages[0].Code) {
+		return languages[0].Code
+	}
+	return ""
 }
