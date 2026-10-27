@@ -580,7 +580,7 @@ func main() {}
 | `mcp.MCPEventWebhookGapArgs`, `mcp.MCPEventWebhookTerminatedArgs` | Arguments for `OnGap` and `OnTerminated`. |
 | `mcp.NullableOf(v)` | Builds a set `mcp.Nullable`; `mcp.NullableNull[T]()` builds an explicit null. |
 | `mcp.MCPEventAdapterTransport` | Transport metadata given to `CreateAdapter`; `Type` is `mcp.MCPEventTransportHTTP`, `mcp.MCPEventTransportSSE` or `mcp.MCPEventTransportCustom`. |
-| `mcp.ManagedSubscribeInput`, `mcp.ManagedSubscription` | Managed subscription input and record. `mcp.ManagedSubscriptionStatus` is `mcp.ManagedSubscriptionPending`, `mcp.ManagedSubscriptionActive`, `mcp.ManagedSubscriptionNeedsAuth`, `mcp.ManagedSubscriptionStopped`, `mcp.ManagedSubscriptionExpired` or `mcp.ManagedSubscriptionFailed`. |
+| `mcp.ManagedSubscribeInput`, `mcp.ManagedSubscription` | Managed subscription input and record. `ManagedSubscribeInput.TTLMs` is a `mcp.Nullable[int64]`: a lifetime in milliseconds, or `mcp.NullableNull[int64]()` to watch until stopped. `ExpiresAt` appears only on the returned record. `mcp.ManagedSubscriptionStatus` is `mcp.ManagedSubscriptionPending`, `mcp.ManagedSubscriptionActive`, `mcp.ManagedSubscriptionNeedsAuth`, `mcp.ManagedSubscriptionStopped`, `mcp.ManagedSubscriptionExpired` or `mcp.ManagedSubscriptionFailed`. |
 | `mcp.ListManagedSubscriptionsInput`, `mcp.ListManagedSubscriptionsResult` | Managed listing input and result page. |
 
 Managed adapters receive a `context.Context` instead of TS request options: cancel it or set a deadline to bound a call. Cancelling does not cancel an already accepted remote subscription.
