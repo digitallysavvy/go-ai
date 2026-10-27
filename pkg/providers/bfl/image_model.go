@@ -274,15 +274,12 @@ func bflLatestProviderOptions(opts *provider.ImageGenerateOptions) (map[string]i
 	return merged, nil
 }
 
-// jsNumber mirrors JavaScript Number(string) for decimal input: blank is 0 and
-// anything unreadable is NaN.
+// jsNumber mirrors JavaScript Number(string): blank is 0, 0x/0o/0b prefixes are
+// integers, and anything unreadable (including Go-only syntax such as "inf")
+// is NaN.
 func jsNumber(s string) float64 {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
+	f, ok := providerutils.JSNumber(s)
+	if !ok {
 		return math.NaN()
 	}
 	return f

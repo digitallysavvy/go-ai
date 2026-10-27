@@ -8,7 +8,7 @@ import (
 )
 
 func TestBuildAzureSpeechTranscribeMultipart_AudioPartCarriesMediaType(t *testing.T) {
-	buf, ct, err := buildAzureSpeechTranscribeMultipart([]byte("abc"), "audio/wav", map[string]interface{}{})
+	buf, ct, err := buildAzureSpeechTranscribeMultipart([]byte("abc"), "audio/wav", azureSpeechDefinition{})
 	if err != nil {
 		t.Fatal(err)
 	}
