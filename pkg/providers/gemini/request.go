@@ -281,9 +281,8 @@ func (m *LanguageModel) buildRequest(ctx context.Context, opts *provider.Generat
 	if imageConfig != nil {
 		genConfig["imageConfig"] = imageConfig
 	}
-	if len(genConfig) > 0 {
-		body["generationConfig"] = genConfig
-	}
+	// TS always sends generationConfig, `{}` when nothing is set.
+	body["generationConfig"] = genConfig
 
 	// Safety settings; a standalone threshold expands to the four configurable categories.
 	if v, ok := provOpts["safetySettings"]; ok && v != nil {
