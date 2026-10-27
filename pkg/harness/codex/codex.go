@@ -19,8 +19,8 @@ import (
 const HarnessID = "codex"
 
 // version is used in the client-app attribution string, mirroring TS
-// `VERSION` pinned to the ai@7.0.140 release this port targets.
-const version = "1.0.153"
+// `VERSION` pinned to the embedded bridge's source package version (VERSIONS.json).
+const version = "1.0.166"
 
 var _ harness.Harness = (*Harness)(nil)
 var _ harness.BootstrapProvider = (*Harness)(nil)
