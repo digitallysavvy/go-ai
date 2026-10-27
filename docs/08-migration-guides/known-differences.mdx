@@ -81,6 +81,24 @@ These details differ:
 - `SetMaxWorkers(0)` means no concurrency limit; TypeScript rejects 0.
 - On platforms other than Linux, macOS and Windows, the default worker cap
   is 32, because Go cannot read available memory there without cgo.
+- A resumed run whose `ToolExecutionOptions` has an empty `ToolCallID`
+  keeps the continuation's outer tool call ID. Go cannot tell an empty ID
+  from an unset one; TypeScript keeps an explicit `""`.
+
+## MCP transports
+
+- Transport failures that wrap a Go error (a failed dial, a broken pipe, a
+  request sent before `Connect` on `HTTPTransport`) are `*TransportError`,
+  whose text starts with `transport error: `. TypeScript lets the runtime's
+  own error through, and its text differs from Go's anyway. Errors that TS
+  creates itself use the TS text.
+- `HTTPTransport` reports a failed POST (an HTTP error status, an
+  unexpected content type, a failed authorization) to `OnError` once.
+  TypeScript reports these twice, because its inner and outer `catch`
+  blocks both call `onerror` with the same error.
+- `Connect` after `Close` starts the transport again, as in v0.5.
+  TypeScript's HTTP transport fails with "Transport already started", and
+  its stdio transport never finishes starting.
 
 ## fx: libfx runtime
 

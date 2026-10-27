@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // StdioTransport implements the Transport interface for stdio-based communication
@@ -95,6 +96,10 @@ type StdioTransportConfig struct {
 	OnError func(error) `json:"-"`
 }
 
+// stdioCloseWaitDelay bounds how long Close waits for the child's I/O after
+// killing it (exec.Cmd.WaitDelay).
+const stdioCloseWaitDelay = time.Second
+
 // stdioWindowsLineBreakMessage is TS createChildProcess's TypeError text.
 const stdioWindowsLineBreakMessage = "Stdio MCP commands and arguments must not contain line breaks on Windows."
 
@@ -164,6 +169,10 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 	// Node's spawn treats an undefined cwd -- the child starts in the
 	// parent process's current working directory.
 	t.cmd.Dir = t.workingDir
+	// TS close() does not wait for the child. Close here waits, so bound the
+	// wait for the stderr copy: a grandchild that inherited the stderr pipe
+	// would otherwise hold Close (and t.mu) until it exits.
+	t.cmd.WaitDelay = stdioCloseWaitDelay
 
 	// Get stdin, stdout, stderr pipes
 	var err error
@@ -253,7 +262,11 @@ func (t *StdioTransport) Send(ctx context.Context, message *MCPMessage) error {
 	t.mu.Unlock()
 
 	if !connected {
-		return NewTransportError("not connected", nil)
+		// TS send() throws MCPClientError("StdioClientTransport not
+		// connected"); *TransportError stays reachable through Cause.
+		err := NewMCPClientError(0, "StdioClientTransport not connected", nil)
+		err.Cause = NewTransportError("not connected", nil)
+		return err
 	}
 
 	// Marshal message to JSON

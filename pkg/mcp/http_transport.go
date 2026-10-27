@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -838,6 +839,22 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	}
 }
 
+// responseStatusText is fetch's Response.statusText: the reason phrase the
+// server sent (resp.Status without the code, "" when it sent none), or the
+// canonical text when resp.Status does not start with the code (a custom
+// SSEClient).
+func responseStatusText(resp *http.Response) string {
+	code := strconv.Itoa(resp.StatusCode)
+	switch {
+	case strings.HasPrefix(resp.Status, code+" "):
+		return strings.TrimPrefix(resp.Status, code+" ")
+	case resp.Status == code:
+		return ""
+	default:
+		return http.StatusText(resp.StatusCode)
+	}
+}
+
 func (t *HTTPTransport) queueReceivedMessages(messages []*MCPMessage) {
 	if len(messages) == 0 {
 		return
@@ -1239,8 +1256,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
 			t.expireSessionID(sessionIDForRequest)
 		}
-		statusText := http.StatusText(resp.StatusCode)
-		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, statusText)
+		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, responseStatusText(resp))
 		// TS reports only the status and URL here, not the response body.
 		t.reportError(NewMCPClientError(0, message, nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		connCancel()

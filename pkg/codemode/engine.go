@@ -266,6 +266,10 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		return "", false, false, werr
 	}
 
+	// TS run runManaged checks the abort signal before the worker cap.
+	if ctx.Err() != nil {
+		return "", false, false, NewAbortedError()
+	}
 	release, werr := acquireWorkerSlot(policy.MemoryLimitBytes)
 	if werr != nil {
 		return "", false, false, werr
