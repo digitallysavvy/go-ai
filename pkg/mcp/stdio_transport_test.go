@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -306,5 +307,30 @@ func TestStdioSendHonorsContextOnFullPipe(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Send did not honor ctx")
+	}
+}
+
+// TS StdioMCPTransport's ReadBuffer only yields newline-terminated lines, so
+// a final message the child writes without "\n" before exiting is never
+// delivered.
+func TestStdioTransportDropsUnterminatedFinalLine(t *testing.T) {
+	transport := NewStdioTransport(StdioTransportConfig{
+		Command: "sh",
+		Args:    []string{"-c", `printf '{"jsonrpc":"2.0","id":1,"result":{}}\r\n{"jsonrpc":"2.0","id":2,"result":{}}'`},
+	})
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	defer func() { _ = transport.Close() }()
+
+	msg, err := transport.Receive(context.Background())
+	if err != nil {
+		t.Fatalf("Receive() error = %v", err)
+	}
+	if fmt.Sprint(msg.ID) != "1" {
+		t.Fatalf("first message id = %v, want 1", msg.ID)
+	}
+	if msg, err := transport.Receive(context.Background()); !errors.Is(err, io.EOF) {
+		t.Fatalf("Receive() = %+v, %v; want EOF without the unterminated message", msg, err)
 	}
 }

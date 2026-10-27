@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -201,6 +202,7 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 	// Increase buffer size for large messages
 	buf := make([]byte, 0, 64*1024)
 	t.reader.Buffer(buf, mcpMaxResponseBodyBytes) // tool results (images) can be large
+	t.reader.Split(scanCompleteLines)
 
 	t.writer = bufio.NewWriter(t.stdin)
 
@@ -399,4 +401,18 @@ func newStdioCommand(command string, args []string, shell bool, shellPath string
 	}
 	line := strings.Join(append([]string{command}, args...), " ")
 	return shellCommand(shellPath, line)
+}
+
+// scanCompleteLines is bufio.ScanLines without its final-token rule: TS
+// StdioMCPTransport's ReadBuffer only yields newline-terminated lines, so
+// bytes left without a trailing "\n" when stdout closes are dropped rather
+// than parsed as a message.
+func scanCompleteLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return bufio.ScanLines(data[:i+1], false)
+	}
+	if atEOF {
+		return len(data), nil, nil
+	}
+	return 0, nil, nil
 }
