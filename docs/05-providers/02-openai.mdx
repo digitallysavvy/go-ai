@@ -953,8 +953,41 @@ A `web_search_call` whose status is `failed` or `incomplete` now produces a tool
 - Text parts that share one stored message id are replayed as a single `item_reference`.
 - For reasoning models, a stored assistant message is only replaced by an `item_reference` when its reasoning part is still present. If the reasoning was removed (for example by pruning), the text is sent as content instead of failing with "was provided without its required 'reasoning' item".
 - With `store: false`, provider-executed web search results are replayed as `web_search_call` items so the search context survives across steps. Results without a valid action are omitted, and other provider-executed tool results that cannot be replayed statelessly are omitted with an `other` warning (`Results for OpenAI tool <name> are not sent to the API when store is false`).
-- Custom tool input deltas are streamed as the JSON encoding of the string input: an opening `"`, JSON-escaped deltas, then a closing `"`. Concatenating the deltas yields the same JSON string as the final tool call input.
+- Custom tool input deltas are raw text. The `tool-input-start` chunk carries `ToolCall.InputEncoding = "text"` so UI message streams accumulate the string; the final tool call input stays JSON-encoded (see October 27 2026 catch-up).
 
 ### File references in chat
 
 The Chat Completions model resolves file parts whose data is a provider reference (`types.FileDataTypeReference`) with the `openai` key (OpenAI and Azure) and sends `{"type":"file","file":{"file_id":"..."}}`. OpenAI-compatible providers built on this model (Baseten, DeepInfra, Cerebras) resolve their own name instead. A reference with no ID for the provider fails the call with `*errors.NoSuchProviderReferenceError` instead of sending a file part without an ID.
+
+## October 27 2026 catch-up
+
+### Additional tools from tool results
+
+A normal tool can discover more function tools at runtime. Put their definitions on the tool result's `ProviderOptions["openai"]["additionalTools"]` and the Responses model sends an `additional_tools` item (`role: "developer"`) immediately after that result's `function_call_output`, in the original order, whenever the history is replayed. Each entry needs `type: "function"`, a non-empty `name` and a `parameters` object; `description` and `strict` are optional and unknown keys are rejected with an `InvalidArgumentError`.
+
+```go
+types.ToolResultContent{
+    ToolCallID: "call_search",
+    ToolName:   "connection_search",
+    Output:     &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: map[string]interface{}{"tool": "linear__list_issues"}},
+    ProviderOptions: map[string]interface{}{
+        "openai": map[string]interface{}{
+            "additionalTools": []interface{}{map[string]interface{}{
+                "type":       "function",
+                "name":       "linear__list_issues",
+                "parameters": map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
+            }},
+        },
+    },
+}
+```
+
+To keep the discovered tool executable and validated by the SDK without sending its definition in the request's top-level `tools`, set `ProviderOptions["openai"]["omitFromRequestTools"] = true` on that function tool. Omitted tools cannot be listed in `allowedTools` (they are dropped with a warning) and cannot be forced with `ToolChoice{Type: "tool"}`; use automatic tool choice for them.
+
+### Structured output with several final answers
+
+For JSON output, non-streaming calls parse the last `final_answer` message (`GenerateResult.StructuredOutputText`) instead of the concatenation of every assistant message. See [Generating structured data](../03-ai-sdk-core/10-generating-structured-data.mdx).
+
+### Custom tool deltas
+
+Custom tool input deltas are raw text again, not JSON-encoded. `ToolCall.InputEncoding` is `"text"` on the `tool-input-start` chunk and is forwarded as `inputEncoding` on UI message chunks and parts.

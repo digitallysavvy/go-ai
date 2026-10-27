@@ -743,6 +743,9 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				body["tool_choice"] = *allowedTools
 			}
 		} else if opts.ToolChoice.Type != "" {
+			if err := responses.CheckOmittedToolChoice(opts.Tools, opts.ToolChoice); err != nil {
+				return nil, false, warnings, err
+			}
 			body["tool_choice"] = convertResponsesToolChoice(opts.ToolChoice, opts.Tools)
 		}
 	}

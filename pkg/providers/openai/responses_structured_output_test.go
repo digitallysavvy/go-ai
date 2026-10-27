@@ -62,3 +62,29 @@ func TestResponsesDoGenerate_StructuredOutputTextIsLastFinalAnswer(t *testing.T)
 		t.Fatalf("StructuredOutputText = %q, want nil", *result.StructuredOutputText)
 	}
 }
+
+// TS #23291: omitFromRequestTools drops the tool from the request, and forcing
+// it via toolChoice is rejected.
+func TestResponsesBuildRequestBody_OmitFromRequestTools(t *testing.T) {
+	model := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "gpt-5.4")
+	tools := []types.Tool{
+		{Name: "connection_search", Parameters: map[string]interface{}{"type": "object"}},
+		{Name: "linear__list_issues", Parameters: map[string]interface{}{"type": "object"},
+			ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"omitFromRequestTools": true}}},
+	}
+	prompt := types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}}}}
+	body, _, err := model.buildRequestBody(&provider.GenerateOptions{Prompt: prompt, Tools: tools}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := body["tools"].([]interface{}); len(got) != 1 {
+		t.Fatalf("tools = %#v, want only connection_search", got)
+	}
+	_, _, err = model.buildRequestBody(&provider.GenerateOptions{
+		Prompt: prompt, Tools: tools,
+		ToolChoice: types.ToolChoice{Type: types.ToolChoiceTool, ToolName: "linear__list_issues"},
+	}, false)
+	if err == nil {
+		t.Fatal("expected forcing an omitted tool to fail")
+	}
+}
