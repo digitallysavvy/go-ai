@@ -4,7 +4,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -454,14 +453,17 @@ func TestDecisionModelDeserializerRegistryKeysRoundTrip(t *testing.T) {
 // whatever ended up registered, so a missing import produces no failure on
 // its own, just quiet under-coverage.
 func TestBlankImportsCoverAllSerializationPackages(t *testing.T) {
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("could not determine this test file's path via runtime.Caller")
+	// go test runs with the package directory as the working directory, so
+	// "." is pkg/providers and the file name is relative to it (works with
+	// and without -trimpath, unlike runtime.Caller).
+	providersDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
 	}
-	providersDir := filepath.Dir(thisFile)
+	thisFile := filepath.Join(providersDir, "serialization_registry_test.go")
 
 	var withSerialization []string
-	err := filepath.WalkDir(providersDir, func(path string, d fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(providersDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
