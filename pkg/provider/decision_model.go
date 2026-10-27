@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -34,6 +35,37 @@ type DecisionQuestion struct {
 	//     only "true"/"false" keys.
 	//   - "box": unused (a box question has instructions only).
 	Criteria interface{}
+}
+
+// OrderedKeys returns the keys of m in order: the entries of order that are
+// keys of m (first occurrence only), then the remaining keys sorted.
+func OrderedKeys[V any](m map[string]V, order []string) []string {
+	out := make([]string, 0, len(m))
+	seen := make(map[string]struct{}, len(m))
+	for _, k := range order {
+		if _, ok := m[k]; !ok {
+			continue
+		}
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	rest := make([]string, 0, len(m)-len(out))
+	for k := range m {
+		if _, ok := seen[k]; !ok {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
+}
+
+// QuestionIDs returns the question IDs of the call in QuestionOrder, then
+// the remaining ones sorted.
+func (o DecisionCallOptions) QuestionIDs() []string {
+	return OrderedKeys(o.Questions, o.QuestionOrder)
 }
 
 // DecisionStatePart is one ordered part of the shared decision state. Mirrors
@@ -259,6 +291,19 @@ type DecisionCallOptions struct {
 
 	// Questions maps question ID -> question.
 	Questions map[string]DecisionQuestion
+
+	// QuestionOrder optionally lists question IDs in the insertion order of
+	// the TypeScript questions object (Go maps are unordered). Providers that
+	// send the questions as a list use it; IDs it omits follow, sorted. Nil
+	// keeps the sorted order.
+	QuestionOrder []string
+
+	// CriteriaOrder optionally lists, per question ID, the keys of a choice
+	// Criteria map in the order the TypeScript object had them (JS objects
+	// keep insertion order, Go maps do not). Keys it omits follow, sorted.
+	// Kept beside the questions, not inside DecisionQuestion, so that struct
+	// stays comparable.
+	CriteriaOrder map[string][]string
 
 	// MaxOutputTokens is the maximum number of output tokens for models that
 	// support it (an integer >= 1; nil means unset).

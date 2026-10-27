@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -86,11 +85,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		}
 	}
 
-	ids := make([]string, 0, len(opts.Questions))
-	for id := range opts.Questions {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := opts.QuestionIDs()
 
 	entries := make([]decisionLanguageModelEntry, 0, len(ids))
 	for _, id := range ids {
@@ -144,11 +139,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		switch en.question.Type {
 		case "choice":
 			criteria, _ := en.question.Criteria.(map[string]interface{})
-			optionKeys := make([]string, 0, len(criteria))
-			for k := range criteria {
-				optionKeys = append(optionKeys, k)
-			}
-			sort.Strings(optionKeys)
+			optionKeys := provider.OrderedKeys(criteria, opts.CriteriaOrder[en.id])
 			optionKeysByIndex[i] = optionKeys
 
 			enumValues := make([]string, len(optionKeys))

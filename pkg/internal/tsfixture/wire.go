@@ -103,6 +103,40 @@ func (c WireCall) RawResponseFormatSchema() json.RawMessage {
 	return json.RawMessage(jsonorder.Stringify(rf))
 }
 
+// RawQuestionOrder returns the decision questions' IDs, and each question's
+// criteria keys, in the order the TS object had them.
+func (c WireCall) RawQuestionOrder() (ids []string, criteria map[string][]string) {
+	if len(c.argsRaw) == 0 {
+		return nil, nil
+	}
+	tree, ok := jsonorder.Parse(c.argsRaw)
+	if !ok {
+		return nil, nil
+	}
+	args, _ := tree.([]interface{})
+	if len(args) == 0 {
+		return nil, nil
+	}
+	qs, ok := jsonorder.Get(args[0], "questions")
+	if !ok {
+		return nil, nil
+	}
+	qo, ok := qs.(*jsonorder.Object)
+	if !ok {
+		return nil, nil
+	}
+	ids = qo.Keys()
+	criteria = map[string][]string{}
+	for _, id := range ids {
+		if cr, ok := jsonorder.Get(qs, id, "criteria"); ok {
+			if co, ok := cr.(*jsonorder.Object); ok {
+				criteria[id] = co.Keys()
+			}
+		}
+	}
+	return ids, criteria
+}
+
 // Arg returns the first argument as an object (the call options).
 func (c WireCall) Arg() map[string]interface{} {
 	if len(c.Args) == 0 {

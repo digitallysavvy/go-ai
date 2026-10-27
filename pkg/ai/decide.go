@@ -99,6 +99,13 @@ type DecideOptions struct {
 	// Questions maps question ID -> question.
 	Questions map[string]provider.DecisionQuestion
 
+	// QuestionOrder and CriteriaOrder optionally carry the insertion order
+	// of Questions and of each choice question's criteria keys (Go maps are
+	// unordered; TS objects are not). They are forwarded to the model, which
+	// uses them where it sends the questions in order. Nil keeps sorted order.
+	QuestionOrder []string
+	CriteriaOrder map[string][]string
+
 	// MaxOutputTokens is the maximum number of output tokens for models that
 	// support it. Must be an integer >= 1.
 	MaxOutputTokens *int
@@ -233,6 +240,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		res, callErr := model.DoDecide(callCtx, provider.DecisionCallOptions{
 			State:           preparedState,
 			Questions:       opts.Questions,
+			QuestionOrder:   opts.QuestionOrder,
+			CriteriaOrder:   opts.CriteriaOrder,
 			MaxOutputTokens: opts.MaxOutputTokens,
 			Reasoning:       opts.Reasoning,
 			Headers:         headers,

@@ -637,3 +637,36 @@ func TestDecisionModel_WarnsAboutUnsupportedMaxOutputTokensAndReasoning(t *testi
 		}
 	}
 }
+
+// Go maps are unordered; QuestionOrder and CriteriaOrder carry the TS object
+// insertion order to the wire (questions and choices are lists).
+func TestDecisionModel_HonorsQuestionAndCriteriaOrder(t *testing.T) {
+	p, rec := newDecisionProvider(t, decisionFixture, http.StatusOK)
+	opts := decisionTestOptions()
+	opts.QuestionOrder = []string{"severity", "refund", "department", "ghost", "refund"}
+	opts.CriteriaOrder = map[string][]string{"department": {"technical", "billing"}}
+	if _, err := decide(t, p, opts); err != nil {
+		t.Fatal(err)
+	}
+	qs, _ := rec.body["questions"].([]interface{})
+	var names []string
+	for _, q := range qs {
+		names = append(names, q.(map[string]interface{})["name"].(string))
+	}
+	if !reflect.DeepEqual(names, []string{"severity", "refund", "department"}) {
+		t.Fatalf("question order = %v", names)
+	}
+	choices := qs[2].(map[string]interface{})["choices"].([]interface{})
+	if choices[0].(map[string]interface{})["value"] != "technical" || choices[1].(map[string]interface{})["value"] != "billing" {
+		t.Fatalf("choices = %v", choices)
+	}
+	// Unlisted IDs follow sorted when only some are ordered.
+	opts.QuestionOrder = []string{"severity"}
+	if _, err := decide(t, p, opts); err != nil {
+		t.Fatal(err)
+	}
+	qs, _ = rec.body["questions"].([]interface{})
+	if qs[0].(map[string]interface{})["name"] != "severity" || qs[1].(map[string]interface{})["name"] != "department" || qs[2].(map[string]interface{})["name"] != "refund" {
+		t.Fatalf("partial order = %v", qs)
+	}
+}

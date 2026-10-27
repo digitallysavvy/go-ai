@@ -10,17 +10,17 @@ import (
 // TS #23470: a criteria-only question is sent without instructions and is not
 // rejected locally.
 func TestDecisionQuestionWire_CriteriaOnly(t *testing.T) {
-	choice := decisionQuestionWire("department", provider.DecisionQuestion{Type: "choice", Criteria: map[string]interface{}{"billing": []interface{}{"Charges"}}})
+	choice := decisionQuestionWire("department", provider.DecisionQuestion{Type: "choice", Criteria: map[string]interface{}{"billing": []interface{}{"Charges"}}}, nil)
 	if _, ok := choice["instructions"]; ok {
 		t.Fatalf("choice has instructions: %#v", choice)
 	}
-	score := decisionQuestionWire("severity", provider.DecisionQuestion{Type: "score", Criteria: []interface{}{"Low", "High"}})
+	score := decisionQuestionWire("severity", provider.DecisionQuestion{Type: "score", Criteria: []interface{}{"Low", "High"}}, nil)
 	if _, ok := score["instructions"]; ok {
 		t.Fatalf("score has instructions: %#v", score)
 	}
 	boolean := decisionQuestionWire("refund", provider.DecisionQuestion{Type: "boolean", Criteria: map[string]interface{}{
 		"true": "Requests money back", "false": []interface{}{"Status inquiry"},
-	}})
+	}}, nil)
 	want := map[string]interface{}{
 		"type": "predicate", "name": "refund",
 		"instructions": "Criteria for true:\nRequests money back\n\nCriteria for false:\n[\"Status inquiry\"]",
