@@ -280,7 +280,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 
 	messages := opts.Messages
 	prompt := opts.Prompt
-	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages)
+	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages, opts.Timeout)
 	if len(callConfig.Messages) > 0 {
 		messages = callConfig.Messages
 		prompt = ""
@@ -405,7 +405,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 	config.CallOptions = defaultedCallOptions
 	messages := opts.Messages
 	prompt := opts.Prompt
-	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages)
+	callConfig := (&ToolLoopAgent{config: config}).prepareGenerateCallConfig(ctx, prompt, messages, opts.Timeout)
 	if len(callConfig.Messages) > 0 {
 		messages = callConfig.Messages
 		prompt = ""
@@ -1203,9 +1203,14 @@ func (a *ToolLoopAgent) prepareCallConfig(ctx context.Context, stepNum int, prom
 
 // prepareGenerateCallConfig is prepareCallConfig for Generate and Stream.
 // The Go-only FilterActiveTools callback runs once on the call's tool set;
-// GenerateText/StreamText then apply ActiveTools after PrepareStep.
-func (a *ToolLoopAgent) prepareGenerateCallConfig(ctx context.Context, prompt string, messages []types.Message) PrepareCallConfig {
+// GenerateText/StreamText then apply ActiveTools after PrepareStep. A
+// per-call timeout wins over the one PrepareCall returns (TS
+// `timeout ?? preparedCall.timeout`).
+func (a *ToolLoopAgent) prepareGenerateCallConfig(ctx context.Context, prompt string, messages []types.Message, callTimeout *ai.TimeoutConfig) PrepareCallConfig {
 	callConfig := a.prepareCallConfig(ctx, 0, prompt, messages, nil, types.Usage{}, nil)
+	if callTimeout != nil {
+		callConfig.Timeout = callTimeout
+	}
 	if a.config.FilterActiveTools != nil {
 		callConfig.Tools = a.config.FilterActiveTools(ctx, 0, callConfig.Tools)
 	}
