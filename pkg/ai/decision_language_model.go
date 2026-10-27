@@ -322,6 +322,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 			Timestamp: genResult.ResponseMetadata.Timestamp,
 			ModelID:   genResult.ResponseMetadata.ModelID,
 			Headers:   genResult.ResponseMetadata.Headers,
+			Body:      genResult.ResponseMetadata.Body, // TS response: result.response, body included
 		}
 	}
 

@@ -434,3 +434,34 @@ func TestDecisionRubric_OmitsNilInstructions(t *testing.T) {
 		t.Fatalf("keys = %v", got)
 	}
 }
+
+// TS returns `response: result.response`, so the response body reaches the
+// decision result.
+func TestDecisionLanguageModel_DoDecide_KeepsResponseBody(t *testing.T) {
+	mock := &testutil.MockLanguageModel{
+		ProviderName: "test",
+		ModelName:    "test-model",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:             `{"q0":0.25}`,
+				FinishReason:     types.FinishReasonStop,
+				ResponseMetadata: &types.ResponseMetadata{ID: "r1", ModelID: "m1", Body: map[string]interface{}{"raw": true}},
+			}, nil
+		},
+	}
+	model, err := NewDecisionLanguageModel(DecisionLanguageModelOptions{Model: mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := model.DoDecide(context.Background(), provider.DecisionCallOptions{
+		State:     "x",
+		Questions: map[string]provider.DecisionQuestion{"refund": {Type: "boolean", Instructions: "Refund?"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := result.Response.Body.(map[string]interface{})
+	if result.Response.ID != "r1" || body["raw"] != true {
+		t.Fatalf("response = %+v", result.Response)
+	}
+}
