@@ -37,8 +37,23 @@ const (
 	ModelMistralVibeCliWithTools = "mistral-vibe-cli-with-tools"
 	ModelVoxtralSmall2507        = "voxtral-small-2507"
 	ModelVoxtralSmallLatest      = "voxtral-small-latest"
+	ModelZaiGLM5                 = "zai-glm-5"
 	ModelZaiGLM52                = "zai-glm-5-2"
+	ModelZaiGLM53                = "zai-glm-5-3"
+	ModelZaiGLM53Flash           = "zai-glm-5-3-flash"
+	ModelZaiGLMLatest            = "zai-glm-latest"
 )
+
+// mistralModelsWithLowHighMaxReasoningEffort mirrors
+// modelsWithLowHighMaxReasoningEffort in the TS chat model (TS #24062):
+// GLM-5.3 models accept only low, high and max reasoning effort and cannot
+// disable reasoning. Omitting reasoning_effort uses max.
+var mistralModelsWithLowHighMaxReasoningEffort = map[string]bool{
+	ModelZaiGLM5:       true,
+	ModelZaiGLM53:      true,
+	ModelZaiGLM53Flash: true,
+	ModelZaiGLMLatest:  true,
+}
 
 // mistralModelsWithoutReasoningEffort mirrors modelsWithoutReasoningEffort in
 // ai/packages/mistral/src/mistral-chat-language-model.ts: known non-reasoning

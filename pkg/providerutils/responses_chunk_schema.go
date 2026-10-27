@@ -80,9 +80,10 @@ var (
 	zRespStatus3 = zEnum("in_progress", "completed", "incomplete")
 
 	zRespShellCall = zObj(fl("type", zLit("shell_call")), fl("id", zStr), fl("call_id", zStr), fl("status", zRespStatus3),
-		fl("action", zObj(fl("commands", zArr(zStr)))))
+		fl("action", zObj(fl("commands", zArr(zStr)), fl("timeout_ms", nNum), fl("max_output_length", nNum))))
 
 	zRespShellOutput = zObj(fl("type", zLit("shell_call_output")), fl("id", zStr), fl("call_id", zStr), fl("status", zRespStatus3),
+		fl("max_output_length", nNum),
 		fl("output", zArr(zObj(fl("stdout", zStr), fl("stderr", zStr), fl("outcome", zDiscType(map[string]zNode{
 			"timeout": zObj(fl("type", zLit("timeout"))),
 			"exit":    zObj(fl("type", zLit("exit")), fl("exit_code", zNum)),

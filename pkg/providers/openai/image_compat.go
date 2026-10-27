@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -103,13 +104,31 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 	}
 	images := make([][]byte, 0, len(response.Data))
 	b64 := make([]string, 0, len(response.Data))
+	// TS getImages: base64 stays untouched when every item has it; items
+	// with only a URL are downloaded (in order). The provider headers go only
+	// to the configured API origin (TS credentialedOrigin); other hosts get
+	// the non-credential allowlist, and cross-origin redirects drop them all.
 	for _, d := range response.Data {
-		raw, err := base64.StdEncoding.DecodeString(d.B64JSON)
+		if d.B64JSON != "" {
+			raw, err := base64.StdEncoding.DecodeString(d.B64JSON)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+			}
+			images = append(images, raw)
+			b64 = append(b64, d.B64JSON)
+			continue
+		}
+		if d.URL == "" {
+			return nil, providererrors.NewProviderError(m.Provider(), 0, "", "Expected url in the image response", nil)
+		}
+		dlOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
+		dlOpts.Headers = m.compatDownloadHeaders(d.URL, opts.Headers)
+		raw, err := fileutil.Download(ctx, d.URL, dlOpts)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+			return nil, providererrors.NewProviderError(m.Provider(), 0, "", fmt.Sprintf("failed to download image: %v", err), err)
 		}
 		images = append(images, raw)
-		b64 = append(b64, d.B64JSON)
+		b64 = append(b64, base64.StdEncoding.EncodeToString(raw))
 	}
 	result := &types.ImageResult{
 		Images:       images,
@@ -126,6 +145,37 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 		result.Usage.InputTokens, result.Usage.OutputTokens, result.Usage.TotalTokens = u.InputTokens, u.OutputTokens, u.TotalTokens
 	}
 	return result, nil
+}
+
+// safeUntrustedFirstHopHeaders mirrors TS SAFE_UNTRUSTED_FIRST_HOP_HEADERS:
+// non-credential request metadata that may reach a host other than the
+// configured API origin.
+var safeUntrustedFirstHopHeaders = map[string]bool{
+	"accept": true, "accept-language": true, "baggage": true, "cache-control": true,
+	"idempotency-key": true, "if-match": true, "if-modified-since": true,
+	"if-none-match": true, "if-range": true, "if-unmodified-since": true,
+	"pragma": true, "range": true, "traceparent": true, "tracestate": true,
+	"user-agent": true, "x-correlation-id": true, "x-request-id": true,
+}
+
+// compatDownloadHeaders returns the headers for downloading a URL-only image
+// (TS fetchUntrustedUrl with credentialedOrigin = the request URL): the
+// provider and call headers when the URL is same-origin with the configured
+// base URL, otherwise only the non-credential allowlist.
+func (m *ImageModel) compatDownloadHeaders(imageURL string, callHeaders map[string]string) map[string]string {
+	all := internalhttp.MergeHeaders(m.provider.client.Headers(), callHeaders)
+	same := fileutil.IsSameOrigin(imageURL, m.provider.config.BaseURL)
+	out := make(map[string]string, len(all))
+	for k, v := range all {
+		lk := strings.ToLower(k)
+		if lk == "content-type" || lk == "content-length" {
+			continue // request-body metadata of the POST, not of the download
+		}
+		if same || safeUntrustedFirstHopHeaders[lk] {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // buildCompatEditBody builds the multipart form of TS convertToFormData:

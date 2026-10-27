@@ -1982,7 +1982,8 @@ func convertLocalShellOutput(part types.ToolResultContent) (interface{}, error) 
 
 func convertShellOutput(part types.ToolResultContent) (interface{}, error) {
 	var parsed struct {
-		Output []struct {
+		MaxOutputLength *int `json:"maxOutputLength"`
+		Output          []struct {
 			Stdout  string `json:"stdout"`
 			Stderr  string `json:"stderr"`
 			Outcome struct {
@@ -2003,9 +2004,10 @@ func convertShellOutput(part types.ToolResultContent) (interface{}, error) {
 		output = append(output, ShellCallOutputEntry{Stdout: entry.Stdout, Stderr: entry.Stderr, Outcome: outcome})
 	}
 	return ShellCallOutput{
-		Type:   "shell_call_output",
-		CallID: part.ToolCallID,
-		Output: output,
+		Type:            "shell_call_output",
+		CallID:          part.ToolCallID,
+		MaxOutputLength: parsed.MaxOutputLength,
+		Output:          output,
 	}, nil
 }
 

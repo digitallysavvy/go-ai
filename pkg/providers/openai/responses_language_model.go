@@ -29,6 +29,9 @@ import (
 type ResponsesLanguageModel struct {
 	provider *Provider
 	modelID  string
+	// requestModelID, when set, is sent as `model` instead of modelID (TS
+	// config.requestModelId; Azure reports the model ID but routes by deployment).
+	requestModelID string
 }
 
 // NewResponsesLanguageModel returns a ResponsesLanguageModel for the given model ID.
@@ -45,6 +48,20 @@ func (m *ResponsesLanguageModel) Provider() string { return m.provider.responses
 
 // ModelID returns the model ID.
 func (m *ResponsesLanguageModel) ModelID() string { return m.modelID }
+
+// WithRequestModelID sets the model ID sent to the API, keeping ModelID() (and
+// capability detection) on the reported model ID. It returns m for chaining.
+func (m *ResponsesLanguageModel) WithRequestModelID(id string) *ResponsesLanguageModel {
+	m.requestModelID = id
+	return m
+}
+
+func (m *ResponsesLanguageModel) requestModel() string {
+	if m.requestModelID != "" {
+		return m.requestModelID
+	}
+	return m.modelID
+}
 
 // SupportsTools reports whether the model supports tool calling.
 func (m *ResponsesLanguageModel) SupportsTools() bool { return true }
@@ -238,6 +255,19 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 				promptCacheRetention = v
 			}
 			if v, ok := openaiOpts["promptCacheOptions"]; ok {
+				if err := validateResponsesPromptCacheOptions(v, providerOptionsName); err != nil {
+					return nil, store, nil, err
+				}
+				// zod's object schema drops unknown keys before TS sends it.
+				if m, isMap := v.(map[string]interface{}); isMap {
+					known := make(map[string]interface{}, len(m))
+					for _, k := range []string{"mode", "ttl", "prewarm"} {
+						if val, has := m[k]; has {
+							known[k] = val
+						}
+					}
+					v = known
+				}
 				promptCacheOptions = v
 			}
 			if v, ok := openaiOpts["promptCacheKey"].(string); ok {
@@ -444,7 +474,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		ProviderOptionsName:                  providerOptionsName,
 		ToolSearchToolName:                   toolSearchToolName(opts.Tools),
 		ProviderToolNames:                    openAIProviderToolNames(opts.Tools),
-		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
+		OutputSchemaToolNames:                outputSchemaToolNames(responses.ScopeFunctionToolOptions(opts.Tools, providerOptionsName)),
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
 		IncludePromptCacheBreakpoint:         true,
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
@@ -536,7 +566,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	body := map[string]interface{}{
-		"model": m.modelID,
+		"model": m.requestModel(),
 		"input": input,
 	}
 	if stream {
@@ -723,7 +753,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Tools.
 	if len(opts.Tools) > 0 {
-		preparedTools, err := responses.PrepareToolsWithError(opts.Tools)
+		preparedTools, err := responses.PrepareToolsWithOptionsName(opts.Tools, providerOptionsName)
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -734,7 +764,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		warnings = append(warnings, toolSchemaWarnings...)
 		body["tools"] = preparedTools
 		if len(allowedToolNames) > 0 {
-			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedTools(opts.Tools, allowedToolNames, allowedToolsMode)
+			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedToolsWithOptionsName(opts.Tools, allowedToolNames, allowedToolsMode, providerOptionsName)
 			warnings = append(warnings, allowedToolWarnings...)
 			if err != nil {
 				return nil, false, warnings, err
@@ -4616,4 +4646,40 @@ func sliceHas(values []string, want string) bool {
 // search as a tool error (TS: status === 'failed' || 'incomplete').
 func isFailedWebSearchStatus(status string) bool {
 	return status == "failed" || status == "incomplete"
+}
+
+// validateResponsesPromptCacheOptions mirrors the TS Responses option schema
+// z.object({mode: z.enum(['implicit','explicit']).optional(),
+// ttl: z.enum(['30m','12h']).optional(), prewarm: z.boolean().optional()}).
+func validateResponsesPromptCacheOptions(value interface{}, providerOptionsName string) error {
+	field := "providerOptions." + providerOptionsName + ".promptCacheOptions"
+	invalid := func(sub, message string) error {
+		if sub != "" {
+			field += "." + sub
+		}
+		return &providererrors.InvalidArgumentError{Field: field, Message: message}
+	}
+	if value == nil {
+		return nil
+	}
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return invalid("", "must be an object")
+	}
+	if v, ok := m["mode"]; ok {
+		if s, isString := v.(string); !isString || (s != "implicit" && s != "explicit") {
+			return invalid("mode", `must be one of "implicit", "explicit"`)
+		}
+	}
+	if v, ok := m["ttl"]; ok {
+		if s, isString := v.(string); !isString || (s != "30m" && s != "12h") {
+			return invalid("ttl", `must be one of "30m", "12h"`)
+		}
+	}
+	if v, ok := m["prewarm"]; ok {
+		if _, isBool := v.(bool); !isBool {
+			return invalid("prewarm", "must be a boolean")
+		}
+	}
+	return nil
 }

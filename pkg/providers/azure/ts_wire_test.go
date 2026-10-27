@@ -18,7 +18,11 @@ func TestTSWire(t *testing.T) {
 	tsfixture.RunWire(t, "../testdata/tswire/azure.jsonl.gz", tsfixture.WireSuite{
 		SkipLanguage: true,
 		Skip: map[string]string{
-			"speech > doGenerate > should use correct URL format": "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
+			"generations > authenticates with an Entra ID token provider":            "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
+			"Speech requests > uses the Entra token instead of the key":              "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
+			"Speech requests > gets a fresh bearer token for each request":           "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
+			"Speech requests > does not replace an explicitly supplied bearer token": "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
+			"speech > doGenerate > should use correct URL format":                    "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
 		},
 		Provider: func(base string, m tsfixture.WireModel) (provider.Provider, error) {
 			srv := base

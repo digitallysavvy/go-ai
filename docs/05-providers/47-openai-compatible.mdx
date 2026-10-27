@@ -27,6 +27,16 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+## Image Responses
+
+Image generation and editing responses can contain base64 data (`b64_json`),
+image URLs (`url`), or a mixture of both. URL-based images are downloaded
+automatically so `Images` and `Base64Images` stay populated, in response
+order. Your provider headers (API key and per-call headers) are sent only when
+the image URL has the same origin as the configured base URL, which supports
+self-hosted servers that protect their image files. Other hosts receive no
+credentials, and a redirect to another origin drops them. When an item has both fields, base64 wins.
+
 ## Assistant Content Serialization
 
 Assistant messages with tool calls no longer use one shape for every

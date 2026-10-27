@@ -35,13 +35,16 @@ type openAIShellCallItem struct {
 	ID     string `json:"id"`
 	CallID string `json:"call_id"`
 	Action struct {
-		Commands []string `json:"commands"`
+		Commands        []string `json:"commands"`
+		TimeoutMs       *float64 `json:"timeout_ms"`
+		MaxOutputLength *float64 `json:"max_output_length"`
 	} `json:"action"`
 }
 
 type openAIShellCallOutputItem struct {
-	CallID string `json:"call_id"`
-	Output []struct {
+	CallID          string   `json:"call_id"`
+	MaxOutputLength *float64 `json:"max_output_length"`
+	Output          []struct {
 		Stdout  string `json:"stdout"`
 		Stderr  string `json:"stderr"`
 		Outcome struct {
@@ -61,14 +64,25 @@ func openAIShellToolCall(providerName string, tools []types.Tool, raw json.RawMe
 	if commands == nil {
 		commands = []string{}
 	}
-	args := map[string]interface{}{"action": map[string]interface{}{"commands": commands}}
+	// TS forwards action.timeout_ms / action.max_output_length as timeoutMs /
+	// maxOutputLength; null and missing stay undefined (omitted from the JSON).
+	type shellAction struct {
+		Commands        []string `json:"commands"`
+		TimeoutMs       *float64 `json:"timeoutMs,omitempty"`
+		MaxOutputLength *float64 `json:"maxOutputLength,omitempty"`
+	}
+	action := shellAction{Commands: commands, TimeoutMs: item.Action.TimeoutMs, MaxOutputLength: item.Action.MaxOutputLength}
 	input := marshalNoEscape(struct {
-		Action struct {
-			Commands []string `json:"commands"`
-		} `json:"action"`
-	}{Action: struct {
-		Commands []string `json:"commands"`
-	}{Commands: commands}})
+		Action shellAction `json:"action"`
+	}{Action: action})
+	argsAction := map[string]interface{}{"commands": commands}
+	if item.Action.TimeoutMs != nil {
+		argsAction["timeoutMs"] = *item.Action.TimeoutMs
+	}
+	if item.Action.MaxOutputLength != nil {
+		argsAction["maxOutputLength"] = *item.Action.MaxOutputLength
+	}
+	args := map[string]interface{}{"action": argsAction}
 	return types.ToolCall{
 		ID:               item.CallID,
 		ToolName:         openAIDeclaredToolName(tools, "openai.shell", "shell"),
@@ -93,10 +107,14 @@ func openAIShellToolResult(tools []types.Tool, raw json.RawMessage) (types.ToolR
 		}
 		output = append(output, map[string]interface{}{"stdout": o.Stdout, "stderr": o.Stderr, "outcome": outcome})
 	}
+	result := map[string]interface{}{"output": output}
+	if item.MaxOutputLength != nil {
+		result["maxOutputLength"] = *item.MaxOutputLength
+	}
 	return types.ToolResultContent{
 		ToolCallID: item.CallID,
 		ToolName:   openAIDeclaredToolName(tools, "openai.shell", "shell"),
-		Result:     map[string]interface{}{"output": output},
+		Result:     result,
 	}, true
 }
 

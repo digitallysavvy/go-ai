@@ -28,6 +28,9 @@ type MoonshotUsage struct {
 type PromptTokensDetails struct {
 	// Tokens that were read from cache
 	CachedTokens *int `json:"cached_tokens,omitempty"`
+
+	// Tokens that were written to the prompt cache
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 }
 
 // CompletionTokensDetails provides detailed breakdown of completion tokens
@@ -46,7 +49,8 @@ type moonshotUsageKnownFields struct {
 	TotalTokens         *float64 `json:"total_tokens"`
 	CachedTokens        *float64 `json:"cached_tokens"`
 	PromptTokensDetails *struct {
-		CachedTokens *float64 `json:"cached_tokens"`
+		CachedTokens     *float64 `json:"cached_tokens"`
+		CacheWriteTokens *float64 `json:"cache_write_tokens"`
 	} `json:"prompt_tokens_details"`
 	CompletionTokensDetails *struct {
 		ReasoningTokens *float64 `json:"reasoning_tokens"`
@@ -109,7 +113,12 @@ func ConvertMoonshotUsageRaw(raw json.RawMessage) (types.Usage, error) {
 	}
 	{
 		result.InputDetails = &types.InputTokenDetails{CacheReadTokens: &cacheReadTokens}
-		noCacheTokens := promptTokens - cacheReadTokens
+		var cacheWriteTokens int64
+		if known.PromptTokensDetails != nil && known.PromptTokensDetails.CacheWriteTokens != nil {
+			cacheWriteTokens = int64(*known.PromptTokensDetails.CacheWriteTokens)
+			result.InputDetails.CacheWriteTokens = &cacheWriteTokens
+		}
+		noCacheTokens := promptTokens - cacheReadTokens - cacheWriteTokens
 		result.InputDetails.NoCacheTokens = &noCacheTokens
 	}
 

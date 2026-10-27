@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -98,6 +100,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	if raw, ok := cacheWriteTokensByTTL(resp.Headers); ok {
+		if meta, ok := result.ProviderMetadata["moonshotai"].(map[string]json.RawMessage); ok {
+			meta["cacheWriteTokens"] = raw
+		}
+	}
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
 	// TS result.request.body: the request as sent.
 	result.RawRequest = reqBody
@@ -136,6 +143,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 	inner := newMoonshotStream(httpResp.Body, opts.IncludeRawChunks)
 	inner.requestBody = reqBody
+	inner.responseHeaders = httpResp.Header
 	return providerutils.WithResponseMetadata(streaming.NewWarningsStream(inner, warnings), httpResp.Header, m.ModelID()), nil
 }
 
@@ -445,6 +453,13 @@ func (m *LanguageModel) buildRequestBodyWithWarnings(opts *provider.GenerateOpti
 	if modelOpts.HasPromptCacheKey {
 		body["prompt_cache_key"] = modelOpts.PromptCacheKey
 	}
+	if modelOpts.PromptCacheOptions != nil {
+		cacheOptions := map[string]interface{}{"mode": modelOpts.PromptCacheOptions.Mode}
+		if modelOpts.PromptCacheOptions.TTL != "" {
+			cacheOptions["ttl"] = modelOpts.PromptCacheOptions.TTL
+		}
+		body["prompt_cache_options"] = cacheOptions
+	}
 	if modelOpts.HasSafetyIdentifier {
 		body["safety_identifier"] = modelOpts.SafetyIdentifier
 	}
@@ -735,6 +750,9 @@ type moonshotStream struct {
 	// exposed via RequestBody() (provider.StreamRequestBody, hand-off:
 	// "stream request body field").
 	requestBody interface{}
+
+	// responseHeaders carry the msh-usage-cache-write-tokens-* split.
+	responseHeaders http.Header
 }
 
 // RequestBody implements provider.StreamRequestBody, exposing the raw
@@ -1030,8 +1048,46 @@ func (s *moonshotStream) buildProviderMetadata() json.RawMessage {
 			meta["toolCallTypes"] = b
 		}
 	}
+	if raw, ok := cacheWriteTokensByTTL(s.responseHeaders); ok {
+		meta["cacheWriteTokens"] = raw
+	}
 	raw, _ := json.Marshal(map[string]interface{}{"moonshotai": meta})
 	return raw
+}
+
+// cacheWriteTokensByTTL mirrors TS extractCacheWriteTokensByTtl: the cache
+// write tokens split by TTL from Moonshot's usage response headers, as
+// {"ttl5m": n, "ttl1h": n}. A missing or malformed header counts as 0 when the
+// other is present; neither present yields no metadata.
+func cacheWriteTokensByTTL(headers http.Header) (json.RawMessage, bool) {
+	ttl5m, ok5m := parseTokenCountHeader(headers.Get("msh-usage-cache-write-tokens-5m"))
+	ttl1h, ok1h := parseTokenCountHeader(headers.Get("msh-usage-cache-write-tokens-1h"))
+	if !ok5m && !ok1h {
+		return nil, false
+	}
+	raw, err := json.Marshal(map[string]int64{"ttl5m": ttl5m, "ttl1h": ttl1h})
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
+}
+
+// parseTokenCountHeader accepts only a (trimmed) run of ASCII digits.
+func parseTokenCountHeader(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // Err returns any error that occurred during streaming

@@ -237,7 +237,7 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
-	tools := []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})}
+	tools := []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})} //nolint:staticcheck // exercises the deprecated tool
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		ID:     "resp_web",
 		Model:  "gpt-4o",
@@ -1219,7 +1219,7 @@ func TestResponsesLanguageModel_DoStream_WebSearchCallLifecycle(t *testing.T) {
 				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Search"}}},
 			},
 		},
-		Tools: []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})},
+		Tools: []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})}, //nolint:staticcheck // exercises the deprecated tool
 	})
 	if err != nil {
 		t.Fatalf("DoStream failed: %v", err)
@@ -2513,7 +2513,7 @@ func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
 		}},
 		ProviderOptions: map[string]interface{}{
 			"openai": map[string]interface{}{
-				"promptCacheOptions": map[string]interface{}{"mode": "manual", "ttl": "24h"},
+				"promptCacheOptions": map[string]interface{}{"mode": "explicit", "ttl": "12h", "prewarm": true},
 			},
 		},
 	}, false)
@@ -2521,7 +2521,7 @@ func TestResponsesLanguageModel_PromptCacheOptionsPassthrough(t *testing.T) {
 		t.Fatalf("buildRequestBody failed: %v", err)
 	}
 	opts, ok := body["prompt_cache_options"].(map[string]interface{})
-	if !ok || opts["mode"] != "manual" || opts["ttl"] != "24h" {
+	if !ok || opts["mode"] != "explicit" || opts["ttl"] != "12h" || opts["prewarm"] != true {
 		t.Fatalf("prompt_cache_options = %#v, want passthrough", body["prompt_cache_options"])
 	}
 }

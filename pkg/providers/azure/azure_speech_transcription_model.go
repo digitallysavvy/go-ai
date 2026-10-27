@@ -259,6 +259,11 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		durationInSeconds = &d
 	}
 
+	// TS exposes the parsed JSON body; a []byte would marshal as base64.
+	var rawBody interface{}
+	if json.Unmarshal(respBody, &rawBody) != nil {
+		rawBody = string(respBody)
+	}
 	return &types.TranscriptionResult{
 		Text:              strings.Join(textParts, " "),
 		Segments:          segments,
@@ -272,7 +277,7 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 			Timestamp: timestamp,
 			ModelID:   m.modelID,
 			Headers:   providerutils.ExtractHeaders(resp.Header),
-			Body:      respBody,
+			Body:      rawBody,
 		},
 	}, nil
 }

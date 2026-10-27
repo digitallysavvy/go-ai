@@ -40,7 +40,7 @@ func TestChatProviderOptionsInvalidArgument(t *testing.T) {
 		{"groq tier", gm, "groq", map[string]interface{}{"serviceTier": "gold"}, "invalid groq provider options"},
 		{"alibaba budget", am, "alibaba", map[string]interface{}{"thinkingBudget": 0}, "invalid alibaba provider options"},
 		{"alibaba bool", am, "alibaba", map[string]interface{}{"enableThinking": "yes"}, "invalid alibaba provider options"},
-		{"mistral enum", mm, "mistral", map[string]interface{}{"reasoningEffort": "low"}, "invalid mistral provider options"},
+		{"mistral enum", mm, "mistral", map[string]interface{}{"reasoningEffort": "medium"}, "invalid mistral provider options"},
 		{"mistral type", mm, "mistral", map[string]interface{}{"safePrompt": 1}, "invalid mistral provider options"},
 		{"cohere thinking", cm, "cohere", map[string]interface{}{"thinking": map[string]interface{}{"type": "maybe"}}, "invalid cohere provider options"},
 		{"zai id", zm, "zai", map[string]interface{}{"requestId": "abc"}, "invalid zai provider options"},

@@ -944,6 +944,22 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### `WebSearchPreview` is deprecated
+
+`tool.WebSearchPreview` (and `azure.WebSearchPreview`) is deprecated. Use `tool.WebSearch` instead; the `SearchContextSize` and `UserLocation` options are supported by both tools. The old name keeps working.
+
+### 12-hour prompt cache writes and prewarming (Responses)
+
+On the Responses API (GPT-5.6 and later), `providerOptions.openai.promptCacheOptions` accepts `ttl: "30m" | "12h"` (the minimum cache lifetime; 12h writes cost more), `mode: "implicit" | "explicit"` and `prewarm: true`, which writes the prompt to the cache without generating output (the result has no content and reports the writes in `Usage.InputDetails.CacheWriteTokens`). Invalid values (for example `ttl: "24h"`) return an `InvalidArgumentError` before the request is sent. A per-part `promptCacheBreakpoint` can set its own `ttl` (`{"mode": "explicit", "ttl": "12h"}`). The cache write split by TTL is available as `Usage.Raw["input_tokens_details"]["cache_write_tokens_details"]` (`ttl_30m_tokens`, `ttl_12h_tokens`). Chat Completions is unchanged: it supports `30m` only.
+
+### Transcription detected languages
+
+`TranscriptionResult.Language` now keeps a two-letter `language` code from the response (for example `"en"`), still maps language names such as `"english"` to their code, and falls back to a single entry in the response's `languages` array. The full `languages` array (`[{"code": "en"}, ...]`) is exposed as `ProviderMetadata["openai"]["languages"]`, so multilingual results are preserved without choosing an arbitrary language (`Language` stays empty when more than one language is detected).
+
+### Shell call execution controls
+
+The Responses `shell` tool now forwards the model-requested `action.timeout_ms` / `action.max_output_length` to your tool input as `action.timeoutMs` / `action.maxOutputLength` (omitted when null), in both generate and streaming. A `maxOutputLength` in the tool result is echoed back as `shell_call_output.max_output_length` on the next request, and a provider-executed `shell_call_output` surfaces it as `maxOutputLength` on the tool result.
+
 ### Failed web searches are tool errors
 
 A `web_search_call` whose status is `failed` or `incomplete` now produces a tool result with `Result: {"status": "<status>"}` and a non-empty `Error`, instead of a normal result with an empty action. This applies to `Generate`, streaming and batch results.

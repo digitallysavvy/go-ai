@@ -25,6 +25,12 @@ func TestTSWire(t *testing.T) {
 	suite := tsfixture.WireSuite{
 		ProviderTool: tsProviderTool,
 		BatchPrefix:  "/v1", // batch objects carry no URL config in the recording
+		SkipModel: func(m tsfixture.WireModel) string {
+			if strings.Contains(m.Cls, "Decision") {
+				return "DecisionCallOptions.Questions is a Go map: the decision prompt orders the questions and the choice criteria by key, TS by insertion order (open item); the harness drops file-part provider options; covered by decision_model_test.go"
+			}
+			return ""
+		},
 		Skip: map[string]string{
 			"OpenAI batch service > creates a Responses batch from prepared JSONL requests":                                                           "provider headers are not captured in the batch recording config; JSONL line key order is semantically irrelevant (covered by batch unit tests)",
 			"OpenAI batch service > warns when a provider tool can return unsupported batch output":                                                   "typed Go hosted tools are named by their id, so the warning feature text differs from the TS tool name; covered by TestBatchWarnsForUnsupportedHostedTool",
