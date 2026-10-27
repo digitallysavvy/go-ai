@@ -96,6 +96,21 @@ func (b *cpuBudget) stop() {
 	}
 }
 
+// exceeded reports whether the budget has run out, including time used since
+// the last resume that the timer has not yet acted on.
+func (b *cpuBudget) exceeded() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.expired {
+		return true
+	}
+	used := b.used
+	if b.running {
+		used += time.Since(b.since)
+	}
+	return b.limit > 0 && used >= b.limit
+}
+
 func (b *cpuBudget) hasExpired() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()

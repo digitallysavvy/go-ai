@@ -263,6 +263,13 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			out.err = classifySandboxFailure(derr, ctx, policy, budget)
 			return
 		}
+		// A pending interruption never hides an exceeded budget: the
+		// invocation fails instead of returning a continuation (TS `run`
+		// cpuTimeoutMs).
+		if interruptedResult && budget.exceeded() {
+			out.err = NewCPUTimeoutError(policy.CPUTimeoutMs)
+			return
+		}
 		out.resultJSON = rJSON
 		out.isUndefined = isUndef
 		out.interrupted = interruptedResult

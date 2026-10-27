@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/third_party/qjs"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -112,5 +113,55 @@ func TestExecutionPolicyCPUTimeoutDefaultsAndValidation(t *testing.T) {
 	}
 	if _, err := resolveExecutionPolicy(&ExecutionPolicy{CPUTimeoutMs: 2_147_483_648}); err == nil {
 		t.Fatal("expected a limit above the run maximum to be rejected")
+	}
+}
+
+// TS `run` cpuTimeoutMs: "A pending interruption never hides an exceeded
+// budget: the invocation fails instead of returning a continuation." The
+// drive below stands in for a script that spends its whole budget and then
+// stops at an interruption; it ignores the sandbox cancellation the budget
+// triggers, so only the post-drive check can turn it into a CPU timeout.
+func TestRunInSandboxInterruptionDoesNotHideExceededCPUBudget(t *testing.T) {
+	policy, err := resolveExecutionPolicy(&ExecutionPolicy{CPUTimeoutMs: 10, TimeoutMs: 10_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := withCPUBudget(context.Background(), newCPUBudget(policy.CPUTimeoutMs))
+	_, _, interrupted, err := runInSandbox(ctx, policy, func(*qjs.Context) (string, bool, bool, error) {
+		time.Sleep(50 * time.Millisecond) // guest time past the 10 ms budget
+		return "", false, true, nil
+	})
+	var cpuErr *CPUTimeoutError
+	if interrupted || !errors.As(err, &cpuErr) {
+		t.Fatalf("interrupted=%v err=%T %v, want *CPUTimeoutError and no continuation", interrupted, err, err)
+	}
+
+	// Within budget, the interruption is returned.
+	ctx = withCPUBudget(context.Background(), newCPUBudget(10_000))
+	policy.CPUTimeoutMs = 10_000
+	_, _, interrupted, err = runInSandbox(ctx, policy, func(*qjs.Context) (string, bool, bool, error) {
+		return "", false, true, nil
+	})
+	if err != nil || !interrupted {
+		t.Fatalf("interrupted=%v err=%v, want the interruption", interrupted, err)
+	}
+}
+
+func TestCPUBudgetExceededCountsRunningTime(t *testing.T) {
+	b := newCPUBudget(20)
+	b.start(func() {})
+	defer b.stop()
+	if b.exceeded() {
+		t.Fatal("exceeded right after start")
+	}
+	b.pause()
+	time.Sleep(40 * time.Millisecond) // paused: a host call, not guest time
+	if b.exceeded() {
+		t.Fatal("paused time counted toward the budget")
+	}
+	b.resume()
+	time.Sleep(40 * time.Millisecond)
+	if !b.exceeded() {
+		t.Fatal("running time past the limit not reported")
 	}
 }

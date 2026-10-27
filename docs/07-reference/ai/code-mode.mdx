@@ -90,8 +90,9 @@ Two of its limits bound time, and they measure different things:
 | `CPUTimeoutMs` | `10_000` | CPU time of the sandboxed code only. Time spent waiting on host tools does not count. | `*CPUTimeoutError` (`CODE_MODE_CPU_TIMEOUT`, details `cpuTimeoutMs`) |
 
 `CPUTimeoutMs` only takes effect when it is lower than `TimeoutMs`. Each
-continuation resume starts with a fresh CPU budget. A zero field uses its
-default; a negative value is rejected.
+continuation resume starts with a fresh CPU budget. A pending interruption
+never hides an exceeded budget: the run fails with `*CPUTimeoutError` instead
+of returning an `*Interrupt`. A zero field uses its default; a negative value is rejected.
 
 The Go sandbox runs on one goroutine, so `CPUTimeoutMs` is measured as the
 wall time the sandbox spends running JavaScript, paused for the whole of each
