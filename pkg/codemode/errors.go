@@ -46,6 +46,7 @@ type CodeModeError interface {
 var (
 	_ CodeModeError = (*BaseError)(nil)
 	_ CodeModeError = (*TimeoutError)(nil)
+	_ CodeModeError = (*CPUTimeoutError)(nil)
 	_ CodeModeError = (*AbortedError)(nil)
 	_ CodeModeError = (*ConcurrencyError)(nil)
 	_ CodeModeError = (*SourceTooLargeError)(nil)
@@ -68,6 +69,20 @@ func NewTimeoutError(timeoutMs int) *TimeoutError {
 		fmt.Sprintf("Code mode execution timed out after %dms.", timeoutMs),
 		"CODE_MODE_TIMEOUT",
 		map[string]interface{}{"timeoutMs": timeoutMs},
+	)}
+}
+
+// CPUTimeoutError is raised when sandboxed code exceeds its CPU time limit.
+// Time spent waiting on host tools does not count toward this limit. Mirrors
+// TypeScript's CodeModeCpuTimeoutError.
+type CPUTimeoutError struct{ *BaseError }
+
+// NewCPUTimeoutError creates a CPUTimeoutError for the given CPU budget.
+func NewCPUTimeoutError(cpuTimeoutMs int) *CPUTimeoutError {
+	return &CPUTimeoutError{NewError(
+		fmt.Sprintf("Code mode execution exceeded its CPU time limit of %dms.", cpuTimeoutMs),
+		"CODE_MODE_CPU_TIMEOUT",
+		map[string]interface{}{"cpuTimeoutMs": cpuTimeoutMs},
 	)}
 }
 

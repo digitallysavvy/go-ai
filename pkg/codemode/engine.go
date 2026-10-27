@@ -173,12 +173,23 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// The CPU budget cancels the sandbox through its own context so it is
+	// told apart from the wall-clock timeout. RunCodeMode attaches the budget
+	// to ctx so the tool bridge can pause it around host calls.
+	budget := cpuBudgetFrom(ctx)
+	if budget == nil {
+		budget = newCPUBudget(policy.CPUTimeoutMs)
+	}
+	sandboxCtx, cancelSandbox := context.WithCancel(runCtx)
+	defer cancelSandbox()
+	defer budget.stop()
+
 	ch := make(chan sandboxOutcome, 1)
 	go func() {
 		var out sandboxOutcome
 		defer func() {
 			if r := recover(); r != nil {
-				out = sandboxOutcome{err: classifySandboxFailure(fmt.Errorf("%v", r), ctx, policy)}
+				out = sandboxOutcome{err: classifySandboxFailure(fmt.Errorf("%v", r), ctx, policy, budget)}
 			}
 			select {
 			case ch <- out:
@@ -210,7 +221,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			MemoryLimit:        policy.MemoryLimitBytes,
 			MaxStackSize:       policy.MaxStackSizeBytes,
 			MaxExecutionTime:   policy.TimeoutMs,
-			Context:            runCtx,
+			Context:            sandboxCtx,
 			CloseOnContextDone: true,
 			NoFSMount:          true,
 			DisableModules:     true,
@@ -218,7 +229,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 			Stderr:             consoleBudget.writer(),
 		})
 		if nerr != nil {
-			out.err = classifySandboxFailure(nerr, ctx, policy)
+			out.err = classifySandboxFailure(nerr, ctx, policy, budget)
 			return
 		}
 		defer func() {
@@ -241,12 +252,15 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 		// `await import('qjs:std')`/`'qjs:os'`/`'qjs:bjson'` reach the same
 		// host-escape primitives independently of the global object.
 		if herr := installRuntimeHardening(jsCtx); herr != nil {
-			out.err = classifySandboxFailure(herr, ctx, policy)
+			out.err = classifySandboxFailure(herr, ctx, policy, budget)
 			return
 		}
+		// Sandbox setup (WASM instantiation, hardening) is not sandboxed code:
+		// the CPU budget counts only the script's own execution.
+		budget.start(cancelSandbox)
 		rJSON, isUndef, interruptedResult, derr := drive(jsCtx)
 		if derr != nil {
-			out.err = classifySandboxFailure(derr, ctx, policy)
+			out.err = classifySandboxFailure(derr, ctx, policy, budget)
 			return
 		}
 		out.resultJSON = rJSON
@@ -258,6 +272,9 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 	case out := <-ch:
 		return out.resultJSON, out.isUndefined, out.interrupted, out.err
 	case <-time.After(timeout + sandboxTimeoutGrace):
+		if budget.hasExpired() {
+			return "", false, false, NewCPUTimeoutError(policy.CPUTimeoutMs)
+		}
 		return "", false, false, NewTimeoutError(policy.TimeoutMs)
 	}
 }
@@ -268,11 +285,14 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 // message is preserved verbatim (RunCodeMode further prefers a preserved
 // *typed* CodeModeError captured by the tool bridge, when one caused the
 // failure; see toolBridge.lastCodeModeErr).
-func classifySandboxFailure(err error, outerCtx context.Context, policy resolvedPolicy) error {
+func classifySandboxFailure(err error, outerCtx context.Context, policy resolvedPolicy, budget *cpuBudget) error {
 	msg := err.Error()
 	if looksLikeContextCancellation(msg) {
 		if outerCtx.Err() != nil {
 			return NewAbortedError()
+		}
+		if budget != nil && budget.hasExpired() {
+			return NewCPUTimeoutError(policy.CPUTimeoutMs)
 		}
 		return NewTimeoutError(policy.TimeoutMs)
 	}
