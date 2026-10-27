@@ -122,8 +122,15 @@ type CredentialMemory struct {
 	descendants map[string]*Credentials
 	order       []string // descendants keys, oldest first
 	refreshing  map[string]*refreshTask
-	saved       map[*Credentials]map[string]bool
+	// saved is libfx's WeakMap of the sessions each rotation was handed
+	// to. An entry outlives its descendants slot, since a request may
+	// still hold those credentials; savedOrder bounds it instead.
+	saved      map[*Credentials]map[string]bool
+	savedOrder []*Credentials
 }
+
+// maxSavedCredentials bounds CredentialMemory.saved.
+const maxSavedCredentials = 4 * maxRememberedCredentials
 
 type refreshTask struct {
 	done chan struct{}
@@ -517,8 +524,7 @@ func (z *authorizer) remember(spec *subscriptionSpec, supplied, next *Credential
 	key := keyOf(spec, supplied.AccessToken)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if old, ok := m.descendants[key]; ok {
-		delete(m.saved, old)
+	if _, ok := m.descendants[key]; ok {
 		for i, k := range m.order {
 			if k == key {
 				m.order = append(m.order[:i], m.order[i+1:]...)
@@ -531,7 +537,6 @@ func (z *authorizer) remember(spec *subscriptionSpec, supplied, next *Credential
 	if len(m.order) > maxRememberedCredentials {
 		oldest := m.order[0]
 		m.order = m.order[1:]
-		delete(m.saved, m.descendants[oldest])
 		delete(m.descendants, oldest)
 	}
 }
@@ -544,6 +549,11 @@ func (z *authorizer) markSaved(next *Credentials, sessionID string) bool {
 	if sessions == nil {
 		sessions = map[string]bool{}
 		m.saved[next] = sessions
+		m.savedOrder = append(m.savedOrder, next)
+		if len(m.savedOrder) > maxSavedCredentials {
+			delete(m.saved, m.savedOrder[0])
+			m.savedOrder = m.savedOrder[1:]
+		}
 	}
 	if sessions[sessionID] {
 		return false

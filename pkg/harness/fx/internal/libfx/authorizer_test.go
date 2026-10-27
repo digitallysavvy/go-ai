@@ -568,7 +568,7 @@ func TestStartAgentValidatesSubscriptionOptions(t *testing.T) {
 func TestAuthorizerMemoryIsBounded(t *testing.T) {
 	store := &hostStore{}
 	z := newTestAuthorizer(t, store.auth(), &authNetwork{})
-	for i := 0; i < maxRememberedCredentials+10; i++ {
+	for i := 0; i < maxSavedCredentials+10; i++ {
 		supplied := &Credentials{AccessToken: fmt.Sprintf("a%d", i)}
 		next := &Credentials{AccessToken: fmt.Sprintf("n%d", i)}
 		z.remember(codexSubscription, supplied, next)
@@ -576,8 +576,8 @@ func TestAuthorizerMemoryIsBounded(t *testing.T) {
 	}
 	z.mem.mu.Lock()
 	defer z.mem.mu.Unlock()
-	if len(z.mem.descendants) != maxRememberedCredentials || len(z.mem.order) != maxRememberedCredentials || len(z.mem.saved) != maxRememberedCredentials {
-		t.Fatalf("descendants %d order %d saved %d", len(z.mem.descendants), len(z.mem.order), len(z.mem.saved))
+	if len(z.mem.descendants) != maxRememberedCredentials || len(z.mem.order) != maxRememberedCredentials || len(z.mem.saved) != maxSavedCredentials || len(z.mem.savedOrder) != maxSavedCredentials {
+		t.Fatalf("descendants %d order %d saved %d/%d", len(z.mem.descendants), len(z.mem.order), len(z.mem.saved), len(z.mem.savedOrder))
 	}
 	if _, ok := z.mem.descendants[keyOf(codexSubscription, "a0")]; ok {
 		t.Fatal("the oldest rotation was not evicted")
@@ -762,5 +762,28 @@ func TestAuthorizerLateRequestReusesFinishedRefresh(t *testing.T) {
 	calls := n.modelCalls()
 	if len(calls) != 2 || calls[0].header.Get("authorization") != "Bearer "+rotated || calls[1].header.Get("authorization") != "Bearer "+rotated {
 		t.Fatalf("model calls = %+v", calls)
+	}
+}
+
+// A rotation replaced by a newer one keeps the sessions it was saved for
+// (libfx's WeakMap entry lives while a request holds it), so a late waiter
+// on its refresh never hands those older credentials to the host again.
+func TestAuthorizerReplacedRotationStaysSaved(t *testing.T) {
+	store := &hostStore{}
+	z := newTestAuthorizer(t, store.auth(), &authNetwork{})
+	supplied := &Credentials{AccessToken: "supplied"}
+	first, second := &Credentials{AccessToken: "first"}, &Credentials{AccessToken: "second"}
+	z.remember(codexSubscription, supplied, first)
+	if err := z.save(context.Background(), codexSubscription, first, "s"); err != nil {
+		t.Fatal(err)
+	}
+	z.remember(codexSubscription, supplied, second)
+	if err := z.save(context.Background(), codexSubscription, first, "s"); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.saved) != 1 {
+		t.Fatalf("the replaced rotation was saved %d times", len(store.saved))
 	}
 }
