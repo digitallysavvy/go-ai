@@ -283,7 +283,7 @@ func (r *remoteOps) execute(ctx context.Context, name string, input json.RawMess
 				files = append(files, rel)
 			}
 		}
-		sort.Strings(files)
+		sortUTF16(files)
 		return limitStrings(files, in.Limit, 1000), nil
 	case "ls":
 		var in struct {
@@ -310,7 +310,7 @@ func (r *remoteOps) execute(ctx context.Context, name string, input json.RawMess
 				names = append(names, n)
 			}
 		}
-		sort.Strings(names)
+		sortUTF16(names)
 		return limitStrings(names, in.Limit, 500), nil
 	}
 	return nil, fmt.Errorf("Unsupported sandbox tool %s", name) //nolint:staticcheck // matches TS SDK's exact error text
@@ -321,6 +321,27 @@ func stringOr(p *string, def string) string {
 		return def
 	}
 	return *p
+}
+
+// sortUTF16 sorts like JavaScript's default Array.prototype.sort, which
+// compares UTF-16 code units (so a surrogate pair sorts before U+E000..U+FFFF,
+// unlike a UTF-8 byte order). The sort is stable, as in JavaScript.
+func sortUTF16(values []string) {
+	keys := make(map[string][]uint16, len(values))
+	for _, v := range values {
+		if _, ok := keys[v]; !ok {
+			keys[v] = utf16.Encode([]rune(v))
+		}
+	}
+	sort.SliceStable(values, func(i, j int) bool {
+		a, b := keys[values[i]], keys[values[j]]
+		for k := 0; k < len(a) && k < len(b); k++ {
+			if a[k] != b[k] {
+				return a[k] < b[k]
+			}
+		}
+		return len(a) < len(b)
+	})
 }
 
 // jsNumber formats n like JavaScript's String(n) for ordinary values.
