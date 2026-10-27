@@ -182,6 +182,10 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		}
 		for _, h := range w.HTTP {
 			c.Model.RequestURLs = append(c.Model.RequestURLs, h.URL)
+			c.Model.RequestAuth = append(c.Model.RequestAuth, h.Headers["authorization"])
+		}
+		if arg := c.Arg(); arg != nil {
+			c.Model.CallHeaders = strMap(arg["headers"])
 		}
 		key := c.Model.Cls + "/" + c.Model.ModelID
 		p, ok := prov[key]

@@ -48,6 +48,12 @@ type WireModel struct {
 	// RequestURLs is set by the runner to the URLs of the HTTP requests the
 	// TS test made, for providers whose settings show only in the URLs.
 	RequestURLs []string `json:"-"`
+	// RequestAuth is set by the runner to the Authorization header of each
+	// recorded HTTP request ("" when absent), in order. A suite uses it to
+	// stand in for a TS token provider (code the recording cannot carry).
+	RequestAuth []string `json:"-"`
+	// CallHeaders is set by the runner to the headers the first call passed.
+	CallHeaders map[string]string `json:"-"`
 }
 
 // WireCall is one model.do*() invocation.
