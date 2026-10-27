@@ -529,8 +529,9 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 	}
 
 	// Perform request. http.Client.Timeout covers reading the response body,
-	// so the shared default client's 60s budget would cut off long-running
-	// streams (TS fetch has no overall timeout; callers cancel via ctx).
+	// so a timeout set on the shared default client would cut off
+	// long-running streams (TS fetch has no overall timeout; callers cancel
+	// via ctx); streamClient drops it.
 	httpResp, err := c.streamClient().Do(httpReq)
 	if err != nil {
 		return nil, transportError(err)
