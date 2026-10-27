@@ -122,3 +122,7 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   message is the HTTP status text, returned unwrapped. Match it with
   `errors.As` on `*providererrors.ProviderError` and its `StatusCode` instead
   of `*providererrors.DownloadError`.
+- **KlingAI `VideoModel()` accepts any model ID.** As in TS, an unknown or
+  empty ID is reported by `DoStart` (and so `GenerateVideo`) as
+  `*providererrors.NoSuchModelError`, not by `VideoModel()`. Check the error
+  from the call instead of only the one from `VideoModel()`.
