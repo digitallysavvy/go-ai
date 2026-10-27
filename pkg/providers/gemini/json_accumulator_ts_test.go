@@ -49,12 +49,12 @@ func loadTSAccumulatorCases(t *testing.T) []tsAccumulatorCase {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	zr, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 	sc := bufio.NewScanner(zr)
 	sc.Buffer(make([]byte, 1<<20), 1<<24)
 	var cases []tsAccumulatorCase
