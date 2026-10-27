@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -169,4 +171,137 @@ func TestLibfxAgentExposesBothCustomApprovals(t *testing.T) {
 	if results != 2 || gw.postCount() != 2 || len(first.Steps()) != 1 || len(second.Steps()) != 1 {
 		t.Errorf("results %d requests %d steps %d/%d", results, gw.postCount(), len(first.Steps()), len(second.Steps()))
 	}
+}
+
+// TestLibfxAgentEchoesAutomaticResultPastPendingCall mirrors TS "echoes an
+// automatic custom result past an earlier pending call", for allow-all and
+// allow-edits, across a detach and resume.
+func TestLibfxAgentEchoesAutomaticResultPastPendingCall(t *testing.T) {
+	for _, mode := range []harness.PermissionMode{harness.PermissionModeAllowAll, harness.PermissionModeAllowEdits} {
+		t.Run(string(mode), func(t *testing.T) {
+			h, gw, sb, effects, effMu := parallelContext(t, "mixed")
+			var mu sync.Mutex
+			weatherCalls, automaticCalls := 0, 0
+			automatic := weatherTool(&mu, &automaticCalls, 18)
+			automatic.Name = "automatic_weather"
+			a, err := harness.NewAgent(harness.AgentSettings{
+				Harness:        h,
+				PermissionMode: mode,
+				UserTools:      map[string]types.Tool{"weather": weatherTool(&mu, &weatherCalls, 12), "automatic_weather": automatic},
+				ToolApproval:   harness.ToolApprovalConfiguration{"weather": ai.ToolApprovalStatusUserApproval},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			session, err := a.CreateSession(ctx, harness.CreateSessionOptions{SandboxSession: sb})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Destroy(ctx) //nolint:errcheck
+			first, err := a.Stream(ctx, agent.AgentStreamOptions{AgentGenerateOptions: agent.AgentGenerateOptions{Prompt: "Run the mixed batch in parallel.", HarnessSession: session}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var firstResults []string
+			collectResults(t, first, &firstResults)
+			if err := first.Err(); err != nil {
+				t.Fatal(err)
+			}
+			var approvals []types.ToolApprovalRequestContent
+			var names []string
+			for _, part := range first.Content() {
+				if r, ok := part.(types.ToolApprovalRequestContent); ok {
+					approvals = append(approvals, r)
+					names = append(names, r.ToolCall.ToolName)
+				}
+			}
+			wantApprovals, wantFirst := "weather", "automatic_weather,bash"
+			if mode == harness.PermissionModeAllowEdits {
+				wantApprovals, wantFirst = "bash,weather", "automatic_weather"
+			}
+			if joinSorted(names) != wantApprovals || joinSorted(firstResults) != wantFirst {
+				t.Fatalf("approvals %v, first results %v", names, firstResults)
+			}
+			mu.Lock()
+			if weatherCalls != 0 || automaticCalls != 1 {
+				t.Errorf("executions weather %d automatic %d", weatherCalls, automaticCalls)
+			}
+			mu.Unlock()
+			effMu.Lock()
+			wantEffects := 1
+			if mode == harness.PermissionModeAllowEdits {
+				wantEffects = 0
+			}
+			if len(*effects) != wantEffects {
+				t.Errorf("effects %v", *effects)
+			}
+			effMu.Unlock()
+			resumeFrom, err := session.Detach(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumed, err := a.CreateSession(ctx, harness.CreateSessionOptions{SessionID: session.SessionID(), SandboxSession: sb, ResumeFrom: resumeFrom})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resumed.Destroy(ctx) //nolint:errcheck
+			responses := make([]types.ToolApprovalResponseContent, len(approvals))
+			for i, ap := range approvals {
+				responses[i] = types.ToolApprovalResponseContent{ApprovalID: ap.ApprovalID, ToolCallID: ap.ToolCallID, Approved: true}
+			}
+			second, err := a.ContinueStream(ctx, agent.AgentStreamOptions{AgentGenerateOptions: agent.AgentGenerateOptions{HarnessSession: resumed}}, responses, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var secondResults []string
+			collectResults(t, second, &secondResults)
+			if err := second.Err(); err != nil {
+				t.Fatal(err)
+			}
+			wantSecond := "weather"
+			if mode == harness.PermissionModeAllowEdits {
+				wantSecond = "bash,weather"
+			}
+			if joinSorted(secondResults) != wantSecond {
+				t.Errorf("second results %v", secondResults)
+			}
+			effMu.Lock()
+			if len(*effects) != 1 || (*effects)[0] != "printf MIXED > mixed.txt" {
+				t.Errorf("effects %v", *effects)
+			}
+			effMu.Unlock()
+			mu.Lock()
+			if weatherCalls != 1 || automaticCalls != 1 {
+				t.Errorf("executions weather %d automatic %d", weatherCalls, automaticCalls)
+			}
+			mu.Unlock()
+			if n := gw.postCount(); n != 2 {
+				t.Errorf("requests = %d", n)
+			}
+		})
+	}
+}
+
+func collectResults(t *testing.T, r *ai.StreamTextResult, names *[]string) {
+	t.Helper()
+	stream := r.FullStream()
+	for {
+		chunk, err := stream.Next()
+		if errors.Is(err, io.EOF) {
+			return
+		}
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
+			*names = append(*names, chunk.ToolResult.ToolName)
+		}
+	}
+}
+
+func joinSorted(values []string) string {
+	out := append([]string(nil), values...)
+	sort.Strings(out)
+	return strings.Join(out, ",")
 }
