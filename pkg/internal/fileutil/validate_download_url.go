@@ -55,6 +55,12 @@ func ValidateDownloadURL(raw string) error {
 	return nil
 }
 
+// NormalizeEscapedURLHost percent-decodes the host of an absolute URL the way
+// the WHATWG URL parser does (net/url rejects such hosts), so that
+// "http://%6c%6f%63%61%6c%68%6f%73%74/" is seen as "http://localhost/". It
+// returns an error when the decoded host holds a forbidden host code point.
+func NormalizeEscapedURLHost(raw string) (string, error) { return normalizeEscapedURLHost(raw) }
+
 func normalizeEscapedURLHost(raw string) (string, error) {
 	schemeEnd := strings.Index(raw, "://")
 	if schemeEnd < 0 {

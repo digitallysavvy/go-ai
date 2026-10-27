@@ -86,10 +86,12 @@ func formatErrno(err error) string {
 // error is a context error (timeout or cancellation); everything else is
 // reported in the result.
 func fetchWebResource(ctx context.Context, rawURL string, headers map[string]string, maxBytes int64, transport http.RoundTripper, filter domainFilter) (fetchResult, error) {
-	client := &http.Client{
-		Transport: transport,
-		// Redirects are handled below, one validated hop at a time.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	// Requests go straight to the transport: http.Client would parse every
+	// Location header itself and fail on hosts net/url cannot parse (for
+	// example a percent-encoded host) before the guards below see them.
+	// Redirects are handled below, one validated hop at a time.
+	if transport == nil {
+		transport = http.DefaultTransport
 	}
 
 	current := rawURL
@@ -120,7 +122,7 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
-		resp, err := client.Do(req)
+		resp, err := transport.RoundTrip(req)
 		if err != nil {
 			if ctx.Err() != nil {
 				return fetchResult{}, ctx.Err()
@@ -137,6 +139,11 @@ func fetchWebResource(ctx context.Context, rawURL string, headers map[string]str
 		location := resp.Header.Get("Location")
 		if isRedirectStatus(resp.StatusCode) && location != "" {
 			drainAndClose(resp)
+			// Absolute locations are percent-decoded in the host like the
+			// WHATWG parser does, so the guards below see the real host.
+			if normalized, nerr := fileutil.NormalizeEscapedURLHost(whatwgPreprocess(location)); nerr == nil {
+				location = normalized
+			}
 			next, err := currentURL.Parse(location)
 			if err != nil {
 				return fetchResult{errCode: errNetwork, message: "A redirect could not be validated and was blocked."}, nil
