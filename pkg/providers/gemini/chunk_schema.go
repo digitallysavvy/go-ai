@@ -120,3 +120,10 @@ func chunkValidationMessage(data string) string {
 func validationIssueText(message string) string { return zodlite.IssueText(message) }
 
 func compactJSONString(data string) string { return zodlite.CompactJSON(data) }
+
+// ResponseValidationMessage validates a GenerateContent response body against
+// the TS responseSchema (the schema google-batch.ts applies to every batch
+// result line with safeValidateTypes). It returns "" when the body matches.
+func ResponseValidationMessage(data []byte) string {
+	return chunkValidationMessage(string(data))
+}

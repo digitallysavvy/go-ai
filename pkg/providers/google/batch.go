@@ -775,8 +775,10 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 		return item
 	}
 
+	// TS safeValidateTypes(responseSchema): a result that does not match the
+	// schema fails that item.
 	var geminiResp gemini.Response
-	if err := json.Unmarshal(response, &geminiResp); err != nil {
+	if gemini.ResponseValidationMessage(response) != "" || json.Unmarshal(response, &geminiResp) != nil {
 		return &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     key,
