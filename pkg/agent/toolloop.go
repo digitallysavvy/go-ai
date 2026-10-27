@@ -935,18 +935,21 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 		// CB-T23: Emit OnStepFinishEvent (after tool execution so ToolResults is populated)
 		ai.Notify(ctx, ai.OnStepFinishEvent{
-			CallID:             stepTel.callID(),
-			StepNumber:         stepResult.StepNumber,
-			Model:              stepResult.Model,
-			ModelProvider:      stepResult.Model.Provider,
-			ModelID:            stepResult.Model.ModelID,
-			Text:               stepResult.Text,
-			Reasoning:          stepResult.Reasoning,
-			ReasoningText:      stepResult.ReasoningText,
-			ToolCalls:          stepResult.ToolCalls,
-			StaticToolCalls:    stepResult.StaticToolCalls,
-			DynamicToolCalls:   stepResult.DynamicToolCalls,
-			ToolResults:        stepToolResults,
+			CallID:           stepTel.callID(),
+			StepNumber:       stepResult.StepNumber,
+			Model:            stepResult.Model,
+			ModelProvider:    stepResult.Model.Provider,
+			ModelID:          stepResult.Model.ModelID,
+			Text:             stepResult.Text,
+			Reasoning:        stepResult.Reasoning,
+			ReasoningText:    stepResult.ReasoningText,
+			ToolCalls:        stepResult.ToolCalls,
+			StaticToolCalls:  stepResult.StaticToolCalls,
+			DynamicToolCalls: stepResult.DynamicToolCalls,
+			// The public results, like StaticToolResults/DynamicToolResults
+			// and GenerateText's step event: approval requests and pending
+			// provider markers are content parts, not tool results.
+			ToolResults:        stepResult.ToolResults,
 			StaticToolResults:  stepResult.StaticToolResults,
 			DynamicToolResults: stepResult.DynamicToolResults,
 			FinishReason:       stepResult.FinishReason,
