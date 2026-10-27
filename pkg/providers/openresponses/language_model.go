@@ -202,6 +202,27 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		})
 	}
 
+	// These are ignored with warnings (TS reports them before the input
+	// conversion warnings).
+	if opts.StopSequences != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "stopSequences",
+		})
+	}
+	if opts.TopK != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "topK",
+		})
+	}
+	if opts.Seed != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "seed",
+		})
+	}
+
 	// Convert messages to Open Responses format
 	input, instructions, conversionWarnings, err := ConvertToOpenResponsesInputForProviderStrict(opts.Prompt.Messages, opts.Prompt.System, m.provider.config.Name, m.provider.config.StrictResponseInput, openResponsesExtensionOptions{Registry: m.provider.extensionRegistry, Tools: opts.Tools, CustomToolID: m.provider.config.CustomToolID})
 	if err != nil {
@@ -239,26 +260,6 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	}
 	if opts.FrequencyPenalty != nil {
 		body["frequency_penalty"] = *opts.FrequencyPenalty
-	}
-
-	// These are ignored with warnings
-	if opts.StopSequences != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "stopSequences",
-		})
-	}
-	if opts.TopK != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "topK",
-		})
-	}
-	if opts.Seed != nil {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "seed",
-		})
 	}
 
 	// Convert tools. Provider-defined tools are encoded via a registered
@@ -859,12 +860,13 @@ func (m *LanguageModel) convertResponse(response OpenResponsesResponse) (*types.
 			// item id a later turn needs to replay this text under
 			// Config.StrictResponseInput.
 			itemCopy := item
-			for _, part := range item.Content {
+			validAnnotations := openResponsesOutputTextAnnotations(item.Raw, item.Content)
+			for i, part := range item.Content {
 				if part.Type == "output_text" {
 					textParts = append(textParts, part.Text)
 					result.Content = append(result.Content, types.TextContent{
 						Text:             part.Text,
-						ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, part.Annotations),
+						ProviderMetadata: openResponsesTextMetadataPayload(m.providerName(), itemCopy.ID, validAnnotations[i]),
 					})
 				}
 			}
@@ -1741,10 +1743,59 @@ func openResponsesTextProviderMetadata(providerName string, item *OutputItem) js
 		return nil
 	}
 	var annotations []Annotation
-	for _, part := range item.Content {
-		annotations = append(annotations, part.Annotations...)
+	for _, partAnnotations := range openResponsesOutputTextAnnotations(item.Raw, item.Content) {
+		annotations = append(annotations, partAnnotations...)
 	}
 	return openResponsesTextMetadataPayload(providerName, item.ID, annotations)
+}
+
+// openResponsesOutputTextAnnotations is TS getOutputTextAnnotations applied to
+// every content part of a message item: a part's annotations are kept only
+// when every one of them is a well-formed url_citation (numeric start_index and
+// end_index, string url and title), otherwise the whole part contributes none.
+// The raw item JSON is consulted so a missing member is told apart from a zero
+// value; an item built without raw JSON keeps its typed annotations.
+func openResponsesOutputTextAnnotations(rawItem json.RawMessage, content []ContentPart) [][]Annotation {
+	out := make([][]Annotation, len(content))
+	var rawParts []struct {
+		Annotations json.RawMessage `json:"annotations"`
+	}
+	if len(rawItem) > 0 {
+		var item struct {
+			Content []struct {
+				Annotations json.RawMessage `json:"annotations"`
+			} `json:"content"`
+		}
+		if json.Unmarshal(rawItem, &item) == nil {
+			rawParts = item.Content
+		}
+	}
+	if len(rawParts) != len(content) {
+		for i, part := range content {
+			out[i] = part.Annotations
+		}
+		return out
+	}
+	for i, rawPart := range rawParts {
+		var entries []map[string]interface{}
+		if len(rawPart.Annotations) == 0 || json.Unmarshal(rawPart.Annotations, &entries) != nil {
+			continue
+		}
+		valid := make([]Annotation, 0, len(entries))
+		for _, entry := range entries {
+			startIndex, startOK := entry["start_index"].(float64)
+			endIndex, endOK := entry["end_index"].(float64)
+			url, urlOK := entry["url"].(string)
+			title, titleOK := entry["title"].(string)
+			if entry["type"] != "url_citation" || !startOK || !endOK || !urlOK || !titleOK {
+				valid = nil
+				break
+			}
+			valid = append(valid, Annotation{Type: "url_citation", URL: url, StartIndex: int(startIndex), EndIndex: int(endIndex), Title: title})
+		}
+		out[i] = valid
+	}
+	return out
 }
 
 func openResponsesToolCallMetadata(providerName, itemID, namespace string) map[string]interface{} {

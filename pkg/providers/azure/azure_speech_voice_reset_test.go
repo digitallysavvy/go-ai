@@ -51,3 +51,36 @@ func TestAzureSpeech_VoiceReset502IsNonRetryable400(t *testing.T) {
 		t.Errorf("other 502: status=%d retryable=%v, want 502 retryable", perr.StatusCode, perr.IsRetryable())
 	}
 }
+
+// TS createJsonErrorResponseHandler (transcription) uses the HTTP status text
+// for an empty or unparseable error body and accepts both error shapes; the
+// speech-synthesis handler only accepts {"error":{"message"}}.
+func TestAzureSpeechErrors_MessageShapes(t *testing.T) {
+	cases := []struct {
+		name   string
+		speech bool
+		status int
+		body   string
+		want   string
+	}{
+		{"transcription empty body uses status text", false, 400, "", "Bad Request"},
+		{"transcription unparseable uses status text", false, 503, "<html>", "Service Unavailable"},
+		{"transcription error.message", false, 400, `{"error":{"message":"bad audio"}}`, "bad audio"},
+		{"transcription top-level message", false, 400, `{"message":"bad audio"}`, "bad audio"},
+		{"speech top-level message is not parsed", true, 500, `{"message":"x"}`, "Azure Speech request failed with status 500."},
+		{"speech error.message", true, 400, `{"error":{"message":"bad voice"}}`, "bad voice"},
+		{"speech empty 400", true, 400, "", "Azure Speech request failed with status 400. Check the voice name, style, and output format."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := azureSpeechAPIError("azure.test", tc.status, stdhttp.Header{}, []byte(tc.body), tc.speech)
+			var perr *providererrors.ProviderError
+			if !errors.As(err, &perr) {
+				t.Fatalf("err = %v", err)
+			}
+			if perr.Message != tc.want {
+				t.Errorf("message = %q, want %q", perr.Message, tc.want)
+			}
+		})
+	}
+}

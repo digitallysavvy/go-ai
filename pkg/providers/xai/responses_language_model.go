@@ -203,7 +203,8 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 	}
 	// TS warns frequencyPenalty, presencePenalty, then stopSequences.
-	if len(opts.StopSequences) > 0 {
+	// TS: stopSequences != null (an empty array warns too).
+	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "stopSequences",
@@ -700,8 +701,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				Score    float64 `json:"score"`
 				Text     string  `json:"text"`
 			}
+			// TS: queries ?? [].
+			queries := item.Queries
+			if queries == nil {
+				queries = []string{}
+			}
 			resultData := map[string]interface{}{
-				"queries": item.Queries,
+				"queries": queries,
 			}
 			if item.Results != nil {
 				mapped := make([]fileSearchResult, len(item.Results))
@@ -912,21 +918,21 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 		}
 		result["action"] = a
 	case "open_page":
-		url := ""
+		// TS passes url through as is: an absent url stays absent.
+		a := map[string]interface{}{"type": "openPage"}
 		if action.URL != nil {
-			url = *action.URL
+			a["url"] = *action.URL
 		}
-		result["action"] = map[string]interface{}{"type": "openPage", "url": url}
+		result["action"] = a
 	case "find_in_page":
-		url := ""
+		a := map[string]interface{}{"type": "findInPage"}
 		if action.URL != nil {
-			url = *action.URL
+			a["url"] = *action.URL
 		}
-		pattern := ""
 		if action.Pattern != nil {
-			pattern = *action.Pattern
+			a["pattern"] = *action.Pattern
 		}
-		result["action"] = map[string]interface{}{"type": "findInPage", "url": url, "pattern": pattern}
+		result["action"] = a
 	}
 	return result
 }

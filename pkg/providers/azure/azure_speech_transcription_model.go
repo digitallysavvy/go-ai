@@ -315,44 +315,55 @@ func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definiti
 	return &buf, writer.FormDataContentType(), nil
 }
 
-// azureSpeechErrorBody mirrors the two shapes Azure Speech error bodies take:
-// {"error":{"message":...}} or {"message":...}.
+// azureSpeechErrorBody decodes the error shapes of Azure Speech failures.
+// Message pointers keep an explicit empty string distinct from an absent key,
+// as the zod schemas in TS do.
 type azureSpeechErrorBody struct {
 	Error *struct {
-		Message string `json:"message"`
+		Message *string `json:"message"`
 	} `json:"error"`
-	Message string `json:"message"`
+	Message *string `json:"message"`
 }
 
 // azureSpeechAPIError builds a *providererrors.ProviderError for a non-200
-// Azure Speech response, mirroring TS's failedResponseHandler: a parsed JSON
-// error message is used as-is; an empty 400 body (Azure's common failure
-// mode for a bad voice, style, or option) gets an actionable message instead
-// of a blank one.
+// Azure Speech response, mirroring the TS failedResponseHandler of each
+// backend.
 //
-// When detectVoiceReset is set (speech synthesis), an Envoy 502 whose body
-// contains "reset reason: protocol error" -- Azure's response to an unknown
-// voice or unsupported style -- is a client input error, so it is reported as
-// a non-retryable 400 (TS #21944). Other 502s stay retryable.
+// Speech synthesis (detectVoiceReset, TS azure-speech-speech-model.ts) only
+// accepts {"error":{"message"}}; anything else gets a status-specific message,
+// and an Envoy 502 whose body contains "reset reason: protocol error" --
+// Azure's response to an unknown voice or unsupported style -- is a client
+// input error, so it is reported as a non-retryable 400 (TS #21944). Other
+// 502s stay retryable.
+//
+// Transcription uses TS createJsonErrorResponseHandler with a union of
+// {"error":{"message"}} and {"message"}; an empty or unparseable body gets the
+// HTTP status text as its message.
 func azureSpeechAPIError(providerName string, statusCode int, headers stdhttp.Header, body []byte, detectVoiceReset bool) error {
 	isVoiceReset := detectVoiceReset && statusCode == stdhttp.StatusBadGateway &&
 		strings.Contains(string(body), "reset reason: protocol error")
-	message := ""
 	var parsed azureSpeechErrorBody
-	if len(body) > 0 && json.Unmarshal(body, &parsed) == nil {
-		if parsed.Error != nil && parsed.Error.Message != "" {
-			message = parsed.Error.Message
-		} else if parsed.Message != "" {
-			message = parsed.Message
-		}
-	}
-	if message == "" {
-		if isVoiceReset {
+	parseOK := json.Unmarshal(body, &parsed) == nil
+	var message string
+	if detectVoiceReset {
+		switch {
+		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
+			message = *parsed.Error.Message
+		case isVoiceReset:
 			message = "Azure Speech could not synthesize the request. Check that the voice is available for this model and that the style is supported by the voice."
-		} else if statusCode == stdhttp.StatusBadRequest {
+		case statusCode == stdhttp.StatusBadRequest:
 			message = "Azure Speech request failed with status 400. Check the voice name, style, and output format."
-		} else {
+		default:
 			message = "Azure Speech request failed with status " + strconv.Itoa(statusCode) + "."
+		}
+	} else {
+		switch {
+		case parseOK && parsed.Error != nil && parsed.Error.Message != nil:
+			message = *parsed.Error.Message
+		case parseOK && parsed.Message != nil:
+			message = *parsed.Message
+		default:
+			message = stdhttp.StatusText(statusCode)
 		}
 	}
 	perr := &providererrors.ProviderError{
