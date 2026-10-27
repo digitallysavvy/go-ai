@@ -33,7 +33,7 @@ func ValidateDownloadURL(raw string) error {
 	if host == "" {
 		return providererrors.NewDownloadError(raw, 0, "", "URL must have a hostname", nil)
 	}
-	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") {
+	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".internal") {
 		return providererrors.NewDownloadError(raw, 0, "", fmt.Sprintf("URL with hostname %s is not allowed", host), nil)
 	}
 	if strings.HasPrefix(parsed.Host, "[") && strings.Contains(parsed.Host, "]") {

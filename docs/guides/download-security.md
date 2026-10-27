@@ -37,6 +37,10 @@ result, err := ai.GenerateImage(ctx, ai.GenerateImageOptions{
 })
 ```
 
+## Blocked Hostnames
+
+Download URLs are also rejected before any request when the hostname is `localhost`, or ends in `.local`, `.localhost` or `.internal` (case-insensitive, with or without a trailing dot or port), or when it is a private, loopback or link-local IP address. The `.internal` suffix check is defense in depth on top of the connection-time IP validation; it does not replace it. A provider's configured base URL (its trusted origin) remains allowed, but redirects to any other `.internal` host are rejected.
+
 ## Why 2 GiB?
 
 The 2 GiB default limit:

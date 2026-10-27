@@ -48,8 +48,8 @@ func validateDownloadURL(rawURL string) error {
 		return providererrors.NewSSRFError(rawURL, "URL must have a hostname", nil)
 	}
 
-	// Block localhost and .local/.localhost domain names before DNS resolution.
-	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") {
+	// Block localhost and .local/.localhost/.internal domain names before DNS resolution.
+	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".internal") {
 		return providererrors.NewSSRFError(
 			rawURL,
 			fmt.Sprintf("URL with hostname %q is not allowed", host),
