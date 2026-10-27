@@ -551,6 +551,23 @@ func TestOSKeyringTouchesOnlyCodexEntry(t *testing.T) {
 		}
 		fail = false
 	}
+	// A program that cannot be started is an access failure, as in TS.
+	subscription.ExecFileInput = origInput
+	// Never run a real credential program here: macOS's is an absolute
+	// path, so that case only runs off macOS, and PATH holds nothing.
+	t.Setenv("PATH", t.TempDir())
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		if goos == "darwin" && runtime.GOOS == "darwin" {
+			continue
+		}
+		if _, statErr := os.Stat("/usr/bin/security"); goos == "darwin" && statErr == nil {
+			continue
+		}
+		err := osKeyring{goos}.write(context.Background(), codexKeyringService, account, "secret-value")
+		if err == nil || err.Error() != "Unable to access the Codex credential store." {
+			t.Errorf("%s write without the program = %v", goos, err)
+		}
+	}
 	if osCodexKeyring("plan9") != nil {
 		t.Error("an unsupported OS has a keyring")
 	}

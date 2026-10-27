@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -505,6 +507,13 @@ func (k osKeyring) write(ctx context.Context, service, account, value string) er
 		err = subscription.WriteWindowsCredentialManagerPassword(ctx, account+"."+service, account, value)
 	}
 	if err != nil {
+		// TS runCommandWithInput: a program that cannot be started is
+		// "access"; one that fails is "update".
+		var execErr *exec.Error
+		var pathErr *fs.PathError
+		if errors.As(err, &execErr) || errors.As(err, &pathErr) {
+			return errors.New("Unable to access the Codex credential store.") //nolint:staticcheck // matches TS SDK's exact error text
+		}
 		return errors.New("Unable to update the Codex credential store.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	return nil
