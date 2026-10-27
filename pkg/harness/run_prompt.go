@@ -2124,6 +2124,10 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 
 	if _, active := d.activeToolSet[raw.ToolName]; !isClientExecutedBuiltin && !active {
 		output := executionDeniedOutput(BuiltinToolFilteringDenialReason(raw.ToolName))
+		// TS sets the execution's toolOutput to this host-side denial, so the
+		// tool-execution-end callback reports it rather than the runtime's
+		// echoed copy.
+		d.setHostOutcome(raw.ToolCallID, hostToolOutcome{output: output})
 		d.markAwaitingEcho(raw.ToolCallID)
 		if err := d.submitToolResult(ToolResultSubmission{ToolCallID: raw.ToolCallID, Output: output}); err != nil {
 			return false, err

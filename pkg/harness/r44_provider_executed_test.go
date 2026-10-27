@@ -85,3 +85,52 @@ func TestR44CustomPendingApprovalRecordsProviderExecutedFalse(t *testing.T) {
 		t.Fatalf("approval response = %+v, want tool call providerExecuted false (set)", r)
 	}
 }
+
+// A call to a tool outside the active set is denied by the host. TS sets the
+// execution's toolOutput to that denial right away, so the
+// tool-execution-end callback reports the host's output, not the runtime's
+// echoed copy.
+func TestR44InactiveToolDenialReportsHostOutput(t *testing.T) {
+	hidden := types.Tool{
+		Name:       "hidden",
+		Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ran", nil
+		},
+	}
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			stop := FinishReason{Unified: FinishReasonStop}
+			return []StreamPart{
+				&StreamStartPart{},
+				&ToolCallPart{ToolCallID: "c1", ToolName: "hidden", Input: `{}`},
+				// The runtime echoes its own rendering of the denial.
+				&ToolResultPart{ToolCallID: "c1", ToolName: "hidden", Result: "denied by host"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	var mu sync.Mutex
+	var ends []ai.OnToolCallFinishEvent
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Tools: map[string]types.Tool{"hidden": hidden}, ActiveTools: map[string]types.Tool{},
+		Callbacks: Callbacks{OnToolExecutionEnd: func(_ context.Context, e ai.OnToolCallFinishEvent) {
+			mu.Lock()
+			ends = append(ends, e)
+			mu.Unlock()
+		}},
+	})
+	drainRunPrompt(t, out)
+	<-out.Done
+	mu.Lock()
+	defer mu.Unlock()
+	if len(ends) != 1 {
+		t.Fatalf("tool execution ends = %+v, want 1", ends)
+	}
+	got, ok := ends[0].ToolOutput.Result.(map[string]interface{})
+	if !ok || got["type"] != "execution-denied" || got["reason"] != BuiltinToolFilteringDenialReason("hidden") {
+		t.Fatalf("tool execution end output = %#v, want the host's execution-denied output", ends[0].ToolOutput.Result)
+	}
+}
