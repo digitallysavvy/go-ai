@@ -29,7 +29,7 @@ import (
 
 const (
 	ClientAppName    = "ai-sdk-harness-grok-build"
-	ClientAppVersion = "0.0.0-go"
+	ClientAppVersion = "1.0.102" // TS VERSION: the bridge manifest's source version
 	HarnessID        = "grok-build"
 )
 

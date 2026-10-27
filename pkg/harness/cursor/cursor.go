@@ -26,12 +26,12 @@ import (
 )
 
 // ClientAppName / ClientAppVersion are the ai-sdk client-app identity Cursor
-// requests are made with. VERSION mirrors the TS package's own version; the
-// Go SDK does not (yet) stamp a package version into adapter packages, so it
-// is fixed to "0.0.0-go" until a release process defines one.
+// requests are made with. ClientAppVersion is TS VERSION, the
+// @ai-sdk/harness-cursor package version at the TS release this SDK tracks
+// (e64ed82f27); bump it with the harness bridges.
 const (
 	ClientAppName    = "ai-sdk-harness-cursor"
-	ClientAppVersion = "0.0.0-go"
+	ClientAppVersion = "1.0.78"
 	HarnessID        = "cursor"
 )
 
