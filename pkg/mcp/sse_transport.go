@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -222,7 +221,7 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		if resp.StatusCode == http.StatusMethodNotAllowed {
 			message += ". This server does not support SSE transport. Try using `http` transport instead"
 		}
-		err := NewMCPClientError(0, strings.TrimSpace(message), nil, WithMCPHTTPResponse(resp.StatusCode, t.url, text))
+		err := NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, text))
 		t.reportError(err)
 		return err
 	}
