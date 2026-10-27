@@ -5,6 +5,7 @@ package toolbash
 import (
 	"context"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/sandbox/local"
@@ -156,10 +158,21 @@ func TestBashToolRejectsInvalidOptionsBeforeChangingTheSession(t *testing.T) {
 		}
 	}
 	check("relative working directory", Options{WorkingDirectory: "relative"}, "workingDirectory")
-	for _, v := range []int{0, -1, 2_147_483_648} {
+	timeouts, lengths := []int{0, -1}, []int{0, -1}
+	// Values past the TS bounds exist only where int is 64 bits; this test
+	// also builds for linux/386 and linux/arm.
+	if math.MaxInt > MaxTimeoutMs {
+		tooLong, unsafe := int64(MaxTimeoutMs)+1, maxSafeInteger+1
+		timeouts = append(timeouts, int(tooLong))
+		lengths = append(lengths, int(unsafe))
+		if _, err := CreateBashTool(context.Background(), Options{Sandbox: rec, MaxOutputLength: intPtr(int(maxSafeInteger))}); err != nil {
+			t.Fatalf("MAX_SAFE_INTEGER maxOutputLength rejected: %v", err)
+		}
+	}
+	for _, v := range timeouts {
 		check("timeout "+strconv.Itoa(v), Options{WorkingDirectory: "/app", TimeoutMs: intPtr(v)}, "timeout")
 	}
-	for _, v := range []int{0, -1} {
+	for _, v := range lengths {
 		check("maxOutputLength "+strconv.Itoa(v), Options{MaxOutputLength: intPtr(v)}, "maxOutputLength")
 	}
 	if _, err := CreateBashTool(context.Background(), Options{Sandbox: rec, TimeoutMs: intPtr(2_147_483_647)}); err != nil {
@@ -338,5 +351,19 @@ func TestBashToolRejectsNonStringCommand(t *testing.T) {
 	tool, _ := CreateBashTool(context.Background(), Options{Sandbox: sb})
 	if _, err := tool.Execute(context.Background(), map[string]interface{}{"command": 5}, types.ToolExecutionOptions{}); err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+// The byte budget is maxChars*utf8.UTFMax and must not overflow int on any
+// architecture.
+func TestBoundedOutputByteBudget(t *testing.T) {
+	if got := newBoundedOutput(30_000).maxBytes; got != 30_000*utf8.UTFMax {
+		t.Fatalf("maxBytes = %d", got)
+	}
+	if got := newBoundedOutput(int(maxScaledChars)).maxBytes; got != int(maxScaledChars)*utf8.UTFMax || got <= 0 {
+		t.Fatalf("maxBytes at the scaling limit = %d", got)
+	}
+	if got := newBoundedOutput(math.MaxInt).maxBytes; got != math.MaxInt {
+		t.Fatalf("maxBytes for math.MaxInt = %d", got)
 	}
 }

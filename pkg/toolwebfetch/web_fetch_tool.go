@@ -115,11 +115,11 @@ func CreateWebFetchTool(opts Options) (types.Tool, error) {
 	if opts.AllowedDomains != nil && opts.BlockedDomains != nil {
 		return types.Tool{}, &providerrors.InvalidArgumentError{Field: "allowedDomains", Message: "Cannot be combined with blockedDomains."}
 	}
-	maxLength, err := positiveOption("maxLength", opts.MaxLength, DefaultMaxLength, 1<<53-1)
+	maxLength, err := positiveOption("maxLength", opts.MaxLength, DefaultMaxLength, maxSafeInteger)
 	if err != nil {
 		return types.Tool{}, err
 	}
-	maxBytes, err := positiveOption("maxBytes", opts.MaxBytes, DefaultMaxBytes, 1<<53-1)
+	maxBytes, err := positiveOption("maxBytes", opts.MaxBytes, DefaultMaxBytes, maxSafeInteger)
 	if err != nil {
 		return types.Tool{}, err
 	}
@@ -229,11 +229,15 @@ func CreateWebFetchTool(opts Options) (types.Tool, error) {
 	}, nil
 }
 
-func positiveOption(name string, value *int, def, max int) (int, error) {
+// maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER, the upper bound TS
+// enforces. It is an int64 so the package builds where int is 32 bits.
+const maxSafeInteger int64 = 1<<53 - 1
+
+func positiveOption(name string, value *int, def int, max int64) (int, error) {
 	if value == nil {
 		return def, nil
 	}
-	if *value < 1 || *value > max {
+	if *value < 1 || int64(*value) > max {
 		return 0, &providerrors.InvalidArgumentError{
 			Field:   name,
 			Message: fmt.Sprintf("Must be an integer between 1 and %d.", max),
