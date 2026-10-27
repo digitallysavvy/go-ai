@@ -233,6 +233,16 @@ func reportUIStreamCallbackFailure(errCh chan<- error, r interface{}) {
 	}
 }
 
+// sendUIStreamErr fails the stream with err unless an earlier failure (for
+// example a step callback whose onError panicked) already filled errCh, so
+// the stream goroutine never blocks on the one-slot channel and out closes.
+func sendUIStreamErr(errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
+	default:
+	}
+}
+
 // CreateUIMessageStreamWithOptions creates a UI message stream with writer callbacks.
 func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStreamOptions) (<-chan UIMessageChunk, <-chan error) {
 	out := make(chan UIMessageChunk)
@@ -545,6 +555,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 	go func() {
 		defer close(out)
 		defer close(errCh)
+		// An OnError, MessageMetadata or conversion callback that panics
+		// fails the stream (TS: an error thrown in the transform errors the
+		// stream) instead of crashing the program from this goroutine.
+		defer func() {
+			if r := recover(); r != nil {
+				reportUIStreamCallbackFailure(errCh, r)
+			}
+		}()
 		if stream == nil {
 			errCh <- fmt.Errorf("stream is required")
 			return
@@ -810,7 +828,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		for {
 			select {
 			case <-ctx.Done():
-				errCh <- ctx.Err()
+				sendUIStreamErr(errCh, ctx.Err())
 				callOnEnd(finishReason)
 				return
 			default:
@@ -834,7 +852,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					return
 				}
 				failSourceOutcome(err)
-				errCh <- err
+				sendUIStreamErr(errCh, err)
 				appendErrorChunk(onError, safeEnqueue, err)
 				callOnEnd(finishReason)
 				return
