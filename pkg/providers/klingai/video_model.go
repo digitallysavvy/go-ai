@@ -18,6 +18,7 @@ import (
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/version"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for KlingAI
@@ -114,7 +115,7 @@ func (m *VideoModel) DoStart(ctx context.Context, opts *provider.VideoModelV3Sta
 		Method:  "POST",
 		Path:    endpointPath,
 		Body:    body,
-		Headers: mergeKlingAIHeaders(authToken, opts.Headers),
+		Headers: m.prov.requestHeaders(authToken, opts.Headers),
 	})
 	if err != nil {
 		// TS postJsonToApi lets the transport failure (an abort, or the
@@ -176,7 +177,7 @@ func (m *VideoModel) DoStatus(ctx context.Context, opts *provider.VideoModelV3St
 	}
 
 	downloadOpts := fileutil.TrustedOriginDownloadOptions(m.prov.config.BaseURL, nil)
-	downloadOpts.Headers = mergeKlingAIHeaders(authToken, opts.Headers)
+	downloadOpts.Headers = m.prov.requestHeaders(authToken, opts.Headers)
 
 	statusURL := strings.TrimRight(m.prov.config.BaseURL, "/") + op.EndpointPath + "/" + providerutils.EncodePathSegment(op.TaskID)
 
@@ -1037,12 +1038,30 @@ func flattenKlingAIHeaders(h map[string][]string) map[string]string {
 	return out
 }
 
-// mergeKlingAIHeaders builds the request headers for a KlingAI call: a fresh
-// bearer token followed by any caller-supplied headers.
-func mergeKlingAIHeaders(authToken string, headers map[string]string) map[string]string {
-	out := map[string]string{"Authorization": "Bearer " + authToken}
-	for k, v := range headers {
+// requestHeaders builds the request headers for a KlingAI call like the TS
+// provider's getHeaders plus combineHeaders: a fresh bearer token, then the
+// provider-configured headers (which may override it), the SDK user-agent
+// suffix, and finally the per-call headers. Header names compare
+// case-insensitively.
+func (p *Provider) requestHeaders(authToken string, callHeaders map[string]string) map[string]string {
+	out := map[string]string{}
+	set := func(k, v string) {
+		for existing := range out {
+			if strings.EqualFold(existing, k) {
+				delete(out, existing)
+			}
+		}
 		out[k] = v
+	}
+	set("Authorization", "Bearer "+authToken)
+	for k, v := range p.config.Headers {
+		set(k, v)
+	}
+	for k, v := range providerutils.WithUserAgentSuffix(out, version.ProviderUserAgent("klingai")) {
+		set(k, v)
+	}
+	for k, v := range callHeaders {
+		set(k, v)
 	}
 	return out
 }

@@ -141,7 +141,9 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 
 	// Poll for completion
-	requestHeaders := mergeStringMaps(m.provider.config.Headers, opts.Headers)
+	// TS combinedHeaders: provider headers (carrying the SDK user-agent suffix)
+	// combined with the call headers, sent on the poll and custom-proxy download.
+	requestHeaders := version.WithUserAgentSuffix(mergeStringMaps(m.provider.config.Headers, opts.Headers), version.ProviderUserAgent("black-forest-labs"))
 	result, err := m.pollResult(ctx, createResp, bflPollOptions(opts.ProviderOptions), requestHeaders)
 	if err != nil {
 		return nil, err
