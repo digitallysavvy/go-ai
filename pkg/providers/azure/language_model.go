@@ -17,6 +17,9 @@ import (
 type LanguageModel struct {
 	provider     *Provider
 	deploymentID string
+	// modelID is the reported model identity (settings modelId); empty means
+	// the deployment ID.
+	modelID string
 
 	once  sync.Once
 	inner *openai.LanguageModel
@@ -44,7 +47,7 @@ func (m *LanguageModel) delegate() *openai.LanguageModel {
 			ChatQuery:        chatQuery,
 			HTTPClient:       httpClient,
 		})
-		m.inner = openai.NewLanguageModel(chatProvider, m.deploymentID)
+		m.inner = openai.NewLanguageModel(chatProvider, m.ModelID()).WithRequestModelID(m.deploymentID)
 	})
 	return m.inner
 }
@@ -67,8 +70,14 @@ func (m *LanguageModel) Provider() string {
 	return "azure.chat"
 }
 
-// ModelID returns the deployment ID (Azure's equivalent of model ID)
+// ModelID returns the model ID reported for identity, telemetry and
+// capability detection: the settings modelId when supplied, otherwise the
+// deployment ID (Azure's equivalent of model ID). Requests always use the
+// deployment ID.
 func (m *LanguageModel) ModelID() string {
+	if m.modelID != "" {
+		return m.modelID
+	}
 	return m.deploymentID
 }
 

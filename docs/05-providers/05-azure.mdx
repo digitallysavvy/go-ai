@@ -147,6 +147,16 @@ if err != nil {
 }
 ```
 
+## Deployment Name and Model ID
+
+When the deployment name does not identify the underlying model, pass the model ID in a settings struct (also available as `ChatModelWithSettings`, `CompletionModelWithSettings` and `LanguageModelWithSettings`):
+
+```go
+model, err := provider.ResponsesModelWithSettings("production-chat", &azure.LanguageModelSettings{ModelID: "gpt-5"})
+```
+
+The SDK reports the model ID as the model identity, including in telemetry, and uses it to detect capabilities such as reasoning support and reasoning-effort updates (for example a GPT-6-or-later ID). API requests still use the deployment name, and the model ID Azure returns in response metadata is preserved. When omitted, the deployment name is used for both. Keep the supplied model ID aligned with the model running in your deployment.
+
 ## Other Model Types
 
 Azure also supports completions, embeddings, image generation, speech, and transcription through deployment names:

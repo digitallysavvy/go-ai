@@ -29,6 +29,9 @@ import (
 type ResponsesLanguageModel struct {
 	provider *Provider
 	modelID  string
+	// requestModelID, when set, is sent as `model` instead of modelID (TS
+	// config.requestModelId; Azure reports the model ID but routes by deployment).
+	requestModelID string
 }
 
 // NewResponsesLanguageModel returns a ResponsesLanguageModel for the given model ID.
@@ -45,6 +48,20 @@ func (m *ResponsesLanguageModel) Provider() string { return m.provider.responses
 
 // ModelID returns the model ID.
 func (m *ResponsesLanguageModel) ModelID() string { return m.modelID }
+
+// WithRequestModelID sets the model ID sent to the API, keeping ModelID() (and
+// capability detection) on the reported model ID. It returns m for chaining.
+func (m *ResponsesLanguageModel) WithRequestModelID(id string) *ResponsesLanguageModel {
+	m.requestModelID = id
+	return m
+}
+
+func (m *ResponsesLanguageModel) requestModel() string {
+	if m.requestModelID != "" {
+		return m.requestModelID
+	}
+	return m.modelID
+}
 
 // SupportsTools reports whether the model supports tool calling.
 func (m *ResponsesLanguageModel) SupportsTools() bool { return true }
@@ -533,7 +550,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	body := map[string]interface{}{
-		"model": m.modelID,
+		"model": m.requestModel(),
 		"input": input,
 	}
 	if stream {

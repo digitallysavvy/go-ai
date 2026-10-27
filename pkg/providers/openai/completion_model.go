@@ -20,6 +20,23 @@ import (
 type CompletionModel struct {
 	provider *Provider
 	modelID  string
+	// requestModelID, when set, is sent as `model` instead of modelID (TS
+	// config.requestModelId; Azure reports the model ID but routes by deployment).
+	requestModelID string
+}
+
+// WithRequestModelID sets the model ID sent to the API, keeping ModelID() as
+// the reported identity. It returns m for chaining.
+func (m *CompletionModel) WithRequestModelID(id string) *CompletionModel {
+	m.requestModelID = id
+	return m
+}
+
+func (m *CompletionModel) requestModel() string {
+	if m.requestModelID != "" {
+		return m.requestModelID
+	}
+	return m.modelID
 }
 
 // NewCompletionModel creates a new OpenAI completion model.
@@ -105,7 +122,7 @@ func (m *CompletionModel) buildCompletionRequest(opts *provider.GenerateOptions,
 	}
 
 	body := map[string]interface{}{
-		"model":  m.modelID,
+		"model":  m.requestModel(),
 		"prompt": completionPrompt,
 	}
 	stop := append([]string{}, stopSequences...)

@@ -238,9 +238,39 @@ func (p *Provider) LanguageModel(modelID string) (provider.LanguageModel, error)
 	return p.ResponsesModel(modelID)
 }
 
+// LanguageModelWithSettings is LanguageModel with optional settings (TS
+// azure(deploymentId, { modelId })).
+func (p *Provider) LanguageModelWithSettings(deploymentID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	return p.ResponsesModelWithSettings(deploymentID, settings)
+}
+
+// LanguageModelSettings are the optional per-model settings of the language
+// model factories (TS AzureOpenAILanguageModelSettings).
+type LanguageModelSettings struct {
+	// ModelID is the underlying model ID used for the reported identity
+	// (telemetry) and capability detection such as reasoning support. It
+	// defaults to the deployment ID. Requests always use the deployment ID.
+	ModelID string
+}
+
+func (s *LanguageModelSettings) modelID() string {
+	if s == nil {
+		return ""
+	}
+	return s.ModelID
+}
+
 // ChatModel returns a legacy deployment-based Chat Completions language model.
 func (p *Provider) ChatModel(modelID string) (provider.LanguageModel, error) {
-	return NewLanguageModel(p, modelID), nil
+	return p.ChatModelWithSettings(modelID, nil)
+}
+
+// ChatModelWithSettings is ChatModel with optional settings (TS
+// azure.chat(deploymentId, { modelId })).
+func (p *Provider) ChatModelWithSettings(deploymentID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	m := NewLanguageModel(p, deploymentID)
+	m.modelID = settings.modelID()
+	return m, nil
 }
 
 // Chat returns a legacy deployment-based Chat Completions language model.
@@ -281,6 +311,16 @@ func (p *Provider) DeepSeek(modelID string) (provider.LanguageModel, error) {
 // CompletionModel returns an Azure OpenAI Completions API language model by
 // deployment ID, matching the TypeScript Azure provider's completion factory.
 func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, error) {
+	return p.CompletionModelWithSettings(modelID, nil)
+}
+
+// CompletionModelWithSettings is CompletionModel with optional settings (TS
+// azure.completion(deploymentId, { modelId })).
+func (p *Provider) CompletionModelWithSettings(modelID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	deploymentID := modelID
+	if id := settings.modelID(); id != "" {
+		modelID = id
+	}
 	headers := p.staticAuthHeaders()
 
 	var completionQuery map[string]string
@@ -291,7 +331,7 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		Name:                          "azure",
 		NoAPIKey:                      true,
 		HeadersFunc:                   p.openaiHeadersFunc,
-		BaseURL:                       p.responsesBaseURL(modelID),
+		BaseURL:                       p.responsesBaseURL(deploymentID),
 		Headers:                       headers,
 		CompletionProviderName:        "azure.completion",
 		CompletionProviderOptionsName: "azure",
@@ -299,7 +339,7 @@ func (p *Provider) CompletionModel(modelID string) (provider.LanguageModel, erro
 		HTTPClient:                    p.httpClient,
 	})
 
-	return openai.NewCompletionModel(completionProvider, modelID), nil
+	return openai.NewCompletionModel(completionProvider, modelID).WithRequestModelID(deploymentID), nil
 }
 
 // Completion returns an Azure OpenAI Completions API language model.
@@ -311,6 +351,18 @@ func (p *Provider) Completion(modelID string) (provider.LanguageModel, error) {
 // deployment ID. Requests use /openai/v1/responses?api-version={version}, the
 // api-key header, and Azure's assistant- file ID compatibility prefix.
 func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error) {
+	return p.ResponsesModelWithSettings(modelID, nil)
+}
+
+// ResponsesModelWithSettings is ResponsesModel with optional settings (TS
+// azure.responses(deploymentId, { modelId })). The settings ModelID is the
+// reported model identity and drives capability detection; requests still use
+// the deployment ID.
+func (p *Provider) ResponsesModelWithSettings(modelID string, settings *LanguageModelSettings) (provider.LanguageModel, error) {
+	deploymentID := modelID
+	if id := settings.modelID(); id != "" {
+		modelID = id
+	}
 	headers := p.staticAuthHeaders()
 
 	var responsesQuery map[string]string
@@ -320,7 +372,7 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 	responsesProvider := openai.New(openai.Config{
 		Name:                         "azure",
 		HeadersFunc:                  p.openaiHeadersFunc,
-		BaseURL:                      p.responsesBaseURL(modelID),
+		BaseURL:                      p.responsesBaseURL(deploymentID),
 		Headers:                      headers,
 		ResponsesProviderName:        "azure.responses",
 		ResponsesProviderOptionsName: "azure",
@@ -330,7 +382,7 @@ func (p *Provider) ResponsesModel(modelID string) (provider.LanguageModel, error
 		HTTPClient:                   p.httpClient,
 	})
 
-	return openai.NewResponsesLanguageModel(responsesProvider, modelID), nil
+	return openai.NewResponsesLanguageModel(responsesProvider, modelID).WithRequestModelID(deploymentID), nil
 }
 
 // Responses returns an Azure OpenAI Responses API language model.
