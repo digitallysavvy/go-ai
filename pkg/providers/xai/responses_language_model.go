@@ -3,6 +3,7 @@ package xai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
@@ -748,10 +749,13 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					Result:     resultValue,
 				})
 			} else {
+				// TS: isError with the message as the result value.
+				failure := fmt.Sprintf("Image generation failed (status: %s).", item.Status)
 				result.Content = append(result.Content, types.ToolResultContent{
 					ToolCallID: item.ID,
 					ToolName:   toolName,
-					Error:      fmt.Sprintf("Image generation failed (status: %s).", item.Status),
+					Result:     failure,
+					Error:      failure,
 				})
 			}
 		}
@@ -1931,7 +1935,10 @@ func (s *xaiResponsesStream) queueProviderExecutedItem(itemType string, raw json
 			}
 			result.Result = v
 		} else {
-			result.Error = fmt.Errorf("Image generation failed (status: %s).", item.Status) //nolint:staticcheck // matches TS SDK's exact error text
+			// TS: isError with the message as the result value.
+			failure := fmt.Sprintf("Image generation failed (status: %s).", item.Status)
+			result.Result = failure
+			result.Error = errors.New(failure)
 		}
 	case "web_search_call":
 		result.Result = mapWebSearchAction(item.Action)

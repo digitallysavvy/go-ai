@@ -170,15 +170,19 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	finalAspectRatio := opts.AspectRatio
 	// Parse size if provided
 	if opts.Size != "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
 		if finalAspectRatio == "" {
 			finalAspectRatio = bflSizeAspectRatio(opts.Size)
 		}
-		if width > 0 && height > 0 {
-			reqBody["width"] = width
-			reqBody["height"] = height
+		// TS: width: Number(widthStr), height: Number(heightStr) from
+		// size.split('x'); a side Number() cannot read is NaN, which
+		// JSON.stringify writes as null (a missing side is Number(undefined)).
+		parts := strings.Split(opts.Size, "x")
+		width, height := jsNumber(parts[0]), math.NaN()
+		if len(parts) > 1 {
+			height = jsNumber(parts[1])
 		}
+		reqBody["width"] = bflJSONNumber(width)
+		reqBody["height"] = bflJSONNumber(height)
 	}
 	if finalAspectRatio != "" {
 		reqBody["aspect_ratio"] = finalAspectRatio
@@ -270,18 +274,24 @@ func bflLatestProviderOptions(opts *provider.ImageGenerateOptions) (map[string]i
 	return merged, nil
 }
 
-// jsNumber mirrors JavaScript Number(string) for decimal input: blank is 0 and
-// anything unreadable is NaN.
+// jsNumber mirrors JavaScript Number(string): blank is 0, 0x/0o/0b prefixes are
+// integers, and anything unreadable (including Go-only syntax such as "inf")
+// is NaN.
 func jsNumber(s string) float64 {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0
-	}
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
+	f, ok := providerutils.JSNumber(s)
+	if !ok {
 		return math.NaN()
 	}
 	return f
+}
+
+// bflJSONNumber mirrors JSON.stringify of a JS number: NaN and Infinity
+// become null.
+func bflJSONNumber(f float64) interface{} {
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return nil
+	}
+	return sizeDimension(f)
 }
 
 // sizeDimension keeps whole numbers as ints (so they validate as integers) and

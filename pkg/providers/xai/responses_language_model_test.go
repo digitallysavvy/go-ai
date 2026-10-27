@@ -1775,6 +1775,10 @@ func TestXAIResponsesImageGenerationFailedStatus(t *testing.T) {
 		if tr.Error == "" || !strings.Contains(tr.Error, "failed") {
 			t.Fatalf("tool result error = %q, want a failure message", tr.Error)
 		}
+		// TS: isError with the failure message as the result value.
+		if tr.Result != "Image generation failed (status: failed)." {
+			t.Fatalf("tool result = %#v", tr.Result)
+		}
 	}
 	if !found {
 		t.Fatal("no image_generation tool-result content found")

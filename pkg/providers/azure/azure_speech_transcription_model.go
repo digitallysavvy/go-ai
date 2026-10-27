@@ -132,21 +132,23 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	if azureOpts.TranscribeStyle != "" {
 		modelOptions["transcribeStyle"] = azureOpts.TranscribeStyle
 	}
-	definition := map[string]interface{}{
-		"enhancedMode": map[string]interface{}{
+	// Struct field order is TS's JSON.stringify member order: enhancedMode,
+	// locales, diarization, phraseList.
+	definition := azureSpeechDefinition{
+		EnhancedMode: map[string]interface{}{
 			"enabled":      true,
 			"model":        modelName,
 			"modelOptions": modelOptions,
 		},
 	}
 	if azureOpts.Locales != nil {
-		definition["locales"] = azureOpts.Locales
+		definition.Locales = azureOpts.Locales
 	}
 	if azureOpts.Diarization != nil {
-		definition["diarization"] = map[string]interface{}{"enabled": azureOpts.Diarization.Enabled}
+		definition.Diarization = map[string]interface{}{"enabled": azureOpts.Diarization.Enabled}
 	}
 	if azureOpts.PhraseList != nil {
-		definition["phraseList"] = map[string]interface{}{"phrases": azureOpts.PhraseList.Phrases}
+		definition.PhraseList = map[string]interface{}{"phrases": azureOpts.PhraseList.Phrases}
 	}
 
 	audio := opts.Audio
@@ -287,7 +289,16 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	}, nil
 }
 
-func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definition map[string]interface{}) (*bytes.Buffer, string, error) {
+// azureSpeechDefinition is the multipart `definition` JSON of a transcription
+// request.
+type azureSpeechDefinition struct {
+	EnhancedMode map[string]interface{} `json:"enhancedMode"`
+	Locales      []string               `json:"locales,omitempty"`
+	Diarization  map[string]interface{} `json:"diarization,omitempty"`
+	PhraseList   map[string]interface{} `json:"phraseList,omitempty"`
+}
+
+func buildAzureSpeechTranscribeMultipart(audio []byte, mimeType string, definition azureSpeechDefinition) (*bytes.Buffer, string, error) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 

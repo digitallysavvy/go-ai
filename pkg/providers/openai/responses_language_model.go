@@ -2163,9 +2163,9 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 // openAIResponsesReasoningMetadataWithEncrypted mirrors the TS reasoning
 // providerMetadata {itemId, reasoningEncryptedContent: encrypted_content ?? null}.
 func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, encrypted string) json.RawMessage {
-	if itemID == "" {
-		return nil
-	}
+	// TS always builds {itemId: part.id, reasoningEncryptedContent:
+	// part.encrypted_content ?? null}, so an item with an empty id and no
+	// encrypted_content still carries both keys.
 	var enc interface{}
 	if encrypted != "" {
 		enc = encrypted
@@ -3978,7 +3978,16 @@ func openAIResponsesRawChunk(data string) *provider.StreamChunk {
 // For compaction items it emits a ChunkTypeCustom.
 // All other item types were emitted incrementally and need no action here.
 func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) (*provider.StreamChunk, bool) {
+	// TS dispatches output_item.done on the done item's own type, not the
+	// type recorded at output_item.added; the recorded type is only a
+	// fallback for a done item that omits its type.
 	itemType := s.itemTypes[e.OutputIndex]
+	var doneType struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(e.Item, &doneType) == nil && doneType.Type != "" {
+		itemType = doneType.Type
+	}
 	if responsesItemIsFunctionCall(itemType, e.Item, true) {
 		s.hasFunctionCall = true
 	}
@@ -3987,7 +3996,21 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 	case "function_call":
 		accum, ok := s.toolAccum[e.OutputIndex]
 		if !ok {
-			return nil, false
+			// No function_call was recorded at output_item.added (the
+			// added item had another type, or none arrived): TS still emits
+			// the call from the done item alone.
+			var seed responses.FunctionCallItem
+			if err := json.Unmarshal(e.Item, &seed); err != nil {
+				return nil, false
+			}
+			accum = &responsesToolAccum{
+				id:                     seed.CallID,
+				itemID:                 seed.ID,
+				name:                   seed.Name,
+				namespace:              seed.Namespace,
+				async:                  seed.Async,
+				suppressInputStreaming: responses.IsUndeclaredParallelToolCall(seed.Name, s.tools),
+			}
 		}
 		delete(s.toolAccum, e.OutputIndex)
 		delete(s.itemTypes, e.OutputIndex)
@@ -4161,9 +4184,12 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ID               string `json:"id,omitempty"`
 			EncryptedContent string `json:"encrypted_content,omitempty"`
 		}
-		if err := json.Unmarshal(e.Item, &item); err != nil || (item.ID == "" && item.EncryptedContent == "") {
+		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
+		// TS resolves the id from the output_index first, so a done item that
+		// carries neither an id nor encrypted_content still closes the
+		// reasoning parts opened at output_item.added.
 		id := firstID
 		if id == "" {
 			id = item.ID
@@ -4175,10 +4201,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// not only when non-empty -- matches the key name/shape used at the
 		// other two reasoning-end sites in this file (output_item.added and
 		// reasoning_summary_part.added).
-		meta := map[string]interface{}{"reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
-		if id != "" {
-			meta["itemId"] = id
-		}
+		meta := map[string]interface{}{"itemId": id, "reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
 		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 
 		// Row 3b9f025/6fe187f: close every summary part that is still open

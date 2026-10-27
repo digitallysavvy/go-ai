@@ -270,13 +270,13 @@ func TestConvertResponse_ReasoningPopulatesContentWithEncryptedContent(t *testin
 	}
 }
 
-// TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted verifies
-// that result.Content is empty when the reasoning item has neither ID nor
-// EncryptedContent (the item is skipped entirely).
-func TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted(t *testing.T) {
+// TestConvertResponse_ReasoningEmittedWhenNeitherIDNorEncrypted verifies that a
+// reasoning item with neither an id nor encrypted_content still yields its
+// reasoning part, as TS does (it never skips reasoning items).
+func TestConvertResponse_ReasoningEmittedWhenNeitherIDNorEncrypted(t *testing.T) {
 	response := OpenResponsesResponse{
 		Output: []OutputItem{
-			{Type: "reasoning", Summary: []ContentPart{{Type: "summary_text", Text: "ignore me"}}},
+			{Type: "reasoning", Summary: []ContentPart{{Type: "summary_text", Text: "keep me"}}},
 		},
 	}
 
@@ -286,8 +286,12 @@ func TestConvertResponse_ReasoningNoContentWhenNeitherIDNorEncrypted(t *testing.
 		t.Fatalf("convertResponse failed: %v", convertErr)
 	}
 
-	if len(result.Content) != 0 {
-		t.Errorf("expected no content parts, got %d", len(result.Content))
+	if len(result.Content) != 1 {
+		t.Fatalf("expected one content part, got %d", len(result.Content))
+	}
+	rc, ok := result.Content[0].(types.ReasoningContent)
+	if !ok || rc.Text != "keep me" {
+		t.Fatalf("content = %#v", result.Content[0])
 	}
 }
 

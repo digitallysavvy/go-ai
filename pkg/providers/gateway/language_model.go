@@ -708,6 +708,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, streami
 			if len(tool.InputExamples) > 0 {
 				toolMap["inputExamples"] = tool.InputExamples
 			}
+			// LanguageModelV4FunctionTool.providerOptions: TS sends the
+			// tool's provider options (e.g. a cacheControl) to the gateway.
+			if po, ok := tool.ProviderOptions.(map[string]interface{}); ok && len(po) > 0 {
+				toolMap["providerOptions"] = po
+			}
 			tools = append(tools, toolMap)
 		}
 		body["tools"] = tools
