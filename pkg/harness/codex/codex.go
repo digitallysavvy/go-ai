@@ -215,15 +215,6 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		}
 	}
 
-	// A fresh start creates the workdir and bridge-state directory; resumes
-	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
-	// undefined` mkdir.
-	if respawnStrategy == "" {
-		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
-			return nil, err
-		}
-	}
-
 	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, HarnessID)
 	if err != nil {
 		return nil, err
@@ -251,6 +242,15 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		env[k] = v
 	}
 	env["AI_SDK_HARNESS_CLIENT_APP"] = harnessutil.ClientApp(HarnessID, version)
+
+	// A fresh start creates the workdir and bridge-state directory; resumes
+	// reuse the ones already in the sandbox. Mirrors TS `respawnStrategy ===
+	// undefined` mkdir.
+	if respawnStrategy == "" {
+		if err := mkdirs(ctx, restricted, workDir, bridgeStateDir); err != nil {
+			return nil, err
+		}
+	}
 
 	launched, err := bridge.Launch(ctx, bridge.LaunchOptions{
 		Label: "codex bridge", Source: HarnessID, Sandbox: restricted,
