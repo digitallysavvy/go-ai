@@ -2164,17 +2164,15 @@ func openAIResponsesToolCallMetadata(providerName, itemID, namespace string, asy
 // providerMetadata {itemId, reasoningEncryptedContent: encrypted_content ?? null}.
 func openAIResponsesReasoningMetadataWithEncrypted(providerName, itemID, encrypted string) json.RawMessage {
 	// TS always builds {itemId: part.id, reasoningEncryptedContent:
-	// part.encrypted_content ?? null}; an item without an id drops itemId
-	// from the JSON but still carries reasoningEncryptedContent: null.
+	// part.encrypted_content ?? null}, so an item with an empty id and no
+	// encrypted_content still carries both keys.
 	var enc interface{}
 	if encrypted != "" {
 		enc = encrypted
 	}
-	meta := map[string]interface{}{"reasoningEncryptedContent": enc}
-	if itemID != "" {
-		meta["itemId"] = itemID
-	}
-	raw, _ := json.Marshal(map[string]interface{}{providerName: meta})
+	raw, _ := json.Marshal(map[string]interface{}{
+		providerName: map[string]interface{}{"itemId": itemID, "reasoningEncryptedContent": enc},
+	})
 	return raw
 }
 
@@ -4186,9 +4184,12 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			ID               string `json:"id,omitempty"`
 			EncryptedContent string `json:"encrypted_content,omitempty"`
 		}
-		if err := json.Unmarshal(e.Item, &item); err != nil || (item.ID == "" && item.EncryptedContent == "") {
+		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
 		}
+		// TS resolves the id from the output_index first, so a done item that
+		// carries neither an id nor encrypted_content still closes the
+		// reasoning parts opened at output_item.added.
 		id := firstID
 		if id == "" {
 			id = item.ID
@@ -4200,10 +4201,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 		// not only when non-empty -- matches the key name/shape used at the
 		// other two reasoning-end sites in this file (output_item.added and
 		// reasoning_summary_part.added).
-		meta := map[string]interface{}{"reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
-		if id != "" {
-			meta["itemId"] = id
-		}
+		meta := map[string]interface{}{"itemId": id, "reasoningEncryptedContent": nonEmptyOrNil(item.EncryptedContent)}
 		providerMeta, _ := json.Marshal(map[string]interface{}{s.providerName: meta})
 
 		// Row 3b9f025/6fe187f: close every summary part that is still open

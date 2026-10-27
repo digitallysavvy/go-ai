@@ -37,3 +37,28 @@ func TestResponsesStreamDoneEventDispatchesOnDoneItemType(t *testing.T) {
 		})
 	}
 }
+
+// A reasoning item with an empty id and no encrypted_content still opens and
+// closes its summary part, and the done metadata carries itemId "" and a null
+// reasoningEncryptedContent like TS.
+func TestResponsesStreamReasoningWithEmptyIDAndNoEncryptedContentClosesPart(t *testing.T) {
+	body := `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"","summary":[]}}` + "\n\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"","summary":[]}}` + "\n\n"
+	s := newResponsesStream(io.NopCloser(strings.NewReader(body)), false)
+	var ended *provider.StreamChunk
+	for {
+		c, err := s.Next()
+		if err != nil {
+			break
+		}
+		if c.Type == provider.ChunkTypeReasoningEnd {
+			ended = c
+		}
+	}
+	if ended == nil || ended.ID != ":0" {
+		t.Fatalf("reasoning-end = %+v", ended)
+	}
+	if got := string(ended.ProviderMetadata); got != `{"openai":{"itemId":"","reasoningEncryptedContent":null}}` {
+		t.Fatalf("metadata = %s", got)
+	}
+}
