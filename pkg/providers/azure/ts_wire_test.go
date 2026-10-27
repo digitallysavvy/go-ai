@@ -1,9 +1,11 @@
 package azure
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/tsfixture"
@@ -18,11 +20,7 @@ func TestTSWire(t *testing.T) {
 	tsfixture.RunWire(t, "../testdata/tswire/azure.jsonl.gz", tsfixture.WireSuite{
 		SkipLanguage: true,
 		Skip: map[string]string{
-			"generations > authenticates with an Entra ID token provider":            "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
-			"Speech requests > uses the Entra token instead of the key":              "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
-			"Speech requests > gets a fresh bearer token for each request":           "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
-			"Speech requests > does not replace an explicitly supplied bearer token": "the TS test passes tokenProvider (code), which the recording cannot carry; covered by TestAzureADTokenProviderAuthenticatesEveryRequestSurface",
-			"speech > doGenerate > should use correct URL format":                    "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
+			"speech > doGenerate > should use correct URL format": "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
 		},
 		Provider: func(base string, m tsfixture.WireModel) (provider.Provider, error) {
 			srv := base
@@ -38,14 +36,42 @@ func TestTSWire(t *testing.T) {
 				}
 			}
 			guard := &http.Client{Transport: tsfixture.GuardTransport{Next: http.DefaultTransport}}
+			// The TS tests that use a tokenProvider are recorded without it
+			// (code): stand in for it with one that serves the Authorization
+			// values the TS requests carried, one per request. A call that
+			// passes its own Authorization header gets a token that must not
+			// be sent.
+			var tokens func(context.Context) (string, error)
+			apiKey := "test-api-key"
+			if len(m.RequestAuth) > 0 && m.RequestAuth[0] != "" {
+				apiKey = ""
+				var mu sync.Mutex
+				n := 0
+				explicit := false
+				for k := range m.CallHeaders {
+					explicit = explicit || strings.EqualFold(k, "authorization")
+				}
+				auth := m.RequestAuth
+				tokens = func(context.Context) (string, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					i := n
+					n++
+					if explicit || i >= len(auth) {
+						return "token-that-must-not-be-sent", nil
+					}
+					return strings.TrimPrefix(auth[i], "Bearer "), nil
+				}
+			}
 			p, err := New(Config{
-				APIKey:                 "test-api-key",
+				APIKey:                 apiKey,
+				ADTokenProvider:        tokens,
 				UseDeploymentBasedURLs: usesDeployments(m),
 				ResourceName:           "test-resource",
 				Headers:                headers,
 				HTTPClient:             guard,
 				SpeechBaseURL:          srv,
-				MaiBaseURL:             srv,
+				MaiBaseURL:             srv + "/mai/v1", // the MAI routes live under /mai/v1
 			})
 			if err != nil {
 				return nil, err

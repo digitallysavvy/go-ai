@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -545,5 +546,46 @@ func TestDecisionModel_WarnsAboutUnsupportedMaxOutputTokensAndReasoning(t *testi
 	}
 	if len(s.bodies[0]) != 3 {
 		t.Fatalf("request keys = %v", s.bodies[0])
+	}
+}
+
+// QuestionOrder and CriteriaOrder keep the TS object order in the request
+// (the questions and choice criteria are JSON objects).
+func TestDecisionModel_KeepsTSQuestionAndCriteriaOrder(t *testing.T) {
+	var raw []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(fixtureBody(t))
+	}))
+	t.Cleanup(srv.Close)
+	m, err := New(Config{APIKey: "k", BaseURL: srv.URL}).DecisionModel("pplx-decider-latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := decisionOptions()
+	opts.QuestionOrder = []string{"severity", "sentiment", "defect"}
+	opts.CriteriaOrder = map[string][]string{"sentiment": {"positive", "negative", "mixed"}}
+	_, _ = m.DoDecide(context.Background(), opts)
+	body := string(raw)
+	if strings.Index(body, `"severity"`) >= strings.Index(body, `"sentiment"`) || strings.Index(body, `"sentiment"`) >= strings.Index(body, `"defect"`) {
+		t.Fatalf("question order not kept: %s", body)
+	}
+	if strings.Index(body, `"positive"`) >= strings.Index(body, `"negative"`) || strings.Index(body, `"negative"`) >= strings.Index(body, `"mixed"`) {
+		t.Fatalf("criteria order not kept: %s", body)
+	}
+}
+
+// TS `modelId: response.model ?? this.modelId` only falls back on null.
+func TestDecisionModel_EmptyResponseModelIsKept(t *testing.T) {
+	body := fixtureBody(t)
+	body["model"] = ""
+	s := newDecisionServer(t, body, 200)
+	res, err := s.model(t, "pplx-decider-latest").DoDecide(context.Background(), decisionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Response.ModelID != "" {
+		t.Fatalf("ModelID = %q", res.Response.ModelID)
 	}
 }

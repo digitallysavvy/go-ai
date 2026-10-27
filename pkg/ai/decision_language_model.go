@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -86,11 +85,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		}
 	}
 
-	ids := make([]string, 0, len(opts.Questions))
-	for id := range opts.Questions {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := opts.QuestionIDs()
 
 	entries := make([]decisionLanguageModelEntry, 0, len(ids))
 	for _, id := range ids {
@@ -144,19 +139,18 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 		switch en.question.Type {
 		case "choice":
 			criteria, _ := en.question.Criteria.(map[string]interface{})
-			optionKeys := make([]string, 0, len(criteria))
-			for k := range criteria {
-				optionKeys = append(optionKeys, k)
-			}
-			sort.Strings(optionKeys)
+			optionKeys := provider.OrderedKeys(criteria, opts.CriteriaOrder[en.id])
 			optionKeysByIndex[i] = optionKeys
 
 			enumValues := make([]string, len(optionKeys))
-			criteriaWire := make(map[string]interface{}, len(optionKeys))
+			// c0, c1, ... c10 in option order (a Go map would sort c10 before
+			// c2 in the model-visible rubric; TS keeps insertion order).
+			criteriaWire := providerutils.OrderedMap{Keys: make([]string, len(optionKeys)), Vals: make(map[string]interface{}, len(optionKeys))}
 			for j, label := range optionKeys {
 				code := fmt.Sprintf("c%d", j)
 				enumValues[j] = code
-				criteriaWire[code] = providerutils.OrderedMap{
+				criteriaWire.Keys[j] = code
+				criteriaWire.Vals[code] = providerutils.OrderedMap{
 					Keys: []string{"label", "description"},
 					Vals: map[string]interface{}{"label": label, "description": criteria[label]},
 				}

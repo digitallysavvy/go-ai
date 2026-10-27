@@ -182,6 +182,10 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 		}
 		for _, h := range w.HTTP {
 			c.Model.RequestURLs = append(c.Model.RequestURLs, h.URL)
+			c.Model.RequestAuth = append(c.Model.RequestAuth, h.Headers["authorization"])
+		}
+		if arg := c.Arg(); arg != nil {
+			c.Model.CallHeaders = strMap(arg["headers"])
 		}
 		key := c.Model.Cls + "/" + c.Model.ModelID
 		p, ok := prov[key]
@@ -328,7 +332,7 @@ func RunWireCall(ctx context.Context, srv *WireServer, s WireSuite, p provider.P
 		if err != nil {
 			return nil, err
 		}
-		return wireDecide(ctx, dm, arg)
+		return wireDecide(ctx, dm, arg, c)
 	case "video":
 		m, ok := p.(interface {
 			VideoModel(string) (provider.VideoModelV3, error)
@@ -1204,7 +1208,7 @@ func hasFn(v interface{}) bool {
 	return false
 }
 
-func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]interface{}) (map[string]interface{}, error) {
+func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]interface{}, c WireCall) (map[string]interface{}, error) {
 	opts := provider.DecisionCallOptions{
 		Headers:         strMap(arg["headers"]),
 		ProviderOptions: objMap(arg["providerOptions"]),
@@ -1254,6 +1258,7 @@ func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]in
 			opts.Questions[id] = q
 		}
 	}
+	opts.QuestionOrder, opts.CriteriaOrder = c.RawQuestionOrder()
 	res, err := m.DoDecide(ctx, opts)
 	if err != nil {
 		return nil, err

@@ -64,7 +64,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 
 	body := map[string]interface{}{
 		"stateParts": stateParts,
-		"questions":  encodeGatewayDecisionQuestions(opts.Questions),
+		"questions":  encodeGatewayDecisionQuestions(opts),
 	}
 	if opts.MaxOutputTokens != nil {
 		body["maxOutputTokens"] = *opts.MaxOutputTokens
@@ -124,20 +124,32 @@ func (m *DecisionModel) handleError(ctx context.Context, err error) error {
 // encodeGatewayDecisionQuestions converts a question map into the
 // Gateway's wire shape. Criteria is included only when non-nil: choice/score
 // questions always carry it, boolean questions may omit it.
-func encodeGatewayDecisionQuestions(questions map[string]provider.DecisionQuestion) map[string]interface{} {
-	out := make(map[string]interface{}, len(questions))
-	for id, q := range questions {
-		wire := map[string]interface{}{"type": q.Type}
+func encodeGatewayDecisionQuestions(opts provider.DecisionCallOptions) providerutils.OrderedMap {
+	out := providerutils.OrderedMap{
+		Keys: opts.QuestionIDs(),
+		Vals: make(map[string]interface{}, len(opts.Questions)),
+	}
+	for id, q := range opts.Questions {
+		wire := providerutils.OrderedMap{Keys: []string{"type", "instructions", "criteria"}, Vals: map[string]interface{}{"type": q.Type}}
 		// Instructions are optional for criteria-only questions.
 		if q.Instructions != nil {
-			wire["instructions"] = q.Instructions
+			wire.Vals["instructions"] = q.Instructions
 		}
 		if q.Criteria != nil {
-			wire["criteria"] = q.Criteria
+			wire.Vals["criteria"] = orderedCriteria(q.Criteria, opts.CriteriaOrder[id])
 		}
-		out[id] = wire
+		out.Vals[id] = wire
 	}
 	return out
+}
+
+// orderedCriteria keeps the TS key order of a choice criteria map when the
+// caller supplied it.
+func orderedCriteria(criteria interface{}, order []string) interface{} {
+	if m, ok := criteria.(map[string]interface{}); ok && len(order) > 0 {
+		return providerutils.OrderedMap{Keys: provider.OrderedKeys(m, order), Vals: m}
+	}
+	return criteria
 }
 
 type gatewayDecisionAnswerWire struct {

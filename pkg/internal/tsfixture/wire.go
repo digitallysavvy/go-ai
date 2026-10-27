@@ -48,6 +48,12 @@ type WireModel struct {
 	// RequestURLs is set by the runner to the URLs of the HTTP requests the
 	// TS test made, for providers whose settings show only in the URLs.
 	RequestURLs []string `json:"-"`
+	// RequestAuth is set by the runner to the Authorization header of each
+	// recorded HTTP request ("" when absent), in order. A suite uses it to
+	// stand in for a TS token provider (code the recording cannot carry).
+	RequestAuth []string `json:"-"`
+	// CallHeaders is set by the runner to the headers the first call passed.
+	CallHeaders map[string]string `json:"-"`
 }
 
 // WireCall is one model.do*() invocation.
@@ -101,6 +107,40 @@ func (c WireCall) RawResponseFormatSchema() json.RawMessage {
 		return nil
 	}
 	return json.RawMessage(jsonorder.Stringify(rf))
+}
+
+// RawQuestionOrder returns the decision questions' IDs, and each question's
+// criteria keys, in the order the TS object had them.
+func (c WireCall) RawQuestionOrder() (ids []string, criteria map[string][]string) {
+	if len(c.argsRaw) == 0 {
+		return nil, nil
+	}
+	tree, ok := jsonorder.Parse(c.argsRaw)
+	if !ok {
+		return nil, nil
+	}
+	args, _ := tree.([]interface{})
+	if len(args) == 0 {
+		return nil, nil
+	}
+	qs, ok := jsonorder.Get(args[0], "questions")
+	if !ok {
+		return nil, nil
+	}
+	qo, ok := qs.(*jsonorder.Object)
+	if !ok {
+		return nil, nil
+	}
+	ids = qo.Keys()
+	criteria = map[string][]string{}
+	for _, id := range ids {
+		if cr, ok := jsonorder.Get(qs, id, "criteria"); ok {
+			if co, ok := cr.(*jsonorder.Object); ok {
+				criteria[id] = co.Keys()
+			}
+		}
+	}
+	return ids, criteria
 }
 
 // Arg returns the first argument as an object (the call options).

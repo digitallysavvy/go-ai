@@ -160,14 +160,10 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		return nil, err
 	}
 
-	ids := make([]string, 0, len(opts.Questions))
-	for id := range opts.Questions {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := opts.QuestionIDs()
 	questions := make([]interface{}, 0, len(ids))
 	for _, id := range ids {
-		questions = append(questions, decisionQuestionWire(id, opts.Questions[id]))
+		questions = append(questions, decisionQuestionWire(id, opts.Questions[id], opts.CriteriaOrder[id]))
 	}
 
 	body := map[string]interface{}{
@@ -465,7 +461,7 @@ func decisionImageContent(part provider.DecisionStatePart) (map[string]interface
 	return image, nil
 }
 
-func decisionQuestionWire(name string, q provider.DecisionQuestion) map[string]interface{} {
+func decisionQuestionWire(name string, q provider.DecisionQuestion, criteriaOrder []string) map[string]interface{} {
 	// A criteria-only question (nil instructions) is sent without them.
 	hasInstructions := q.Instructions != nil
 	instructions := ""
@@ -495,11 +491,7 @@ func decisionQuestionWire(name string, q provider.DecisionQuestion) map[string]i
 		return map[string]interface{}{"type": "predicate", "name": name, "instructions": strings.Join(sections, "\n\n")}
 	case "choice":
 		criteria, _ := q.Criteria.(map[string]interface{})
-		values := make([]string, 0, len(criteria))
-		for v := range criteria {
-			values = append(values, v)
-		}
-		sort.Strings(values)
+		values := provider.OrderedKeys(criteria, criteriaOrder)
 		choices := make([]interface{}, 0, len(values))
 		for _, v := range values {
 			choice := map[string]interface{}{"value": v}
