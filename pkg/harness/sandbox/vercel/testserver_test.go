@@ -541,7 +541,10 @@ func (f *fakeServer) handleListSnapshots(w http.ResponseWriter, r *http.Request)
 	// `pagination.next` is a string or null.
 	start := 0
 	if c := r.URL.Query().Get("cursor"); c != "" {
-		fmt.Sscanf(c, "cur_%d", &start)
+		if _, err := fmt.Sscanf(c, "cur_%d", &start); err != nil {
+			http.Error(w, "bad cursor", http.StatusBadRequest)
+			return
+		}
 	}
 	out := all[min(start, len(all)):]
 	var next interface{}

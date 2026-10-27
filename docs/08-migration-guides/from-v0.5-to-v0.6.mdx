@@ -63,6 +63,16 @@ the new type. Reading promoted fields still compiles.
 
 ## Behavior changes that can need an edit
 
+- **Code mode has a default 10 s CPU limit.** `ExecutionPolicy.CPUTimeoutMs`
+  (default 10_000) stops guest JavaScript that runs longer than that in one
+  invocation with `*codemode.CPUTimeoutError`. Time in host tools does not
+  count. Raise `CPUTimeoutMs` (and `TimeoutMs`) for long-running scripts.
+- **MCP OAuth rejects unbound pre-registered confidential credentials.** Client
+  information with a client secret but no `Issuer` and no stored authorization
+  server information now fails `mcp.Auth` with an authorization-server mismatch
+  error. Set `Issuer` to the authorization server the secret was registered
+  with, or return it from `OAuthAuthorizationServerInformationStore`.
+  Dynamically registered clients keep working.
 - **OpenAI Responses `promptCacheOptions` is validated.** Only `mode`
   (`implicit` or `explicit`), `ttl` (`30m` or `12h`) and `prewarm` are sent.
   Invalid values such as `ttl: "24h"` fail before the request with
