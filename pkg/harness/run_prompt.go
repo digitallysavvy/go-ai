@@ -2631,6 +2631,9 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 		for _, c := range TranslatePart(display, d.translateOpts()) {
 			if c.ToolResult != nil && c.ToolResult.Error == nil {
 				result := *c.ToolResult
+				// enqueueHostToolOutcome sets no providerExecuted, unlike a
+				// translated echo of the call.
+				result.ProviderExecuted, result.ProviderExecutedSet = false, false
 				if display.IsError {
 					result.Error = fmt.Errorf("%v", display.Result)
 				} else if hasModelOutput {
