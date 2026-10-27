@@ -150,7 +150,7 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 	b.mu.Unlock()
 	if b.policy.MaxBridgeRequests > 0 && n > b.policy.MaxBridgeRequests {
 		return "", NewBridgeLimitError(
-			fmt.Sprintf("Code mode exceeded the %d bridge request limit.", b.policy.MaxBridgeRequests),
+			fmt.Sprintf("JavaScript runtime exceeded the %d bridge request limit.", b.policy.MaxBridgeRequests),
 			map[string]interface{}{"maxBridgeRequests": b.policy.MaxBridgeRequests},
 		)
 	}
@@ -168,6 +168,13 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		b.committed[idx] = rec
 		b.mu.Unlock()
 		return rec.OutputJSON, nil
+	}
+
+	// TS invokeCodeModeTool serializes the input against maxToolInputBytes
+	// before invokeHostTool looks the tool up, so an oversized input fails
+	// with the size error even for an unknown tool.
+	if err := assertJSONPayloadSize(inputJSON, b.policy.MaxToolInputBytes, "Tool \""+toolName+"\" input"); err != nil {
+		return "", err
 	}
 
 	tool, ok := b.tools[toolName]
@@ -188,9 +195,6 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		return "", NewToolError("Tool \""+toolName+"\" does not have execute().", map[string]interface{}{"toolName": toolName})
 	}
 
-	if err := assertJSONPayloadSize(inputJSON, b.policy.MaxToolInputBytes, "Tool \""+toolName+"\" input"); err != nil {
-		return "", err
-	}
 	inputVal, ferr := fromJSONPayload(inputJSON)
 	if ferr != nil {
 		return "", ferr
@@ -335,7 +339,7 @@ func (b *toolBridge) raiseInterrupt(toolName string, input interface{}, toolCall
 	defer b.mu.Unlock()
 	if b.policy.MaxInFlightBridgeRequests > 0 && len(b.pendingBatch) >= b.policy.MaxInFlightBridgeRequests {
 		b.fatalErr = NewBridgeLimitError(
-			fmt.Sprintf("Code mode exceeded the %d in-flight bridge request limit.", b.policy.MaxInFlightBridgeRequests),
+			fmt.Sprintf("JavaScript runtime exceeded the %d in-flight bridge request limit.", b.policy.MaxInFlightBridgeRequests),
 			map[string]interface{}{"maxInFlightBridgeRequests": b.policy.MaxInFlightBridgeRequests},
 		)
 		return b.fatalErr
@@ -398,6 +402,14 @@ func (b *toolBridge) preservedCodeModeErr(message string) CodeModeError {
 		}
 	}
 	return nil
+}
+
+// requestTotal returns how many host calls this invocation has made (TS
+// run's totalBridgeRequests).
+func (b *toolBridge) requestTotal() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.requestCount
 }
 
 // fatal returns the invocation's fatal error, if any (see fatalErr's doc
