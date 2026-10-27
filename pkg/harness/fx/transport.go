@@ -265,6 +265,21 @@ func (b *credentialBroker) strip(h http.Header) {
 	}
 }
 
+// redactHeader replaces the real credential in response header values.
+func (b *credentialBroker) redactHeader(h http.Header) {
+	if !b.active() {
+		return
+	}
+	for name, values := range h {
+		for i, v := range values {
+			if strings.Contains(v, b.real) {
+				values[i] = strings.ReplaceAll(v, b.real, b.placeholder)
+			}
+		}
+		h[name] = values
+	}
+}
+
 func (b *credentialBroker) redact(data []byte) []byte {
 	if !b.active() || !bytes.Contains(data, []byte(b.real)) {
 		return data
@@ -481,9 +496,13 @@ func (t *transport) fetch(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
-		if t.o.broker.active() && resp.Body != nil {
-			resp.Body = &redactingReader{src: resp.Body, broker: t.o.broker}
-			resp.ContentLength = -1
+		if t.o.broker.active() {
+			resp.Header = cloneHeader(resp.Header)
+			t.o.broker.redactHeader(resp.Header)
+			if resp.Body != nil {
+				resp.Body = &redactingReader{src: resp.Body, broker: t.o.broker}
+				resp.ContentLength = -1
+			}
 		}
 		return resp, nil
 	}
@@ -622,6 +641,7 @@ func (t *transport) fetch(req *http.Request) (*http.Response, error) {
 		}
 		h := cloneHeader(resp.Header)
 		h.Del("Content-Length")
+		t.o.broker.redactHeader(h)
 		return sseResponse(resp.StatusCode, h, string(data)), nil
 	}
 
@@ -635,6 +655,7 @@ func (t *transport) fetch(req *http.Request) (*http.Response, error) {
 	}()
 	h := cloneHeader(resp.Header)
 	h.Del("Content-Length")
+	t.o.broker.redactHeader(h)
 	return &http.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: h, Body: pipe, ContentLength: -1}, nil
 }
 

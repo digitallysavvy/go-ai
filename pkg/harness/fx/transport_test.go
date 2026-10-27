@@ -484,3 +484,39 @@ func TestTransportRewriteStaysOnGatewayOrigin(t *testing.T) {
 		}
 	}
 }
+
+// The real key is redacted from response headers as well as bodies.
+func TestCredentialBrokerRedactsResponseHeaders(t *testing.T) {
+	b := &credentialBroker{placeholder: "fx-brokered-ph", real: "sk-real-secret"}
+	h := &transportHarness{turn: newTurnState()}
+	o := h.options(func(req *http.Request) (*http.Response, error) {
+		hdr := http.Header{"X-Echo": {req.Header.Get("Authorization")}, "Content-Type": {"text/event-stream"}}
+		status := 200
+		if req.Method == http.MethodPost {
+			status = 401
+		}
+		return &http.Response{StatusCode: status, Header: hdr, Body: io.NopCloser(strings.NewReader("x"))}, nil
+	})
+	o.broker = b
+	tr := newTransport(o)
+	pass, _ := http.NewRequest(http.MethodGet, "https://ai-gateway.vercel.sh/v1/models", nil)
+	pass.Header.Set("Authorization", "Bearer fx-brokered-ph")
+	model := modelRequest(t, `{"prompt":[]}`)
+	model.Header.Set("Authorization", "Bearer fx-brokered-ph")
+	for _, req := range []*http.Request{pass, model} {
+		resp, err := tr.fetch(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		for name, values := range resp.Header {
+			for _, v := range values {
+				if strings.Contains(v, "sk-real-secret") {
+					t.Errorf("%s %s: header %s = %q", req.Method, req.URL, name, v)
+				}
+			}
+		}
+	}
+	tr.stop()
+}
