@@ -621,6 +621,11 @@ func (c *Channel) onDrop(conn Conn, code int, reason string) {
 	c.connected = false
 	closing := c.closing
 	c.mu.Unlock()
+	// A failed read ends this socket for good; release it so a transport that
+	// keeps the descriptor open after a protocol or read error (x/net reports
+	// every close as EOF without closing the TCP connection) cannot leak one
+	// connection per reconnect. Close is idempotent.
+	_ = conn.Close()
 	if closing {
 		c.enqueue(func() { c.finalizeClose(code, reason) })
 	} else {
