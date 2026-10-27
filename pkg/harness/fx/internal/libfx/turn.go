@@ -41,6 +41,7 @@ const (
 	maxPromptImagesBytes   = (8 << 20) / 4 * 3
 	maxToolImageDataBytes  = 5 << 20
 	maxToolImagesDataBytes = 8 << 20
+	maxImageSourceRefBytes = 512
 )
 
 var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -459,7 +460,13 @@ func hostToolContent(v any) (string, bool, error) {
 		}
 		images := make([]ToolImage, 0, len(typed.Images))
 		for _, img := range typed.Images {
-			if img.Type != "image" || img.MimeType == "" || len(img.MimeType) > 128 || (img.Data == "" && img.SourceRef == "") || (len(img.Data) > maxToolImageDataBytes && img.SourceRef == "") {
+			if img.Type != "image" {
+				return "", false, errors.New("invalid tool image")
+			}
+			if err := checkImageSourceRef(img.SourceRef); err != nil {
+				return "", false, err
+			}
+			if img.MimeType == "" || len(img.MimeType) > 128 || (img.Data == "" && img.SourceRef == "") || (len(img.Data) > maxToolImageDataBytes && img.SourceRef == "") {
 				return "", false, errors.New("invalid tool image")
 			}
 			if len(img.Data) > maxToolImageDataBytes {
@@ -503,6 +510,21 @@ func hostToolContent(v any) (string, bool, error) {
 		return "null", false, nil
 	}
 	return string(data), false, nil
+}
+
+// checkImageSourceRef is libfx normalizeImageSourceRef for a tool image:
+// at most 512 bytes of valid UTF-8 without ASCII controls.
+func checkImageSourceRef(ref string) error {
+	if ref == "" {
+		return nil
+	}
+	if len(ref) > maxImageSourceRefBytes {
+		return fmt.Errorf("tool image sourceRef exceeds the %d byte libfx limit", maxImageSourceRefBytes)
+	}
+	if !utf8.ValidString(ref) || strings.ContainsFunc(ref, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return errors.New("tool image sourceRef must be valid UTF-8 without ASCII controls")
+	}
+	return nil
 }
 
 // imageDataBytes is libfx promptImageDataBytes for base64 image data.
