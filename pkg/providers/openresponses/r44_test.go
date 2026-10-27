@@ -63,3 +63,22 @@ func TestR44_ReasoningEndKeepsEmptyContentArray(t *testing.T) {
 		t.Fatalf("metadata = %v", got)
 	}
 }
+
+// The custom_tool_call done event keeps the call id and name recorded at
+// output_item.added, as for function calls (TS `toolCall?.toolCallId ??
+// item.call_id`).
+func TestR44_CustomToolCallDoneKeepsAddedIdentity(t *testing.T) {
+	chunks := r44Drain(t,
+		`{"type":"response.output_item.added","item":{"type":"custom_tool_call","id":"i1","call_id":"c1","name":"f","input":""}}`,
+		`{"type":"response.output_item.done","item":{"type":"custom_tool_call","id":"i1","call_id":"c2","name":"g","input":"x"}}`,
+	)
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolCall {
+			if c.ToolCall.ID != "c1" || c.ToolCall.ToolName != "f" {
+				t.Fatalf("tool call = %#v", c.ToolCall)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool call")
+}

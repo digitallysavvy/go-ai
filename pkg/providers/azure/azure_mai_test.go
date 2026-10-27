@@ -686,3 +686,25 @@ func TestAzureSpeechTranscription_Accepts2xxOtherThan200(t *testing.T) {
 		t.Fatalf("result=%v err=%v", result, err)
 	}
 }
+
+// TS postJsonToApi treats any 2xx (response.ok) as success for speech too.
+func TestAzureSpeechSpeech_Accepts2xxOtherThan200(t *testing.T) {
+	server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.WriteHeader(stdhttp.StatusCreated)
+		_, _ = w.Write([]byte{1, 2, 3})
+	}))
+	defer server.Close()
+	p, err := New(Config{APIKey: "k", ResourceName: "r", SpeechBaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := p.SpeechModel("mai-voice-2.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := model.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{Text: "Hi", Voice: "x"})
+	if err != nil || result == nil || len(result.Audio) != 3 {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+}

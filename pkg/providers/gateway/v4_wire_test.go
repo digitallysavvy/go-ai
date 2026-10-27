@@ -188,3 +188,23 @@ func TestGatewayStreamToolCallKeepsExplicitProviderExecutedFalse(t *testing.T) {
 		t.Fatalf("omitted must stay unset: %#v err=%v", b, err)
 	}
 }
+
+// tool-input-start keeps an explicit providerExecuted false too.
+func TestGatewayStreamToolInputStartKeepsExplicitProviderExecutedFalse(t *testing.T) {
+	stream := &gatewayTextStream{
+		parser: streamingParser(strings.Join([]string{
+			`data: {"type":"tool-input-start","id":"a","toolName":"w","providerExecuted":false}`, "",
+			`data: {"type":"tool-input-start","id":"b","toolName":"w"}`, "",
+			`data: [DONE]`, "",
+		}, "\n")),
+		body: io.NopCloser(strings.NewReader("")),
+	}
+	a, err := stream.Next()
+	if err != nil || a.ToolCall == nil || a.ToolCall.ProviderExecuted || !a.ToolCall.ProviderExecutedSet {
+		t.Fatalf("explicit false lost: %#v err=%v", a, err)
+	}
+	b, err := stream.Next()
+	if err != nil || b.ToolCall == nil || b.ToolCall.ProviderExecutedSet {
+		t.Fatalf("omitted must stay unset: %#v err=%v", b, err)
+	}
+}
