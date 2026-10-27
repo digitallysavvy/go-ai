@@ -1448,6 +1448,9 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			if argsJSON != "" {
 				_ = json.Unmarshal([]byte(argsJSON), &args) //nolint:errcheck
 			}
+			// TS toolCallsByItemId.delete(item.id): a repeated done event for
+			// the same item must not reuse the accumulated arguments.
+			delete(s.toolCallsByItemID, event.Item.ID)
 			return &provider.StreamChunk{
 				Type: provider.ChunkTypeToolCall,
 				ToolCall: &types.ToolCall{
