@@ -94,10 +94,13 @@ continuation resume starts with a fresh CPU budget. A pending interruption
 never hides an exceeded budget: the run fails with `*CPUTimeoutError` instead
 of returning an `*Interrupt`. A zero field uses its default; a negative value is rejected.
 
-The Go sandbox runs on one goroutine, so `CPUTimeoutMs` is measured as the
-wall time the sandbox spends running JavaScript, paused for the whole of each
-host tool call. A heavily loaded machine can therefore consume the budget
-faster than true CPU time would.
+On Linux the sandbox goroutine is pinned to its OS thread and `CPUTimeoutMs`
+counts that thread's real CPU time, paused for the whole of each host tool call,
+like the TypeScript runner. On other platforms (macOS, Windows) the Go runtime
+cannot read the sandbox thread's CPU clock without cgo, so `CPUTimeoutMs` is
+measured as the wall time the sandbox spends running JavaScript, again paused
+during host tool calls; a heavily loaded machine can consume that budget faster
+than true CPU time would.
 
 <Note>
   The `CPUTimeoutMs` default (10 seconds) also applies to callers upgrading

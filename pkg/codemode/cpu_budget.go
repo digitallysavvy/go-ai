@@ -12,12 +12,19 @@ import (
 // goroutine, so the CPU time is the wall time the sandbox spends running JS:
 // the budget is paused for the whole of a host tool call, so time spent
 // waiting on tools never counts.
+//
+// Where the OS allows it (Linux) the sandbox goroutine is pinned to its OS
+// thread and the budget counts that thread's real CPU time, like TS's runner,
+// which counts guest CPU only; a loaded machine then does not use the budget
+// up faster. Elsewhere the budget falls back to the wall-clock reading
+// described above (see cpu_meter_other.go).
 type cpuBudget struct {
 	limit time.Duration
 
 	mu       sync.Mutex
 	used     time.Duration
-	since    time.Time
+	since    time.Duration // meter reading when counting last (re)started
+	meter    func() time.Duration
 	running  bool
 	expired  bool
 	stopped  bool
@@ -36,7 +43,10 @@ func (b *cpuBudget) start(onExpire func()) {
 	defer b.mu.Unlock()
 	b.onExpire = onExpire
 	b.running = true
-	b.since = time.Now()
+	if b.meter == nil {
+		b.meter = newSandboxMeter()
+	}
+	b.since = b.meter()
 	b.timer = time.AfterFunc(b.limit, b.fire)
 }
 
@@ -47,7 +57,7 @@ func (b *cpuBudget) fire() {
 		return
 	}
 	// A pause/resume racing the timer may have moved the deadline.
-	if remaining := b.limit - (b.used + time.Since(b.since)); remaining > 0 {
+	if remaining := b.limit - (b.used + b.meter() - b.since); remaining > 0 {
 		b.timer.Reset(remaining)
 		b.mu.Unlock()
 		return
@@ -67,7 +77,7 @@ func (b *cpuBudget) pause() {
 	if !b.running || b.stopped {
 		return
 	}
-	b.used += time.Since(b.since)
+	b.used += b.meter() - b.since
 	b.running = false
 	if b.timer != nil {
 		b.timer.Stop()
@@ -82,7 +92,7 @@ func (b *cpuBudget) resume() {
 		return
 	}
 	b.running = true
-	b.since = time.Now()
+	b.since = b.meter()
 	b.timer.Reset(max(b.limit-b.used, 0))
 }
 
@@ -106,7 +116,7 @@ func (b *cpuBudget) exceeded() bool {
 	}
 	used := b.used
 	if b.running {
-		used += time.Since(b.since)
+		used += b.meter() - b.since
 	}
 	return b.limit > 0 && used >= b.limit
 }
@@ -128,4 +138,9 @@ func withCPUBudget(ctx context.Context, b *cpuBudget) context.Context {
 func cpuBudgetFrom(ctx context.Context) *cpuBudget {
 	b, _ := ctx.Value(cpuBudgetKey{}).(*cpuBudget)
 	return b
+}
+
+func newWallMeter() func() time.Duration {
+	origin := time.Now()
+	return func() time.Duration { return time.Since(origin) }
 }
