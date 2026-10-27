@@ -2618,7 +2618,25 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 			display = tr
 		}
 		d.recordToolResult(display)
+		// TS enqueueHostToolOutcome: a failed host tool is a tool-error
+		// carrying the submitted output, never a successful tool-result
+		// (TranslatePart only turns provider-executed failures into errors).
+		// A successful one reports the cached model output, as the echoed
+		// results in consumeLoop do.
+		d.execMu.Lock()
+		modelOutput, hasModelOutput := d.toolModelOutputs[display.ToolCallID]
+		d.execMu.Unlock()
 		for _, c := range TranslatePart(display, d.translateOpts()) {
+			if c.ToolResult != nil && c.ToolResult.Error == nil {
+				result := *c.ToolResult
+				if display.IsError {
+					result.Error = fmt.Errorf("%v", display.Result)
+				} else if hasModelOutput {
+					mo := modelOutput
+					result.ModelOutput = &mo
+				}
+				c.ToolResult = &result
+			}
 			d.stream.push(c)
 		}
 	}
