@@ -54,7 +54,12 @@ func newTextResponseID() string {
 // loopTelemetry carries the per-run telemetry state of the legacy loop.
 type loopTelemetry struct {
 	settings *ai.TelemetrySettings
-	callID   string
+	// rootSettings are the settings the loop's own root span was started
+	// with. Its end, error and abort events use them, so a PrepareCall
+	// override that disables telemetry or changes its integrations cannot
+	// leave that root open.
+	rootSettings *ai.TelemetrySettings
+	callID       string
 	// ownsRoot is true when the loop opened the root span itself.
 	ownsRoot bool
 	// rootCtx is the context carrying the root span when the loop opened it
@@ -66,18 +71,25 @@ type loopTelemetry struct {
 // prepareCall `telemetry`). Later spans use the new settings. When the caller
 // already opened a root span under the previous settings, the new settings
 // have none, so the loop opens one for them, under a new call id, and closes
-// it at the end.
+// it at the end. When the loop's own root was not opened because telemetry
+// was disabled, it is opened now under the new settings.
 func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTelemetry, settings *ai.TelemetrySettings, messages []types.Message) context.Context {
 	if lt == nil || settings == nil || settings == lt.settings {
 		return ctx
 	}
 	lt.settings = settings
 	if lt.ownsRoot {
+		if !telemetry.Enabled(lt.rootSettings) && telemetry.Enabled(settings) {
+			lt.rootSettings = settings
+			ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
+			lt.rootCtx = ctx
+		}
 		return ctx
 	}
 	// The caller's root keeps its call id (and the call state integrations
 	// keep under it) for its own end event; the late root is a call of its own.
 	lt.ownsRoot = true
+	lt.rootSettings = settings
 	lt.callID = newTelemetryCallID()
 	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
 	lt.rootCtx = ctx
@@ -195,7 +207,7 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types
 	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
 		return ctx, &loopTelemetry{settings: settings, callID: id}
 	}
-	lt := &loopTelemetry{settings: settings, callID: newTelemetryCallID(), ownsRoot: true}
+	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true}
 	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
 	return ctx, lt
 }
@@ -214,9 +226,9 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 			if result != nil {
 				steps = result.Steps
 			}
-			telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: lt.settings, CallID: lt.callID, Reason: err, Steps: steps})
+			telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: lt.rootSettings, CallID: lt.callID, Reason: err, Steps: steps})
 		} else {
-			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: lt.settings, CallID: lt.callID, Error: err})
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: lt.rootSettings, CallID: lt.callID, Error: err})
 		}
 		return
 	}
@@ -251,9 +263,9 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 		// TS onEndEvent.files spans every step.
 		Files:            allFiles,
 		ProviderMetadata: last.ProviderMetadata,
-		Settings:         lt.settings,
-		RuntimeContext:   telemetryRuntimeContextFor(lt.settings, a.runtimeContext()),
-		ToolsContext:     telemetryToolsContextFor(lt.settings, a.config.ToolsContext),
+		Settings:         lt.rootSettings,
+		RuntimeContext:   telemetryRuntimeContextFor(lt.rootSettings, a.runtimeContext()),
+		ToolsContext:     telemetryToolsContextFor(lt.rootSettings, a.config.ToolsContext),
 	})
 }
 
