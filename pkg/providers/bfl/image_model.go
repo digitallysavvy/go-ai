@@ -710,7 +710,7 @@ func (m *ImageModel) convertResponse(ctx context.Context, result bflResult, crea
 	// Download image from URL
 	imageData, responseHeaders, err := m.downloadImage(ctx, result.Result.Sample, headers)
 	if err != nil {
-		return nil, fmt.Errorf("failed to download image: %w", err)
+		return nil, err // TS getFromApi errors propagate unchanged
 	}
 
 	return &types.ImageResult{
@@ -814,8 +814,11 @@ func (m *ImageModel) downloadImage(ctx context.Context, url string, headers map[
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512))
-		return nil, nil, providererrors.NewDownloadError(url, resp.StatusCode, resp.Status, "", nil)
+		// TS createStatusCodeErrorResponseHandler: an APICallError whose
+		// message is the HTTP status text.
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		cause := &internalhttp.HTTPStatusError{StatusCode: resp.StatusCode, Headers: resp.Header, Body: errBody}
+		return nil, nil, providererrors.NewProviderErrorFromResponse("bfl", 0, "", http.StatusText(resp.StatusCode), cause)
 	}
 	limit := opts.MaxSize
 	if limit == 0 {
