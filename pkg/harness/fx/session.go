@@ -620,6 +620,12 @@ func (a *activeTurn) notifyLocked() {
 // waitFor waits until get reports ok (called with s.mu held, returns with
 // it held) or the turn is aborted.
 func (a *activeTurn) waitForLocked(get func() bool) error {
+	return a.waitForCallerLocked(context.Background(), get)
+}
+
+// waitForCallerLocked is waitForLocked that also stops when the waiting
+// call's own ctx ends (a control call such as SubmitUserMessage).
+func (a *activeTurn) waitForCallerLocked(ctx context.Context, get func() bool) error {
 	for {
 		if err := a.abortErr(); err != nil {
 			return err
@@ -627,11 +633,15 @@ func (a *activeTurn) waitForLocked(get func() bool) error {
 		if get() {
 			return nil
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		wake := a.wake
 		a.s.mu.Unlock()
 		select {
 		case <-wake:
 		case <-a.ctx.Done():
+		case <-ctx.Done():
 		}
 		a.s.mu.Lock()
 	}
@@ -1626,7 +1636,7 @@ func (a *activeTurn) SubmitUserMessage(ctx context.Context, text string) error {
 	s := a.s
 	s.mu.Lock()
 	err := a.controlWaitLocked(func() error {
-		return a.waitForLocked(func() bool {
+		return a.waitForCallerLocked(ctx, func() bool {
 			return a.runtimeTurn != nil && a.transport != nil && a.transport.requestIndex >= len(a.turn.Models)-1
 		})
 	})

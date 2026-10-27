@@ -243,3 +243,39 @@ func TestLibfxEmitMaySubmitToolResultSynchronously(t *testing.T) {
 		t.Errorf("finish parts = %d", n)
 	}
 }
+
+// SubmitUserMessage waits for the turn to reach the core; its own ctx ends
+// that wait (the engine here never finishes starting).
+func TestLibfxSubmitUserMessageHonorsCallerContext(t *testing.T) {
+	h, m := newMockHarness(t, Settings{})
+	release := make(chan struct{})
+	factory := m.factory
+	h.newEngine = func(ctx context.Context, o runtimeOptions) (fxEngine, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return factory(ctx, o)
+	}
+	sb := newFakeSandbox()
+	ctx := context.Background()
+	s, err := h.DoStart(ctx, startOpts(sb, "steer-ctx"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.DoDestroy(ctx) //nolint:errcheck
+	defer close(release)
+	control, err := s.DoPromptTurn(ctx, harness.PromptTurnOptions{Prompt: harness.TextPrompt("go"), Emit: func(harness.StreamPart) {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steerCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	var steerErr error
+	within(t, 5*time.Second, "SubmitUserMessage with an expired ctx", func() {
+		steerErr = control.(harness.UserMessageSubmitter).SubmitUserMessage(steerCtx, "later")
+	})
+	if steerErr != context.DeadlineExceeded {
+		t.Fatalf("SubmitUserMessage = %v, want context.DeadlineExceeded", steerErr)
+	}
+}
