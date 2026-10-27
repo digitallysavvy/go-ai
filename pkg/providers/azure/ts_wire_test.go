@@ -18,7 +18,9 @@ func TestTSWire(t *testing.T) {
 	tsfixture.RunWire(t, "../testdata/tswire/azure.jsonl.gz", tsfixture.WireSuite{
 		SkipLanguage: true,
 		Skip: map[string]string{
-			"speech > doGenerate > should use correct URL format": "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
+			"transcription > doGenerate > should use correct URL format":                                              "the recording predates TS #23589, which keeps a two-letter language code (\"en\"); covered by openai TestTranscriptionDetectedLanguages",
+			"transcription > doGenerate > should use deployment-based URL format when useDeploymentBasedUrls is true": "the recording predates TS #23589, which keeps a two-letter language code (\"en\"); covered by openai TestTranscriptionDetectedLanguages",
+			"speech > doGenerate > should use correct URL format":                                                     "the TS test serves a Uint8Array-shaped JSON body as audio; the recording cannot carry it",
 		},
 		Provider: func(base string, m tsfixture.WireModel) (provider.Provider, error) {
 			srv := base
