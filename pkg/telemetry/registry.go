@@ -929,6 +929,18 @@ func legacyState(callID string) *legacyCallState {
 	return v.(*legacyCallState)
 }
 
+// legacyLoadedState returns LegacyOpenTelemetry's call state for callID
+// without creating it (TS this.callStates.get), or nil.
+func legacyLoadedState(callID string) *legacyCallState {
+	if callID == "" {
+		return nil
+	}
+	if v, ok := legacyCallStates.Load(callID); ok {
+		return v.(*legacyCallState)
+	}
+	return nil
+}
+
 // legacyDeleteState removes callID's call state once its root span has ended
 // (mirrors TS's this.cleanupCallState(event.callId), called at the end of
 // onGenerateEnd/onObjectOperationEnd/onEmbedOperationEnd/onRerankOperationEnd/
@@ -1913,7 +1925,10 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	// could return the other integration's "current" span).
 	var span trace.Span
 	if e.CallID != "" {
-		st := legacyState(i.stateKey(e.CallID))
+		st := legacyLoadedState(i.stateKey(e.CallID))
+		if st == nil {
+			return ctx
+		}
 		st.mu.Lock()
 		span = st.stepSpan
 		st.mu.Unlock()
@@ -1977,10 +1992,12 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 // duration on this span) kept as an additive, non-conflicting attribute.
 func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCallFinishEvent) {
 	// H5: look up OUR OWN tool span by (CallID, ToolCallID) instead of
-	// trace.SpanFromContext(ctx).
+	// trace.SpanFromContext(ctx). TS returns when there is no such span
+	// (`if (!toolSpanEntry) return;`): the span in ctx may belong to another
+	// integration or to the caller.
 	var span trace.Span
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			span = st.toolSpans[e.ToolCallID]
 			if span != nil {
@@ -1988,8 +2005,10 @@ func (i LegacyOpenTelemetry) OnToolExecutionEnd(ctx context.Context, e Telemetry
 			}
 			st.mu.Unlock()
 		}
-	}
-	if span == nil {
+		if span == nil {
+			return
+		}
+	} else {
 		span = trace.SpanFromContext(ctx)
 	}
 	if !span.IsRecording() {

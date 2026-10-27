@@ -232,6 +232,18 @@ func genAIState(callID string) *genAICallState {
 	return v.(*genAICallState)
 }
 
+// genAILoadedState returns OpenTelemetry's call state for callID without
+// creating it (TS this.callStates.get), or nil.
+func genAILoadedState(callID string) *genAICallState {
+	if callID == "" {
+		return nil
+	}
+	if v, ok := genAICallStates.Load(callID); ok {
+		return v.(*genAICallState)
+	}
+	return nil
+}
+
 // genAIBaseSupplemental returns the root span's supplemental attributes
 // (runtime context and headers) recorded for callID.
 func genAIBaseSupplemental(callID string) []attribute.KeyValue {
@@ -1200,7 +1212,8 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	// registered — could return the other integration's "current" span).
 	var span trace.Span
 	if e.CallID != "" {
-		if st := genAIState(i.stateKey(e.CallID)); st != nil {
+		// TS `if (!state || !parentContext) return;`.
+		if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			span = st.stepSpan
 			if span == nil {
@@ -1208,8 +1221,10 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 			}
 			st.mu.Unlock()
 		}
-	}
-	if span == nil {
+		if span == nil {
+			return ctx
+		}
+	} else {
 		span = trace.SpanFromContext(ctx)
 	}
 	if !span.IsRecording() {
@@ -1254,7 +1269,7 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 	// trace.SpanFromContext(ctx).
 	var span trace.Span
 	if e.CallID != "" {
-		if st := genAIState(i.stateKey(e.CallID)); st != nil {
+		if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			span = st.toolSpans[e.ToolCallID]
 			if span != nil {
@@ -1262,8 +1277,12 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 			}
 			st.mu.Unlock()
 		}
-	}
-	if span == nil {
+		// TS `if (!toolSpanEntry) return;`: the span in ctx may belong to
+		// another integration or to the caller.
+		if span == nil {
+			return
+		}
+	} else {
 		span = trace.SpanFromContext(ctx)
 	}
 	if !span.IsRecording() {
