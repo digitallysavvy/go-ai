@@ -20,6 +20,11 @@ const tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPh
 // start frame the bridge received.
 func promptStart(t *testing.T, prompt harness.Prompt) (any, error) {
 	t.Helper()
+	return promptStartWithSkills(t, prompt, nil)
+}
+
+func promptStartWithSkills(t *testing.T, prompt harness.Prompt, skills []harness.Skill) (any, error) {
+	t.Helper()
 	const token = "image-token"
 	got := make(chan map[string]any, 1)
 	srv := newServer(t, token, func(turn *bridgetest.Turn, start map[string]any) {
@@ -39,7 +44,7 @@ func promptStart(t *testing.T, prompt harness.Prompt) (any, error) {
 	}
 	t.Cleanup(func() { _ = sess.DoDestroy(context.Background()) })
 	control, err := sess.DoPromptTurn(context.Background(), harness.PromptTurnOptions{
-		Prompt: prompt, Emit: func(harness.StreamPart) {},
+		TurnSettings: harness.TurnSettings{Skills: skills}, Prompt: prompt, Emit: func(harness.StreamPart) {},
 	})
 	if err != nil {
 		return nil, err
@@ -89,5 +94,16 @@ func TestDoPromptTurn_RejectsRemoteImageURL(t *testing.T) {
 	var unsupported *harness.CapabilityUnsupportedError
 	if !errors.As(err, &unsupported) || !strings.Contains(err.Error(), "remote image URLs") {
 		t.Fatalf("err = %v, want remote image URL rejection", err)
+	}
+}
+
+// TS builds the start message (and so extracts the prompt) after writing
+// skills, so an invalid skill name wins over an unsupported prompt.
+func TestDoPromptTurn_SkillErrorPrecedesUnsupportedPrompt(t *testing.T) {
+	_, err := promptStartWithSkills(t, harness.Prompt{Message: &types.Message{Role: types.RoleUser, Content: []types.ContentPart{
+		types.ImageContent{URL: "https://example.com/a.png", MimeType: "image/png"},
+	}}}, []harness.Skill{{Name: "Bad Name"}})
+	if err == nil || !strings.Contains(err.Error(), "Invalid deepagents skill name") {
+		t.Fatalf("err = %v, want the skill name error", err)
 	}
 }

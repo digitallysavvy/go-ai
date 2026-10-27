@@ -202,10 +202,6 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		return nil, harness.NewCapabilityUnsupportedError(
 			"Harness 'deepagents' requires a JSON schema for structured output.", HarnessID, nil)
 	}
-	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
-	if err != nil {
-		return nil, err
-	}
 	skillResult, err := harnessutil.WriteSkills(ctx, harnessutil.WriteSkillsOptions{
 		Sandbox: s.p.sandbox, HomePath: s.p.homeDir, SkillsDir: ".agents/skills", Skills: opts.Skills,
 		SkillNamePattern:            skillNamePattern,
@@ -213,6 +209,13 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		FilePathMode:                harnessutil.SkillFilePathStripLeadingSlashes,
 		InvalidSkillFilePathMessage: invalidSkillFilePathMessage,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// After the skill write, like TS (whose start message is built after it):
+	// a prompt that fails extraction still writes skills, and a skill error
+	// wins over a prompt error. Before wireTurn, so no listener is left behind.
+	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
 	if err != nil {
 		return nil, err
 	}
