@@ -18,6 +18,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // applyUserAgentSuffix appends the Go runtime tag to whatever "User-Agent"
@@ -342,7 +343,9 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 		case []byte:
 			bodyReader = bytes.NewReader(body)
 		default:
-			bodyBytes, err := json.Marshal(req.Body)
+			// JSON.stringify bytes: no HTML escaping of <, > and &, no
+			// trailing newline (TS postJsonToApi).
+			bodyBytes, err := jsonstr.Marshal(req.Body)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal request body: %w", err)
 			}
@@ -490,7 +493,9 @@ func (c *Client) DoStream(ctx context.Context, req Request) (*http.Response, err
 		case []byte:
 			bodyReader = bytes.NewReader(body)
 		default:
-			bodyBytes, err := json.Marshal(req.Body)
+			// JSON.stringify bytes: no HTML escaping of <, > and &, no
+			// trailing newline (TS postJsonToApi).
+			bodyBytes, err := jsonstr.Marshal(req.Body)
 			if err != nil {
 				return nil, fmt.Errorf("failed to marshal request body: %w", err)
 			}
