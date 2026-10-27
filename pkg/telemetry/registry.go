@@ -2661,9 +2661,9 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 		}
 	}
 	// H5: close any of OUR OWN still-open step/tool spans, mirroring TS's
-	// onError (`if (state.stepSpan) { recordSpanError(...); .end(); }` and a
-	// loop over state.toolSpans) — otherwise a step or tool span left open by
-	// an error that skipped OnStepEnd/OnToolExecutionEnd would leak.
+	// onError (`if (state.stepSpan) { recordSpanError(...); .end(); }`). TS
+	// legacy onError leaves tool spans open (only its onAbort and the GenAI
+	// onError end them); Go ends them with the error so they are not leaked.
 	if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
@@ -2722,8 +2722,8 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 // OnAbort closes any in-flight step span (mirroring TS onAbort's
 // `state.stepSpan.end()`, no error status — LegacyOpenTelemetry has no
 // inferenceSpan of its own to close, unlike GenAI's OpenTelemetry), any
-// in-flight tool spans, and records the abort reason on the root span before
-// ending it. H5: all three are resolved by CallID from our own state (never
+// in-flight tool, embed, rerank and decision spans, and then ends the root
+// span (TS records no abort reason on it). H5: all three are resolved by CallID from our own state (never
 // trace.SpanFromContext(ctx)/ctx.Value(stepSpanKey{}) alone), so this closes
 // the right spans even when another integration is also registered.
 func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
