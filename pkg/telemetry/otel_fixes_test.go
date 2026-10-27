@@ -409,26 +409,34 @@ func TestLegacyNestedSpansInheritRuntimeContextAttributes(t *testing.T) {
 	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("telemetry-test")})
 	settings := &Settings{IsEnabled: Bool(true)}
 	runtimeContext := map[string]interface{}{"userId": "u1"}
+	t.Cleanup(func() {
+		for _, id := range []string{"inherit-gen", "inherit-embed", "inherit-rerank", "inherit-decide"} {
+			legacyDeleteState(id)
+			otelModelCallSpans.Delete(otelSpanKey("decision", id))
+			otelModelCallSpans.Delete(otelSpanKey("reranking", id))
+		}
+		otelModelCallSpans.Delete(otelSpanKey("embedding", "e1"))
+	})
 
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
-		CallID: "call-gen", OperationType: "ai.generateText", Settings: settings, RuntimeContext: runtimeContext,
+		CallID: "inherit-gen", OperationType: "ai.generateText", Settings: settings, RuntimeContext: runtimeContext,
 	})
-	integration.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "call-gen", OperationType: "ai.generateText", Settings: settings})
+	integration.OnStepStart(ctx, TelemetryStepStartEvent{CallID: "inherit-gen", OperationType: "ai.generateText", Settings: settings})
 
 	ctx = integration.OnStart(context.Background(), TelemetryStartEvent{
-		CallID: "call-embed", OperationType: "ai.embed", Settings: settings, RuntimeContext: runtimeContext,
+		CallID: "inherit-embed", OperationType: "ai.embed", Settings: settings, RuntimeContext: runtimeContext,
 	})
-	integration.OnEmbedStart(ctx, EmbeddingModelCallStartEvent{CallID: "call-embed", EmbedCallID: "e1", OperationID: "ai.embed.doEmbed", Settings: settings})
+	integration.OnEmbedStart(ctx, EmbeddingModelCallStartEvent{CallID: "inherit-embed", EmbedCallID: "e1", OperationID: "ai.embed.doEmbed", Settings: settings})
 
 	ctx = integration.OnStart(context.Background(), TelemetryStartEvent{
-		CallID: "call-rerank", OperationType: "ai.rerank", Settings: settings, RuntimeContext: runtimeContext,
+		CallID: "inherit-rerank", OperationType: "ai.rerank", Settings: settings, RuntimeContext: runtimeContext,
 	})
-	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{CallID: "call-rerank", OperationID: "ai.rerank.doRerank", Settings: settings})
+	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{CallID: "inherit-rerank", OperationID: "ai.rerank.doRerank", Settings: settings})
 
 	ctx = integration.OnDecideStart(context.Background(), DecideStartEvent{
-		CallID: "call-decide", OperationID: "ai.decide", Settings: settings, RuntimeContext: runtimeContext,
+		CallID: "inherit-decide", OperationID: "ai.decide", Settings: settings, RuntimeContext: runtimeContext,
 	})
-	integration.OnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{CallID: "call-decide", OperationID: "ai.decide.doDecide", Settings: settings})
+	integration.OnDecisionModelCallStart(ctx, DecisionModelCallStartEvent{CallID: "inherit-decide", OperationID: "ai.decide.doDecide", Settings: settings})
 
 	for _, name := range []string{"ai.generateText.doGenerate", "ai.embed.doEmbed", "ai.rerank.doRerank", "ai.decide.doDecide"} {
 		span := findSpan(rec, name)

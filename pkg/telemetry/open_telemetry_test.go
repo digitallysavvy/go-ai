@@ -860,19 +860,20 @@ func TestOpenTelemetryRootSpansCarryEmbeddingAndRerankingInputs(t *testing.T) {
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("genai"), Embedding: true, Reranking: true})
 	settings := &Settings{RecordInputs: true}
 
-	trace.SpanFromContext(integration.OnStart(context.Background(), TelemetryStartEvent{
-		CallID: "e1", OperationType: "ai.embed", ModelID: "emb", Settings: settings, Prompt: "hello",
-	})).End()
-	trace.SpanFromContext(integration.OnStart(context.Background(), TelemetryStartEvent{
-		CallID: "e2", OperationType: "ai.embedMany", ModelID: "emb-many", Settings: settings, Values: []string{"a", "b"},
-	})).End()
+	for _, start := range []TelemetryStartEvent{
+		{CallID: "root-inputs-embed", OperationType: "ai.embed", ModelID: "emb", Settings: settings, Prompt: "hello"},
+		{CallID: "root-inputs-embed-many", OperationType: "ai.embedMany", ModelID: "emb-many", Settings: settings, Values: []string{"a", "b"}},
+	} {
+		ctx := integration.OnStart(context.Background(), start)
+		integration.OnEnd(ctx, TelemetryFinishEvent{CallID: start.CallID, OperationType: start.OperationType, Settings: settings})
+	}
 	docs := []map[string]interface{}{{"id": 1}}
 	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
-		CallID: "r1", OperationType: "ai.rerank", ModelID: "rr", Settings: settings, Documents: docs,
+		CallID: "root-inputs-rerank", OperationType: "ai.rerank", ModelID: "rr", Settings: settings, Documents: docs,
 	})
-	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{CallID: "r1", OperationID: "ai.rerank.doRerank", ModelID: "rr", Settings: settings, Documents: docs})
-	integration.OnRerankEnd(ctx, RerankingModelCallEndEvent{CallID: "r1", OperationID: "ai.rerank.doRerank", Settings: settings})
-	trace.SpanFromContext(ctx).End()
+	integration.OnRerankStart(ctx, RerankingModelCallStartEvent{CallID: "root-inputs-rerank", OperationID: "ai.rerank.doRerank", ModelID: "rr", Settings: settings, Documents: docs})
+	integration.OnRerankEnd(ctx, RerankingModelCallEndEvent{CallID: "root-inputs-rerank", OperationID: "ai.rerank.doRerank", Settings: settings})
+	integration.OnEnd(ctx, TelemetryFinishEvent{CallID: "root-inputs-rerank", OperationType: "ai.rerank", Settings: settings})
 
 	if v, _ := attrValue(findSpan(rec, "embeddings emb"), "ai.value"); v != `"hello"` {
 		t.Errorf("embed root ai.value = %v", v)
