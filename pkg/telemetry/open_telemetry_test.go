@@ -212,7 +212,7 @@ func TestOpenTelemetryEmbeddingUsageNotDoubleCounted(t *testing.T) {
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 
-	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.embed", Settings: settings})
+	rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{CallID: "embed-1", OperationType: "ai.embed", Settings: settings})
 	integration.OnEmbedStart(rootCtx, EmbeddingModelCallStartEvent{Settings: settings, CallID: "embed-1", ModelProvider: "openai", ModelID: "text-embedding-3"})
 	integration.OnEmbedEnd(rootCtx, EmbeddingModelCallEndEvent{
 		Settings: settings, CallID: "embed-1",

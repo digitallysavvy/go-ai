@@ -31,7 +31,7 @@ func TestOpenTelemetryEmbedUsageReadsTokensField(t *testing.T) {
 			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 			integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
 			settings := &Settings{IsEnabled: Bool(true)}
-			rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.embed", Settings: settings})
+			rootCtx := integration.OnStart(context.Background(), TelemetryStartEvent{CallID: "e1", OperationType: "ai.embed", Settings: settings})
 			integration.OnEmbedStart(rootCtx, EmbeddingModelCallStartEvent{Settings: settings, CallID: "e1", ModelProvider: "p", ModelID: "m"})
 			integration.OnEmbedEnd(rootCtx, EmbeddingModelCallEndEvent{Settings: settings, CallID: "e1", Usage: tc.usage})
 			span := findSpan(rec, "embeddings m")

@@ -952,12 +952,18 @@ func legacyDeleteState(callID string) {
 }
 
 // legacyRootSpanFor resolves LegacyOpenTelemetry's own root span for callID.
-// Falls back to trace.SpanFromContext(ctx) when callID is empty or has no
-// recorded root span yet, so any call site not yet updated to populate
-// CallID keeps working exactly as before (single-integration behavior is
-// unaffected either way).
+// An empty callID (a call site that doesn't populate CallID) falls back to
+// trace.SpanFromContext(ctx); a callID with no recorded root span yields a
+// non-recording span, as TS returns when getCallState finds none. Like TS
+// getCallState it never creates call state.
 func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
-	if st := legacyState(callID); st != nil {
+	if callID == "" {
+		return trace.SpanFromContext(ctx)
+	}
+	// TS `if (!state?.rootSpan) return;`: without our own root span the span
+	// in ctx belongs to the caller or to another integration, so return a
+	// non-recording span and let the handler stop.
+	if st := legacyLoadedState(callID); st != nil {
 		st.mu.Lock()
 		span := st.rootSpan
 		st.mu.Unlock()
@@ -965,7 +971,7 @@ func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
 			return span
 		}
 	}
-	return trace.SpanFromContext(ctx)
+	return trace.SpanFromContext(context.Background())
 }
 
 // finiteFloat64Attr returns an attribute.KeyValue for a float64 value, or
@@ -1511,10 +1517,13 @@ func appendRuntimeContextAttribute(attrs []attribute.KeyValue, key string, value
 }
 
 // stepSpanFor resolves this integration's open step span for callID from its
-// own call state (TS state.stepSpan), falling back to the step span in ctx,
-// which holds only the last registered integration's span.
+// own call state (TS state.stepSpan). Only an event without a CallID falls
+// back to the step span in ctx, which holds only the last registered
+// integration's span.
 func (i LegacyOpenTelemetry) stepSpanFor(ctx context.Context, callID string) (trace.Span, bool) {
 	if key := i.stateKey(callID); key != "" {
+		// TS `if (!state?.stepSpan) return;`: a step span in ctx is not
+		// necessarily ours.
 		if v, ok := legacyCallStates.Load(key); ok {
 			st := v.(*legacyCallState)
 			st.mu.Lock()
@@ -1524,6 +1533,7 @@ func (i LegacyOpenTelemetry) stepSpanFor(ctx context.Context, callID string) (tr
 				return span, true
 			}
 		}
+		return nil, false
 	}
 	span, ok := ctx.Value(stepSpanKey{}).(trace.Span)
 	return span, ok
@@ -1707,7 +1717,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 		}
 	}
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.stepSpan = stepSpan
 			st.mu.Unlock()
@@ -1783,7 +1793,7 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 	// OnEmbedEnd ever fires — otherwise this span leaks (TS's onError/onAbort
 	// both iterate state.embedSpans.values()).
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.embedSpans == nil {
 				st.embedSpans = make(map[string]trace.Span)
@@ -1807,7 +1817,7 @@ func (i LegacyOpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallE
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("embedding", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			delete(st.embedSpans, e.EmbedCallID)
 			st.mu.Unlock()
@@ -1878,7 +1888,7 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 	// state.rerankSpan = {span, context}) so OnError/OnAbort can defensively
 	// close it if the provider call itself fails before OnRerankEnd fires.
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = span
 			st.mu.Unlock()
@@ -1900,7 +1910,7 @@ func (i LegacyOpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCall
 	callID := modelCallID(e.CallID, e.OperationID)
 	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("reranking", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = nil
 			st.mu.Unlock()
@@ -1999,7 +2009,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 	}
 	child.SetAttributes(runtimeCtxAttrs...)
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.toolSpans == nil {
 				st.toolSpans = make(map[string]trace.Span)
@@ -2317,7 +2327,7 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	// state.stepSpan if it's still set, mirroring TS's onAbort/onError) don't
 	// try to end it a second time.
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil
@@ -2349,7 +2359,7 @@ func (i LegacyOpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEv
 	}
 	stepSpan.End()
 	if e.CallID != "" {
-		if st := legacyState(i.stateKey(e.CallID)); st != nil {
+		if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil
@@ -2560,7 +2570,7 @@ func (i LegacyOpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent)
 	// onError (`if (state.stepSpan) { recordSpanError(...); .end(); }` and a
 	// loop over state.toolSpans) — otherwise a step or tool span left open by
 	// an error that skipped OnStepEnd/OnToolExecutionEnd would leak.
-	if st := legacyState(i.stateKey(e.CallID)); st != nil {
+	if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
 		st.stepSpan = nil
@@ -2632,7 +2642,7 @@ func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent)
 			}
 		}
 	}
-	if st := legacyState(i.stateKey(e.CallID)); st != nil {
+	if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
 		st.stepSpan = nil
@@ -2659,7 +2669,7 @@ func (i LegacyOpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent)
 		if rerankSpan != nil && rerankSpan.IsRecording() {
 			rerankSpan.End()
 		}
-	} else if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
+	} else if stepSpan, ok := ctx.Value(stepSpanKey{}).(trace.Span); e.CallID == "" && ok && stepSpan.IsRecording() {
 		stepSpan.End()
 	}
 	span := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
