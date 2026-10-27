@@ -309,6 +309,25 @@ func attemptRepair(
 	return repair(ctx, text, cause)
 }
 
+// objectOutputJSONSchema is TS outputStrategy.jsonSchema(), the schema the
+// onStart event and the telemetry ai.schema attribute carry: the schema for
+// object output, the wrapper the model is asked for in array and enum
+// output, and none for no-schema output.
+func objectOutputJSONSchema(mode ObjectOutputMode, s schema.Schema, enumValues []string) map[string]interface{} {
+	switch mode {
+	case ObjectModeArray, ObjectModeEnum:
+		format, err := buildStreamObjectResponseFormat(StreamObjectOptions{OutputMode: mode, Schema: s, EnumValues: enumValues})
+		if err != nil {
+			return nil
+		}
+		wrapped, _ := format.Schema.(map[string]interface{})
+		return wrapped
+	case ObjectModeNoSchema:
+		return nil
+	}
+	return schemaToMap(s)
+}
+
 func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.ResponseFormat, error) {
 	switch opts.OutputMode {
 	case ObjectModeObject:
@@ -836,7 +855,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
-		Schema:            schemaToMap(opts.Schema),
+		Schema:            objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues),
 		SchemaName:        opts.SchemaName,
 		SchemaDescription: opts.SchemaDescription,
 		IsEnabled:         isEnabled,
@@ -877,7 +896,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	if telObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
-		startEvent.Schema = schemaToMap(opts.Schema)
+		startEvent.Schema = objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues)
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
@@ -1776,7 +1795,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
-		Schema:            schemaToMap(opts.Schema),
+		Schema:            objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues),
 		SchemaName:        opts.SchemaName,
 		SchemaDescription: opts.SchemaDescription,
 		IsEnabled:         isEnabled,
@@ -1816,7 +1835,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if streamObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
-		startEvent.Schema = schemaToMap(opts.Schema)
+		startEvent.Schema = objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues)
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
@@ -1896,6 +1915,10 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	var streamWarnings []types.Warning
 	var streamProviderMetadata map[string]interface{}
 	var streamErr error // captures a non-EOF stream error for deferred callback firing
+	// rawStreamErr is set when streamErr came from stream.Next itself rather
+	// than from a provider error part (TS: a rejected stream rather than an
+	// 'error' chunk).
+	rawStreamErr := false
 
 	// Response metadata fields updated by ChunkTypeResponseMetadata chunks.
 	streamResMeta := GenerateStepResponse{
@@ -1911,11 +1934,11 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	// legacy onObjectStepEnd "ai.stream.firstChunk" span event.
 	var firstChunkAt time.Time
 
-	// Process stream chunks. On a non-EOF error we record it and break so that
-	// OnStepFinish / OnFinishEvent still fire with whatever was accumulated —
-	// matching the TS SDK's TransformStream flush behaviour where the flush
-	// handler always executes even after a transform error.
-streamLoop:
+	// Process stream chunks. A provider error part does not end the stream
+	// (TS stream-object.ts records the first one as the terminal error and
+	// keeps reading). A non-EOF error from the stream itself is recorded and
+	// ends the loop; OnStepFinish / OnFinishEvent still fire with whatever was
+	// accumulated.
 	for {
 		chunk, chunkErr := stream.Next()
 		if chunkErr != nil {
@@ -1926,7 +1949,10 @@ streamLoop:
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
-			streamErr = chunkErr
+			if streamErr == nil {
+				streamErr = chunkErr
+				rawStreamErr = true
+			}
 			break
 		}
 
@@ -1973,24 +1999,30 @@ streamLoop:
 			}
 
 		case provider.ChunkTypeFinish:
-			finishReason = chunk.FinishReason
+			// After an error part the finish reason stays "error" (TS
+			// `terminalError === undefined ? chunk.finishReason.unified :
+			// 'error'`); the finish part's usage is kept either way.
+			if streamErr == nil {
+				finishReason = chunk.FinishReason
+			}
 			if chunk.Usage != nil {
 				usage = *chunk.Usage
 			}
 
 		case provider.ChunkTypeError:
-			// A provider error part is terminal: stop reading immediately
-			// rather than continuing to consume chunks after it, and report
-			// finishReason "error" instead of whatever finish reason (if
-			// any) the model happened to send. Mirrors TS stream-object.ts's
-			// TransformStream error handling (audit row b181020 / WG5).
+			// The first provider error part is the call's terminal error and
+			// sets finishReason "error"; every error part reaches onError.
+			// Reading continues (TS stream-object.ts, b181020): later text
+			// still updates the partial object and a later finish part still
+			// supplies usage and provider metadata.
 			chunkErr := wrapGatewayError(streamChunkError(chunk))
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, chunkErr) })
 			}
-			streamErr = chunkErr
-			finishReason = types.FinishReasonError
-			break streamLoop
+			if streamErr == nil {
+				streamErr = chunkErr
+				finishReason = types.FinishReasonError
+			}
 
 		case provider.ChunkTypeResponseMetadata:
 			if chunk.ResponseMetadata != nil {
@@ -2082,7 +2114,13 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
+		if rawStreamErr {
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: streamErr})
+		} else {
+			// TS sends an error part's outcome through the flush handler's
+			// onEnd (finishReason "error"), not onError.
+			fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, nil, streamProviderMetadata, usage)
+		}
 		// TS streamObject surfaces the stream error as is (no message prefix).
 		return nil, streamErr
 	}
@@ -2145,7 +2183,9 @@ streamLoop:
 			Response:         streamResMeta,
 			ProviderMetadata: streamProviderMetadata,
 		}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: opts.ExperimentalTelemetry, CallID: callID, Error: parseErr})
+		// TS reports a final parse or validation failure through the flush
+		// handler's onEnd (object undefined), not onError.
+		fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, nil, streamProviderMetadata, usage)
 		return nil, parseErr
 	}
 	finalObject = parsedObject
@@ -2181,18 +2221,7 @@ streamLoop:
 		Response:         streamResMeta,
 		ProviderMetadata: streamProviderMetadata,
 	}, resolveObjectOnEnd(opts.OnEnd, opts.OnFinishEvent))
-	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-		CallID:           callID,
-		OperationType:    "ai.streamObject",
-		Settings:         opts.ExperimentalTelemetry,
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		FinishReason:     string(finishReason),
-		Text:             accumulatedText,
-		Object:           objectResultValue(opts.OutputMode, result),
-		ProviderMetadata: streamProviderMetadata,
-		Usage:            telemetryUsageFromUsage(usage),
-	})
+	fireStreamObjectTelemetryEnd(ctx, opts, callID, finishReason, accumulatedText, objectResultValue(opts.OutputMode, result), streamProviderMetadata, usage)
 
 	// Call legacy OnFinish if provided
 	if opts.OnFinish != nil {
@@ -2200,6 +2229,24 @@ streamLoop:
 	}
 
 	return result, nil
+}
+
+// fireStreamObjectTelemetryEnd ends a StreamObject call's telemetry the way
+// TS stream-object.ts's flush handler does (telemetryDispatcher.onEnd), with a
+// nil object when the call failed.
+func fireStreamObjectTelemetryEnd(ctx context.Context, opts StreamObjectOptions, callID string, finishReason types.FinishReason, text string, object interface{}, providerMetadata map[string]interface{}, usage types.Usage) {
+	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
+		CallID:           callID,
+		OperationType:    "ai.streamObject",
+		Settings:         opts.ExperimentalTelemetry,
+		ModelProvider:    opts.Model.Provider(),
+		ModelID:          opts.Model.ModelID(),
+		FinishReason:     string(finishReason),
+		Text:             text,
+		Object:           object,
+		ProviderMetadata: providerMetadata,
+		Usage:            telemetryUsageFromUsage(usage),
+	})
 }
 
 // parsePartialJSON wraps the jsonparser.ParsePartialJSON function

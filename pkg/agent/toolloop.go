@@ -1661,11 +1661,16 @@ func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResu
 
 // executeStep executes a single agent step
 func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig, stepTel *loopStepTelemetry) (*types.StepResult, bool, interface{}, []types.Tool, error) {
-	// Apply per-step timeout if configured
+	// Apply the per-step timeout, a PrepareCall override included (TS
+	// `timeout ?? preparedCall.timeout`; the config value is the default).
 	stepCtx := ctx
 	var stepCancel context.CancelFunc
-	if a.config.Timeout != nil && a.config.Timeout.HasPerStep() {
-		stepCtx, stepCancel = a.config.Timeout.CreateTimeoutContext(ctx, "step")
+	stepTimeout := callConfig.Timeout
+	if stepTimeout == nil {
+		stepTimeout = a.config.Timeout
+	}
+	if stepTimeout.HasPerStep() {
+		stepCtx, stepCancel = stepTimeout.CreateTimeoutContext(ctx, "step")
 		defer stepCancel()
 	}
 
@@ -1772,11 +1777,22 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		// spans nest under it, while the step ctx stays unchanged.
 		modelCallCtx = mc
 		if stepCtx != ctx {
-			// keep the per-step timeout deadline on the model-call ctx
+			// Keep the per-step deadline on the model-call ctx, so it expires
+			// with context.DeadlineExceeded like the step ctx (a plain cancel
+			// would surface as context.Canceled, an abort).
 			var cancel context.CancelFunc
-			modelCallCtx, cancel = context.WithCancel(mc)
+			if deadline, ok := stepCtx.Deadline(); ok {
+				modelCallCtx, cancel = context.WithDeadline(mc, deadline)
+			} else {
+				modelCallCtx, cancel = context.WithCancel(mc)
+			}
 			defer cancel()
-			stop := context.AfterFunc(stepCtx, cancel)
+			stop := context.AfterFunc(stepCtx, func() {
+				// The deadline itself expires modelCallCtx above.
+				if !errors.Is(stepCtx.Err(), context.DeadlineExceeded) {
+					cancel()
+				}
+			})
 			defer stop()
 		}
 	}
