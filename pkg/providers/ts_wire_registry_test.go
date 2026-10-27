@@ -117,9 +117,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return openai.New(openai.Config{APIKey: wireAPIKey(m), BaseURL: b, Name: name, OpenAICompatible: true, Headers: wireHeaders(m),
 			SupportsStructuredOutputs: &structured, SupportsMultiPartToolContent: multipart, IncludeUsage: includeUsage}), nil
 	}},
-	"cohere": {RootBase: true, Skip: map[string]string{
-		"~should validate cached token usage": "TS validates the usage schema and throws; Go reads usage leniently",
-	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"cohere": {RootBase: true, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return cohere.New(cohere.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"mistral": {
@@ -224,7 +222,6 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return alibaba.New(alibaba.Config{APIKey: k, BaseURL: b, VideoBaseURL: b, EmbeddingBaseURL: b, Headers: h})
 	})},
 	"deepseek": {Skip: map[string]string{
-		"~raw usage > continues validating known usage field":                                                                      "TS validates the usage schema and throws; Go reads usage leniently",
 		"DeepSeekChatLanguageModel > doGenerate > tool call > json response format > should send correct request body with schema": "the injected schema text keeps TS object key order, which a Go map cannot",
 	}, Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
 		cfg := deepseek.Config{APIKey: wireAPIKey(m), BaseURL: b, Headers: wireHeaders(m)}
@@ -236,9 +233,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		}
 		return deepseek.New(cfg), nil
 	}},
-	"moonshotai": {Skip: map[string]string{
-		"~should preserve a provider error envelope in stream errors": "TS emits this as an error part; Go ends the stream with the same error from Next",
-	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"moonshotai": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return moonshot.New(moonshot.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	// Open Responses takes the full endpoint URL as its base URL.
