@@ -436,7 +436,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	// Determine system message mode based on model type.
-	systemMsgMode := "system"
+	// TS: systemMessageMode ?? (isReasoningModel ? 'developer' :
+	// modelCapabilities.systemMessageMode) -- so forceReasoning:false on a
+	// recognized reasoning model still resolves to "developer".
+	systemMsgMode := modelCapabilities.SystemMessageMode
 	if isReasoning {
 		systemMsgMode = "developer"
 	}

@@ -3647,3 +3647,24 @@ func TestResponsesLanguageModel_ComputerCallReplaySendsEmptyPendingSafetyChecks(
 		t.Fatalf("wire = %s, want pending_safety_checks:[]", raw)
 	}
 }
+
+// TS: systemMessageMode ?? (isReasoningModel ? 'developer' :
+// modelCapabilities.systemMessageMode), so forceReasoning:false on a
+// recognized reasoning model keeps the capability-derived "developer" role.
+func TestResponsesLanguageModel_SystemRole_ForceReasoningFalseKeepsCapabilityMode(t *testing.T) {
+	for modelID, want := range map[string]string{"gpt-5.4": "developer", "gpt-4o": "system"} {
+		p := New(Config{APIKey: "test-key"})
+		model := NewResponsesLanguageModel(p, modelID)
+		body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+			Prompt:          types.Prompt{System: "sys", Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}}}},
+			ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"forceReasoning": false}},
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sysMsg, ok := body["input"].([]interface{})[0].(responses.SystemMessage)
+		if !ok || sysMsg.Role != want {
+			t.Fatalf("%s: got %#v want role %s", modelID, body["input"].([]interface{})[0], want)
+		}
+	}
+}
