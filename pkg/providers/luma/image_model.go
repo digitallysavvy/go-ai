@@ -13,6 +13,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
 // Default polling configuration (TS LumaImageModel.pollIntervalMillis /
@@ -202,7 +203,7 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 // validation is required here -- only the final image download (below) needs
 // it, since that URL comes from the response body.
 func (m *ImageModel) pollForImageURL(ctx context.Context, generationID string, headers map[string]string, pollIntervalMillis, maxPollAttempts float64) (string, error) {
-	path := "/dream-machine/v1/generations/" + generationID
+	path := "/dream-machine/v1/generations/" + providerutils.EncodePathSegment(generationID)
 
 	for i := 0; float64(i) < maxPollAttempts; i++ {
 		select {

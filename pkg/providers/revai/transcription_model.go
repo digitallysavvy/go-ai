@@ -141,7 +141,7 @@ func (m *TranscriptionModel) DoTranscribe(ctx context.Context, opts *provider.Tr
 	httpResp, err := m.provider.client.DoJSONResponse(ctx, internalhttp.Request{
 		ValidateResponse: providerutils.MediaResponseValidator(m.Provider(), providerutils.SchemaRevAITranscript),
 		Method:           http.MethodGet,
-		Path:             fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", submission.ID),
+		Path:             fmt.Sprintf("/speechtotext/v1/jobs/%s/transcript", providerutils.EncodePathSegment(submission.ID)),
 		Headers:          opts.Headers,
 	}, &transcript)
 	if err != nil {
@@ -178,7 +178,7 @@ func (m *TranscriptionModel) pollJobStatus(ctx context.Context, jobID string, he
 	pollOpts := fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport)
 	pollOpts.Headers = version.WithUserAgentSuffix(internalhttp.MergeHeaders(map[string]string{"Authorization": "Bearer " + providerutils.APIKeyOrEnv(m.provider.config.APIKey, "REVAI_API_KEY")}, m.provider.config.Headers, headers), version.ProviderUserAgent("revai"))
 
-	pollURL := m.provider.config.BaseURL + "/speechtotext/v1/jobs/" + jobID
+	pollURL := m.provider.config.BaseURL + "/speechtotext/v1/jobs/" + providerutils.EncodePathSegment(jobID)
 	start := time.Now()
 	for {
 		select {
