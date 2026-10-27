@@ -255,10 +255,22 @@ func TestSpeechStream_KeepalivesWhileIdleAndNoneAfterInputEnds(t *testing.T) {
 		t.Fatalf("messages = %#v", got)
 	}
 	close(text.release)
-	all := server.waitForCount(t, 4, 2*time.Second)
-	if !reflect.DeepEqual(all[len(all)-1], m("text", "")) {
-		// a keepalive may have raced ahead of the end message
-		all = server.waitForCount(t, len(all)+1, 2*time.Second)
+	// A keepalive may race ahead of the end message, so wait for it by value.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		found := false
+		for _, msg := range server.all()[1:] {
+			if reflect.DeepEqual(msg, m("text", "")) {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("end-of-input message not sent")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	end := len(server.all())
 	time.Sleep(200 * time.Millisecond)
