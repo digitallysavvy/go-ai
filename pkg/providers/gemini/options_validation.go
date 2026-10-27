@@ -44,7 +44,7 @@ func checkLanguageModelOptions(opts map[string]interface{}) error {
 			return fmt.Errorf("responseModalities: expected array, received %T", v)
 		}
 		for i, e := range list {
-			if err := enumValue(fmt.Sprintf("responseModalities[%d]", i), e, "TEXT", "IMAGE"); err != nil {
+			if err := enumValue(fmt.Sprintf("responseModalities[%d]", i), e, "TEXT", "IMAGE", "AUDIO"); err != nil {
 				return err
 			}
 		}

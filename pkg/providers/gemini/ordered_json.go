@@ -79,7 +79,7 @@ func marshalOrdered(v interface{}) string {
 		}
 		b.WriteByte(']')
 		return b.String()
-	case nil:
+	case nil, arrayHole:
 		return "null"
 	default:
 		return marshalJSONCompact(val)
@@ -104,6 +104,8 @@ func toPlainJSON(v interface{}) interface{} {
 			out[i] = toPlainJSON(e)
 		}
 		return out
+	case arrayHole:
+		return nil
 	default:
 		return val
 	}

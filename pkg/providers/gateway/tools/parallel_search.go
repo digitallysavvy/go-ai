@@ -6,11 +6,33 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
+// Parallel Search modes. "turbo" and "fast" trade excerpt depth for latency
+// ("turbo" is English and Japanese only), "basic" is balanced and "advanced"
+// is the most thorough.
+const (
+	ParallelSearchModeTurbo    = "turbo"
+	ParallelSearchModeFast     = "fast"
+	ParallelSearchModeBasic    = "basic"
+	ParallelSearchModeAdvanced = "advanced"
+
+	// ParallelSearchModeOneShot is a deprecated alias of "basic".
+	//
+	// Deprecated: use ParallelSearchModeBasic.
+	ParallelSearchModeOneShot = "one-shot"
+	// ParallelSearchModeAgentic is a deprecated alias of "advanced".
+	//
+	// Deprecated: use ParallelSearchModeAdvanced.
+	ParallelSearchModeAgentic = "agentic"
+)
+
+// parallelSearchModes lists every mode the gateway input schema accepts.
+var parallelSearchModes = []string{"turbo", "fast", "basic", "advanced", "one-shot", "agentic"}
+
 // ParallelSearchConfig contains configuration for the Parallel Search tool
 type ParallelSearchConfig struct {
-	// Mode preset for different use cases:
-	// - "one-shot": Comprehensive results with longer excerpts for single-response answers (default)
-	// - "agentic": Concise, token-efficient results for multi-step agentic workflows
+	// Mode is the search mode: "turbo", "fast", "basic" (default), "advanced",
+	// or the deprecated aliases "one-shot" (runs as "basic") and "agentic"
+	// (runs as "advanced").
 	Mode string
 
 	// MaxResults is the default maximum number of results to return (1-20).
@@ -23,21 +45,29 @@ type ParallelSearchConfig struct {
 	// Excerpts is the default excerpt configuration for controlling result length
 	Excerpts *ParallelSearchExcerpts
 
+	// MaxCharsTotal is the maximum total characters across all result excerpts.
+	MaxCharsTotal *int
+
 	// FetchPolicy is the default fetch policy for controlling content freshness
 	FetchPolicy *ParallelSearchFetchPolicy
+
+	// Location is an ISO 3166-1 alpha-2 country code to localize results,
+	// e.g. "us". Invalid codes are ignored with a warning.
+	Location string
 }
 
 // ParallelSearchSourcePolicy controls which domains to include/exclude and freshness
 type ParallelSearchSourcePolicy struct {
-	// IncludeDomains is a list of domains to include in search results
-	// Example: []string{"wikipedia.org", "nature.com"}
+	// IncludeDomains restricts results to these domains or domain/path
+	// prefixes. When set, ExcludeDomains is ignored.
+	// Example: []string{"wikipedia.org", "docs.python.org/3"}
 	IncludeDomains []string
 
-	// ExcludeDomains is a list of domains to exclude from search results
-	// Example: []string{"reddit.com", "twitter.com"}
+	// ExcludeDomains is a list of domains or domain/path prefixes to exclude
+	// from results. Example: []string{"reddit.com"}
 	ExcludeDomains []string
 
-	// AfterDate only includes results published after this date (ISO 8601 format)
+	// AfterDate only includes results published on or after this date (YYYY-MM-DD)
 	// Example: "2024-01-01"
 	AfterDate string
 }
@@ -47,15 +77,25 @@ type ParallelSearchExcerpts struct {
 	// MaxCharsPerResult is the maximum characters per result
 	MaxCharsPerResult *int
 
-	// MaxCharsTotal is the maximum total characters across all results
+	// MaxCharsTotal is the maximum total characters across all results.
+	//
+	// Deprecated: use ParallelSearchConfig.MaxCharsTotal instead.
 	MaxCharsTotal *int
 }
 
 // ParallelSearchFetchPolicy controls content freshness
 type ParallelSearchFetchPolicy struct {
-	// MaxAgeSeconds is the maximum age in seconds for cached content
-	// Set to 0 to always fetch fresh content
+	// MaxAgeSeconds is the maximum age in seconds of cached content before a
+	// live fetch is attempted. Minimum 600; lower values are raised to 600.
 	MaxAgeSeconds *int
+
+	// TimeoutSeconds is the timeout in seconds for a live fetch when content
+	// is not cached. The gateway caps it to stay within its own tool timeout.
+	TimeoutSeconds *int
+
+	// DisableCacheFallback returns an error instead of falling back to older
+	// cached content when a live fetch fails or times out. Defaults to false.
+	DisableCacheFallback *bool
 }
 
 // ParallelSearchTool is the return type for the parallel search tool factory
@@ -71,15 +111,15 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 		},
 		"search_queries": map[string]interface{}{
 			"type":        "array",
-			"description": "Optional search queries to supplement the objective. Maximum 200 characters per query.",
+			"description": "Provide 2-3 concise keyword queries, 3-6 words each (max 5, 200 chars each). Strongly recommended; the search runs on these queries.",
 			"items": map[string]interface{}{
 				"type": "string",
 			},
 		},
 		"mode": map[string]interface{}{
 			"type":        "string",
-			"description": "Mode preset: 'one-shot' for comprehensive results with longer excerpts (default), 'agentic' for concise, token-efficient results for multi-step workflows.",
-			"enum":        []string{"one-shot", "agentic"},
+			"description": "Search mode: \"turbo\" and \"fast\" return quickly with shorter excerpts, \"basic\" is balanced (default), \"advanced\" is the most thorough. \"turbo\" supports English and Japanese only. \"one-shot\" and \"agentic\" are deprecated aliases of \"basic\" and \"advanced\".",
+			"enum":        parallelSearchModes,
 		},
 		"max_results": map[string]interface{}{
 			"type":        "number",
@@ -93,17 +133,17 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 		"properties": map[string]interface{}{
 			"include_domains": map[string]interface{}{
 				"type":        "array",
-				"description": "Limit results to these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page).",
+				"description": "Domains or domain/path prefixes to restrict results to, without scheme or port. Example: ['wikipedia.org', 'docs.python.org/3'].",
 				"items":       map[string]interface{}{"type": "string"},
 			},
 			"exclude_domains": map[string]interface{}{
 				"type":        "array",
-				"description": "Exclude results from these domains. Use plain domain names only — e.g. example.com or sub.example.gov, or a bare extension like .edu. Do not include a scheme, path, or port (e.g. not https://example.com/page).",
+				"description": "Domains or domain/path prefixes to exclude, without scheme or port. Example: ['reddit.com'].",
 				"items":       map[string]interface{}{"type": "string"},
 			},
 			"after_date": map[string]interface{}{
 				"type":        "string",
-				"description": "Only include results published after this date. Use an ISO 8601 calendar date formatted YYYY-MM-DD (e.g. 2025-01-01); do not include a time.",
+				"description": "Only include results published on or after this date. Use an ISO 8601 calendar date formatted YYYY-MM-DD (e.g. 2025-01-01); do not include a time.",
 			},
 		},
 	}
@@ -118,9 +158,14 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 			},
 			"max_chars_total": map[string]interface{}{
 				"type":        "number",
-				"description": "Maximum total characters across all results.",
+				"description": "Deprecated: use the top-level max_chars_total.",
 			},
 		},
+	}
+
+	properties["max_chars_total"] = map[string]interface{}{
+		"type":        "number",
+		"description": "Maximum total characters across all result excerpts.",
 	}
 
 	properties["fetch_policy"] = map[string]interface{}{
@@ -129,9 +174,22 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 		"properties": map[string]interface{}{
 			"max_age_seconds": map[string]interface{}{
 				"type":        "number",
-				"description": "Maximum age in seconds for cached content. Set to 0 to always fetch fresh content.",
+				"description": "Maximum age of cached content in seconds before a live fetch, minimum 600.",
+			},
+			"timeout_seconds": map[string]interface{}{
+				"type":        "number",
+				"description": "Timeout in seconds for a live fetch when content is not cached. Capped by the gateway tool timeout.",
+			},
+			"disable_cache_fallback": map[string]interface{}{
+				"type":        "boolean",
+				"description": "Return an error instead of older cached content when a live fetch fails.",
 			},
 		},
+	}
+
+	properties["location"] = map[string]interface{}{
+		"type":        "string",
+		"description": "ISO 3166-1 alpha-2 country code to localize results, e.g. \"us\".",
 	}
 
 	parameters := map[string]interface{}{
@@ -168,28 +226,57 @@ func NewParallelSearch(config ParallelSearchConfig) ParallelSearchTool {
 }
 
 func parallelSearchOutputSchema() map[string]interface{} {
+	nullableString := map[string]interface{}{"type": []interface{}{"string", "null"}}
 	return map[string]interface{}{
 		"oneOf": []interface{}{
 			map[string]interface{}{
-				"type": "object",
+				"type":     "object",
+				"required": []string{"search_id", "results"},
 				"properties": map[string]interface{}{
-					"searchId": map[string]interface{}{"type": "string"},
+					"search_id": map[string]interface{}{"type": "string"},
 					"results": map[string]interface{}{
 						"type": "array",
 						"items": map[string]interface{}{
-							"type": "object",
+							"type":     "object",
+							"required": []string{"url", "excerpts"},
 							"properties": map[string]interface{}{
-								"url":            map[string]interface{}{"type": "string"},
-								"title":          map[string]interface{}{"type": "string"},
-								"excerpt":        map[string]interface{}{"type": "string"},
-								"publishDate":    map[string]interface{}{"type": "string", "nullable": true},
-								"relevanceScore": map[string]interface{}{"type": "number"},
+								"url":          map[string]interface{}{"type": "string"},
+								"title":        nullableString,
+								"publish_date": nullableString,
+								"excerpts": map[string]interface{}{
+									"type":  "array",
+									"items": map[string]interface{}{"type": "string"},
+								},
 							},
 						},
 					},
+					"warnings": map[string]interface{}{
+						"type": []interface{}{"array", "null"},
+						"items": map[string]interface{}{
+							"type":     "object",
+							"required": []string{"type", "message"},
+							"properties": map[string]interface{}{
+								"type":    map[string]interface{}{"type": "string"},
+								"message": map[string]interface{}{"type": "string"},
+								"detail":  map[string]interface{}{"type": []interface{}{"object", "null"}},
+							},
+						},
+					},
+					"usage": map[string]interface{}{
+						"type": []interface{}{"array", "null"},
+						"items": map[string]interface{}{
+							"type":     "object",
+							"required": []string{"name"},
+							"properties": map[string]interface{}{
+								"name":  map[string]interface{}{"type": "string"},
+								"count": map[string]interface{}{"type": "number"},
+							},
+						},
+					},
+					"session_id": map[string]interface{}{"type": "string"},
 				},
 			},
-			searchErrorSchema([]string{"api_error", "rate_limit", "timeout", "invalid_input", "configuration_error", "unknown"}),
+			searchErrorSchema([]string{"api_error", "configuration_error", "execution_error", "gateway_rate_limit", "invalid_input", "rate_limit", "timeout", "unknown", "unknown_tool"}),
 		},
 	}
 }
@@ -225,10 +312,22 @@ func parallelSearchArgs(config ParallelSearchConfig) map[string]interface{} {
 		}
 		args["excerpts"] = excerpts
 	}
+	if config.MaxCharsTotal != nil {
+		args["maxCharsTotal"] = *config.MaxCharsTotal
+	}
+	if config.Location != "" {
+		args["location"] = config.Location
+	}
 	if config.FetchPolicy != nil {
 		fetchPolicy := map[string]interface{}{}
 		if config.FetchPolicy.MaxAgeSeconds != nil {
 			fetchPolicy["maxAgeSeconds"] = *config.FetchPolicy.MaxAgeSeconds
+		}
+		if config.FetchPolicy.TimeoutSeconds != nil {
+			fetchPolicy["timeoutSeconds"] = *config.FetchPolicy.TimeoutSeconds
+		}
+		if config.FetchPolicy.DisableCacheFallback != nil {
+			fetchPolicy["disableCacheFallback"] = *config.FetchPolicy.DisableCacheFallback
 		}
 		args["fetchPolicy"] = fetchPolicy
 	}

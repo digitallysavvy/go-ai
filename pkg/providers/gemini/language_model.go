@@ -102,6 +102,9 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		prior         []*types.GenerateResult
 		usageMetadata *UsageMetadata
 		firstPrompt   *int
+		// groundingPerRequest holds each request's grounding snapshot (null
+		// when absent), in request order (TS groundingMetadataPerRequest).
+		groundingPerRequest []json.RawMessage
 	)
 	if response.UsageMetadata != nil {
 		v := response.UsageMetadata.PromptTokenCount
@@ -109,8 +112,13 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	}
 	for {
 		var token string
-		if len(response.Candidates) > 0 && response.Candidates[0].FinishReason == "CONTINUATION" {
-			token = response.Candidates[0].ContinuationToken
+		if len(response.Candidates) > 0 {
+			groundingPerRequest = append(groundingPerRequest, rawOrNull(response.Candidates[0].GroundingMetadata))
+			if response.Candidates[0].FinishReason == "CONTINUATION" {
+				token = response.Candidates[0].ContinuationToken
+			}
+		} else {
+			groundingPerRequest = append(groundingPerRequest, json.RawMessage("null"))
 		}
 		usageMetadata = addUsageMetadata(usageMetadata, response.UsageMetadata)
 		if token == "" {
@@ -140,7 +148,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	if len(prior) == 0 {
 		result = m.convertResponseFull(last, tnm, jsonResponseToolName, nil)
 	} else {
-		result = m.convertResponseFull(last, tnm, jsonResponseToolName, firstPrompt)
+		result = m.convertResponseWithGrounding(last, tnm, jsonResponseToolName, firstPrompt, groundingPerRequest)
 		for i := len(prior) - 1; i >= 0; i-- {
 			p := prior[i]
 			result.Content = append(append([]types.ContentPart{}, p.Content...), result.Content...)
@@ -368,6 +376,14 @@ func (m *LanguageModel) convertResponse(response Response, tnm toolNameMapping) 
 // several continued long-decode requests (the first request's prompt token
 // count, exposed in provider metadata).
 func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMapping, jsonResponseToolName string, initialPromptTokenCount *int) *types.GenerateResult {
+	return m.convertResponseWithGrounding(response, tnm, jsonResponseToolName, initialPromptTokenCount, nil)
+}
+
+// convertResponseWithGrounding is convertResponseFull plus
+// groundingMetadataPerRequest: for an automatically continued response, each
+// request's grounding snapshot in order (null for requests that returned
+// none). nil omits the provider metadata field.
+func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm toolNameMapping, jsonResponseToolName string, initialPromptTokenCount *int, groundingPerRequest []json.RawMessage) *types.GenerateResult {
 	result := &types.GenerateResult{
 		Usage:       convertUsage(response.UsageMetadata),
 		RawResponse: response,
@@ -656,6 +672,11 @@ func (m *LanguageModel) convertResponseFull(response Response, tnm toolNameMappi
 	meta := map[string]json.RawMessage{}
 	meta["promptFeedback"] = rawOrNull(response.PromptFeedback)
 	meta["groundingMetadata"] = rawOrNull(candidate.GroundingMetadata)
+	if groundingPerRequest != nil {
+		if gp, err := json.Marshal(groundingPerRequest); err == nil {
+			meta["groundingMetadataPerRequest"] = gp
+		}
+	}
 	meta["urlContextMetadata"] = rawOrNull(candidate.UrlContextMetadata)
 	meta["safetyRatings"] = rawOrNull(candidate.SafetyRatings)
 	if candidate.FinishMessage != "" {

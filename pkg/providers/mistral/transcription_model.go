@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -203,35 +202,42 @@ func mistralTranscriptionProviderMetadata(response mistralTranscriptionResponse)
 // ai/packages/mistral/src/mistral-transcription-model-options.ts.
 type mistralTranscriptionOptions struct {
 	Language               string
+	ReturnLanguage         *bool
 	Temperature            *float64
 	TimestampGranularities []string
 	Diarize                *bool
 	ContextBias            []string
 }
 
-// contextBiasItem is z.string().min(1).regex(/^[^\s,]+$/).
-var mistralContextBiasItem = regexp.MustCompile(`^[^\s,]+$`)
+// mistralLegacyTranscriptionModels are the known models that cannot combine a
+// pinned language with timestamp granularities. Only these are restricted so
+// future and custom models can combine them without an SDK update.
+var mistralLegacyTranscriptionModels = map[string]bool{
+	"voxtral-mini-2507":   true,
+	"voxtral-mini-2602":   true,
+	"voxtral-mini-latest": true,
+}
 
 // mistralTranscriptionOptionsSchema is mistralTranscriptionModelOptions.
 var mistralTranscriptionOptionsSchema = providerutils.OptionSchema{
 	"language":               providerutils.OptStringLen(1, -1),
+	"returnLanguage":         providerutils.OptBool,
 	"temperature":            providerutils.OptNumber,
 	"timestampGranularities": providerutils.OptArray(providerutils.OptEnum("segment", "word"), 1, -1),
 	"diarize":                providerutils.OptBool,
-	"contextBias": providerutils.OptArray(providerutils.OptAnd(
-		providerutils.OptStringLen(1, -1),
-		providerutils.OptMatch(mistralContextBiasItem, "Context bias items must not contain commas or whitespace."),
-	), 0, 100),
+	// Voxtral 3 accepts phrases and descriptions of the recording, including
+	// spaces and punctuation; entries only need to be non-empty.
+	"contextBias": providerutils.OptArray(providerutils.OptStringLen(1, -1), 0, -1),
 }
 
 // extractMistralTranscriptionOptions reads providerOptions.mistral and
 // validates it like TS parseProviderOptions(mistralTranscriptionModelOptions).
 // The value is normalized through its JSON form first, so Go ints, []string
-// slices and typed structs are read like their JSON equivalents. Mistral
-// documents language and timestampGranularities as mutually exclusive;
-// rejecting the combination locally provides a stable SDK error instead of an
-// API 4xx, matching TS.
-func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*mistralTranscriptionOptions, error) {
+// slices and typed structs are read like their JSON equivalents. Known legacy
+// models cannot combine language with timestampGranularities; rejecting the
+// combination locally provides a stable SDK error instead of an API 4xx,
+// matching TS. Language and returnLanguage are always mutually exclusive.
+func extractMistralTranscriptionOptions(modelID string, opts *provider.TranscriptionOptions) (*mistralTranscriptionOptions, error) {
 	if opts == nil || opts.ProviderOptions == nil {
 		return nil, nil
 	}
@@ -256,6 +262,9 @@ func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*m
 	if v, ok := m["language"].(string); ok {
 		result.Language = v
 	}
+	if v, ok := m["returnLanguage"].(bool); ok {
+		result.ReturnLanguage = &v
+	}
 	if v, ok := m["temperature"].(float64); ok {
 		result.Temperature = &v
 	}
@@ -277,10 +286,17 @@ func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*m
 		}
 	}
 
-	if result.Language != "" && len(result.TimestampGranularities) > 0 {
+	if mistralLegacyTranscriptionModels[modelID] && result.Language != "" && len(result.TimestampGranularities) > 0 {
 		return nil, &providererrors.InvalidArgumentError{
 			Field:   "providerOptions",
 			Message: "providerOptions.mistral.language cannot be combined with providerOptions.mistral.timestampGranularities",
+		}
+	}
+
+	if result.Language != "" && result.ReturnLanguage != nil && *result.ReturnLanguage {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "providerOptions",
+			Message: "providerOptions.mistral.language cannot be combined with providerOptions.mistral.returnLanguage",
 		}
 	}
 
@@ -288,7 +304,7 @@ func extractMistralTranscriptionOptions(opts *provider.TranscriptionOptions) (*m
 }
 
 func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOptions) (io.Reader, string, error) {
-	mistralOpts, err := extractMistralTranscriptionOptions(opts)
+	mistralOpts, err := extractMistralTranscriptionOptions(m.modelID, opts)
 	if err != nil {
 		return nil, "", err
 	}
@@ -330,6 +346,11 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 
 	if mistralOpts != nil {
+		if mistralOpts.ReturnLanguage != nil {
+			if err := writer.WriteField("return_language", strconv.FormatBool(*mistralOpts.ReturnLanguage)); err != nil {
+				return nil, "", err
+			}
+		}
 		if mistralOpts.Temperature != nil {
 			if err := writer.WriteField("temperature", strconv.FormatFloat(*mistralOpts.Temperature, 'f', -1, 64)); err != nil {
 				return nil, "", err

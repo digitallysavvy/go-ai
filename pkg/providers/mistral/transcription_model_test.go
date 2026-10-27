@@ -2,13 +2,18 @@ package mistral
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
 // TestMistralTranscriptionModelDoTranscribe guards 4e116c9: batch Voxtral
@@ -220,7 +225,7 @@ func TestMistralTranscriptionTypedOptionsAreForwardedAndValidated(t *testing.T) 
 
 	for name, bad := range map[string]map[string]interface{}{
 		"enum":        {"timestampGranularities": []string{"line"}},
-		"whitespace":  {"contextBias": []string{"a b"}},
+		"empty entry": {"contextBias": []string{""}},
 		"empty list":  {"timestampGranularities": []string{}},
 		"temperature": {"temperature": "hot"},
 	} {
@@ -248,4 +253,105 @@ func TestTranscriptionEmptyUsageStillProducesUsageMetadata(t *testing.T) {
 	if usage, ok := meta["usage"].(map[string]interface{}); !ok || len(usage) != 0 {
 		t.Fatalf("metadata = %#v", result.ProviderMetadata)
 	}
+}
+
+// transcribeForm runs one transcription and returns the multipart fields.
+func transcribeForm(t *testing.T, modelID string, mistralOpts map[string]interface{}, respBody string) (map[string][]string, interface{}, error) {
+	t.Helper()
+	fields := map[string][]string{}
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
+			}
+			b, _ := io.ReadAll(part)
+			fields[part.FormName()] = append(fields[part.FormName()], string(b))
+		}
+		return mistralJSONResponse(respBody), nil
+	})
+	res, err := NewTranscriptionModel(p, modelID).DoTranscribe(context.Background(), &provider.TranscriptionOptions{
+		Audio: []byte("x"), MimeType: "audio/wav",
+		ProviderOptions: map[string]interface{}{"mistral": mistralOpts},
+	})
+	var lang interface{}
+	if res != nil {
+		lang = res.Language
+	}
+	return fields, lang, err
+}
+
+// Ported from TS #23781 (Voxtral 3 transcription).
+func TestMistralTranscriptionVoxtral3(t *testing.T) {
+	const okBody = `{"model":"m","text":"hi"}`
+
+	t.Run("context bias accepts phrases, punctuation, and more than 100 entries", func(t *testing.T) {
+		bias := []string{"AI SDK", "A conversation about Vercel, TypeScript, and speech."}
+		for i := 0; i < 100; i++ {
+			bias = append(bias, fmt.Sprintf("Product %d", i))
+		}
+		fields, _, err := transcribeForm(t, "voxtral-mini-transcribe-3-0", map[string]interface{}{"contextBias": bias}, okBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(fields["context_bias"], bias) {
+			t.Fatalf("context_bias = %v", fields["context_bias"])
+		}
+	})
+
+	t.Run("legacy models reject language with timestamps", func(t *testing.T) {
+		for _, id := range []string{"voxtral-mini-2507", "voxtral-mini-2602", "voxtral-mini-latest"} {
+			_, _, err := transcribeForm(t, id, map[string]interface{}{"language": "en", "timestampGranularities": []string{"segment"}}, okBody)
+			var ia *providererrors.InvalidArgumentError
+			if !errors.As(err, &ia) {
+				t.Errorf("%s: err = %v, want InvalidArgumentError", id, err)
+			}
+		}
+	})
+
+	t.Run("unrecognized models allow language with timestamps", func(t *testing.T) {
+		for _, id := range []string{"voxtral-mini-transcribe-4-0", "voxtral-small-transcribe-3-1", "custom-transcription-model"} {
+			fields, _, err := transcribeForm(t, id, map[string]interface{}{"language": "en", "timestampGranularities": []string{"segment"}}, okBody)
+			if err != nil {
+				t.Fatalf("%s: %v", id, err)
+			}
+			if fields["language"][0] != "en" || fields["timestamp_granularities"][0] != "segment" {
+				t.Errorf("%s: fields = %v", id, fields)
+			}
+		}
+	})
+
+	t.Run("voxtral 3 allows language with segment timestamps and diarization", func(t *testing.T) {
+		for _, id := range []string{"voxtral-mini-transcribe-3-0", "voxtral-mini-transcribe-3", "voxtral-mini-transcribe-latest", "voxtral-small-transcribe-3-0", "voxtral-small-transcribe-3", "voxtral-small-transcribe-latest"} {
+			fields, _, err := transcribeForm(t, id, map[string]interface{}{
+				"language": "en", "returnLanguage": false,
+				"timestampGranularities": []string{"segment"}, "diarize": true,
+			}, okBody)
+			if err != nil {
+				t.Fatalf("%s: %v", id, err)
+			}
+			if fields["return_language"][0] != "false" || fields["diarize"][0] != "true" || fields["timestamp_granularities"][0] != "segment" {
+				t.Errorf("%s: fields = %v", id, fields)
+			}
+		}
+	})
+
+	t.Run("requests and returns the detected language", func(t *testing.T) {
+		fields, lang, err := transcribeForm(t, "voxtral-mini-transcribe-3-0", map[string]interface{}{"returnLanguage": true}, `{"model":"m","text":"hi","language":"en"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fields["return_language"][0] != "true" || lang != "en" {
+			t.Fatalf("fields = %v lang = %v", fields, lang)
+		}
+	})
+
+	t.Run("rejects language prediction when the language is pinned", func(t *testing.T) {
+		_, _, err := transcribeForm(t, "voxtral-mini-transcribe-3-0", map[string]interface{}{"language": "en", "returnLanguage": true}, okBody)
+		if err == nil || !strings.Contains(err.Error(), "providerOptions.mistral.language cannot be combined with providerOptions.mistral.returnLanguage") {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }

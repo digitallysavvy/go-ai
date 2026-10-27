@@ -110,7 +110,7 @@ func TestBuildRequestBody_StreamAddsStreamOptions(t *testing.T) {
 }
 
 func TestBuildRequestBody_OmitsFixedSamplingForKimiModels(t *testing.T) {
-	for _, modelID := range []string{"kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k3"} {
+	for _, modelID := range []string{"kimi-k2.5", "kimi-k2.6", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k3", "kimi-k3.1-pro", "kimi-k3.1-pro-highspeed"} {
 		t.Run(modelID, func(t *testing.T) {
 			model := newMoonshotTestModel(modelID)
 			temp, topP, freq, pres := 0.2, 0.4, 0.5, 0.6
@@ -957,5 +957,44 @@ func TestMoonshotReferenceAcceptsMoonshotaiKey(t *testing.T) {
 	}
 	if part["image_url"].(map[string]interface{})["url"] != "ms://abc" {
 		t.Fatalf("part = %#v", part)
+	}
+}
+
+// TS #23886: kimi-k3.1-pro and kimi-k3.1-pro-highspeed belong to the kimi-k3 family.
+func TestKimiK31ProModelsUseKimiK3Family(t *testing.T) {
+	for _, modelID := range []string{ModelKimiK31Pro, ModelKimiK31ProHighspeed} {
+		t.Run(modelID, func(t *testing.T) {
+			if GetModelFamily(modelID) != FamilyKimiK3 || !IsKimiModel(modelID) {
+				t.Fatalf("family = %q", GetModelFamily(modelID))
+			}
+			model := newMoonshotTestModel(modelID)
+			medium := types.ReasoningMedium
+			body, warnings, err := model.buildRequestBodyWithWarnings(&provider.GenerateOptions{
+				Prompt:    textPrompt("Hello"),
+				Reasoning: &medium,
+				ProviderOptions: map[string]interface{}{"moonshot": map[string]interface{}{
+					"thinking":         map[string]interface{}{"type": "disabled"},
+					"reasoningHistory": "preserved",
+				}},
+			}, false)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, has := body["thinking"]; has {
+				t.Errorf("thinking must be omitted, got %#v", body["thinking"])
+			}
+			if body["reasoning_effort"] != "high" {
+				t.Errorf("reasoning_effort = %v, want high", body["reasoning_effort"])
+			}
+			found := false
+			for _, w := range warnings {
+				if w.Feature == "thinking" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected thinking warning, got %#v", warnings)
+			}
+		})
 	}
 }

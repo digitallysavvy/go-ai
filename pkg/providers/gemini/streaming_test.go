@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -963,5 +964,82 @@ func TestStreamContinuationResetsFinishReason(t *testing.T) {
 	last := chunks[len(chunks)-1]
 	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonInterrupted {
 		t.Fatalf("finish = %+v", last)
+	}
+}
+
+// Ported from TS #23459 'in-stream errors': Google can send an error frame
+// mid-stream; it is surfaced as a provider stream error and the stream
+// finishes with reason "error".
+func TestStream_InStreamError(t *testing.T) {
+	cases := []struct {
+		name        string
+		partialText bool
+		code        interface{}
+		status      string
+		retryable   bool
+	}{
+		{"503 no text", false, 503, "UNAVAILABLE", true},
+		{"503 partial text", true, 503, "UNAVAILABLE", true},
+		{"400", false, 400, "INVALID_ARGUMENT", false},
+		{"null code", false, nil, "UNKNOWN", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errFrame := mustMarshal(map[string]interface{}{"error": map[string]interface{}{
+				"code": tc.code, "message": "Provider error", "status": tc.status,
+				"details": []interface{}{map[string]interface{}{"@type": "type.googleapis.com/google.rpc.RetryInfo"}},
+			}})
+			var frames []string
+			if tc.partialText {
+				frames = append(frames, `{"candidates":[{"content":{"parts":[{"text":"Partial answer"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}}`)
+			}
+			frames = append(frames, errFrame, "[DONE]")
+			chunks := drainStream(t, newTestStream(sseStream(frames...)))
+
+			var types_ []string
+			var errChunk, finish *provider.StreamChunk
+			for _, c := range chunks {
+				switch c.Type {
+				case provider.ChunkTypeResponseMetadata:
+					continue
+				case provider.ChunkTypeError:
+					errChunk = c
+				case provider.ChunkTypeFinish:
+					finish = c
+				}
+				types_ = append(types_, string(c.Type))
+			}
+			want := []string{"error", "finish"}
+			if tc.partialText {
+				want = []string{"text-start", "text", "error", "text-end", "finish"}
+			}
+			if strings.Join(types_, ",") != strings.Join(want, ",") {
+				t.Fatalf("chunk types = %v, want %v", types_, want)
+			}
+			spe, ok := errChunk.Err.(*providererrors.StreamProviderError)
+			if !ok {
+				t.Fatalf("err = %#v, want *StreamProviderError", errChunk.Err)
+			}
+			if spe.Message != "Provider error" || spe.Type != tc.status || spe.IsRetryable != tc.retryable {
+				t.Fatalf("stream error = %+v", spe)
+			}
+			if tc.code == nil {
+				if spe.Code != nil || spe.StatusCode != nil {
+					t.Fatalf("code/status = %v/%v, want nil", spe.Code, spe.StatusCode)
+				}
+			} else if spe.StatusCode == nil || *spe.StatusCode != tc.code.(int) {
+				t.Fatalf("statusCode = %v, want %v", spe.StatusCode, tc.code)
+			}
+			data, _ := spe.Data.(map[string]interface{})
+			if data["status"] != tc.status {
+				t.Fatalf("data = %#v", spe.Data)
+			}
+			if finish.FinishReason != types.FinishReasonError || finish.RawFinishReason != "" {
+				t.Fatalf("finish = %q raw %q", finish.FinishReason, finish.RawFinishReason)
+			}
+			if tc.partialText && (finish.Usage == nil || finish.Usage.InputTokens == nil || *finish.Usage.InputTokens != 10) {
+				t.Fatalf("usage = %+v", finish.Usage)
+			}
+		})
 	}
 }

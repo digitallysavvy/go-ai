@@ -451,6 +451,23 @@ func TestConvertToAnthropicPrompt_Golden(t *testing.T) {
 			wantMessages: `[{"role":"user","content":[{"type":"tool_result","tool_use_id":"pdf-1","content":[{"type":"document","source":{"type":"url","url":"https://example.com/doc.pdf"}}]}]}]`,
 		},
 		{
+			name: "tool result with provider-referenced file",
+			messages: []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{
+				types.ToolResultContent{ToolName: "get-file", ToolCallID: "get-file-1", Output: &types.ToolResultOutput{
+					Type: types.ToolResultOutputContent,
+					Content: []types.ToolResultContentBlock{
+						types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"anthropic": "file-txt-12345"}}, MediaType: "text/plain"},
+						types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeReference, Reference: types.ProviderReference{"anthropic": "file-img-1"}}, MediaType: "image/png"},
+					},
+				}},
+			}}},
+			wantMessages: `[{"role":"user","content":[{"type":"tool_result","tool_use_id":"get-file-1","content":[
+				{"type":"document","source":{"type":"file","file_id":"file-txt-12345"}},
+				{"type":"image","source":{"type":"file","file_id":"file-img-1"}}
+			]}]}]`,
+			wantBetas: []string{AnthropicBetaFilesAPI},
+		},
+		{
 			name: "error-text and execution-denied tool results",
 			messages: []types.Message{{Role: types.RoleTool, Content: []types.ContentPart{
 				types.ToolResultContent{ToolName: "t", ToolCallID: "c1", Output: &types.ToolResultOutput{Type: types.ToolResultOutputErrorText, Value: "boom"}},

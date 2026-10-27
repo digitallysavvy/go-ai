@@ -507,6 +507,8 @@ for chunk := range stream.Chunks() {
 
 `gemini-4-argon` can produce very long responses. A `generateContent` request that stops at the per-request cap while `MaxTokens` budget remains (finish reason `CONTINUATION`) is continued automatically by `DoGenerate` and `DoStream`: the same request is resent with the continuation token and the results are combined into one response. Usage is summed across requests. Because every continued request re-sends the prompt plus all output so far, `providerMetadata.google.initialPromptTokenCount` holds the first request's prompt token count for context-window checks.
 
+For an automatically continued response, `providerMetadata.google.groundingMetadataPerRequest` lists each request's grounding metadata in request order (`null` for requests that returned none), so search queries from earlier requests are not lost. `groundingMetadata` keeps its meaning: the final request's grounding.
+
 A response that uses up the caller's `MaxTokens` returns finish reason `length` with `providerMetadata.google.continuationToken`. Resume it by passing the token back with the original prompt and a higher `MaxTokens` (the budget is cumulative):
 
 ```go
@@ -1041,6 +1043,22 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
                 "thinkingBudget": 512,
                 "includeThoughts": true,
             },
+        },
+    },
+})
+```
+
+### Response modalities
+
+The `responseModalities` provider option accepts `TEXT`, `IMAGE`, and `AUDIO`; which values work depends on the model. Generated audio is returned as a file part (for example `audio/wav`) in the result content.
+
+```go
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Prompt: "Compose a short jingle.",
+    ProviderOptions: map[string]interface{}{
+        "google": map[string]interface{}{
+            "responseModalities": []string{"TEXT", "AUDIO"},
         },
     },
 })

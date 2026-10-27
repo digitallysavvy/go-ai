@@ -95,6 +95,10 @@ func AnthropicToolsetNames(tools []types.Tool) map[string]string {
 type AnthropicCacheControlValidator struct {
 	breakpointCount int
 	warnings        []types.Warning
+	// providerOptionsName is the cache option namespace of compatible
+	// providers (TS CacheControlValidator providerOptionsName). Empty means
+	// only the canonical "anthropic" namespace is read.
+	providerOptionsName string
 }
 
 // NewAnthropicCacheControlValidator creates a validator for one request.
@@ -102,10 +106,17 @@ func NewAnthropicCacheControlValidator() *AnthropicCacheControlValidator {
 	return &AnthropicCacheControlValidator{}
 }
 
+// NewAnthropicCacheControlValidatorFor creates a validator that prefers the
+// cache options in providerOptions[providerOptionsName] and falls back to the
+// canonical "anthropic" namespace (TS CacheControlValidator constructor).
+func NewAnthropicCacheControlValidatorFor(providerOptionsName string) *AnthropicCacheControlValidator {
+	return &AnthropicCacheControlValidator{providerOptionsName: providerOptionsName}
+}
+
 // GetCacheControl returns the cache_control value from the anthropic provider
 // options (accepting both cacheControl and cache_control), or nil.
 func (v *AnthropicCacheControlValidator) GetCacheControl(providerOptions map[string]interface{}, contextType string, canCache bool) interface{} {
-	value := anthropicCacheControlFromOptions(providerOptions)
+	value := anthropicCacheControlFromOptions(providerOptions, v.providerOptionsName)
 	if value == nil {
 		return nil
 	}
@@ -134,22 +145,42 @@ func (v *AnthropicCacheControlValidator) Warnings() []types.Warning {
 	return v.warnings
 }
 
-func anthropicCacheControlFromOptions(options map[string]interface{}) interface{} {
-	anthropicOpts := anthropicOptions(options)
-	if anthropicOpts == nil {
-		return nil
+func anthropicCacheControlFromOptions(options map[string]interface{}, providerOptionsName string) interface{} {
+	// Prefer the configured namespace, retaining the canonical namespace as a
+	// fallback. Both cacheControl and cache_control are accepted.
+	var namespaces []map[string]interface{}
+	if providerOptionsName != "" && providerOptionsName != "anthropic" && options != nil {
+		if custom, ok := options[providerOptionsName].(map[string]interface{}); ok {
+			namespaces = append(namespaces, custom)
+		}
 	}
-	if cacheControl, ok := anthropicOpts["cacheControl"]; ok && cacheControl != nil {
-		return cacheControl
+	if anthropicOpts := anthropicOptions(options); anthropicOpts != nil {
+		namespaces = append(namespaces, anthropicOpts)
 	}
-	if cacheControl, ok := anthropicOpts["cache_control"]; ok && cacheControl != nil {
-		return cacheControl
+	for _, ns := range namespaces {
+		if cacheControl, ok := ns["cacheControl"]; ok && cacheControl != nil {
+			return cacheControl
+		}
+		if cacheControl, ok := ns["cache_control"]; ok && cacheControl != nil {
+			return cacheControl
+		}
 	}
 	return nil
 }
 
+// AnthropicMediaPartConverter lets compatible providers convert a file part
+// into their own image or video block (TS AnthropicMediaPartConverter). The
+// returned block must not carry cache_control; the converter adds it. A nil
+// block (with a nil error) means "use the default conversion".
+type AnthropicMediaPartConverter func(part types.FileContent) (map[string]interface{}, error)
+
 // AnthropicPromptOptions configures ConvertToAnthropicPrompt.
 type AnthropicPromptOptions struct {
+	// ConvertMediaPart overrides the file conversion of user message parts
+	// (including image parts, which are file parts with an image media type).
+	// nil uses the default conversion.
+	ConvertMediaPart AnthropicMediaPartConverter
+
 	// SendReasoning controls whether reasoning parts are sent back as
 	// thinking / redacted_thinking blocks. nil means true (TS default).
 	SendReasoning *bool
@@ -757,6 +788,43 @@ func resolveAnthropicFile(fileData types.FileData, data []byte, url, reference, 
 	return f, nil
 }
 
+// AnthropicFilePart is a resolved view of a file part for custom media
+// converters (see AnthropicMediaPartConverter): the tagged data kind and its
+// payload, whichever of the FileContent forms the caller used.
+type AnthropicFilePart struct {
+	// Kind is the data kind: data, url, reference or text.
+	Kind types.FileDataType
+	// Data holds the bytes for Kind == FileDataTypeData.
+	Data []byte
+	// URL holds the URL for Kind == FileDataTypeURL.
+	URL string
+	// Reference holds the provider references for Kind == FileDataTypeReference.
+	Reference types.ProviderReference
+	// MediaType is the declared media type; it may be a bare top-level type
+	// such as "image". Use FullMediaType to resolve it.
+	MediaType string
+
+	file anthropicFile
+}
+
+// ResolveAnthropicFilePart normalizes a file part (legacy Data/URL/Reference
+// fields, tagged FileData, data: URLs) into an AnthropicFilePart.
+func ResolveAnthropicFilePart(p types.FileContent) (AnthropicFilePart, error) {
+	f, err := resolveAnthropicFile(p.FileData, p.Data, p.URL, p.Reference, p.Text, firstNonEmpty(p.MediaType, p.MimeType), p.Filename)
+	if err != nil {
+		return AnthropicFilePart{}, err
+	}
+	return AnthropicFilePart{Kind: f.kind, Data: f.data, URL: f.url, Reference: f.reference, MediaType: f.mediaType, file: f}, nil
+}
+
+// TopLevelMediaType returns the part before "/" of the media type ("image"
+// for "image/png").
+func (f AnthropicFilePart) TopLevelMediaType() string { return topLevelMediaType(f.MediaType) }
+
+// FullMediaType resolves a full media type, detecting it from inline bytes
+// when only the top-level type was given (TS resolveFullMediaType).
+func (f AnthropicFilePart) FullMediaType() (string, error) { return f.file.resolveFullMediaType() }
+
 func topLevelMediaType(mediaType string) string {
 	if i := strings.Index(mediaType, "/"); i >= 0 {
 		return mediaType[:i]
@@ -860,6 +928,20 @@ func (c *anthropicConverter) documentMetadata(providerOptions map[string]interfa
 }
 
 func (c *anthropicConverter) convertUserFile(p types.FileContent, cacheControl interface{}) (map[string]interface{}, error) {
+	if c.opts.ConvertMediaPart != nil {
+		converted, err := c.opts.ConvertMediaPart(p)
+		if err != nil {
+			return nil, err
+		}
+		if converted != nil {
+			block := make(map[string]interface{}, len(converted)+1)
+			for k, v := range converted {
+				block[k] = v
+			}
+			setIfNotNil(block, "cache_control", cacheControl)
+			return block, nil
+		}
+	}
 	f, err := resolveAnthropicFile(p.FileData, p.Data, p.URL, p.Reference, p.Text, firstNonEmpty(p.MediaType, p.MimeType), p.Filename)
 	if err != nil {
 		return nil, err
@@ -1173,6 +1255,17 @@ func (c *anthropicConverter) convertToolResultContentBlock(block types.ToolResul
 func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]interface{}, error) {
 	topLevel := topLevelMediaType(f.mediaType)
 	switch f.kind {
+	case types.FileDataTypeReference:
+		fileID, err := providerutils.ResolveProviderReference(f.reference, "anthropic")
+		if err != nil {
+			return nil, err
+		}
+		c.addBeta(AnthropicBetaFilesAPI)
+		blockType := "document"
+		if topLevel == "image" {
+			blockType = "image"
+		}
+		return map[string]interface{}{"type": blockType, "source": map[string]interface{}{"type": "file", "file_id": fileID}}, nil
 	case types.FileDataTypeURL:
 		if topLevel == "image" {
 			return map[string]interface{}{"type": "image", "source": map[string]interface{}{"type": "url", "url": f.url}}, nil

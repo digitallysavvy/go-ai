@@ -36,6 +36,10 @@ const DefaultVideoBaseURL = "https://api.minimax.io"
 type Provider struct {
 	config            Config
 	anthropicProvider *anthropic.Provider
+	// anthropicConfig is the Anthropic transport configuration. Models with
+	// the M3.1 capabilities get their own transport derived from it
+	// (see newM31AnthropicProvider).
+	anthropicConfig anthropic.Config
 
 	// videoClient serves the video generation API (Authorization: Bearer
 	// <apiKey>, no anthropic-version header, unlike the chat client). The
@@ -84,7 +88,7 @@ func New(cfg Config) *Provider {
 
 	// MINIMAX_API_KEY is read per request (TS loadApiKey) by the Anthropic
 	// sub-provider through APIKeyEnvVar and by resolveVideoHeaders.
-	anthropicProvider := anthropic.New(anthropic.Config{
+	anthropicConfig := anthropic.Config{
 		APIKey:            cfg.APIKey,
 		APIKeyEnvVar:      "MINIMAX_API_KEY",
 		APIKeyDescription: "MiniMax API key",
@@ -98,7 +102,8 @@ func New(cfg Config) *Provider {
 			return map[string][]string{}
 		},
 		UserAgentName: "minimax",
-	})
+	}
+	anthropicProvider := anthropic.New(anthropicConfig)
 
 	// No static headers: resolveVideoHeaders builds the Authorization header
 	// fresh on every video request instead.
@@ -109,6 +114,7 @@ func New(cfg Config) *Provider {
 	return &Provider{
 		config:            cfg,
 		anthropicProvider: anthropicProvider,
+		anthropicConfig:   anthropicConfig,
 		videoClient:       videoClient,
 		videoBaseURL:      videoBaseURL,
 	}

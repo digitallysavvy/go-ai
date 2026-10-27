@@ -52,13 +52,18 @@ type stream struct {
 	lastServerToolCallID string
 
 	// Metadata accumulated across SSE events, emitted on the finish chunk.
-	lastGroundingMetadata  json.RawMessage
-	emittedSourceURLs      map[string]bool
-	lastUrlContextMetadata json.RawMessage
-	lastSafetyRatings      json.RawMessage
-	lastFinishMessage      string
-	lastPromptFeedback     json.RawMessage
-	lastUsageMetadata      *UsageMetadata
+	lastGroundingMetadata json.RawMessage
+	// requestGroundingMetadata is the current request's grounding snapshot;
+	// groundingPerRequest collects the snapshots of the requests that were
+	// continued (TS groundingMetadataPerRequest).
+	requestGroundingMetadata json.RawMessage
+	groundingPerRequest      []json.RawMessage
+	emittedSourceURLs        map[string]bool
+	lastUrlContextMetadata   json.RawMessage
+	lastSafetyRatings        json.RawMessage
+	lastFinishMessage        string
+	lastPromptFeedback       json.RawMessage
+	lastUsageMetadata        *UsageMetadata
 	// lastServiceTier is the last top-level chunk serviceTier (fallback only).
 	lastServiceTier string
 
@@ -68,6 +73,10 @@ type stream struct {
 	// top of the stack (TS: `activeStreamingToolCalls[length - 1]`).
 	activeStreamingToolCalls []*activeStreamingToolCall
 	drainedOnDone            bool
+	// deferredErr ends the stream with an error once chunkBuffer has drained
+	// (TS: an exception in the transform handler errors the stream after the
+	// chunks it already enqueued).
+	deferredErr error
 
 	// tnm maps provider tool names (e.g. "code_execution") to caller-chosen
 	// custom names, mirroring TS createToolNameMapping.
@@ -177,6 +186,11 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 			chunk := s.chunkBuffer[0]
 			s.chunkBuffer = s.chunkBuffer[1:]
 			return chunk, nil
+		}
+
+		if s.deferredErr != nil {
+			s.err = s.deferredErr
+			continue
 		}
 
 		event, err := s.parser.Next()
@@ -293,6 +307,8 @@ func (s *stream) continueStream() bool {
 		})
 		return false
 	}
+	s.groundingPerRequest = append(s.groundingPerRequest, rawOrNull(s.requestGroundingMetadata))
+	s.requestGroundingMetadata = nil
 	_ = s.reader.Close()
 	s.reader = next
 	s.parser = streaming.NewSSEParser(next)
@@ -321,6 +337,20 @@ func (s *stream) finalizeOnce() bool {
 // s.chunkBuffer. Mirrors the TS SDK TransformStream transform handler; the
 // 'finish' chunk itself is only enqueued once, from flush (see Next/EOF).
 func (s *stream) processSSEEvent(chunkData Response) {
+	// An in-stream error frame (TS: value.error != null): surface it as a
+	// provider stream error and finish with reason "error".
+	if chunkData.Error != nil {
+		s.finishReason = types.FinishReasonError
+		s.rawFinishReason = ""
+		s.hasFinished = true
+		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: chunkData.Error.Message,
+			Err:  s.newStreamError(chunkData.Error),
+		})
+		return
+	}
+
 	// TS emits response-metadata on the first chunk that carries a
 	// responseId. Go also emits one on the first chunk without an id (it
 	// carries the model id and headers), so a responseId that only shows up
@@ -355,6 +385,10 @@ func (s *stream) processSSEEvent(chunkData Response) {
 			s.rawFinishReason = reason
 			s.hasFinished = true
 		}
+	}
+
+	if len(chunkData.Candidates) > 0 && chunkData.Candidates[0].GroundingMetadata != nil {
+		s.requestGroundingMetadata = chunkData.Candidates[0].GroundingMetadata
 	}
 
 	// A confirmed prompt block is terminal for generated content, but later
@@ -444,6 +478,26 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		s.continuedUsage = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
 		s.lastUsageMetadata = nil
 	}
+}
+
+// newStreamError mirrors TS createProviderStreamError for a Google in-stream
+// error: type is the Google status, code/statusCode the numeric code, and the
+// error is retryable for 408/409/429/5xx.
+func (s *stream) newStreamError(e *StreamError) *providererrors.StreamProviderError {
+	var code interface{}
+	var statusCode *int
+	retryable := false
+	if e.Code != nil {
+		c := int(*e.Code)
+		code = *e.Code
+		statusCode = &c
+		retryable = c == 408 || c == 409 || c == 429 || c >= 500
+	}
+	var data interface{}
+	if raw, err := json.Marshal(e); err == nil {
+		_ = json.Unmarshal(raw, &data)
+	}
+	return providererrors.NewStreamProviderError(e.Message, s.cfg.ProviderName, e.Status, code, statusCode, &retryable, data)
 }
 
 // buildFinishChunk builds the single 'finish' chunk emitted at end-of-stream
@@ -557,6 +611,12 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		"groundingMetadata":  rawOrNull(s.lastGroundingMetadata),
 		"urlContextMetadata": rawOrNull(s.lastUrlContextMetadata),
 		"safetyRatings":      rawOrNull(s.lastSafetyRatings),
+	}
+	if len(s.groundingPerRequest) > 0 {
+		per := append(append([]json.RawMessage{}, s.groundingPerRequest...), rawOrNull(s.requestGroundingMetadata))
+		if gp, err := json.Marshal(per); err == nil {
+			meta["groundingMetadataPerRequest"] = gp
+		}
 	}
 	if s.lastFinishMessage != "" {
 		fm, _ := json.Marshal(s.lastFinishMessage)
@@ -986,7 +1046,7 @@ func (s *stream) processFuncCallPart(part Part) {
 // tool call when neither the functionCall-level willContinue nor any
 // individual partial arg's willContinue is true.
 func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulator, toolCallID string, partialArgs []PartialArg, functionCallWillContinue bool, sigMeta json.RawMessage) {
-	result := accumulator.ProcessPartialArgs(partialArgs)
+	result, accErr := accumulator.processPartialArgs(partialArgs)
 	if result.TextDelta != "" {
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type:             provider.ChunkTypeToolInputDelta,
@@ -994,6 +1054,14 @@ func (s *stream) applyPartialArgsAndMaybeFinish(accumulator *GoogleJSONAccumulat
 			Text:             result.TextDelta,
 			ProviderMetadata: sigMeta,
 		})
+	}
+
+	if accErr != nil {
+		// TS would throw (or build arguments that JSON.stringify drops) for a
+		// path that conflicts with an earlier value; end the stream with an
+		// error instead of panicking or emitting a corrupt tool call.
+		s.deferredErr = providererrors.NewStreamProviderError("invalid function call partialArgs: "+accErr.Error(), s.cfg.ProviderName, "", nil, nil, nil, nil)
+		return
 	}
 
 	allArgsDone := true

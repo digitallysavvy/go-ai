@@ -401,3 +401,39 @@ func TestStream_ServerToolCallAndResult(t *testing.T) {
 		t.Fatalf("finish reason = %v, want stop", finish)
 	}
 }
+
+// TestStream_PartialArgsStreaming_EmptyContainerArguments ports TS
+// 'streaming-tool-call-empty-container-arguments': value-less partialArgs
+// entries (`$.emptyArr[]`, `$.emptyObj`) are empty containers and must appear
+// in both the tool-input deltas and the final tool-call input.
+func TestStream_PartialArgsStreaming_EmptyContainerArguments(t *testing.T) {
+	fc := func(body string) string {
+		return `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":` + body + `}]}}]}`
+	}
+	s := newTestStream(sseStream(
+		fc(`{"name":"t","willContinue":true}`),
+		fc(`{"partialArgs":[{"jsonPath":"$.id","stringValue":"x"}],"willContinue":true}`),
+		fc(`{"partialArgs":[{"jsonPath":"$.emptyArr[]"}],"willContinue":true}`),
+		fc(`{"partialArgs":[{"jsonPath":"$.emptyObj"}],"willContinue":true}`),
+		fc(`{"partialArgs":[{"jsonPath":"$.nested.tags[]"}],"willContinue":true}`),
+		fc(`{"partialArgs":[{"jsonPath":"$.zero","numberValue":0}]}`),
+		`{"candidates":[{"content":{"role":"model","parts":[{"text":""}]},"finishReason":"STOP"}]}`,
+		"[DONE]",
+	))
+	chunks := drainStream(t, s)
+
+	want := `{"id":"x","emptyArr":[],"emptyObj":{},"nested":{"tags":[]},"zero":0}`
+	joined := ""
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeToolInputDelta {
+			joined += c.Text
+		}
+	}
+	if joined != want {
+		t.Fatalf("deltas = %q, want %q", joined, want)
+	}
+	calls := toolCallsOf(chunks)
+	if len(calls) != 1 || calls[0].ToolCall.RawArguments != want {
+		t.Fatalf("tool calls = %+v, want one with %q", calls, want)
+	}
+}
