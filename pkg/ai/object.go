@@ -916,11 +916,9 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 			Text:             result.Text,
 			Object:           objectResultValue(opts.OutputMode, result),
 			ProviderMetadata: result.ProviderMetadata,
-			Usage: telemetry.TelemetryUsage{
-				InputTokens:  result.Usage.InputTokens,
-				OutputTokens: result.Usage.OutputTokens,
-				TotalTokens:  result.Usage.TotalTokens,
-			},
+			// The whole usage, as StreamObject: TS onObjectOperationEnd also
+			// records ai.usage.reasoningTokens and ai.usage.cachedInputTokens.
+			Usage: telemetryUsageFromUsage(result.Usage),
 		})
 	}
 
