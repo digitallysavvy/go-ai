@@ -392,13 +392,15 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		s.requestGroundingMetadata = chunkData.Candidates[0].GroundingMetadata
 	}
 
-	// A confirmed prompt block is terminal for generated content, but later
-	// chunks can still contribute usage and provider metadata (handled above).
-	if s.confirmedPromptBlockReason != "" || len(chunkData.Candidates) == 0 {
+	if len(chunkData.Candidates) == 0 {
 		return
 	}
 	candidate := chunkData.Candidates[0]
 
+	// Candidate metadata is recorded even after a confirmed prompt block (TS
+	// updates it before the terminal check): a block is terminal for
+	// generated content only, later chunks can still contribute usage and
+	// provider metadata.
 	if candidate.GroundingMetadata != nil {
 		s.lastGroundingMetadata = candidate.GroundingMetadata
 	}
@@ -416,6 +418,10 @@ func (s *stream) processSSEEvent(chunkData Response) {
 		if candidate.FinishReason == "CONTINUATION" {
 			s.pendingContinuation = candidate.ContinuationToken
 		}
+	}
+
+	if s.confirmedPromptBlockReason != "" {
+		return
 	}
 
 	// Grounding chunks become url sources, each URL emitted once (TS

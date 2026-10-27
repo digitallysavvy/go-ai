@@ -1069,3 +1069,29 @@ func TestStreamContinuationFailureKeepsErrorType(t *testing.T) {
 		t.Fatalf("finish = %+v", last)
 	}
 }
+
+// TS records the candidate's safetyRatings, finishMessage and grounding
+// before the confirmed-prompt-block check, so a block chunk that also carries
+// them still reports them in the finish provider metadata.
+func TestStreamConfirmedPromptBlockKeepsCandidateMetadata(t *testing.T) {
+	s := newTestStream(sseStream(
+		`{"promptFeedback":{"blockReason":"SAFETY"},"candidates":[{"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT"}],"finishMessage":"blocked"}]}`,
+		`{"candidates":[{"content":{"parts":[{"text":"ignored"}]},"groundingMetadata":{"webSearchQueries":["q"]}}]}`,
+	))
+	chunks := drainChunks(t, s)
+	last := chunks[len(chunks)-1]
+	if last.Type != provider.ChunkTypeFinish || last.FinishReason != types.FinishReasonContentFilter {
+		t.Fatalf("finish = %+v", last)
+	}
+	meta := string(last.ProviderMetadata)
+	for _, want := range []string{`"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT"}]`, `"finishMessage":"blocked"`, `"webSearchQueries":["q"]`} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("finish metadata missing %s: %s", want, meta)
+		}
+	}
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeText {
+			t.Fatalf("content after a confirmed prompt block must be dropped: %+v", c)
+		}
+	}
+}
