@@ -63,6 +63,14 @@ the new type. Reading promoted fields still compiles.
 
 ## Behavior changes that can need an edit
 
+- **`ToolChoice: none` is enforced.** A tool call under tool choice `none`
+  now fails the call with `*ai.ToolChoiceViolationError` (check it with
+  `ai.IsToolChoiceViolationError`) instead of running the tool. Any tool-choice
+  violation ends the step with finish reason `error`.
+- **Truncated streams finish with `interrupted`.** A provider stream that ends
+  before its finish event reports `types.FinishReasonInterrupted` instead of
+  `FinishReasonOther`. Check for `FinishReasonInterrupted` if you detect
+  truncated streams by the finish reason.
 - **Prompt validation matches TS.** `GenerateText`, `StreamText`,
   `GenerateObject`, `StreamObject` and the agent calls return
   `*errors.InvalidPromptError` when neither or both of `Prompt` and
