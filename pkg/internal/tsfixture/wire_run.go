@@ -54,6 +54,10 @@ type WireSuite struct {
 	// recorded TS model (class, id and plain settings such as modelFamily).
 	LanguageFor func(p provider.Provider, m WireModel) (provider.LanguageModel, error)
 	Skip        map[string]string
+	// ReplayNoHTTPErrors replays TS tests that make no HTTP request and expect
+	// every call to throw (validation before HTTP): Go must throw the same
+	// error and send nothing.
+	ReplayNoHTTPErrors bool
 	// rootBase passes the bare server URL as the base URL for Go providers
 	// whose default base is the host root (the paths carry the API version).
 	RootBase bool
@@ -150,7 +154,7 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			skip(why)
 		}
 	}
-	if len(w.Calls) == 0 || len(w.HTTP) == 0 {
+	if len(w.Calls) == 0 || (len(w.HTTP) == 0 && !(s.ReplayNoHTTPErrors && allCallsThrow(w.Calls))) {
 		skip("no replayable call or HTTP exchange in the TS test")
 	}
 	for _, h := range w.HTTP {
@@ -1222,6 +1226,15 @@ func decideStateValues(c WireCall) []json.RawMessage {
 		out[i] = p.Value
 	}
 	return out
+}
+
+func allCallsThrow(calls []WireCall) bool {
+	for _, c := range calls {
+		if c.Error == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]interface{}, c WireCall) (map[string]interface{}, error) {
