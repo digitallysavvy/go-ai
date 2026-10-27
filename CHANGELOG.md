@@ -50,6 +50,9 @@ Patch release: bug and security fixes backported from the v0.6.0 line.
 
 ### Fixed
 
+- The SDK version reported in `User-Agent` headers (`ai/<version>`,
+  `ai-sdk/<version>`, `ai-sdk-<provider>/<version>`) said `0.5.0` in
+  v0.5.1 and v0.5.2. It now reports `0.5.3`.
 - `GenerateObject` and `StreamObject` sent responseFormat type `json_schema` /
   `json_object` instead of `json` (as the TS SDK does). Providers that key JSON
   mode off `json` (Gemini, Cohere, Alibaba, Bedrock, Perplexity, Hugging Face,

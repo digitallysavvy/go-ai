@@ -6,7 +6,7 @@ import "github.com/digitallysavvy/go-ai/pkg/providerutils"
 // provider package independently (openai's VERSION, anthropic's VERSION,
 // etc. are all different); Go ships as a single module, so this one
 // constant stands in for every TS package's own VERSION import below.
-const Version = "0.5.0"
+const Version = "0.5.3"
 
 // UserAgent returns the user-agent suffix used by the pkg/ai operation
 // wrappers (GenerateText, StreamText, Embed, Transcribe, Batch, GenerateVideo,
