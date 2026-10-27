@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -191,8 +190,12 @@ func (r *remoteOps) execute(ctx context.Context, name string, input json.RawMess
 			return nil, err
 		}
 		if in.Timeout != nil && *in.Timeout > 0 {
+			d, err := abortSignalTimeout(*in.Timeout * 1000)
+			if err != nil {
+				return nil, err
+			}
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(*in.Timeout*float64(time.Second)))
+			ctx, cancel = context.WithTimeout(ctx, d)
 			defer cancel()
 		}
 		res, err := r.run(ctx, in.Command)
@@ -344,8 +347,49 @@ func sortUTF16(values []string) {
 	})
 }
 
-// jsNumber formats n like JavaScript's String(n) for ordinary values.
-func jsNumber(n float64) string { return strconv.FormatFloat(n, 'f', -1, 64) }
+// jsNumber formats n like JavaScript's String(n).
+func jsNumber(n float64) string { return providerutils.JSNumberString(n) }
+
+// abortSignalTimeout mirrors Node's AbortSignal.timeout(ms), which TS bash
+// calls with `timeout * 1000`: the delay must be an integer in
+// [0, 4294967295] (ERR_OUT_OF_RANGE otherwise), and one that does not fit a
+// signed 32-bit integer fires after 1 ms (TimeoutOverflowWarning).
+func abortSignalTimeout(ms float64) (time.Duration, error) {
+	if math.IsNaN(ms) || math.IsInf(ms, 0) || ms != math.Trunc(ms) {
+		return 0, nodeOutOfRange("delay", "an integer", ms)
+	}
+	if ms < 0 || ms > 4294967295 {
+		return 0, nodeOutOfRange("delay", ">= 0 && <= 4294967295", ms)
+	}
+	if ms > math.MaxInt32 {
+		ms = 1
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// nodeOutOfRange is the message of Node's ERR_OUT_OF_RANGE for a number:
+// an integer above 2**32 is written with `_` digit separators.
+func nodeOutOfRange(name, rng string, input float64) error {
+	received := jsNumber(input)
+	if input == math.Trunc(input) && math.Abs(input) > 1<<32 {
+		received = addNumericalSeparator(received)
+	}
+	return fmt.Errorf("The value of %q is out of range. It must be %s. Received %s", name, rng, received) //nolint:staticcheck // matches Node's exact error text
+}
+
+// addNumericalSeparator is Node's internal addNumericalSeparator.
+func addNumericalSeparator(val string) string {
+	res := ""
+	i := len(val)
+	start := 0
+	if strings.HasPrefix(val, "-") {
+		start = 1
+	}
+	for ; i >= start+4; i -= 3 {
+		res = "_" + val[i-3:i] + res
+	}
+	return val[:i] + res
+}
 
 // limitStrings mirrors Array.slice(0, limit ?? def).
 func limitStrings(values []string, limit *float64, def int) []string {
@@ -353,19 +397,17 @@ func limitStrings(values []string, limit *float64, def int) []string {
 	if limit != nil {
 		n = *limit
 	}
-	end := len(values)
+	// ToIntegerOrInfinity truncates toward zero, so -0.5 is -0: not
+	// negative, and the slice is empty.
+	t := math.Trunc(n)
+	length := float64(len(values))
 	switch {
-	case math.IsNaN(n):
-		end = 0
-	case n < 0:
-		end = len(values) + int(math.Ceil(n))
-		if end < 0 {
-			end = 0
-		}
-	case n < float64(len(values)):
-		end = int(n)
+	case math.IsNaN(t):
+		return values[:0]
+	case t < 0:
+		return values[:int(math.Max(length+t, 0))]
 	}
-	return values[:end]
+	return values[:int(math.Min(t, length))]
 }
 
 // Node's path.matchesGlob runs minimatch with `nocase: isMacOS || isWindows`
