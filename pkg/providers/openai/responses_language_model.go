@@ -436,7 +436,10 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	}
 
 	// Determine system message mode based on model type.
-	systemMsgMode := "system"
+	// TS: systemMessageMode ?? (isReasoningModel ? 'developer' :
+	// modelCapabilities.systemMessageMode) -- so forceReasoning:false on a
+	// recognized reasoning model still resolves to "developer".
+	systemMsgMode := modelCapabilities.SystemMessageMode
 	if isReasoning {
 		systemMsgMode = "developer"
 	}
@@ -1584,7 +1587,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, item.Caller),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, nil),
 			})
 
 		case "program":
@@ -2724,6 +2727,9 @@ type responsesOngoingToolCall struct {
 	codeInterpreter *codeInterpreterStreamState
 	// toolSearchExecution is "server" or "client" for a tool_search_call.
 	toolSearchExecution string
+	// async is the output_item.added item's async flag (custom_tool_call),
+	// the fallback when output_item.done omits it (TS ongoingToolCall.async).
+	async *bool
 }
 
 // applyPatchStreamState tracks whether an apply_patch_call's diff has
@@ -2748,6 +2754,20 @@ type codeInterpreterStreamState struct {
 // event carrying item_id -- response.reasoning_summary_part.added,
 // response.reasoning_summary_text.delta, and
 // response.reasoning_summary_part.done -- not just output_item.done.
+// resolveEventItemID is resolveOutputItemID for the events whose TS schema
+// makes output_index nullish (text delta, reasoning summary part added/done,
+// summary text delta): TS keeps the event's own item id when output_index is
+// null or absent, instead of mapping it through index 0.
+func (s *responsesStream) resolveEventItemID(outputIndex int, itemID string) string {
+	var peek struct {
+		OutputIndex *int `json:"output_index"`
+	}
+	if json.Unmarshal([]byte(s.curEventData), &peek) != nil || peek.OutputIndex == nil {
+		return itemID
+	}
+	return s.resolveOutputItemID(outputIndex, itemID)
+}
+
 func (s *responsesStream) resolveOutputItemID(outputIndex int, itemID string) string {
 	if first, ok := s.firstItemIDByOutputIndex[outputIndex]; ok {
 		return first
@@ -2992,8 +3012,24 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			trimmed := bytes.TrimSpace(peek.Choices)
 			isArray = len(trimmed) > 0 && trimmed[0] == '['
 			if isArray {
-				s.err = providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
-				return nil, s.err
+				// TS delivers this as an error part (an APICallError carrying
+				// the offending chunk as responseBody) and finishes the stream
+				// with finish reason "error".
+				notRetryable := false
+				mismatch := providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
+				mismatch.ResponseBody = event.Data
+				mismatch.Retryable = &notRetryable
+				s.queueRawChunk(event.Data)
+				s.hadDecodeError = true
+				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
+					Type: provider.ChunkTypeError,
+					Text: chatCompletionsMismatchMessage,
+					Err:  mismatch,
+				})
+				if ok {
+					return chunk, nil
+				}
+				continue
 			}
 		}
 		// TS openaiResponsesChunkSchema: a modeled event whose members fail its
@@ -3246,6 +3282,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
 					toolName:   e.Item.Name,
 					toolCallID: e.Item.CallID,
+					async:      e.Item.Async,
 				}
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{
@@ -3336,7 +3373,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeText,
-				ID:   s.resolveOutputItemID(e.OutputIndex, e.ItemID),
+				ID:   s.resolveEventItemID(e.OutputIndex, e.ItemID),
 				Text: e.Delta,
 			})
 			if ok {
@@ -3386,7 +3423,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			// TS unconditionally enqueues reasoning-delta here, even for an
 			// empty-string delta -- no guard.
-			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 			meta, _ := json.Marshal(map[string]interface{}{s.providerName: map[string]interface{}{"itemId": itemID}})
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type:             provider.ChunkTypeReasoning,
@@ -3416,7 +3453,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// output_item.added; only summary_index > 0 needs boundary handling
 			// here (row a0d2e8c/6fe187f area).
 			if e.SummaryIndex > 0 {
-				itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+				itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 				if accum := s.reasoningAccum[itemID]; accum != nil {
 					accum.summaryParts[e.SummaryIndex] = "active"
 					// A new active summary part means every "can-conclude" part
@@ -3468,7 +3505,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if eventRawChunk != nil {
 				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
-			itemID := s.resolveOutputItemID(e.OutputIndex, e.ItemID)
+			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 			if accum := s.reasoningAccum[itemID]; accum != nil {
 				if s.store {
 					// The response is stored server-side, so no encrypted_content
@@ -4273,10 +4310,14 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	case "custom_tool_call":
 		delete(s.itemTypes, e.OutputIndex)
+		ongoingCustom := s.ongoingToolCalls[e.OutputIndex]
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CustomToolCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
+		}
+		if item.Async == nil && ongoingCustom != nil {
+			item.Async = ongoingCustom.async
 		}
 		s.flushQueue = append(s.flushQueue,
 			&provider.StreamChunk{
@@ -4290,7 +4331,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, item.Caller),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, nil),
 			},
 		})
 

@@ -2676,12 +2676,21 @@ func TestResponsesLanguageModel_DoStreamChatCompletionsMismatchError(t *testing.
 `)), false)
 	defer stream.Close() //nolint:errcheck
 
-	_, err := stream.Next()
-	if err == nil {
-		t.Fatal("expected an error for a Chat Completions-shaped chunk")
+	// TS delivers the mismatch as an error part, then finishes with "error".
+	chunk, err := stream.Next()
+	if err != nil || chunk.Type != provider.ChunkTypeError {
+		t.Fatalf("first chunk = %+v err=%v, want an error part", chunk, err)
 	}
-	if !strings.Contains(err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
-		t.Fatalf("error = %v, want the Chat Completions mismatch message", err)
+	if !strings.Contains(chunk.Err.Error(), "Received a Chat Completions stream while using the OpenAI Responses API") {
+		t.Fatalf("error = %v, want the Chat Completions mismatch message", chunk.Err)
+	}
+	var perr *providererrors.ProviderError
+	if !errors.As(chunk.Err, &perr) || !strings.Contains(perr.ResponseBody, `"chatcmpl-1"`) {
+		t.Fatalf("error should carry the offending chunk as ResponseBody: %#v", chunk.Err)
+	}
+	finish, err := stream.Next()
+	if err != nil || finish.Type != provider.ChunkTypeFinish || finish.FinishReason != types.FinishReasonError {
+		t.Fatalf("finish = %+v err=%v, want finish reason error", finish, err)
 	}
 }
 
@@ -3645,5 +3654,74 @@ func TestResponsesLanguageModel_ComputerCallReplaySendsEmptyPendingSafetyChecks(
 	raw, _ := json.Marshal(input[0])
 	if !strings.Contains(string(raw), `"pending_safety_checks":[]`) {
 		t.Fatalf("wire = %s, want pending_safety_checks:[]", raw)
+	}
+}
+
+// TS: systemMessageMode ?? (isReasoningModel ? 'developer' :
+// modelCapabilities.systemMessageMode), so forceReasoning:false on a
+// recognized reasoning model keeps the capability-derived "developer" role.
+func TestResponsesLanguageModel_SystemRole_ForceReasoningFalseKeepsCapabilityMode(t *testing.T) {
+	for modelID, want := range map[string]string{"gpt-5.4": "developer", "gpt-4o": "system"} {
+		p := New(Config{APIKey: "test-key"})
+		model := NewResponsesLanguageModel(p, modelID)
+		body, _, err := model.buildRequestBody(&provider.GenerateOptions{
+			Prompt:          types.Prompt{System: "sys", Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Hi"}}}}},
+			ProviderOptions: map[string]interface{}{"openai": map[string]interface{}{"forceReasoning": false}},
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sysMsg, ok := body["input"].([]interface{})[0].(responses.SystemMessage)
+		if !ok || sysMsg.Role != want {
+			t.Fatalf("%s: got %#v want role %s", modelID, body["input"].([]interface{})[0], want)
+		}
+	}
+}
+
+// TS custom_tool_call: zod strips `caller`, and output_item.done falls back to
+// the async flag seen at output_item.added.
+func TestResponsesStream_CustomToolCallAsyncFallbackAndNoCaller(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"fmt","input":"","async":true}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"fmt","input":"x","status":"completed","caller":{"type":"program","caller_id":"p1"}}}
+
+`)), false)
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatal("no tool call chunk")
+		}
+		if chunk.Type != provider.ChunkTypeToolCall {
+			continue
+		}
+		md, _ := chunk.ToolCall.ProviderMetadata["openai"].(map[string]interface{})
+		if md["async"] != true {
+			t.Fatalf("async fallback missing: %#v", md)
+		}
+		if _, has := md["caller"]; has {
+			t.Fatalf("caller must be stripped for custom_tool_call: %#v", md)
+		}
+		return
+	}
+}
+
+// TS keeps the event's own item id when a nullish output_index is absent.
+func TestResponsesStream_TextDeltaWithoutOutputIndexKeepsItemID(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_first","role":"assistant","content":[]}}
+
+data: {"type":"response.output_text.delta","item_id":"msg_other","delta":"hi"}
+
+`)), false)
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatal("no text chunk")
+		}
+		if chunk.Type == provider.ChunkTypeText {
+			if chunk.ID != "msg_other" {
+				t.Fatalf("id = %q, want msg_other", chunk.ID)
+			}
+			return
+		}
 	}
 }

@@ -223,8 +223,11 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		locale := ""
 		if phrase.Locale != nil {
 			locale = *phrase.Locale
-			base := strings.ToLower(strings.SplitN(locale, "-", 2)[0])
-			languages[base] = true
+			// TS: `phrase.locale ? [...] : []` -- an empty locale adds no language.
+			if locale != "" {
+				base := strings.ToLower(strings.SplitN(locale, "-", 2)[0])
+				languages[base] = true
+			}
 		}
 		words := make([]AzureSpeechWord, 0, len(phrase.Words))
 		for _, w := range phrase.Words {
@@ -247,7 +250,8 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 	reportedLanguage := ""
 	if len(languages) == 1 {
 		for lang := range languages {
-			if len(lang) == 2 {
+			// TS: /^[a-z]{2}$/
+			if len(lang) == 2 && lang[0] >= 'a' && lang[0] <= 'z' && lang[1] >= 'a' && lang[1] <= 'z' {
 				reportedLanguage = lang
 			}
 		}

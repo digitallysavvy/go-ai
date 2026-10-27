@@ -300,6 +300,10 @@ func encodeQuery(q map[string]string) string {
 	return b.String()
 }
 
+// EncodeQuery exposes encodeQuery to provider packages that build their own
+// URLs (URLSearchParams escaping).
+func EncodeQuery(q map[string]string) string { return encodeQuery(q) }
+
 func formEscape(b *strings.Builder, s string) {
 	const hex = "0123456789ABCDEF"
 	// Invalid UTF-8 becomes U+FFFD, as the WHATWG encoder does.

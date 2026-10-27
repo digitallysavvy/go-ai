@@ -3,9 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
-	"net/url"
 	"reflect"
-	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
@@ -235,12 +233,5 @@ var (
 // passed through verbatim; the Gateway owns resolution (including the bare
 // -> "openai/" qualification), exactly like the non-realtime routes.
 func ToGatewayRealtimeURL(baseURL string, modelID string) string {
-	u, err := url.Parse(strings.Replace(baseURL, "http", "ws", 1) + "/realtime-model")
-	if err != nil {
-		return ""
-	}
-	query := u.Query()
-	query.Set("ai-model-id", modelID)
-	u.RawQuery = query.Encode()
-	return u.String()
+	return gatewayWebSocketURL(baseURL, "/realtime-model", modelID)
 }

@@ -1745,9 +1745,9 @@ func (s *xaiResponsesStream) handleOutputItemDone(e responses.OutputItemDoneEven
 			if doneItem.Name != "" {
 				name = doneItem.Name
 			}
-			if doneItem.Arguments != "" || rawArgs == "" {
-				rawArgs = doneItem.Arguments
-			}
+			// TS: `input: part.arguments` -- the done item's arguments verbatim,
+			// not the accumulated deltas.
+			rawArgs = doneItem.Arguments
 		}
 		var args map[string]interface{}
 		if rawArgs != "" {

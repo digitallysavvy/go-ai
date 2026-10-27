@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -85,14 +84,7 @@ func (p *Provider) GetTranscriptionToken(ctx context.Context, modelID string, op
 // browser WebSocket cannot set headers and slashes in qualified ids (e.g.
 // "openai/gpt-realtime-whisper") must survive query encoding.
 func ToGatewayTranscriptionURL(baseURL string, modelID string) string {
-	u, err := url.Parse(strings.Replace(baseURL, "http", "ws", 1) + "/transcription-model")
-	if err != nil {
-		return ""
-	}
-	query := u.Query()
-	query.Set("ai-model-id", modelID)
-	u.RawQuery = query.Encode()
-	return u.String()
+	return gatewayWebSocketURL(baseURL, "/transcription-model", modelID)
 }
 
 // DoTranscribe transcribes audio via the Gateway transcription-model endpoint.
