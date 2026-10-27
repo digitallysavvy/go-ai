@@ -344,4 +344,3 @@ func lifecycleDataOf(opts harness.StartOptions) []json.RawMessage {
 	}
 	return out
 }
-

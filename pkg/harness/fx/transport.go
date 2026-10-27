@@ -15,9 +15,9 @@ import (
 	"sync"
 	"unicode"
 
+	"github.com/digitallysavvy/go-ai/pkg/harness/fx/internal/libfx"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/jsstr"
 	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
-	"github.com/digitallysavvy/go-ai/pkg/harness/fx/internal/libfx"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 )
 

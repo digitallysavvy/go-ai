@@ -100,10 +100,10 @@ type fxSteer struct {
 
 // fxTurnState is the open turn (TS FxTurnState).
 type fxTurnState struct {
-	ID             string          `json:"id"`
-	Prompt         json.RawMessage `json:"prompt"`
-	Signature      string          `json:"signature"`
-	ResponseFormat json.RawMessage `json:"responseFormat,omitempty"`
+	ID             string           `json:"id"`
+	Prompt         json.RawMessage  `json:"prompt"`
+	Signature      string           `json:"signature"`
+	ResponseFormat json.RawMessage  `json:"responseFormat,omitempty"`
 	Models         []*fxModelRecord `json:"models"`
 	Tools          []*fxToolRecord  `json:"tools"`
 	EmittedKeys    []string         `json:"emittedKeys"`
