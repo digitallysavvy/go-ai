@@ -56,11 +56,9 @@ func (m *DecisionModel) SupportedQuestionTypes() []string {
 func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCallOptions) (*provider.DecisionResult, error) {
 	// TypeSafe-specific provider limits (mirrors the TS doDecide checks,
 	// enforced before any HTTP request).
-	ids := make([]string, 0, len(opts.Questions))
-	for id := range opts.Questions {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	// In the TS insertion order when the caller gave it (QuestionOrder), so
+	// the first violating question reported is the one TS reports.
+	ids := opts.QuestionIDs()
 	for _, id := range ids {
 		q := opts.Questions[id]
 		switch q.Type {
@@ -113,26 +111,33 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning"})
 	}
 
-	requestQuestions := make(map[string]interface{}, len(opts.Questions))
-	for id, q := range opts.Questions {
+	// Questions, and each choice question's criteria, go on the wire in the
+	// TS insertion order when the caller gave it (QuestionOrder and
+	// CriteriaOrder); otherwise sorted.
+	requestQuestions := providerutils.OrderedMap{Keys: ids, Vals: make(map[string]interface{}, len(opts.Questions))}
+	for _, id := range ids {
+		q := opts.Questions[id]
 		wireType := q.Type
 		if wireType == "boolean" {
 			wireType = "noul"
 		}
-		entry := map[string]interface{}{"type": wireType}
+		entry := providerutils.OrderedMap{Keys: []string{"type", "instructions", "criteria"}, Vals: map[string]interface{}{"type": wireType}}
 		// Instructions are optional for criteria-only questions.
 		if q.Instructions != nil {
-			entry["instructions"] = q.Instructions
+			entry.Vals["instructions"] = q.Instructions
 		}
 		if q.Type == "box" {
 			// A box question is sent as {type, instructions} only.
-			requestQuestions[id] = entry
+			requestQuestions.Vals[id] = entry
 			continue
 		}
 		if q.Criteria != nil {
-			entry["criteria"] = q.Criteria
+			entry.Vals["criteria"] = q.Criteria
+			if criteria, ok := q.Criteria.(map[string]interface{}); ok && len(opts.CriteriaOrder[id]) > 0 {
+				entry.Vals["criteria"] = providerutils.OrderedMap{Keys: provider.OrderedKeys(criteria, opts.CriteriaOrder[id]), Vals: criteria}
+			}
 		}
-		requestQuestions[id] = entry
+		requestQuestions.Vals[id] = entry
 	}
 
 	requestState, assets, images, err := typeSafeRequestState(provider.DecisionStateParts(opts.State))
@@ -141,13 +146,14 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 	hasImages := len(assets) > 0
 
-	body := map[string]interface{}{
+	// TS body key order: model, state, assets (with images), questions.
+	body := providerutils.OrderedMap{Keys: []string{"model", "state", "assets", "questions"}, Vals: map[string]interface{}{
 		"model":     m.modelID,
 		"state":     requestState,
 		"questions": requestQuestions,
-	}
+	}}
 	if hasImages {
-		body["assets"] = assets
+		body.Vals["assets"] = assets
 	}
 
 	headers, err := m.provider.resolveHeaders()
@@ -694,7 +700,7 @@ func containsString(haystack []string, needle string) bool {
 
 // buildImageMultipart builds the multipart/form-data body: the JSON request as
 // the "request" part, then each image part in state order.
-func buildImageMultipart(body map[string]interface{}, images []typesafeImagePart) (*bytes.Buffer, string, error) {
+func buildImageMultipart(body interface{}, images []typesafeImagePart) (*bytes.Buffer, string, error) {
 	requestJSON, err := jsonstr.Marshal(body)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to marshal request body: %w", err)
