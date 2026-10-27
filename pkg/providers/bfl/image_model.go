@@ -245,7 +245,7 @@ func bflLatestProviderOptions(opts *provider.ImageGenerateOptions) (map[string]i
 	parts := strings.Split(opts.Size, "x")
 	width, werr := strconv.ParseFloat(parts[0], 64)
 	height := math.NaN()
-	var herr error = fmt.Errorf("missing height")
+	herr := fmt.Errorf("missing height")
 	if len(parts) > 1 {
 		height, herr = strconv.ParseFloat(parts[1], 64)
 	}
