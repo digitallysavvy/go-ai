@@ -491,9 +491,7 @@ func expandBraces(pattern string) []string {
 		var out []string
 		start := open + 1
 		for _, c := range append(commas, closeAt) {
-			for _, alt := range expandBraces(prefix + pattern[start:c] + suffix) {
-				out = append(out, alt)
-			}
+			out = append(out, expandBraces(prefix+pattern[start:c]+suffix)...)
 			start = c + 1
 		}
 		return out
