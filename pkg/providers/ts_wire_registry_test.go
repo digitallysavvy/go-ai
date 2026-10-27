@@ -94,13 +94,6 @@ func wireHeaders(m tsfixture.WireModel) map[string]string {
 
 // wireSuites maps a TS package (testdata/tswire/<pkg>.jsonl.gz) to the Go
 // provider replayed against it.
-// bflTestModelRecording: recorded at TS b658e8503c, where the unknown model ID
-// "test-model" used the legacy request format. TS #23410 sends unknown model IDs
-// to the latest (Klein) API and renamed the TS test model to flux-2-pro, so these
-// recordings no longer describe TS behavior for "test-model". The same cases are
-// covered for the legacy models by pkg/providers/bfl tests.
-const bflTestModelRecording = "recorded before TS #23410 (unknown model IDs default to the latest API); test-model is no longer a legacy model"
-
 var wireSuites = map[string]tsfixture.WireSuite{
 	"openai-compatible": {Skip: map[string]string{
 		"~transformRequestBody": "the transform is code in the TS test; Go has Config.TransformRequestBody",
@@ -186,11 +179,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return xai.New(xai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
-	"black-forest-labs": {Skip: map[string]string{
-		"BlackForestLabsImageModel > doGenerate > passes the correct parameters including aspect ratio and providerOptions": bflTestModelRecording,
-		"BlackForestLabsImageModel > doGenerate > warns and derives aspect_ratio when size is provided":                     bflTestModelRecording,
-		"BlackForestLabsImageModel > doGenerate > warns and ignores size when both size and aspectRatio are provided":       bflTestModelRecording,
-	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
+	"black-forest-labs": {Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return bfl.New(bfl.Config{APIKey: k, BaseURL: b, Headers: h, PollIntervalMillis: 1, PollTimeoutMillis: 5000})
 	})},
 	"bytedance": {Provider: func(b string, m tsfixture.WireModel) (provider.Provider, error) {
@@ -285,6 +274,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	})},
 	"typesafe-ai": {Skip: map[string]string{
 		"restores authentication from the environment when no headers are serialized": "depends on process environment variables set by the TS test",
+		"image input > finds references in nested JSON string values but not in object keys": "JSON key order inside the joined state text: Go state objects are maps and marshal sorted, TS keeps insertion order (covered by typesafeai image_test.go)",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return typesafeai.New(typesafeai.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},

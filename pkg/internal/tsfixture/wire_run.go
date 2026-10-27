@@ -1210,6 +1210,14 @@ func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]in
 		ProviderOptions: objMap(arg["providerOptions"]),
 		Questions:       map[string]provider.DecisionQuestion{},
 	}
+	if v, ok := arg["maxOutputTokens"].(float64); ok {
+		n := int(v)
+		opts.MaxOutputTokens = &n
+	}
+	if v, ok := arg["reasoning"].(string); ok {
+		r := types.ReasoningLevel(v)
+		opts.Reasoning = &r
+	}
 	switch st := arg["state"].(type) {
 	case []interface{}:
 		var parts []provider.DecisionStatePart
@@ -1229,7 +1237,9 @@ func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]in
 				mt, _ := pm["mediaType"].(string)
 				fd.MediaType = mt
 				fname, _ := pm["filename"].(string)
-				parts = append(parts, provider.DecisionFilePart(types.FileContent{FileData: fd, MediaType: mt, Filename: fname}))
+				fc := types.FileContent{FileData: fd, MediaType: mt, Filename: fname}
+				fc.ProviderOptions = objMap(pm["providerOptions"])
+				parts = append(parts, provider.DecisionFilePart(fc))
 			}
 		}
 		opts.State = parts
