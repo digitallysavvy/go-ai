@@ -215,22 +215,26 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 	// TS onEndEvent.toolCalls/toolResults span every step.
 	var allToolCalls []types.ToolCall
 	var allToolResults []types.ToolResult
+	var allFiles []types.GeneratedFileContent
 	for _, step := range result.Steps {
 		allToolCalls = append(allToolCalls, step.ToolCalls...)
 		allToolResults = append(allToolResults, step.ToolResults...)
+		allFiles = append(allFiles, step.Files...)
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-		CallID:           lt.callID,
-		OperationType:    "ai.generateText",
-		FinishReason:     string(result.FinishReason),
-		Usage:            telemetryUsage(result.Usage),
-		ModelProvider:    a.config.Model.Provider(),
-		ModelID:          a.config.Model.ModelID(),
-		Text:             result.Text,
-		Reasoning:        telemetry.JoinReasoning(last.Reasoning),
-		ToolCalls:        allToolCalls,
-		ToolResults:      allToolResults,
-		ReasoningParts:   last.Reasoning,
+		CallID:         lt.callID,
+		OperationType:  "ai.generateText",
+		FinishReason:   string(result.FinishReason),
+		Usage:          telemetryUsage(result.Usage),
+		ModelProvider:  a.config.Model.Provider(),
+		ModelID:        a.config.Model.ModelID(),
+		Text:           result.Text,
+		Reasoning:      telemetry.JoinReasoning(last.Reasoning),
+		ToolCalls:      allToolCalls,
+		ToolResults:    allToolResults,
+		ReasoningParts: last.Reasoning,
+		// TS onEndEvent.files spans every step.
+		Files:            allFiles,
 		ProviderMetadata: last.ProviderMetadata,
 		Settings:         lt.settings,
 		RuntimeContext:   telemetryRuntimeContextFor(lt.settings, a.runtimeContext()),

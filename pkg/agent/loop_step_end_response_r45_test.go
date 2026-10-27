@@ -44,3 +44,37 @@ func TestGenerateAgentStepEndTelemetryCarriesResponseMetadata(t *testing.T) {
 	}
 	t.Fatal("no doGenerate span")
 }
+
+// TS onGenerateEnd records ai.response.files from every step's files on the
+// root span; the legacy loop's end event carried none.
+func TestGenerateAgentEndTelemetryCarriesFiles(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	a := NewToolLoopAgent(AgentConfig{
+		Model: &mockLanguageModel{responses: []types.GenerateResult{{
+			Text: "done", FinishReason: types.FinishReasonStop,
+			Content: []types.ContentPart{types.TextContent{Text: "done"}, types.GeneratedFileContent{MediaType: "image/png", Data: []byte{1, 2}}},
+		}}},
+		Telemetry: &telemetry.Options{
+			IsEnabled:     telemetry.Bool(true),
+			RecordOutputs: true,
+			Integrations:  []telemetry.TelemetryIntegration{telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})},
+		},
+	})
+	if _, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range rec.Ended() {
+		if s.Name() != "ai.generateText" {
+			continue
+		}
+		for _, kv := range s.Attributes() {
+			if kv.Key == "ai.response.files" && kv.Value.AsString() == `[{"type":"file","mediaType":"image/png","data":"AQI="}]` {
+				return
+			}
+		}
+		t.Fatalf("root span lacks ai.response.files: %v", s.Attributes())
+	}
+	t.Fatal("no root span")
+}
