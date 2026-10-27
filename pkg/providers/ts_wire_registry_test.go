@@ -273,7 +273,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return heygen.New(heygen.Config{APIKey: k, BaseURL: b, Headers: h, PollIntervalMillis: 1, PollTimeoutMillis: 5000})
 	})},
 	"typesafe-ai": {Skip: map[string]string{
-		"restores authentication from the environment when no headers are serialized": "depends on process environment variables set by the TS test",
+		"restores authentication from the environment when no headers are serialized":        "depends on process environment variables set by the TS test",
 		"image input > finds references in nested JSON string values but not in object keys": "JSON key order inside the joined state text: Go state objects are maps and marshal sorted, TS keeps insertion order (covered by typesafeai image_test.go)",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return typesafeai.New(typesafeai.Config{APIKey: k, BaseURL: b, Headers: h})
