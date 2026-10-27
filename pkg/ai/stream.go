@@ -1121,7 +1121,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepToolOrder = prepared.ToolOrder
 		}
 		if prepared.ProviderOptions != nil {
-			stepProviderOptions = prepared.ProviderOptions
+			// TS mergeObjects(providerOptions, prepareStepResult.providerOptions).
+			stepProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
 		}
 		if prepared.RuntimeContext != nil {
 			runtimeContext = prepared.RuntimeContext
@@ -3218,7 +3219,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				nextToolOrder = prepared.ToolOrder
 			}
 			if prepared.ProviderOptions != nil {
-				nextProviderOptions = prepared.ProviderOptions
+				// TS mergeObjects(providerOptions, prepareStepResult.providerOptions).
+				nextProviderOptions = promptutils.MergeProviderOptions(opts.ProviderOptions, prepared.ProviderOptions)
 			}
 			if prepared.RuntimeContext != nil {
 				r.cbRuntimeCtx = prepared.RuntimeContext
