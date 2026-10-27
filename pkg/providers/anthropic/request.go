@@ -138,12 +138,18 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	}
 
 	temperature := opts.Temperature
-	if temperature != nil && *temperature > 1 {
-		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v exceeds anthropic maximum of 1.0. clamped to 1.0", *temperature))
-		one := 1.0
-		temperature = &one
+	maxTemperature := 1.0
+	temperatureProvider := "anthropic"
+	if m.provider.config.MaxTemperature != nil {
+		maxTemperature = *m.provider.config.MaxTemperature
+		temperatureProvider = m.providerOptionsName()
+	}
+	if temperature != nil && *temperature > maxTemperature {
+		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v exceeds %s maximum of %.1f. clamped to %.1f", *temperature, temperatureProvider, maxTemperature, maxTemperature))
+		clamped := maxTemperature
+		temperature = &clamped
 	} else if temperature != nil && *temperature < 0 {
-		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v is below anthropic minimum of 0. clamped to 0", *temperature))
+		warnUnsupported(&warnings, "temperature", fmt.Sprintf("%v is below %s minimum of 0. clamped to 0", *temperature, temperatureProvider))
 		zero := 0.0
 		temperature = &zero
 	}
@@ -203,7 +209,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 	}
 
 	// Shared cache control validator across the prompt and tool definitions.
-	validator := prompt.NewAnthropicCacheControlValidator()
+	validator := prompt.NewAnthropicCacheControlValidatorFor(m.provider.config.CacheControlProviderOptionsName)
 	toolsetNames := prompt.AnthropicToolsetNames(opts.Tools)
 	sendReasoning := o.SendReasoning
 	if sendReasoning == nil {
@@ -213,6 +219,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 		SendReasoning:         sendReasoning,
 		ToolsetNames:          toolsetNames,
 		CacheControlValidator: validator,
+		ConvertMediaPart:      m.provider.config.ConvertMediaPart,
 	})
 	if err != nil {
 		return nil, err
@@ -434,7 +441,8 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 			thinking := map[string]interface{}{"type": "enabled", "budget_tokens": budget}
 			body["thinking"] = thinking
 		}
-		if _, ok := body["temperature"]; ok {
+		keepSampling := m.provider.config.SupportsTemperatureAndTopPWithThinking
+		if _, ok := body["temperature"]; ok && !keepSampling {
 			delete(body, "temperature")
 			warnUnsupported(&warnings, "temperature", "temperature is not supported when thinking is enabled")
 		}
@@ -442,7 +450,7 @@ func (m *LanguageModel) prepareRequestWithBetas(opts *provider.GenerateOptions, 
 			delete(body, "top_k")
 			warnUnsupported(&warnings, "topK", "topK is not supported when thinking is enabled")
 		}
-		if topP != nil {
+		if topP != nil && !keepSampling {
 			delete(body, "top_p")
 			warnUnsupported(&warnings, "topP", "topP is not supported when thinking is enabled")
 		}

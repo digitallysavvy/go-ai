@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -123,6 +124,26 @@ type Config struct {
 	// providers. Vertex-Anthropic and Bedrock-Anthropic set this to a function
 	// that returns an empty map to force base64 conversion, matching TS.
 	SupportedURLs func(modelID string) map[string][]string `json:"-"`
+
+	// ConvertMediaPart lets a compatible provider convert file parts into its
+	// own image or video blocks (TS languageModelConfig.convertMediaPart). A
+	// nil block result falls back to the default conversion.
+	ConvertMediaPart prompt.AnthropicMediaPartConverter `json:"-"`
+
+	// MaxTemperature is the maximum temperature of a compatible provider
+	// (TS maxTemperature). nil means 1, the Anthropic maximum. When set, the
+	// clamp warnings name the provider instead of "anthropic".
+	MaxTemperature *float64 `json:"maxTemperature,omitempty"`
+
+	// SupportsTemperatureAndTopPWithThinking keeps temperature and topP when
+	// thinking is enabled, for compatible providers that accept both
+	// (TS supportsTemperatureAndTopPWithThinking).
+	SupportsTemperatureAndTopPWithThinking bool `json:"supportsTemperatureAndTopPWithThinking,omitempty"`
+
+	// CacheControlProviderOptionsName is the provider options namespace a
+	// compatible provider reads cache control from before falling back to
+	// "anthropic" (TS cacheControlProviderOptionsName).
+	CacheControlProviderOptionsName string `json:"cacheControlProviderOptionsName,omitempty"`
 
 	// Headers are custom HTTP headers to include in requests.
 	Headers map[string]string `json:"headers,omitempty"`
