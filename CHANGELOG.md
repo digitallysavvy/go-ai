@@ -105,6 +105,8 @@ Patch release: bug and security fixes backported from the v0.6.0 line.
   Mistral, Ollama, Together, Voyage). It returns an error.
 - ACP: `SubmitToolResult` returns a malformed `askUserQuestions` result as an
   error instead of panicking in the caller's goroutine.
+- ACP: a malformed `askUserQuestions` result submitted before its question
+  arrived settles the turn with an error instead of crashing the process.
 - ACP: a turn that settled early no longer leaves the session marked in flight
   after the bridge finishes it, so later prompts are accepted.
 - Replicate language model: nil options no longer panic, and a non-2xx poll

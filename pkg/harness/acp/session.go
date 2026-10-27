@@ -451,7 +451,17 @@ func (s *session) wireTurn(ctx context.Context, emit harness.EmitFunc, start fun
 		if buffered.ToolResult != nil {
 			tr = *buffered.ToolResult
 		}
-		output := s.p.askUserQuestions.ToNativeResponse(nativeRequest, tr)
+		// A malformed buffered result makes the adapter panic (TS throws);
+		// TS's handler try/catch settles the turn with an error part and an
+		// abort, so it must not unwind the bridge's event goroutine.
+		output, err := c.toNativeResponse(nativeRequest, tr)
+		if err != nil {
+			closeForwardedBlock()
+			forward(&harness.ErrorPart{Error: err.Error()})
+			_ = s.p.channel.Send(bridge.AbortCommand{})
+			settle(err)
+			return
+		}
 		_ = s.p.channel.Send(bridge.ToolResultCommand{ToolCallID: withNative.ToolCallID, Output: output, IsError: isErr, ToolResult: buffered.ToolResult})
 	}))
 
