@@ -309,6 +309,25 @@ func attemptRepair(
 	return repair(ctx, text, cause)
 }
 
+// objectOutputJSONSchema is TS outputStrategy.jsonSchema(), the schema the
+// onStart event and the telemetry ai.schema attribute carry: the schema for
+// object output, the wrapper the model is asked for in array and enum
+// output, and none for no-schema output.
+func objectOutputJSONSchema(mode ObjectOutputMode, s schema.Schema, enumValues []string) map[string]interface{} {
+	switch mode {
+	case ObjectModeArray, ObjectModeEnum:
+		format, err := buildStreamObjectResponseFormat(StreamObjectOptions{OutputMode: mode, Schema: s, EnumValues: enumValues})
+		if err != nil {
+			return nil
+		}
+		wrapped, _ := format.Schema.(map[string]interface{})
+		return wrapped
+	case ObjectModeNoSchema:
+		return nil
+	}
+	return schemaToMap(s)
+}
+
 func buildStreamObjectResponseFormat(opts StreamObjectOptions) (*provider.ResponseFormat, error) {
 	switch opts.OutputMode {
 	case ObjectModeObject:
@@ -836,7 +855,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
-		Schema:            schemaToMap(opts.Schema),
+		Schema:            objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues),
 		SchemaName:        opts.SchemaName,
 		SchemaDescription: opts.SchemaDescription,
 		IsEnabled:         isEnabled,
@@ -877,7 +896,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	if telObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
-		startEvent.Schema = schemaToMap(opts.Schema)
+		startEvent.Schema = objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues)
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
@@ -1776,7 +1795,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		Headers:           opts.Headers,
 		ProviderOptions:   opts.ProviderOptions,
 		Output:            opts.OutputMode,
-		Schema:            schemaToMap(opts.Schema),
+		Schema:            objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues),
 		SchemaName:        opts.SchemaName,
 		SchemaDescription: opts.SchemaDescription,
 		IsEnabled:         isEnabled,
@@ -1816,7 +1835,7 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if streamObjectRecordInputs {
 		startEvent.System = opts.System
 		startEvent.Messages = opts.Messages
-		startEvent.Schema = schemaToMap(opts.Schema)
+		startEvent.Schema = objectOutputJSONSchema(opts.OutputMode, opts.Schema, opts.EnumValues)
 	}
 	ctx = telemetry.FireOnStart(ctx, startEvent)
 
