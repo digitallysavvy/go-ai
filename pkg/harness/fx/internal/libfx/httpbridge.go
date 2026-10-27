@@ -51,6 +51,12 @@ func AllowlistFetch(client *http.Client, origins []string) FetchFunc {
 		if !allowed[origin] {
 			return fmt.Errorf("fx runtime: redirect to %s is not allowed", origin)
 		}
+		// A request that carries credentials never follows a redirect off
+		// its own origin, even to another allowed one: subscription and
+		// Gateway credentials are bound to the origin they were added for.
+		if len(via) > 0 && OriginOf(req.URL) != OriginOf(via[0].URL) && carriesCredentials(via[0].Header) {
+			return fmt.Errorf("fx runtime: credentialed redirect from %s to %s is not allowed", OriginOf(via[0].URL), origin)
+		}
 		if next != nil {
 			return next(req, via)
 		}
@@ -416,4 +422,14 @@ func httpRequest(ctx context.Context, mod api.Module, s []uint64) {
 		return
 	}
 	ret(s, int32(len(r.body)))
+}
+
+// carriesCredentials reports whether a request holds a credential header.
+func carriesCredentials(h http.Header) bool {
+	for _, name := range []string{"Authorization", "X-Api-Key", "Cookie", "Chatgpt-Account-Id", "X-Grok-User-Id", "X-Userid"} {
+		if h.Get(name) != "" {
+			return true
+		}
+	}
+	return false
 }

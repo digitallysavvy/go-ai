@@ -255,3 +255,35 @@ func TestResponsesProtocolPrepareBody(t *testing.T) {
 		t.Error("the Codex models endpoint is not a model request")
 	}
 }
+
+// TestTransportResponsesNeverRewritesOrigins: the subscription protocol
+// sends every request to the URL the core named. A path that is itself a
+// URL stays a path on the same origin, and is not a model request.
+func TestTransportResponsesNeverRewritesOrigins(t *testing.T) {
+	for _, provider := range []string{"codex", "grok"} {
+		h := &transportHarness{turn: newTurnState()}
+		var hosts []string
+		tr := newTransport(subscriptionOptions(h, provider, func(req *http.Request) (*http.Response, error) {
+			hosts = append(hosts, req.URL.Host+" "+req.URL.EscapedPath())
+			return &http.Response{StatusCode: 404, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+		}))
+		base := strings.TrimSuffix(responsesURL(provider), "/responses")
+		origin := base[:strings.Index(base[len("https://"):], "/")+len("https://")]
+		for _, path := range []string{"//evil.example/v1/responses", "/https://evil.example/v1/responses", "/https:/evil.example/x"} {
+			resp, err := tr.fetch(postBody(t, origin+path, `{}`, nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+		}
+		tr.stop()
+		for _, h := range hosts {
+			if !strings.HasPrefix(h, origin[len("https://"):]+" ") {
+				t.Errorf("%s: request left the origin: %s", provider, h)
+			}
+		}
+		if len(h.turn.Models) != 0 || tr.index() != -1 {
+			t.Errorf("%s: a path-as-URL request was treated as a model request", provider)
+		}
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -580,5 +581,97 @@ func TestAuthorizerMemoryIsBounded(t *testing.T) {
 	}
 	if _, ok := z.mem.descendants[keyOf(codexSubscription, "a0")]; ok {
 		t.Fatal("the oldest rotation was not evicted")
+	}
+}
+
+func TestAuthorizerRedactsCredentialsFromResponseHeaders(t *testing.T) {
+	for _, status := range []int{200, 401, 500} {
+		n := &authNetwork{respond: func(c authCall, _ int) *http.Response {
+			r := textResponse(status, "")
+			r.Header.Set("X-Echo", c.header.Get("authorization"))
+			r.Header.Set("X-Refresh", `{"r":"old-refresh"}`)
+			return r
+		}}
+		// No refresh token on the 401 case would stop the retry; keep one
+		// and let the retry hit the same response.
+		store := &hostStore{creds: Credentials{AccessToken: "old-access", RefreshToken: "old-refresh", AccountID: "account", ExpiresAt: farFuture()}}
+		n.rotated = jwt(map[string]any{"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "account"}})
+		z := newTestAuthorizer(t, store.auth(), n)
+		resp, err := send(t, z, n, "https://chatgpt.com/backend-api/codex/responses", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close() //nolint:errcheck
+		for name, values := range resp.Header {
+			for _, v := range values {
+				if strings.Contains(v, "old-access") || strings.Contains(v, "old-refresh") || strings.Contains(v, n.rotated) {
+					t.Fatalf("status %d: header %s leaks a credential: %s", status, name, v)
+				}
+			}
+		}
+		if got := resp.Header.Get("X-Echo"); !strings.HasPrefix(got, "Bearer ***") {
+			t.Fatalf("status %d: X-Echo = %q", status, got)
+		}
+	}
+}
+
+func TestAuthorizerKeepsStrictOrigins(t *testing.T) {
+	z := newTestAuthorizer(t, SubscriptionAuth{Credentials: func(context.Context, CredentialRequest) (Credentials, error) { return Credentials{}, nil }}, &authNetwork{})
+	for _, raw := range []string{
+		"https://chatgpt.com//evil.example/backend-api/codex/responses",
+		"https://chatgpt.com/https://evil.example/backend-api/codex/responses",
+		"https://chatgpt.com.evil.example/backend-api/codex/responses",
+		"https://chatgpt.com:8443/backend-api/codex/responses",
+		"http://chatgpt.com/backend-api/codex/responses",
+		"https://user@evil.example/backend-api/codex/responses",
+		"https://cli-chat-proxy.grok.com/v1/responses/../../evil",
+		"https://cli-chat-proxy.grok.com.evil.example/v1/responses",
+	} {
+		req, err := http.NewRequest("POST", raw, nil)
+		if err != nil {
+			continue
+		}
+		if s := z.specFor(EndpointOf(req.URL)); s != nil {
+			t.Errorf("%s would be authorized as %s", raw, s.provider)
+		}
+	}
+}
+
+func TestAllowlistFetchRefusesCredentialedCrossOriginRedirects(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "reached "+r.Header.Get("Authorization"))
+	}))
+	defer target.Close()
+	sameOrigin := http.NewServeMux()
+	var origin *httptest.Server
+	sameOrigin.HandleFunc("/off", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL+"/x", http.StatusFound) })
+	sameOrigin.HandleFunc("/on", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/final", http.StatusFound) })
+	sameOrigin.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "final") })
+	origin = httptest.NewServer(sameOrigin)
+	defer origin.Close()
+	fetch := AllowlistFetch(&http.Client{}, []string{origin.URL, target.URL})
+	get := func(path string, auth bool) (*http.Response, error) {
+		req, _ := http.NewRequest("GET", origin.URL+path, nil)
+		if auth {
+			req.Header.Set("Authorization", "Bearer secret")
+		}
+		return fetch(req)
+	}
+	if _, err := get("/off", true); err == nil || !strings.Contains(err.Error(), "credentialed redirect") {
+		t.Fatalf("credentialed cross-origin redirect: %v", err)
+	}
+	resp, err := get("/off", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close() //nolint:errcheck
+	resp, err = get("/on", true)
+	if err != nil {
+		t.Fatalf("same-origin redirect: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close() //nolint:errcheck
+	if string(body) != "final" {
+		t.Fatalf("body %q", body)
 	}
 }

@@ -733,14 +733,32 @@ func (z *authorizer) do(spec *subscriptionSpec, endpoint string, hostFetch Fetch
 	if err != nil {
 		return nil, err
 	}
-	return withoutCredentials(resp, next)
+	// The retry's response may still quote the rejected credentials.
+	return withoutCredentials(resp, next, used)
 }
 
 var jsonLeading = regexp.MustCompile(`^\s*[\[{"]`)
 
 // withoutCredentials masks the credentials a failed response repeats. JSON
 // is normalized first, so an escaped copy cannot survive.
-func withoutCredentials(resp *http.Response, c *Credentials) (*http.Response, error) {
+func withoutCredentials(resp *http.Response, creds ...*Credentials) (*http.Response, error) {
+	var secrets []string
+	for _, c := range creds {
+		if c != nil {
+			secrets = append(secrets, c.AccessToken, c.RefreshToken)
+		}
+	}
+	// Response headers never repeat the credentials either, whatever the
+	// status (a Go hardening: libfx masks error bodies only).
+	if headerHolds(resp.Header, secrets) {
+		resp.Header = resp.Header.Clone()
+		for name, values := range resp.Header {
+			for i, v := range values {
+				values[i] = RedactSecrets(v, secrets...)
+			}
+			resp.Header[name] = values
+		}
+	}
 	if resp.StatusCode < 400 {
 		return resp, nil
 	}
@@ -765,7 +783,7 @@ func withoutCredentials(resp *http.Response, c *Credentials) (*http.Response, er
 			}
 		}
 	}
-	body = RedactSecrets(body, c.AccessToken, c.RefreshToken)
+	body = RedactSecrets(body, secrets...)
 	h := resp.Header.Clone()
 	if h == nil {
 		h = http.Header{}
@@ -776,6 +794,19 @@ func withoutCredentials(resp *http.Response, c *Credentials) (*http.Response, er
 		Status: resp.Status, StatusCode: resp.StatusCode, Proto: resp.Proto, ProtoMajor: resp.ProtoMajor, ProtoMinor: resp.ProtoMinor,
 		Header: h, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body)), Request: resp.Request,
 	}, nil
+}
+
+func headerHolds(h http.Header, secrets []string) bool {
+	for _, values := range h {
+		for _, v := range values {
+			for _, secret := range secrets {
+				if secret != "" && strings.Contains(v, secret) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // RedactSecrets replaces each secret, and its JSON-escaped form, with
