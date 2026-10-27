@@ -3,6 +3,7 @@ package perplexity
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -251,7 +252,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 
 	if response.Error != nil || response.Status == "failed" {
 		message := "Perplexity response failed"
-		if response.Error != nil && response.Error.Message != "" {
+		if response.Error != nil {
+			// TS: response.error?.message ?? 'Perplexity response failed'.
 			message = response.Error.Message
 		}
 		return nil, &providererrors.ProviderError{
@@ -774,11 +776,25 @@ func (s *perplexityAgentStream) processEvent(data string) {
 	case "response.failed":
 		s.finishReason = types.FinishReasonError
 		s.rawFinishReason = "failed"
+		// TS enqueues `value.error ?? new Error('Perplexity response failed')`
+		// and the core normalizes the error object into a stream provider
+		// error (type, code, message and the object as data).
 		message := "Perplexity response failed"
-		if chunk.Error != nil && chunk.Error.Message != "" {
+		var errorObject interface{}
+		if chunk.Error != nil {
 			message = chunk.Error.Message
+			var probe struct {
+				Error map[string]interface{} `json:"error"`
+			}
+			if json.Unmarshal([]byte(data), &probe) == nil && probe.Error != nil {
+				errorObject = probe.Error
+			}
 		}
-		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeError, Text: message})
+		s.pending = append(s.pending, &provider.StreamChunk{
+			Type: provider.ChunkTypeError,
+			Text: message,
+			Err:  providererrors.NormalizeStreamProviderError(errors.New(message), "perplexity", errorObject),
+		})
 	}
 }
 
