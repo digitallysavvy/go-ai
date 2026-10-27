@@ -267,6 +267,19 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 	}
 	word := zObj(fl("word", zStr), fl("start", zNum), fl("end", zNum))
 	b64Data := zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))))
+	// compatImageItem is z.object({b64_json: nullish, url: nullish}).refine(
+	// b64_json != null || url != null) from openaiCompatibleImageResponseSchema.
+	compatImageBase := zObj(fl("b64_json", nStr), fl("url", nStr))
+	compatImageItem := func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+		if bad := compatImageBase(v, present, path); bad != nil {
+			return bad
+		}
+		m := v.(map[string]interface{})
+		if m["b64_json"] == nil && m["url"] == nil {
+			return &zodlite.Issue{Path: path, Code: "custom", Message: "Expected b64_json or url in the image response"}
+		}
+		return nil
+	}
 	return map[MediaResponseSchema]zNode{
 		SchemaOpenAIEmbedding: openaiEmb,
 		SchemaCompatEmbedding: zObj(fl("data", zArr(zObj(fl("embedding", zNumVec())))), fl("usage", zNullish(zObj(fl("prompt_tokens", zNum)))),
@@ -288,7 +301,7 @@ var mediaSchemas = func() map[MediaResponseSchema]zNode {
 			fl("background", nStr), fl("output_format", nStr), fl("size", nStr), fl("quality", nStr),
 			fl("usage", zNullish(zObj(fl("input_tokens", nNum), fl("output_tokens", nNum), fl("total_tokens", nNum),
 				fl("input_tokens_details", zNullish(zObj(fl("image_tokens", nNum), fl("text_tokens", nNum)))))))),
-		SchemaCompatImage: zObj(fl("data", zArr(zObj(fl("b64_json", zStr)))),
+		SchemaCompatImage: zObj(fl("data", zArr(compatImageItem)),
 			fl("usage", zNullish(zObj(fl("input_tokens", nNum), fl("output_tokens", nNum), fl("total_tokens", nNum))))),
 		SchemaTogetherImage:  b64Data,
 		SchemaDeepInfraImage: zObj(fl("images", zArr(zStr))),

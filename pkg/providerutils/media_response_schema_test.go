@@ -42,7 +42,7 @@ func TestMediaResponseSchemas(t *testing.T) {
 		{SchemaOpenAIImage,
 			[]string{`{"data":[{"b64_json":"aa"}]}`, `{"created":1,"data":[{"b64_json":"aa","revised_prompt":null}],"usage":{"input_tokens_details":{"text_tokens":1}}}`},
 			[]string{`{"data":[{"url":"https://x"}]}`, `{}`}},
-		{SchemaCompatImage, []string{`{"data":[{"b64_json":"aa"}],"usage":null}`}, []string{`{"data":[{}]}`}},
+		{SchemaCompatImage, []string{`{"data":[{"b64_json":"aa"}],"usage":null}`, `{"data":[{"url":"https://x"},{"b64_json":null,"url":"u"},{"b64_json":"a","url":null}]}`}, []string{`{"data":[{}]}`, `{"data":[{"b64_json":null,"url":null}]}`}},
 		{SchemaTogetherImage, []string{`{"data":[{"b64_json":"aa"}]}`}, []string{`{"data":[{"url":"u"}]}`}},
 		{SchemaDeepInfraImage, []string{`{"images":["a"]}`}, []string{`{"images":[1]}`, `{"data":[]}`}},
 		{SchemaXAIImage,

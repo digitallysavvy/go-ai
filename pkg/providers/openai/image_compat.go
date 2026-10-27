@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -103,13 +104,27 @@ func (m *ImageModel) doCompat(ctx context.Context, opts *provider.ImageGenerateO
 	}
 	images := make([][]byte, 0, len(response.Data))
 	b64 := make([]string, 0, len(response.Data))
+	// TS getImages: base64 stays untouched when every item has it; items
+	// with only a URL are downloaded (in order, without provider credentials).
 	for _, d := range response.Data {
-		raw, err := base64.StdEncoding.DecodeString(d.B64JSON)
+		if d.B64JSON != "" {
+			raw, err := base64.StdEncoding.DecodeString(d.B64JSON)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+			}
+			images = append(images, raw)
+			b64 = append(b64, d.B64JSON)
+			continue
+		}
+		if d.URL == "" {
+			return nil, providererrors.NewProviderError(m.Provider(), 0, "", "Expected url in the image response", nil)
+		}
+		raw, err := fileutil.Download(ctx, d.URL, fileutil.TrustedOriginDownloadOptions(m.provider.config.BaseURL, m.provider.client.HTTPClient().Transport))
 		if err != nil {
-			return nil, fmt.Errorf("failed to decode base64 image: %w", err)
+			return nil, providererrors.NewProviderError(m.Provider(), 0, "", fmt.Sprintf("failed to download image: %v", err), err)
 		}
 		images = append(images, raw)
-		b64 = append(b64, d.B64JSON)
+		b64 = append(b64, base64.StdEncoding.EncodeToString(raw))
 	}
 	result := &types.ImageResult{
 		Images:       images,
