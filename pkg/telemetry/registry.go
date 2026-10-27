@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"math"
 	"strings"
 	"sync"
@@ -118,6 +119,11 @@ type TelemetryStartEvent struct {
 	// emitted as ai.request.audio.mediaType (LegacyOpenTelemetry) /
 	// ai.request.audio.media_type (OpenTelemetry), input-gated.
 	AudioMediaType string
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryStepStartEvent is passed to TelemetryIntegration.OnStepStart.
@@ -152,6 +158,11 @@ type TelemetryStepStartEvent struct {
 	// mirroring TS's `'ai.prompt.tools': {input: () =>
 	// event.stepTools?.map(tool => JSON.stringify(tool))}`.
 	StepTools []types.Tool
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // LanguageModelCallStartEvent is emitted immediately before a provider model call.
@@ -176,6 +187,11 @@ type LanguageModelCallStartEvent struct {
 	FrequencyPenalty *float64
 	StopSequences    []string
 	Seed             *int
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // LanguageModelCallEndEvent is emitted after a provider model call returns and
@@ -194,6 +210,11 @@ type LanguageModelCallEndEvent struct {
 	// ai.response.providerMetadata when OpenTelemetryOptions.ProviderMetadata
 	// is set (18651f6).
 	ProviderMetadata map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // LanguageModelCallPerformance contains timing statistics for provider model work.
@@ -218,6 +239,11 @@ type EmbeddingModelCallStartEvent struct {
 	Values        []string
 	// Dimensions is the requested embedding output dimensions, when set.
 	Dimensions *int
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // EmbeddingModelCallEndEvent is emitted after an embedding model call
@@ -245,6 +271,11 @@ type EmbeddingModelCallEndEvent struct {
 	// error). OnEmbedEnd records it on the span (matching TS onError's
 	// recordErrorOnSpan) instead of setting usage/embeddings attributes.
 	Error error
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // RerankingModelCallStartEvent is emitted immediately before a reranking model call.
@@ -258,6 +289,11 @@ type RerankingModelCallStartEvent struct {
 	DocumentsType string
 	Query         string
 	TopN          *int
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // RerankingModelCallEndEvent is emitted after a reranking model call attempt
@@ -284,6 +320,11 @@ type RerankingModelCallEndEvent struct {
 	// error). OnRerankEnd records it on the span (matching TS onError's
 	// recordErrorOnSpan) instead of setting ranking attributes.
 	Error error
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryToolCallStartEvent is passed to TelemetryIntegration.OnToolExecutionStart.
@@ -297,6 +338,11 @@ type TelemetryToolCallStartEvent struct {
 	ToolName    string
 	Args        map[string]interface{}
 	ToolContext map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryToolCallFinishEvent is passed to TelemetryIntegration.OnToolExecutionEnd.
@@ -312,6 +358,11 @@ type TelemetryToolCallFinishEvent struct {
 	Error       error
 	DurationMs  int64
 	ToolContext map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryChunkEvent is passed to TelemetryIntegration.OnChunk (streaming only).
@@ -392,6 +443,11 @@ type TelemetryStepFinishEvent struct {
 	Settings       *Settings
 	RuntimeContext map[string]interface{}
 	ToolsContext   map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryStepEndEvent is the canonical name for TelemetryStepFinishEvent.
@@ -476,6 +532,11 @@ type TelemetryFinishEvent struct {
 	// as a raw JSON string on ai.response.usage, mirroring TS's
 	// onAudioOperationEnd.
 	ProviderUsage map[string]interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryErrorEvent is passed to TelemetryIntegration.OnError.
@@ -488,6 +549,11 @@ type TelemetryErrorEvent struct {
 	// corresponding *End event is never notified on an error path. Other
 	// operations leave this empty and are unaffected.
 	CallID string
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryAbortEvent is emitted when a generation is aborted by context
@@ -497,6 +563,11 @@ type TelemetryAbortEvent struct {
 	CallID   string
 	Reason   error
 	Steps    []types.StepResult
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // TelemetryUsage carries token counts for telemetry events.
@@ -2604,6 +2675,7 @@ func callIntegration(fn func()) {
 // returned ctx is used for that; with a single integration registered this
 // is byte-for-byte the previous behavior.
 func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
@@ -2618,6 +2690,7 @@ func FireOnStart(ctx context.Context, e TelemetryStartEvent) context.Context {
 // FireOnStepStart calls OnStepStart on every registered integration, threading
 // the returned context through the chain so each integration can inject step spans.
 func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
@@ -2635,6 +2708,7 @@ func FireOnStepStart(ctx context.Context, e TelemetryStepStartEvent) context.Con
 // returned ctx. The caller should use the returned ctx for the actual
 // provider call (594029e), so provider HTTP spans become children of it.
 func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
@@ -2649,6 +2723,7 @@ func FireOnLanguageModelCallStart(ctx context.Context, e LanguageModelCallStartE
 
 // FireOnLanguageModelCallEnd publishes and fans out a model-call end event.
 func FireOnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2662,6 +2737,7 @@ func FireOnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent
 
 // FireOnEmbedStart publishes and fans out an embedding model-call start event.
 func FireOnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2675,6 +2751,7 @@ func FireOnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 
 // FireOnEmbedEnd publishes and fans out an embedding model-call end event.
 func FireOnEmbedEnd(ctx context.Context, e EmbeddingModelCallEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2699,6 +2776,7 @@ func FireOnEmbedFinish(ctx context.Context, e EmbeddingModelCallEndEvent) {
 
 // FireOnRerankStart publishes and fans out a reranking model-call start event.
 func FireOnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2712,6 +2790,7 @@ func FireOnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 
 // FireOnRerankEnd publishes and fans out a reranking model-call end event.
 func FireOnRerankEnd(ctx context.Context, e RerankingModelCallEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2737,6 +2816,7 @@ func FireOnRerankFinish(ctx context.Context, e RerankingModelCallEndEvent) {
 // FireOnToolCallStart calls OnToolExecutionStart on every registered integration,
 // threading the returned context through the chain.
 func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
@@ -2749,6 +2829,7 @@ func FireOnToolCallStart(ctx context.Context, e TelemetryToolCallStartEvent) con
 
 // FireOnToolCallFinish calls OnToolExecutionEnd on every registered integration.
 func FireOnToolCallFinish(ctx context.Context, e TelemetryToolCallFinishEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2770,6 +2851,7 @@ func FireOnChunk(ctx context.Context, e TelemetryChunkEvent) {
 //
 // Deprecated: use FireOnStepEnd.
 func FireOnStepFinish(ctx context.Context, e TelemetryStepFinishEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2793,6 +2875,7 @@ func FireOnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 // FireOnEnd calls OnEnd on every registered integration, falling back to the
 // deprecated OnFinish method for older integrations.
 func FireOnEnd(ctx context.Context, e TelemetryFinishEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2815,6 +2898,7 @@ func FireOnFinish(ctx context.Context, e TelemetryFinishEvent) {
 
 // FireOnError calls OnError on every registered integration.
 func FireOnError(ctx context.Context, e TelemetryErrorEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2826,6 +2910,7 @@ func FireOnError(ctx context.Context, e TelemetryErrorEvent) {
 
 // FireOnAbort calls OnAbort on every registered integration.
 func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2852,6 +2937,7 @@ func FireOnAbort(ctx context.Context, e TelemetryAbortEvent) {
 // span (provider error); leave it nil to just close it without an error
 // status (abort).
 func FireOnStepError(ctx context.Context, e TelemetryErrorEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -2860,6 +2946,17 @@ func FireOnStepError(ctx context.Context, e TelemetryErrorEvent) {
 			callIntegration(func() { h.OnStepError(ctx, e) })
 		}
 	}
+}
+
+type aiVersionKey struct{}
+
+// AIVersionFromContext returns the SDK version carried by the context passed
+// to TelemetryIntegration.ExecuteTool, or "" for any other context. ExecuteTool
+// has no event argument, so the version travels on ctx; TS passes `aiVersion`
+// in the executeTool options (TS #23958).
+func AIVersionFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(aiVersionKey{}).(string)
+	return v
 }
 
 // FireExecuteTool chains ExecuteTool across all registered integrations (Gap 4).
@@ -2884,6 +2981,7 @@ func FireExecuteToolWithSettings(
 	if telemetryDisabled(settings) {
 		return execute(ctx, args)
 	}
+	ctx = context.WithValue(ctx, aiVersionKey{}, sdkversion.Version)
 	is := snapshotFor(settings)
 	if len(is) == 0 {
 		return execute(ctx, args)
