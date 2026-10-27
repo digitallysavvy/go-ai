@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 )
 
 // DiagnosticEventType is the stable name of a telemetry diagnostic event.
@@ -53,6 +55,11 @@ const (
 type DiagnosticMessage struct {
 	Type  DiagnosticEventType
 	Event interface{}
+	// AIVersion is the version of the SDK that emitted the event, so
+	// subscribers can tell which release filtered runtime and tool context.
+	// Publish fills it in when empty. Mirrors the TS `aiVersion` field the
+	// telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // DiagnosticHandler receives diagnostic messages.
@@ -99,6 +106,9 @@ func (c *DiagnosticChannel) Subscribe(handler DiagnosticHandler) func() {
 func (c *DiagnosticChannel) Publish(ctx context.Context, msg DiagnosticMessage) error {
 	if c == nil {
 		return nil
+	}
+	if msg.AIVersion == "" {
+		msg.AIVersion = sdkversion.Version
 	}
 	c.mu.RLock()
 	handlers := make([]DiagnosticHandler, 0, len(c.subscribers))

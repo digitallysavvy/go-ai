@@ -548,6 +548,29 @@ func main() {
 }
 ```
 
+## Diagnostics Channel
+
+Every telemetry lifecycle event is also published to a process-wide diagnostics channel. Subscribe with `telemetry.SubscribeDiagnostic`. Each `telemetry.DiagnosticMessage` has the event `Type`, the `Event` payload, and `AIVersion`, the version of the SDK that emitted it. Use `AIVersion` to tell which release produced an event, for example to know whether it filtered runtime and tool context.
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
+)
+
+func main() {
+	unsubscribe := telemetry.SubscribeDiagnostic(func(ctx context.Context, msg telemetry.DiagnosticMessage) error {
+		fmt.Println(msg.Type, "emitted by SDK version", msg.AIVersion)
+		return nil
+	})
+	defer unsubscribe()
+}
+```
+
 ## Best Practices
 
 ### 1. Disable Sensitive Data Recording
