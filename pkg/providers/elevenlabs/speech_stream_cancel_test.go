@@ -74,7 +74,7 @@ func TestSpeechStream_StalledHandshakeHonorsContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer ln.Close() //nolint:errcheck
 	go func() {
 		for {
 			c, err := ln.Accept()
