@@ -308,6 +308,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 			})
 		},
 		Reconnect:     settings.Reconnect,
+		OnDebug:       settings.OnDebug,
 		OnDiagnostic:  onDiagnostic,
 		OnBridgeError: bridge.CreateBridgeErrorHandler(HarnessID, opts.SessionID),
 	}
@@ -394,6 +395,7 @@ func (h *Harness) tryAttach(ctx context.Context, opts attachOptions) *session {
 			})
 		},
 		Reconnect:              opts.settings.Reconnect,
+		OnDebug:                opts.settings.OnDebug,
 		InitialLastSeenEventID: opts.coords.LastSeenEventID,
 		OnDiagnostic:           opts.onDiagnostic,
 		OnBridgeError:          bridge.CreateBridgeErrorHandler(HarnessID, opts.sessionID),

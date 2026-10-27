@@ -74,6 +74,13 @@ type Settings struct {
 	// Reconnect tunes reconnection after an established bridge connection
 	// drops.
 	Reconnect bridge.ReconnectOptions
+	// OnDebug is called with bridge connection lifecycle events: reconnect
+	// attempts, successful reconnects, and "reconnect-failed" once the
+	// connection is closed for good. Hosts that cache idle sessions can use it
+	// to reattach before sending the next prompt. The Cause of a failed
+	// reconnect can contain connection details, so avoid logging it as is. It
+	// runs on the connection's goroutine, so it must not block.
+	OnDebug func(bridge.ChannelDebugEvent)
 	// MintBridgeToken creates the bridge channel token. Defaults to a random
 	// 32-byte hex token. Requires the sandbox to expose an ID.
 	MintBridgeToken harness.MintBridgeTokenCallback

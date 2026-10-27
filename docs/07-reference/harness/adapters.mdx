@@ -279,6 +279,7 @@ See `examples/harness/image-input` for a runnable program.
 | `PortEndpoint` | `*harness.PortEndpoint` | PortEndpoint overrides the host endpoint used to reach the bridge. Required together with Port for a sandbox that is not a harness.NetworkSandboxSession. |
 | `StartupTimeout` | `time.Duration` | StartupTimeout bounds how long to wait for the bridge to announce its port. Defaults to 120s. |
 | `Reconnect` | `bridge.ReconnectOptions` | Reconnect tunes reconnection after an established bridge connection drops. |
+| `OnDebug` | `func(bridge.ChannelDebugEvent)` | OnDebug is called with bridge connection lifecycle events: reconnect attempts, successful reconnects, and "reconnect-failed" once the connection is closed for good. Hosts that cache idle sessions can use it to reattach before sending the next prompt. The Cause of a failed reconnect can contain connection details, so avoid logging it as is. It runs on the connection's goroutine, so it must not block. |
 | `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken creates the bridge channel token. Defaults to a random 32-byte hex token. Requires the sandbox to expose an ID. |
 
 {/* /gen:fields */}
