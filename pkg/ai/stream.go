@@ -1739,7 +1739,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepResponseModelID := stepModelID
 		// TS createStepResponse: a step whose stream reports no response id
 		// or timestamp gets a generated id and the step's start time.
-		stepResponseID := remapGenerateID()
+		// stepResponseID holds only a provider-reported id.
+		var stepResponseID string
+		stepDefaultResponseID := remapGenerateID()
 		stepResponseTimestamp := time.Now()
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
@@ -2237,6 +2239,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					if responseID == "" {
 						responseID = responseIDFromMetadata(chunk.ResponseMetadata)
 					}
+					if responseID == "" {
+						responseID = stepDefaultResponseID
+					}
 					Notify(stepCtx, LanguageModelCallEndEvent{
 						CallID:           r.cbCallID,
 						Provider:         stepProvider,
@@ -2440,7 +2445,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					previousOutputChunkAt = nil
 					outputChunkGapsMs = nil
 					stepResponseModelID = stepModelID
-					stepResponseID = remapGenerateID()
+					stepResponseID = ""
+					stepDefaultResponseID = remapGenerateID()
 					stepResponseTimestamp = time.Now()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					preRefinementCalls = nil
@@ -2873,7 +2879,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Messages: includedRequestMessages(r.cbInclude.RequestMessages, currentMessages),
 			},
 			Response: types.StepResponse{
-				ID:        stepResponseID,
+				ID:        firstNonEmptyString(stepResponseID, stepDefaultResponseID),
 				ModelID:   stepResponseModelID,
 				Timestamp: stepResponseTimestamp,
 				Headers:   stepHeaders,

@@ -153,3 +153,40 @@ func TestGenerate_PartialResponseMetadataGetsDefaultsLikeTS(t *testing.T) {
 		t.Errorf("GenerateObject response = %+v", obj.Response)
 	}
 }
+
+// The language-model-call-end event reports the step response id: the
+// provider's, a finish chunk's, or else the generated default (TS
+// stepResponse.id).
+func TestStreamText_ModelCallEndResponseID(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		finish provider.StreamChunk
+		want   string
+	}{
+		"generated":       {provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: "stop"}, "gen-id"},
+		"finish metadata": {provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: "stop", ResponseMetadata: &provider.ResponseMetadata{ID: "resp-finish"}}, "resp-finish"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{
+				DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+					return testutil.NewMockTextStream([]provider.StreamChunk{{Type: provider.ChunkTypeText, Text: "hi"}, tc.finish}), nil
+				},
+			}
+			var got string
+			result, err := StreamText(context.Background(), StreamTextOptions{
+				Model: model, Prompt: "hi",
+				Internal:               &InternalOptions{GenerateID: func() string { return "gen-id" }},
+				OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) { got = e.ResponseID },
+			})
+			if err != nil {
+				t.Fatalf("StreamText() error = %v", err)
+			}
+			if _, err := result.ReadAll(); err != nil {
+				t.Fatalf("ReadAll() error = %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("model call end ResponseID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
