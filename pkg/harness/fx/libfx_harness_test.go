@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -717,7 +718,18 @@ func TestLibfxFreshPromptAfterFailedColdContinuation(t *testing.T) {
 	}
 }
 
+// isolateHome points subscription discovery at an empty home, as the TS
+// suite mocks os.homedir.
+func isolateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("GROK_HOME", filepath.Join(home, ".grok"))
+}
+
 func TestLibfxGatewayAuthMissingFailsBeforeSandboxAccess(t *testing.T) {
+	isolateHome(t)
 	for _, key := range []string{"unset", ""} {
 		t.Setenv("VERCEL_OIDC_TOKEN", "")
 		t.Setenv("AI_GATEWAY_API_KEY", "")
@@ -779,6 +791,14 @@ func TestLibfxBrokersResolvedCredential(t *testing.T) {
 		}
 		_ = s.DoDestroy(context.Background())
 	}
+}
+
+func resolveAuthentication(auth AuthenticationMode, required string, env map[string]string, home ...string) (fxAuthentication, error) {
+	o := resolveAuthOptions{Auth: auth, Env: env, RequiredProvider: required, HomeDirectory: "/nonexistent-fx-test-home", Keyring: noKeyring{}}
+	if len(home) > 0 {
+		o.HomeDirectory = home[0]
+	}
+	return resolveFxAuthentication(context.Background(), o)
 }
 
 func TestResolveFxEnvModes(t *testing.T) {

@@ -128,6 +128,8 @@ type runtimeOptions struct {
 	Fetch        libfx.FetchFunc
 	OnHook       func(libfx.HookEvent)
 	OnReceive    func(method string, params json.RawMessage)
+	// Subscription carries a codex or grok session's credentials.
+	Subscription *libfx.SubscriptionAuth
 }
 
 // fxEngine is the narrow runtime boundary (TS FxEngine); tests replace it.
@@ -181,6 +183,7 @@ func (h *libfxHarness) startAgent(ctx context.Context, o runtimeOptions) (fxEngi
 		Fetch:            o.Fetch,
 		OnHook:           o.OnHook,
 		OnReceive:        o.OnReceive,
+		Subscription:     o.Subscription,
 		Stderr:           io.Discard,
 	})
 	if err != nil {
@@ -193,40 +196,22 @@ func (h *libfxHarness) startAgent(ctx context.Context, o runtimeOptions) (fxEngi
 	return agentEngine{a}, nil
 }
 
-// fxAuthentication is the resolved credential (TS FxResolvedAuthentication,
-// Gateway only).
+// fxAuthentication is the resolved credential (TS FxResolvedAuthentication):
+// a Gateway key, or a codex or grok subscription store.
 type fxAuthentication struct {
-	Provider string
-	APIKey   string
-	BaseURL  string
+	Provider     string
+	APIKey       string
+	BaseURL      string
+	Subscription *fxSubscription
 }
 
 const errNoGatewayCredential = "fx requires AI_GATEWAY_API_KEY or VERCEL_OIDC_TOKEN in the host environment or an explicit authentication environment. No subscription credentials were available."
-
-// resolveAuthentication mirrors the Gateway part of TS
-// resolveFxAuthentication. Subscription discovery is not ported yet, so a
-// session pinned to a codex or grok subscription cannot resume here.
-func resolveAuthentication(auth AuthenticationMode, requiredProvider string, processEnv map[string]string) (fxAuthentication, error) {
-	env := harnessutil.AuthenticationEnvironment(auth, processEnv)
-	gateway := harnessutil.GetAIGatewayAuthFromEnv(env)
-	isolated := harnessutil.IsAuthenticationEnvironment(auth)
-	if requiredProvider != "" && requiredProvider != "gateway" {
-		if isolated || auth.Mode == harness.AuthModeAIGateway {
-			return fxAuthentication{}, errors.New("Cannot resume fx: authentication does not allow the saved subscription provider.") //nolint:staticcheck // matches TS SDK's exact error text
-		}
-		return fxAuthentication{}, fmt.Errorf("Cannot resume fx: no %s subscription credentials are available.", requiredProvider) //nolint:staticcheck // matches TS SDK's exact error text
-	}
-	if gateway.APIKey == "" {
-		return fxAuthentication{}, errors.New(errNoGatewayCredential) //nolint:staticcheck // matches TS SDK's exact error text
-	}
-	return fxAuthentication{Provider: "gateway", APIKey: gateway.APIKey, BaseURL: gateway.BaseURL}, nil
-}
 
 // libfxHarness is CreateFx under RuntimeLibfx (TS createFx).
 type libfxHarness struct {
 	settings  Settings
 	newEngine engineFactory
-	resolve   func(auth AuthenticationMode, requiredProvider string) (fxAuthentication, error)
+	resolve   func(ctx context.Context, auth AuthenticationMode, requiredProvider string) (fxAuthentication, error)
 	network   libfx.FetchFunc
 }
 
@@ -248,8 +233,8 @@ func newLibfxHarness(s Settings) (*libfxHarness, error) {
 	}
 	h := &libfxHarness{settings: s}
 	h.newEngine = h.startAgent
-	h.resolve = func(auth AuthenticationMode, required string) (fxAuthentication, error) {
-		return resolveAuthentication(auth, required, harnessutil.ProcessEnv())
+	h.resolve = func(ctx context.Context, auth AuthenticationMode, required string) (fxAuthentication, error) {
+		return resolveFxAuthentication(ctx, resolveAuthOptions{Auth: auth, Env: harnessutil.ProcessEnv(), RequiredProvider: required})
 	}
 	return h, nil
 }

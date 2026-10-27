@@ -83,7 +83,7 @@ func startLibfxSession(ctx context.Context, h *libfxHarness, opts harness.StartO
 	var auth fxAuthentication
 	var authErr error
 	if resume == nil {
-		if auth, authErr = h.resolve(h.settings.Auth, ""); authErr != nil {
+		if auth, authErr = h.resolve(ctx, h.settings.Auth, ""); authErr != nil {
 			return nil, authErr
 		}
 	}
@@ -104,7 +104,7 @@ func startLibfxSession(ctx context.Context, h *libfxHarness, opts harness.StartO
 		if required == "" {
 			required = "gateway"
 		}
-		if auth, err = h.resolve(h.settings.Auth, required); err != nil {
+		if auth, err = h.resolve(ctx, h.settings.Auth, required); err != nil {
 			return nil, err
 		}
 	}
@@ -1026,7 +1026,12 @@ func (a *activeTurn) runBody() error {
 	}
 	headers["user-agent"] = clientApp
 	headers["x-client-app"] = clientApp
+	var protocol transportProtocol = gatewayProtocol{}
+	if s.auth.Subscription != nil {
+		protocol = responsesProtocol{provider: s.auth.Provider}
+	}
 	tr := newTransport(transportOptions{
+		protocol:       protocol,
 		baseURL:        s.auth.BaseURL,
 		headers:        headers,
 		responseFormat: a.turn.ResponseFormat,
@@ -1098,9 +1103,8 @@ func (a *activeTurn) runBody() error {
 	if err != nil {
 		return fmt.Errorf("invalid saved fx checkpoint: %w", err)
 	}
-	engine, err := s.h.newEngine(a.ctx, runtimeOptions{
+	opts := runtimeOptions{
 		APIKey:       s.broker.placeholder,
-		Provider:     "",
 		Model:        a.settings.Model,
 		Effort:       s.h.settings.Effort,
 		Fast:         a.fast,
@@ -1111,7 +1115,13 @@ func (a *activeTurn) runBody() error {
 		Fetch:        tr.fetch,
 		OnHook:       a.onHook,
 		OnReceive:    a.onReceive,
-	})
+	}
+	if sub := s.auth.Subscription; sub != nil {
+		opts.APIKey = ""
+		opts.Provider = s.auth.Provider
+		opts.Subscription = a.subscriptionAuth(sub)
+	}
+	engine, err := s.h.newEngine(a.ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -1194,6 +1204,34 @@ func (a *activeTurn) runBody() error {
 	s.mu.Unlock()
 	a.deliver()
 	return nil
+}
+
+// subscriptionAuth hands libfx the selected store. A store failure is
+// what the turn reports, rather than libfx's wrapped transport error.
+func (a *activeTurn) subscriptionAuth(sub *fxSubscription) *libfx.SubscriptionAuth {
+	fail := func(err error) error {
+		a.s.mu.Lock()
+		if a.credentialFail == nil {
+			a.credentialFail = err
+		}
+		a.s.mu.Unlock()
+		return err
+	}
+	return &libfx.SubscriptionAuth{
+		Credentials: func(ctx context.Context, _ libfx.CredentialRequest) (libfx.Credentials, error) {
+			c, err := sub.read(ctx)
+			if err != nil {
+				return libfx.Credentials{}, fail(err)
+			}
+			return c, nil
+		},
+		OnCredentials: func(ctx context.Context, next libfx.Credentials, _ libfx.CredentialRequest) error {
+			if err := sub.write(ctx, next); err != nil {
+				return fail(err)
+			}
+			return nil
+		},
+	}
 }
 
 // drain reads the runtime turn's events (TS draining).
