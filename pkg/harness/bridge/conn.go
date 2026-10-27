@@ -2,14 +2,12 @@ package bridge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
-	"github.com/digitallysavvy/go-ai/pkg/harness/internal/securejson"
 	wsutil "github.com/digitallysavvy/go-ai/pkg/providerutils/websocket"
 	"golang.org/x/net/websocket"
 )
@@ -248,20 +246,17 @@ func Dial(ctx context.Context, endpoint harness.PortEndpoint, opts DialOptions) 
 	}
 }
 
-// parseHello returns the frame when it is a JSON object whose type is
-// `bridge-hello` (other frames before hello are ignored, as in TS).
+// parseHello returns the frame when it passes the TS hello schema
+// (harnessV1BridgeHelloSchema): a `bridge-hello` object whose optional keys
+// are not null and have the right types. Other frames, and hellos that fail
+// the schema, are ignored, as in TS.
 func parseHello(msg []byte) (*Hello, bool) {
-	var probe struct {
-		Type any `json:"type"`
-	}
-	if securejson.Check(msg) != nil || json.Unmarshal(msg, &probe) != nil || probe.Type != TypeHello {
+	frame, _, err := DecodeOutbound(msg)
+	if err != nil {
 		return nil, false
 	}
-	var hello Hello
-	if json.Unmarshal(msg, &hello) != nil {
-		return nil, false // fails the TS hello schema (wrong field type)
-	}
-	return &hello, true
+	hello, ok := frame.(*Hello)
+	return hello, ok
 }
 
 // SupportsUserMessageResponses reports the hello capability

@@ -1439,8 +1439,11 @@ func toolCallPartToCall(p *ToolCallPart) types.ToolCall {
 		ToolName:         p.ToolName,
 		RawArguments:     p.Input,
 		ProviderExecuted: p.ProviderExecuted,
-		Dynamic:          p.Dynamic,
-		ProviderMetadata: convertProviderMetadata(ProviderMetadata(p.ProviderMetadata)),
+		// TS validateToolCall copies `providerExecuted` whenever the event
+		// defines it, so an explicit false stays set.
+		ProviderExecutedSet: p.ProviderExecuted || !p.ProviderExecutedOmitted,
+		Dynamic:             p.Dynamic,
+		ProviderMetadata:    convertProviderMetadata(ProviderMetadata(p.ProviderMetadata)),
 	}
 }
 
@@ -2595,6 +2598,8 @@ func approvalAsToolCallPart(approval PendingToolApproval) ToolCallPart {
 	return ToolCallPart{
 		ToolCallID: approval.ToolCallID, ToolName: approval.ToolName, Input: approval.Input,
 		ProviderExecuted: providerExecuted, NativeName: approval.NativeName,
+		// TS copies `approval.providerExecuted`, which may be undefined.
+		ProviderExecutedOmitted: approval.ProviderExecuted == nil,
 	}
 }
 
@@ -2641,12 +2646,18 @@ func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, c
 		// display) is needed — mirrors TS's `safeParseJSON`-only else
 		// branch.
 		args, _ := parseJSONObject(rawToolCall.Input)
-		call = types.ToolCall{ID: rawToolCall.ToolCallID, ToolName: rawToolCall.ToolName, Arguments: args, ProviderExecuted: rawToolCall.ProviderExecuted}
+		call = types.ToolCall{
+			ID: rawToolCall.ToolCallID, ToolName: rawToolCall.ToolName, Arguments: args,
+			ProviderExecuted:    rawToolCall.ProviderExecuted,
+			ProviderExecutedSet: rawToolCall.ProviderExecuted || !rawToolCall.ProviderExecutedOmitted,
+		}
 	}
 
 	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeToolApprovalResponse, ToolApprovalResponse: &types.ToolApprovalResponseContent{
 		ApprovalID: approval.ApprovalID, ToolCallID: approval.ToolCallID, ToolCall: call,
 		Approved: continuation.Approved, Reason: continuation.Reason,
+		// TS: `approval.providerExecuted` (true for a builtin approval).
+		ProviderExecuted: approval.ProviderExecuted != nil && *approval.ProviderExecuted,
 	}})
 	if d.in.OnToolApprovalSettled != nil {
 		d.in.OnToolApprovalSettled(approval.ApprovalID)

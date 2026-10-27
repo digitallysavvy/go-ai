@@ -1,6 +1,6 @@
 // Package githubcopilot is the Go port of the TypeScript
-// `@ai-sdk/harness-github-copilot` package (pinned to ai@7.0.113, hash
-// 5ecd4f4).
+// `@ai-sdk/harness-github-copilot` package (pinned to
+// ai@7.0.153, TS e64ed82f27).
 //
 // Like pkg/harness/cursor, GitHub Copilot is an "ACP-derived" adapter: TS
 // `createGitHubCopilot()` is a thin configuration layer over `createACP()`

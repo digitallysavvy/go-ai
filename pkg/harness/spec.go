@@ -1,5 +1,5 @@
 // Package harness is the Go port of the TypeScript `@ai-sdk/harness` package
-// (pinned to ai@7.0.113).
+// (pinned to ai@7.0.153, TS e64ed82f27).
 //
 // It contains the harness-v1 specification types that adapters implement
 // (TS `HarnessV1*`), the stream-part vocabulary, JSON lifecycle state that is
