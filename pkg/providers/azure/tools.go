@@ -31,3 +31,9 @@ func WebSearch(config openaitool.WebSearchConfig) types.Tool {
 func WebSearchPreview(config openaitool.WebSearchPreviewConfig) types.Tool {
 	return openaitool.WebSearchPreview(config)
 }
+
+// ToolSearch creates the OpenAI Responses tool_search provider tool for Azure OpenAI.
+// Mark function tools to defer with provider options {"azure": {"deferLoading": true}}.
+func ToolSearch(args openaitool.ToolSearchArgs) types.Tool {
+	return openaitool.ToolSearch(args)
+}

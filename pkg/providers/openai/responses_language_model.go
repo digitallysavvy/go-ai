@@ -441,7 +441,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		ProviderOptionsName:                  providerOptionsName,
 		ToolSearchToolName:                   toolSearchToolName(opts.Tools),
 		ProviderToolNames:                    openAIProviderToolNames(opts.Tools),
-		OutputSchemaToolNames:                outputSchemaToolNames(opts.Tools),
+		OutputSchemaToolNames:                outputSchemaToolNames(responses.ScopeFunctionToolOptions(opts.Tools, providerOptionsName)),
 		ExplicitMessageItemType:              m.provider.explicitMessageItemType(),
 		IncludePromptCacheBreakpoint:         true,
 		ConfigurationUpdateUnsupportedReason: configurationUpdateUnsupportedReason,
@@ -720,7 +720,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Tools.
 	if len(opts.Tools) > 0 {
-		preparedTools, err := responses.PrepareToolsWithError(opts.Tools)
+		preparedTools, err := responses.PrepareToolsWithOptionsName(opts.Tools, providerOptionsName)
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -731,7 +731,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		warnings = append(warnings, toolSchemaWarnings...)
 		body["tools"] = preparedTools
 		if len(allowedToolNames) > 0 {
-			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedTools(opts.Tools, allowedToolNames, allowedToolsMode)
+			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedToolsWithOptionsName(opts.Tools, allowedToolNames, allowedToolsMode, providerOptionsName)
 			warnings = append(warnings, allowedToolWarnings...)
 			if err != nil {
 				return nil, false, warnings, err

@@ -69,10 +69,30 @@ Azure exposes the OpenAI Responses provider tools as Azure helpers:
 - `azure.CodeInterpreter`
 - `azure.FileSearch`
 - `azure.ImageGeneration`
+- `azure.ToolSearch`
 - `azure.WebSearch`
 - `azure.WebSearchPreview` (deprecated, use `azure.WebSearch`)
 
 Use them with Responses-compatible Azure deployments.
+
+### Tool search
+
+`azure.ToolSearch` lets the model load deferred tools only when it needs them (requires `gpt-5.4` or later). Mark function tools to defer with `deferLoading` under the `azure` provider-options key; `openai` is still read as a fallback. It accepts the same arguments as `openaitool.ToolSearch`, including client-executed tool search and namespaces.
+
+```go
+tools := []types.Tool{
+	azure.ToolSearch(openaitool.ToolSearchArgs{}),
+	{
+		Type:        types.ToolTypeFunction,
+		Name:        "get_weather",
+		Description: "Get the current weather at a specific location",
+		Parameters:  map[string]interface{}{"type": "object"},
+		ProviderOptions: map[string]interface{}{
+			"azure": map[string]interface{}{"deferLoading": true},
+		},
+	},
+}
+```
 
 ```go
 searchContext := "low"

@@ -30,9 +30,18 @@ func PrepareTools(tools []types.Tool) []interface{} {
 // PrepareToolsWithError converts SDK tools to OpenAI Responses API tool
 // definitions and reports TS-parity unsupported functionality errors.
 func PrepareToolsWithError(tools []types.Tool) ([]interface{}, error) {
+	return PrepareToolsWithOptionsName(tools, "")
+}
+
+// PrepareToolsWithOptionsName is PrepareToolsWithError for providers whose
+// provider-options key is not "openai" (TS prepareResponsesTools
+// providerOptionsName, e.g. "azure"). Function tool options are read from
+// providerOptions[providerOptionsName], falling back to providerOptions.openai.
+func PrepareToolsWithOptionsName(tools []types.Tool, providerOptionsName string) ([]interface{}, error) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
+	tools = scopeFunctionToolOptions(tools, providerOptionsName)
 
 	result := make([]interface{}, 0, len(tools))
 	namespaces := map[string]*NamespaceToolDef{}
@@ -595,6 +604,40 @@ func functionToolNamespace(providerOptions interface{}) (functionToolNamespaceOp
 	return functionToolNamespaceOption{Name: name, Description: description}, true
 }
 
+// ScopeFunctionToolOptions returns tools whose map-valued ProviderOptions
+// expose the options under providerOptionsName (when set and non-nil) as the
+// "openai" entry, matching TS `tool.providerOptions?.[name] ?? tool.providerOptions?.openai`.
+// The input tools and their option maps are never mutated.
+func ScopeFunctionToolOptions(tools []types.Tool, providerOptionsName string) []types.Tool {
+	return scopeFunctionToolOptions(tools, providerOptionsName)
+}
+
+func scopeFunctionToolOptions(tools []types.Tool, name string) []types.Tool {
+	if name == "" || name == "openai" {
+		return tools
+	}
+	var out []types.Tool
+	for i, t := range tools {
+		options, ok := t.ProviderOptions.(map[string]interface{})
+		if !ok || options[name] == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]types.Tool(nil), tools...)
+		}
+		scoped := make(map[string]interface{}, len(options))
+		for k, v := range options {
+			scoped[k] = v
+		}
+		scoped["openai"] = options[name]
+		out[i].ProviderOptions = scoped
+	}
+	if out == nil {
+		return tools
+	}
+	return out
+}
+
 func functionToolOpenAIOptions(providerOptions interface{}) (map[string]interface{}, bool) {
 	options, ok := providerOptions.(map[string]interface{})
 	if !ok {
@@ -749,9 +792,16 @@ type allowedToolAlias struct {
 // is dropped with a warning -- the caller must use each tool's own Name
 // instead.
 func ResolveAllowedTools(tools []types.Tool, toolNames []string, mode string) (*AllowedToolsToolChoice, []types.Warning, error) {
+	return ResolveAllowedToolsWithOptionsName(tools, toolNames, mode, "")
+}
+
+// ResolveAllowedToolsWithOptionsName is ResolveAllowedTools reading function
+// tool options from providerOptions[providerOptionsName] (fallback "openai").
+func ResolveAllowedToolsWithOptionsName(tools []types.Tool, toolNames []string, mode string, providerOptionsName string) (*AllowedToolsToolChoice, []types.Warning, error) {
 	if len(toolNames) == 0 {
 		return nil, nil, nil
 	}
+	tools = scopeFunctionToolOptions(tools, providerOptionsName)
 	if mode == "" {
 		mode = "auto"
 	}
