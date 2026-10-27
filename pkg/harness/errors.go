@@ -185,9 +185,25 @@ func ErrorValueMessage(v any) string {
 	return string(b)
 }
 
-type rawValueError struct{ message string }
+type rawValueError struct {
+	message string
+	// value is the wire value the error was built from (TS keeps the raw
+	// value, not an Error); hasValue is false for errors built from text.
+	value    any
+	hasValue bool
+}
 
 func (e *rawValueError) Error() string { return e.message }
+
+// errorRawValue returns the wire value an ErrorFromValue error was built
+// from.
+func errorRawValue(err error) (any, bool) {
+	var rv *rawValueError
+	if errors.As(err, &rv) && rv.hasValue {
+		return rv.value, true
+	}
+	return nil, false
+}
 
 // ErrorFromValue converts a wire error value to a Go error: an error passes
 // through unchanged (so errors.As keeps working) and anything else becomes an
@@ -196,5 +212,5 @@ func ErrorFromValue(v any) error {
 	if err, ok := v.(error); ok {
 		return err
 	}
-	return &rawValueError{message: ErrorValueMessage(v)}
+	return &rawValueError{message: ErrorValueMessage(v), value: v, hasValue: true}
 }

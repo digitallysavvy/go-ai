@@ -230,7 +230,7 @@ func TestFileReporter_WritesUnifiedEventsWithSpansAndDiagnostics(t *testing.T) {
 	// Key order matches the TS object literals.
 	raw, _ := os.ReadFile(filepath.Join(dir, "events.jsonl"))
 	first := strings.SplitN(string(raw), "\n", 2)[0]
-	if !strings.HasPrefix(first, `{"ts":`) || !strings.Contains(first, `"kind":"turn-start","callId":"call-1","operationId":"ai.harness","modelId":"m","input":`) {
+	if !strings.HasPrefix(first, `{"ts":`) || !strings.Contains(first, `"kind":"turn-start","callId":"call-1","operationId":"ai.harness","provider":"","modelId":"m","input":`) {
 		t.Fatalf("unexpected key order: %s", first)
 	}
 }

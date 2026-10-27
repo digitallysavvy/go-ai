@@ -207,7 +207,9 @@ func (d *turnDriver) settleFailure(err error) {
 	// stream itself settles through an `abort` chunk rather than an `error`
 	// one just below.
 	if d.ctx.Err() != nil {
-		d.telAbort(err)
+		// TS `lifecycle.abort(input.abortSignal.reason)`: the reason is the
+		// caller's cancellation cause, not the failure that ended the loop.
+		d.telAbort(context.Cause(d.ctx))
 		d.abort(err)
 		return
 	}
@@ -441,6 +443,10 @@ type turnDriver struct {
 	stepReasoning   string
 	stepToolCalls   []types.ToolCall
 	stepToolResults []types.ToolResult
+	// stepProviderToolResults are the step's provider-executed outcomes as
+	// the runtime sent them (not work-dir-stripped), for the model-call-end
+	// content (TS stepProviderToolResults).
+	stepProviderToolResults []types.ToolResult
 	// stepApprovalRequests mirrors TS stepApprovalRequests: approval-request
 	// parts enqueued this step, reported in onLanguageModelCallEnd content.
 	stepApprovalRequests []types.ToolApprovalRequestContent
@@ -1203,7 +1209,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 					}
 				}
 			}
-			d.recordToolResult(tr)
+			d.recordToolResult(tr, part.(*ToolResultPart))
 			for _, c := range chunks {
 				d.stream.push(c)
 			}
@@ -1568,6 +1574,7 @@ func (d *turnDriver) resetStepAccum() {
 	d.stepReasoning = ""
 	d.stepToolCalls = nil
 	d.stepToolResults = nil
+	d.stepProviderToolResults = nil
 	d.stepApprovalRequests = nil
 	d.toolExecMs = map[string]int64{}
 	d.stepOpen = false
@@ -1673,23 +1680,22 @@ func (d *turnDriver) ensureToolExecutionStarted(telCtx context.Context, call typ
 // (ensuring the start events have fired first). Mirrors TS's
 // `toolExecutions` map, populated for every tool call regardless of who
 // executed it (host or the runtime's own builtin).
-func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
+func (d *turnDriver) recordToolResult(tr, raw *ToolResultPart) {
 	call, ok := d.toolCallsByID[tr.ToolCallID]
 	if !ok {
 		call = types.ToolCall{ID: tr.ToolCallID, ToolName: tr.ToolName}
 	}
-	var toolResult types.ToolResult
-	if tr.IsError {
-		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Error: fmt.Errorf("%v", tr.Result), ProviderExecuted: ok && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
-		if toolResult.ProviderExecuted {
-			toolResult.Result = tr.Result
-		}
-	} else {
-		toolResult = types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, Result: tr.Result, ProviderExecuted: ok && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
-	}
 	// Step content keeps the echoed (work-dir-stripped) result, as TS builds
 	// it from the forwarded stream parts.
-	d.stepToolResults = append(d.stepToolResults, toolResult)
+	d.stepToolResults = append(d.stepToolResults, partToolResult(tr, call, ok))
+	// TS execution.toolOutput, the model-call content and the
+	// tool-execution-end callbacks use the unstripped event (`value.result`),
+	// not the display copy.
+	toolResult := partToolResult(raw, call, ok)
+	inStep := d.isStepToolCall(tr.ToolCallID)
+	if toolResult.ProviderExecuted && inStep {
+		d.stepProviderToolResults = append(d.stepProviderToolResults, toolResult)
+	}
 	// A host-executed tool reports its own outcome (raw output / original
 	// error) to the callbacks, not the echoed copy (TS keeps the first
 	// `toolExecution.toolOutput`).
@@ -1704,10 +1710,28 @@ func (d *turnDriver) recordToolResult(tr *ToolResultPart) {
 	// (execution != null)`): a result for a call from an earlier step or
 	// slice, such as a continued builtin approval's result, fires no
 	// tool-execution callbacks.
-	if !d.isStepToolCall(tr.ToolCallID) {
+	if !inStep {
 		return
 	}
 	d.publishToolExecutionEnd(tr.ToolCallID, tr.ToolName, call, toolResult)
+}
+
+// partToolResult builds the tool outcome of a runtime tool-result event
+// (TS `{ ...toolCall, type: 'tool-result', output: value.result }` or
+// `{ ...toolCall, type: 'tool-error', error: value.result }`).
+func partToolResult(tr *ToolResultPart, call types.ToolCall, known bool) types.ToolResult {
+	out := types.ToolResult{ToolCallID: tr.ToolCallID, ToolName: tr.ToolName, Input: call.Arguments, ProviderExecuted: known && call.ProviderExecuted, Dynamic: tr.Dynamic || call.Dynamic}
+	if !tr.IsError {
+		out.Result = tr.Result
+		return out
+	}
+	// TS keeps the raw wire value as the tool-error's error; ErrorFromValue
+	// carries it, with getErrorMessage text.
+	out.Error = ErrorFromValue(tr.Result)
+	if out.ProviderExecuted {
+		out.Result = tr.Result
+	}
+	return out
 }
 
 // isStepToolCall reports whether the current step saw the tool call (TS
@@ -2626,7 +2650,7 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 		if display == nil {
 			display = tr
 		}
-		d.recordToolResult(display)
+		d.recordToolResult(display, tr)
 		// TS enqueueHostToolOutcome: a failed host tool is a tool-error
 		// carrying the submitted output, never a successful tool-result
 		// (TranslatePart only turns provider-executed failures into errors).
@@ -2642,7 +2666,10 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 				// translated echo of the call.
 				result.ProviderExecuted, result.ProviderExecutedSet = false, false
 				if display.IsError {
-					result.Error = fmt.Errorf("%v", display.Result)
+					// TS `error: outcome.error` is the submitted output as is:
+					// unstripped, with getErrorMessage text.
+					result.Error = ErrorFromValue(tr.Result)
+					result.Result = tr.Result
 				} else if hasModelOutput {
 					mo := modelOutput
 					result.ModelOutput = &mo

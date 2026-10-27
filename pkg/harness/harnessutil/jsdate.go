@@ -597,9 +597,26 @@ func parseJSDateIn(s string, loc *time.Location) (int64, bool) {
 }
 
 // jsLocalToUTC converts a local wall-clock time, in milliseconds as if it
-// were UTC, to UTC in loc.
+// were UTC, to UTC in loc. Like V8 (ICU's UCAL_TZ_LOCAL_FORMER, and the ES
+// UTC(t) disambiguation), a repeated local time takes the offset before the
+// transition (the earlier instant), and a skipped one is read with the
+// offset before the transition too, so 02:30 on a spring-forward night in
+// New York is 03:30 EDT. Go's time.Date leaves the skipped case unspecified.
 func jsLocalToUTC(localMs int64, loc *time.Location) int64 {
-	wall := time.UnixMilli(localMs).UTC()
-	t := time.Date(wall.Year(), wall.Month(), wall.Day(), wall.Hour(), wall.Minute(), wall.Second(), wall.Nanosecond(), loc)
-	return t.UnixMilli()
+	const day = 86_400_000
+	offsetAt := func(utcMs int64) int64 {
+		_, sec := time.UnixMilli(utcMs).In(loc).Zone()
+		return int64(sec) * 1000
+	}
+	before := offsetAt(localMs - day)
+	best, found := int64(0), false
+	for _, o := range [...]int64{before, offsetAt(localMs), offsetAt(localMs + day)} {
+		if u := localMs - o; offsetAt(u) == o && (!found || u < best) {
+			best, found = u, true
+		}
+	}
+	if !found {
+		return localMs - before
+	}
+	return best
 }

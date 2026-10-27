@@ -168,6 +168,21 @@ func (o *orderedRecord) MarshalJSON() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// reporterToolError renders a tool error the way TS JSON-stringifies the raw
+// value: a runtime-reported error is its wire value (TS `error:
+// value.result`), and a thrown Go error is a JS Error, which writes `{}`.
+// A provider-executed error from the core step carries its raw value in
+// Result.
+func reporterToolError(err error, result interface{}, providerExecuted bool) interface{} {
+	if v, ok := errorRawValue(err); ok {
+		return v
+	}
+	if providerExecuted && result != nil {
+		return result
+	}
+	return rawReporterError(err)
+}
+
 func newRecord(kind string, callID string) *orderedRecord {
 	return (&orderedRecord{}).set("ts", time.Now().UnixMilli()).set("kind", kind).set("callId", callID)
 }
@@ -201,21 +216,19 @@ func intPtrOpt(o *orderedRecord, key string, v *int64) {
 // reporterUsage renders usage in the TS LanguageModelUsage shape.
 func reporterUsage(u telemetry.TelemetryUsage) *orderedRecord {
 	out := &orderedRecord{}
+	// TS asLanguageModelUsage / addLanguageModelUsage always build both
+	// detail objects, so they are written (possibly `{}`) every time.
 	intPtrOpt(out, "inputTokens", u.InputTokens)
-	if u.NoCacheInputTokens != nil || u.CacheReadInputTokens != nil || u.CacheCreationInputTokens != nil {
-		d := &orderedRecord{}
-		intPtrOpt(d, "noCacheTokens", u.NoCacheInputTokens)
-		intPtrOpt(d, "cacheReadTokens", u.CacheReadInputTokens)
-		intPtrOpt(d, "cacheWriteTokens", u.CacheCreationInputTokens)
-		out.set("inputTokenDetails", d)
-	}
+	in := &orderedRecord{}
+	intPtrOpt(in, "noCacheTokens", u.NoCacheInputTokens)
+	intPtrOpt(in, "cacheReadTokens", u.CacheReadInputTokens)
+	intPtrOpt(in, "cacheWriteTokens", u.CacheCreationInputTokens)
+	out.set("inputTokenDetails", in)
 	intPtrOpt(out, "outputTokens", u.OutputTokens)
-	if u.OutputTextTokens != nil || u.ReasoningTokens != nil {
-		d := &orderedRecord{}
-		intPtrOpt(d, "textTokens", u.OutputTextTokens)
-		intPtrOpt(d, "reasoningTokens", u.ReasoningTokens)
-		out.set("outputTokenDetails", d)
-	}
+	outDetails := &orderedRecord{}
+	intPtrOpt(outDetails, "textTokens", u.OutputTextTokens)
+	intPtrOpt(outDetails, "reasoningTokens", u.ReasoningTokens)
+	out.set("outputTokenDetails", outDetails)
 	intPtrOpt(out, "totalTokens", u.TotalTokens)
 	return out
 }
@@ -335,18 +348,12 @@ func (r *FileReporter) OnStart(ctx context.Context, e telemetry.TelemetryStartEv
 	if e.OperationType != "" {
 		rec.set("operationId", e.OperationType)
 	}
-	if e.ModelProvider != "" {
-		rec.set("provider", e.ModelProvider)
-	}
-	if e.ModelID != "" {
-		rec.set("modelId", e.ModelID)
-	}
+	// TS provider and modelId are always strings (an unknown harness model
+	// is ''), so both are written even when empty.
+	rec.set("provider", e.ModelProvider)
+	rec.set("modelId", e.ModelID)
 	if recordInputs(e.Settings) {
-		msgs := e.Messages
-		if msgs == nil {
-			msgs = []types.Message{}
-		}
-		in := (&orderedRecord{}).set("messages", msgs)
+		in := (&orderedRecord{}).set("messages", reporterMessages(e))
 		if e.System != "" {
 			in.set("instructions", e.System)
 		}
@@ -354,6 +361,35 @@ func (r *FileReporter) OnStart(ctx context.Context, e telemetry.TelemetryStartEv
 	}
 	r.record(e.CallID, false, rec)
 	return ctx
+}
+
+// reporterMessages renders the start event's messages. A harness turn's
+// messages are TS `[{ role: 'user', content: promptToText(prompt) }]`, whose
+// content is a string, so each is written as {role, content: text} rather
+// than as a content-part array.
+func reporterMessages(e telemetry.TelemetryStartEvent) interface{} {
+	if e.OperationType != "ai.harness" {
+		if e.Messages == nil {
+			return []types.Message{}
+		}
+		return e.Messages
+	}
+	out := make([]interface{}, 0, len(e.Messages))
+	for _, m := range e.Messages {
+		var text strings.Builder
+		for _, part := range m.Content {
+			switch c := part.(type) {
+			case types.TextContent:
+				text.WriteString(c.Text)
+			case *types.TextContent:
+				if c != nil {
+					text.WriteString(c.Text)
+				}
+			}
+		}
+		out = append(out, (&orderedRecord{}).set("role", string(m.Role)).set("content", text.String()))
+	}
+	return out
 }
 
 // OnStepStart records a step-start line.
@@ -384,9 +420,9 @@ func (r *FileReporter) OnToolExecutionEnd(_ context.Context, e telemetry.Telemet
 	}
 	rec := newRecord("tool-end", e.CallID).set("toolCallId", e.ToolCallID).set("isError", isError)
 	if isError {
-		// TS writes the raw thrown value (`toolOutput.error`); an Error
-		// instance JSON-stringifies to `{}`.
-		rec.set("output", rawReporterError(e.Error))
+		// TS writes the raw value (`toolOutput.error`): the runtime's wire
+		// value, or a thrown Error, which JSON-stringifies to `{}`.
+		rec.set("output", reporterToolError(e.Error, nil, false))
 	} else {
 		rec.setOpt("output", e.Result)
 	}
@@ -419,7 +455,7 @@ func reporterStepContent(e telemetry.TelemetryStepEndEvent) []interface{} {
 		if tr.Error != nil {
 			content = append(content, (&orderedRecord{}).set("type", "tool-error").
 				set("toolCallId", tr.ToolCallID).set("toolName", tr.ToolName).
-				set("input", tr.Input).set("error", rawReporterError(tr.Error)))
+				set("input", tr.Input).set("error", reporterToolError(tr.Error, tr.Result, tr.ProviderExecuted)))
 			continue
 		}
 		content = append(content, (&orderedRecord{}).set("type", "tool-result").

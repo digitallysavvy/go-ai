@@ -410,6 +410,12 @@ These match TS and are unlikely to need code changes, but can change output.
   A host call that names a builtin other than `askUserQuestions` gets an
   `execution-denied` result with the builtin-filtering reason and the turn
   continues; before, the turn failed with "could not validate host tool".
+- **Harness tool-execution-end callbacks see the runtime's result as sent.**
+  As in TS, `OnToolExecutionEnd` and the model-call-end content get the
+  provider-executed result before the session work dir is stripped (the
+  consumer stream still sees the stripped copy), and a runtime tool error's
+  text is the `getErrorMessage` of its value (JSON for an object) instead of
+  Go `%v` formatting.
 
 ---
 
@@ -482,6 +488,14 @@ in v0.5.3.
   reconnects instead of reconnecting forever. (v0.5.3)
 - fx on libfx rejects `MemoryLimitBytes` above 4 GiB at `CreateFx` instead
   of crashing on the first turn.
+- fx `bash` validates its `timeout` like Node `AbortSignal.timeout` (an
+  integer number of milliseconds up to 4294967295) instead of overflowing
+  for a huge value.
+- Harness date parsing reads a local time skipped by a daylight-saving
+  change with the offset before the change, as V8 does.
+- The harness file reporter writes TS's record shapes: usage detail
+  objects, an empty `modelId`, the prompt text as a string message, and a
+  runtime tool error's value.
 
 ---
 
