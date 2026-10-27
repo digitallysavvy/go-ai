@@ -220,7 +220,14 @@ func runWireTest(t *testing.T, pkg string, s WireSuite, w WireTest) {
 			b, _ := json.Marshal(got)
 			t.Logf("call %d (%s) err=%v got=%s", i, c.Method, err, trim(string(b)))
 		}
-		if ds := CompareWireResult(srv, s, c, got, err); len(ds) > 0 {
+		ds := CompareWireResult(srv, s, c, got, err)
+		if len(w.HTTP) == 0 && len(ds) == 0 && err != nil {
+			// A replayed no-HTTP error case (ReplayNoHTTPErrors) is pure Go
+			// validation: the error text must match TS, so an unrelated Go
+			// failure cannot pass for the expected one.
+			ds = wireErrorTextDiff(c.Error, err)
+		}
+		if len(ds) > 0 {
 			for _, d := range ds {
 				diffs = append(diffs, fmt.Sprintf("call %d (%s): %s", i, c.Method, d))
 			}
@@ -522,6 +529,18 @@ func wireErrSummary(e interface{}) string {
 
 // wireErrorDiff compares error messages: Go wraps errors in different ways,
 // so the TS message must appear in the Go error text.
+// wireErrorTextDiff reports a TS error message that the Go error does not
+// contain, whatever TSWIRE_ERRORS says.
+func wireErrorTextDiff(tsErr interface{}, goErr error) []string {
+	m, _ := tsErr.(map[string]interface{})
+	em, _ := m["$error"].(map[string]interface{})
+	msg, _ := em["message"].(string)
+	if msg == "" || strings.Contains(goErr.Error(), msg) {
+		return nil
+	}
+	return []string{fmt.Sprintf("error text TS=%q Go=%q", trim(msg), trim(goErr.Error()))}
+}
+
 func wireErrorDiff(tsErr interface{}, goErr error) []string {
 	m, _ := tsErr.(map[string]interface{})
 	em, _ := m["$error"].(map[string]interface{})
