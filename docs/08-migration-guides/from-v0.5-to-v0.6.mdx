@@ -150,3 +150,10 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   empty ID is reported by `DoStart` (and so `GenerateVideo`) as
   `*providererrors.NoSuchModelError`, not by `VideoModel()`. Check the error
   from the call instead of only the one from `VideoModel()`.
+- **A failed harness stop-condition suspension fails the turn.** When a
+  `StopWhen` condition is met inside an `Agent` or `AgentSession` and the
+  adapter's `DoSuspendTurn` returns an error (including
+  `CapabilityUnsupportedError` from an adapter that cannot suspend), the turn
+  now fails with that error, as in TS. v0.5.x finished the turn instead, so
+  the error went unseen. If you use `StopWhen` with an adapter that cannot
+  suspend, handle the error from the turn, or leave out the stop condition.
