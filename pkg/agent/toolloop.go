@@ -794,14 +794,6 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 					a.config.OnAgentAction(action)
 				}
 			}
-			if len(callConfig.ExperimentalRefineToolInput) > 0 {
-				refined, refineErr := ai.RefineToolCalls(stepCtx, stepResult.ToolCalls, callConfig.Tools, callConfig.ExperimentalRefineToolInput, callConfig.RuntimeContext, callConfig.ToolsContext)
-				if refineErr != nil {
-					stepTel.fail(refineErr)
-					return nil, refineErr
-				}
-				stepResult.ToolCalls = refined
-			}
 			// callConfig.Messages (this step's messages, including its own
 			// AppendToolCallerMessages announcement), not currentMessages,
 			// matches TS generate-text.ts's executeToolCall({ messages: stepMessages, ... }).
@@ -1501,10 +1493,11 @@ func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig
 		return calls, nil
 	}
 	repair := callConfig.RepairToolCall
+	refine := callConfig.ExperimentalRefineToolInput
 	if skipRepair {
 		// With tool choice none every tool call is rejected, so the user's
-		// repair callback must not process them (TS #23843).
-		repair = nil
+		// repair and refine callbacks must not process them (TS #23843).
+		repair, refine = nil, nil
 	}
 	parsed := make([]types.ToolCall, len(calls))
 	for i, call := range calls {
@@ -1523,6 +1516,12 @@ func parseAgentToolCalls(ctx context.Context, calls []types.ToolCall, callConfig
 			Instructions:        callConfig.System,
 			InstructionMessages: callConfig.InstructionMessages,
 			Messages:            messages,
+			// The refiner runs inside the parse step (TS parseToolCall), so
+			// the language-model-call end event, the tool input callbacks
+			// and execution all see the refined input.
+			RefineToolInput: refine,
+			RuntimeContext:  callConfig.RuntimeContext,
+			ToolsContext:    callConfig.ToolsContext,
 		})
 		if err != nil {
 			// Only a context cancellation reaches here; ParseToolCall
