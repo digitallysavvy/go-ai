@@ -466,3 +466,68 @@ func TestMCPClientLegacyFallbackResetsTransportProtocolVersion(t *testing.T) {
 		t.Fatalf("initialize sent with transport version %q, want %q", got, LatestLegacyProtocolVersion)
 	}
 }
+
+type waitingDiscoveryTransport struct{ *discoveryMockTransport }
+
+func (waitingDiscoveryTransport) WaitsForProtocolVersionDiscovery() bool { return true }
+
+// TS #22042: a transport that waits for server/discover is not downgraded to
+// `initialize` when the response is slower than the 1 s probe timeout; one
+// that does not still falls back after the timeout.
+func TestMCPClientProtocolDiscoveryWaitsForSlowResponse(t *testing.T) {
+	slow := func() *discoveryMockTransport {
+		tr := newDiscoveryMockTransport()
+		tr.supportsDiscovery = true
+		tr.discoverDelay = time.Duration(DefaultProtocolDiscoveryTimeoutMS+300) * time.Millisecond
+		return tr
+	}
+
+	t.Run("waiting transport", func(t *testing.T) {
+		tr := slow()
+		client := NewMCPClient(waitingDiscoveryTransport{tr}, MCPClientConfig{})
+		if err := client.Connect(context.Background()); err != nil {
+			t.Fatalf("Connect error: %v", err)
+		}
+		defer client.Close() //nolint:errcheck
+		if client.protocolEra != "modern" {
+			t.Fatalf("protocolEra = %q, want modern", client.protocolEra)
+		}
+		if _, sent := tr.sentParams["initialize"]; sent {
+			t.Fatal("initialize must not be sent when a waiting transport answers slowly")
+		}
+	})
+
+	t.Run("waiting transport honors the connect context", func(t *testing.T) {
+		tr := slow()
+		tr.discoverDelay = time.Hour
+		client := NewMCPClient(waitingDiscoveryTransport{tr}, MCPClientConfig{})
+		ctx, cancel := context.WithTimeout(context.Background(), 1300*time.Millisecond)
+		defer cancel()
+		if err := client.Connect(ctx); err == nil {
+			_ = client.Close()
+			t.Fatal("expected Connect to fail when the context expires while waiting")
+		}
+	})
+
+	t.Run("other transports keep the probe timeout", func(t *testing.T) {
+		tr := slow()
+		client := NewMCPClient(tr, MCPClientConfig{})
+		if err := client.Connect(context.Background()); err != nil {
+			t.Fatalf("Connect error: %v", err)
+		}
+		defer client.Close() //nolint:errcheck
+		if client.protocolEra == "modern" {
+			t.Fatal("expected fallback to the legacy handshake")
+		}
+		if _, sent := tr.sentParams["initialize"]; !sent {
+			t.Fatal("expected initialize after the probe timeout")
+		}
+	})
+}
+
+func TestHTTPTransportWaitsForProtocolVersionDiscovery(t *testing.T) {
+	var tr ProtocolVersionDiscoveryWaiter = NewHTTPTransport(HTTPTransportConfig{URL: "http://localhost:9999/mcp"})
+	if !tr.WaitsForProtocolVersionDiscovery() {
+		t.Fatal("HTTPTransport must wait for server/discover")
+	}
+}

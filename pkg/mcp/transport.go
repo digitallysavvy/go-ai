@@ -41,6 +41,18 @@ type ProtocolVersionDiscoveryTransport interface {
 	SupportsProtocolVersionDiscovery() bool
 }
 
+// ProtocolVersionDiscoveryWaiter is an optional extension of
+// ProtocolVersionDiscoveryTransport (TS MCPTransport.waitsForProtocolVersionDiscovery,
+// TS #22042). A transport that reports true always delivers a response to
+// `server/discover` (Streamable HTTP), so the client waits for it, bounded
+// only by the Connect context, instead of treating a slow response as a
+// legacy server after DefaultProtocolDiscoveryTimeoutMS. Other transports
+// (stdio, custom) keep the short probe timeout because a legacy server may
+// never answer the unknown method.
+type ProtocolVersionDiscoveryWaiter interface {
+	WaitsForProtocolVersionDiscovery() bool
+}
+
 // MCPToolParameterHeadersTransport is implemented by transports that support
 // binding tool call arguments to HTTP headers via the `x-mcp-header` JSON
 // Schema extension (hash 0c60a40). Only HTTPTransport reports true.

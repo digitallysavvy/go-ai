@@ -213,6 +213,7 @@ A transport can implement these interfaces. The client checks for them with a ty
 | `mcp.MCPToolParameterHeadersTransport` | Support binding tool arguments to HTTP headers (see below). |
 | `mcp.ProtocolVersionTransport` | Receive the protocol version negotiated during initialize. |
 | `mcp.ProtocolVersionDiscoveryTransport` | Support probing `server/discover` before falling back to `initialize`. Only `HTTPTransport` does. |
+| `mcp.ProtocolVersionDiscoveryWaiter` | Optional: a transport reporting `WaitsForProtocolVersionDiscovery() == true` is waited on (bounded by the `Connect` context) instead of falling back after the 1 s probe timeout. `HTTPTransport` does; stdio and custom transports keep the timeout. |
 | `mcp.SendOptionsTransport` | Accept `mcp.MCPTransportSendOptions` on each send. |
 | `mcp.SSEClient` | A custom SSE-capable client for the HTTP and SSE transports. |
 
@@ -246,7 +247,7 @@ A tool input schema can mark a property with `x-mcp-header`. The client then sen
 | `mcp.LatestLegacyProtocolVersion` | `"2025-11-25"`. Negotiated with `initialize`. |
 | `mcp.ProtocolVersion` | The legacy version the client sends in `initialize`. |
 | `mcp.SupportedProtocolVersions` | Every version the client understands, in order of preference. |
-| `mcp.DefaultProtocolDiscoveryTimeoutMS` | How long the client waits for a `server/discover` response before it falls back to `initialize`. |
+| `mcp.DefaultProtocolDiscoveryTimeoutMS` | How long the client waits for a `server/discover` response before it falls back to `initialize`. Not applied to transports that implement `mcp.ProtocolVersionDiscoveryWaiter` (Streamable HTTP). |
 | `mcp.ModernProtocolErrorCodes` | JSON-RPC error codes a server uses for a hard failure during modern-era discovery. |
 
 `mcp.DiscoverResult` is the result of `server/discover`. `mcp.DiscoverResultServerInfo(result)` extracts the server info from its metadata.
