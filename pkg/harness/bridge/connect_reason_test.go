@@ -146,3 +146,46 @@ func TestChannelTagsConnectReason(t *testing.T) {
 		t.Fatalf("reasons = %v, want [open reconnect ...]", reasons)
 	}
 }
+
+// TS bridge-web-socket.test.ts "does not retry when the bridge rejects the
+// token": close code 1008 before bridge-hello fails at once with the
+// unauthorized error, not after the retry budget.
+func TestNewBridgeConnectFunc_BadTokenFailsFast(t *testing.T) {
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	t.Cleanup(srv.Close)
+	endpoint, err := bridge.WithBridgeToken(srv.Endpoint(), "wrong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connect := bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{
+		Name: "test bridge", OpenRetryTimeout: 20 * time.Second,
+	})
+	start := time.Now()
+	_, err = connect(bridge.WithConnectReason(context.Background(), bridge.ConnectReasonOpen))
+	want := "The harness bridge rejected the WebSocket connection as unauthorized (code 1008)."
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
+	}
+	var unauthorized *bridge.UnauthorizedError
+	if !errors.As(err, &unauthorized) || unauthorized.Code != 1008 {
+		t.Fatalf("err = %T, want *UnauthorizedError", err)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatalf("took %v, want a fast failure", time.Since(start))
+	}
+}
+
+// A non-1008 close before hello is still retried and keeps TS's wording.
+func TestDial_CloseBeforeHelloReportsCode(t *testing.T) {
+	srv := bridgetest.NewServer(bridgetest.Options{Token: "tok"})
+	endpoint := srv.Endpoint()
+	srv.Close()
+	_, err := bridge.Dial(context.Background(), endpoint, bridge.DialOptions{WaitForHello: true, HelloTimeout: time.Second})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var unauthorized *bridge.UnauthorizedError
+	if errors.As(err, &unauthorized) {
+		t.Fatalf("a refused connection is not an auth failure: %v", err)
+	}
+}

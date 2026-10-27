@@ -140,12 +140,10 @@ func (s *Server) DropActive() {
 func (s *Server) handle(ws *websocket.Conn) {
 	token := ws.Request().URL.Query().Get(bridge.TokenQueryParam)
 	if !s.opts.AnyToken && token != s.opts.Token {
-		// Mirrors runBridge: accept the WebSocket, then close it
-		// (unauthorized), rather than rejecting the HTTP upgrade. x/net's
-		// websocket.Conn exposes no close-code API, so this is a plain
-		// close; the client observes it as a socket error (code 1006)
-		// rather than an explicit 1008 frame — sufficient to test that an
-		// unauthorized connection is refused and never sends bridge-hello.
+		// Mirrors runBridge: accept the WebSocket, then close it with code
+		// 1008 "unauthorized", rather than rejecting the HTTP upgrade.
+		ws.PayloadType = websocket.CloseFrame
+		_, _ = ws.Write(append([]byte{0x03, 0xf0}, "unauthorized"...))
 		_ = ws.Close()
 		return
 	}

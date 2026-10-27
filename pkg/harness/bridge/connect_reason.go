@@ -70,9 +70,9 @@ const (
 // connection and nothing else until the host sends `start` or `resume`, so no
 // frame is lost between the handshake and the channel wiring the socket.
 //
-// Unlike TS, an upgrade the bridge rejects with close code 1008 (bad token) is
-// retried until the budget ends: the WebSocket client in use does not expose
-// close codes.
+// A connection the bridge closes with code 1008 (bad token) fails at once with
+// *UnauthorizedError instead of being retried. x/net/websocket does not expose
+// close codes, so Dial reads the code off the raw connection (closeSniffer).
 func NewBridgeConnectFunc(endpoint harness.PortEndpoint, opts BridgeConnectOptions) ConnectFunc {
 	name := opts.Name
 	if name == "" {
