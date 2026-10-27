@@ -353,3 +353,40 @@ func readGoMod() (string, error) {
 		dir = parent
 	}
 }
+
+// A notification handler that never returns (for example one feeding a
+// channel the Close caller would drain) must not make Close hang: Close
+// stops the guest and returns once ctx ends.
+func TestEngineCloseReturnsWhileNotificationHandlerBlocks(t *testing.T) {
+	line := `{"jsonrpc":"2.0","method":"session/update","params":{}}` + "\n"
+	wasm := pinnedGuest(code(
+		fdCall(t, "fd_write", 1, 1032, 1104),
+		fdCall(t, "fd_read", 0, 1024, 1100),
+	), lineData(line))
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	e := startFake(t, wasm, Options{OnNotification: func(string, json.RawMessage) {
+		close(entered)
+		<-release
+	}})
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("notification never dispatched")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	closed := make(chan error, 1)
+	go func() { closed <- e.Close(ctx) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung on a blocked notification handler")
+	}
+	select {
+	case <-e.Done():
+	default:
+		t.Fatal("core still running after Close")
+	}
+}

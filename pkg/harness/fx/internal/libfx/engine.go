@@ -548,7 +548,8 @@ func (e *Engine) Err() error {
 }
 
 // Close closes the core's stdin so it exits, waits up to 5 s (or ctx), then
-// stops it. It returns the abnormal-exit error, if any, from before Close.
+// stops it. It waits for a blocked OnNotification handler only until ctx
+// ends or another 5 s pass. It returns the abnormal-exit error, if any, from before Close.
 func (e *Engine) Close(ctx context.Context) error {
 	e.mu.Lock()
 	alreadyExited := e.pendingDone
@@ -565,8 +566,24 @@ func (e *Engine) Close(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 	e.runCancel()
+	// Every blocking host call watches runCtx, so the guest stops promptly.
 	<-e.done
-	<-e.dispatched
+	// A notification handler that blocks (OnNotification runs on the
+	// dispatcher) must not hang Close: wait for the dispatcher only until
+	// ctx ends or the grace period passes. It still fails pending requests
+	// once the handler returns.
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(closeGrace)
+	select {
+	case <-e.dispatched:
+	case <-t.C:
+	case <-ctx.Done():
+	}
 	_ = e.mod.Close(context.Background())
 	if alreadyExited {
 		return priorErr
