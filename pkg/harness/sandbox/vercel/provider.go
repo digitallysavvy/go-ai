@@ -318,16 +318,11 @@ func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams C
 
 var (
 	snapshotPollInterval        = 500 * time.Millisecond
-	snapshotPollTimeout         = 30 * time.Second
 	templateSnapshotWaitTimeout = 60 * time.Second
 )
 
-// pollForTemplateSnapshot polls until a completed manual snapshot exists for
-// the named template. Mirrors TS `pollForTemplateSnapshot`.
-func pollForTemplateSnapshot(ctx context.Context, client *APIClient, name string) (string, error) {
-	return pollForTemplateSnapshotWithTimeout(ctx, client, name, snapshotPollTimeout)
-}
-
+// pollForTemplateSnapshotWithTimeout polls until a completed manual snapshot
+// exists for the named template (TS `pollForTemplateSnapshot`).
 func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, name string, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
