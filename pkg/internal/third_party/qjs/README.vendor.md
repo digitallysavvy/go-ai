@@ -754,7 +754,7 @@ Size 1,283,460 bytes (was 1,283,463; sha256 c91dd469...ba787d19 superseded).
 `pkg/codemode/stack_overflow_test.go`; mutation-checked by restoring the
 previous qjs.wasm (they fail/panic with the out-of-bounds trap).
 
-## wazero v1.12.0: compile per Runtime
+## wazero v1.12.0: one shared Runtime, per-run instances
 
 wazero v1.12.0 matches an imported function's signature by type IDs that
 belong to one `wazero.Runtime`. Upstream qjs compiles `qjs.wasm` once, in a
@@ -762,13 +762,37 @@ throwaway Runtime, and instantiates that `CompiledModule` in a fresh Runtime
 per `New`. Under v1.12.0 every `New` then fails with
 `import func[env.jsFunctionProxy]: signature mismatch: i32i64i32i32_i64 != i32i64i32i32_i64`.
 
-The patch in `runtime.go` (marked `go-ai patch (wazero v1.12.0)`) compiles
-the module again in each `New`'s own Runtime. The process-wide
-`CompilationCache` is unchanged, so the machine code is a cache hit; the
-remaining cost is wazero decoding and validating the 1.28 MB module.
+Compiling again in each `New`'s own Runtime works, but decoding and
+validating the 1.28 MB module per run cost about 13 ms per `New` (v1.9.0:
+3.2 ms). The patch in `runtime.go` (`sharedRuntime`, marked
+`go-ai patch (wazero v1.12.0)`) instead keeps one process-wide Runtime per
+(module bytes, `CloseOnContextDone`, `CacheDir`) that compiles `qjs.wasm`
+and the WASI host module once. Each `New` then instantiates, in that
+Runtime:
 
-Measured on darwin/arm64 (`New` + `Close`, `NoFSMount`, 30 iterations x 3):
-about 4.5 ms per `New` on v1.9.0, about 20 to 40 ms on v1.12.0 with this
-patch. Module isolation is unchanged: each `New` still gets its own Runtime,
-store and linear memory. The full `pkg/codemode` and qjs suites pass under
-`-race` with the same pass/skip set as v1.9.0.
+- its own anonymous WASI instance (its own sys context: stdio, clocks, no
+  environment, no preopens unless `NoFSMount` is off),
+- its own anonymous `env` host module, bound to its own `ProxyRegistry`,
+- its own anonymous guest instance, with its own linear memory and globals.
+
+The guest's imports are bound to that run's WASI and `env` instances with
+`experimental.WithImportResolver`. Nothing is registered by name in the
+shared Runtime, so an import the resolver does not bind fails to resolve
+rather than reaching another run's module. `Close` closes all three
+instances and the compiled `env` module. `DisableBuildCache` keeps the old
+behavior: a private Runtime compiled from scratch, closed with the
+`Runtime`.
+
+Measured on an Apple M1 (darwin/arm64), `BenchmarkNewClose` with code
+mode's options: 3.2 ms on v1.9.0, 13.3 ms with a per-Runtime compile,
+1.3 ms with the shared Runtime. `pkg/codemode`'s
+`BenchmarkRunCodeModeStartup` (one trivial run end to end): 4.3 ms, 15.0 ms
+and 2.4 ms.
+
+**Tests.** `shared_runtime_patch_test.go`: globals and memory do not leak
+between runs, each concurrent run calls only its own host functions
+(mutation-checked by resolving every run to one `env` instance), nothing is
+registered by name, `Close` releases every per-run instance, and cancelling
+one run leaves the others working. The full `pkg/codemode` and qjs suites
+(escape routes, hardening, resource exhaustion, CPU budget) pass under
+`-race -count=3`.
