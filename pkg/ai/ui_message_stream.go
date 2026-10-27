@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -1780,15 +1781,13 @@ func stringValue(value interface{}) string {
 	return ""
 }
 
+// parseToolInputPartial is TS parsePartialJson(text).value: incomplete JSON
+// is repaired, so a streaming tool part shows the input received so far.
 func parseToolInputPartial(text string) interface{} {
 	if text == "" {
 		return nil
 	}
-	var value interface{}
-	if err := json.Unmarshal([]byte(text), &value); err == nil {
-		return value
-	}
-	return nil
+	return jsonparser.ParsePartialJSON(text).Value
 }
 
 // UIMessageStreamError is the error reported (via onError) when a UI message
