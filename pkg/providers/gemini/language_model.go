@@ -106,10 +106,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		// when absent), in request order (TS groundingMetadataPerRequest).
 		groundingPerRequest []json.RawMessage
 	)
-	if response.UsageMetadata != nil {
-		v := response.UsageMetadata.PromptTokenCount
-		firstPrompt = &v
-	}
+	firstPrompt = initialPromptTokens(response.UsageMetadata)
 	for {
 		var token string
 		if len(response.Candidates) > 0 {
@@ -450,7 +447,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 					Signature:        part.ThoughtSignature,
 					ProviderMetadata: sigMeta,
 				})
-			} else if sigMeta != nil {
+			} else if sigMeta != nil && !part.textAbsent {
 				attachSignatureToLastContent(result, sigMeta)
 			}
 			continue
@@ -483,10 +480,13 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			continue
 		}
 		// Regular text → TextContent (ThoughtSignature forwarded via ProviderMetadata).
-		if part.Text != "" && jsonResponseToolName != "" {
+		// TS: a text part (the key present with a value) is skipped when the
+		// request used a JSON response tool, whatever its text.
+		if jsonResponseToolName != "" && part.FunctionCall == nil && part.ToolCall == nil && part.ToolResponse == nil &&
+			(part.Text != "" || !part.textAbsent) {
 			continue
 		}
-		if part.Text == "" && part.ThoughtSignature != "" && part.FunctionCall == nil && part.ToolCall == nil && part.ToolResponse == nil {
+		if part.Text == "" && !part.textAbsent && part.ThoughtSignature != "" && part.FunctionCall == nil && part.ToolCall == nil && part.ToolResponse == nil {
 			// TS: an empty text part carrying a thoughtSignature attaches it
 			// to the previous content part.
 			meta, _ := json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
@@ -517,7 +517,9 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			result.Content = append(result.Content, tc)
 			continue
 		}
-		if part.FunctionCall != nil {
+		// TS: `'functionCall' in part && part.functionCall.name != null`; a
+		// call without a name is dropped.
+		if part.FunctionCall != nil && part.FunctionCall.Name != "" {
 			args := part.FunctionCall.Args
 			if args == nil {
 				args = map[string]interface{}{}

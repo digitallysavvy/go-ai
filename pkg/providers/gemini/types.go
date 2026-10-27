@@ -138,6 +138,22 @@ func (u UsageMetadata) MarshalJSON() ([]byte, error) {
 	return json.Marshal(merged)
 }
 
+// initialPromptTokens is TS `usage?.promptTokenCount` for the first request of
+// a continued response: nil when there is no usage object or it carries no
+// numeric promptTokenCount (a missing count is not a zero count).
+func initialPromptTokens(u *UsageMetadata) *int {
+	if u == nil {
+		return nil
+	}
+	if u.raw != nil {
+		if _, ok := u.raw["promptTokenCount"].(float64); !ok {
+			return nil
+		}
+	}
+	v := u.PromptTokenCount
+	return &v
+}
+
 // promptFeedbackBlockReason extracts the blockReason field from a raw
 // promptFeedback payload, if present.
 func promptFeedbackBlockReason(raw json.RawMessage) string {
@@ -259,11 +275,16 @@ func (p *Part) UnmarshalJSON(b []byte) error {
 	}
 	*p = Part(v)
 	var aux struct {
+		Text     json.RawMessage `json:"text"`
 		ToolCall *struct {
 			Args json.RawMessage `json:"args"`
 		} `json:"toolCall"`
 	}
-	if json.Unmarshal(b, &aux) == nil && aux.ToolCall != nil && len(aux.ToolCall.Args) > 0 && string(aux.ToolCall.Args) != "null" {
+	auxErr := json.Unmarshal(b, &aux)
+	// TS checks `'text' in part && part.text != null`: a part decoded without
+	// a text value takes no part in the empty-text/thoughtSignature handling.
+	p.textAbsent = auxErr == nil && (len(aux.Text) == 0 || string(aux.Text) == "null")
+	if auxErr == nil && aux.ToolCall != nil && len(aux.ToolCall.Args) > 0 && string(aux.ToolCall.Args) != "null" {
 		p.toolCallArgsRaw = string(aux.ToolCall.Args)
 	}
 	return nil
@@ -307,7 +328,10 @@ type Part struct {
 	// order JSON.stringify(part.toolCall.args) has in TS. A string (not
 	// json.RawMessage) keeps Part comparable with ==, as in v0.5.2.
 	toolCallArgsRaw string
-	ToolResponse    *struct {
+	// textAbsent is set when the part was decoded from JSON that had no
+	// (or a null) text value. A hand-built Part keeps the zero value.
+	textAbsent   bool
+	ToolResponse *struct {
 		ToolType string                 `json:"toolType"`
 		Response map[string]interface{} `json:"response,omitempty"`
 		ID       string                 `json:"id"`

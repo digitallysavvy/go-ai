@@ -478,9 +478,8 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	if candidate.FinishReason == "CONTINUATION" {
 		// Usage metadata is per request. The next request reports its own
 		// usage, so bank the usage of this one.
-		if s.continuedUsage == nil && s.lastUsageMetadata != nil {
-			v := s.lastUsageMetadata.PromptTokenCount
-			s.initialPromptTokenCount = &v
+		if s.continuedUsage == nil {
+			s.initialPromptTokenCount = initialPromptTokens(s.lastUsageMetadata)
 		}
 		s.continuedUsage = addUsageMetadata(s.continuedUsage, s.lastUsageMetadata)
 		s.lastUsageMetadata = nil
@@ -822,7 +821,7 @@ func (s *stream) processNonFuncPart(part Part) {
 	}
 
 	// Empty text + thoughtSignature on an open text block → text-delta with metadata only.
-	if part.Text == "" && sigMeta != nil && s.currentTextBlockID != "" {
+	if part.Text == "" && !part.textAbsent && sigMeta != nil && s.currentTextBlockID != "" {
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
 			Type:             provider.ChunkTypeText,
 			ID:               s.currentTextBlockID,
