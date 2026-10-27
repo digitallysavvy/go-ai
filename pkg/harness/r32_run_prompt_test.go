@@ -22,7 +22,7 @@ func TestRunPromptProtocolErrorsMatchTSText(t *testing.T) {
 		err.Error() != "Harness 'h' emitted a built-in tool approval request but does not support approval responses." {
 		t.Fatalf("no submitter: %v", err)
 	}
-	d.activeToolSet = map[string]struct{}{"t": {}}
+	d.in.ActiveTools = map[string]types.Tool{"t": {Name: "t"}}
 	if _, err := d.handleHostToolCall(&ToolCallPart{ToolCallID: "x", ToolName: "t"}); err == nil ||
 		err.Error() != "Harness 'h' could not validate host tool 't'." {
 		t.Fatalf("validate: %v", err)

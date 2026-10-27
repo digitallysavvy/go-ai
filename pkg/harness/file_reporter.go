@@ -44,10 +44,9 @@ type FileReporterOptions struct {
 // No external collector or OpenTelemetry setup is required. Records are
 // buffered per turn and appended, one JSON object per line, when the turn
 // ends. Input and output content is recorded unless the call's
-// telemetry.Options has RecordInputs / RecordOutputs false; note that a
-// non-nil telemetry.Options with those fields left at their zero value
-// disables recording, so start from telemetry.DefaultSettings(). Call Close
-// when done to release the file handle.
+// telemetry.Options sets RecordInputs / RecordOutputs to false; leaving them
+// nil records, as an omitted recordInputs / recordOutputs does in TS. Call
+// Close when done to release the file handle.
 //
 // A FileReporter is safe for concurrent use. Mirrors TS `FileReporter`
 // (createFileReporter).
@@ -434,9 +433,13 @@ func reporterStepContent(e telemetry.TelemetryStepEndEvent) []interface{} {
 func (r *FileReporter) OnStepEnd(_ context.Context, e telemetry.TelemetryStepEndEvent) {
 	rec := newRecord("step-finish", e.CallID).set("usage", reporterUsage(e.Usage))
 	if recordOutputs(e.Settings) {
-		if c := reporterStepContent(e); c != nil {
-			rec.set("output", c)
+		// TS step.content is always an array, so an empty step writes
+		// "output": [].
+		c := reporterStepContent(e)
+		if c == nil {
+			c = []interface{}{}
 		}
+		rec.set("output", c)
 	}
 	r.record(e.CallID, false, rec)
 }
