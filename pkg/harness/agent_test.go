@@ -1168,14 +1168,12 @@ func TestAgent_StopWhenReleasesCheckpointPinOnAbort(t *testing.T) {
 	}
 }
 
-// TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported ports the
-// other half of suspendOrFinishNow's contract: when the adapter's
-// DoSuspendTurn fails (e.g. CapabilityUnsupportedError), the local result
-// still settles the same way, but the session falls back to WG4's original
-// hard-finish behavior — OnTurnFinished fires and the session returns to
-// idle — instead of getting stuck reporting an unfinished turn nothing can
-// ever resume.
-func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T) {
+// TestAgent_StopWhenSuspendFailureFailsTurn ports the other half of
+// suspendOrFinishNow's contract: when the adapter's DoSuspendTurn fails (e.g.
+// CapabilityUnsupportedError), the turn fails with that error, as TS awaits
+// onStopConditionMet inside the turn's try block.
+func TestAgent_StopWhenSuspendFailureFailsTurn(t *testing.T) {
+	logs := captureTurnLogs(t)
 	mock := newMockHarness(mockHarnessOptions{
 		script: func(submit func(string, interface{})) []StreamPart {
 			return []StreamPart{
@@ -1207,14 +1205,17 @@ func TestAgent_StopWhenFallsBackToHardFinishWhenSuspendUnsupported(t *testing.T)
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if err := result.Err(); err != nil {
-		t.Fatalf("Err() = %v", err)
+	if err := result.Err(); !IsCapabilityUnsupportedError(err) {
+		t.Fatalf("Err() = %v, want the DoSuspendTurn CapabilityUnsupportedError", err)
 	}
-	if result.Text() != "first" {
-		t.Fatalf("Text() = %q, want %q", result.Text(), "first")
+	if got := logs(); len(got) != 1 || !strings.Contains(got[0], "harness turn failed: mock harness cannot suspend turns") {
+		t.Fatalf("turn logs = %q, want one \"harness turn failed\" line", got)
 	}
-	if session.HasUnfinishedTurn() {
-		t.Fatal("session should be idle: DoSuspendTurn failed, so this must fall back to a hard finish")
+	// As TS: the failed suspension leaves the session's suspend state set,
+	// so isTurnSuspending suppresses onTurnFailed and the turn stays
+	// unfinished.
+	if !session.HasUnfinishedTurn() {
+		t.Fatal("session reports no unfinished turn, want the turn left unfinished like TS")
 	}
 }
 

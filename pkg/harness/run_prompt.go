@@ -1943,13 +1943,15 @@ func (d *turnDriver) releasePendingStopBoundary() {
 // DoSuspendTurn): when it succeeds, the turn is genuinely suspended — OnTurn-
 // Finished is NOT called, so the session stays in its "suspended" state
 // (HasUnfinishedTurn() true) instead of returning to idle, and a caller can
-// continue it with ContinueGenerate/ContinueStream. When it's unavailable or
-// fails (nil OnStopConditionMet — e.g. a bare runPrompt call outside an
-// Agent/AgentSession — or the adapter can't honor DoSuspendTurn), this falls
-// back to WG4's original behavior: a hard finish, OnTurnFinished fires, and
-// the session returns to idle. Mirrors TS `runPrompt`'s early-stop branch
-// (`input.onStopConditionMet?.()` then `lifecycle.end`/`result.finish()`,
-// with no `onTurnFinished` call in that branch either).
+// continue it with ContinueGenerate/ContinueStream. When it fails (the
+// adapter's DoSuspendTurn returned an error, CapabilityUnsupportedError
+// included), the turn fails with that error like TS, whose catch settles it
+// with an error part (OnTurnFailed is skipped while the session still reports
+// the turn as suspending, as in TS). Without an OnStopConditionMet (a bare
+// runPrompt call outside an Agent/AgentSession) the turn hard-finishes and
+// OnTurnFinished fires. Mirrors TS `runPrompt`'s early-stop branch
+// (`await input.onStopConditionMet?.()` then `lifecycle.end`/
+// `result.finish()`, with no `onTurnFinished` call in that branch).
 //
 // Implemented (WG13): (1) TS's "one event of lookahead" refinement — a
 // finish-step whose step might satisfy a StopCondition only sets
@@ -1969,9 +1971,17 @@ func (d *turnDriver) releasePendingStopBoundary() {
 func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason) {
 	suspended := false
 	if d.in.OnStopConditionMet != nil {
-		if _, err := d.in.OnStopConditionMet(d.ctx); err == nil {
-			suspended = true
+		if _, err := d.in.OnStopConditionMet(d.ctx); err != nil {
+			// TS awaits onStopConditionMet inside the turn's try block: a
+			// failed suspension fails the turn ("harness turn failed").
+			_ = d.joinOutstandingExecutions()
+			if d.ctx.Err() == nil || !errors.Is(err, d.ctx.Err()) {
+				d.logError("harness turn failed", err)
+			}
+			d.settleFailure(err)
+			return
 		}
+		suspended = true
 	}
 	// TS's StopConditions early-stop path ends the root telemetry span with
 	// the usage of every completed step summed (TS #22259; previously only
