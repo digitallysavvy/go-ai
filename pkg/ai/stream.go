@@ -269,6 +269,14 @@ type StreamTextOptions struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStart func(ctx context.Context, e OnStepStartEvent)
 
+	// OnStepError is called when a step that started fails before it produces
+	// a step result: the provider call fails, or the model stream ends
+	// without output (NoOutputGeneratedError). OnStepEnd is not called for
+	// such a step. A provider error chunk does not fail the step: it still
+	// ends with OnStepEnd and finish reason "error". Aborts and timeouts end
+	// the step with OnAbort instead. Additive (TS #23758).
+	OnStepError func(ctx context.Context, e OnStepErrorEvent)
+
 	// OnToolExecutionStart is called just before each tool's Execute function runs.
 	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
 
@@ -682,6 +690,12 @@ type StreamTextResult struct {
 	// external stream result (stream-start included), which
 	// ToUIMessageStream uses as its step boundary. Nil for StreamText results.
 	uiChunkBuf *chunkBuffer
+
+	// openStep is the step that has started but not ended (set and cleared by
+	// the goroutine that runs bootstrapAndStream and processStream); it is
+	// reported to OnStepError when the stream fails before the step produces
+	// a result.
+	openStep *OnStepStartEvent
 
 	processingDone chan struct{}
 
@@ -1164,7 +1178,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 	// TS converts the step prompt before it fires onStepStart.
-	Notify(stepCtx, OnStepStartEvent{
+	firstStepStart := OnStepStartEvent{
 		CallID:              callID,
 		StepNumber:          0,
 		Provider:            stepModel.Provider(),
@@ -1183,7 +1197,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
 		ToolsContext:        toolsContext,
-	}, opts.OnStepStart)
+	}
+	Notify(stepCtx, firstStepStart, opts.OnStepStart)
+	r.openStep = &firstStepStart
 
 	// Build generate options
 	genOpts := &provider.GenerateOptions{
@@ -1309,6 +1325,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
 		} else {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
 			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 		// TS reports the doStream failure itself, without wrapper text, after
@@ -1420,6 +1437,16 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 // same way a mid-stream failure does (processStream's own deferred cleanup),
 // so Err()/ReadAll()/Stream() behave identically regardless of which phase
 // produced the error.
+// notifyStepError reports the open step, if any, to OnStepError and closes it.
+func (r *StreamTextResult) notifyStepError(ctx context.Context, onStepError func(context.Context, OnStepErrorEvent), err error) {
+	if r.openStep == nil {
+		return
+	}
+	step := *r.openStep
+	r.openStep = nil
+	Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, onStepError)
+}
+
 func (r *StreamTextResult) fail(err error) {
 	r.err = err
 	r.mu.Lock()
@@ -2908,6 +2935,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			})
 		}
 
+		// The step produced its result: it is no longer open for OnStepError.
+		r.openStep = nil
+
 		// Populate ResponseMessages on the step that just completed.
 		responseCalls, responseContent := stepResult.ToolCalls, stepResult.Content
 		if workflowBlocked {
@@ -3199,7 +3229,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			break
 		}
 		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)
-		Notify(nextStepCtx, OnStepStartEvent{
+		nextStepStart := OnStepStartEvent{
 			CallID:              r.cbCallID,
 			StepNumber:          stepNum,
 			Provider:            nextModel.Provider(),
@@ -3219,7 +3249,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ExperimentalContext: r.cbExperimentalCtx,
 			RuntimeContext:      r.cbRuntimeCtx,
 			ToolsContext:        r.cbToolsCtx,
-		}, opts.OnStepStart)
+		}
+		Notify(nextStepCtx, nextStepStart, opts.OnStepStart)
+		r.openStep = &nextStepStart
 		nextGenOpts := &provider.GenerateOptions{
 			Prompt:                nextPrompt,
 			AllowSystemMessages:   allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages),
@@ -3395,6 +3427,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	if r.err != nil {
 		if isAbortErr(ctx, r.err) {
 			fireAbort(r.err)
+		} else {
+			// A step that started without producing a result has failed;
+			// report it before the call error (aborts end with OnAbort).
+			r.notifyStepError(ctx, opts.OnStepError, r.err)
 		}
 		if opts.OnError != nil && !isAbortErr(ctx, r.err) {
 			safeInvoke(func() { opts.OnError(ctx, r.err) })

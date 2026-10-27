@@ -194,6 +194,19 @@ type OnStepStartEvent struct {
 	ToolsContext        map[string]interface{}
 }
 
+// OnStepErrorEvent is passed to OnStepError when a step that started fails
+// before it produces a step result (TS GenerateTextStepErrorEvent): the
+// provider call fails, the model stream ends without output, or, in
+// GenerateText only, the call is aborted or times out. OnStepEnd is not called
+// for such a step. It carries the OnStepStartEvent of the failed step plus the
+// error.
+type OnStepErrorEvent struct {
+	OnStepStartEvent
+
+	// Error is the error that ended the step.
+	Error error
+}
+
 // OnToolCallStartEvent is emitted just before a tool's Execute function is
 // invoked. It fires once per tool call.
 //

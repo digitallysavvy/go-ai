@@ -127,6 +127,16 @@ func resolveAgentToolExecutionEnd(opts AgentGenerateOptions) func(context.Contex
 
 // mergeListener returns a single listener that calls both a and b in order.
 // If either is nil, returns the other. If both are nil, returns nil.
+// mergeErrorHandlers runs the config-level handler first, then the per-call one.
+func mergeErrorHandlers(a, b func(ctx context.Context, err error)) func(ctx context.Context, err error) {
+	return mergeListener(a, b)
+}
+
+// mergeAbortHandlers runs the config-level handler first, then the per-call one.
+func mergeAbortHandlers(a, b func(ctx context.Context, steps []types.StepResult)) func(ctx context.Context, steps []types.StepResult) {
+	return mergeListener(a, b)
+}
+
 func mergeListener[E any](a, b func(ctx context.Context, e E)) func(ctx context.Context, e E) {
 	if a == nil {
 		return b
@@ -285,7 +295,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		onStepFinish:     resolveAgentOnStepEnd(opts),
 		onFinish:         resolveAgentOnEnd(opts),
 	})
-	return ai.GenerateText(ctx, ai.GenerateTextOptions{
+	result, genErr := ai.GenerateText(ctx, ai.GenerateTextOptions{
 		Model:                          callConfig.Model,
 		Prompt:                         prompt,
 		Messages:                       messages,
@@ -334,11 +344,19 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		Internal:                       callConfig.Internal,
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
+		OnStepError:                    config.OnStepError,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
 		OnStepEndEvent:                 cbs.onStepFinish,
 		OnEndEvent:                     cbs.onFinish,
 	})
+	// GenerateText has no error callback, so report the error before it is
+	// returned. Aborts and timeouts are not reported, like in Stream.
+	if genErr != nil && config.ErrorHandler != nil && ctx.Err() == nil &&
+		!errors.Is(genErr, context.Canceled) && !errors.Is(genErr, context.DeadlineExceeded) {
+		config.ErrorHandler(ctx, genErr)
+	}
+	return result, genErr
 }
 
 // GenerateAgent preserves the Go-specific AgentResult loop shape. Prefer
@@ -451,10 +469,11 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		OnChunk:                        opts.OnChunk,
 		InitialStreamChunks:            opts.InitialStreamChunks,
 		ExperimentalTransform:          opts.ExperimentalTransform,
-		OnError:                        opts.OnError,
-		OnAbortEvent:                   agentAbortEvent(opts.OnAbort),
+		OnError:                        mergeErrorHandlers(config.ErrorHandler, opts.OnError),
+		OnAbortEvent:                   agentAbortEvent(mergeAbortHandlers(config.AbortHandler, opts.OnAbort)),
 		OnStart:                        cbs.onStart,
 		OnStepStart:                    cbs.onStepStart,
+		OnStepError:                    config.OnStepError,
 		OnToolExecutionStart:           cbs.onToolCallStart,
 		OnToolExecutionEnd:             cbs.onToolCallFinish,
 		OnStepEndEvent:                 cbs.onStepFinish,

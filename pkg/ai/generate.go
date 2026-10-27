@@ -474,6 +474,13 @@ type GenerateTextOptions struct {
 	// OnStepStart is called at the beginning of each LLM step.
 	OnStepStart func(ctx context.Context, e OnStepStartEvent)
 
+	// OnStepError is called when a step that started fails before it produces
+	// a step result: the provider call fails or an error occurs while the step
+	// runs. OnStepEnd is not called for such a step. In GenerateText an abort
+	// or timeout also ends the step here (the event's Error is the abort or
+	// timeout error). The call then returns the error. Additive (TS #23758).
+	OnStepError func(ctx context.Context, e OnStepErrorEvent)
+
 	// OnToolExecutionStart is called just before each tool's Execute function runs.
 	OnToolExecutionStart func(ctx context.Context, e OnToolCallStartEvent)
 
@@ -879,10 +886,21 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// named result, which would otherwise hide them.
 	var liveResult *GenerateTextResult
 
+	// openStep is the step that has started but not ended; it is reported to
+	// OnStepError when the call fails before the step produces a result.
+	var openStep *OnStepStartEvent
+
 	// Ensure telemetry is always closed — OnError ends the span on failure,
 	// OnFinish ends it on success.
 	defer func() {
 		if err != nil {
+			// GenerateText has no OnAbort for a failing step, so aborts and
+			// timeouts also end the open step here.
+			if openStep != nil {
+				step := *openStep
+				openStep = nil
+				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, opts.OnStepError)
+			}
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
 				if liveResult != nil {
@@ -1199,7 +1217,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
 
 		// Emit OnStepStartEvent.
-		Notify(ctx, OnStepStartEvent{
+		stepStartEvent := OnStepStartEvent{
 			CallID:              callID,
 			StepNumber:          stepIndex,
 			Provider:            stepModel.Provider(),
@@ -1219,7 +1237,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ExperimentalContext: runtimeContext,
 			RuntimeContext:      runtimeContext,
 			ToolsContext:        toolsContext,
-		}, opts.OnStepStart)
+		}
+		Notify(ctx, stepStartEvent, opts.OnStepStart)
+		openStep = &stepStartEvent
 
 		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back to Output's format.
 		responseFormat := opts.ResponseFormat
@@ -1713,6 +1733,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.Warnings = append(result.Warnings, stepResult.Warnings...)
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.FinalStep = stepResult
+
+		openStep = nil
 
 		// Call step finish callback (v6.0: with user context)
 		if onStepEnd != nil {
