@@ -85,6 +85,12 @@ function recordMockFetch(cfg) {
         const body = init?.body;
         if (typeof body === 'string') rec.bodyB64 = Buffer.from(body).toString('base64');
         else if (body instanceof Uint8Array || body instanceof ArrayBuffer) rec.bodyB64 = Buffer.from(body).toString('base64');
+        else if (typeof FormData !== 'undefined' && body instanceof FormData) {
+          // serialize the multipart body the way fetch would send it
+          const r = new Response(body);
+          rec.headers['content-type'] = r.headers.get('content-type');
+          rec.bodyB64 = Buffer.from(await r.arrayBuffer()).toString('base64');
+        }
         c.http.push(rec);
       } catch (e) { rec = null; }
     }
