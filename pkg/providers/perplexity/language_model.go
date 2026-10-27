@@ -532,22 +532,28 @@ func perplexityToolCallMetadataMap(item perplexityOutputItem) map[string]interfa
 	return map[string]interface{}{"perplexity": inner}
 }
 
+// formatPplxNumber renders n like JS String(number) for the values that occur
+// here: integers without a fraction part, fractions in shortest form.
+func formatPplxNumber(n pplxNumber) string {
+	return strconv.FormatFloat(float64(n), 'f', -1, 64)
+}
+
 // perplexityTextID mirrors TS getTextId: a text block's identity is the
 // item's own id, or its output index, or "text" as a last resort; a nonzero
 // content_index is appended so multiple content parts on one item get
 // distinct blocks.
-func perplexityTextID(itemID *string, outputIndex *int64, contentIndex *int64) string {
+func perplexityTextID(itemID *string, outputIndex *pplxNumber, contentIndex *pplxNumber) string {
 	id := "text"
 	switch {
 	case itemID != nil:
 		id = *itemID
 	case outputIndex != nil:
-		id = strconv.FormatInt(*outputIndex, 10)
+		id = formatPplxNumber(*outputIndex)
 	}
 	if contentIndex == nil || *contentIndex == 0 {
 		return id
 	}
-	return fmt.Sprintf("%s:%d", id, *contentIndex)
+	return id + ":" + formatPplxNumber(*contentIndex)
 }
 
 // perplexityTextState tracks one text block's accumulated text and whether
@@ -707,7 +713,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 		}
 		seq := streaming.GenerateID()
 		if chunk.SequenceNumber != nil {
-			seq = strconv.FormatInt(*chunk.SequenceNumber, 10)
+			seq = formatPplxNumber(*chunk.SequenceNumber)
 		}
 		s.activeReasoningID = "reasoning-" + seq
 		s.pending = append(s.pending, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: s.activeReasoningID})
@@ -749,7 +755,7 @@ func (s *perplexityAgentStream) processEvent(data string) {
 			s.emitResponseMetadataOnce(chunk.Response)
 			for i := range chunk.Response.Output {
 				item := chunk.Response.Output[i]
-				outputIndex := int64(i)
+				outputIndex := pplxNumber(i)
 				s.finishOutputText(&item, &outputIndex)
 				s.emitOutputSources(&item)
 				s.emitFunctionCall(&item)
@@ -846,7 +852,7 @@ func (s *perplexityAgentStream) finishText(id string, text *string) {
 	}
 }
 
-func (s *perplexityAgentStream) finishOutputText(item *perplexityOutputItem, outputIndex *int64) {
+func (s *perplexityAgentStream) finishOutputText(item *perplexityOutputItem, outputIndex *pplxNumber) {
 	if item == nil || item.Type != "message" {
 		return
 	}
@@ -854,7 +860,7 @@ func (s *perplexityAgentStream) finishOutputText(item *perplexityOutputItem, out
 		if part.Type != "output_text" {
 			continue
 		}
-		contentIndex := int64(i)
+		contentIndex := pplxNumber(i)
 		s.finishText(perplexityTextID(item.ID, outputIndex, &contentIndex), part.Text)
 	}
 }

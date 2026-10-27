@@ -1213,7 +1213,7 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 	usage := &perplexityUsage{
 		InputTokens:         33,
 		OutputTokens:        205342,
-		OutputTokensDetails: &perplexityOutputTokensDetails{ReasoningTokens: int64Ptr(193947)},
+		OutputTokensDetails: &perplexityOutputTokensDetails{ReasoningTokens: pplxNumberPtr(193947)},
 	}
 	got := convertPerplexityUsage(usage, nil)
 	if *got.InputTokens != 33 || *got.InputDetails.NoCacheTokens != 33 {
@@ -1409,3 +1409,4 @@ func TestConvertPerplexityUsageTotalIsInputPlusOutput(t *testing.T) {
 		t.Fatalf("total = %v, want 15 when total_tokens is absent", u.TotalTokens)
 	}
 }
+func pplxNumberPtr(v float64) *pplxNumber { n := pplxNumber(v); return &n }
