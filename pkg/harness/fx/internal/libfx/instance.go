@@ -174,8 +174,4 @@ func memWriteU64(mod api.Module, ptr uint32, v uint64) bool {
 	return mod.Memory().WriteUint64Le(ptr, v)
 }
 
-func memReadU32(mod api.Module, ptr uint32) (uint32, bool) {
-	return mod.Memory().ReadUint32Le(ptr)
-}
-
 func le32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }

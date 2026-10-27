@@ -110,6 +110,9 @@ func hostToolCall(ctx context.Context, mod api.Module, s []uint64) {
 		res ToolResult
 		err error
 	}
+	// The tool runs on its own goroutine so an abort returns -2 at once; a
+	// tool that ignores ctx finishes in the background and its result is
+	// dropped.
 	done := make(chan outcome, 1)
 	go func() {
 		defer func() {

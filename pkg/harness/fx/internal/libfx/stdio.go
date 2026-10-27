@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -195,12 +194,4 @@ func (t *tailBuffer) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return string(t.buf)
-}
-
-func (t *tailBuffer) describe() string {
-	s := t.String()
-	if s == "" {
-		return ""
-	}
-	return fmt.Sprintf(" (stderr: %q)", s)
 }
