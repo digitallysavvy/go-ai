@@ -28,7 +28,7 @@ func tsProviderTool(id, name string, args map[string]interface{}) (types.Tool, b
 		if !decode(&c) {
 			return t, false
 		}
-		t = openaitool.WebSearchPreview(c)
+		t = openaitool.WebSearchPreview(c) //nolint:staticcheck // exercises the deprecated tool
 	case "openai.file_search":
 		var c openaitool.FileSearchConfig
 		if !decode(&c) {

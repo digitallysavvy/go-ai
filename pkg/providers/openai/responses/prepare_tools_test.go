@@ -366,7 +366,7 @@ func TestPrepareTools_ProviderDefinedDispatchesByProviderID(t *testing.T) {
 }
 
 func TestPrepareTools_WebSearchPreview(t *testing.T) {
-	result := PrepareTools([]types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{
+	result := PrepareTools([]types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{ //nolint:staticcheck // exercises the deprecated tool
 		SearchContextSize: "low",
 	})})
 	def, ok := result[0].(WebSearchPreviewToolDef)

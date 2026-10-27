@@ -237,7 +237,7 @@ func TestResponsesLanguageModel_WebSearchPreviewPreservesToolNameAndEmptyArrays(
 
 	p := New(Config{APIKey: "test-key"})
 	model := NewResponsesLanguageModel(p, "gpt-4o")
-	tools := []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})}
+	tools := []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})} //nolint:staticcheck // exercises the deprecated tool
 	result, err := model.convertResponse(responses.ResponsesAPIResponse{
 		ID:     "resp_web",
 		Model:  "gpt-4o",
@@ -1219,7 +1219,7 @@ func TestResponsesLanguageModel_DoStream_WebSearchCallLifecycle(t *testing.T) {
 				{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "Search"}}},
 			},
 		},
-		Tools: []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})},
+		Tools: []types.Tool{openaitool.WebSearchPreview(openaitool.WebSearchPreviewConfig{})}, //nolint:staticcheck // exercises the deprecated tool
 	})
 	if err != nil {
 		t.Fatalf("DoStream failed: %v", err)
