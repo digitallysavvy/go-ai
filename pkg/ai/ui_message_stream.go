@@ -2133,6 +2133,10 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 		closeSide = make(chan error, 1)
 		go func() {
 			closeSide <- init.ConsumeSSEStream(pr)
+			// A consumer that stops reading early must not block the
+			// response writes the tee feeds into the side pipe (TS tees
+			// the stream, so each branch reads at its own pace).
+			_, _ = io.Copy(io.Discard, pr)
 		}()
 		defer func() { _ = pw.Close() }()
 		teeWriter = io.MultiWriter(w, pw)
