@@ -272,7 +272,8 @@ func collapseSpace(s string) string {
 	return strings.Join(strings.FieldsFunc(s, isSpace), " ")
 }
 
-func isSpace(r rune) bool { return unicode.IsSpace(r) || r == 0xFEFF }
+// isSpace is JavaScript \s: Unicode white space plus U+FEFF, without U+0085.
+func isSpace(r rune) bool { return r != 0x85 && (unicode.IsSpace(r) || r == 0xFEFF) }
 
 // documentTitle returns the page title. A "Page | Site" title is shortened to
 // the page heading when the heading is one of its parts.
