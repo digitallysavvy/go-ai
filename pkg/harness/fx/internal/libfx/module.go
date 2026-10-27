@@ -272,3 +272,18 @@ func wazeroVersion() string {
 	}
 	return wazeroModuleVersion
 }
+
+// Prepare resolves fx-core.wasm (downloading and caching it on first use),
+// verifies it, compiles it and checks its import table, without running it.
+// Hosts call it at boot so the first session does not pay for the download
+// or the compile.
+func Prepare(ctx context.Context, src Source, limitPages uint32) (*Module, error) {
+	mod, err := Resolve(ctx, src)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := loadHost(ctx, mod, limitPages); err != nil {
+		return nil, err
+	}
+	return mod, nil
+}
