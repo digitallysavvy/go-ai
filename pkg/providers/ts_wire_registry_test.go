@@ -125,7 +125,7 @@ var wireSuites = map[string]tsfixture.WireSuite{
 	"mistral": {
 		Skip: map[string]string{
 			"doGenerate > should inject JSON schema when structured outputs are disabled": "the injected schema text keeps TS object key order, which a Go map cannot",
-			"~should use a custom base URL": "Go mistral.Config.BaseURL is the host root and the provider adds /v1 (kept from v0.5.2); TS baseURL carries the version, so a TS /v2 base has no Go equivalent",
+			"~should use a custom base URL":                                               "Go mistral.Config.BaseURL is the host root and the provider adds /v1 (kept from v0.5.2); TS baseURL carries the version, so a TS /v2 base has no Go equivalent",
 		},
 		RootBase: true,
 		Provider: simple(func(b, k string, h map[string]string) provider.Provider {
