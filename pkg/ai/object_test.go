@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"strings"
 	"testing"
@@ -1143,24 +1144,24 @@ func TestStreamObject_PanickingOnChunkDoesNotAbortStream(t *testing.T) {
 	}
 }
 
-// TestStreamObject_ErrorChunkIsTerminal ports TS stream-object.ts's
-// TransformStream error handling (audit row b181020 / WG5): a provider error
-// part must stop consumption immediately (no later chunks processed) and
-// report finishReason "error" rather than whatever finish reason the model
-// sent (or omitted).
-func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
+// TestStreamObject_ErrorChunkKeepsReading ports TS stream-object.ts's
+// error-part handling (b181020): the first error part is the call's error
+// and makes the finish reason "error", but reading continues, so later text
+// still updates the partial object, a later finish part still supplies the
+// usage, and every error part reaches onError.
+func TestStreamObject_ErrorChunkKeepsReading(t *testing.T) {
 	t.Parallel()
+	threeTokens := int64(3)
 
 	model := &testutil.MockLanguageModel{
 		StructuredSupport: true,
 		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
 			return testutil.NewMockTextStream([]provider.StreamChunk{
-				{Type: provider.ChunkTypeText, Text: `{"result": "partial"`},
+				{Type: provider.ChunkTypeText, Text: `{"result": "par`},
 				{Type: provider.ChunkTypeError, Text: "provider exploded"},
-				// These must never be observed: the stream is terminal at the
-				// error part above.
-				{Type: provider.ChunkTypeText, Text: `"}`},
-				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+				{Type: provider.ChunkTypeText, Text: `tial"}`},
+				{Type: provider.ChunkTypeError, Text: "second error"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{InputTokens: &threeTokens}},
 			}), nil
 		},
 	}
@@ -1168,16 +1169,23 @@ func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
 	testSchema := schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})
 
 	var finishEvent *ObjectOnFinishEvent
+	var partials []interface{}
+	var onErrors []error
 	_, err := StreamObject(context.Background(), StreamObjectOptions{
-		Model:  model,
-		Prompt: "Stream object",
-		Schema: testSchema,
+		Model:   model,
+		Prompt:  "Stream object",
+		Schema:  testSchema,
+		OnChunk: func(p interface{}) { partials = append(partials, p) },
+		OnError: func(_ context.Context, e error) { onErrors = append(onErrors, e) },
 		OnEnd: func(ctx context.Context, e ObjectOnFinishEvent) {
 			finishEvent = &e
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "provider exploded") {
-		t.Fatalf("StreamObject() error = %v, want it to wrap the provider error part", err)
+		t.Fatalf("StreamObject() error = %v, want the first provider error part", err)
+	}
+	if len(onErrors) != 2 {
+		t.Fatalf("onError calls = %d, want one per error part", len(onErrors))
 	}
 	if finishEvent == nil {
 		t.Fatal("OnEnd was not called")
@@ -1185,8 +1193,15 @@ func TestStreamObject_ErrorChunkIsTerminal(t *testing.T) {
 	if finishEvent.FinishReason != types.FinishReasonError {
 		t.Fatalf("FinishReason = %q, want error", finishEvent.FinishReason)
 	}
-	if finishEvent.Object != nil {
-		t.Fatalf("Object = %#v, want nil after an error part", finishEvent.Object)
+	if finishEvent.Object != nil || !strings.Contains(fmt.Sprint(finishEvent.Error), "provider exploded") {
+		t.Fatalf("Object = %#v, Error = %v, want nil and the first error", finishEvent.Object, finishEvent.Error)
+	}
+	if finishEvent.Usage.InputTokens == nil || *finishEvent.Usage.InputTokens != 3 {
+		t.Fatalf("Usage = %#v, want the finish part's usage", finishEvent.Usage)
+	}
+	last, _ := partials[len(partials)-1].(map[string]interface{})
+	if last["result"] != "partial" {
+		t.Fatalf("last partial = %#v, want the text after the error part included", partials[len(partials)-1])
 	}
 }
 
