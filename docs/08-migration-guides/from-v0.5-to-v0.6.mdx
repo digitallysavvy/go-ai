@@ -63,6 +63,10 @@ the new type. Reading promoted fields still compiles.
 
 ## Behavior changes that can need an edit
 
+- **OpenAI Responses `promptCacheOptions` is validated.** Only `mode`
+  (`implicit` or `explicit`), `ttl` (`30m` or `12h`) and `prewarm` are sent.
+  Invalid values such as `ttl: "24h"` fail before the request with
+  `InvalidArgumentError`, and unknown keys are dropped.
 - **`ToolChoice: none` is enforced.** A tool call under tool choice `none`
   now fails the call with `*ai.ToolChoiceViolationError` (check it with
   `ai.IsToolChoiceViolationError`) instead of running the tool. Any tool-choice
