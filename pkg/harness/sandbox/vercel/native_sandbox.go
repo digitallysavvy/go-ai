@@ -252,6 +252,17 @@ func (s *Sandbox) Stop(ctx context.Context) (snapshotID string, err error) {
 	return snapshotID, nil
 }
 
+// Snapshot snapshots the running session and returns the snapshot ID (TS
+// `Sandbox.snapshot`). The session is stopped by the API once the snapshot
+// is taken.
+func (s *Sandbox) Snapshot(ctx context.Context, expiration *int64) (string, error) {
+	resp, err := s.client.CreateSnapshot(ctx, s.sessionID, expiration)
+	if err != nil {
+		return "", err
+	}
+	return resp.Snapshot.ID, nil
+}
+
 // Delete deletes the sandbox. After this the instance should not be used.
 func (s *Sandbox) Delete(ctx context.Context) error {
 	return s.client.DeleteSandbox(ctx, s.name)

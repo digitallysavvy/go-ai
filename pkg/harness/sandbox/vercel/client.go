@@ -208,6 +208,44 @@ func (c *APIClient) StopSession(ctx context.Context, sessionID string) (*stopSes
 	return &out, nil
 }
 
+// CreateSnapshot posts POST /v2/sandboxes/sessions/{id}/snapshot. Like TS
+// `Sandbox.snapshot`, taking a snapshot stops the session.
+func (c *APIClient) CreateSnapshot(ctx context.Context, sessionID string, expiration *int64) (*createSnapshotResponse, error) {
+	var out createSnapshotResponse
+	if err := c.http.DoJSON(ctx, httpinternal.Request{
+		Method: http.MethodPost, Path: "/v2/sandboxes/sessions/" + pathEscape(sessionID) + "/snapshot", Headers: c.headers(nil), Query: c.query(nil), Body: createSnapshotRequest{Expiration: expiration},
+	}, &out); err != nil {
+		return nil, toAPIError(err)
+	}
+	return &out, nil
+}
+
+// maxSnapshotListPages bounds how many pages ListSnapshots follows.
+const maxSnapshotListPages = 20
+
+// ListSnapshots lists the project's snapshots for a sandbox name, newest
+// first, following pagination (TS `Snapshot.list({ name, sortOrder: 'desc' })`
+// iterated with `for await`).
+func (c *APIClient) ListSnapshots(ctx context.Context, name string) ([]snapshotWire, error) {
+	var all []snapshotWire
+	until := ""
+	for page := 0; page < maxSnapshotListPages; page++ {
+		var out listSnapshotsResponse
+		if err := c.http.DoJSON(ctx, httpinternal.Request{
+			Method: http.MethodGet, Path: "/v2/sandboxes/snapshots", Headers: c.headers(nil),
+			Query: c.query(map[string]string{"projectId": c.credentials.ProjectID, "name": name, "sortOrder": "desc", "until": until}),
+		}, &out); err != nil {
+			return nil, toAPIError(err)
+		}
+		all = append(all, out.Snapshots...)
+		if out.Pagination.Next == nil || len(out.Snapshots) == 0 {
+			break
+		}
+		until = strconv.FormatInt(*out.Pagination.Next, 10)
+	}
+	return all, nil
+}
+
 // UpdateSessionNetworkPolicy posts POST
 // /v2/sandboxes/sessions/{id}/network-policy.
 func (c *APIClient) UpdateSessionNetworkPolicy(ctx context.Context, sessionID string, policy NetworkPolicy) (*sessionResponse, error) {

@@ -14,7 +14,8 @@
 //     (`vercel link` / `vercel env pull`). VERCEL_OIDC_TOKEN is read fresh on
 //     each top-level operation; explicit Token+TeamID+ProjectID work exactly
 //     as in TS.
-//   - No snapshot listing/tree, session listing, user/group management, or
+//   - Snapshots are only created and listed for template preparation; there is
+//     no snapshot tree, session listing, user/group management, or
 //     `@workflow/serde` (de)serialization hooks — these are native-SDK
 //     features unrelated to the harness sandbox surface and are not exposed
 //     by packages/sandbox-vercel either.
@@ -27,6 +28,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sync"
 	"time"
 
@@ -257,10 +259,13 @@ func (c *snapshotCache) set(key, value string) {
 	c.m[key] = value
 }
 
-// ensureTemplateSnapshot gets-or-creates a persistent named template sandbox,
-// preparing it via onCreate exactly once, then returns a snapshot ID for it
-// (stopping it to produce one if it doesn't already have one). Mirrors TS
-// `ensureTemplateSnapshot`.
+// ensureTemplateSnapshot returns a manual snapshot ID for the named template,
+// preparing it via onCreate exactly once. Mirrors TS `ensureTemplateSnapshot`
+// (TS #23529): the template is prepared in a non-persistent builder sandbox
+// and a manual snapshot is taken only after onCreate completes. A concurrent
+// builder that hits the duplicate-name conflict (or finds the named builder
+// sandbox before preparation has finished) waits for the winner's completed
+// manual snapshot instead of reusing an incomplete one.
 func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams CreateParams, templateName string, cache *snapshotCache, onCreate func(context.Context, *Sandbox) error) (string, error) {
 	if cache != nil {
 		if id, ok := cache.get(templateName); ok {
@@ -270,30 +275,38 @@ func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams C
 
 	templateParams := baseParams
 	templateParams.Name = templateName
-	persistent := true
+	persistent := false
 	templateParams.Persistent = &persistent
 	if templateParams.SnapshotExpiration == nil {
 		zero := int64(0)
 		templateParams.SnapshotExpiration = &zero
 	}
 
-	prepared, err := GetOrCreateSandbox(ctx, client, templateParams, onCreate)
-	if err != nil {
+	var createdSnapshotID string
+	onCreateStarted := false
+	_, err := GetOrCreateSandbox(ctx, client, templateParams, func(ctx context.Context, sbx *Sandbox) error {
+		onCreateStarted = true
+		if onCreate != nil {
+			if err := onCreate(ctx, sbx); err != nil {
+				return err
+			}
+		}
+		id, err := sbx.Snapshot(ctx, templateParams.SnapshotExpiration)
+		if err != nil {
+			return err
+		}
+		createdSnapshotID = id
+		return nil
+	})
+	if err != nil && (onCreateStarted || !isSandboxNameConflictError(err)) {
 		return "", err
 	}
 
-	snapshotID := prepared.CurrentSnapshotID()
+	snapshotID := createdSnapshotID
 	if snapshotID == "" {
-		stoppedSnapshotID, err := prepared.Stop(ctx)
+		snapshotID, err = pollForTemplateSnapshotWithTimeout(ctx, client, templateName, templateSnapshotWaitTimeout)
 		if err != nil {
 			return "", err
-		}
-		snapshotID = stoppedSnapshotID
-		if snapshotID == "" {
-			snapshotID, err = pollForTemplateSnapshot(ctx, client, templateName)
-			if err != nil {
-				return "", err
-			}
 		}
 	}
 
@@ -303,26 +316,34 @@ func ensureTemplateSnapshot(ctx context.Context, client *APIClient, baseParams C
 	return snapshotID, nil
 }
 
-const (
-	snapshotPollInterval = 500 * time.Millisecond
-	snapshotPollTimeout  = 30 * time.Second
+var (
+	snapshotPollInterval        = 500 * time.Millisecond
+	snapshotPollTimeout         = 30 * time.Second
+	templateSnapshotWaitTimeout = 60 * time.Second
 )
 
-// pollForTemplateSnapshot polls a named sandbox until it reports a snapshot
-// ID. Mirrors TS `pollForTemplateSnapshot`.
+// pollForTemplateSnapshot polls until a completed manual snapshot exists for
+// the named template. Mirrors TS `pollForTemplateSnapshot`.
 func pollForTemplateSnapshot(ctx context.Context, client *APIClient, name string) (string, error) {
-	deadline := time.Now().Add(snapshotPollTimeout)
-	resumeFalse := false
+	return pollForTemplateSnapshotWithTimeout(ctx, client, name, snapshotPollTimeout)
+}
+
+func pollForTemplateSnapshotWithTimeout(ctx context.Context, client *APIClient, name string, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		sbx, err := GetSandbox(ctx, client, name, &resumeFalse)
+		snapshots, err := client.ListSnapshots(ctx, name)
 		if err != nil {
 			return "", err
 		}
-		if sbx.CurrentSnapshotID() != "" {
-			return sbx.CurrentSnapshotID(), nil
+		// Only completed manual snapshots count: automatic snapshots can be
+		// taken of a half-prepared builder.
+		for _, snap := range snapshots {
+			if snap.Status == "created" && snap.CreationMethod == "manual" {
+				return snap.ID, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -331,6 +352,19 @@ func pollForTemplateSnapshot(ctx context.Context, client *APIClient, name string
 		}
 	}
 	return "", fmt.Errorf("Timed out waiting for snapshot of template %q to publish.", name) //nolint:staticcheck // matches TS SDK's exact error text
+}
+
+var sandboxNameConflictPattern = regexp.MustCompile(`(?i)sandbox.*name.*already exists`)
+
+// isSandboxNameConflictError reports the API's duplicate sandbox name
+// response (400 or 409 with an "already exists" message).
+func isSandboxNameConflictError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return (apiErr.StatusCode == 400 || apiErr.StatusCode == 409) &&
+		(sandboxNameConflictPattern.MatchString(apiErr.Message) || sandboxNameConflictPattern.MatchString(apiErr.Error()))
 }
 
 // createLiveSandboxFromSnapshot forks a live sandbox from a prepared

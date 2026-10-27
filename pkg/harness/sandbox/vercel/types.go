@@ -100,6 +100,29 @@ type stopSessionResponse struct {
 	} `json:"snapshot,omitempty"`
 }
 
+// snapshotWire is one entry of the snapshot list / create responses.
+type snapshotWire struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	CreationMethod string `json:"creationMethod"`
+}
+
+type createSnapshotRequest struct {
+	Expiration *int64 `json:"expiration,omitempty"`
+}
+
+type createSnapshotResponse struct {
+	Snapshot snapshotWire `json:"snapshot"`
+	Session  sessionWire  `json:"session"`
+}
+
+type listSnapshotsResponse struct {
+	Snapshots  []snapshotWire `json:"snapshots"`
+	Pagination struct {
+		Next *int64 `json:"next"`
+	} `json:"pagination"`
+}
+
 type sessionResponse struct {
 	Session sessionWire `json:"session"`
 }

@@ -216,9 +216,10 @@ func TestCreateNetworkSandboxSessionWithTemplateDerivesReusableSnapshot(t *testi
 	}
 }
 
-// Ports utils.test.ts "prepares and publishes a named template once when a
-// cache is supplied": a template sandbox with no snapshot yet is stopped to
-// produce one, and the result is cached by template name.
+// Ports utils.test.ts "prepares and manually snapshots a named template once
+// when a cache is supplied" (TS #23529): the template is prepared in a
+// non-persistent builder, snapshotted manually after onCreate, and the result
+// is cached by template name.
 func TestEnsureTemplateSnapshotUsesStopFallbackAndCache(t *testing.T) {
 	f := newFakeServer()
 	defer f.Close()
@@ -252,6 +253,12 @@ func TestEnsureTemplateSnapshotUsesStopFallbackAndCache(t *testing.T) {
 	}
 	if len(f.createRequests) != 1 {
 		t.Fatalf("expected exactly one create request (cache skips the second GetOrCreate), got %d", len(f.createRequests))
+	}
+	if p := f.createRequests[0].Persistent; p == nil || *p {
+		t.Fatalf("template builder must be non-persistent, got %v", p)
+	}
+	if f.snapshotReqs != 1 {
+		t.Fatalf("expected one manual snapshot request, got %d", f.snapshotReqs)
 	}
 }
 
