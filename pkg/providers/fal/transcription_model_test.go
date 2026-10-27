@@ -402,7 +402,7 @@ func TestFalTranscriptionModel_ErrorResponse(t *testing.T) {
 }
 
 // TestFalTranscriptionModel_MissingRequestID: TS reads
-// `queueResponse.request_id ?? ''`, so a queue submit response without a
+// `queueResponse.request_id ?? ”`, so a queue submit response without a
 // request_id is not an error; the result is polled at `.../requests/`.
 func TestFalTranscriptionModel_MissingRequestID(t *testing.T) {
 	var polled bool
