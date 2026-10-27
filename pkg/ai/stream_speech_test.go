@@ -413,3 +413,35 @@ func TestStreamSpeech_TextPartsCarryVoiceAndProviderOptions(t *testing.T) {
 		t.Fatalf("seen = %+v", seen)
 	}
 }
+
+// TS: "should preserve the response body from doStream and response-metadata parts".
+func TestStreamSpeech_PreservesResponseBody(t *testing.T) {
+	fromDoStream := &mockStreamingSpeechModel{doStream: func(context.Context, *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
+		r := speechParts(audioPart("a"), finishPart())
+		r.Response = &provider.SpeechStreamResponseMetadata{ModelID: "test-model-id", Body: map[string]interface{}{"setup": true}}
+		return r, nil
+	}}
+	res, _ := ExperimentalStreamSpeech(context.Background(), StreamSpeechOptions{Model: fromDoStream, Text: "Hi"})
+	responses, err := res.Responses()
+	if err != nil || len(responses) != 1 {
+		t.Fatalf("responses = %+v err=%v", responses, err)
+	}
+	if body, _ := responses[0].Body.(map[string]interface{}); body["setup"] != true {
+		t.Fatalf("body from DoStreamSpeech = %v", responses[0].Body)
+	}
+
+	fromPart := &mockStreamingSpeechModel{doStream: func(context.Context, *provider.SpeechStreamOptions) (*provider.SpeechStreamResult, error) {
+		return speechParts(
+			provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeStreamStart},
+			provider.SpeechStreamPart{Type: provider.SpeechStreamPartTypeResponseMetadata, Body: map[string]interface{}{"final": true}},
+			audioPart("a"), finishPart()), nil
+	}}
+	res, _ = ExperimentalStreamSpeech(context.Background(), StreamSpeechOptions{Model: fromPart, Text: "Hi"})
+	responses, err = res.Responses()
+	if err != nil || len(responses) != 1 {
+		t.Fatalf("responses = %+v err=%v", responses, err)
+	}
+	if body, _ := responses[0].Body.(map[string]interface{}); body["final"] != true {
+		t.Fatalf("body from response-metadata = %v", responses[0].Body)
+	}
+}

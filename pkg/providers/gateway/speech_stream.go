@@ -293,7 +293,7 @@ func (s *gatewaySpeechStream) run(cfg gatewaySpeechStreamConfig) {
 				case hasServerError:
 					fail(gatewayStreamServerError(lastServerError, cfg.authMethod, "speech"))
 				default:
-					fail(errors.New("AI Gateway speech stream closed before a finish part was received")) //nolint:staticcheck // matches TS SDK's exact error text
+					fail(errors.New("AI Gateway speech stream closed before a finish part was received.")) //nolint:staticcheck // matches TS SDK's exact error text
 				}
 				return
 			}

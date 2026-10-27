@@ -281,7 +281,7 @@ func TestSpeechModel_DoStreamSpeech_ErrorsWhenClosedBeforeFinish(t *testing.T) {
 	server.waitForFrame(t, "speech-stream.text-done", 2*time.Second)
 	server.closeConnection()
 	_, err = result.Stream.Next()
-	if err == nil || !strings.Contains(err.Error(), "AI Gateway speech stream closed before a finish part was received") {
+	if err == nil || !strings.HasSuffix(err.Error(), "AI Gateway speech stream closed before a finish part was received.") {
 		t.Fatalf("err = %v", err)
 	}
 }
