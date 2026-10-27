@@ -40,16 +40,24 @@ jobs:
         id: fxpin
         run: |
           pin=pkg/harness/fx/internal/libfx/pin_gen.go
-          echo "version=$(sed -n 's/^[[:space:]]*Version *= *"\([^"]*\)"/\1/p' "$pin")" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(sed -n 's/^[[:space:]]*WasmSHA256 *= *"\([0-9a-f]*\)"/\1/p' "$pin")" >> "$GITHUB_OUTPUT"
+          version=$(sed -n 's/^[[:space:]]*Version *= *"\([^"]*\)"/\1/p' "$pin")
+          sha256=$(sed -n 's/^[[:space:]]*WasmSHA256 *= *"\([0-9a-f]*\)"/\1/p' "$pin")
+          # A pin the patterns no longer match must not share a cache key.
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || ! printf '%s' "$sha256" | grep -Eq '^[0-9a-f]{64}$'; then
+            echo "could not read the fx-core.wasm pin from $pin" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
+      # Only the module is cached: the SDK checks its sha256 on every load.
+      # wazero's compilation cache (machine code with only a CRC check) is
+      # rebuilt in each run rather than restored.
       - name: Cache fx-core.wasm
         uses: actions/cache@v4
         with:
-          path: ~/.cache/go-ai/fx/${{ steps.fxpin.outputs.version }}
-          key: fx-wasm-${{ runner.os }}-${{ steps.fxpin.outputs.sha256 }}-${{ hashFiles('go.sum') }}
-          restore-keys: |
-            fx-wasm-${{ runner.os }}-${{ steps.fxpin.outputs.sha256 }}-
+          path: ~/.cache/go-ai/fx/${{ steps.fxpin.outputs.version }}/fx-core.wasm
+          key: fx-wasm-${{ runner.os }}-${{ steps.fxpin.outputs.sha256 }}
 
       - name: Run tests
         # GOAI_FX_WASM_TEST=1 makes the real fx-core.wasm tests required: they

@@ -238,9 +238,11 @@ func TestExtractWasmRejectsNonRegularAndOversized(t *testing.T) {
 // real pinned module (from the cache) and checks the full download path.
 func TestResolveDownloadsAndCachesThePinnedModule(t *testing.T) {
 	clearFxEnv(t)
+	// Skips only where libfxtest allows it: in CI a missing module fails.
+	requireWasm(t)
 	real, err := Resolve(context.Background(), Source{Offline: true})
 	if err != nil {
-		t.Skipf("pinned module not cached: %v", err)
+		t.Fatalf("pinned module not cached after requireWasm: %v", err)
 	}
 	tgz := tarball(t, map[string][]byte{tarballWasmPath: real.Bytes})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(tgz) }))
