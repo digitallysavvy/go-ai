@@ -371,7 +371,7 @@ func convertMCPContentToModelOutputBlock(part ToolResultContent) types.ToolResul
 // the same rules as typed content; unknown parts keep their JSON text.
 func genericMCPContentBlocks(result interface{}) ([]types.ToolResultContentBlock, bool) {
 	rv := reflect.ValueOf(result)
-	for rv.IsValid() && rv.Kind() == reflect.Ptr {
+	for rv.IsValid() && rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return nil, false
 		}

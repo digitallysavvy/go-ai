@@ -114,7 +114,7 @@ func validateStdioCommandForGOOS(goos, command string, args []string) error {
 	values := append([]string{command}, args...)
 	for _, value := range values {
 		if strings.ContainsAny(value, "\r\n") {
-			return errors.New(stdioWindowsLineBreakMessage)
+			return errors.New(stdioWindowsLineBreakMessage) //nolint:staticcheck // matches TS TypeError text
 		}
 	}
 	return nil
