@@ -13,11 +13,13 @@ import (
 //
 // A wall-clock cap alone is flaky under load (a loaded -race run can be many
 // times slower), so the test checks how the cost grows instead: quadrupling
-// the input must cost well under the 16x of a quadratic scan. Each size takes
-// the fastest of several runs, the sizes are interleaved so load hits both
-// alike, and the large size is long enough (40-140 KB) that the
-// reverted quadratic code takes seconds at the small size and minutes at the
-// large one. The absolute cap is only a backstop against a hang.
+// the input must cost well under the 16x of a quadratic scan. Cost is the
+// process CPU time of one call, not wall time, so other processes competing
+// for the CPUs (parallel test runs) do not inflate one size more than the
+// other; each size takes the cheapest of several interleaved runs. The large
+// size is long enough (40-140 KB) that the reverted quadratic code takes
+// seconds at the small size and minutes at the large one. The wall-clock
+// backstop only guards against a hang.
 func TestStripTypeScriptBoundedOnAdversarialInput(t *testing.T) {
 	cases := map[string]func(n int) string{
 		"nested parens":    func(n int) string { return strings.Repeat("(", n) + "1" + strings.Repeat(")", n) },
@@ -32,7 +34,7 @@ func TestStripTypeScriptBoundedOnAdversarialInput(t *testing.T) {
 		"comparison list": 30000, "optional calls": 6000, "arrow list": 3000,
 	}
 	const (
-		runs      = 3
+		runs      = 5
 		growthCap = 8.0 // linear is 4x, quadratic 16x
 		noise     = 50 * time.Millisecond
 		backstop  = 2 * time.Minute
@@ -46,20 +48,20 @@ func TestStripTypeScriptBoundedOnAdversarialInput(t *testing.T) {
 				src  string
 				best *time.Duration
 			}{{small, &bestSmall}, {large, &bestLarge}} {
-				start := time.Now()
+				start, cpuStart := time.Now(), processCPUTime()
 				_, _ = stripTypeScriptAnnotations(c.src)
-				d := time.Since(start)
-				if d > backstop {
-					t.Fatalf("%s: %d bytes took %v", name, len(c.src), d)
+				d := processCPUTime() - cpuStart
+				if wall := time.Since(start); wall > backstop {
+					t.Fatalf("%s: %d bytes took %v", name, len(c.src), wall)
 				}
 				if d < *c.best {
 					*c.best = d
 				}
 			}
 		}
-		t.Logf("%s: %d bytes %v, %d bytes %v", name, len(small), bestSmall, len(large), bestLarge)
+		t.Logf("%s: %d bytes %v CPU, %d bytes %v CPU", name, len(small), bestSmall, len(large), bestLarge)
 		if limit := time.Duration(float64(bestSmall)*growthCap) + noise; bestLarge > limit {
-			t.Errorf("%s: cost grows superlinearly: %d bytes took %v, %d bytes took %v (limit %v)",
+			t.Errorf("%s: cost grows superlinearly: %d bytes took %v CPU, %d bytes took %v CPU (limit %v)",
 				name, len(small), bestSmall, len(large), bestLarge, limit)
 		}
 	}
