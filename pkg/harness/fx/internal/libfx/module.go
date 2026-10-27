@@ -230,14 +230,20 @@ func compilationCacheFor(versionDir string) wazero.CompilationCache {
 	// memory.
 	dir := ""
 	if v := wazeroVersion(); versionDir != "" && v != "" {
-		dir = filepath.Join(versionDir, fmt.Sprintf("wazero-%s-%s-%s", v, runtime.GOOS, runtime.GOARCH))
+		dir = filepath.Join(versionDir, "wazero-"+v+"-"+goosArch())
 	}
 	if c := compilationCaches[dir]; c != nil {
 		return c
 	}
 	var c wazero.CompilationCache
+	if dir != "" && !compileCacheDirTrusted(versionDir, dir) {
+		// Someone else can write here (a squatted temp dir, a shared or
+		// loosely permissioned GO_AI_FX_CACHE_DIR): keep machine code in
+		// memory rather than load it from disk.
+		dir = ""
+	}
 	if dir != "" {
-		if err := os.MkdirAll(dir, 0o700); err == nil {
+		if err := os.MkdirAll(dir, 0o700); err == nil && privateDir(dir) {
 			c, err = wazero.NewCompilationCacheWithDir(dir)
 			if err != nil {
 				c = nil
@@ -249,6 +255,22 @@ func compilationCacheFor(versionDir string) wazero.CompilationCache {
 	}
 	compilationCaches[dir] = c
 	return c
+}
+
+func goosArch() string { return runtime.GOOS + "-" + runtime.GOARCH }
+
+// compileCacheDirTrusted reports whether the cache root, the version
+// directory and (when it exists) the compile directory are private to this
+// user. wazero checks cached machine code only with a CRC32, so a writable
+// ancestor would let another user plant code this process runs.
+func compileCacheDirTrusted(versionDir, dir string) bool {
+	if !privateDir(filepath.Dir(versionDir)) || !privateDir(versionDir) {
+		return false
+	}
+	if _, err := os.Lstat(dir); err == nil {
+		return privateDir(dir)
+	}
+	return true
 }
 
 // wazeroModuleVersion keys the on-disk compilation cache, so machine code
