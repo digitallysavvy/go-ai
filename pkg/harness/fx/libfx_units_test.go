@@ -352,6 +352,12 @@ func TestGlobRegexp(t *testing.T) {
 		{"*.go", "a.go", true}, {"*.go", "src/a.go", false}, {"**/*.go", "a.go", true}, {"**/*.go", "x/y/a.go", true},
 		{"src/**", "src/a/b", true}, {"?.txt", "a.txt", true}, {"[ab].txt", "c.txt", false}, {"[!ab].txt", "c.txt", true},
 		{"*.{go,ts}", "a.ts", true}, {"*.{go,ts}", "a.js", false}, {"a+b.txt", "a+b.txt", true},
+		// Node path.matchesGlob (minimatch, dot: false), checked with node v24.
+		{"**/*", ".git/config", false}, {"**/*.go", "a/.b/c.go", false}, {"*.js", ".eslintrc.js", false},
+		{".*.js", ".eslintrc.js", true}, {"*.js", ".js", false}, {"**/*.go", "b.go", true},
+		{"a/*", "a/.x", false}, {"a/.*", "a/.x", true}, {"**/b", ".a/b", false}, {".a/*", ".a/b", true},
+		{"x/**", "x/.a/b", false}, {"x/**", "x/a", true}, {"a/**/b", "a/b", true}, {"a/**", "a", false},
+		{"{src,lib}/**/*.go", "lib/x/y.go", true}, {"{src,lib}/*.go", "cmd/y.go", false}, {"a{b,c{d,e}}", "ace", true},
 	}
 	for _, c := range cases {
 		re, err := globRegexp(c.pattern)
