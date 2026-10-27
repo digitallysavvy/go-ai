@@ -121,7 +121,7 @@ type perplexityUsage struct {
 // keys).
 type perplexityAgentResponse struct {
 	ID                string                       `json:"id"`
-	CreatedAt         int64                        `json:"created_at"`
+	CreatedAt         float64                      `json:"created_at"`
 	Model             string                       `json:"model"`
 	Object            string                       `json:"object"`
 	Output            []perplexityOutputItem       `json:"output"`

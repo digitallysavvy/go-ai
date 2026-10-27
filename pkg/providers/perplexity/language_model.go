@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -271,7 +272,7 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 	_ = json.Unmarshal(resp.Body, &bodyGeneric)
 	result.ResponseMetadata = &types.ResponseMetadata{
 		ID:        response.ID,
-		Timestamp: time.Unix(response.CreatedAt, 0),
+		Timestamp: perplexityCreatedAt(response.CreatedAt),
 		ModelID:   response.Model,
 		Headers:   responseHeaders,
 		Body:      bodyGeneric,
@@ -311,6 +312,13 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 
 // handleError converts an HTTP-level error into a ProviderError, resolving
 // the Agent API's error envelope when present (see errors.go).
+// perplexityCreatedAt is TS `new Date(created_at * 1000)`; created_at is a
+// zod number, so a fractional second is valid.
+func perplexityCreatedAt(createdAt float64) time.Time {
+	sec := math.Floor(createdAt)
+	return time.Unix(int64(sec), int64((createdAt-sec)*1e9))
+}
+
 func (m *LanguageModel) handleError(err error) error {
 	if providererrors.IsLoadAPIKeyError(err) {
 		return err // TS throws LoadAPIKeyError unwrapped
@@ -502,14 +510,12 @@ func perplexityFetchedContentSource(fc perplexityFetchedContent) types.SourceCon
 
 type perplexityToolCallMeta struct {
 	ItemID           *string `json:"itemId"`
-	ThoughtSignature string  `json:"thoughtSignature,omitempty"`
+	ThoughtSignature *string `json:"thoughtSignature,omitempty"`
 }
 
 func perplexityToolCallMetadata(item perplexityOutputItem) json.RawMessage {
-	m := perplexityToolCallMeta{ItemID: item.ID}
-	if item.ThoughtSignature != nil {
-		m.ThoughtSignature = *item.ThoughtSignature
-	}
+	// TS spreads thoughtSignature whenever it is not null, so "" stays.
+	m := perplexityToolCallMeta{ItemID: item.ID, ThoughtSignature: item.ThoughtSignature}
 	raw, _ := json.Marshal(map[string]interface{}{"perplexity": m})
 	return raw
 }
@@ -785,7 +791,7 @@ func (s *perplexityAgentStream) emitResponseMetadataOnce(response *perplexityAge
 		Type: provider.ChunkTypeResponseMetadata,
 		ResponseMetadata: &provider.ResponseMetadata{
 			ID:        response.ID,
-			Timestamp: time.Unix(response.CreatedAt, 0),
+			Timestamp: perplexityCreatedAt(response.CreatedAt),
 			ModelID:   response.Model,
 			Headers:   s.responseHeaders,
 		},
