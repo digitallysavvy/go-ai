@@ -40,7 +40,7 @@ func NewMCPToolConverter(client *MCPClient) *MCPToolConverter {
 func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool, error) {
 	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
+		return nil, err
 	}
 
 	return c.ToolsFromDefinitions(mcpTools, nil)
@@ -54,7 +54,7 @@ func (c *MCPToolConverter) ConvertToGoAITools(ctx context.Context) ([]types.Tool
 func (c *MCPToolConverter) ConvertToGoAIToolsWithSchemas(ctx context.Context, schemas map[string]MCPToolSchema) ([]types.Tool, error) {
 	mcpTools, err := c.client.ListAllTools(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list MCP tools: %w", err)
+		return nil, err
 	}
 	return c.ToolsFromDefinitions(mcpTools, schemas)
 }
@@ -145,10 +145,12 @@ func (c *MCPToolConverter) convertTool(mcpTool MCPTool, toolSchema *MCPToolSchem
 		Meta:              copyMap(mcpTool.Meta),
 		Type:              toolType,
 		Execute: func(ctx context.Context, input map[string]interface{}, options types.ToolExecutionOptions) (interface{}, error) {
-			// Call MCP tool
+			// Call MCP tool. TS execute lets the callTool error propagate
+			// unchanged, so the tool-error text the model sees is the
+			// MCPClientError message itself (no Go-only prefix).
 			result, err := c.client.CallTool(ctx, mcpTool.Name, input)
 			if err != nil {
-				return nil, fmt.Errorf("MCP tool execution failed: %w", err)
+				return nil, err
 			}
 			if outputSchema != nil && !result.IsError {
 				return extractMCPStructuredOutput(*result, outputSchema, mcpTool.Name)
