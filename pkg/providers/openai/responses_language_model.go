@@ -3220,12 +3220,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 						ToolCall: &types.ToolCall{
 							ID:       e.Item.CallID,
 							ToolName: e.Item.Name,
+							// Custom tool deltas are raw text; the final tool
+							// call input stays JSON-encoded (TS #23407).
+							InputEncoding: "text",
 						},
 					},
-					// Custom tool input is a string, so stream its JSON
-					// encoding consistently with the final tool call input
-					// (TS #22535).
-					&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: e.Item.CallID, Text: `"`},
 				)
 				continue
 			case "apply_patch_call":
@@ -3510,7 +3509,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
 					ID:   toolCall.toolCallID,
-					Text: escapeJSONDelta(e.Delta),
+					Text: e.Delta,
 				})
 				if ok {
 					return chunk, nil
@@ -4247,7 +4246,6 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 			return nil, false
 		}
 		s.flushQueue = append(s.flushQueue,
-			&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: item.CallID, Text: `"`},
 			&provider.StreamChunk{
 				Type:     provider.ChunkTypeToolInputEnd,
 				ToolCall: &types.ToolCall{ID: item.CallID},

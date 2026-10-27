@@ -104,6 +104,9 @@ func ToUIMessageChunk(part ModelCallStreamPart) (ai.UIMessageChunk, bool) {
 			return nil, false
 		}
 		c := ai.UIMessageChunk{"type": "tool-input-start", "toolCallId": part.ToolCall.ID, "toolName": part.ToolCall.ToolName}
+		if part.ToolCall.InputEncoding != "" {
+			c["inputEncoding"] = part.ToolCall.InputEncoding
+		}
 		if part.ToolCall.ProviderExecuted {
 			c["providerExecuted"] = true
 		}

@@ -190,7 +190,11 @@ type ToolUIPart struct {
 	//   - output-error: the deprecated raw input of an output-error part.
 	//
 	// Deprecated: for output-error, use Input instead.
-	RawInput               interface{}
+	RawInput interface{}
+	// InputEncoding is the encoding of RawInput on an input-streaming part:
+	// "json" (the default when empty) or "text" (raw text deltas, e.g. OpenAI
+	// custom tools).
+	InputEncoding          string
 	ErrorText              string
 	Preliminary            *bool
 	CallProviderMetadata   map[string]interface{}
@@ -757,6 +761,9 @@ func (p ToolUIPart) MarshalJSON() ([]byte, error) {
 	if p.RawInput != nil {
 		o.field("rawInput", p.RawInput)
 	}
+	if p.InputEncoding != "" {
+		o.field("inputEncoding", p.InputEncoding)
+	}
 	if p.ErrorText != "" || p.State == ToolStateOutputError {
 		o.field("errorText", p.ErrorText)
 	}
@@ -787,6 +794,7 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		Input                  interface{}            `json:"input"`
 		Output                 interface{}            `json:"output"`
 		RawInput               interface{}            `json:"rawInput"`
+		InputEncoding          string                 `json:"inputEncoding"`
 		ErrorText              string                 `json:"errorText"`
 		Preliminary            *bool                  `json:"preliminary"`
 		CallProviderMetadata   map[string]interface{} `json:"callProviderMetadata"`
@@ -808,6 +816,7 @@ func (p *ToolUIPart) UnmarshalJSON(data []byte) error {
 		Input:                  raw.Input,
 		Output:                 raw.Output,
 		RawInput:               raw.RawInput,
+		InputEncoding:          raw.InputEncoding,
 		ErrorText:              raw.ErrorText,
 		Preliminary:            raw.Preliminary,
 		CallProviderMetadata:   raw.CallProviderMetadata,

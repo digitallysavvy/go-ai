@@ -534,6 +534,9 @@ func uiToolPartIssue(part map[string]interface{}) string {
 	}
 	switch ToolUIPartState(state) {
 	case ToolStateInputStreaming:
+		if v, exists := part["inputEncoding"]; exists && v != "json" && v != "text" {
+			return "Invalid input: inputEncoding must be json or text"
+		}
 		return never("output", "errorText", "approval")
 	case ToolStateInputAvailable:
 		if msg := required("input"); msg != "" {

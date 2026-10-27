@@ -1131,6 +1131,9 @@ type uiPartialToolCall struct {
 	dynamic      bool
 	title        interface{}
 	toolMetadata interface{}
+	// inputEncoding is "text" when the input deltas are raw text rather than
+	// partial JSON (TS partialToolCalls[].inputEncoding).
+	inputEncoding string
 }
 
 func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiMessageCallbackState {
@@ -1183,11 +1186,12 @@ func seedPartialToolCalls(message UIMessageChunk) map[string]*uiPartialToolCall 
 		}
 		toolName, dynamic := toolInfoFromPart(part)
 		partials[toolCallID] = &uiPartialToolCall{
-			text:         stringValue(part["rawInput"]),
-			toolName:     toolName,
-			dynamic:      dynamic,
-			title:        part["title"],
-			toolMetadata: part["toolMetadata"],
+			text:          stringValue(part["rawInput"]),
+			toolName:      toolName,
+			dynamic:       dynamic,
+			title:         part["title"],
+			toolMetadata:  part["toolMetadata"],
+			inputEncoding: stringValue(part["inputEncoding"]),
 		}
 	}
 	return partials
@@ -1332,16 +1336,21 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		toolName := stringValue(chunk["toolName"])
 		dynamic, _ := chunk["dynamic"].(bool)
 		s.partialTools[toolCallID] = &uiPartialToolCall{
-			toolName:     toolName,
-			dynamic:      dynamic,
-			title:        chunk["title"],
-			toolMetadata: chunk["toolMetadata"],
+			toolName:      toolName,
+			dynamic:       dynamic,
+			title:         chunk["title"],
+			toolMetadata:  chunk["toolMetadata"],
+			inputEncoding: stringValue(chunk["inputEncoding"]),
 		}
-		s.updateToolPart(toolCallID, toolName, dynamic, UIMessageChunk{
+		startUpdate := UIMessageChunk{
 			"state":    "input-streaming",
 			"input":    uiOmitField,
 			"rawInput": uiOmitField,
-		}, chunk)
+		}
+		if enc := stringValue(chunk["inputEncoding"]); enc != "" {
+			startUpdate["inputEncoding"] = enc
+		}
+		s.updateToolPart(toolCallID, toolName, dynamic, startUpdate, chunk)
 	case "tool-input-delta":
 		toolCallID := stringValue(chunk["toolCallId"])
 		partial := s.partialTools[toolCallID]
@@ -1355,11 +1364,23 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		// message can later re-seed partialTools via seedPartialToolCalls and
 		// continue streaming after a disconnect. Mirrors TS
 		// process-ui-message-stream.ts's tool-input-delta handling (TS #21480).
-		s.updateToolPart(toolCallID, partial.toolName, partial.dynamic, UIMessageChunk{
+		// Text-encoded deltas (e.g. OpenAI custom tools) accumulate raw text;
+		// everything else is partial JSON (TS inputEncoding === 'text').
+		var partialInput interface{}
+		if partial.inputEncoding == "text" {
+			partialInput = partial.text
+		} else {
+			partialInput = parseToolInputPartial(partial.text)
+		}
+		deltaUpdate := UIMessageChunk{
 			"state":    "input-streaming",
-			"input":    parseToolInputPartial(partial.text),
+			"input":    partialInput,
 			"rawInput": partial.text,
-		}, UIMessageChunk{"title": partial.title, "toolMetadata": partial.toolMetadata})
+		}
+		if partial.inputEncoding != "" {
+			deltaUpdate["inputEncoding"] = partial.inputEncoding
+		}
+		s.updateToolPart(toolCallID, partial.toolName, partial.dynamic, deltaUpdate, UIMessageChunk{"title": partial.title, "toolMetadata": partial.toolMetadata})
 	case "tool-input-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		toolName := stringValue(chunk["toolName"])
@@ -1563,7 +1584,7 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	// TS updateToolPart/updateDynamicToolPart assign output, errorText, rawInput
 	// and preliminary on every update, so a field the update does not carry is
 	// cleared rather than left over from the previous state.
-	for _, key := range []string{"output", "errorText", "rawInput", "preliminary"} {
+	for _, key := range []string{"output", "errorText", "rawInput", "preliminary", "inputEncoding"} {
 		delete(part, key)
 	}
 	for key, value := range update {
@@ -2426,6 +2447,9 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			"type":       "tool-input-start",
 			"toolCallId": chunk.ToolCall.ID,
 			"toolName":   chunk.ToolCall.ToolName,
+		}
+		if chunk.ToolCall.InputEncoding != "" {
+			part["inputEncoding"] = chunk.ToolCall.InputEncoding
 		}
 		if chunk.ToolCall.ProviderExecuted {
 			part["providerExecuted"] = true
