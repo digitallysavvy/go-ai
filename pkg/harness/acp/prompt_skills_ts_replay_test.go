@@ -16,20 +16,24 @@ func userMessage(parts ...types.ContentPart) harness.Prompt {
 }
 
 // Replays TS acp-v1-prompt.test.ts.
-func TestTSReplay_ConvertPromptToTextBlocks(t *testing.T) {
+func TestTSReplay_ConvertPromptToContentBlocks(t *testing.T) {
 	maps := []struct {
 		name     string
 		prompt   harness.Prompt
-		expected []TextContentBlock
+		expected []ContentBlock
 	}{
-		{"string prompt", harness.TextPrompt("Hello"), []TextContentBlock{{Type: "text", Text: "Hello"}}},
+		{"string prompt", harness.TextPrompt("Hello"), []ContentBlock{{Type: "text", Text: "Hello"}}},
 		{"separate user message text parts", userMessage(types.TextContent{Text: "First"}, types.TextContent{Text: "Second"}),
-			[]TextContentBlock{{Type: "text", Text: "First"}, {Type: "text", Text: "Second"}}},
-		{"empty user message", userMessage(), []TextContentBlock{}},
+			[]ContentBlock{{Type: "text", Text: "First"}, {Type: "text", Text: "Second"}}},
+		{"empty user message", userMessage(), []ContentBlock{}},
+		{"inline image file", userMessage(types.TextContent{Text: "Describe this"}, types.FileContent{MediaType: "image/png", Data: []byte{1, 2, 3}}),
+			[]ContentBlock{{Type: "text", Text: "Describe this"}, {Type: "image", Data: "AQID", MimeType: "image/png"}}},
+		{"inline image part", userMessage(types.ImageContent{URL: "data:image/png;base64,AQID"}),
+			[]ContentBlock{{Type: "image", Data: "AQID", MimeType: "image/png"}}},
 	}
 	for _, tc := range maps {
 		t.Run("maps a "+tc.name, func(t *testing.T) {
-			got, err := convertPromptToTextBlocks(tc.prompt, "portable-acp")
+			got, err := convertPromptToContentBlocks(tc.prompt, "portable-acp")
 			if err != nil || !reflect.DeepEqual(got, tc.expected) {
 				t.Fatalf("got %+v, %v", got, err)
 			}
@@ -43,14 +47,14 @@ func TestTSReplay_ConvertPromptToTextBlocks(t *testing.T) {
 		part     types.ContentPart
 		category string
 	}{
-		{"legacy image part", types.ImageContent{}, "image content"},
-		{"image file", types.FileContent{MediaType: "image/png"}, "image content"},
-		{"audio file", types.FileContent{MediaType: "audio/mpeg"}, "audio content"},
-		{"embedded resource file", types.FileContent{MediaType: "text/plain"}, `embedded resource content with media type "text/plain"`},
+		{"audio file", types.FileContent{MediaType: "audio/mpeg"}, "files of media type 'audio/mpeg'"},
+		{"embedded resource file", types.FileContent{MediaType: "text/plain"}, "files of media type 'text/plain'"},
+		{"other future part", types.ReasoningContent{Text: "x"}, "content parts other than text, image, or file parts"},
+		{"remote image URL", types.FileContent{MediaType: "image/png", URL: "https://example.com/image.png"}, "remote image URLs"},
 	}
 	for _, tc := range rejects {
 		t.Run("rejects "+tc.name+" precisely", func(t *testing.T) {
-			_, err := convertPromptToTextBlocks(userMessage(tc.part), "portable-acp")
+			_, err := convertPromptToContentBlocks(userMessage(tc.part), "portable-acp")
 			var unsupported *harness.CapabilityUnsupportedError
 			if !errors.As(err, &unsupported) || unsupported.HarnessID != "portable-acp" || !strings.Contains(err.Error(), tc.category) {
 				t.Fatalf("err = %v", err)
@@ -60,15 +64,15 @@ func TestTSReplay_ConvertPromptToTextBlocks(t *testing.T) {
 }
 
 func TestTSReplay_PrependInstructionGuidance(t *testing.T) {
-	got := prependInstructionGuidance([]TextContentBlock{{Type: "text", Text: "First"}, {Type: "text", Text: "Second"}}, "Prefer concise answers.")
-	want := []TextContentBlock{
+	got := prependInstructionGuidance([]ContentBlock{{Type: "text", Text: "First"}, {Type: "text", Text: "Second"}}, "Prefer concise answers.")
+	want := []ContentBlock{
 		{Type: "text", Text: "<session-guidance>\nThis block is operating guidance from the harness, not user-authored content.\n<instructions>\nPrefer concise answers.\n</instructions>\n</session-guidance>"},
 		{Type: "text", Text: "First"}, {Type: "text", Text: "Second"},
 	}
 	if !reflect.DeepEqual(got, want) || strings.Contains(got[0].Text, "available-skills") {
 		t.Fatalf("got %+v", got)
 	}
-	if got := prependInstructionGuidance([]TextContentBlock{{Type: "text", Text: "Hello"}}, ""); !reflect.DeepEqual(got, []TextContentBlock{{Type: "text", Text: "Hello"}}) {
+	if got := prependInstructionGuidance([]ContentBlock{{Type: "text", Text: "Hello"}}, ""); !reflect.DeepEqual(got, []ContentBlock{{Type: "text", Text: "Hello"}}) {
 		t.Fatalf("empty guidance block added: %+v", got)
 	}
 	if got := prependInstructionGuidance(nil, ""); got == nil || len(got) != 0 {

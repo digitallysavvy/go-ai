@@ -803,7 +803,7 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
 	}
-	blocks, err := convertPromptToTextBlocks(prompt, s.p.harnessID)
+	blocks, err := convertPromptToContentBlocks(prompt, s.p.harnessID)
 	if err != nil {
 		return nil, err
 	}

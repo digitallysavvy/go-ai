@@ -577,8 +577,8 @@ func TestCreateImplementationIdentityStable(t *testing.T) {
 	}
 }
 
-func TestConvertPromptToTextBlocksRejectsImages(t *testing.T) {
-	blocks, err := convertPromptToTextBlocks(harness.TextPrompt("hi"), "test-acp")
+func TestConvertPromptToContentBlocksText(t *testing.T) {
+	blocks, err := convertPromptToContentBlocks(harness.TextPrompt("hi"), "test-acp")
 	if err != nil || len(blocks) != 1 || blocks[0].Text != "hi" {
 		t.Fatalf("blocks = %v, err = %v", blocks, err)
 	}

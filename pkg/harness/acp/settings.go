@@ -336,7 +336,9 @@ type Settings struct {
 	// NonTextContentTypes lists the non-text tool model output the ACP
 	// implementation can deliver to its model. Text is always supported;
 	// undeclared image content is omitted with a bridge stderr warning.
-	// Defaults to none. Mirrors TS `nonTextContentTypes`.
+	// Declaring NonTextContentImage also enables image prompts when the ACP
+	// agent does not advertise image prompt support. Defaults to none.
+	// Mirrors TS `nonTextContentTypes`.
 	NonTextContentTypes   []NonTextContentType
 	AskUserQuestions      *AskUserQuestionsSettings
 	PermissionModeMapping *PermissionModeMapping

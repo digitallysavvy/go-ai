@@ -235,7 +235,7 @@ func (h *acpHarness) ValidateLifecycleStateData(data json.RawMessage) error {
 // validateStartConfigShape checks the required, enum and array fields of a
 // persisted turnStartConfig (withPrompt) or coldSession object, mirroring the
 // zod schemas' `version: literal(1)`, `configurationFingerprint: string`,
-// `permissionMode` enum, `prompt` text blocks and `tools`/`builtinTools`
+// `permissionMode` enum, `prompt` content blocks and `tools`/`builtinTools`
 // arrays (`.default([])` accepts only an absent key, not null).
 func validateStartConfigShape(raw json.RawMessage, key string, withPrompt bool) error {
 	var cfg map[string]json.RawMessage
@@ -267,15 +267,19 @@ func validateStartConfigShape(raw json.RawMessage, key string, withPrompt bool) 
 	}
 	if withPrompt {
 		var blocks []struct {
-			Type string  `json:"type"`
-			Text *string `json:"text"`
+			Type     string  `json:"type"`
+			Text     *string `json:"text"`
+			Data     *string `json:"data"`
+			MimeType *string `json:"mimeType"`
 		}
 		if v, ok := cfg["prompt"]; !ok || json.Unmarshal(v, &blocks) != nil || blocks == nil {
-			return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+			return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text and image blocks.", key) //nolint:staticcheck // mirrors the TS zod array
 		}
 		for _, b := range blocks {
-			if b.Type != "text" || b.Text == nil {
-				return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text blocks.", key) //nolint:staticcheck // mirrors the TS zod array
+			validText := b.Type == "text" && b.Text != nil
+			validImage := b.Type == "image" && b.Data != nil && b.MimeType != nil
+			if !validText && !validImage {
+				return fmt.Errorf("ACP lifecycle state data: %s.prompt must be an array of text and image blocks.", key) //nolint:staticcheck // mirrors the TS zod array
 			}
 		}
 	}
@@ -732,7 +736,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 				Tools: respawnStrategy.turnStartConfig.Tools, PermissionMode: permissionMode,
 				Debug: debugConfig(opts.Observability),
 			},
-			Prompt: []TextContentBlock{}, BuiltinTools: builtinToolCatalog, PermissionModeMapping: h.permMap,
+			Prompt: []ContentBlock{}, BuiltinTools: builtinToolCatalog, PermissionModeMapping: h.permMap,
 			TurnStartConfig: *respawnStrategy.turnStartConfig,
 			RecoveryMode:    &RecoveryMode{Type: "cold-restore", ACPSessionID: respawnStrategy.acpSessionID},
 		}

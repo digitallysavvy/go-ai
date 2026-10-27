@@ -25,7 +25,7 @@ type BuiltinToolMapping struct {
 type TurnStartConfig struct {
 	Version                  int                     `json:"version"`
 	ConfigurationFingerprint string                  `json:"configurationFingerprint"`
-	Prompt                   []TextContentBlock      `json:"prompt"`
+	Prompt                   []ContentBlock          `json:"prompt"`
 	Tools                    []harness.ToolSpec      `json:"tools"`
 	BuiltinTools             []BuiltinToolMapping    `json:"builtinTools"`
 	PermissionMode           harness.PermissionMode  `json:"permissionMode"`
@@ -52,7 +52,7 @@ type ColdSessionState struct {
 
 // createTurnStartConfigInput is the input of createTurnStartConfig.
 type createTurnStartConfigInput struct {
-	Prompt                []TextContentBlock
+	Prompt                []ContentBlock
 	Tools                 []harness.ToolSpec
 	BuiltinTools          []BuiltinToolMapping
 	PermissionMode        harness.PermissionMode
@@ -213,11 +213,11 @@ func fingerprintValue(value any) string {
 // `prompt`/`tools`/`builtinTools` wire fields to always be JSON arrays,
 // never `null`, matching TS's `z.array(...)` (with `.default([])` for the
 // two array fields that are optional at the call site).
-func nonNilBlocks(v []TextContentBlock) []TextContentBlock {
+func nonNilBlocks(v []ContentBlock) []ContentBlock {
 	if v == nil {
-		return []TextContentBlock{}
+		return []ContentBlock{}
 	}
-	return append(make([]TextContentBlock, 0, len(v)), v...)
+	return append(make([]ContentBlock, 0, len(v)), v...)
 }
 
 func nonNilToolSpecs(v []harness.ToolSpec) []harness.ToolSpec {

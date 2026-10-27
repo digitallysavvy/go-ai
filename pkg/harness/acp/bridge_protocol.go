@@ -94,7 +94,7 @@ func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 type StartMessage struct {
 	bridge.StartBase
 
-	Prompt                []TextContentBlock     `json:"prompt"`
+	Prompt                []ContentBlock         `json:"prompt"`
 	Instructions          string                 `json:"instructions,omitempty"`
 	InstructionMapping    *InstructionMapping    `json:"instructionMapping,omitempty"`
 	OutputSchemaMapping   *OutputSchemaMapping   `json:"outputSchemaMapping,omitempty"`
