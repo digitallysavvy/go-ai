@@ -498,6 +498,10 @@ in v0.5.3.
 - Code mode stripper: `!!x` lost one `!`. (v0.5.3)
 - Code mode counts real sandbox thread CPU time on Linux, macOS and Windows.
 - MCP `HTTPTransport` works again after `Close` then `Connect`.
+- MCP `SSETransport`: a closed stream's reader no longer disturbs the stream
+  of a later `Connect`, and a `Connect` interrupted by `Close` returns an
+  error instead of hanging. `HTTPTransport.Close` closes stream bodies, so a
+  custom `SSEClient` body that ignores the request context cannot hang it.
 - `WorkflowAgent.Generate`/`Stream` keep the positional prompt when the
   options struct has an empty `Prompt`. (v0.5.3)
 - Google and Vertex Interactions background streams stop after 3 empty
