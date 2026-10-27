@@ -67,7 +67,7 @@ go get github.com/digitallysavvy/go-ai@v0.6.0
 - **New models.** Claude Haiku 5.5 (Anthropic, Bedrock, Vertex Anthropic,
   Gateway), Gemini `gemini-4-argon` with automatic long-decode continuation,
   `gemini-nano-banana-2.1`, MiniMax M3.1, Moonshot `kimi-k3.1-pro`, Mistral
-  Voxtral 3 speech/transcription and `glm-5.3`, xAI `grok-imagine-image-2.0`,
+  Voxtral 3 speech/transcription and GLM 5.3 reasoning (`zai-glm-5-3`), xAI `grok-imagine-image-2.0`,
   BFL flux-3, Azure MAI-Image, and a regenerated AI Gateway catalog (removed
   IDs stay as deprecated constants).
 - **32-bit platforms.** The SDK builds and vets on linux/386 and linux/arm,

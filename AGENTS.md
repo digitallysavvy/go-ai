@@ -25,7 +25,7 @@ use the rest of this file. Instead:
 
 `github.com/digitallysavvy/go-ai` is the Go AI SDK: a Go port of Vercel's
 TypeScript AI SDK (`ai` on npm), tracking it 1:1 for server-side features.
-The current parity target is `ai@7.0.127`. Intentional differences are listed in
+The current parity target is `ai@7.0.153`. Intentional differences are listed in
 `docs/08-migration-guides/known-differences.mdx`; anything else that behaves
 differently from TypeScript is a bug.
 

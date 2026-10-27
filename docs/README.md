@@ -2,7 +2,7 @@
 
 Welcome to the Go AI SDK documentation. This is a complete Go implementation of the Vercel AI SDK with full feature parity for backend functionality.
 
-Build AI-powered applications in Go with a unified API across 49 model providers including OpenAI, Anthropic, Google, AWS Bedrock, Azure, Cohere, Mistral, and many more.
+Build AI-powered applications in Go with a unified API across 50 model providers including OpenAI, Anthropic, Google, AWS Bedrock, Azure, Cohere, Mistral, and many more.
 
 ## Quick Start
 
@@ -151,7 +151,7 @@ Common issues and solutions:
 
 ## Key Features
 
-- **Unified Provider API**: Switch between 49 providers with zero code changes
+- **Unified Provider API**: Switch between 50 providers with zero code changes
 - **Text Generation**: `GenerateText()` and `StreamText()` with multi-step tool calling
 - **Structured Output**: `GenerateObject()` for JSON schema-validated responses
 - **Embeddings**: `Embed()` and `EmbedMany()` with similarity search utilities
