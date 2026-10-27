@@ -381,6 +381,14 @@ func toolCallInputArguments(call types.ToolCall) (map[string]interface{}, error)
 		return v, nil
 	case nil:
 		return map[string]interface{}{}, nil
+	case string:
+		// A custom (text) tool call: providers carry TS's
+		// `input: JSON.stringify(text)` as RawArguments and the same text as
+		// Arguments {"input": text}.
+		if call.Arguments != nil {
+			return call.Arguments, nil
+		}
+		return nil, fmt.Errorf("tool input must be a JSON object, got %T", value)
 	default:
 		return nil, fmt.Errorf("tool input must be a JSON object, got %T", value)
 	}

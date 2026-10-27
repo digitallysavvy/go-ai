@@ -171,3 +171,66 @@ data: [DONE]
 		t.Fatalf("text=%q finish=%q", text, finish)
 	}
 }
+
+// TS pushes the response tool's `arguments` as is: an empty string stays an
+// empty text part and still counts as text for the finish reason.
+func TestGroqJSONResponseToolEmptyArgumentsKeptEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"1","model":"m","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"json","arguments":""}}]}}],"usage":{}}`))
+	}))
+	defer srv.Close()
+	m := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "openai/gpt-oss-120b")
+	res, err := m.DoGenerate(context.Background(), structuredWithToolsOpts(types.ToolChoice{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var texts []string
+	for _, p := range res.Content {
+		if tc, ok := p.(types.TextContent); ok {
+			texts = append(texts, tc.Text)
+		}
+	}
+	if len(texts) != 1 || texts[0] != "" || res.FinishReason != types.FinishReasonStop {
+		t.Fatalf("texts=%q finish=%q", texts, res.FinishReason)
+	}
+}
+
+func TestGroqJSONResponseToolStreamEmptyArgumentsKeptEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"id":"1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"json","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+`))
+	}))
+	defer srv.Close()
+	m := NewLanguageModel(New(Config{APIKey: "k", BaseURL: srv.URL}), "openai/gpt-oss-120b")
+	stream, err := m.DoStream(context.Background(), structuredWithToolsOpts(types.ToolChoice{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close() //nolint:errcheck
+	text, sawText := "", false
+	var finish types.FinishReason
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		switch c.Type {
+		case provider.ChunkTypeText:
+			text += c.Text
+			sawText = true
+		case provider.ChunkTypeFinish:
+			finish = c.FinishReason
+		}
+	}
+	if !sawText || text != "" || finish != types.FinishReasonStop {
+		t.Fatalf("sawText=%v text=%q finish=%q", sawText, text, finish)
+	}
+}

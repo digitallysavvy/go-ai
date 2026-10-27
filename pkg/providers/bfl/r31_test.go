@@ -3,6 +3,7 @@ package bfl
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -61,5 +62,29 @@ func TestVideoUntimedKeyframesNeedDurationIsInvalidArgumentError(t *testing.T) {
 	want := "Invalid argument for parameter duration: FLUX 3 video requires an explicit duration when 3 or more keyframes are sent without a timestamp."
 	if err.Error() != want {
 		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+}
+
+// TS getArgs parses the provider options before it checks the input image
+// count, so an invalid option wins over the 10-image limit.
+func TestImageOptionValidationBeforeInputImageLimit(t *testing.T) {
+	m := NewImageModel(New(Config{APIKey: "k"}), "flux-kontext-pro")
+	files := make([]provider.ImageFile, 11)
+	_, err := m.DoGenerate(context.Background(), &provider.ImageGenerateOptions{
+		Prompt: "p", Files: files,
+		ProviderOptions: map[string]interface{}{"blackForestLabs": map[string]interface{}{"steps": -1}},
+	})
+	if err == nil || strings.Contains(err.Error(), "up to 10 input images") {
+		t.Fatalf("want option validation error, got %v", err)
+	}
+}
+
+func TestBFLSizeAspectRatioMatchesTSNumber(t *testing.T) {
+	for in, want := range map[string]string{
+		"1024x768": "4:3", "1024x768abc": "", "0x5": "", "axb": "", "1024": "", "1.5x1": "3:2",
+	} {
+		if got := bflSizeAspectRatio(in); got != want {
+			t.Errorf("bflSizeAspectRatio(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

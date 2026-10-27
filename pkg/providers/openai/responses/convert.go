@@ -1001,11 +1001,7 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		}, true, nil
 	}
 	if opts.CustomToolNames[tc.ToolName] || opts.CustomToolNames[toolName] {
-		input := tc.RawArguments
-		if input == "" {
-			raw, _ := jsonstr.Marshal(tc.Arguments)
-			input = string(raw)
-		}
+		input := customToolCallInputText(tc)
 		var async *bool
 		if openaiMeta, ok := tc.ProviderMetadata[openAIProviderOptionsName(opts)].(map[string]interface{}); ok {
 			if rawAsync, ok := openaiMeta["async"].(bool); ok {
@@ -1022,6 +1018,29 @@ func convertAssistantToolCallItem(tc types.ToolCall, itemID string, opts Convert
 		}, true, nil
 	}
 	return nil, false, nil
+}
+
+// customToolCallInputText is the raw text of a custom tool call for the
+// custom_tool_call wire item's `input`. TS decodes a custom_tool_call as
+// `input: JSON.stringify(part.input)`; the SDK parses that back to the raw
+// string, which prompt conversion sends as is. Here the decoded call carries
+// the text as Arguments {"input": text} and/or RawArguments as the JSON string
+// literal of it; plain (non-JSON-string) RawArguments is the text itself.
+func customToolCallInputText(tc types.ToolCall) string {
+	if raw := strings.TrimSpace(tc.RawArguments); strings.HasPrefix(raw, `"`) {
+		var text string
+		if json.Unmarshal([]byte(raw), &text) == nil {
+			return text
+		}
+	}
+	if text, ok := tc.Arguments["input"].(string); ok && len(tc.Arguments) == 1 {
+		return text
+	}
+	if tc.RawArguments != "" {
+		return tc.RawArguments
+	}
+	raw, _ := jsonstr.Marshal(tc.Arguments)
+	return string(raw)
 }
 
 func isProviderDefinedResponsesTool(normalizedToolName, originalToolName string, opts ConvertOptions) bool {

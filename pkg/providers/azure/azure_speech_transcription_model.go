@@ -192,7 +192,8 @@ func (m *AzureSpeechTranscriptionModel) DoGenerate(ctx context.Context, opts *pr
 		return nil, err
 	}
 
-	if resp.StatusCode != stdhttp.StatusOK {
+	// TS postFormDataToApi treats any 2xx (response.ok) as success.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, azureSpeechAPIError(m.Provider(), resp.StatusCode, resp.Header, respBody, false)
 	}
 

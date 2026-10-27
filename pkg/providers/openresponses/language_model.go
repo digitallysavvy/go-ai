@@ -1362,10 +1362,8 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			}
 			s.toolCallsByItemID[event.ItemID] = state
 		}
-		// Use the final arguments from the event if provided
-		if event.Arguments != "" {
-			state.ArgsJSON = event.Arguments
-		}
+		// TS: toolCall.arguments = chunk.arguments, even when it is "".
+		state.ArgsJSON = event.Arguments
 		return nil, false
 
 	case "response.custom_tool_call_input.delta":
@@ -1419,10 +1417,13 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			argsJSON := event.Item.Arguments
 			providerMetadata := openResponsesToolCallMetadata(s.providerName, event.Item.ID, event.Item.Namespace)
 			if ok {
-				if id == "" {
+				// TS: toolCall?.toolCallId ?? item.call_id and
+				// toolCall?.toolName ?? item.name -- the id and name seen when
+				// the item was added win over those of the done item.
+				if state.ID != "" {
 					id = state.ID
 				}
-				if toolName == "" {
+				if state.ToolName != "" {
 					toolName = state.ToolName
 				}
 				if argsJSON == "" {
@@ -1457,10 +1458,11 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 			toolName := event.Item.Name
 			input := event.Item.Input
 			if ok {
-				if customToolCallID == "" {
+				// TS: toolCall?.toolCallId ?? item.call_id (likewise the name).
+				if custom.ID != "" {
 					customToolCallID = custom.ID
 				}
-				if toolName == "" {
+				if custom.ToolName != "" {
 					toolName = custom.ToolName
 				}
 				if input == "" {
@@ -1690,8 +1692,9 @@ func openResponsesReasoningProviderMetadata(providerName string, item *OutputIte
 	for _, part := range item.Summary {
 		summary = append(summary, map[string]interface{}{"type": "summary_text", "text": part.Text})
 	}
+	// TS: reasoningContent == null ? null : [...]; an empty array stays [].
 	var reasoningContent interface{}
-	if len(item.Content) > 0 {
+	if item.Content != nil {
 		content := make([]map[string]interface{}, 0, len(item.Content))
 		for _, part := range item.Content {
 			content = append(content, map[string]interface{}{"type": "reasoning_text", "text": part.Text})

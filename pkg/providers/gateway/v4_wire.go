@@ -127,7 +127,7 @@ type v4Part struct {
 	Result           json.RawMessage `json:"result"`
 	IsError          bool            `json:"isError"`
 	Preliminary      bool            `json:"preliminary"`
-	ProviderExecuted bool            `json:"providerExecuted"`
+	ProviderExecuted *bool           `json:"providerExecuted"`
 	Dynamic          bool            `json:"dynamic"`
 	Title            string          `json:"title"`
 	ApprovalID       string          `json:"approvalId"`
@@ -219,8 +219,11 @@ func (p v4Part) toolCall() types.ToolCall {
 		ToolName:         p.ToolName,
 		Arguments:        args,
 		RawArguments:     input,
-		ProviderExecuted: p.ProviderExecuted,
-		Dynamic:          p.Dynamic,
+		ProviderExecuted: p.ProviderExecuted != nil && *p.ProviderExecuted,
+		// An explicit providerExecuted false on the wire is kept, as TS
+		// forwards the field whenever it is not undefined.
+		ProviderExecutedSet: p.ProviderExecuted != nil,
+		Dynamic:             p.Dynamic,
 	}
 	if len(p.ProviderMetadata) > 0 {
 		var md map[string]interface{}

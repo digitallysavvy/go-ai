@@ -91,9 +91,6 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	// TS: the response timestamp is taken before the request is sent.
 	startedAt := time.Now()
-	if len(opts.Files) > 10 {
-		return nil, fmt.Errorf("Black Forest Labs supports up to 10 input images.") //nolint:staticcheck // matches TS SDK's exact error text
-	}
 	api := bflModelAPIFor(m.modelID)
 	if api == bflAPILatest {
 		merged, err := bflLatestProviderOptions(opts)
@@ -106,6 +103,11 @@ func (m *ImageModel) DoGenerate(ctx context.Context, opts *provider.ImageGenerat
 	}
 	if err := validateBFLImageOptions(m.modelID, opts.ProviderOptions); err != nil {
 		return nil, err
+	}
+	// TS getArgs parses the provider options before it checks the input image
+	// count, so an invalid option wins over the image limit.
+	if len(opts.Files) > 10 {
+		return nil, fmt.Errorf("Black Forest Labs supports up to 10 input images.") //nolint:staticcheck // matches TS SDK's exact error text
 	}
 	var reqBody map[string]interface{}
 	var warnings []types.Warning
@@ -170,10 +172,10 @@ func (m *ImageModel) buildRequestBody(opts *provider.ImageGenerateOptions) map[s
 	if opts.Size != "" {
 		var width, height int
 		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
+		if finalAspectRatio == "" {
+			finalAspectRatio = bflSizeAspectRatio(opts.Size)
+		}
 		if width > 0 && height > 0 {
-			if finalAspectRatio == "" {
-				finalAspectRatio = bflAspectRatio(width, height)
-			}
 			reqBody["width"] = width
 			reqBody["height"] = height
 		}
@@ -349,11 +351,7 @@ func (m *ImageModel) buildFlux3Request(opts *provider.ImageGenerateOptions, api 
 
 	finalAspectRatio := opts.AspectRatio
 	if opts.Size != "" && finalAspectRatio == "" {
-		var width, height int
-		_, _ = fmt.Sscanf(opts.Size, "%dx%d", &width, &height)
-		if width > 0 && height > 0 {
-			finalAspectRatio = bflAspectRatio(width, height)
-		}
+		finalAspectRatio = bflSizeAspectRatio(opts.Size)
 	}
 
 	// Exact dimensions (latest API) take precedence over aspect ratio and
@@ -450,25 +448,28 @@ func bflWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
 	}}
 }
 
-func bflAspectRatio(width, height int) string {
-	divisor := gcd(width, height)
-	return strconv.Itoa(width/divisor) + ":" + strconv.Itoa(height/divisor)
+// bflSizeAspectRatio mirrors TS convertSizeToAspectRatio: Number() of each
+// side of size.split('x'), undefined unless both are finite and positive,
+// then the gcd-reduced ratio ("" for undefined).
+func bflSizeAspectRatio(size string) string {
+	parts := strings.Split(size, "x")
+	w, h := jsNumber(parts[0]), math.NaN()
+	if len(parts) > 1 {
+		h = jsNumber(parts[1])
+	}
+	if math.IsNaN(w) || math.IsNaN(h) || math.IsInf(w, 0) || math.IsInf(h, 0) || w <= 0 || h <= 0 {
+		return ""
+	}
+	x, y := math.Abs(w), math.Abs(h)
+	for y != 0 {
+		x, y = y, math.Mod(x, y)
+	}
+	return jsRound(w/x) + ":" + jsRound(h/x)
 }
 
-func gcd(a, b int) int {
-	if a < 0 {
-		a = -a
-	}
-	if b < 0 {
-		b = -b
-	}
-	for b != 0 {
-		a, b = b, a%b
-	}
-	if a == 0 {
-		return 1
-	}
-	return a
+// jsRound is Math.round formatted as a JS number string.
+func jsRound(f float64) string {
+	return strconv.FormatFloat(math.Floor(f+0.5), 'f', -1, 64)
 }
 
 func bflImageValue(file provider.ImageFile) string {

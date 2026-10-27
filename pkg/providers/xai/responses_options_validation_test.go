@@ -46,3 +46,22 @@ func TestResponsesProviderOptionsValidation(t *testing.T) {
 		t.Errorf("typed options rejected: %v", err)
 	}
 }
+
+// TS: `include = [...include, 'reasoning.encrypted_content']` when store is
+// false -- no duplicate check, so an explicit entry is repeated.
+func TestStoreFalseAppendsEncryptedContentWithoutDedupe(t *testing.T) {
+	m := NewResponsesLanguageModel(New(Config{APIKey: "k"}), "grok-4")
+	body, _, err := m.buildRequestBody(&provider.GenerateOptions{
+		Prompt: types.Prompt{Text: "hi"},
+		ProviderOptions: map[string]interface{}{"xai": map[string]interface{}{
+			"include": []interface{}{"reasoning.encrypted_content"}, "store": false,
+		}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	include, _ := body["include"].([]string)
+	if len(include) != 2 || include[0] != "reasoning.encrypted_content" || include[1] != "reasoning.encrypted_content" {
+		t.Fatalf("include = %v", include)
+	}
+}

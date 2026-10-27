@@ -135,7 +135,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	inner.responseHeaders = providerutils.ExtractHeaders(httpResp.Header)
 	var textStream provider.TextStream = inner
 	if name := m.jsonResponseToolName(opts); name != "" {
-		textStream = streaming.NewJSONResponseToolStream(textStream, name)
+		textStream = streaming.NewJSONResponseToolStream(textStream, name).WithExactArguments()
 	}
 	return streaming.NewWarningsStream(textStream, warnings), nil
 }
@@ -311,20 +311,24 @@ func applyJSONResponseToolResult(result *types.GenerateResult, response groqResp
 		}
 	}
 	var remaining []types.ToolCall
+	hasResponseText := false
 	for i, call := range result.ToolCalls {
 		if call.ToolName == toolName {
-			if call.RawArguments == "" {
-				call.RawArguments = rawByIndex[i]
+			// TS pushes `toolCall.function.arguments` as is, so an empty
+			// argument string stays an empty text part.
+			text := call.RawArguments
+			if text == "" {
+				text = rawByIndex[i]
 			}
-			text := providerutils.JSONResponseToolText(call)
 			result.Text += text
 			result.Content = append(result.Content, types.TextContent{Text: text})
+			hasResponseText = true
 			continue
 		}
 		remaining = append(remaining, call)
 	}
 	result.ToolCalls = remaining
-	if result.Text != "" && len(remaining) == 0 && result.RawFinishReason == "tool_calls" {
+	if hasResponseText && len(remaining) == 0 && result.RawFinishReason == "tool_calls" {
 		result.FinishReason = types.FinishReasonStop
 	}
 }

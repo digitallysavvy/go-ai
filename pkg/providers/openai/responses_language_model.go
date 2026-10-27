@@ -1600,10 +1600,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if err := json.Unmarshal(rawItem, &item); err != nil {
 				continue
 			}
+			// TS: input: JSON.stringify(part.input) -- the JSON string literal
+			// of the raw custom tool text.
+			customRaw, _ := jsonstr.Marshal(item.Input)
 			toolCalls = append(toolCalls, types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
+				RawArguments:     string(customRaw),
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, nil),
 			})
 
@@ -2371,6 +2375,12 @@ func toRawMetadata(m map[string]interface{}) json.RawMessage {
 	return raw
 }
 
+// customToolRaw is TS JSON.stringify of a custom tool call's raw text input.
+func customToolRaw(input string) string {
+	raw, _ := jsonstr.Marshal(input)
+	return string(raw)
+}
+
 // nonEmptyOrNil returns nil for an empty string so it marshals as JSON null
 // (matching TS's `encryptedContent ?? null`), or the string itself otherwise.
 func nonEmptyOrNil(s string) interface{} {
@@ -2878,17 +2888,12 @@ func (s *responsesStream) queueEOFFinish() {
 	if s.hadDecodeError {
 		finishReason = types.FinishReasonError
 	}
-	fields := map[string]interface{}{}
-	if s.responseID != "" {
-		fields["responseId"] = s.responseID
-	}
+	// TS always reports responseId (null until response.created arrives).
+	fields := map[string]interface{}{"responseId": nonEmptyOrNil(s.responseID)}
 	if len(s.logprobs) > 0 {
 		fields["logprobs"] = s.logprobs
 	}
-	var meta json.RawMessage
-	if len(fields) > 0 {
-		meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
-	}
+	meta, _ := json.Marshal(map[string]interface{}{s.providerName: fields})
 	usage := convertResponsesUsage(nil)
 	rawFinishReason := ""
 	if s.sawErrorEvent {
@@ -3807,10 +3812,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			{
 				// TS: { responseId, logprobs?, serviceTier?, reasoningContext? }.
-				fields := map[string]interface{}{}
-				if responseID != "" {
-					fields["responseId"] = responseID
-				}
+				fields := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
 				if len(s.logprobs) > 0 {
 					fields["logprobs"] = s.logprobs
 				}
@@ -3820,9 +3822,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
 					fields["reasoningContext"] = e.Response.Reasoning.Context
 				}
-				if len(fields) > 0 {
-					meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
-				}
+				meta, _ = json.Marshal(map[string]interface{}{s.providerName: fields})
 			}
 
 			s.err = io.EOF
@@ -3860,24 +3860,18 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
 
-			metaMap := map[string]interface{}{}
 			responseID := s.responseID
 			if responseID == "" {
 				responseID = e.Response.ID
 			}
-			if responseID != "" {
-				metaMap["responseId"] = responseID
-			}
+			metaMap := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
 			if len(s.logprobs) > 0 {
 				metaMap["logprobs"] = s.logprobs
 			}
 			if e.Response.Reasoning != nil && e.Response.Reasoning.Context != "" {
 				metaMap["reasoningContext"] = e.Response.Reasoning.Context
 			}
-			var meta json.RawMessage
-			if len(metaMap) > 0 {
-				meta, _ = json.Marshal(map[string]interface{}{s.providerName: metaMap})
-			}
+			meta, _ := json.Marshal(map[string]interface{}{s.providerName: metaMap})
 
 			// Output already started (encounteredStreamError branch, TS
 			// openai-responses-language-model.ts ~line 2737): a response.failed
@@ -4354,6 +4348,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
+				RawArguments:     customToolRaw(item.Input),
 				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, nil),
 			},
 		})
