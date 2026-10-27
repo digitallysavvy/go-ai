@@ -145,7 +145,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	if err != nil {
 		return nil, err
 	}
-	hasImages := len(assets) > 0
+	hasImages := len(assets.Keys) > 0
 
 	// TS body key order: model, state, assets (with images), questions.
 	body := providerutils.OrderedMap{Keys: []string{"model", "state", "assets", "questions"}, Vals: map[string]interface{}{
@@ -582,7 +582,8 @@ func jsonStrings(value interface{}) []string {
 //     contains it (or insertReference is false).
 //   - A single remaining json part is sent as native JSON; otherwise text and
 //     json parts are joined with newlines.
-func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, map[string]typesafeAsset, []typesafeImagePart, error) {
+func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, providerutils.OrderedMap, []typesafeImagePart, error) {
+	noAssets := providerutils.OrderedMap{}
 	var stateStrings []string
 	for _, part := range parts {
 		switch part.Type {
@@ -593,17 +594,22 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, map[
 		}
 	}
 
-	assets := map[string]typesafeAsset{}
+	assets := providerutils.OrderedMap{Vals: map[string]interface{}{}}
 	var images []typesafeImagePart
 	stateParts := make([]provider.DecisionStatePart, 0, len(parts))
+
+	// TS runs every file part's synchronous checks (data kind, media type)
+	// inside Promise.all(map(async ...)) before any part resumes from its
+	// `await parseProviderOptions`, so an unsupported file later in the state
+	// is reported ahead of an option error on an earlier one.
+	mediaTypes := make([]string, len(parts))
 	for index, part := range parts {
 		if part.Type != "file" {
-			stateParts = append(stateParts, part)
 			continue
 		}
 		file := part.File
 		if file == nil {
-			return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{Functionality: "TypeSafe AI decision file input"}
+			return nil, noAssets, nil, &providererrors.UnsupportedFunctionalityError{Functionality: "TypeSafe AI decision file input"}
 		}
 		mediaType := file.MediaType
 		if mediaType == "" {
@@ -613,27 +619,33 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, map[
 			mediaType = file.FileData.MediaType
 		}
 		if kind := file.FileData.Type; kind != "" && kind != types.FileDataTypeData {
-			return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{
+			return nil, noAssets, nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("TypeSafe AI decision file input: %s (%s)", mediaType, kind),
 			}
 		}
 		if mediaType != "image/png" && mediaType != "image/jpeg" {
-			return nil, nil, nil, &providererrors.UnsupportedFunctionalityError{
+			return nil, noAssets, nil, &providererrors.UnsupportedFunctionalityError{
 				Functionality: fmt.Sprintf("TypeSafe AI decision image media type: %s", mediaType),
 			}
 		}
-		_, data, err := part.InlineData()
-		if err != nil {
-			return nil, nil, nil, &providererrors.InvalidArgumentError{Field: "state", Message: err.Error(), Cause: err}
+		mediaTypes[index] = mediaType
+	}
+
+	for index, part := range parts {
+		if part.Type != "file" {
+			stateParts = append(stateParts, part)
+			continue
 		}
+		file := part.File
+		mediaType := mediaTypes[index]
 		fileOptions, err := providerutils.ParseProviderOptions("typesafe", file.ProviderOptions, typesafeFilePartSchema)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, noAssets, nil, err
 		}
 		explicitRef, hasRef := fileOptions["reference"].(string)
 		insertOpt, hasInsert := fileOptions["insertReference"].(bool)
 		if hasInsert && !insertOpt && !hasRef {
-			return nil, nil, nil, &providererrors.InvalidArgumentError{
+			return nil, noAssets, nil, &providererrors.InvalidArgumentError{
 				Field:   "providerOptions.typesafe.reference",
 				Message: "TypeSafe images with insertReference: false need an explicit reference.",
 			}
@@ -643,21 +655,26 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, map[
 		reference := explicitRef
 		if !hasRef {
 			if reference, err = typesafeGenerateID(); err != nil {
-				return nil, nil, nil, err
+				return nil, noAssets, nil, err
 			}
 		}
 		insertReference := !containsString(stateStrings, reference)
 		if hasInsert {
 			insertReference = insertOpt
 		}
-		if _, dup := assets[reference]; dup {
-			return nil, nil, nil, &providererrors.InvalidArgumentError{
+		if _, dup := assets.Vals[reference]; dup {
+			return nil, noAssets, nil, &providererrors.InvalidArgumentError{
 				Field:   "providerOptions.typesafe.reference",
 				Message: "Duplicate TypeSafe image reference: " + reference,
 			}
 		}
 		partName := fmt.Sprintf("image-%d", index)
-		assets[reference] = typesafeAsset{Type: "image", Part: partName}
+		assets.Keys = append(assets.Keys, reference)
+		assets.Vals[reference] = typesafeAsset{Type: "image", Part: partName}
+		_, data, err := part.InlineData()
+		if err != nil {
+			return nil, noAssets, nil, &providererrors.InvalidArgumentError{Field: "state", Message: err.Error(), Cause: err}
+		}
 		filename := file.Filename
 		if filename == "" {
 			ext := "jpeg"
@@ -684,7 +701,7 @@ func typeSafeRequestState(parts []provider.DecisionStatePart) (interface{}, map[
 		// JSON.stringify keeps <, > and & literal; json.Marshal would escape them.
 		encoded, err := jsonstr.Marshal(part.Value)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to encode decision state: %w", err)
+			return nil, noAssets, nil, fmt.Errorf("failed to encode decision state: %w", err)
 		}
 		texts = append(texts, string(encoded))
 	}
