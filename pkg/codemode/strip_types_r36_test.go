@@ -7,23 +7,60 @@ import (
 	"time"
 )
 
-// The stripper rescans the enclosing span at every bracket, so deeply nested
+// The stripper rescanned the enclosing span at every bracket, so deeply nested
 // brackets and long flat runs cost quadratic time: a 256 KiB snippet could pin
 // a CPU for minutes before the sandbox's own limits applied.
+//
+// A wall-clock cap alone is flaky under load (a loaded -race run can be many
+// times slower), so the test checks how the cost grows instead: quadrupling
+// the input must cost well under the 16x of a quadratic scan. Each size takes
+// the fastest of several runs, the sizes are interleaved so load hits both
+// alike, and the large size is long enough (40-140 KB) that the
+// reverted quadratic code takes seconds at the small size and minutes at the
+// large one. The absolute cap is only a backstop against a hang.
 func TestStripTypeScriptBoundedOnAdversarialInput(t *testing.T) {
-	cases := map[string]string{
-		"nested parens":    strings.Repeat("(", 20000) + "1" + strings.Repeat(")", 20000),
-		"nested objects":   strings.Repeat("({a: ", 20000) + "1" + strings.Repeat("})", 20000),
-		"nested templates": strings.Repeat("`${", 20000) + "1" + strings.Repeat("}`", 20000),
-		"comparison list":  strings.Repeat("a<b,", 30000),
-		"optional calls":   strings.Repeat("a?.b<T>?.(1),", 6000),
-		"arrow list":       strings.Repeat("(a) => (b) => (c) => 1,", 3000),
+	cases := map[string]func(n int) string{
+		"nested parens":    func(n int) string { return strings.Repeat("(", n) + "1" + strings.Repeat(")", n) },
+		"nested objects":   func(n int) string { return strings.Repeat("({a: ", n) + "1" + strings.Repeat("})", n) },
+		"nested templates": func(n int) string { return strings.Repeat("`${", n) + "1" + strings.Repeat("}`", n) },
+		"comparison list":  func(n int) string { return strings.Repeat("a<b,", n) },
+		"optional calls":   func(n int) string { return strings.Repeat("a?.b<T>?.(1),", n) },
+		"arrow list":       func(n int) string { return strings.Repeat("(a) => (b) => (c) => 1,", n) },
 	}
-	for name, src := range cases {
-		start := time.Now()
-		_, _ = stripTypeScriptAnnotations(src)
-		if d := time.Since(start); d > 8*time.Second {
-			t.Errorf("%s: %d bytes took %v", name, len(src), d)
+	sizes := map[string]int{
+		"nested parens": 20000, "nested objects": 20000, "nested templates": 20000,
+		"comparison list": 30000, "optional calls": 6000, "arrow list": 3000,
+	}
+	const (
+		runs      = 3
+		growthCap = 8.0 // linear is 4x, quadratic 16x
+		noise     = 50 * time.Millisecond
+		backstop  = 2 * time.Minute
+	)
+	for name, gen := range cases {
+		large := gen(sizes[name])
+		small := gen(sizes[name] / 4)
+		bestSmall, bestLarge := time.Duration(1<<62), time.Duration(1<<62)
+		for i := 0; i < runs; i++ {
+			for _, c := range []struct {
+				src  string
+				best *time.Duration
+			}{{small, &bestSmall}, {large, &bestLarge}} {
+				start := time.Now()
+				_, _ = stripTypeScriptAnnotations(c.src)
+				d := time.Since(start)
+				if d > backstop {
+					t.Fatalf("%s: %d bytes took %v", name, len(c.src), d)
+				}
+				if d < *c.best {
+					*c.best = d
+				}
+			}
+		}
+		t.Logf("%s: %d bytes %v, %d bytes %v", name, len(small), bestSmall, len(large), bestLarge)
+		if limit := time.Duration(float64(bestSmall)*growthCap) + noise; bestLarge > limit {
+			t.Errorf("%s: cost grows superlinearly: %d bytes took %v, %d bytes took %v (limit %v)",
+				name, len(small), bestSmall, len(large), bestLarge, limit)
 		}
 	}
 }
