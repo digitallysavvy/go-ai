@@ -150,11 +150,14 @@ type OpenTelemetry struct {
 	tracer     trace.Tracer
 	enrichSpan EnrichSpanFunc
 	opts       OpenTelemetryOptions
+	inst       *integrationInstance
 }
+
+func (i OpenTelemetry) stateKey(callID string) string { return instanceStateKey(i.inst, callID) }
 
 // NewOpenTelemetry creates a GenAI semconv OpenTelemetry integration.
 func NewOpenTelemetry(opts OpenTelemetryOptions) OpenTelemetry {
-	return OpenTelemetry{tracer: opts.Tracer, enrichSpan: opts.EnrichSpan, opts: opts}
+	return OpenTelemetry{tracer: opts.Tracer, enrichSpan: opts.EnrichSpan, opts: opts, inst: newIntegrationInstance()}
 }
 
 func (i OpenTelemetry) tracerFor(settings *Settings) trace.Tracer {
@@ -263,6 +266,25 @@ func genAIRootSpanFor(callID string, ctx context.Context) trace.Span {
 		}
 	}
 	return trace.SpanFromContext(ctx)
+}
+
+// stepSpanFor resolves this integration's open step span for callID from its
+// own call state (TS state.stepSpan), falling back to the step span in ctx,
+// which holds only the last registered integration's span.
+func (i OpenTelemetry) stepSpanFor(ctx context.Context, callID string) (trace.Span, bool) {
+	if key := i.stateKey(callID); key != "" {
+		if v, ok := genAICallStates.Load(key); ok {
+			st := v.(*genAICallState)
+			st.mu.Lock()
+			span := st.stepSpan
+			st.mu.Unlock()
+			if span != nil {
+				return span, true
+			}
+		}
+	}
+	span, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span)
+	return span, ok
 }
 
 // genAIChildTracer returns the tracer that created callID's root span, so
@@ -447,7 +469,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	// OnStepStart/OnToolExecutionStart/OnEnd/OnError/OnAbort can find it by
 	// CallID instead of trace.SpanFromContext.
 	if e.CallID != "" {
-		st := genAIState(e.CallID)
+		st := genAIState(i.stateKey(e.CallID))
 		st.mu.Lock()
 		st.rootSpan = span
 		st.baseSupp = baseSupp
@@ -522,16 +544,16 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	// H5: resolve OUR OWN root span by CallID rather than
 	// trace.SpanFromContext(ctx), which — with two integrations registered —
 	// would return whichever integration's OnStart ran last.
-	rootSpan := genAIRootSpanFor(e.CallID, ctx)
+	rootSpan := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !rootSpan.IsRecording() {
 		return ctx
 	}
 	// TS onObjectStepStart creates no step span for generateObject/
 	// streamObject: the chat span sits directly under the root.
-	if isLegacyObjectOperation(e.OperationType) || genAIIsObjectCall(e.CallID) {
+	if isLegacyObjectOperation(e.OperationType) || genAIIsObjectCall(i.stateKey(e.CallID)) {
 		return ctx
 	}
-	tracer := genAIChildTracer(e.CallID, rootSpan)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), rootSpan)
 	// Explicitly rebase ctx onto our own root span before creating the step
 	// span, so it nests correctly under this integration's root even if
 	// ctx's ambient "current span" belongs to another registered integration.
@@ -549,14 +571,14 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 		stepSpan.SetAttributes(attrs...)
 	}
 	stepSpan.SetAttributes(attribute.String("gen_ai.operation.name", "agent_step"))
-	stepSpan.SetAttributes(genAIBaseSupplemental(e.CallID)...)
+	stepSpan.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
 	if i.opts.ToolChoice && e.ToolChoice.Type != "" {
 		if b, err := jsonstr.Marshal(e.ToolChoice); err == nil {
 			stepSpan.SetAttributes(attribute.String("ai.prompt.toolChoice", string(b)))
 		}
 	}
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.stepSpan = stepSpan
 			st.mu.Unlock()
@@ -584,9 +606,9 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	// generateObject/streamObject (TS onObjectStepStart) parent the chat span
 	// under the root instead.
 	var parent trace.Span
-	isObject := genAIIsObjectCall(e.CallID)
+	isObject := genAIIsObjectCall(i.stateKey(e.CallID))
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			parent = st.stepSpan
 			if isObject {
@@ -598,7 +620,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	if parent == nil || !parent.IsRecording() {
 		return ctx
 	}
-	tracer := genAIChildTracer(e.CallID, parent)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
 	spanName := "chat"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
@@ -662,11 +684,11 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	}
 	if isObject {
 		// TS onObjectStepStart spreads state.baseSupplementalAttributes.
-		attrs = append(attrs, genAIBaseSupplemental(e.CallID)...)
+		attrs = append(attrs, genAIBaseSupplemental(i.stateKey(e.CallID))...)
 	}
 	span.SetAttributes(attrs...)
 	if e.CallID != "" {
-		genAICallSpans.Store(genAISpanKey("languageModel", e.CallID), otelSpanEntry{span: span, toolDefs: toolDefs})
+		genAICallSpans.Store(genAISpanKey("languageModel", i.stateKey(e.CallID)), otelSpanEntry{span: span, toolDefs: toolDefs})
 	}
 	return ctx
 }
@@ -780,7 +802,7 @@ func finalToolResultsByCallID(content []types.ContentPart) map[string]types.Cont
 // and creates short-lived execute_tool spans for provider-executed tool
 // calls surfaced in the response (37b75e8), parented under the chat span.
 func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageModelCallEndEvent) {
-	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID))
+	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID)))
 	if !ok {
 		return
 	}
@@ -795,7 +817,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	// generateObject/streamObject end their chat span in TS onObjectStepEnd:
 	// no provider re-record, cache-creation tokens or client performance
 	// attributes, and the object text as the output message.
-	isObject := genAIIsObjectCall(e.CallID)
+	isObject := genAIIsObjectCall(i.stateKey(e.CallID))
 	attrs := []attribute.KeyValue{
 		attribute.StringSlice("gen_ai.response.finish_reasons", []string{e.FinishReason}),
 	}
@@ -864,7 +886,7 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 	entry.span.SetAttributes(attrs...)
 
 	inferenceCtx := trace.ContextWithSpan(ctx, entry.span)
-	tracer := genAIChildTracer(e.CallID, entry.span)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), entry.span)
 	finalOutputs := finalToolResultsByCallID(content)
 	recorded := make(map[string]bool)
 	for _, c := range content {
@@ -959,12 +981,12 @@ func detailedUsageAttrs(usage TelemetryUsage) []attribute.KeyValue {
 func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
-	parent := genAIRootSpanFor(e.CallID, ctx)
+	parent := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !parent.IsRecording() {
 		return
 	}
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
-	tracer := genAIChildTracer(e.CallID, parent)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
 	spanName := "embeddings"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
@@ -982,19 +1004,19 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
+	span.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
 	if i.opts.Embedding && (e.Settings == nil || e.Settings.RecordInputs) && len(e.Values) > 0 {
 		span.SetAttributes(attribute.StringSlice("ai.values", jsonStringifyEach(e.Values)))
 	}
 	if callID != "" {
-		genAICallSpans.Store(genAISpanKey("embedding", callID), otelSpanEntry{span: span})
+		genAICallSpans.Store(genAISpanKey("embedding", i.stateKey(callID)), otelSpanEntry{span: span})
 	}
 	// H5: also record it in our own callId-keyed state so OnError/OnAbort can
 	// defensively close it if the provider call itself fails before
 	// OnEmbedEnd ever fires — see the identical comment in registry.go's
 	// LegacyOpenTelemetry.OnEmbedStart.
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.embedSpans == nil {
 				st.embedSpans = make(map[string]trace.Span)
@@ -1027,9 +1049,9 @@ func jsonStringifyEach[T any](values []T) []string {
 // leak — see the doc comment on EmbeddingModelCallEndEvent.
 func (i OpenTelemetry) OnEmbedEnd(_ context.Context, e EmbeddingModelCallEndEvent) {
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
-	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("embedding", callID))
+	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("embedding", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			delete(st.embedSpans, e.EmbedCallID)
 			st.mu.Unlock()
@@ -1079,12 +1101,12 @@ func embeddingUsageTokens(u types.EmbeddingUsage) (int64, bool) {
 func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
-	parent := genAIRootSpanFor(e.CallID, ctx)
+	parent := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !parent.IsRecording() {
 		return
 	}
 	callID := modelCallID(e.CallID, e.OperationID)
-	tracer := genAIChildTracer(e.CallID, parent)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
 	spanName := "rerank"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
@@ -1102,7 +1124,7 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
+	span.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
 	// TS event.documents.map(d => JSON.stringify(d)): text and object documents.
 	if i.opts.Reranking && (e.Settings == nil || e.Settings.RecordInputs) {
 		if docs := legacyJSONEachElement(e.Documents); len(docs) > 0 {
@@ -1110,13 +1132,13 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		}
 	}
 	if callID != "" {
-		genAICallSpans.Store(genAISpanKey("reranking", callID), otelSpanEntry{span: span})
+		genAICallSpans.Store(genAISpanKey("reranking", i.stateKey(callID)), otelSpanEntry{span: span})
 	}
 	// H5: also record it in our own callId-keyed state so OnError/OnAbort can
 	// defensively close it if the provider call itself fails before
 	// OnRerankEnd ever fires.
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = span
 			st.mu.Unlock()
@@ -1132,9 +1154,9 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 // on RerankingModelCallEndEvent.
 func (i OpenTelemetry) OnRerankEnd(_ context.Context, e RerankingModelCallEndEvent) {
 	callID := modelCallID(e.CallID, e.OperationID)
-	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("reranking", callID))
+	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("reranking", i.stateKey(callID)))
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			st.rerankSpan = nil
 			st.mu.Unlock()
@@ -1176,7 +1198,7 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	// registered — could return the other integration's "current" span).
 	var span trace.Span
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			span = st.stepSpan
 			if span == nil {
@@ -1191,7 +1213,7 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	if !span.IsRecording() {
 		return ctx
 	}
-	tracer := genAIChildTracer(e.CallID, span)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), span)
 	ctx, child := tracer.Start(trace.ContextWithSpan(ctx, span), "execute_tool "+e.ToolName, trace.WithSpanKind(trace.SpanKindInternal))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType: SpanTypeTool,
@@ -1212,7 +1234,7 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 		}
 	}
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.toolSpans == nil {
 				st.toolSpans = make(map[string]trace.Span)
@@ -1230,7 +1252,7 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 	// trace.SpanFromContext(ctx).
 	var span trace.Span
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			span = st.toolSpans[e.ToolCallID]
 			if span != nil {
@@ -1290,7 +1312,7 @@ func (i OpenTelemetry) OnToolCallFinish(ctx context.Context, e TelemetryToolCall
 // spans for any provider-executed tool calls surfaced this step (5ad6abf),
 // and ends the step span created by OnStepStart.
 func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
-	stepSpan, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span)
+	stepSpan, ok := i.stepSpanFor(ctx, e.CallID)
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
@@ -1324,7 +1346,7 @@ func (i OpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEvent) {
 	// H5: clear the recorded step span so OnAbort/OnError (which also close
 	// state.stepSpan if it's still set) don't try to end it a second time.
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil
@@ -1344,12 +1366,12 @@ func (i OpenTelemetry) OnFinish(ctx context.Context, e TelemetryFinishEvent) { i
 func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 	// The end is terminal for the call: its state goes even when no span is
 	// recording, so a late event cannot leave an entry behind.
-	defer genAIDeleteState(e.CallID)
+	defer genAIDeleteState(i.stateKey(e.CallID))
 	// H5: resolve OUR OWN root span by CallID rather than
 	// trace.SpanFromContext(ctx), which — with a second integration also
 	// registered — would silently resolve to that other integration's span
 	// and leave ours never ended.
-	span := genAIRootSpanFor(e.CallID, ctx)
+	span := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -1363,7 +1385,7 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 		// reason) and no token-based gen_ai.usage.* (appendGenAIUsageAttrs).
 		i.onAudioOperationEnd(span, e)
 		span.End()
-		genAIDeleteState(e.CallID)
+		genAIDeleteState(i.stateKey(e.CallID))
 		return
 	}
 	recordOutputs := e.Settings == nil || e.Settings.RecordOutputs
@@ -1378,7 +1400,7 @@ func (i OpenTelemetry) OnEnd(ctx context.Context, e TelemetryFinishEvent) {
 		i.onGenerateEnd(span, e, recordOutputs)
 	}
 	span.End()
-	genAIDeleteState(e.CallID)
+	genAIDeleteState(i.stateKey(e.CallID))
 }
 
 // onGenerateEnd mirrors TS onGenerateEnd (generateText/streamText): finish
@@ -1566,9 +1588,9 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	// Terminal for the call (also when it arrives after OnEnd): never leave
 	// state behind.
-	defer genAIDeleteState(e.CallID)
+	defer genAIDeleteState(i.stateKey(e.CallID))
 	if e.CallID != "" {
-		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", i.stateKey(e.CallID))); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				if e.Error != nil {
 					RecordErrorOnSpan(entry.span, e.Error)
@@ -1576,7 +1598,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 				entry.span.End()
 			}
 		}
-		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID)); ok {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				if e.Error != nil {
 					RecordErrorOnSpan(entry.span, e.Error)
@@ -1589,7 +1611,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 	// CallID — mirrors TS's onError stepSpan/toolSpans handling — otherwise a
 	// step or tool span left open by an error that skipped
 	// OnStepEnd/OnToolExecutionEnd would leak.
-	if st := genAIState(e.CallID); st != nil {
+	if st := genAIState(i.stateKey(e.CallID)); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
 		st.stepSpan = nil
@@ -1632,7 +1654,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 			rerankSpan.End()
 		}
 	}
-	span := genAIRootSpanFor(e.CallID, ctx)
+	span := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -1640,7 +1662,7 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 		RecordErrorOnSpan(span, e.Error)
 	}
 	span.End()
-	genAIDeleteState(e.CallID)
+	genAIDeleteState(i.stateKey(e.CallID))
 }
 
 // OnAbort ends any in-flight model-call ("chat") span, any in-flight step/
@@ -1651,21 +1673,21 @@ func (i OpenTelemetry) OnError(ctx context.Context, e TelemetryErrorEvent) {
 // alone), so this closes the right spans even when another integration is
 // also registered.
 func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
-	defer genAIDeleteState(e.CallID)
+	defer genAIDeleteState(i.stateKey(e.CallID))
 	if e.CallID != "" {
 		// TS onAbort also ends an in-flight decision model-call span.
-		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID)); ok {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", i.stateKey(e.CallID))); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				entry.span.End()
 			}
 		}
-		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID)); ok {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				entry.span.End()
 			}
 		}
 	}
-	if st := genAIState(e.CallID); st != nil {
+	if st := genAIState(i.stateKey(e.CallID)); st != nil {
 		st.mu.Lock()
 		stepSpan := st.stepSpan
 		st.stepSpan = nil
@@ -1695,12 +1717,12 @@ func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 	} else if stepSpan, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span); ok && stepSpan.IsRecording() {
 		stepSpan.End()
 	}
-	span := genAIRootSpanFor(e.CallID, ctx)
+	span := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
 	span.End()
-	genAIDeleteState(e.CallID)
+	genAIDeleteState(i.stateKey(e.CallID))
 }
 
 // OnStepError closes a still-open step span and the nested model-call
@@ -1711,7 +1733,7 @@ func (i OpenTelemetry) OnAbort(ctx context.Context, e TelemetryAbortEvent) {
 // or a plain end (mirroring onAbort) when it's nil.
 func (i OpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
 	if e.CallID != "" {
-		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", e.CallID)); ok {
+		if value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("languageModel", i.stateKey(e.CallID))); ok {
 			if entry, ok := value.(otelSpanEntry); ok && entry.span.IsRecording() {
 				if e.Error != nil {
 					RecordErrorOnSpan(entry.span, e.Error)
@@ -1720,7 +1742,7 @@ func (i OpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
 			}
 		}
 	}
-	stepSpan, ok := ctx.Value(genAIStepSpanKey{}).(trace.Span)
+	stepSpan, ok := i.stepSpanFor(ctx, e.CallID)
 	if !ok || !stepSpan.IsRecording() {
 		return
 	}
@@ -1729,7 +1751,7 @@ func (i OpenTelemetry) OnStepError(ctx context.Context, e TelemetryErrorEvent) {
 	}
 	stepSpan.End()
 	if e.CallID != "" {
-		if st := genAIState(e.CallID); st != nil {
+		if st := genAIState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			if st.stepSpan == stepSpan {
 				st.stepSpan = nil

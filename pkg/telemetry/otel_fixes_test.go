@@ -472,10 +472,10 @@ func TestTerminalEventsAfterEndDoNotLeakCallState(t *testing.T) {
 				integration.(abortHandler).OnAbort(ctx, TelemetryAbortEvent{CallID: callID, Settings: settings})
 			}
 		}
-		if _, ok := legacyCallStates.Load(callID); ok {
+		if _, ok := legacyCallStates.Load(legacy.stateKey(callID)); ok {
 			t.Errorf("%s: legacy call state leaked", terminal)
 		}
-		if _, ok := genAICallStates.Load(callID); ok {
+		if _, ok := genAICallStates.Load(genAI.stateKey(callID)); ok {
 			t.Errorf("%s: GenAI call state leaked", terminal)
 		}
 	}

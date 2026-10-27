@@ -313,7 +313,7 @@ func (i LegacyOpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEve
 	// OnDecisionModelCallStart can find them instead of relying on ctx,
 	// which only carries the last registered integration's values.
 	if e.CallID != "" {
-		st := legacyState(e.CallID)
+		st := legacyState(i.stateKey(e.CallID))
 		st.mu.Lock()
 		st.rootSpan = span
 		st.baseAttrs = baseAttrs
@@ -327,8 +327,8 @@ func (i LegacyOpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEve
 // (resolved by CallID, embedded by OnDecideStart) and ends it, mirroring
 // TS's onDecideOperationEnd.
 func (i LegacyOpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
-	defer legacyDeleteState(e.CallID)
-	span := legacyRootSpanFor(e.CallID, ctx)
+	defer legacyDeleteState(i.stateKey(e.CallID))
+	span := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -338,7 +338,7 @@ func (i LegacyOpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) 
 		}
 	}
 	span.End()
-	legacyDeleteState(e.CallID)
+	legacyDeleteState(i.stateKey(e.CallID))
 }
 
 // OnDecisionModelCallStart creates the nested "ai.decide.doDecide"
@@ -349,18 +349,18 @@ func (i LegacyOpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) 
 func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
-	parent := legacyRootSpanFor(e.CallID, ctx)
+	parent := legacyRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !parent.IsRecording() {
 		return
 	}
-	tracer := genAIChildTracer(e.CallID, parent)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), e.OperationID)
 	functionID := ""
 	if e.Settings != nil {
 		functionID = e.Settings.FunctionID
 	}
 	span.SetAttributes(legacyOperationNameAttrs(e.OperationID, functionID)...)
-	span.SetAttributes(legacyInheritedAttrs(ctx, e.CallID)...)
+	span.SetAttributes(legacyInheritedAttrs(ctx, i.stateKey(e.CallID))...)
 	if e.Settings == nil || e.Settings.RecordInputs {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
 			span.SetAttributes(attr)
@@ -370,7 +370,7 @@ func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e Dec
 		}
 	}
 	if e.CallID != "" {
-		otelModelCallSpans.Store(otelSpanKey("decision", e.CallID), otelSpanEntry{span: span})
+		otelModelCallSpans.Store(otelSpanKey("decision", i.stateKey(e.CallID)), otelSpanEntry{span: span})
 	}
 }
 
@@ -378,7 +378,7 @@ func (i LegacyOpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e Dec
 // metadata on the nested "ai.decide.doDecide" span and ends it, mirroring
 // TS's experimental_onDecisionModelCallEnd.
 func (i LegacyOpenTelemetry) OnDecisionModelCallEnd(_ context.Context, e DecisionModelCallEndEvent) {
-	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", e.CallID))
+	value, ok := otelModelCallSpans.LoadAndDelete(otelSpanKey("decision", i.stateKey(e.CallID)))
 	if !ok {
 		return
 	}
@@ -462,7 +462,7 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 	// OnDecideEnd/OnDecisionModelCallStart can find it instead of relying
 	// on trace.SpanFromContext(ctx).
 	if e.CallID != "" {
-		st := genAIState(e.CallID)
+		st := genAIState(i.stateKey(e.CallID))
 		st.mu.Lock()
 		st.rootSpan = span
 		st.baseSupp = baseSupp
@@ -475,8 +475,8 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 // OnDecideEnd sets output attributes on the root decide span (resolved
 // by CallID) and ends it, mirroring TS's onDecideOperationEnd.
 func (i OpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
-	defer genAIDeleteState(e.CallID)
-	span := genAIRootSpanFor(e.CallID, ctx)
+	defer genAIDeleteState(i.stateKey(e.CallID))
+	span := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !span.IsRecording() {
 		return
 	}
@@ -487,7 +487,7 @@ func (i OpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
 		}
 	}
 	span.End()
-	genAIDeleteState(e.CallID)
+	genAIDeleteState(i.stateKey(e.CallID))
 }
 
 // OnDecisionModelCallStart creates the nested "decide {modelId}" child
@@ -496,11 +496,11 @@ func (i OpenTelemetry) OnDecideEnd(ctx context.Context, e DecideEndEvent) {
 func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartEvent) {
 	// H5: resolve our own root span by CallID rather than
 	// trace.SpanFromContext(ctx).
-	parent := genAIRootSpanFor(e.CallID, ctx)
+	parent := genAIRootSpanFor(i.stateKey(e.CallID), ctx)
 	if !parent.IsRecording() {
 		return
 	}
-	tracer := genAIChildTracer(e.CallID, parent)
+	tracer := genAIChildTracer(i.stateKey(e.CallID), parent)
 	spanName := "decide"
 	if e.ModelID != "" {
 		spanName += " " + e.ModelID
@@ -518,7 +518,7 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	)
-	span.SetAttributes(genAIBaseSupplemental(e.CallID)...)
+	span.SetAttributes(genAIBaseSupplemental(i.stateKey(e.CallID))...)
 	recordInputs := e.Settings == nil || e.Settings.RecordInputs
 	if i.opts.experimentalDecision() && recordInputs {
 		if attr, ok := jsonAttr("ai.decision.state", e.State); ok {
@@ -529,7 +529,7 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 		}
 	}
 	if e.CallID != "" {
-		genAICallSpans.Store(genAISpanKey("decision", e.CallID), otelSpanEntry{span: span})
+		genAICallSpans.Store(genAISpanKey("decision", i.stateKey(e.CallID)), otelSpanEntry{span: span})
 	}
 }
 
@@ -537,7 +537,7 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 // metadata on the nested decide span and ends it, mirroring TS's
 // experimental_onDecisionModelCallEnd.
 func (i OpenTelemetry) OnDecisionModelCallEnd(_ context.Context, e DecisionModelCallEndEvent) {
-	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", e.CallID))
+	value, ok := genAICallSpans.LoadAndDelete(genAISpanKey("decision", i.stateKey(e.CallID)))
 	if !ok {
 		return
 	}
