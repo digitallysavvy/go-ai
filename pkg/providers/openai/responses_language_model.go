@@ -375,13 +375,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
 	}
-	if conversation != "" && previousResponseID != "" {
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "conversation",
-			Details: "conversation and previousResponseId cannot be used together",
-		})
-	}
 
 	modelCapabilities := GetLanguageModelCapabilities(m.modelID)
 
@@ -433,6 +426,14 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			Details: fmt.Sprintf("%s only supports the following reasoning efforts: %s", m.modelID, strings.Join(modelCapabilities.SupportedReasoningEfforts, ", ")),
 		})
 		reasoningEffort = ""
+	}
+	// TS reports this after the reasoningEffort check above.
+	if conversation != "" && previousResponseID != "" {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "conversation",
+			Details: "conversation and previousResponseId cannot be used together",
+		})
 	}
 
 	// Determine system message mode based on model type.
@@ -568,6 +569,38 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		input = append(input, map[string]interface{}{"type": "compaction_trigger"})
 	}
 
+	// TS normalizes the response format schema right after the compaction
+	// trigger, so its warnings (and any error) precede the reasoning-model
+	// warnings below.
+	var normalizedResponseSchema interface{}
+	hasJSONFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json"
+	if hasJSONFormat && opts.ResponseFormat.Schema != nil {
+		// Normalize the response schema for OpenAI structured outputs
+		// (d5e3024, 411b3f2: drop propertyNames / lookaround patterns),
+		// matching the chat model's handling.
+		normalizedResponseSchema = opts.ResponseFormat.Schema
+		if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(opts.ResponseFormat.Schema); rawSchema != nil {
+			normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
+			if normErr != nil {
+				return nil, false, warnings, normErr
+			}
+			warnings = append(warnings, schemaWarnings...)
+			normalizedResponseSchema = normalizedSchema
+		}
+	}
+
+	// TS reports the GPT-6 promptCacheRetention removal before the
+	// reasoning-model warnings.
+	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
+		// GPT-6+ models do not support promptCacheRetention; use
+		// promptCacheOptions instead.
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "promptCacheRetention",
+			Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
+		})
+	}
+
 	body := map[string]interface{}{
 		"model": m.requestModel(),
 		"input": input,
@@ -598,35 +631,6 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 			reasoning["context"] = reasoningContext
 		}
 		body["reasoning"] = reasoning
-	} else if !isReasoning {
-		if reasoningEffortOption != "" {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningEffort",
-				Details: "reasoningEffort is not supported for non-reasoning models",
-			})
-		}
-		if reasoningSummary != "" {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningSummary",
-				Details: "reasoningSummary is not supported for non-reasoning models",
-			})
-		}
-		if reasoningMode != "" {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningMode",
-				Details: "reasoningMode is not supported for non-reasoning models",
-			})
-		}
-		if reasoningContext != "" {
-			warnings = append(warnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "reasoningContext",
-				Details: "reasoningContext is not supported for non-reasoning models",
-			})
-		}
 	}
 
 	// Build the include list in TS order (user include, logprobs, web search
@@ -658,6 +662,36 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 					effectiveEffort = e
 				}
 			}
+		}
+	}
+	if !isReasoning {
+		if reasoningEffortOption != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningEffort",
+				Details: "reasoningEffort is not supported for non-reasoning models",
+			})
+		}
+		if reasoningSummary != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningSummary",
+				Details: "reasoningSummary is not supported for non-reasoning models",
+			})
+		}
+		if reasoningMode != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningMode",
+				Details: "reasoningMode is not supported for non-reasoning models",
+			})
+		}
+		if reasoningContext != "" {
+			warnings = append(warnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "reasoningContext",
+				Details: "reasoningContext is not supported for non-reasoning models",
+			})
 		}
 	}
 	supportsNonReasoningParams := !isReasoning || (effectiveEffort == "none" && supportsNonReasoningParameters(m.modelID))
@@ -712,25 +746,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 
 	// Response format and/or text verbosity → "text" object.
 	// TS only creates text.format for responseFormat.type === "json".
-	hasJSONFormat := opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json"
 	if hasJSONFormat || textVerbosity != "" {
 		textObj := map[string]interface{}{}
 		if hasJSONFormat {
 			if opts.ResponseFormat.Schema != nil {
-				// Normalize the response schema for OpenAI structured outputs
-				// (d5e3024, 411b3f2: drop propertyNames / lookaround
-				// patterns), matching the chat model's handling.
-				responseSchema := opts.ResponseFormat.Schema
-				if rawSchema := providerutils.ResponseFormatJSONSchemaOrdered(responseSchema); rawSchema != nil {
-					{
-						normalizedSchema, schemaWarnings, normErr := NormalizeOpenAISchemaValue(rawSchema)
-						if normErr != nil {
-							return nil, false, warnings, normErr
-						}
-						warnings = append(warnings, schemaWarnings...)
-						responseSchema = normalizedSchema
-					}
-				}
+				responseSchema := normalizedResponseSchema
 				format := map[string]interface{}{
 					"type":   "json_schema",
 					"strict": strictJSONSchema,
@@ -754,7 +774,8 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["text"] = textObj
 	}
 
-	// Tools.
+	// Tools. TS appends every tool warning after all other warnings.
+	var toolWarnings []types.Warning
 	if len(opts.Tools) > 0 {
 		preparedTools, err := responses.PrepareToolsWithOptionsName(opts.Tools, providerOptionsName)
 		if err != nil {
@@ -764,13 +785,13 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		if err != nil {
 			return nil, false, nil, err
 		}
-		warnings = append(warnings, toolSchemaWarnings...)
+		toolWarnings = append(toolWarnings, toolSchemaWarnings...)
 		body["tools"] = preparedTools
 		if len(allowedToolNames) > 0 {
 			allowedTools, allowedToolWarnings, err := responses.ResolveAllowedToolsWithOptionsName(opts.Tools, allowedToolNames, allowedToolsMode, providerOptionsName)
-			warnings = append(warnings, allowedToolWarnings...)
+			toolWarnings = append(toolWarnings, allowedToolWarnings...)
 			if err != nil {
-				return nil, false, warnings, err
+				return nil, false, append(warnings, toolWarnings...), err
 			}
 			if allowedTools != nil {
 				body["tool_choice"] = *allowedTools
@@ -813,16 +834,11 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 	} else if hasNilProviderOption(openaiOpts, "previousResponseId") {
 		body["previous_response_id"] = nil
 	}
-	if promptCacheRetention != "" && modelCapabilities.SupportsConfigurationUpdate {
-		// GPT-6+ models do not support promptCacheRetention; use
-		// promptCacheOptions instead.
-		warnings = append(warnings, types.Warning{
-			Type:    "unsupported",
-			Feature: "promptCacheRetention",
-			Details: "promptCacheRetention is not supported by GPT-6 and later models; use promptCacheOptions instead",
-		})
-	} else if promptCacheRetention != "" {
-		body["prompt_cache_retention"] = promptCacheRetention
+	if promptCacheRetention != "" {
+		// GPT-6+ drops it (warned about above).
+		if !modelCapabilities.SupportsConfigurationUpdate {
+			body["prompt_cache_retention"] = promptCacheRetention
+		}
 	} else if hasNilProviderOption(openaiOpts, "promptCacheRetention") {
 		body["prompt_cache_retention"] = nil
 	}
@@ -898,7 +914,7 @@ func (m *ResponsesLanguageModel) buildRequest(opts *provider.GenerateOptions, st
 		body["context_management"] = contextManagement
 	}
 
-	return body, store, warnings, nil
+	return body, store, append(warnings, toolWarnings...), nil
 }
 
 func stringSliceFromInterface(value interface{}) []string {
