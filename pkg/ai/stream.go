@@ -849,6 +849,25 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		toolsContext = map[string]interface{}{}
 	}
 
+	// Build prompt. TS standardizePrompt runs before the start events, so a
+	// prompt error reaches no integration: none has call state for it yet
+	// (TS integrations ignore its onError), and a Go integration without
+	// call state would fall back to the caller's span in ctx.
+	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
+	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
+	// TS standardizePrompt reports a missing/duplicated/empty prompt before
+	// the system-message check.
+	var normalizedPrompt types.Prompt
+	normErr := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
+	if normErr == nil {
+		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
+	}
+	if normErr != nil {
+		r.fail(normErr)
+		return
+	}
+	prompt = normalizedPrompt
+
 	// Fire OnStart — integrations start their root spans here and embed them
 	// in the returned context.  FireOnFinish / FireOnError are called later
 	// from processStream or ReadAll once the stream completes.
@@ -906,22 +925,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		defer cancel()
 	}
 
-	// Build prompt
-	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
-	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
-	// TS standardizePrompt reports a missing/duplicated/empty prompt before
-	// the system-message check.
-	var normalizedPrompt types.Prompt
-	normErr := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
-	if normErr == nil {
-		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
-	}
-	if normErr != nil {
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
-		r.fail(normErr)
-		return
-	}
-	prompt = normalizedPrompt
 	opts.RuntimeContext = runtimeContext
 	opts.ExperimentalContext = runtimeContext
 	opts.ToolsContext = toolsContext
