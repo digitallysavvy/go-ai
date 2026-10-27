@@ -575,3 +575,17 @@ func TestDecisionModel_KeepsTSQuestionAndCriteriaOrder(t *testing.T) {
 		t.Fatalf("criteria order not kept: %s", body)
 	}
 }
+
+// TS `modelId: response.model ?? this.modelId` only falls back on null.
+func TestDecisionModel_EmptyResponseModelIsKept(t *testing.T) {
+	body := fixtureBody(t)
+	body["model"] = ""
+	s := newDecisionServer(t, body, 200)
+	res, err := s.model(t, "pplx-decider-latest").DoDecide(context.Background(), decisionOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Response.ModelID != "" {
+		t.Fatalf("ModelID = %q", res.Response.ModelID)
+	}
+}

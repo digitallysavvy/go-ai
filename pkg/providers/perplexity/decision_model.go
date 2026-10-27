@@ -205,7 +205,7 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 
 	modelID := m.modelID
-	if response.Model != nil && *response.Model != "" {
+	if response.Model != nil { // TS `response.model ?? modelId`: an empty string is kept
 		modelID = *response.Model
 	}
 	headers := lowerHeaders(providerutils.ExtractHeaders(httpResp.Headers))
