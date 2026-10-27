@@ -1327,8 +1327,10 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 	span.SetAttributes(setFiniteFloat64(nil, "gen_ai.execute_tool.duration", msToSeconds(e.DurationMs))...)
 	if e.Error != nil {
 		RecordErrorOnSpan(span, e.Error)
-	} else if e.Settings.ShouldRecordOutputs() {
-		// TS: gen_ai.tool.call.result is an output (recordOutputs gate).
+	} else if e.Settings.ShouldRecordOutputs() && e.Result != nil {
+		// TS: gen_ai.tool.call.result is an output (recordOutputs gate). A
+		// tool with no result (TS undefined, which JSON.stringify leaves
+		// undefined) records none, as in the legacy integration.
 		if b, err := jsonstr.Marshal(e.Result); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.tool.call.result", string(b)))
 		}
