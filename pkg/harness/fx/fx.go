@@ -87,7 +87,8 @@ type Settings struct {
 	// Wasm says where fx-core.wasm comes from; nil downloads and caches the
 	// pinned module on first use (see WasmSource).
 	Wasm *WasmSource
-	// MemoryLimitBytes caps each core's memory; 0 means 1 GiB.
+	// MemoryLimitBytes caps each core's memory, up to the wasm32 maximum of
+	// 4 GiB; 0 means 1 GiB.
 	MemoryLimitBytes int64
 	// HTTPClient sends the core's model requests. nil uses an SSRF-safe
 	// client. Either way only the AI Gateway base origin and libfx's default

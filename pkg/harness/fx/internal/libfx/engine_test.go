@@ -390,3 +390,16 @@ func TestEngineCloseReturnsWhileNotificationHandlerBlocks(t *testing.T) {
 		t.Fatal("core still running after Close")
 	}
 }
+
+// wazero panics on a memory limit past the wasm32 maximum; loadHost must
+// return an error instead of crashing the host process.
+func TestLoadHostRejectsMemoryLimitPastWasm32(t *testing.T) {
+	wasm := pinnedGuest(code(i32Const(0), call(importIndex(t, wasiModule, "proc_exit"))), nil)
+	mod, err := Resolve(context.Background(), fakeSource(t, wasm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadHost(context.Background(), mod, MaxMemoryLimitPages+1); err == nil || !strings.Contains(err.Error(), "wasm32 maximum") {
+		t.Fatalf("loadHost = %v", err)
+	}
+}
