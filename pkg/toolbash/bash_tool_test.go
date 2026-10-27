@@ -165,7 +165,8 @@ func TestBashToolRejectsInvalidOptionsBeforeChangingTheSession(t *testing.T) {
 		tooLong, unsafe := int64(MaxTimeoutMs)+1, maxSafeInteger+1
 		timeouts = append(timeouts, int(tooLong))
 		lengths = append(lengths, int(unsafe))
-		if _, err := CreateBashTool(context.Background(), Options{Sandbox: rec, MaxOutputLength: intPtr(int(maxSafeInteger))}); err != nil {
+		safe := maxSafeInteger
+		if _, err := CreateBashTool(context.Background(), Options{Sandbox: rec, MaxOutputLength: intPtr(int(safe))}); err != nil {
 			t.Fatalf("MAX_SAFE_INTEGER maxOutputLength rejected: %v", err)
 		}
 	}

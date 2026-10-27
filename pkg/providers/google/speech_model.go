@@ -643,7 +643,7 @@ func parseGeminiSampleRate(mimeType string) int {
 	// int, so an out-of-range value must be rejected explicitly instead of
 	// being treated as a real sample rate.
 	rate, err := strconv.Atoi(match[1])
-	if err != nil || rate < 0 || rate > math.MaxUint32 {
+	if err != nil || rate < 0 || int64(rate) > math.MaxUint32 {
 		return 0
 	}
 	return rate
@@ -661,7 +661,7 @@ func addGeminiWAVHeader(pcm []byte, sampleRate int) []byte {
 	// math.MaxInt64). Guard the narrowing conversion below explicitly so an
 	// out-of-range value can't silently truncate into a bogus WAV header
 	// field instead of being treated as "unknown".
-	if sampleRate < 0 || sampleRate > math.MaxUint32 {
+	if sampleRate < 0 || int64(sampleRate) > math.MaxUint32 {
 		sampleRate = 0
 	}
 	blockAlign := numChannels * bitsPerSample / 8

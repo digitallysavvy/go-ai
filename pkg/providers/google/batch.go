@@ -154,7 +154,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		fileParts.Write(encoded)
 		fileParts.WriteByte('\n')
 	}
-	if fileParts.Len() > googleBatchInputFileMaxBytes {
+	if int64(fileParts.Len()) > googleBatchInputFileMaxBytes {
 		return nil, &providererrors.InvalidArgumentError{Field: "requests", Message: "Google batch input files must not exceed 2 GB."}
 	}
 
