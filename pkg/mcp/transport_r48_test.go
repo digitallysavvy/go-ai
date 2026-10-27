@@ -92,3 +92,61 @@ func TestSSETransportStaleReaderDoesNotClobberReconnect(t *testing.T) {
 		})
 	}
 }
+
+// pipeSSEClient answers GETs (and, when post is set, POSTs) with an
+// io.Pipe-backed event stream that never ends and does not watch the request
+// context: only closing the body unblocks its reader.
+type pipeSSEClient struct{ post bool }
+
+func (c *pipeSSEClient) Do(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet || (c.post && req.Method == http.MethodPost) {
+		pr, pw := io.Pipe()
+		go func() { _, _ = pw.Write([]byte(": keep-alive\n\n")) }()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: pr}, nil
+	}
+	return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(strings.NewReader(""))}, nil
+}
+
+// TS close() cancels the inbound SSE reader and aborts POST-response
+// readers, which cancels their bodies. Go's Close waits for those reader
+// goroutines, so before the fix a custom SSEClient body that ignores the
+// request context made Close hang forever.
+func TestHTTPTransportCloseClosesCustomStreamBodies(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		post     bool
+		protocol string
+	}{
+		{"inbound GET", false, "2025-06-18"},
+		// The modern protocol opens no inbound GET, so only the POST
+		// reader is in play.
+		{"POST response", true, LatestProtocolVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport := NewHTTPTransport(HTTPTransportConfig{
+				URL:                    "http://example.test/mcp",
+				InitialProtocolVersion: tc.protocol,
+				SSEClient:              &pipeSSEClient{post: tc.post},
+			})
+			if err := transport.Connect(context.Background()); err != nil {
+				t.Fatalf("Connect: %v", err)
+			}
+			if tc.post {
+				if err := transport.Send(context.Background(), &MCPMessage{JSONRpc: "2.0", ID: 1, Method: "ping"}); err != nil {
+					t.Fatalf("Send: %v", err)
+				}
+			}
+			time.Sleep(50 * time.Millisecond)
+			done := make(chan struct{})
+			go func() {
+				_ = transport.Close()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Close hung on a stream body that ignores the request context")
+			}
+		})
+	}
+}
