@@ -409,3 +409,115 @@ func TestPruneModelMessages_EmptyToolsListPrunesNothing(t *testing.T) {
 		t.Fatalf("expected nothing pruned, got %+v", out)
 	}
 }
+
+// TS prune-messages.test.ts "toolCalls > consecutive reasoning parts" (#23128).
+func pruneReasoning(s string) types.ContentPart { return types.ReasoningContent{Text: s} }
+
+func pruneReasoningFile() types.ContentPart {
+	return types.ReasoningFileContent{MediaType: "image/png", Data: []byte("reasoning-image")}
+}
+
+func TestPruneModelMessages_PrunesOrphanedReasoningGroups(t *testing.T) {
+	t.Parallel()
+
+	for _, rule := range []string{"all", "before-last-message", "before-last-2-messages"} {
+		for _, count := range []int{2, 3} {
+			parts := make([]types.ContentPart, 0, count+1)
+			for i := 0; i < count; i++ {
+				parts = append(parts, pruneReasoning("summary"))
+			}
+			parts = append(parts, types.ToolCallContent{ToolCallID: "call-1", ToolName: "remove-me"})
+			messages := []types.Message{
+				assistantMsg(parts...),
+				toolMsg(types.ToolResultContent{ToolCallID: "call-1", ToolName: "remove-me"}),
+				userMsg("Continue."),
+				assistantMsg(types.TextContent{Text: "Final answer."}),
+			}
+			out, err := PruneModelMessages(messages, PruneModelMessagesOptions{
+				ToolCalls: []PruneToolCallsRule{{Type: rule}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(out, messages[2:]) {
+				t.Fatalf("rule %s count %d: got %+v", rule, count, out)
+			}
+		}
+	}
+}
+
+func TestPruneModelMessages_OrphanedReasoningTextAndFiles(t *testing.T) {
+	t.Parallel()
+
+	messages := []types.Message{assistantMsg(
+		pruneReasoning("Call the tool."),
+		pruneReasoningFile(),
+		types.ToolCallContent{ToolCallID: "call-1", ToolName: "remove-me"},
+	)}
+	rules := []PruneToolCallsRule{{Type: "all"}}
+
+	out, _ := PruneModelMessages(messages, PruneModelMessagesOptions{ToolCalls: rules})
+	if len(out) != 0 {
+		t.Fatalf("expected message removed, got %+v", out)
+	}
+	out, _ = PruneModelMessages(messages, PruneModelMessagesOptions{ToolCalls: rules, EmptyMessages: "keep"})
+	if len(out) != 1 || len(out[0].Content) != 0 {
+		t.Fatalf("expected one empty assistant message, got %+v", out)
+	}
+}
+
+func TestPruneModelMessages_ReasoningFollowedByRetainedContentKept(t *testing.T) {
+	t.Parallel()
+
+	keptTool := types.ToolCallContent{ToolCallID: "call-kept", ToolName: "keep-me"}
+	messages := []types.Message{assistantMsg(
+		pruneReasoning("Only explains the removed tool."),
+		types.ToolCallContent{ToolCallID: "call-removed", ToolName: "remove-me"},
+		pruneReasoning("Explains the retained tool."),
+		keptTool,
+		pruneReasoning("Explains the retained text."),
+		types.ToolCallContent{ToolCallID: "call-before-text", ToolName: "remove-me"},
+		types.TextContent{Text: "Retained answer."},
+	)}
+	out, err := PruneModelMessages(messages, PruneModelMessagesOptions{
+		ToolCalls: []PruneToolCallsRule{{Type: "all", Tools: []string{"remove-me"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []types.Message{assistantMsg(
+		pruneReasoning("Explains the retained tool."),
+		keptTool,
+		pruneReasoning("Explains the retained text."),
+		types.TextContent{Text: "Retained answer."},
+	)}
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("got %+v", out)
+	}
+}
+
+func TestPruneModelMessages_ReasoningGroupWithoutFollowingContentKept(t *testing.T) {
+	t.Parallel()
+
+	messages := []types.Message{assistantMsg(pruneReasoning("First."), pruneReasoning("Second."))}
+	out, _ := PruneModelMessages(messages, PruneModelMessagesOptions{ToolCalls: []PruneToolCallsRule{{Type: "all"}}})
+	if !reflect.DeepEqual(out, messages) {
+		t.Fatalf("got %+v", out)
+	}
+}
+
+func TestPruneModelMessages_ReasoningGroupWithTextAfterPrunedToolCall(t *testing.T) {
+	t.Parallel()
+
+	text := types.TextContent{Text: "Retained answer."}
+	messages := []types.Message{assistantMsg(
+		pruneReasoning("First summary."), pruneReasoningFile(),
+		types.ToolCallContent{ToolCallID: "call-1", ToolName: "remove-me"},
+		text,
+	)}
+	out, _ := PruneModelMessages(messages, PruneModelMessagesOptions{ToolCalls: []PruneToolCallsRule{{Type: "all"}}})
+	want := []types.Message{assistantMsg(pruneReasoning("First summary."), pruneReasoningFile(), text)}
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("got %+v", out)
+	}
+}
