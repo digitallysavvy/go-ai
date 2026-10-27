@@ -129,6 +129,7 @@ These tables are generated from the `agent.AgentGenerateOptions` and `agent.Agen
 | `RuntimeContext` | `interface{}` |  |
 | `ToolsContext` | `map[string]interface{}` |  |
 | `CallOptions` | `interface{}` |  |
+| `ExperimentalSteering` | `*ai.Steering` | ExperimentalSteering adds user messages to the run at the next step boundary (see ai.Steering). Supported by ToolLoopAgent.Generate, ToolLoopAgent.Stream and CreateAgentUIStream; the legacy Execute/GenerateAgent loop ignores it. Create one per call with ai.NewSteering. Experimental (TS experimental_steering, #23813). |
 | `Model` | `provider.LanguageModel` |  |
 | `Tools` | `[]types.Tool` |  |
 | `ToolChoice` | `types.ToolChoice` |  |
