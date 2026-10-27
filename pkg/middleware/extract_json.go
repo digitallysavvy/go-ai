@@ -120,6 +120,12 @@ func ExtractJSONMiddleware(options *ExtractJSONOptions) *LanguageModelMiddleware
 				part.Text = transform(part.Text)
 				return []types.ContentPart{part}
 			})
+			// The provider-selected structured output text is transformed
+			// too (TS: structuredOutputText: transform(structuredOutputText)).
+			if result.StructuredOutputText != nil {
+				transformed := transform(*result.StructuredOutputText)
+				result.StructuredOutputText = &transformed
+			}
 			return result, nil
 		},
 

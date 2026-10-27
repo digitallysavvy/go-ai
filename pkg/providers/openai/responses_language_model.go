@@ -99,6 +99,9 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		return nil, err
 	}
 	result.Warnings = append(warnings, result.Warnings...)
+	if opts.ResponseFormat != nil && opts.ResponseFormat.Type == "json" {
+		result.StructuredOutputText = responsesStructuredOutputText(resp.Output)
+	}
 	if responsesLogprobsRequested(opts.ProviderOptions, m.provider.responsesProviderOptionsName()) {
 		if logprobs := responsesOutputLogprobs(resp.Output); len(logprobs) > 0 {
 			if pm, ok := result.ProviderMetadata[m.provider.responsesProviderOptionsName()].(map[string]interface{}); ok {
@@ -1312,6 +1315,35 @@ func responsesWebSearchToolName(tools []types.Tool) string {
 // ─────────────────────────────────────────────────────────────────────────────
 // Non-streaming response conversion
 // ─────────────────────────────────────────────────────────────────────────────
+
+// responsesStructuredOutputText returns the text of the last "final_answer"
+// message in output (all of its content parts joined), or nil when there is
+// none. A Responses API response can hold several assistant messages with
+// JSON; concatenating them breaks structured-output parsing, so JSON output
+// is parsed from the last final answer only while every message stays in
+// the generated content (TS structuredOutputText, #23895).
+func responsesStructuredOutputText(output []json.RawMessage) *string {
+	var selected *string
+	for _, rawItem := range output {
+		var peek struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(rawItem, &peek) != nil || peek.Type != "message" {
+			continue
+		}
+		var item responses.AssistantMessageItem
+		if json.Unmarshal(rawItem, &item) != nil || item.Phase == nil || *item.Phase != "final_answer" {
+			continue
+		}
+		var text strings.Builder
+		for _, part := range item.Content {
+			text.WriteString(part.Text)
+		}
+		joined := text.String()
+		selected = &joined
+	}
+	return selected
+}
 
 func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResponse, store bool, webSearchToolName string, tools []types.Tool, approvalFromPrompt map[string]string, providerOptionsName ...string) (*types.GenerateResult, error) {
 	providerName := "openai"
