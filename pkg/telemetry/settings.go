@@ -40,13 +40,17 @@ type Options struct {
 	// nil means enabled, matching the TypeScript SDK's optional isEnabled field.
 	IsEnabled *bool
 
-	// RecordInputs controls whether input data is recorded in spans. Defaults to true when telemetry is enabled.
-	// You might want to disable input recording to avoid recording sensitive
+	// RecordInputs controls whether input data is recorded in spans. A nil
+	// *Options records inputs; a non-nil Options records them only when this
+	// is true (DefaultSettings sets it), unlike TS, where an omitted
+	// recordInputs means true. You might want to disable input recording to avoid recording sensitive
 	// information, to reduce data transfers, or to increase performance.
 	RecordInputs bool
 
-	// RecordOutputs controls whether output data is recorded in spans. Defaults to true when telemetry is enabled.
-	// You might want to disable output recording to avoid recording sensitive
+	// RecordOutputs controls whether output data is recorded in spans. A nil
+	// *Options records outputs; a non-nil Options records them only when this
+	// is true (DefaultSettings sets it), unlike TS, where an omitted
+	// recordOutputs means true. You might want to disable output recording to avoid recording sensitive
 	// information, to reduce data transfers, or to increase performance.
 	RecordOutputs bool
 
