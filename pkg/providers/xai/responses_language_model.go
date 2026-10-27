@@ -203,7 +203,8 @@ func xaiResponsesWarnings(opts *provider.GenerateOptions) []types.Warning {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 	}
 	// TS warns frequencyPenalty, presencePenalty, then stopSequences.
-	if len(opts.StopSequences) > 0 {
+	// TS: stopSequences != null (an empty array warns too).
+	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{
 			Type:    "unsupported",
 			Feature: "stopSequences",

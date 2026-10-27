@@ -98,7 +98,8 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	if opts.PresencePenalty != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "presencePenalty"})
 	}
-	if len(opts.StopSequences) > 0 {
+	// TS: stopSequences != null (an empty array warns too).
+	if opts.StopSequences != nil {
 		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "stopSequences"})
 	}
 	if opts.Seed != nil {
