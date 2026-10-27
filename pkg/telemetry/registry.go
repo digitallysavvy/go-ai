@@ -46,7 +46,7 @@ type TelemetryStartEvent struct {
 	// nil means telemetry was not configured for this call.
 	Settings *Settings
 	// Prompt, System, and Messages are only populated when
-	// Settings.RecordInputs is true.
+	// Settings.ShouldRecordInputs() is true.
 	Prompt string
 	System string
 	// Messages carries the caller-supplied message list (generateText/
@@ -396,25 +396,25 @@ type TelemetryStepFinishEvent struct {
 	Usage         TelemetryUsage
 
 	// Text is the generated text for this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Text string
 
 	// Reasoning is the reasoning/thinking text of this step with the parts
 	// joined by "\n" (see JoinReasoning), the legacy ai.response.reasoning
-	// value. Integrations should check Settings.RecordOutputs before recording.
+	// value. Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Reasoning string
 
 	// ToolCalls made by the model in this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	ToolCalls []types.ToolCall
 
 	// Files holds model-generated output files for this step.
-	// Integrations should check Settings.RecordOutputs before recording.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Files []types.GeneratedFileContent
 
 	// ToolResults are the results of the tool calls of this step (including
 	// failed calls, which carry Error), mirroring TS's step-end
-	// `toolResults`. Integrations should check Settings.RecordOutputs before
+	// `toolResults`. Integrations should check Settings.ShouldRecordOutputs() before
 	// recording.
 	ToolResults []types.ToolResult
 
@@ -476,7 +476,7 @@ type TelemetryFinishEvent struct {
 	ModelProvider string
 	ModelID       string
 	// Text is the full generated text. Integrations should check
-	// Settings.RecordOutputs before recording this value.
+	// Settings.ShouldRecordOutputs() before recording this value.
 	Text string
 	// Reasoning is the reasoning/thinking text of the final step with the
 	// parts joined by "\n" (see JoinReasoning), emitted as ai.response.reasoning (output-gated) for ai.generateText/
@@ -487,7 +487,7 @@ type TelemetryFinishEvent struct {
 	// (output-gated) for ai.generateText/ai.streamText only.
 	ToolCalls []types.ToolCall
 	// Files holds any model-generated output files (e.g. images, audio).
-	// Integrations should check Settings.RecordOutputs before recording file data.
+	// Integrations should check Settings.ShouldRecordOutputs() before recording file data.
 	Files []types.GeneratedFileContent
 	// ToolResults and ReasoningParts feed the GenAI integration's root-span
 	// gen_ai.output.messages (TS onGenerateEnd): the tool results of every
