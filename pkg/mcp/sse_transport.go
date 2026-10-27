@@ -38,7 +38,10 @@ type SSETransport struct {
 	protocolVersion string
 	streamBody      io.Closer
 	cancel          context.CancelFunc
-	streamErr       error
+	// streamCtx is the transport-lifetime context (TS abortController
+	// signal), canceled by Close. Every Send POST also watches it.
+	streamCtx context.Context
+	streamErr error
 
 	config TransportConfig
 	oauth  *OAuthConfig
@@ -227,6 +230,7 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	t.mu.Lock()
 	t.streamBody = resp.Body
 	t.cancel = cancel
+	t.streamCtx = reqCtx
 	t.streamErr = nil
 	t.mu.Unlock()
 	go t.readSSEStream(resp.Body, ready)
@@ -261,6 +265,7 @@ func (t *SSETransport) closeWithoutCallback() {
 	t.endpoint = nil
 	t.streamBody = nil
 	t.cancel = nil
+	t.streamCtx = nil
 	t.streamErr = io.EOF
 	t.mu.Unlock()
 	if cancel != nil {
@@ -276,10 +281,23 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 	t.mu.Lock()
 	connected := t.connected
 	endpoint := t.endpoint
+	streamCtx := t.streamCtx
 	t.mu.Unlock()
 
 	if !connected || endpoint == nil {
 		return NewMCPClientError(0, "MCP SSE Transport Error: Not connected", nil)
+	}
+
+	// TS send() signals the POST with AbortSignal.any([transportSignal,
+	// options.signal]): Close aborts an in-flight POST. sendFailed still
+	// checks only the caller's ctx, so that abort is reported, as in TS.
+	reqCtx := ctx
+	if streamCtx != nil {
+		var cancel context.CancelFunc
+		reqCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		stop := context.AfterFunc(streamCtx, cancel)
+		defer stop()
 	}
 
 	data, err := json.Marshal(message)
@@ -297,7 +315,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 	// instead of triggering a second, redundant refresh.
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
 		if err != nil {
 			return NewTransportError("failed to create request", err)
 		}
