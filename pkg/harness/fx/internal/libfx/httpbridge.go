@@ -145,6 +145,11 @@ func (st *stream) run(fetch FetchFunc, method, rawURL string, headers, body []by
 		req, err = buildRequest(st.ctx, method, rawURL, headers, body)
 		if err == nil {
 			resp, err = fetch(req)
+			if err == nil && resp == nil {
+				// A custom Fetch broke its contract; fail the stream instead
+				// of dereferencing nil below.
+				err = errors.New("fx runtime: fetch returned no response")
+			}
 		}
 	}
 	if err == nil && st.ctx.Err() != nil {
@@ -331,6 +336,12 @@ func httpRequest(ctx context.Context, mod api.Module, s []uint64) {
 		return
 	}
 	statusOut, respPtr, respCap := u32(s[8]), u32(s[9]), u32(s[10])
+	// The response buffer must lie in guest memory; this also bounds how
+	// much of the body the host reads to the guest's memory size.
+	if _, ok := memBytes(mod, respPtr, respCap); !ok {
+		ret(s, -1)
+		return
+	}
 	ectx, release := inst.newEffect()
 	defer release()
 	type result struct {
@@ -347,6 +358,9 @@ func httpRequest(ctx context.Context, mod api.Module, s []uint64) {
 			return
 		}
 		resp, err := inst.fetch(req)
+		if err == nil && resp == nil {
+			err = errors.New("fx runtime: fetch returned no response")
+		}
 		if err != nil {
 			done <- result{err: err}
 			return

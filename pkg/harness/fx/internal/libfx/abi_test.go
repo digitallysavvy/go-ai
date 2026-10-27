@@ -764,3 +764,47 @@ func TestAllowlistFetch(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A custom Fetch that returns (nil, nil) fails the call instead of
+// dereferencing a nil response on a host goroutine (a process crash).
+func TestHTTPFetchReturningNilResponse(t *testing.T) {
+	mod := memoryGuest(t)
+	inst, ctx := testInstance(t)
+	inst.fetch = func(*http.Request) (*http.Response, error) { return nil, nil }
+	args := putRequestArgs(t, mod, "GET", "https://ai-gateway.vercel.sh/x", "", "")
+	if r := callHost(ctx, mod, httpRequest, append(args, 0, 100, 64)...); r != -1 {
+		t.Fatalf("buffered request = %d, want -1", r)
+	}
+	h := callHost(ctx, mod, streamOpen, args...)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r := callHost(ctx, mod, streamStatus, uint64(h), 0)
+		if r == -1 {
+			break
+		}
+		if r != 0 || time.Now().After(deadline) {
+			t.Fatalf("stream status = %d, want -1", r)
+		}
+	}
+	callHost(ctx, mod, streamClose, uint64(h))
+}
+
+// The buffered response buffer must lie in guest memory; a capacity past
+// its end fails before any request is sent, so the host never buffers up
+// to 4 GiB for a guest that cannot hold it.
+func TestHTTPRequestRejectsOutOfRangeBuffer(t *testing.T) {
+	mod := memoryGuest(t)
+	inst, ctx := testInstance(t)
+	called := false
+	inst.fetch = func(*http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("x")), Header: http.Header{}}, nil
+	}
+	args := putRequestArgs(t, mod, "GET", "https://ai-gateway.vercel.sh/x", "", "")
+	if r := callHost(ctx, mod, httpRequest, append(args, 0, 100, 0xffffffff)...); r != -1 {
+		t.Fatalf("request = %d, want -1", r)
+	}
+	if called {
+		t.Fatal("fetch ran for an out-of-range response buffer")
+	}
+}
