@@ -399,8 +399,11 @@ type turnDriver struct {
 	activeToolSet  map[string]struct{}
 	stripToolInput func(part StreamPart) []StreamPart
 
-	// execToolCallsByID holds the *unstripped* tool-call event for host tool
-	// execution (execution needs the real absolute paths); toolCallsByID
+	// rawToolCallsByID holds each tool-call event as the consumer sees it
+	// (work-dir-stripped), like TS `rawToolCallsByToolCallId`, which stores
+	// the display value: builtin approval records, builtin approval
+	// continuations and suspended results take their input from it. Host
+	// tool execution uses the unstripped event directly. toolCallsByID
 	// holds the parsed, display (work-dir-stripped) public tool call used
 	// for approvals, classification and callbacks. validatedHostCallsByID
 	// holds the schema-validated call with *unstripped* Arguments actually
@@ -411,7 +414,7 @@ type turnDriver struct {
 	// Go's driver revisits a call's validation result from separate
 	// functions (handleHostToolCall, processApprovalContinuation) rather
 	// than a single closure scope.
-	execToolCallsByID      map[string]*ToolCallPart
+	rawToolCallsByID       map[string]*ToolCallPart
 	toolCallsByID          map[string]types.ToolCall
 	validatedHostCallsByID map[string]*types.ToolCall
 	providerExecByID       map[string]bool
@@ -620,7 +623,7 @@ func (d *turnDriver) logError(context string, err any) {
 }
 
 func (d *turnDriver) run() {
-	d.execToolCallsByID = map[string]*ToolCallPart{}
+	d.rawToolCallsByID = map[string]*ToolCallPart{}
 	d.toolCallsByID = map[string]types.ToolCall{}
 	d.validatedHostCallsByID = map[string]*types.ToolCall{}
 	d.providerExecByID = map[string]bool{}
@@ -1154,8 +1157,8 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 
 		if tc, isCall := display.(*ToolCallPart); isCall {
 			rawTC := part.(*ToolCallPart)
-			d.execToolCallsByID[tc.ToolCallID] = rawTC
-			d.rememberCall(rawTC.ToolCallID, rawTC.ToolName, rawTC.Input, true)
+			d.rawToolCallsByID[tc.ToolCallID] = tc
+			d.rememberCall(tc.ToolCallID, tc.ToolName, tc.Input, true)
 			displayCall, hostCall, verr := d.classifyAndValidateToolCall(rawTC, tc)
 			if verr != nil {
 				_ = d.joinOutstandingExecutions()
@@ -2086,7 +2089,7 @@ func (d *turnDriver) handleApprovalRequest(part *ToolApprovalRequestPart) (await
 	if !ok {
 		return false, fmt.Errorf("Harness '%s' emitted approval request '%s' for unknown tool call '%s'.", d.in.Harness.HarnessID(), part.ApprovalID, part.ToolCallID) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	raw := d.execToolCallsByID[part.ToolCallID]
+	raw := d.rawToolCallsByID[part.ToolCallID]
 	toolName := call.ToolName
 	if raw != nil {
 		toolName = raw.ToolName
@@ -2661,7 +2664,7 @@ func approvalAsToolCallPart(approval PendingToolApproval) ToolCallPart {
 func (d *turnDriver) processApprovalContinuation(approval PendingToolApproval, continuation types.ToolApprovalResponseContent) (turnOutcome, error) {
 	rawToolCall := approvalAsToolCallPart(approval)
 	if approval.Kind == PendingToolApprovalBuiltin {
-		if r := d.execToolCallsByID[approval.ToolCallID]; r != nil {
+		if r := d.rawToolCallsByID[approval.ToolCallID]; r != nil {
 			rawToolCall = *r
 		}
 	}

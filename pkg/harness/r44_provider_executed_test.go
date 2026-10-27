@@ -239,3 +239,50 @@ func TestR44UnechoedHostToolPublishesEndAtStepClose(t *testing.T) {
 		t.Fatalf("tool execution ends = %+v (before step end: %v), want one with the host output before the step ends", ends, endBeforeStep)
 	}
 }
+
+// TS keeps the display (work-dir-stripped) tool-call event in
+// rawToolCallsByToolCallId, so a builtin approval record and the tool call of
+// its approval response carry the stripped input, never the absolute path.
+func TestR44BuiltinApprovalUsesStrippedInput(t *testing.T) {
+	for _, continued := range []bool{false, true} {
+		mock := newMockHarness(mockHarnessOptions{
+			script: func(submit func(string, interface{})) []StreamPart {
+				stop := FinishReason{Unified: FinishReasonStop}
+				return []StreamPart{
+					&StreamStartPart{},
+					mustDecodePart(t, `{"type":"tool-call","toolCallId":"c1","toolName":"bash","input":"{\"path\":\"/work/dir/a.txt\"}","providerExecuted":true,"dynamic":true}`),
+					&ToolApprovalRequestPart{ApprovalID: "a1", ToolCallID: "c1"},
+					&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+					&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+				}
+			},
+		})
+		var mu sync.Mutex
+		var recorded []PendingToolApproval
+		in := runPromptInput{
+			Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+			SessionWorkDir: "/work/dir",
+			OnPendingToolApproval: func(a PendingToolApproval) {
+				mu.Lock()
+				recorded = append(recorded, a)
+				mu.Unlock()
+			},
+		}
+		if continued {
+			in.ToolApprovalContinuations = []types.ToolApprovalResponseContent{{ApprovalID: "a1", ToolCallID: "c1", Approved: true}}
+		}
+		chunks := drainRunPrompt(t, runPrompt(context.Background(), in))
+		if continued {
+			responses := chunksOfType(chunks, provider.ChunkTypeToolApprovalResponse)
+			if len(responses) != 1 || responses[0].ToolApprovalResponse.ToolCall.Arguments["path"] != "a.txt" {
+				t.Fatalf("approval responses = %+v, want the stripped path", responses)
+			}
+			continue
+		}
+		mu.Lock()
+		if len(recorded) != 1 || recorded[0].Input != `{"path":"a.txt"}` {
+			t.Fatalf("pending approvals = %+v, want the stripped input", recorded)
+		}
+		mu.Unlock()
+	}
+}
