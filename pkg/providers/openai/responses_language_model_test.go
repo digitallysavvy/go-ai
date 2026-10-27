@@ -3668,3 +3668,30 @@ func TestResponsesLanguageModel_SystemRole_ForceReasoningFalseKeepsCapabilityMod
 		}
 	}
 }
+
+// TS custom_tool_call: zod strips `caller`, and output_item.done falls back to
+// the async flag seen at output_item.added.
+func TestResponsesStream_CustomToolCallAsyncFallbackAndNoCaller(t *testing.T) {
+	stream := newResponsesStream(io.NopCloser(strings.NewReader(`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"fmt","input":"","async":true}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","id":"ctc_1","call_id":"call_1","name":"fmt","input":"x","status":"completed","caller":{"type":"program","caller_id":"p1"}}}
+
+`)), false)
+	for {
+		chunk, err := stream.Next()
+		if err != nil {
+			t.Fatal("no tool call chunk")
+		}
+		if chunk.Type != provider.ChunkTypeToolCall {
+			continue
+		}
+		md, _ := chunk.ToolCall.ProviderMetadata["openai"].(map[string]interface{})
+		if md["async"] != true {
+			t.Fatalf("async fallback missing: %#v", md)
+		}
+		if _, has := md["caller"]; has {
+			t.Fatalf("caller must be stripped for custom_tool_call: %#v", md)
+		}
+		return
+	}
+}

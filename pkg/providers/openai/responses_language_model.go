@@ -1587,7 +1587,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, item.Caller),
+				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, "", item.Async, nil),
 			})
 
 		case "program":
@@ -2727,6 +2727,9 @@ type responsesOngoingToolCall struct {
 	codeInterpreter *codeInterpreterStreamState
 	// toolSearchExecution is "server" or "client" for a tool_search_call.
 	toolSearchExecution string
+	// async is the output_item.added item's async flag (custom_tool_call),
+	// the fallback when output_item.done omits it (TS ongoingToolCall.async).
+	async *bool
 }
 
 // applyPatchStreamState tracks whether an apply_patch_call's diff has
@@ -3249,6 +3252,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				s.ongoingToolCalls[e.OutputIndex] = &responsesOngoingToolCall{
 					toolName:   e.Item.Name,
 					toolCallID: e.Item.CallID,
+					async:      e.Item.Async,
 				}
 				s.flushQueue = append(s.flushQueue,
 					&provider.StreamChunk{
@@ -4276,10 +4280,14 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 
 	case "custom_tool_call":
 		delete(s.itemTypes, e.OutputIndex)
+		ongoingCustom := s.ongoingToolCalls[e.OutputIndex]
 		delete(s.ongoingToolCalls, e.OutputIndex)
 		var item responses.CustomToolCallItem
 		if err := json.Unmarshal(e.Item, &item); err != nil {
 			return nil, false
+		}
+		if item.Async == nil && ongoingCustom != nil {
+			item.Async = ongoingCustom.async
 		}
 		s.flushQueue = append(s.flushQueue,
 			&provider.StreamChunk{
@@ -4293,7 +4301,7 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
-				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, item.Caller),
+				ProviderMetadata: openAIResponsesToolCallMetadata(s.providerName, item.ID, "", item.Async, nil),
 			},
 		})
 
