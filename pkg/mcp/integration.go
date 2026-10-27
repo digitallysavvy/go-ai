@@ -1,9 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -319,6 +321,13 @@ func (c *MCPToolConverter) convertToModelOutput(result interface{}) types.ToolRe
 			ok = true
 		}
 	}
+	if !ok {
+		// TS converts any object with a content array, not only a typed
+		// CallToolResult (for example a map from an application wrapper).
+		if blocks, isContent := genericMCPContentBlocks(result); isContent {
+			return types.ToolResultOutput{Type: types.ToolResultOutputContent, Content: blocks}
+		}
+	}
 	if !ok || mcpResult.Content == nil {
 		return types.ToolResultOutput{
 			Type:  types.ToolResultOutputJSON,
@@ -348,6 +357,84 @@ func convertMCPContentToModelOutputBlock(part ToolResultContent) types.ToolResul
 		}
 	}
 	return types.TextContentBlock{Text: marshalMCPContentForModelOutput(part)}
+}
+
+// genericMCPContentBlocks mirrors the TS duck-typed check
+// `'content' in output && Array.isArray(output.content)` for values that are
+// not a typed CallToolResult: maps and structs (or pointers to them) whose
+// JSON form is an object with a "content" array. Each part is converted with
+// the same rules as typed content; unknown parts keep their JSON text.
+func genericMCPContentBlocks(result interface{}) ([]types.ToolResultContentBlock, bool) {
+	rv := reflect.ValueOf(result)
+	for rv.IsValid() && rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return nil, false
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() || (rv.Kind() != reflect.Map && rv.Kind() != reflect.Struct) {
+		return nil, false
+	}
+	data, err := jsonstr.Marshal(result)
+	if err != nil {
+		return nil, false
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil, false
+	}
+	var parts []json.RawMessage
+	rawContent, has := top["content"]
+	if !has || len(bytes.TrimSpace(rawContent)) == 0 || bytes.TrimSpace(rawContent)[0] != '[' {
+		return nil, false
+	}
+	if err := json.Unmarshal(rawContent, &parts); err != nil {
+		return nil, false
+	}
+	blocks := make([]types.ToolResultContentBlock, 0, len(parts))
+	for _, raw := range parts {
+		blocks = append(blocks, convertGenericMCPContentPart(raw))
+	}
+	return blocks, true
+}
+
+func convertGenericMCPContentPart(raw json.RawMessage) types.ToolResultContentBlock {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err == nil && fields != nil {
+		var partType string
+		_ = json.Unmarshal(fields["type"], &partType)
+		if text, has := fields["text"]; has && partType == "text" {
+			return types.TextContentBlock{Text: rawJSONStringValue(text)}
+		}
+		data, hasData := fields["data"]
+		mime, hasMime := fields["mimeType"]
+		if partType == "image" && hasData && hasMime {
+			mediaType := rawJSONStringValue(mime)
+			return types.FileContentBlock{
+				FileData:  types.FileData{Type: types.FileDataTypeData, DataString: rawJSONStringValue(data), MediaType: mediaType},
+				MediaType: mediaType,
+			}
+		}
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return types.TextContentBlock{Text: string(raw)}
+	}
+	return types.TextContentBlock{Text: compact.String()}
+}
+
+// rawJSONStringValue returns a JSON string's value, or the compact JSON text
+// of any other value (TS casts with `as string` and passes it through).
+func rawJSONStringValue(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		return string(raw)
+	}
+	return compact.String()
 }
 
 func marshalMCPContentForModelOutput(part ToolResultContent) string {
