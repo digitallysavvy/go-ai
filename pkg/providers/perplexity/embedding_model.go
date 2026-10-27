@@ -131,6 +131,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		Headers:          embedOptsHeaders(opts),
 	}, &response)
 	if err != nil {
+		// TS failedResponseHandler: createJsonErrorResponseHandler(perplexityErrorSchema).
+		if pe, ok := perplexityHTTPError(err, "perplexity").(*providererrors.ProviderError); ok {
+			pe.Cause = err
+			return nil, pe
+		}
 		return nil, providererrors.NewProviderError("perplexity", 0, "", err.Error(), err)
 	}
 

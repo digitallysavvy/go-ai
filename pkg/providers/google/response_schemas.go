@@ -98,6 +98,10 @@ var (
 		fl("error", zNullish(zGoogleRPCStatus)),
 		fl("response", zNullish(zGoogleBatchOutput)),
 	)
+	// googleBatchResultLineSchema (google-batch.ts): one responses-file line.
+	zGoogleBatchResultLine = zObj(
+		fl("key", zStr), fl("response", zodlite.Unknown), fl("error", zNullish(zGoogleRPCStatus)),
+	)
 	zGoogleBatchList = zObj(
 		fl("operations", zNullish(zArr(zGoogleBatchOperation))), fl("nextPageToken", nStr),
 	)

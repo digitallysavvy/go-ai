@@ -165,6 +165,17 @@ type perplexityErrorEnvelope struct {
 	Message *string `json:"message,omitempty"`
 }
 
+// perplexityErrorBodyMatches reports whether body parses as JSON and matches
+// perplexityErrorSchema; otherwise TS createJsonErrorResponseHandler falls
+// back to the response status text.
+func perplexityErrorBodyMatches(body []byte) bool {
+	var value interface{}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return false
+	}
+	return pplxschema.Error(value, true, nil) == nil
+}
+
 // perplexityErrorToMessage mirrors TS perplexityErrorToMessage: it resolves
 // whichever shape the error envelope used into a single human-readable
 // message string.

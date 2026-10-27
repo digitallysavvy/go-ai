@@ -335,7 +335,9 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 	// passed through verbatim, matching TS's
 	// `openResponsesOptions?.reasoningEffort ?? mapReasoningToProviderEffort(...)`.
 	var reasoningEffort string
-	if opts.Reasoning != nil {
+	// TS `reasoningEffort ?? (isCustomReasoning(reasoning) ? map...)`: the
+	// mapping (and its compatibility warning) only runs without the option.
+	if opts.Reasoning != nil && provOpts.ReasoningEffort == "" {
 		switch *opts.Reasoning {
 		case types.ReasoningNone:
 			reasoningEffort = "none"

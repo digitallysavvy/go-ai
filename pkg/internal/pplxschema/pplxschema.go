@@ -41,22 +41,24 @@ var (
 			fl("arguments", nStr), fl("thought_signature", nStr)),
 	}
 
-	// zPplxItem is perplexityOutputItemSchema: the four handled shapes, or any
-	// object with a string `type` that is not one of them.
-	zPplxItem zNode = func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
-		m, ok := v.(map[string]interface{})
-		if !ok {
-			return &zodlite.Issue{Path: path, Code: "invalid_union", Message: "Invalid input"}
+	// zPplxUnhandled is the last union member: an object whose string `type`
+	// is refined to not be one of the handled types (custom issue at `type`).
+	zPplxUnhandled = zObj(fl("type", func(v interface{}, present bool, path []interface{}) *zodlite.Issue {
+		if bad := zStr(v, present, path); bad != nil {
+			return bad
 		}
-		t, isStr := m["type"].(string)
-		if !isStr {
-			return &zodlite.Issue{Path: path, Code: "invalid_union", Message: "Invalid input"}
-		}
-		if n, handled := zPplxHandledItems[t]; handled {
-			return n(v, present, path)
+		if _, handled := zPplxHandledItems[v.(string)]; handled {
+			return &zodlite.Issue{Path: path, Code: "custom", Message: "Invalid input"}
 		}
 		return nil
-	}
+	}))
+
+	// zPplxItem is perplexityOutputItemSchema: z.union of the four handled
+	// shapes and the unhandled catch-all (a malformed handled item fails every
+	// member, so it is an invalid_union issue like TS).
+	zPplxItem = zodlite.Union(
+		zPplxHandledItems["message"], zPplxHandledItems["search_results"],
+		zPplxHandledItems["fetch_url_results"], zPplxHandledItems["function_call"], zPplxUnhandled)
 
 	zPplxCost = zObj(fl("currency", zOptional(zStr)), fl("input_cost", zOptional(zNum)), fl("output_cost", zOptional(zNum)),
 		fl("total_cost", zOptional(zNum)), fl("cache_creation_cost", nNum), fl("cache_read_cost", nNum), fl("tool_calls_cost", nNum))
@@ -85,4 +87,13 @@ var (
 		fl("results", zNullish(zArr(zPplxSearchResult))), fl("contents", zNullish(zArr(zPplxFetched))),
 		fl("error", zNullish(zObj(fl("code", nStr), fl("message", zStr), fl("type", nStr)))),
 	)
+)
+
+// Error is perplexityErrorSchema: `error`, `detail` and `message` are
+// optional (an explicit null fails).
+var Error = zObj(
+	fl("error", zOptional(zodlite.Union(zStr, zObj(
+		fl("code", zNullish(zodlite.Union(zStr, zNum))), fl("message", nStr), fl("type", nStr))))),
+	fl("detail", zOptional(zodlite.Union(zStr, zArr(zObj(fl("msg", zStr)))))),
+	fl("message", zOptional(zStr)),
 )
