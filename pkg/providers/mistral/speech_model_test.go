@@ -135,3 +135,54 @@ func TestMistralSpeechModelRejectsInvalidRefAudio(t *testing.T) {
 		t.Fatal("request must not be sent")
 	}
 }
+
+// TS #23781: Voxtral 3 delivery controls are forwarded and inline tags kept.
+func TestMistralSpeechModelVoxtral3DeliveryControls(t *testing.T) {
+	var seenBody map[string]interface{}
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		_ = json.NewDecoder(r.Body).Decode(&seenBody)
+		return mistralJSONResponse(`{"audio_data":"` + base64.StdEncoding.EncodeToString([]byte("x")) + `"}`), nil
+	})
+	m := NewSpeechModel(p, "voxtral-mini-tts-3-0")
+	result, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+		Text:  "[emotion=happy] I like tomato soup.",
+		Voice: "gb_jane_neutral",
+		ProviderOptions: map[string]interface{}{"mistral": map[string]interface{}{
+			"expressiveness": 1.5,
+			"phonemeHints":   map[string][]string{"tomato": {"t", "ə", "m", "ɑ", "t", "oʊ"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"expressiveness":1.5,"input":"[emotion=happy] I like tomato soup.","model":"voxtral-mini-tts-3-0","phoneme_hints":{"tomato":["t","ə","m","ɑ","t","oʊ"]},"response_format":"mp3","stream":false,"voice_id":"gb_jane_neutral"}`
+	got, _ := json.Marshal(seenBody)
+	if string(got) != want {
+		t.Fatalf("body = %s\nwant   %s", got, want)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings = %+v", result.Warnings)
+	}
+}
+
+func TestMistralSpeechModelRejectsInvalidDeliveryControls(t *testing.T) {
+	p := newMistralProviderWithTransport(t, func(r *http.Request) (*http.Response, error) {
+		t.Fatal("request must not be sent")
+		return nil, nil
+	})
+	m := NewSpeechModel(p, "voxtral-mini-tts-3-0")
+	for name, opts := range map[string]map[string]interface{}{
+		"expressiveness low":  {"expressiveness": 0.9},
+		"expressiveness high": {"expressiveness": 5.1},
+		"empty hints":         {"phonemeHints": map[string]interface{}{"tomato": []interface{}{}}},
+		"empty phoneme":       {"phonemeHints": map[string]interface{}{"tomato": []interface{}{""}}},
+	} {
+		_, err := m.DoGenerate(context.Background(), &provider.SpeechGenerateOptions{
+			Text:            "hi",
+			ProviderOptions: map[string]interface{}{"mistral": opts},
+		})
+		if err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}

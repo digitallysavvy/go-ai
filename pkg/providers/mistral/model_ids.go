@@ -40,6 +40,30 @@ const (
 	ModelZaiGLM52                = "zai-glm-5-2"
 )
 
+// Mistral speech (text-to-speech) model IDs, mirroring MistralSpeechModelId in
+// ai/packages/mistral/src/mistral-speech-model-options.ts. Any other model ID
+// string is accepted as well.
+const (
+	ModelVoxtralMiniTTS2603   = "voxtral-mini-tts-2603"
+	ModelVoxtralMiniTTS30     = "voxtral-mini-tts-3-0"
+	ModelVoxtralMiniTTS3      = "voxtral-mini-tts-3"
+	ModelVoxtralMiniTTSLatest = "voxtral-mini-tts-latest"
+)
+
+// Mistral transcription model IDs, mirroring MistralTranscriptionModelId in
+// ai/packages/mistral/src/mistral-transcription-model-options.ts. Any other
+// model ID string is accepted as well.
+const (
+	ModelVoxtralMini2602              = "voxtral-mini-2602"
+	ModelVoxtralMiniLatest            = "voxtral-mini-latest"
+	ModelVoxtralMiniTranscribe30      = "voxtral-mini-transcribe-3-0"
+	ModelVoxtralMiniTranscribe3       = "voxtral-mini-transcribe-3"
+	ModelVoxtralMiniTranscribeLatest  = "voxtral-mini-transcribe-latest"
+	ModelVoxtralSmallTranscribe30     = "voxtral-small-transcribe-3-0"
+	ModelVoxtralSmallTranscribe3      = "voxtral-small-transcribe-3"
+	ModelVoxtralSmallTranscribeLatest = "voxtral-small-transcribe-latest"
+)
+
 // mistralModelsWithoutReasoningEffort mirrors modelsWithoutReasoningEffort in
 // ai/packages/mistral/src/mistral-chat-language-model.ts: known non-reasoning
 // models from https://api.mistral.ai/v1/models (2026-10-06). Unknown IDs

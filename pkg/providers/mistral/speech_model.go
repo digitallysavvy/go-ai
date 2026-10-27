@@ -98,6 +98,16 @@ func (m *SpeechModel) DoGenerate(ctx context.Context, opts *provider.SpeechGener
 // mistralSpeechOptionsSchema is mistralSpeechModelOptions.
 var mistralSpeechOptionsSchema = providerutils.OptionSchema{
 	"refAudio": providerutils.OptStringLen(1, -1),
+	// expressiveness: 1 to 5. Supported by Voxtral 3.
+	"expressiveness": providerutils.OptRange(1, 5),
+	// phonemeHints: words mapped to non-empty lists of IPA phonemes.
+	// Supported by Voxtral 3.
+	"phonemeHints": providerutils.OptRecord(func(key string) error {
+		if key == "" {
+			return fmt.Errorf("too small: expected string to have >=1 characters")
+		}
+		return nil
+	}, providerutils.OptArray(providerutils.OptStringLen(1, -1), 1, -1)),
 }
 
 // redactedSpeechRequestBody returns a shallow copy of body with ref_audio
@@ -162,11 +172,15 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 	}
 
 	refAudio := ""
+	var expressiveness interface{}
+	var phonemeHints interface{}
 	if opts.ProviderOptions != nil {
 		if mistralOpts, ok := opts.ProviderOptions["mistral"].(map[string]interface{}); ok {
 			if v, ok := mistralOpts["refAudio"].(string); ok {
 				refAudio = v
 			}
+			expressiveness = mistralOpts["expressiveness"]
+			phonemeHints = mistralOpts["phonemeHints"]
 		}
 	}
 
@@ -180,6 +194,12 @@ func (m *SpeechModel) buildRequestBody(opts *provider.SpeechGenerateOptions) (ma
 		body["ref_audio"] = refAudio
 	} else if opts.Voice != "" {
 		body["voice_id"] = opts.Voice
+	}
+	if expressiveness != nil {
+		body["expressiveness"] = expressiveness
+	}
+	if phonemeHints != nil {
+		body["phoneme_hints"] = phonemeHints
 	}
 
 	return body, warnings

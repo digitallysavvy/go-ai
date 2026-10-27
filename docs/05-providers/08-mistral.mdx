@@ -99,6 +99,24 @@ transcript, err := ai.Transcribe(ctx, ai.TranscribeOptions{
 Other Voxtral model IDs include `mistral.ModelVoxtralSmall2507` /
 `voxtral-small-2507` and `mistral.ModelVoxtralSmallLatest`.
 
+#### Voxtral 3
+
+The Voxtral 3 models are available as `voxtral-mini-tts-3-0` / `voxtral-mini-tts-3` (speech) and
+`voxtral-mini-transcribe-3-0`, `voxtral-mini-transcribe-3`, `voxtral-small-transcribe-3-0`,
+`voxtral-small-transcribe-3` and their `-latest` aliases (transcription); see the
+`mistral.ModelVoxtral...` constants.
+
+Speech provider options (`providerOptions["mistral"]`):
+
+- `expressiveness` (number, 1 to 5): how expressive the speech is. Higher values trade voice similarity and stability for stronger delivery.
+- `phonemeHints` (map of word to a non-empty list of IPA phonemes): pronunciation hints. Inline tags such as `[emotion=happy]` in the text are preserved.
+
+Transcription provider options:
+
+- `returnLanguage` (bool): return the detected language in `result.Language`. It cannot be combined with `language`.
+- `contextBias`: entries may now be phrases or descriptions of the recording, including spaces and punctuation, with no 100-entry limit. Entries share the context window with the audio.
+- `language` can be combined with `timestampGranularities` on every model except the legacy `voxtral-mini-2507`, `voxtral-mini-2602` and `voxtral-mini-latest`. Voxtral 3 supports segment timestamps only, and requires them when `diarize` is enabled.
+
 ## Provider-Specific Features
 
 ### Cached Token Usage
