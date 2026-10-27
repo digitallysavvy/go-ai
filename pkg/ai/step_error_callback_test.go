@@ -238,3 +238,66 @@ func TestStreamText_OnStepErrorNotCalledOnSuccessOrAbort(t *testing.T) {
 		t.Fatal("OnStepError must not fire for an abort")
 	}
 }
+
+// A tool-choice violation in streamText ends the step with OnStepEnd (finish
+// reason error), not OnStepError (TS model-call-end finishReason "error").
+func TestStreamText_ToolChoiceViolationEndsStepWithOnStepEnd(t *testing.T) {
+	t.Parallel()
+
+	log := &stepLog{}
+	result, err := StreamText(context.Background(), StreamTextOptions{
+		Model:       noneToolStreamModel(types.FinishReasonToolCalls),
+		Prompt:      "go",
+		Tools:       twoStepTools(),
+		ToolChoice:  types.NoneToolChoice(),
+		OnStepStart: func(ctx context.Context, e OnStepStartEvent) { log.add("start") },
+		OnStepEnd: func(ctx context.Context, s types.StepResult, uc interface{}) {
+			log.add("end:" + string(s.FinishReason))
+		},
+		OnStepError: func(ctx context.Context, e OnStepErrorEvent) { log.add("error") },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := result.ReadAll()
+	if !IsToolChoiceViolationError(readErr) {
+		t.Fatalf("err = %v", readErr)
+	}
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	if got := log.events; len(got) != 2 || got[0] != "start" || got[1] != "end:error" {
+		t.Fatalf("events = %v", got)
+	}
+}
+
+// generateText throws the violation before the step ends, so it fires
+// OnStepError (TS openStep is still set).
+func TestGenerateText_ToolChoiceViolationFiresOnStepError(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		ToolSupport: true,
+		DoGenerateFunc: func(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				FinishReason: types.FinishReasonToolCalls,
+				ToolCalls:    []types.ToolCall{{ID: "c1", ToolName: "tool1", Arguments: map[string]interface{}{}, RawArguments: "{}"}},
+			}, nil
+		},
+	}
+	log := &stepLog{}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Model:       model,
+		Prompt:      "go",
+		Tools:       twoStepTools(),
+		ToolChoice:  types.NoneToolChoice(),
+		OnStepStart: func(ctx context.Context, e OnStepStartEvent) { log.add("start") },
+		OnStepEnd:   func(ctx context.Context, s types.StepResult, uc interface{}) { log.add("end") },
+		OnStepError: func(ctx context.Context, e OnStepErrorEvent) { log.add("error") },
+	})
+	if !IsToolChoiceViolationError(err) {
+		t.Fatalf("err = %v", err)
+	}
+	if got := log.events; len(got) != 2 || got[1] != "error" {
+		t.Fatalf("events = %v", got)
+	}
+}

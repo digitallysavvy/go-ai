@@ -2618,11 +2618,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		if violation != nil {
 			// TS model-call-end carries finishReason "error" for a tool-choice
-			// violation (usage and metadata are preserved).
+			// violation (usage and metadata are preserved). The step is still
+			// recorded and ends with OnStepEnd, not OnStepError; its tool calls
+			// are not executed and the call fails with the violation.
 			r.finishReason = types.FinishReasonError
-			r.err = violation
-			cancelStep()
-			break
 		}
 
 		// Execute accumulated tool calls after stream is fully consumed.
@@ -2632,6 +2631,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		skipStepTools := stepSawErrorChunk && opts.Internal != nil && opts.Internal.StopOnStreamError
 		workflowBlocked := workflowBlockedToolStep(opts.Internal, r.finishReason, stepContent)
 		skipStepTools = skipStepTools || workflowBlocked
+		skipStepTools = skipStepTools || violation != nil
 		// With no tools at all only invalid client calls are answered (TS
 		// emits their tool-error whatever the tool set).
 		callsToExecute := stepToolCalls
@@ -3063,6 +3063,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		logModelWarnings(stepWarnings, stepProvider, stepModelID)
 		cancelStep()
 
+		if violation != nil {
+			r.err = violation
+			steeringEndReason = SteeringError
+			break
+		}
 		if hasUserApproval || skipStepTools {
 			steeringEndReason = SteeringWaitingForToolResults
 			break
