@@ -184,20 +184,17 @@ func convertCodeInterpreterTool(t types.Tool) map[string]interface{} {
 	cfg, _ := t.ProviderOptions.(openaitool.CodeInterpreterConfig)
 	switch container := cfg.Container.(type) {
 	case string:
-		if container != "" {
-			def["container"] = container
-		} else {
-			def["container"] = map[string]interface{}{"type": "auto"}
-		}
+		// TS forwards any string container id as is, including "".
+		def["container"] = container
 	case openaitool.CodeInterpreterContainer:
 		containerDef := map[string]interface{}{"type": "auto"}
-		if len(container.FileIDs) > 0 {
+		if container.FileIDs != nil {
 			containerDef["file_ids"] = container.FileIDs
 		}
 		def["container"] = containerDef
 	case *openaitool.CodeInterpreterContainer:
 		containerDef := map[string]interface{}{"type": "auto"}
-		if container != nil && len(container.FileIDs) > 0 {
+		if container != nil && container.FileIDs != nil {
 			containerDef["file_ids"] = container.FileIDs
 		}
 		def["container"] = containerDef
@@ -321,7 +318,8 @@ func convertMCPTool(t types.Tool) map[string]interface{} {
 	if cfg.ConnectorID != "" {
 		def["connector_id"] = cfg.ConnectorID
 	}
-	if len(cfg.Headers) > 0 {
+	if cfg.Headers != nil {
+		// TS forwards `headers: args.headers`, so an empty object stays.
 		def["headers"] = cfg.Headers
 	}
 	if cfg.RequireApproval != nil {
