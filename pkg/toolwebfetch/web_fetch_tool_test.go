@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -152,7 +153,24 @@ func TestOptions(t *testing.T) {
 	invalid("maxLength 0", Options{MaxLength: intp(0)}, "maxLength")
 	invalid("maxBytes -1", Options{MaxBytes: intp(-1)}, "maxBytes")
 	invalid("timeout 0", Options{TimeoutMs: intp(0)}, "timeout")
-	invalid("timeout too large", Options{TimeoutMs: intp(2_147_483_648)}, "timeout")
+	// Values past the TS bounds exist only where int is 64 bits; the package
+	// and this test also build for linux/386 and linux/arm.
+	if math.MaxInt > MaxTimeoutMs {
+		tooLong := int64(MaxTimeoutMs) + 1
+		invalid("timeout too large", Options{TimeoutMs: intp(int(tooLong))}, "timeout")
+		unsafe := maxSafeInteger + 1
+		invalid("maxLength past MAX_SAFE_INTEGER", Options{MaxLength: intp(int(unsafe))}, "maxLength")
+		invalid("maxBytes past MAX_SAFE_INTEGER", Options{MaxBytes: intp(int(unsafe))}, "maxBytes")
+		safe := maxSafeInteger
+		newTool(t, Options{MaxLength: intp(int(safe)), MaxBytes: intp(int(safe))})
+	}
+	_, err := CreateWebFetchTool(Options{MaxLength: intp(0)})
+	if err == nil || !strings.Contains(err.Error(), "Must be an integer between 1 and 9007199254740991.") {
+		t.Fatalf("maxLength 0 error = %v", err)
+	}
+	if int64(math.MaxInt) <= maxSafeInteger { // int is 32 bits: every positive int is accepted
+		newTool(t, Options{MaxLength: intp(math.MaxInt), MaxBytes: intp(math.MaxInt)})
+	}
 
 	tool := newTool(t, Options{AllowedDomains: []string{"Example.COM"}, MaxLength: intp(1000), RequireURLInUserMessage: true})
 	for _, want := range []string{

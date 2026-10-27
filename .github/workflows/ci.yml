@@ -145,6 +145,13 @@ jobs:
       - name: Build
         run: go build -v ./...
 
+      # int is 32 bits on these targets, so an untyped constant above
+      # 2^31-1 used as int fails to compile there.
+      - name: Cross-build for 32-bit (linux/386, linux/arm)
+        run: |
+          GOOS=linux GOARCH=386 go build ./...
+          GOOS=linux GOARCH=arm go build ./...
+
   build-examples:
     name: Build Examples
     runs-on: ubuntu-latest

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
+	"github.com/digitallysavvy/go-ai/pkg/jsonparser"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
@@ -229,6 +230,16 @@ func panicToError(r interface{}) error {
 func reportUIStreamCallbackFailure(errCh chan<- error, r interface{}) {
 	select {
 	case errCh <- panicToError(r):
+	default:
+	}
+}
+
+// sendUIStreamErr fails the stream with err unless an earlier failure (for
+// example a step callback whose onError panicked) already filled errCh, so
+// the stream goroutine never blocks on the one-slot channel and out closes.
+func sendUIStreamErr(errCh chan<- error, err error) {
+	select {
+	case errCh <- err:
 	default:
 	}
 }
@@ -545,6 +556,14 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 	go func() {
 		defer close(out)
 		defer close(errCh)
+		// An OnError, MessageMetadata or conversion callback that panics
+		// fails the stream (TS: an error thrown in the transform errors the
+		// stream) instead of crashing the program from this goroutine.
+		defer func() {
+			if r := recover(); r != nil {
+				reportUIStreamCallbackFailure(errCh, r)
+			}
+		}()
 		if stream == nil {
 			errCh <- fmt.Errorf("stream is required")
 			return
@@ -810,7 +829,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		for {
 			select {
 			case <-ctx.Done():
-				errCh <- ctx.Err()
+				sendUIStreamErr(errCh, ctx.Err())
 				callOnEnd(finishReason)
 				return
 			default:
@@ -834,7 +853,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					return
 				}
 				failSourceOutcome(err)
-				errCh <- err
+				sendUIStreamErr(errCh, err)
 				appendErrorChunk(onError, safeEnqueue, err)
 				callOnEnd(finishReason)
 				return
@@ -1762,15 +1781,13 @@ func stringValue(value interface{}) string {
 	return ""
 }
 
+// parseToolInputPartial is TS parsePartialJson(text).value: incomplete JSON
+// is repaired, so a streaming tool part shows the input received so far.
 func parseToolInputPartial(text string) interface{} {
 	if text == "" {
 		return nil
 	}
-	var value interface{}
-	if err := json.Unmarshal([]byte(text), &value); err == nil {
-		return value
-	}
-	return nil
+	return jsonparser.ParsePartialJSON(text).Value
 }
 
 // UIMessageStreamError is the error reported (via onError) when a UI message
@@ -2116,6 +2133,10 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 		closeSide = make(chan error, 1)
 		go func() {
 			closeSide <- init.ConsumeSSEStream(pr)
+			// A consumer that stops reading early must not block the
+			// response writes the tee feeds into the side pipe (TS tees
+			// the stream, so each branch reads at its own pace).
+			_, _ = io.Copy(io.Discard, pr)
 		}()
 		defer func() { _ = pw.Close() }()
 		teeWriter = io.MultiWriter(w, pw)

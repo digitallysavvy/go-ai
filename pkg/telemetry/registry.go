@@ -1529,6 +1529,24 @@ func (i LegacyOpenTelemetry) stepSpanFor(ctx context.Context, callID string) (tr
 	return span, ok
 }
 
+// requestSettingsFor returns the root call's settings from this
+// integration's call state (TS state.settings), falling back to the values
+// OnStart stashed in ctx. FireOnStart returns the last integration's ctx, so
+// with another integration registered after this one the ctx value is
+// missing.
+func (i LegacyOpenTelemetry) requestSettingsFor(ctx context.Context, callID string) (legacySettings, bool) {
+	if st := legacyLoadedState(i.stateKey(callID)); st != nil {
+		st.mu.Lock()
+		settings, hasRoot := st.settings, st.rootSpan != nil
+		st.mu.Unlock()
+		if hasRoot {
+			return settings, true
+		}
+	}
+	settings, ok := ctx.Value(legacyRequestSettingsKey{}).(legacySettings)
+	return settings, ok
+}
+
 // stepSpanKey is a private context key used to pass the OTel step span from
 // OnStepStart to OnStepFinish without relying on trace.SpanFromContext (which
 // would return the innermost span, potentially set by provider-level tracing).
@@ -1608,7 +1626,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// generateText/streamText (onObjectStepStart omits it), matching
 	// legacySettings.StopSequences only being populated for those two
 	// operation types in OnStart above.
-	if settings, ok := ctx.Value(legacyRequestSettingsKey{}).(legacySettings); ok {
+	if settings, ok := i.requestSettingsFor(ctx, e.CallID); ok {
 		if settings.FrequencyPenalty != nil {
 			if kv, ok := finiteFloat64Attr("gen_ai.request.frequency_penalty", *settings.FrequencyPenalty); ok {
 				stepSpan.SetAttributes(kv)
@@ -1967,11 +1985,19 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 		}
 	}
 	// Runtime context attrs on tool call spans (0651c5f): reuse the root
-	// span's already-flattened ai.settings.context.* attrs, since
-	// TelemetryToolCallStartEvent carries no RuntimeContext of its own.
-	if attrs, ok := ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue); ok {
-		child.SetAttributes(attrs...)
+	// span's already-flattened ai.settings.context.* attrs (TS filters
+	// state.baseTelemetryAttributes), since TelemetryToolCallStartEvent
+	// carries no RuntimeContext of its own. The call state holds this
+	// integration's own; ctx holds only the last integration's.
+	var runtimeCtxAttrs []attribute.KeyValue
+	if st := legacyLoadedState(i.stateKey(e.CallID)); st != nil {
+		st.mu.Lock()
+		runtimeCtxAttrs = st.runtimeCtxAttrs
+		st.mu.Unlock()
+	} else {
+		runtimeCtxAttrs, _ = ctx.Value(runtimeContextAttrsKey{}).([]attribute.KeyValue)
 	}
+	child.SetAttributes(runtimeCtxAttrs...)
 	if e.CallID != "" {
 		if st := legacyState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()

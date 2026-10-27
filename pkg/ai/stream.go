@@ -849,12 +849,32 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		toolsContext = map[string]interface{}{}
 	}
 
+	// Build prompt. TS standardizePrompt runs before the start events, so a
+	// prompt error reaches no integration: none has call state for it yet
+	// (TS integrations ignore its onError), and a Go integration without
+	// call state would fall back to the caller's span in ctx.
+	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
+	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
+	// TS standardizePrompt reports a missing/duplicated/empty prompt before
+	// the system-message check.
+	var normalizedPrompt types.Prompt
+	normErr := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
+	if normErr == nil {
+		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
+	}
+	if normErr != nil {
+		r.fail(normErr)
+		return
+	}
+	prompt = normalizedPrompt
+
 	// Fire OnStart — integrations start their root spans here and embed them
 	// in the returned context.  FireOnFinish / FireOnError are called later
 	// from processStream or ReadAll once the stream completes.
 	telSystem := ""
 	var telMessages []types.Message
-	if telemetrySettings != nil && telemetrySettings.RecordInputs {
+	// A nil *Options records inputs (integrations treat it the same way).
+	if telemetrySettings == nil || telemetrySettings.RecordInputs {
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
@@ -905,22 +925,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		defer cancel()
 	}
 
-	// Build prompt
-	prompt := buildPrompt(opts.Prompt, opts.Messages, system)
-	allowSystem := allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages)
-	// TS standardizePrompt reports a missing/duplicated/empty prompt before
-	// the system-message check.
-	var normalizedPrompt types.Prompt
-	normErr := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages)
-	if normErr == nil {
-		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
-	}
-	if normErr != nil {
-		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
-		r.fail(normErr)
-		return
-	}
-	prompt = normalizedPrompt
 	opts.RuntimeContext = runtimeContext
 	opts.ExperimentalContext = runtimeContext
 	opts.ToolsContext = toolsContext
@@ -2979,20 +2983,26 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			r.mu.Unlock()
 			telemetry.FireOnStepEnd(telemetryStepCtx, telemetry.TelemetryStepEndEvent{
-				CallID:         r.cbCallID,
-				OperationType:  "ai.streamText",
-				StepNumber:     stepIndex,
-				FinishReason:   string(r.finishReason),
-				Usage:          stepTelUsage,
-				Text:           stepText,
-				Reasoning:      telemetry.JoinReasoning(stepResult.Reasoning),
-				ToolCalls:      stepResult.ToolCalls,
-				ToolResults:    publicStepToolResults,
-				Files:          stepFiles,
-				Performance:    languageModelCallPerformance(performance),
-				Settings:       r.telemetrySettings,
-				RuntimeContext: telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
-				ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
+				CallID:        r.cbCallID,
+				OperationType: "ai.streamText",
+				StepNumber:    stepIndex,
+				FinishReason:  string(r.finishReason),
+				Usage:         stepTelUsage,
+				Text:          stepText,
+				Reasoning:     telemetry.JoinReasoning(stepResult.Reasoning),
+				ToolCalls:     stepResult.ToolCalls,
+				ToolResults:   publicStepToolResults,
+				Files:         stepFiles,
+				// TS onStepEnd records event.providerMetadata and
+				// event.response.id/modelId/timestamp.
+				ProviderMetadata:  stepResult.ProviderMetadata,
+				ResponseID:        stepResult.Response.ID,
+				ResponseModelID:   stepResult.Response.ModelID,
+				ResponseTimestamp: stepResult.Response.Timestamp,
+				Performance:       languageModelCallPerformance(performance),
+				Settings:          r.telemetrySettings,
+				RuntimeContext:    telemetryRuntimeContextWithSensitivity(r.telemetrySettings, r.cbRuntimeCtx, r.cbSensitiveRuntimeCtx),
+				ToolsContext:      telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 			})
 		}
 

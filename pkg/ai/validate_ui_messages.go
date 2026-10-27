@@ -345,8 +345,14 @@ func decodeValidatedUIMessages(raw interface{}) ([]UIMessage, error) {
 			if !ok {
 				continue
 			}
-			if tool.State != ToolStateOutputError {
+			// TS declares rawInput on input-streaming (the partial input a
+			// resumed stream continues from) and output-error parts, and
+			// inputEncoding only on input-streaming parts.
+			if tool.State != ToolStateOutputError && tool.State != ToolStateInputStreaming {
 				tool.RawInput = nil
+			}
+			if tool.State != ToolStateInputStreaming {
+				tool.InputEncoding = ""
 			}
 			if tool.State != ToolStateOutputAvailable && tool.State != ToolStateOutputError {
 				tool.ResultProviderMetadata = nil

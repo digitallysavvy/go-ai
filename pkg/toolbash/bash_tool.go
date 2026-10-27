@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"path"
 	"strings"
 	"sync"
@@ -85,7 +86,7 @@ func CreateBashTool(ctx context.Context, opts Options) (types.Tool, error) {
 	maxOutput := DefaultMaxOutputLength
 	if opts.MaxOutputLength != nil {
 		maxOutput = *opts.MaxOutputLength
-		if maxOutput < 1 {
+		if maxOutput < 1 || int64(maxOutput) > maxSafeInteger {
 			return types.Tool{}, &providerrors.InvalidArgumentError{Field: "maxOutputLength", Message: "Must be a positive safe integer."}
 		}
 	}
@@ -273,9 +274,19 @@ type boundedOutput struct {
 	total    int // characters seen (UTF-8 sequence starts)
 }
 
+// maxSafeInteger is JavaScript's Number.MAX_SAFE_INTEGER; TS rejects a larger
+// maxOutputLength (Number.isSafeInteger). It is an int64 so the package builds
+// where int is 32 bits.
+const maxSafeInteger int64 = 1<<53 - 1
+
+// maxScaledChars is the largest maxChars whose byte budget is
+// maxChars*utf8.UTFMax: 2^60 on 64-bit, and math.MaxInt/utf8.UTFMax where int
+// is 32 bits so the product cannot overflow. Larger limits use maxChars bytes.
+const maxScaledChars = min(int64(1<<62)/utf8.UTFMax, math.MaxInt/utf8.UTFMax)
+
 func newBoundedOutput(maxChars int) *boundedOutput {
 	maxBytes := maxChars
-	if maxChars <= (1<<62)/utf8.UTFMax {
+	if int64(maxChars) <= maxScaledChars {
 		maxBytes = maxChars * utf8.UTFMax
 	}
 	return &boundedOutput{maxChars: maxChars, maxBytes: maxBytes}
