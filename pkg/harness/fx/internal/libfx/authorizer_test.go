@@ -714,3 +714,53 @@ func TestAuthorizerSavesRotationAfterRequestCancel(t *testing.T) {
 		t.Fatalf("saved = %d rotations", len(store.saved))
 	}
 }
+
+type pauseKey struct{}
+
+// A request that chose expiring credentials just before another request's
+// refresh of them finished must use that refresh's result, not spend the
+// same refresh token a second time (libfx reads the remembered rotation
+// and joins a running refresh atomically).
+func TestAuthorizerLateRequestReusesFinishedRefresh(t *testing.T) {
+	rotated := jwt(map[string]any{"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "account"}})
+	n := &authNetwork{rotated: rotated}
+	store := &hostStore{creds: Credentials{AccessToken: "old-access", RefreshToken: "old-refresh", AccountID: "account", ExpiresAt: authNow.UnixMilli()}}
+	z := newTestAuthorizer(t, store.auth(), n)
+	paused, release := make(chan struct{}), make(chan struct{})
+	testHookBeforeRefresh = func(ctx context.Context) {
+		if ctx.Value(pauseKey{}) != nil {
+			close(paused)
+			<-release
+		}
+	}
+	defer func() { testHookBeforeRefresh = nil }()
+	sendCtx := func(ctx context.Context) (*http.Response, error) {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, codexResponsesEndpoint, strings.NewReader("{}"))
+		return z.do(codexSubscription, codexResponsesEndpoint, n.fetch, req, []byte("{}"))
+	}
+	late := make(chan error, 1)
+	go func() {
+		resp, err := sendCtx(context.WithValue(context.Background(), pauseKey{}, true))
+		if err == nil {
+			resp.Body.Close() //nolint:errcheck
+		}
+		late <- err
+	}()
+	<-paused // the late request chose the expiring credentials
+	resp, err := sendCtx(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close() //nolint:errcheck
+	close(release)
+	if err := <-late; err != nil {
+		t.Fatal(err)
+	}
+	if got := n.refreshN.Load(); got != 1 {
+		t.Fatalf("refresh token spent %d times, want 1", got)
+	}
+	calls := n.modelCalls()
+	if len(calls) != 2 || calls[0].header.Get("authorization") != "Bearer "+rotated || calls[1].header.Get("authorization") != "Bearer "+rotated {
+		t.Fatalf("model calls = %+v", calls)
+	}
+}

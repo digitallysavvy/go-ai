@@ -621,12 +621,32 @@ func (z *authorizer) locked(ctx context.Context, spec *subscriptionSpec, supplie
 	return next, nil
 }
 
+// testHookBeforeRefresh runs between a request's choice of credentials and
+// its refresh (tests).
+var testHookBeforeRefresh func(ctx context.Context)
+
 // refresh spends current's refresh token once, however many requests need
 // it at the same time.
 func (z *authorizer) refresh(ctx context.Context, spec *subscriptionSpec, supplied, current *Credentials, sessionID string) (*Credentials, error) {
+	if testHookBeforeRefresh != nil {
+		testHookBeforeRefresh(ctx)
+	}
 	m := z.mem
 	key := keyOf(spec, current.RefreshToken)
 	m.mu.Lock()
+	// libfx reads the remembered rotation and joins a running refresh in
+	// one synchronous step. Here they are separate lock sections, so a
+	// refresh that finished in between has already spent current's refresh
+	// token: use its result rather than spending the token again.
+	if d := m.descendants[keyOf(spec, supplied.AccessToken)]; d != nil && d != current && d.AccessToken != current.AccessToken && !needsRefresh(d, z.now()) {
+		m.mu.Unlock()
+		if sessionID != "" {
+			if err := z.save(ctx, spec, d, sessionID); err != nil {
+				return nil, err
+			}
+		}
+		return d, nil
+	}
 	task, running := m.refreshing[key]
 	if !running {
 		task = &refreshTask{done: make(chan struct{})}
