@@ -134,7 +134,7 @@ func TestCompletionModelWarningsAndPromptErrorsMatchTypeScript(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected unexpected system message error")
 	}
-	if !strings.Contains(err.Error(), "unexpected system message in prompt: late") {
+	if !strings.Contains(err.Error(), "Unexpected system message in prompt: late") {
 		t.Fatalf("error should include system content, got %q", err.Error())
 	}
 
@@ -337,6 +337,53 @@ func TestCompletionStreamInterruptedWithoutFinishReason(t *testing.T) {
 				t.Fatalf("finish reason = %q", chunk.FinishReason)
 			}
 			return
+		}
+	}
+}
+
+func TestConvertToCompletionPromptTypedErrors(t *testing.T) {
+	_, _, err := convertToCompletionPrompt(types.Prompt{Messages: []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "first"}}},
+		{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "late"}}},
+	}})
+	if !providererrors.IsInvalidPromptError(err) {
+		t.Fatalf("want InvalidPromptError, got %T %v", err, err)
+	}
+	_, _, err = convertToCompletionPrompt(types.Prompt{Messages: []types.Message{
+		{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c", ToolName: "t"}}},
+	}})
+	if !providererrors.IsUnsupportedFunctionalityError(err) || err.Error() != "'tool-call messages' functionality not supported." {
+		t.Fatalf("got %T %v", err, err)
+	}
+	_, _, err = convertToCompletionPrompt(types.Prompt{Messages: []types.Message{{Role: types.RoleTool}}})
+	if !providererrors.IsUnsupportedFunctionalityError(err) {
+		t.Fatalf("got %T %v", err, err)
+	}
+}
+
+// TS opens the text block on the first valid chunk even when it carries no text.
+func TestCompletionStreamEmptyTextStillOpensTextBlock(t *testing.T) {
+	stream := newCompletionStream(io.NopCloser(strings.NewReader(
+		`data: {"id":"cmpl-1","created":1,"model":"m","choices":[{"text":"","finish_reason":"stop","index":0}]}
+
+data: [DONE]
+
+`)), false)
+	var types_ []provider.ChunkType
+	for {
+		c, err := stream.Next()
+		if err != nil {
+			break
+		}
+		types_ = append(types_, c.Type)
+	}
+	want := []provider.ChunkType{provider.ChunkTypeResponseMetadata, provider.ChunkTypeTextStart, provider.ChunkTypeTextEnd, provider.ChunkTypeFinish}
+	if len(types_) != len(want) {
+		t.Fatalf("got %v want %v", types_, want)
+	}
+	for i := range want {
+		if types_[i] != want[i] {
+			t.Fatalf("got %v want %v", types_, want)
 		}
 	}
 }

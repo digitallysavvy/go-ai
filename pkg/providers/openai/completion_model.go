@@ -272,12 +272,12 @@ func convertToCompletionPrompt(prompt types.Prompt) (string, []string, error) {
 	for _, message := range messages {
 		switch message.Role {
 		case types.RoleSystem:
-			return "", nil, fmt.Errorf("unexpected system message in prompt: %s", completionTextContent(message.Content))
+			return "", nil, &providererrors.InvalidPromptError{Message: "Unexpected system message in prompt: " + completionTextContent(message.Content)}
 		case types.RoleUser:
 			text += "user:\n" + completionTextContent(message.Content) + "\n\n"
 		case types.RoleAssistant:
 			if len(message.ToolCalls) > 0 {
-				return "", nil, fmt.Errorf("unsupported functionality: tool-call messages")
+				return "", nil, &providererrors.UnsupportedFunctionalityError{Functionality: "tool-call messages"}
 			}
 			assistantText, err := completionAssistantTextContent(message.Content)
 			if err != nil {
@@ -285,7 +285,7 @@ func convertToCompletionPrompt(prompt types.Prompt) (string, []string, error) {
 			}
 			text += "assistant:\n" + assistantText + "\n\n"
 		case types.RoleTool:
-			return "", nil, fmt.Errorf("unsupported functionality: tool messages")
+			return "", nil, &providererrors.UnsupportedFunctionalityError{Functionality: "tool messages"}
 		default:
 			return "", nil, fmt.Errorf("unsupported role: %s", message.Role)
 		}
@@ -316,7 +316,7 @@ func completionAssistantTextContent(parts []types.ContentPart) (string, error) {
 				text += p.Text
 			}
 		case types.ToolCallContent, *types.ToolCallContent:
-			return "", fmt.Errorf("unsupported functionality: tool-call messages")
+			return "", &providererrors.UnsupportedFunctionalityError{Functionality: "tool-call messages"}
 		}
 	}
 	return text, nil
@@ -590,6 +590,12 @@ func (s *completionStream) finish() {
 	}
 	s.finished = true
 	s.flushPendingMetadata()
+	// TS opens the text block on the first valid chunk, whether or not it
+	// carries text, and closes it in flush().
+	if s.metadataEmitted && !s.textStarted {
+		s.textStarted = true
+		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: "0"})
+	}
 	if s.textStarted {
 		s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeTextEnd, ID: "0"})
 	}
