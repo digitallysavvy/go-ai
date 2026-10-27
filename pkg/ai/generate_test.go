@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -74,8 +75,8 @@ func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedHeaders["user-agent"] != "ai/0.5.0" {
-		t.Fatalf("user-agent = %q, want ai/0.5.0", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "ai/"+sdkversion.Version {
+		t.Fatalf("user-agent = %q, want ai/<sdk version>", capturedHeaders["user-agent"])
 	}
 
 	// Existing user-agent values are kept as a prefix, not replaced.
@@ -88,8 +89,8 @@ func TestGenerateText_AppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.0" {
-		t.Fatalf("user-agent = %q, want custom-agent ai/0.5.0", capturedHeaders["user-agent"])
+	if capturedHeaders["user-agent"] != "custom-agent ai/"+sdkversion.Version {
+		t.Fatalf("user-agent = %q, want custom-agent ai/<sdk version>", capturedHeaders["user-agent"])
 	}
 }
 

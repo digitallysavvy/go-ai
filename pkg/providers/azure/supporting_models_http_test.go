@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"io"
 	"net/http"
 	"strings"
@@ -41,7 +42,7 @@ func TestAzureEmbeddingModelDoEmbedAndDoEmbedManyHTTP(t *testing.T) {
 	if len(one.Embedding) != 2 || one.Response.Headers["X-Req"] != "r1" {
 		t.Fatalf("result mismatch: %#v", one)
 	}
-	if !strings.HasPrefix(seenUserAgent, "ai-sdk-azure/0.5.0 ") {
+	if !strings.HasPrefix(seenUserAgent, "ai-sdk-azure/"+sdkversion.Version+" ") {
 		t.Fatalf("User-Agent = %q", seenUserAgent)
 	}
 

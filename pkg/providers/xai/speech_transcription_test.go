@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -20,7 +21,7 @@ func TestXAISpeechModelRequestDefaultsAndProviderOptions(t *testing.T) {
 		if r.URL.Path != "/v1/tts" {
 			t.Fatalf("path = %s, want /v1/tts", r.URL.Path)
 		}
-		if r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("X-Test") != "request" || !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/0.5.0 ") {
+		if r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("X-Test") != "request" || !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/"+sdkversion.Version+" ") {
 			t.Fatalf("headers = %#v", r.Header)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&seen); err != nil {
@@ -140,7 +141,7 @@ func TestXAITranscriptionMultipartRequestAndResponse(t *testing.T) {
 		if r.URL.Path != "/v1/stt" {
 			t.Fatalf("path = %s, want /v1/stt", r.URL.Path)
 		}
-		if !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/0.5.0 ") {
+		if !strings.HasPrefix(r.Header.Get("User-Agent"), "ai-sdk-xai/"+sdkversion.Version+" ") {
 			t.Fatalf("User-Agent = %q", r.Header.Get("User-Agent"))
 		}
 		contentType = r.Header.Get("Content-Type")

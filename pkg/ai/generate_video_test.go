@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -118,7 +119,7 @@ func TestGenerateVideoSingleCallDefaultsAndConversion(t *testing.T) {
 	if gotOpts.ProviderOptions == nil {
 		t.Fatal("expected providerOptions to default to an empty map")
 	}
-	if !strings.Contains(gotOpts.Headers["user-agent"], "ai/0.5.0") {
+	if !strings.Contains(gotOpts.Headers["user-agent"], "ai/"+sdkversion.Version) {
 		t.Fatalf("expected ai/<version> user-agent suffix, got headers=%+v", gotOpts.Headers)
 	}
 	if res.Video == nil || res.Video.URL != "" || !bytes.Equal(res.Video.Data, []byte{0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p'}) {

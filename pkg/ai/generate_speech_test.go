@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 	"strings"
 	"testing"
 	"time"
@@ -46,7 +47,7 @@ func TestGenerateSpeechForwardsProviderResponseMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSpeech error = %v", err)
 	}
-	if capturedHeaders["user-agent"] != "ai/0.5.0" {
+	if capturedHeaders["user-agent"] != "ai/"+sdkversion.Version {
 		t.Fatalf("user-agent = %q", capturedHeaders["user-agent"])
 	}
 	if capturedProviderOptions == nil || len(capturedProviderOptions) != 0 {
@@ -207,7 +208,7 @@ func TestGenerateSpeechAppendsAIUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateSpeech error = %v", err)
 	}
-	if capturedHeaders["user-agent"] != "custom-agent ai/0.5.0" {
+	if capturedHeaders["user-agent"] != "custom-agent ai/"+sdkversion.Version {
 		t.Fatalf("user-agent = %q", capturedHeaders["user-agent"])
 	}
 	if _, ok := capturedHeaders["User-Agent"]; ok {
