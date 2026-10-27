@@ -956,6 +956,10 @@ On the Responses API (GPT-5.6 and later), `providerOptions.openai.promptCacheOpt
 
 `TranscriptionResult.Language` now keeps a two-letter `language` code from the response (for example `"en"`), still maps language names such as `"english"` to their code, and falls back to a single entry in the response's `languages` array. The full `languages` array (`[{"code": "en"}, ...]`) is exposed as `ProviderMetadata["openai"]["languages"]`, so multilingual results are preserved without choosing an arbitrary language (`Language` stays empty when more than one language is detected).
 
+### Shell call execution controls
+
+The Responses `shell` tool now forwards the model-requested `action.timeout_ms` / `action.max_output_length` to your tool input as `action.timeoutMs` / `action.maxOutputLength` (omitted when null), in both generate and streaming. A `maxOutputLength` in the tool result is echoed back as `shell_call_output.max_output_length` on the next request, and a provider-executed `shell_call_output` surfaces it as `maxOutputLength` on the tool result.
+
 ### Failed web searches are tool errors
 
 A `web_search_call` whose status is `failed` or `incomplete` now produces a tool result with `Result: {"status": "<status>"}` and a non-empty `Error`, instead of a normal result with an empty action. This applies to `Generate`, streaming and batch results.

@@ -42,6 +42,7 @@ var shellInputNode = zodlite.Object(
 )
 
 var shellOutputNode = zodlite.Object(
+	zodlite.F("maxOutputLength", optNumber),
 	zodlite.F("output", zodlite.Array(zodlite.Object(
 		zodlite.F("stdout", zodlite.String),
 		zodlite.F("stderr", zodlite.String),
