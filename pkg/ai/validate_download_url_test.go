@@ -418,3 +418,16 @@ func TestValidateDownloadURL_InternalHostnames(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDownloadURLBlocksIDNInternalForms(t *testing.T) {
+	for _, u := range []string{
+		"https://a.internal。/x",
+		"https://a.ｉｎｔｅｒｎａｌ/x",
+		"https://ＬＯＣＡＬＨＯＳＴ/x",
+		"https://a.INTERNAL./x",
+	} {
+		if err := validateDownloadURL(u); err == nil {
+			t.Errorf("%q should be rejected", u)
+		}
+	}
+}

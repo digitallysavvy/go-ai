@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 
+	"golang.org/x/net/idna"
+
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
 
@@ -29,7 +31,7 @@ func ValidateDownloadURL(raw string) error {
 	if err := validateURLPort(parsed); err != nil {
 		return providererrors.NewDownloadError(raw, 0, "", fmt.Sprintf("Invalid URL: %s", raw), err)
 	}
-	host := strings.ToLower(strings.TrimRight(parsed.Hostname(), "."))
+	host := NormalizeHostname(parsed.Hostname())
 	if host == "" {
 		return providererrors.NewDownloadError(raw, 0, "", "URL must have a hostname", nil)
 	}
@@ -383,4 +385,17 @@ func canonicalIPv6Hostname(ip net.IP) string {
 	}
 	b.WriteByte(']')
 	return b.String()
+}
+
+// NormalizeHostname lowercases host, maps it through IDNA (UTS #46, as the
+// WHATWG URL parser and net/http do before dialing) and strips trailing dots,
+// so that fullwidth letters, ideographic full stops and trailing dots cannot
+// slip past string-based hostname blocklists. Hosts that fail IDNA mapping
+// are returned lowercased; net/http rejects them at dial time.
+func NormalizeHostname(host string) string {
+	host = strings.ToLower(host)
+	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+		host = ascii
+	}
+	return strings.TrimRight(strings.ToLower(host), ".")
 }

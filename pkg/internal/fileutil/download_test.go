@@ -912,3 +912,20 @@ func TestDownloadDataURLPercentAndForgivingBase64(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDownloadURLBlocksIDNInternalForms(t *testing.T) {
+	for _, u := range []string{
+		"https://a.internal。/x",
+		"https://a.ｉｎｔｅｒｎａｌ/x",
+		"https://a.internal．/x",
+		"https://ＬＯＣＡＬＨＯＳＴ/x",
+		"https://a.INTERNAL./x",
+	} {
+		if err := ValidateDownloadURL(u); err == nil {
+			t.Errorf("%q should be rejected", u)
+		}
+	}
+	if err := ValidateDownloadURL("https://internal.example.com/x"); err != nil {
+		t.Errorf("unexpected: %v", err)
+	}
+}
