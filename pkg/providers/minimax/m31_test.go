@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -752,5 +754,64 @@ func TestMiniMaxM31Sampling(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The M3.1 transport is derived per model (Go's Anthropic transport is per
+// provider, TS' config per model). It must cost nothing beyond a small
+// allocation: same headers and user agent as the base transport, the shared
+// HTTP client (one keep-alive connection serves both), and no goroutines or
+// transports left behind by creating models.
+func TestMiniMaxM31TransportIsEquivalentAndLeakFree(t *testing.T) {
+	s := newM31Server(t, false)
+	var mu sync.Mutex
+	newConns := 0
+	s.srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			mu.Lock()
+			newConns++
+			mu.Unlock()
+		}
+	}
+	p := New(Config{APIKey: "key", BaseURL: s.srv.URL, Headers: map[string]string{"x-custom": "1"}})
+
+	for _, id := range []string{"MiniMax-M2", "MiniMax-M3.1", "MiniMax-M2", "MiniMax-M3.1"} {
+		m, err := p.LanguageModel(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{
+			Prompt: types.Prompt{Messages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "hi"}}}}},
+		}); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.headers) != 4 {
+		t.Fatalf("requests = %d", len(s.headers))
+	}
+	for _, name := range []string{"X-Api-Key", "Anthropic-Version", "User-Agent", "X-Custom", "Content-Type"} {
+		base, derived := s.headers[0].Get(name), s.headers[1].Get(name)
+		if base == "" || base != derived {
+			t.Errorf("header %s: base %q, M3.1 %q", name, base, derived)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if newConns != 1 {
+		t.Errorf("connections = %d, want 1 (the M3.1 transport must share the HTTP client)", newConns)
+	}
+
+	// Creating many M3.1 models leaves no goroutines behind.
+	before := runtime.NumGoroutine()
+	for i := 0; i < 2000; i++ {
+		if _, err := p.LanguageModel("MiniMax-M3.1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := runtime.NumGoroutine(); after > before+2 {
+		t.Errorf("goroutines %d -> %d after creating models", before, after)
 	}
 }
