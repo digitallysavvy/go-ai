@@ -2178,7 +2178,9 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	_, harnessHasBuiltin := d.in.Harness.BuiltinTools()[raw.ToolName]
 	isClientExecutedBuiltin := raw.ToolName == string(BuiltinToolAskUserQuestions) && harnessHasBuiltin
 
-	if _, active := d.activeToolSet[raw.ToolName]; !isClientExecutedBuiltin && !active {
+	// TS `hasTool({ tools: activeTools, ... })`: activeTools holds the active
+	// user tools only, so a host call for any other builtin is denied too.
+	if _, active := d.in.ActiveTools[raw.ToolName]; !isClientExecutedBuiltin && !active {
 		output := executionDeniedOutput(BuiltinToolFilteringDenialReason(raw.ToolName))
 		// TS sets the execution's toolOutput to this host-side denial, so the
 		// tool-execution-end callback reports it rather than the runtime's
