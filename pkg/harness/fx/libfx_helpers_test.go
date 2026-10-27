@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -317,4 +318,8 @@ func newRealHarness(t *testing.T, gw *gatewayServer, s Settings) *libfxHarness {
 
 func startOpts(sb *fakeSandbox, sessionID string) harness.StartOptions {
 	return harness.StartOptions{SandboxSession: sb, SessionID: sessionID, SessionWorkDir: "/workspace"}
+}
+
+func textOutput(v string) types.ToolResultOutput {
+	return types.ToolResultOutput{Type: types.ToolResultOutputText, Value: v}
 }

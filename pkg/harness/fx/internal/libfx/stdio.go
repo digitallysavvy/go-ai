@@ -89,7 +89,10 @@ func (q *byteQueue) isClosed() bool {
 // queue returns true at once, as ByteQueue.wait does.
 func (q *byteQueue) wait(ctx context.Context, timeout time.Duration) bool {
 	q.mu.Lock()
-	if q.closed {
+	// Data pushed after the caller's empty read, but before this lock, has
+	// already replaced the wake channel: waiting on the new one would miss
+	// it, so return at once.
+	if q.closed || len(q.chunks) > 0 {
 		q.mu.Unlock()
 		return true
 	}
