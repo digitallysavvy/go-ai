@@ -2182,9 +2182,13 @@ func (d *turnDriver) handleHostToolCall(raw *ToolCallPart) (awaiting bool, err e
 	case CustomToolApprovalRequest:
 		pending := d.pendingApprovalsByToolCallID[raw.ToolCallID]
 		if pending == nil {
+			// TS records a custom approval with an explicit
+			// `providerExecuted: false`: it is persisted in lifecycle state and
+			// copied onto the rebuilt tool call when the approval continues.
+			providerExecuted := false
 			pending = &PendingToolApproval{
 				ApprovalID: generateApprovalID(), ToolCallID: raw.ToolCallID, ToolName: raw.ToolName,
-				Input: raw.Input, Kind: PendingToolApprovalCustom, NativeName: raw.NativeName,
+				Input: raw.Input, Kind: PendingToolApprovalCustom, ProviderExecuted: &providerExecuted, NativeName: raw.NativeName,
 			}
 			d.pendingApprovalsByApprovalID[pending.ApprovalID] = pending
 			d.pendingApprovalsByToolCallID[pending.ToolCallID] = pending
