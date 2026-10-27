@@ -886,6 +886,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		if agentHasProviderApprovalRequest(stepResult.Content) {
 			shouldContinue = false
 		}
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778).
+		if stepResult.FinishReason == types.FinishReasonInterrupted {
+			shouldContinue = false
+		}
 		// TS stepTimeMs spans the model call and the tool execution.
 		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
 		responseCalls := stepResult.ToolCalls

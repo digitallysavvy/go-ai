@@ -152,6 +152,16 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### Interrupted finish reason
+
+`types.FinishReasonInterrupted` (`"interrupted"`) means the provider stream ended without a completion signal, so the output may be incomplete. The partial text and tool calls are preserved, but the step never executes tools, never raises a `ToolChoiceViolationError` for a required tool choice, and never continues the tool loop. Check for it when you need to distinguish a cut-off response from a normal `stop`.
+
+```go
+if result.FinishReason == types.FinishReasonInterrupted {
+    fmt.Println("response was cut off:", result.Text)
+}
+```
+
 ### ToolOrder
 
 `ToolOrder` controls the order tools are sent to providers after active-tool filtering, middleware transforms, and `PrepareStep` updates. Listed names are sent first in the provided order; unlisted tools follow alphabetically.

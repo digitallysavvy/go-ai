@@ -76,6 +76,11 @@ func checkToolChoiceViolation(choice types.ToolChoice, toolCalls []types.ToolCal
 	if !ok {
 		return nil
 	}
+	// An interrupted stream ended without a completion signal: its partial
+	// output is preserved without raising a required-tool error (TS #23778).
+	if finishReason == types.FinishReasonInterrupted {
+		return nil
+	}
 	if toolChoiceSatisfied(enforced, toolCalls) {
 		return nil
 	}

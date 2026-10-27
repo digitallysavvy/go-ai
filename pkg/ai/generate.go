@@ -1805,6 +1805,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			break
 		}
 
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778).
+		if genResult.FinishReason == types.FinishReasonInterrupted {
+			break
+		}
+
 		// Check if we should continue.
 		// Continue when there are local tool calls in the turn OR when a provider
 		// tool with SupportsDeferredResults has not yet delivered its result.

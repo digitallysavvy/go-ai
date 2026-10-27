@@ -2942,6 +2942,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if hasUserApproval || skipStepTools {
 			break
 		}
+		// An interrupted step (provider stream ended without a completion
+		// signal) never continues the loop (TS #23778).
+		if r.finishReason == types.FinishReasonInterrupted {
+			break
+		}
 
 		// Continue when this step included local tool calls that were executed
 		// in-step, or when a deferred provider tool has not yet delivered its result.

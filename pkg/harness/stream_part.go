@@ -164,6 +164,7 @@ const (
 	FinishReasonContentFilter = "content-filter"
 	FinishReasonToolCalls     = "tool-calls"
 	FinishReasonError         = "error"
+	FinishReasonInterrupted   = "interrupted"
 	FinishReasonOther         = "other"
 )
 
@@ -176,7 +177,7 @@ type FinishReason struct {
 func (r FinishReason) validate() error {
 	switch r.Unified {
 	case FinishReasonStop, FinishReasonLength, FinishReasonContentFilter,
-		FinishReasonToolCalls, FinishReasonError, FinishReasonOther:
+		FinishReasonToolCalls, FinishReasonError, FinishReasonInterrupted, FinishReasonOther:
 		return nil
 	}
 	return fmt.Errorf("invalid finish reason %q", r.Unified)

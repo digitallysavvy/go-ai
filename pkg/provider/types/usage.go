@@ -302,6 +302,11 @@ const (
 	// FinishReasonError indicates an error occurred
 	FinishReasonError FinishReason = "error"
 
+	// FinishReasonInterrupted indicates the provider stream ended without a
+	// completion signal; output may be incomplete. Interrupted steps never
+	// execute tools, continue an agent loop or raise a tool-choice violation.
+	FinishReasonInterrupted FinishReason = "interrupted"
+
 	// FinishReasonOther indicates another reason
 	FinishReasonOther FinishReason = "other"
 )
