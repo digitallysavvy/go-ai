@@ -295,6 +295,11 @@ Each item has before/after code in the
   flattened into `ai.settings.context.<path>` attributes.
   **Migration:** queries on the old JSON-string attributes must read the
   flattened keys, or `EnrichSpan` must return primitives.
+- **Perplexity embedding provider options are validated like TS.** A
+  `dimensions` that is not a positive integer or an unknown `encodingFormat`
+  fails with `*providererrors.InvalidArgumentError`.
+  **Migration:** pass a positive integer and `base64_int8` or
+  `base64_binary`.
 
 ---
 
@@ -496,6 +501,8 @@ in v0.5.3.
   versus file-upload size check counts the whole creation body like TS.
 - Gemini: a part with only a `thoughtSignature` no longer attaches it to the
   previous content, and a function call without a name is dropped.
+- Google and Vertex requests always carry `generationConfig` (`{}` when
+  nothing is set), as TS does.
 
 ### Workflow, MCP, code mode and harness
 

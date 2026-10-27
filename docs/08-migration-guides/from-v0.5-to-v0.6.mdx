@@ -231,3 +231,9 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   one) is flattened into `ai.settings.context.<path>` attributes instead of
   one JSON string. If a dashboard or query reads those JSON strings, read the
   flattened keys, or return primitives from `EnrichSpan`.
+- **Perplexity embedding provider options are validated.** As in TS, a
+  `dimensions` that is not a positive integer, or an `encodingFormat` other
+  than `base64_int8` or `base64_binary`, now fails `DoEmbed`/`DoEmbedMany`
+  with `*providererrors.InvalidArgumentError`. v0.5 truncated a fractional
+  `dimensions` and ignored or sent other values. Pass a positive integer and
+  a supported format.
