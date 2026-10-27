@@ -105,9 +105,9 @@ Two details differ:
   failed response repeats in its body; it also masks them in response
   headers of any status, masks both the rejected and the refreshed tokens
   after a `401` retry, bounds OAuth token responses at 1 MiB, and refuses a
-  redirect that would carry the credentials to another origin. The core may
-  also reach `https://x.ai`, where the grok provider reads the Grok CLI
-  version.
+  redirect that would carry the credentials to another origin. Of `https://x.ai`
+  the core may reach only `https://x.ai/cli/stable`, where the grok provider
+  reads the Grok CLI version without credentials.
 - **MCP server order.** Go maps have no insertion order, so `MCPServers` are
   connected, and their tools listed, in server-name order; TS uses the
   object's key order. Structured MCP tool output is serialized with sorted

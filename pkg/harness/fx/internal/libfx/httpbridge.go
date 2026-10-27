@@ -23,24 +23,37 @@ const streamChunkBytes = 32 << 10
 
 // DefaultAllowedOrigins are the origins the default fetch lets the core
 // reach: the AI Gateway and the codex and grok subscription endpoints. TS
-// uses plain fetch with no allowlist; this is a Go hardening.
+// uses plain fetch with no allowlist; this is a Go hardening. An entry with
+// a path allows that one endpoint only, not its whole origin.
 var DefaultAllowedOrigins = []string{
 	"https://ai-gateway.vercel.sh",
 	"https://chatgpt.com",
 	"https://cli-chat-proxy.grok.com",
 	"https://api.x.ai",
-	// The grok provider reads the current Grok CLI version here.
-	"https://x.ai",
+	// The grok provider reads the current Grok CLI version here, without
+	// credentials (libfx fx-core GET https://x.ai/cli/stable).
+	"https://x.ai/cli/stable",
 	"https://auth.openai.com",
 	"https://auth.x.ai",
 }
 
 // AllowlistFetch returns a FetchFunc that sends requests whose origin is in
-// origins through client and refuses every other origin.
+// origins through client and refuses every other origin. An entry with a
+// path ("https://host/path") allows only that endpoint (scheme, host and
+// path, any query).
 func AllowlistFetch(client *http.Client, origins []string) FetchFunc {
 	allowed := map[string]bool{}
+	endpoints := map[string]bool{}
 	for _, o := range origins {
+		if u, err := url.Parse(o); err == nil && u.Scheme != "" && u.Host != "" && u.Path != "" && u.Path != "/" {
+			endpoints[u.Scheme+"://"+u.Host+u.EscapedPath()] = true
+			continue
+		}
 		allowed[o] = true
+	}
+	permitted := func(u *url.URL) bool {
+		origin := u.Scheme + "://" + u.Host
+		return allowed[origin] || endpoints[origin+u.EscapedPath()]
 	}
 	// Redirects are held to the same allowlist; the caller's client is
 	// copied, not modified.
@@ -48,7 +61,7 @@ func AllowlistFetch(client *http.Client, origins []string) FetchFunc {
 	next := c.CheckRedirect
 	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		origin := req.URL.Scheme + "://" + req.URL.Host
-		if !allowed[origin] {
+		if !permitted(req.URL) {
 			return fmt.Errorf("fx runtime: redirect to %s is not allowed", origin)
 		}
 		// A request that carries credentials never follows a redirect off
@@ -67,7 +80,7 @@ func AllowlistFetch(client *http.Client, origins []string) FetchFunc {
 	}
 	return func(req *http.Request) (*http.Response, error) {
 		origin := req.URL.Scheme + "://" + req.URL.Host
-		if !allowed[origin] {
+		if !permitted(req.URL) {
 			return nil, fmt.Errorf("fx runtime: request to %s is not allowed", origin)
 		}
 		return c.Do(req)

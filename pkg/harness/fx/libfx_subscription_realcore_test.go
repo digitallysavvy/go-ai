@@ -87,6 +87,12 @@ func (n *subscriptionNetwork) RoundTrip(req *http.Request) (*http.Response, erro
 	case "https://auth.x.ai/oauth2/userinfo":
 		return respond(200, `{"sub":"account"}`)
 	case "https://x.ai/cli/stable":
+		// The version check is anonymous: it never carries credentials.
+		for _, name := range []string{"Authorization", "Cookie", "Chatgpt-Account-Id", "X-Grok-User-Id", "X-Userid", "X-Api-Key"} {
+			if req.Header.Get(name) != "" {
+				n.t.Errorf("the Grok CLI version request carried %s", name)
+			}
+		}
 		return respond(200, "1.0.13\n")
 	}
 	if !strings.HasSuffix(endpoint, "/responses") {
