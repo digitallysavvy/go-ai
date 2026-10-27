@@ -48,3 +48,20 @@ func TestBridgeFramesRejectForbiddenPrototypeKey(t *testing.T) {
 		t.Fatal("ready with __proto__ must be rejected")
 	}
 }
+
+// TS safeParseJSON with harnessV1BridgeHelloSchema drops a hello whose
+// optional fields have the wrong type, and Dial keeps waiting.
+func TestParseHelloRejectsWrongFieldTypes(t *testing.T) {
+	for _, frame := range []string{
+		`{"type":"bridge-hello","state":5}`,
+		`{"type":"bridge-hello","lastSeq":"3"}`,
+		`{"type":"bridge-hello","capabilities":{"experimental_userMessageResponses":"yes"}}`,
+	} {
+		if _, ok := parseHello([]byte(frame)); ok {
+			t.Errorf("parseHello(%s) accepted a frame that fails the TS schema", frame)
+		}
+	}
+	if h, ok := parseHello([]byte(`{"type":"bridge-hello","state":"waiting","lastSeq":2}`)); !ok || h.State != "waiting" {
+		t.Fatalf("valid hello: ok=%v h=%+v", ok, h)
+	}
+}
