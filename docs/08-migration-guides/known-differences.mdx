@@ -152,6 +152,24 @@ These details differ:
   - The `toolStartInput` size limit measures the raw wire bytes, where TS
     measures `JSON.stringify(rawInput)`. They differ only near the 64 KiB
     limit.
+  - `realpath` decodes the core's base64 path strictly and keeps invalid
+    UTF-8 bytes; Node's `Buffer.from(..., 'base64').toString('utf8')` is
+    lenient and replaces them with U+FFFD. Only a path that is not valid
+    UTF-8 differs.
+  - When a `bash` `timeout` passes, the error text is what the sandbox
+    returns for a cancelled context (usually `context deadline exceeded`);
+    TS gets the sandbox's rejection for a `TimeoutError` ("The operation was
+    aborted due to timeout").
+
+## Harness file reporter
+
+- A step's `output` is rebuilt from the step-end telemetry event (text,
+  reasoning, files, tool calls, tool results), so it omits the approval
+  requests and sources that TS `step.content` holds, and writes
+  `"input": null` where TS leaves an undefined input out.
+- When a provider-executed tool sends a preliminary result and then its
+  final result, TS pushes the first `toolOutput` into the model-call content
+  twice; Go records each result once.
 
 ## Features that are TypeScript-only (not ported)
 
