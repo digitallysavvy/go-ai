@@ -167,6 +167,9 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopWatch := context.AfterFunc(ctx, cancel)
 	var resp *http.Response
+	// TS fails the connection when an OK response has no body (`!response.ok
+	// || !response.body`); only a custom SSEClient can return one.
+	missingBody := false
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.url, nil)
 		if err != nil {
@@ -195,7 +198,8 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 			cancel()
 			return NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response"))
 		}
-		if resp.Body == nil {
+		missingBody = resp.Body == nil
+		if missingBody {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
 		}
 		if resp.StatusCode == http.StatusUnauthorized && t.auth.enabled() && attempt == 0 {
@@ -211,7 +215,7 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		}
 		break
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || missingBody {
 		defer resp.Body.Close() //nolint:errcheck
 		stopWatch()
 		cancel()

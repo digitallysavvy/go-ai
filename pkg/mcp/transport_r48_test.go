@@ -150,3 +150,36 @@ func TestHTTPTransportCloseClosesCustomStreamBodies(t *testing.T) {
 		})
 	}
 }
+
+type nilBodySSEClient struct{}
+
+func (nilBodySSEClient) Do(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{}}, nil
+}
+
+// TS SseMCPTransport.start fails with `MCP SSE Transport Error: 200 OK` when
+// an OK response has no body (`!response.ok || !response.body`). Before the
+// fix Go read the missing body as an empty stream and failed with "Connection
+// closed before endpoint event was received".
+func TestSSETransportConnectOKWithoutBody(t *testing.T) {
+	var mu sync.Mutex
+	var reported []error
+	transport := NewSSETransport(SSETransportConfig{URL: "http://example.test/sse", SSEClient: nilBodySSEClient{}, OnError: func(err error) {
+		mu.Lock()
+		reported = append(reported, err)
+		mu.Unlock()
+	}})
+	err := transport.Connect(context.Background())
+	var mcpErr *MCPClientError
+	if !errors.As(err, &mcpErr) || mcpErr.Message != "MCP SSE Transport Error: 200 OK" {
+		t.Fatalf("Connect error = %#v, want MCP SSE Transport Error: 200 OK", err)
+	}
+	if mcpErr.StatusCode != http.StatusOK {
+		t.Fatalf("StatusCode = %d, want 200", mcpErr.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reported) != 1 || reported[0] != err {
+		t.Fatalf("OnError got %v, want the Connect error once", reported)
+	}
+}
