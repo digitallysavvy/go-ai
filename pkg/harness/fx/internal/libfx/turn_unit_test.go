@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +201,18 @@ func TestHostToolContentChecksSourceRef(t *testing.T) {
 	}
 	if got, _, err := hostToolContent(result(strings.Repeat("r", 512))); err != nil || !strings.Contains(got, `"sourceRef"`) {
 		t.Errorf("a 512-byte sourceRef: %s, %v", got, err)
+	}
+}
+
+func TestTurnUsageKeepsSafeIntegers(t *testing.T) {
+	raw := map[string]json.RawMessage{
+		"inputTokens": json.RawMessage(`12`), "outputTokens": json.RawMessage(`3.0`),
+		"cacheReadTokens": json.RawMessage(`1e2`), "cacheWriteTokens": json.RawMessage(`1.5`),
+		"reasoningTokens": json.RawMessage(`9007199254740992`), "other": json.RawMessage(`4`),
+	}
+	got := turnUsage(raw)
+	want := map[string]int64{"inputTokens": 12, "outputTokens": 3, "cacheReadTokens": 100}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("turnUsage = %v, want %v", got, want)
 	}
 }

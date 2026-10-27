@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -974,15 +975,20 @@ func (a *Agent) sendPrompt(sessionID, turnID string, prompt []map[string]any, im
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return TurnResult{}, fmt.Errorf("fx session/prompt returned an invalid result: %w", err)
 	}
+	return TurnResult{StopReason: res.StopReason, Usage: turnUsage(res.Usage)}, nil
+}
+
+// turnUsage is libfx normalizeTurnUsage: the five counters that are safe
+// integers (Number.isSafeInteger), so 12, 12.0 and 1.2e1 all count.
+func turnUsage(raw map[string]json.RawMessage) map[string]int64 {
 	usage := map[string]int64{}
 	for _, key := range []string{"inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens"} {
-		if v, ok := res.Usage[key]; ok {
-			if n, err := strconv.ParseInt(string(v), 10, 64); err == nil && n >= -(1<<53-1) && n <= 1<<53-1 {
-				usage[key] = n
-			}
+		var f float64
+		if v, ok := raw[key]; ok && json.Unmarshal(v, &f) == nil && f == math.Trunc(f) && math.Abs(f) <= 1<<53-1 {
+			usage[key] = int64(f)
 		}
 	}
-	return TurnResult{StopReason: res.StopReason, Usage: usage}, nil
+	return usage
 }
 
 // preparePrompt validates blocks and splits image bytes out as attachments
