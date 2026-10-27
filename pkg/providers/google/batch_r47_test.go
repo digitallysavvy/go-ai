@@ -1,12 +1,14 @@
 package google
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -103,5 +105,78 @@ func TestR47_BatchInlineThresholdIgnoresHTMLEscaping(t *testing.T) {
 	}
 	if path != "/v1beta/models/gemini-2.5-flash:batchGenerateContent" {
 		t.Fatalf("path = %q", path)
+	}
+}
+
+// TS inlines while inlineInputBytes < 20_000_000, where inlineInputBytes sums
+// each inlined request's JSON.stringify bytes plus one per separator. It does
+// not count the batch wrapper or displayName. The sizes here are computed
+// with that formula independently of the provider code, and the prompt is
+// padded so the total is exactly the limit minus one (inline) or the limit
+// (file upload).
+func TestR47_BatchInlineThresholdCountsOnlyInlinedRequests(t *testing.T) {
+	const model = "gemini-2.5-flash"
+	p := New(Config{APIKey: "k"})
+	tsBytes := func(reqs []provider.BatchV4Request) int {
+		total := 0
+		for i, r := range reqs {
+			body, _, err := NewLanguageModel(p, model).PrepareBatchRequestBody(&r.Text.Options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			enc.SetEscapeHTML(false)
+			if err := enc.Encode(map[string]interface{}{"request": body, "metadata": map[string]interface{}{"key": r.RequestID()}}); err != nil {
+				t.Fatal(err)
+			}
+			total += buf.Len() - 1
+			if i > 0 {
+				total++
+			}
+		}
+		return total
+	}
+	build := func(target int) []provider.BatchV4Request {
+		reqs := []provider.BatchV4Request{googleTextBatchRequest("a", model, "x"), googleTextBatchRequest("b", model, "y")}
+		pad := target - tsBytes(reqs)
+		reqs[1] = googleTextBatchRequest("b", model, "y"+strings.Repeat("y", pad))
+		if got := tsBytes(reqs); got != target {
+			t.Fatalf("padded size = %d, want %d", got, target)
+		}
+		return reqs
+	}
+	for _, tc := range []struct {
+		size int
+		path string
+	}{
+		{googleBatchInlineCreationMaxBytes - 1, "/v1beta/models/" + model + ":batchGenerateContent"},
+		{googleBatchInlineCreationMaxBytes, "/upload/v1beta/files"},
+	} {
+		var mu sync.Mutex
+		var first string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			if first == "" {
+				first = r.URL.Path
+			}
+			mu.Unlock()
+			_, _ = io.Copy(io.Discard, r.Body)
+			if strings.HasSuffix(r.URL.Path, ":batchGenerateContent") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(googleBatchOperationJSON))
+				return
+			}
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		b := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"}).ExperimentalBatch()
+		_, _ = b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{Requests: build(tc.size)})
+		srv.Close()
+		mu.Lock()
+		got := first
+		mu.Unlock()
+		if got != tc.path {
+			t.Fatalf("inline bytes %d: first request path = %q, want %q", tc.size, got, tc.path)
+		}
 	}
 }

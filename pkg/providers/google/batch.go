@@ -131,14 +131,7 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		"requests": map[string]interface{}{"requests": inlinedRequests},
 	}
 	requestBody := map[string]interface{}{"batch": inlineBody}
-	// TS measures JSON.stringify bytes, which leave <, > and & unescaped.
-	var inlineJSON bytes.Buffer
-	inlineEnc := json.NewEncoder(&inlineJSON)
-	inlineEnc.SetEscapeHTML(false)
-	_ = inlineEnc.Encode(requestBody)
-	inlineSize := inlineJSON.Len() - 1 // Encode appends a newline
-
-	if inlineSize < googleBatchInlineCreationMaxBytes {
+	if googleBatchInlineInputBytes(inlinedRequests) < googleBatchInlineCreationMaxBytes {
 		var operation googleBatchOperationWire
 		if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
 			ValidateResponse: googleValidator(zGoogleBatchOperation),
@@ -1003,3 +996,17 @@ func googleBatchLineError(line []byte) error {
 
 func (s *googleBatchFileResultsStream) Err() error   { return s.err }
 func (s *googleBatchFileResultsStream) Close() error { return s.body.Close() }
+
+// googleBatchInlineInputBytes is TS's inlineInputBytes: the sum of each
+// inlined request's JSON.stringify byte length, plus one per separator
+// between requests. It counts only the inlined requests, not the batch
+// wrapper or displayName. JSON.stringify leaves <, > and & unescaped. The
+// encoded array is "[" + requests joined by "," + "]" + a trailing newline,
+// so dropping those three bytes gives TS's count (0 for no requests).
+func googleBatchInlineInputBytes(inlinedRequests []map[string]interface{}) int {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(inlinedRequests)
+	return max(buf.Len()-3, 0)
+}
