@@ -27,6 +27,13 @@ func TestR48GlobClassesParseLikeMinimatch(t *testing.T) {
 		{"x", "[[:graph:]]", true},
 		{"]", "[!]]", false},
 		{"a", "[^a-]", false},
+		// A never-matching class swallows the rest of the segment, even
+		// after a literal, and negation does not make it match.
+		{"a", "a[z-a]", false},
+		{"b", "[!z-a]", false},
+		// `!` negates only as the class's first character.
+		{"!", "[a!]", true},
+		{"b", "[a!]", false},
 	} {
 		g, err := compileGlob(tc.pattern, true, false)
 		if err != nil {
