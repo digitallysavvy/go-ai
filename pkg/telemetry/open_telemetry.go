@@ -38,6 +38,18 @@ type OpenTelemetryOptions struct {
 	// Settings.EnrichSpan, when set, overrides this constructor-level value.
 	EnrichSpan EnrichSpanFunc
 
+	// AgentSpanName controls the root agent span names of text and object
+	// generation (TS `agentSpanName`). AgentSpanNameModelID (the default)
+	// names spans "invoke_agent {modelId}". AgentSpanNameFunctionID names them
+	// "invoke_agent {functionId}", falling back to the model ID when the call
+	// has no function ID. Other operations keep their default names.
+	AgentSpanName AgentSpanNameMode
+	// AgentSpanNameFunc returns the complete root agent span name and takes
+	// precedence over AgentSpanName. An empty return value, or a panic, falls
+	// back to the default model-based name (TS: returning undefined or
+	// throwing).
+	AgentSpanNameFunc func(AgentSpanNameOptions) string
+
 	// The following gate emission of AI-SDK-specific supplemental
 	// attributes that are not part of the GenAI SemConv (18651f6). All
 	// default to false (off) so a GenAI backend sees only standard
@@ -66,6 +78,55 @@ type OpenTelemetryOptions struct {
 	ToolChoice bool
 	// Schema emits ai.schema/ai.schema.name/ai.schema.description.
 	Schema bool
+}
+
+// AgentSpanNameMode selects how root agent spans are named.
+type AgentSpanNameMode string
+
+const (
+	// AgentSpanNameModelID names root agent spans "invoke_agent {modelId}".
+	AgentSpanNameModelID AgentSpanNameMode = "modelId"
+	// AgentSpanNameFunctionID names root agent spans
+	// "invoke_agent {functionId}", falling back to the model ID.
+	AgentSpanNameFunctionID AgentSpanNameMode = "functionId"
+)
+
+// AgentSpanNameOptions is passed to OpenTelemetryOptions.AgentSpanNameFunc.
+type AgentSpanNameOptions struct {
+	ModelID string
+	// FunctionID is the call's telemetry function ID, or empty when unset.
+	FunctionID string
+}
+
+// agentSpanName returns the root span name. Mirrors TS getAgentSpanName:
+// only invoke_agent spans are configurable; other operations, such as
+// embeddings, keep "{operation} {modelId}".
+func (i OpenTelemetry) agentSpanName(operationName, modelID, functionID string) (name string) {
+	defaultName := operationName
+	if modelID != "" {
+		defaultName += " " + modelID
+	}
+	if operationName != "invoke_agent" {
+		return defaultName
+	}
+	if fn := i.opts.AgentSpanNameFunc; fn != nil {
+		defer func() {
+			if recover() != nil {
+				name = defaultName
+			}
+		}()
+		if custom := fn(AgentSpanNameOptions{ModelID: modelID, FunctionID: functionID}); custom != "" {
+			return custom
+		}
+		return defaultName
+	}
+	if i.opts.AgentSpanName == AgentSpanNameFunctionID {
+		if functionID != "" {
+			return "invoke_agent " + functionID
+		}
+		return "invoke_agent " + modelID
+	}
+	return defaultName
 }
 
 // experimentalDecision reports whether ai.decision.* attributes are enabled,
@@ -249,11 +310,13 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	// open-telemetry.ts): the GenAI-mapped operation name (mapOperationName),
 	// never the raw operationId, and the model id — not functionId, which
 	// only ever surfaces via the gen_ai.agent.name attribute below (H3
-	// follow-up 5).
-	spanName := mapOperationName(e.OperationType)
-	if e.ModelID != "" {
-		spanName += " " + e.ModelID
+	// follow-up 5). OpenTelemetryOptions.AgentSpanName (TS #23835) opts into
+	// functionId or a custom name for invoke_agent spans.
+	functionID := ""
+	if e.Settings != nil {
+		functionID = e.Settings.FunctionID
 	}
+	spanName := i.agentSpanName(mapOperationName(e.OperationType), e.ModelID, functionID)
 	ctx, span := tracer.Start(ctx, spanName, trace.WithSpanKind(genAIRootSpanKind(e.OperationType)))
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,

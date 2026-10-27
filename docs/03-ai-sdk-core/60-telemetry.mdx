@@ -136,6 +136,28 @@ result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
 })
 ```
 
+### Agent Span Names
+
+Root agent spans of text and object generation are named `invoke_agent {modelId}` by default, so agents that share a model are hard to tell apart. Set `AgentSpanName` on `telemetry.OpenTelemetryOptions` to name them after the call's `FunctionID`, or set `AgentSpanNameFunc` to return the complete name. Spans of other operations, such as embeddings, keep their default names.
+
+```go
+integration := telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{
+    Tracer: tracer,
+    // "invoke_agent travel-planner"; falls back to the model ID without a FunctionID.
+    AgentSpanName: telemetry.AgentSpanNameFunctionID,
+})
+
+custom := telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{
+    Tracer: tracer,
+    AgentSpanNameFunc: func(o telemetry.AgentSpanNameOptions) string {
+        if o.FunctionID == "" {
+            return "" // an empty name keeps the default
+        }
+        return "my-app " + o.FunctionID
+    },
+})
+```
+
 ### Event Names
 
 Telemetry integrations should implement `OnEnd`, `OnEmbedEnd`, and `OnRerankEnd`. The older `OnFinish`, `OnEmbedFinish`, and `OnRerankFinish` names are kept as deprecated compatibility fallbacks. Streaming `OnChunk` telemetry is no longer emitted; application-level `StreamTextOptions.OnChunk` callbacks still receive stream chunks.
