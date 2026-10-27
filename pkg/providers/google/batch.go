@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/geminischema"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -778,7 +779,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	// TS safeValidateTypes(responseSchema): a result that does not match the
 	// schema fails that item.
 	var geminiResp gemini.Response
-	if gemini.ResponseValidationMessage(response) != "" || json.Unmarshal(response, &geminiResp) != nil {
+	if geminischema.ValidationMessage(string(response)) != "" || json.Unmarshal(response, &geminiResp) != nil {
 		return &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     key,
