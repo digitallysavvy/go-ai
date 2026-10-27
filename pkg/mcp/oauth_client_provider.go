@@ -109,6 +109,12 @@ type OAuthClientProvider interface {
 	ClientMetadata() OAuthClientMetadata
 	// ClientInformation returns previously stored (pre-registered or
 	// dynamically registered) client credentials, or nil if none exist yet.
+	//
+	// Pre-registered confidential clients (a ClientSecret, or a provider that
+	// implements OAuthClientAuthenticator) must be bound to their
+	// authorization server: set Issuer, or store authorization server
+	// information. Auth otherwise fails with an authorization server mismatch
+	// instead of sending the secret to a server the MCP server chose.
 	ClientInformation(ctx context.Context) (*OAuthClientInformation, error)
 }
 
