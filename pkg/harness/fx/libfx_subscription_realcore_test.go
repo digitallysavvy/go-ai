@@ -277,17 +277,7 @@ func TestLibfxRealCoreSubscriptionParsedOutputColdReplay(t *testing.T) {
 			fixtures := responsesFixtures(t, provider, true)
 			fixture := fixtures[len(fixtures)-1]
 			sub := &memSubscription{creds: libfx.Credentials{AccessToken: "test-token", RefreshToken: "test-refresh", AccountID: "account", ExpiresAt: 2_000_000_000_000}}
-			// The transport has recorded the whole response once the body is
-			// closed. TS serves it in a single chunk, so its suspension can
-			// never land mid-record; waiting for the close keeps that true
-			// here, where the pump reads 32 KiB at a time.
-			recorded := make(chan struct{})
-			var recordedOnce sync.Once
-			network := &subscriptionNetwork{t: t, model: func(int) *http.Response {
-				resp := sseBody(fixture)
-				resp.Body = &closeSignal{ReadCloser: resp.Body, fire: func() { recordedOnce.Do(func() { close(recorded) }) }}
-				return resp
-			}}
+			network := &subscriptionNetwork{t: t, model: func(int) *http.Response { return sseBody(fixture) }}
 			h := newSubscriptionHarness(t, provider, sub, network)
 			sb := newFakeSandbox()
 			ctx := context.Background()
@@ -302,15 +292,12 @@ func TestLibfxRealCoreSubscriptionParsedOutputColdReplay(t *testing.T) {
 			var once sync.Once
 			before := &partLog{}
 			before.on = func(p harness.StreamPart) {
-				if p.PartType() == harness.PartTypeTextDelta {
-					once.Do(func() {
-						select {
-						case <-recorded:
-						case <-time.After(30 * time.Second):
-							t.Error("the response was never fully recorded")
-						}
-						suspended <- suspendFromEmit(t, session)
-					})
+				// TS serves the response as one chunk, so its suspension never
+				// lands before the record is complete. The pump here reads
+				// 32 KiB at a time; suspend at the first text delta that
+				// arrives once the record holds the whole response.
+				if p.PartType() == harness.PartTypeTextDelta && modelRecordComplete(session) {
+					once.Do(func() { suspended <- suspendFromEmit(t, session) })
 				}
 			}
 			control, err := session.DoPromptTurn(ctx, harness.PromptTurnOptions{TurnSettings: opts, Prompt: harness.TextPrompt("Reply."), Emit: before.emit})
@@ -392,13 +379,11 @@ func derefAny[T any](p *T) any {
 	return *p
 }
 
-type closeSignal struct {
-	io.ReadCloser
-	fire func()
-}
-
-func (c *closeSignal) Close() error {
-	err := c.ReadCloser.Close()
-	c.fire()
-	return err
+// modelRecordComplete reports whether the turn's first model record holds
+// its whole response.
+func modelRecordComplete(session harness.Session) bool {
+	s := session.(*libfxSession)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state.Turn != nil && len(s.state.Turn.Models) > 0 && s.state.Turn.Models[0] != nil && s.state.Turn.Models[0].Complete
 }

@@ -416,7 +416,7 @@ func GrokAccountID(ctx context.Context, accessToken string, fetch FetchFunc) (st
 // new token is for the same account.
 func refreshGrokCredentials(ctx context.Context, c Credentials, fetch FetchFunc, now func() time.Time) (Credentials, error) {
 	if c.RefreshToken == "" {
-		return Credentials{}, errors.New("Grok credentials have no refreshToken")
+		return Credentials{}, errors.New("Grok credentials have no refreshToken") //nolint:staticcheck // matches libfx error text
 	}
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
