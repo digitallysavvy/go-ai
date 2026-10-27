@@ -208,10 +208,7 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		defer resp.Body.Close() //nolint:errcheck
 		stopWatch()
 		cancel()
-		statusText := http.StatusText(resp.StatusCode)
-		if statusText == "" {
-			statusText = resp.Status
-		}
+		statusText := responseStatusText(resp)
 		// TS #19430: keep the (bounded) response body on the error.
 		text := string(readErrorBody(resp.Body))
 		message := fmt.Sprintf("MCP SSE Transport Error: %d %s", resp.StatusCode, statusText)
