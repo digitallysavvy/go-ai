@@ -90,8 +90,13 @@ var (
 		fl("details", zNullish(zArr(zAny))),
 	)
 
-	Response = zObj(
-		fl("error", zNullish(zGoogleError)),
+	Response = zObj(append([]zodlite.Field{fl("error", zNullish(zGoogleError))}, responseFields...)...)
+
+	// BatchResponse is TS responseSchema (batch results): the same object
+	// without the in-stream `error` key, which zod strips.
+	BatchResponse = zObj(responseFields...)
+
+	responseFields = []zodlite.Field{
 		fl("responseId", zNullish(zStr)),
 		fl("candidates", zNullish(zArr(zObj(
 			fl("content", zNullish(zObj(fl("parts", zNullish(zArr(zPart)))))),
@@ -102,7 +107,7 @@ var (
 		)))),
 		fl("usageMetadata", zNullish(zUsage)),
 		fl("promptFeedback", zNullish(zObj(fl("blockReason", zNullish(zStr)), fl("safetyRatings", zNullish(zArr(zSafety)))))),
-	)
+	}
 )
 
 // ValidationMessage validates a GenerateContent JSON body or frame against
@@ -110,4 +115,9 @@ var (
 // TypeValidationError message.
 func ValidationMessage(data string) string {
 	return zodlite.ValidationMessage(Response, data)
+}
+
+// BatchValidationMessage validates a batch result against BatchResponse.
+func BatchValidationMessage(data string) string {
+	return zodlite.ValidationMessage(BatchResponse, data)
 }

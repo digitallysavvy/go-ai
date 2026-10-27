@@ -536,23 +536,33 @@ func generateGoogleBatchDisplayNameSuffix() string {
 
 type googleRPCStatusWire struct {
 	Code    interface{} `json:"code"`
-	Message string      `json:"message"`
-	Status  string      `json:"status"`
+	Message *string     `json:"message"`
+	Status  *string     `json:"status"`
 }
 
+// codeString is TS String(error.code): a JSON number prints as a JS number.
+func (e *googleRPCStatusWire) codeString() string {
+	if f, ok := e.Code.(float64); ok {
+		return providerutils.JSNumberString(f)
+	}
+	return fmt.Sprintf("%v", e.Code)
+}
+
+// toBatchError is TS convertGoogleRpcError: `message ?? fallback` keeps an
+// explicit empty message, and a present status / code is always copied.
 func (e *googleRPCStatusWire) toBatchError(fallbackMessage string) *provider.BatchError {
 	if e == nil {
 		return nil
 	}
-	out := &provider.BatchError{Message: e.Message}
-	if out.Message == "" {
-		out.Message = fallbackMessage
+	out := &provider.BatchError{Message: fallbackMessage}
+	if e.Message != nil {
+		out.Message = *e.Message
 	}
-	if e.Status != "" {
-		out.Type = e.Status
+	if e.Status != nil {
+		out.Type = *e.Status
 	}
 	if e.Code != nil {
-		out.Code = fmt.Sprintf("%v", e.Code)
+		out.Code = e.codeString()
 	}
 	return out
 }
@@ -717,8 +727,7 @@ func parseGoogleBatchCountOrZero(v interface{}) *int {
 func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessage, errWire *googleRPCStatusWire) *provider.BatchV4ItemResult {
 	if errWire != nil {
 		status := provider.BatchItemFailed
-		codeStr := fmt.Sprintf("%v", errWire.Code)
-		if errWire.Status == "CANCELLED" || codeStr == "1" {
+		if (errWire.Status != nil && *errWire.Status == "CANCELLED") || (errWire.Code != nil && errWire.codeString() == "1") {
 			status = provider.BatchItemCancelled
 		}
 		return &provider.BatchV4ItemResult{
@@ -741,7 +750,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	var preview struct {
 		Candidates     []json.RawMessage `json:"candidates"`
 		PromptFeedback *struct {
-			BlockReason string `json:"blockReason"`
+			BlockReason *string `json:"blockReason"`
 		} `json:"promptFeedback"`
 	}
 	if err := json.Unmarshal(response, &preview); err == nil && len(preview.Candidates) == 0 {
@@ -750,18 +759,18 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 		errType := ""
 		var meta map[string]interface{}
 		if preview.PromptFeedback != nil {
-			// TS: blockReason ?? null.
+			// TS: blockReason ?? null (an empty string is a block reason).
 			var blockReason interface{}
-			if preview.PromptFeedback.BlockReason != "" {
-				blockReason = preview.PromptFeedback.BlockReason
+			if preview.PromptFeedback.BlockReason != nil {
+				blockReason = *preview.PromptFeedback.BlockReason
 			}
 			meta = map[string]interface{}{"google": map[string]interface{}{
 				"promptFeedback": map[string]interface{}{"blockReason": blockReason},
 			}}
-			if preview.PromptFeedback.BlockReason != "" {
-				message = fmt.Sprintf("Google blocked the batch request (%s).", preview.PromptFeedback.BlockReason)
+			if preview.PromptFeedback.BlockReason != nil {
+				message = fmt.Sprintf("Google blocked the batch request (%s).", *preview.PromptFeedback.BlockReason)
 				code = "prompt_blocked"
-				errType = preview.PromptFeedback.BlockReason
+				errType = *preview.PromptFeedback.BlockReason
 			}
 		}
 		item := &provider.BatchV4ItemResult{
@@ -778,8 +787,13 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 
 	// TS safeValidateTypes(responseSchema): a result that does not match the
 	// schema fails that item.
-	var geminiResp gemini.Response
-	if geminischema.ValidationMessage(string(response)) != "" || json.Unmarshal(response, &geminiResp) != nil {
+	// The schema strips an `error` key, so it is not decoded into the typed
+	// response (its shadowing field takes any JSON).
+	var decoded struct {
+		gemini.Response
+		Error json.RawMessage `json:"error"`
+	}
+	if geminischema.BatchValidationMessage(string(response)) != "" || json.Unmarshal(response, &decoded) != nil {
 		return &provider.BatchV4ItemResult{
 			Type:   provider.BatchRequestTypeText,
 			ID:     key,
@@ -789,7 +803,7 @@ func (b *Batch) convertGoogleBatchResultLine(key string, response json.RawMessag
 	}
 
 	lm := NewLanguageModel(b.provider, "")
-	genResult := lm.ConvertBatchResponse(geminiResp)
+	genResult := lm.ConvertBatchResponse(decoded.Response)
 
 	if imageResult := convertGoogleBatchImageResult(genResult); imageResult != nil {
 		return &provider.BatchV4ItemResult{
@@ -951,6 +965,14 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 		if len(line) == 0 {
 			continue
 		}
+		// TS createJsonLinesResponseHandler(googleBatchResultLineSchema): a line
+		// that is not JSON (JSONParseError) or does not match the schema
+		// (TypeValidationError) fails the stream.
+		if err := googleBatchLineError(line); err != nil {
+			s.err = err
+			_ = s.body.Close()
+			return nil, err
+		}
 		var wire googleBatchResultLineWire
 		if err := json.Unmarshal(line, &wire); err != nil {
 			s.err = err
@@ -958,6 +980,20 @@ func (s *googleBatchFileResultsStream) Next() (*provider.BatchV4ItemResult, erro
 		}
 		return s.batch.convertGoogleBatchResultLine(wire.Key, wire.Response, wire.Error), nil
 	}
+}
+
+// googleBatchLineError validates one responses-file line against
+// googleBatchResultLineSchema.
+func googleBatchLineError(line []byte) error {
+	var value interface{}
+	if syntax := json.Unmarshal(line, &value); syntax != nil {
+		return providererrors.NewJSONParseError(string(line), syntax)
+	}
+	if bad := zGoogleBatchResultLine(value, true, nil); bad != nil {
+		_, typed := providerutils.ChunkParseFailure(string(line), bad)
+		return typed
+	}
+	return nil
 }
 
 func (s *googleBatchFileResultsStream) Err() error   { return s.err }
