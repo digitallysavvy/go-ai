@@ -285,6 +285,8 @@ Mistral cached token counts map into `types.Usage.InputDetails.CacheReadTokens` 
 
 `mistral-large-4` and `mistral-large-4-0` (`mistral.ModelMistralLarge4`, `mistral.ModelMistralLarge40`) accept reasoning configuration. Chat models now default to supporting `reasoning_effort`: only known non-reasoning models (the `codestral`, `ministral`, `mistral-code`, `mistral-large-latest`/`mistral-large-2512` and `voxtral-small` IDs) emit an `unsupported` `reasoning` warning, so new or unknown model IDs forward `Reasoning` and `providerOptions.mistral.reasoningEffort` instead of dropping them.
 
+GLM-5.3 models (`zai-glm-5-3`, `zai-glm-5-3-flash`, `zai-glm-5`, `zai-glm-latest`; `mistral.ModelZaiGLM53` and friends) accept only `low`, `high` and `max` reasoning effort and cannot disable reasoning. `Reasoning` maps `minimal`/`low` to `low`, `medium`/`high` to `high`, `xhigh`/`max` to `max`, and `none` to `low` with a `compatibility` warning. `providerOptions.mistral.reasoningEffort` now also accepts `low` and `max`. Other models keep mapping every level to `high`, and `none` to `none`.
+
 ### Conversations API and web search
 
 `Provider.ConversationModel(id)` calls Mistral's Conversations API (`POST /v1/conversations`, `store: false`) and supports the provider-executed `mistral.WebSearch()` and `mistral.WebSearchPremium()` tools. Web search runs produce a provider-executed tool call and result (the result carries the execution `info`), and `tool_reference` chunks become URL sources (deduplicated by URL).
