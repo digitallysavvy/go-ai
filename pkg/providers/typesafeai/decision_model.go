@@ -217,7 +217,8 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 
 	modelID := m.modelID
-	if response.Model != nil && *response.Model != "" {
+	// TS `response.model ?? this.modelId`: only null/absent falls back.
+	if response.Model != nil {
 		modelID = *response.Model
 	}
 
