@@ -2223,6 +2223,13 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 				ProviderMetadata: providerMetadata,
 				ToolMetadata:     call.ToolMetadata,
 			}
+			if approval.Status == types.ToolApprovalStatusApproved {
+				// An automatically approved call keeps its approval so its
+				// request/response parts are recorded, as in GenerateText.
+				result.ApprovalStatus = approval.Status
+				result.ApprovalReason = approval.Reason
+				result.ProviderExecutedSet = call.ProviderExecutedSet
+			}
 			results = append(results, result)
 
 			// CB-T23: Emit OnToolCallFinishEvent
