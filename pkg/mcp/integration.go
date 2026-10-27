@@ -283,25 +283,30 @@ func extractMCPStructuredOutput(result CallToolResult, outputSchema schema.Schem
 	if result.StructuredContent != nil {
 		defaulted := schema.ApplyDefaults(result.StructuredContent, outputSchema)
 		if err := outputSchema.Validator().Validate(defaulted); err != nil {
-			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned structuredContent that does not match the expected outputSchema", toolName), err.Error())
+			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned structuredContent that does not match the expected outputSchema", Cause: err}
 		}
 		return defaulted, nil
 	}
+	// TS uses the first text part (content.find); one without a text field
+	// falls through to the error below.
 	for _, part := range result.Content {
-		if part.Type != "text" || !part.hasTextField() {
+		if part.Type != "text" {
 			continue
+		}
+		if !part.hasTextField() {
+			break
 		}
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(part.Text), &parsed); err != nil {
-			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned content that does not match the expected outputSchema", toolName), err.Error())
+			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned content that does not match the expected outputSchema", Cause: err}
 		}
 		defaulted := schema.ApplyDefaults(parsed, outputSchema)
 		if err := outputSchema.Validator().Validate(defaulted); err != nil {
-			return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q returned content that does not match the expected outputSchema", toolName), err.Error())
+			return nil, &MCPClientError{Message: "Tool \"" + toolName + "\" returned content that does not match the expected outputSchema", Cause: err}
 		}
 		return defaulted, nil
 	}
-	return nil, NewMCPClientError(0, fmt.Sprintf("Tool %q did not return structuredContent or parseable text content", toolName), nil)
+	return nil, NewMCPClientError(0, "Tool \""+toolName+"\" did not return structuredContent or parseable text content", nil)
 }
 
 // convertToModelOutput converts a tool result to model-readable output
