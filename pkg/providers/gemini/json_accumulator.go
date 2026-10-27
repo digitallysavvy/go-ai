@@ -102,8 +102,15 @@ func (g *GoogleJSONAccumulator) ProcessPartialArgs(partialArgs []PartialArg) acc
 	var delta strings.Builder
 
 	for _, arg := range partialArgs {
-		rawPath := strings.TrimPrefix(arg.JSONPath, "$.")
-		if rawPath == "" {
+		// Vertex terminates an array with a value-less `$.path[]` entry. For
+		// an empty array, that terminator is the only entry sent for the path.
+		isArrayTerminator := strings.HasSuffix(arg.JSONPath, "[]")
+		jsonPath := arg.JSONPath
+		if isArrayTerminator {
+			jsonPath = strings.TrimSuffix(jsonPath, "[]")
+		}
+		rawPath := strings.TrimPrefix(jsonPath, "$.")
+		if rawPath == "" || rawPath == "$" {
 			continue
 		}
 
@@ -122,6 +129,19 @@ func (g *GoogleJSONAccumulator) ProcessPartialArgs(partialArgs []PartialArg) acc
 
 		value, valueJSON, ok := resolvePartialArgValue(arg)
 		if !ok {
+			// A value-less entry for a path without a value is an empty
+			// container (an empty container has no leaves to stream).
+			// Value-less entries for existing paths are string or array
+			// terminators and are ignored.
+			if existingOK || (arg.WillContinue != nil && *arg.WillContinue) {
+				continue
+			}
+			var empty interface{} = newOrderedMap()
+			if isArrayTerminator {
+				empty = []interface{}{}
+			}
+			setNestedValue(g.accumulatedArgs, segments, empty)
+			delta.WriteString(g.emitContainer(segments, isArrayTerminator))
 			continue
 		}
 
@@ -184,6 +204,35 @@ func (g *GoogleJSONAccumulator) emitNavigationTo(target []interface{}, arg Parti
 	fragment.WriteString(g.closeDownTo(commonDepth))
 	fragment.WriteString(g.openDownTo(targetContainer, leaf))
 	fragment.WriteString(g.emitLeaf(leaf, arg, valueJSON))
+
+	return fragment.String()
+}
+
+// emitContainer navigates to targetSegments and opens a container there. The
+// container stays open so later entries for its children continue inside it;
+// it is closed by subsequent navigation or by Finalize.
+//
+// Input: targetSegments=["nested","tags"], isArray=true
+// Output: `{"nested":{"tags":[`
+func (g *GoogleJSONAccumulator) emitContainer(target []interface{}, isArray bool) string {
+	var fragment strings.Builder
+
+	if g.stringOpen {
+		fragment.WriteByte('"')
+		g.stringOpen = false
+	}
+
+	fragment.WriteString(g.ensureRoot())
+
+	commonDepth := g.findCommonStackDepth(target)
+
+	fragment.WriteString(g.closeDownTo(commonDepth))
+	// openDownTo infers the innermost container type from the leaf segment type.
+	var leaf interface{} = ""
+	if isArray {
+		leaf = 0
+	}
+	fragment.WriteString(g.openDownTo(target, leaf))
 
 	return fragment.String()
 }
