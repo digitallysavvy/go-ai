@@ -119,6 +119,9 @@ or `recordOutputs` means `true`. Set both to `true`, or start from
   redirect that would carry the credentials to another origin. Of `https://x.ai`
   the core may reach only `https://x.ai/cli/stable`, where the grok provider
   reads the Grok CLI version without credentials.
+- **`glob` case.** The `glob` built-in tool follows Node's `path.matchesGlob`
+  (dot segments are never matched by wildcards) but always matches case
+  sensitively; Node ignores case when the TS host runs on macOS or Windows.
 - **MCP server order.** Go maps have no insertion order, so `MCPServers` are
   connected, and their tools listed, in server-name order unless
   `Settings.MCPServerOrder` gives the TS object's key order. Structured MCP
