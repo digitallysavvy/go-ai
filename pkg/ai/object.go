@@ -201,18 +201,30 @@ func responseMetadataFromGenerateResultWithID(model provider.LanguageModel, resu
 	if result == nil {
 		return nil
 	}
-	if result.ResponseMetadata != nil {
-		return result.ResponseMetadata
+	meta := result.ResponseMetadata
+	if meta != nil && meta.ID != "" && !meta.Timestamp.IsZero() && meta.ModelID != "" {
+		return meta
 	}
 	if generateID == nil {
 		generateID = newCallID
 	}
-	result.ResponseMetadata = &types.ResponseMetadata{
-		ID:        generateID(),
-		Timestamp: time.Now(),
-		ModelID:   model.ModelID(),
-		Headers:   result.ResponseHeaders,
+	// TS responseData: each field the provider left out gets its default
+	// (id ?? generateId(), timestamp ?? new Date(), modelId ?? model.modelId).
+	// The provider's struct is copied, not modified.
+	filled := types.ResponseMetadata{Headers: result.ResponseHeaders}
+	if meta != nil {
+		filled = *meta
 	}
+	if filled.ID == "" {
+		filled.ID = generateID()
+	}
+	if filled.Timestamp.IsZero() {
+		filled.Timestamp = time.Now()
+	}
+	if filled.ModelID == "" {
+		filled.ModelID = model.ModelID()
+	}
+	result.ResponseMetadata = &filled
 	return result.ResponseMetadata
 }
 

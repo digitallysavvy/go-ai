@@ -1737,8 +1737,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		stepProvider := r.cbModel.Provider()
 		stepModelID := r.cbModel.ModelID()
 		stepResponseModelID := stepModelID
-		var stepResponseID string
-		var stepResponseTimestamp time.Time
+		// TS createStepResponse: a step whose stream reports no response id
+		// or timestamp gets a generated id and the step's start time.
+		stepResponseID := remapGenerateID()
+		stepResponseTimestamp := time.Now()
 		stepInstructions := r.cbSystem
 		stepInstructionMessages := r.cbInstructionMessages
 		stepTools := append([]types.Tool(nil), currentTools...)
@@ -2438,8 +2440,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					previousOutputChunkAt = nil
 					outputChunkGapsMs = nil
 					stepResponseModelID = stepModelID
-					stepResponseID = ""
-					stepResponseTimestamp = time.Time{}
+					stepResponseID = remapGenerateID()
+					stepResponseTimestamp = time.Now()
 					toolInputCallbacks = newStreamToolInputCallbacks(stepExecutionTools, currentMessages, r.cbToolsCtx)
 					preRefinementCalls = nil
 					stepTextParts = nil
