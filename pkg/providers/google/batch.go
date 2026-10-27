@@ -131,9 +131,14 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		"requests": map[string]interface{}{"requests": inlinedRequests},
 	}
 	requestBody := map[string]interface{}{"batch": inlineBody}
-	inlineJSON, _ := json.Marshal(requestBody)
+	// TS measures JSON.stringify bytes, which leave <, > and & unescaped.
+	var inlineJSON bytes.Buffer
+	inlineEnc := json.NewEncoder(&inlineJSON)
+	inlineEnc.SetEscapeHTML(false)
+	_ = inlineEnc.Encode(requestBody)
+	inlineSize := inlineJSON.Len() - 1 // Encode appends a newline
 
-	if len(inlineJSON) < googleBatchInlineCreationMaxBytes {
+	if inlineSize < googleBatchInlineCreationMaxBytes {
 		var operation googleBatchOperationWire
 		if err := b.provider.client.DoJSON(ctx, internalhttp.Request{
 			ValidateResponse: googleValidator(zGoogleBatchOperation),

@@ -81,3 +81,27 @@ func TestR47_BatchResultsFileLineValidation(t *testing.T) {
 		})
 	}
 }
+
+// TS sizes the inline body with JSON.stringify, which leaves "<" as one byte;
+// Go's default escaping (<, six bytes) pushed a 5 MB prompt of them over
+// the 20 MB inline threshold and into a file upload.
+func TestR47_BatchInlineThresholdIgnoresHTMLEscaping(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(googleBatchOperationJSON))
+	}))
+	defer srv.Close()
+	b := New(Config{APIKey: "k", BaseURL: srv.URL + "/v1beta"}).ExperimentalBatch()
+	_, err := b.DoStartBatch(t.Context(), provider.BatchV4StartOptions{
+		Requests: []provider.BatchV4Request{googleTextBatchRequest("a", "gemini-2.5-flash", strings.Repeat("<", 5_000_000))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/v1beta/models/gemini-2.5-flash:batchGenerateContent" {
+		t.Fatalf("path = %q", path)
+	}
+}
