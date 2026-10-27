@@ -488,6 +488,14 @@ in v0.5.3.
 - Stability no longer panics on nil options, and the Replicate language model
   no longer panics on nil options (v0.5.3).
 - Bedrock picks up rotated AWS credentials without a restart.
+- Perplexity decodes fractional token counts, and its embedding model
+  validates `dimensions` and `encodingFormat` like TS.
+- Open Responses `Generate` returns a text part (with the item ID) for a
+  refusal content part, as TS does.
+- Google batch: an empty `metadata.state` stays pending, and the inline
+  versus file-upload size check counts the whole creation body like TS.
+- Gemini: a part with only a `thoughtSignature` no longer attaches it to the
+  previous content, and a function call without a name is dropped.
 
 ### Workflow, MCP, code mode and harness
 
@@ -542,6 +550,8 @@ Notable ones:
   Mistral accepts a call-level `Language`.
 - Streaming speech "closed before completion" errors omit the WebSocket
   close code and reason.
+- Google batch `Cursor` and `WebhookURL`, and the response `nextPageToken`,
+  treat `""` as absent; Perplexity usage counts such as `12.5` are truncated.
 
 ---
 

@@ -1224,7 +1224,6 @@ func TestPerplexityConvertUsage_ReasoningTokensAreSubsetOfOutput(t *testing.T) {
 	}
 }
 
-func int64Ptr(v int64) *int64 { return &v }
 
 // TS: "preserves citation annotations from output items and %s" (it.each over
 // response.completed / response.incomplete). A message with a citation is

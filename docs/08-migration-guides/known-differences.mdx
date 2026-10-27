@@ -171,6 +171,20 @@ These details differ:
   final result, TS pushes the first `toolOutput` into the model-call content
   twice; Go records each result once.
 
+## Google batch and Perplexity: empty values and fractional counts
+
+- **Google batch cursor and webhook.** `BatchV4ListOptions.Cursor` and
+  `BatchV4StartOptions.WebhookURL` are strings, so an empty value is the same
+  as unset. TS sends `pageToken=` for `cursor: ""` and a `webhookConfig` for
+  `webhookUrl: ""`; Go sends neither. A response `nextPageToken: ""` is
+  reported as no `NextCursor`, where TS returns `nextCursor: ""`. An empty
+  `metadata.state` and `responsesFile` are kept as values, like TS, but
+  `BatchV4Status.RawStatus` cannot tell `""` from absent.
+- **Perplexity fractional counts.** TS `z.number()` accepts counts such as
+  `12.5`. Go accepts them too and truncates usage counts toward zero, because
+  `types.Usage` holds integers. `providerMetadata.perplexity.usage` and
+  `toolCalls` invocation counts are truncated the same way.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
