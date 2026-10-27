@@ -42,6 +42,10 @@ type SSETransport struct {
 	// signal), canceled by Close. Every Send POST also watches it.
 	streamCtx context.Context
 	streamErr error
+	// streamGen identifies the current stream. Connect and Close each bump
+	// it, so a reader goroutine left over from a closed or failed stream
+	// (Close does not wait for it) cannot clear the state of a newer one.
+	streamGen uint64
 
 	config TransportConfig
 	oauth  *OAuthConfig
@@ -163,6 +167,9 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopWatch := context.AfterFunc(ctx, cancel)
 	var resp *http.Response
+	// TS fails the connection when an OK response has no body (`!response.ok
+	// || !response.body`); only a custom SSEClient can return one.
+	missingBody := false
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.url, nil)
 		if err != nil {
@@ -191,7 +198,8 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 			cancel()
 			return NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response"))
 		}
-		if resp.Body == nil {
+		missingBody = resp.Body == nil
+		if missingBody {
 			resp.Body = io.NopCloser(bytes.NewReader(nil))
 		}
 		if resp.StatusCode == http.StatusUnauthorized && t.auth.enabled() && attempt == 0 {
@@ -207,7 +215,7 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		}
 		break
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || missingBody {
 		defer resp.Body.Close() //nolint:errcheck
 		stopWatch()
 		cancel()
@@ -232,8 +240,10 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	t.cancel = cancel
 	t.streamCtx = reqCtx
 	t.streamErr = nil
+	t.streamGen++
+	gen := t.streamGen
 	t.mu.Unlock()
-	go t.readSSEStream(resp.Body, ready)
+	go t.readSSEStream(resp.Body, gen, ready)
 
 	select {
 	case err := <-ready:
@@ -267,6 +277,7 @@ func (t *SSETransport) closeWithoutCallback() {
 	t.cancel = nil
 	t.streamCtx = nil
 	t.streamErr = io.EOF
+	t.streamGen++
 	t.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -449,7 +460,7 @@ func (t *SSETransport) applyHeaders(ctx context.Context, req *http.Request, base
 	return t.auth.setBearer(ctx, req.Header)
 }
 
-func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
+func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<- error) {
 	defer body.Close() //nolint:errcheck
 	parser := streaming.NewSSEParser(body)
 	readySent := false
@@ -457,16 +468,21 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 		event, err := parser.Next()
 		if err == io.EOF {
 			t.mu.Lock()
-			wasConnected := t.connected
-			aborted := t.cancel == nil // closed intentionally via Close
-			t.connected = false
-			t.endpoint = nil
+			// A Close (or a later Connect) since this stream started owns
+			// the transport state now: leave it alone (TS returns silently
+			// once its abortController is aborted).
+			aborted := t.streamGen != gen
 			var unexpected error
-			if readySent && wasConnected {
-				unexpected = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
-				t.streamErr = unexpected
-			} else {
-				t.streamErr = io.EOF
+			if !aborted {
+				wasConnected := t.connected
+				t.connected = false
+				t.endpoint = nil
+				if readySent && wasConnected {
+					unexpected = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
+					t.streamErr = unexpected
+				} else {
+					t.streamErr = io.EOF
+				}
 			}
 			t.mu.Unlock()
 			if !readySent && !aborted {
@@ -482,13 +498,11 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 		}
 		if err != nil {
 			t.mu.Lock()
-			aborted := t.cancel == nil // closed intentionally via Close
-			t.connected = false
-			t.endpoint = nil
+			aborted := t.streamGen != gen // closed via Close, or replaced
 			if !aborted {
+				t.connected = false
+				t.endpoint = nil
 				t.streamErr = NewMCPClientError(0, "MCP SSE Transport Error: Connection closed unexpectedly", nil)
-			} else {
-				t.streamErr = io.EOF
 			}
 			t.mu.Unlock()
 			if !readySent {
@@ -499,6 +513,9 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 			return
 		}
 
+		if t.isStaleStream(gen) {
+			return
+		}
 		if event.Event == "endpoint" {
 			if t.hasEndpoint() {
 				continue
@@ -513,8 +530,10 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 			endpoint = t.baseURL.ResolveReference(endpoint)
 			if origin(endpoint) != origin(t.baseURL) {
 				t.mu.Lock()
-				t.connected = false
-				t.endpoint = nil
+				if t.streamGen == gen {
+					t.connected = false
+					t.endpoint = nil
+				}
 				t.mu.Unlock()
 				if !readySent {
 					ready <- NewMCPClientError(0, fmt.Sprintf("MCP SSE Transport Error: Endpoint origin does not match connection origin: %s", origin(endpoint)), nil)
@@ -522,6 +541,10 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 				return
 			}
 			t.mu.Lock()
+			if t.streamGen != gen {
+				t.mu.Unlock()
+				return
+			}
 			t.endpoint = endpoint
 			t.connected = true
 			t.mu.Unlock()
@@ -543,6 +566,14 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, ready chan<- error) {
 		}
 		t.queueReceivedMessages([]*MCPMessage{msg})
 	}
+}
+
+// isStaleStream reports whether the stream gen belongs to has been closed or
+// replaced by a later Connect.
+func (t *SSETransport) isStaleStream(gen uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.streamGen != gen
 }
 
 func (t *SSETransport) hasEndpoint() bool {

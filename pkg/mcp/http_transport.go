@@ -899,6 +899,18 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 	return []*MCPMessage{msg}, nil
 }
 
+// closeBodyWhenDone closes body as soon as ctx ends, and at the latest when
+// the returned func runs. body is closed exactly once.
+func closeBodyWhenDone(ctx context.Context, body io.Closer) func() {
+	var once sync.Once
+	closeBody := func() { once.Do(func() { body.Close() }) } //nolint:errcheck
+	stop := context.AfterFunc(ctx, closeBody)
+	return func() {
+		stop()
+		closeBody()
+	}
+}
+
 // readMCPHTTPSSEMessages parses a text/event-stream response returned from a
 // POST send() (as opposed to the standing inbound SSE GET listener), matching
 // TS send()'s `processEvents()`. A clean end-of-stream (EOF) returns
@@ -916,7 +928,10 @@ func parseMCPHTTPJSONMessages(body []byte) ([]*MCPMessage, error) {
 // func for ctx, invoked once this goroutine is done with it.
 func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release context.CancelFunc, body io.ReadCloser) {
 	defer release()
-	defer body.Close() //nolint:errcheck
+	// TS close() cancels the reader, which cancels the body. A body from a
+	// custom SSEClient may not watch the request context, so close it when
+	// ctx ends; otherwise Close would wait on this goroutine forever.
+	defer closeBodyWhenDone(ctx, body)()
 	parser := streaming.NewSSEParser(body)
 	for {
 		event, err := parser.Next()
@@ -1294,7 +1309,11 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 // intentionally canceled (Close, or a switch to the modern protocol).
 func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel context.CancelFunc, body io.ReadCloser) {
 	defer connCancel()
-	defer body.Close() //nolint:errcheck
+	// TS inboundSseConnection.close() cancels the reader, which cancels the
+	// body. A body from a custom SSEClient may not watch the request
+	// context, so close it when connCtx ends (Close, or a switch to the
+	// modern protocol); otherwise Close would wait on this goroutine forever.
+	defer closeBodyWhenDone(connCtx, body)()
 	parser := streaming.NewSSEParser(body)
 	for {
 		event, err := parser.Next()
