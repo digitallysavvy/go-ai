@@ -72,7 +72,7 @@ const (
 //
 // A connection the bridge closes with code 1008 (bad token) fails at once with
 // *UnauthorizedError instead of being retried. x/net/websocket does not expose
-// close codes, so Dial reads the code off the raw connection (closeSniffer).
+// close codes, so Dial reads the code off the raw connection (websocket.CloseInfo).
 func NewBridgeConnectFunc(endpoint harness.PortEndpoint, opts BridgeConnectOptions) ConnectFunc {
 	name := opts.Name
 	if name == "" {

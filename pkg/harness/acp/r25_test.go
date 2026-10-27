@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -268,5 +269,99 @@ func TestDeserializeBridgePartKeepsWireKeyOrder(t *testing.T) {
 	got := deserializeBridgePart(part.(*harness.ErrorPart), "h").Error()
 	if got != `{"z":1,"a":2}` {
 		t.Fatalf("got %s", got)
+	}
+}
+
+// TS acp-v1-bootstrap.ts adds pnpm-workspace.yaml only when the source has
+// one (`source.pnpmWorkspaceYaml == null ? {} : ...`); an explicitly empty
+// value never reaches the bootstrap because validateACPV1Settings rejects it.
+func TestR42BootstrapPnpmWorkspaceYAML(t *testing.T) {
+	has := func(i implementation) (string, bool) {
+		t.Helper()
+		b, err := buildBootstrap("my-agent", i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range b.Files {
+			if f.Path == ".harness-bootstrap/my-agent/pnpm-workspace.yaml" {
+				return f.Content, true
+			}
+		}
+		return "", false
+	}
+	i := tsLocked()
+	i.Source.PnpmWorkspaceYAML = ""
+	if _, ok := has(i); ok {
+		t.Fatal("unset pnpmWorkspaceYaml must not add pnpm-workspace.yaml")
+	}
+	i.Source.PnpmWorkspaceYAML = "x: 1\n"
+	if c, ok := has(i); !ok || c != "x: 1\n" {
+		t.Fatalf("pnpm-workspace.yaml = %q, %v", c, ok)
+	}
+	s := Settings{HarnessID: "my-agent", Source: tsLocked().Source, Executable: "agent"}
+	s.Source.PnpmWorkspaceYAML, s.Source.PnpmWorkspaceYAMLSet = "", true
+	if _, err := CreateACP(s); err == nil || err.Error() != "ACP source.pnpmWorkspaceYaml must not be empty." {
+		t.Fatalf("New err = %v", err)
+	}
+}
+
+// TS acpToolCallCandidateSchema / acpQuestionRequestSchema /
+// acpQuestionResolvedSchema reject frames without a string requestId or with
+// a tool call lacking string toolCallId and title; the channel then
+// dispatches a validation error instead of the frame.
+func TestR42DecodeOutboundValidatesACPFrames(t *testing.T) {
+	for _, tc := range []struct {
+		frame string
+		ok    bool
+	}{
+		{`{"type":"acp-tool-call-candidate","requestId":"r","toolCall":{"toolCallId":"t","title":"x"}}`, true},
+		{`{"type":"acp-tool-call-candidate","toolCall":{"toolCallId":"t","title":"x"}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":1,"toolCall":{"toolCallId":"t","title":"x"}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":"r","toolCall":{"toolCallId":"t"}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":"r","toolCall":{"toolCallId":"t","title":null}}`, false},
+		{`{"type":"acp-tool-call-candidate","requestId":"r"}`, false},
+		{`{"type":"acp-question-request","requestId":"r","nativeRequest":{}}`, true},
+		{`{"type":"acp-question-request","requestId":"r"}`, true},
+		{`{"type":"acp-question-request","requestId":"r","nativeToolCall":null}`, false},
+		{`{"type":"acp-question-request","requestId":"r","nativeToolCall":{"toolCallId":"t","title":"x"}}`, true},
+		{`{"type":"acp-question-resolved","requestId":"r"}`, true},
+		{`{"type":"acp-question-resolved"}`, false},
+		{`{"type":"acp-question-resolved","requestId":null}`, false},
+	} {
+		_, _, err := decodeOutbound([]byte(tc.frame))
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", tc.frame, err, tc.ok)
+		}
+	}
+}
+
+// TS persists `fingerprintValue({ value: options.instructions ?? null })` as
+// the lifecycle instructionsFingerprint (values from node's crypto).
+func TestR42InstructionsFingerprintMatchesTS(t *testing.T) {
+	if got := instructionsFingerprint(""); got != "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b" {
+		t.Fatalf("no instructions: %s", got)
+	}
+	if got := instructionsFingerprint("be brief"); got != "64fb0968bd4b1c29468f76afa89983bfeedca3b0c17049edf539fc5ebb3b6806" {
+		t.Fatalf("instructions: %s", got)
+	}
+}
+
+// acpTurnStartConfigSchema and acpColdSessionStateSchema default tools and
+// builtinTools to []; a persisted configuration without them must not be
+// re-sent to the bridge as null.
+func TestR42PersistedStartConfigDefaultsArrays(t *testing.T) {
+	var cfg TurnStartConfig
+	if err := json.Unmarshal([]byte(`{"version":1,"configurationFingerprint":"f","prompt":[],"permissionMode":"allow-all"}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	var cold ColdSessionState
+	if err := json.Unmarshal([]byte(`{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all"}`), &cold); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []any{cfg, cold} {
+		b, _ := json.Marshal(v)
+		if !strings.Contains(string(b), `"tools":[]`) || !strings.Contains(string(b), `"builtinTools":[]`) {
+			t.Fatalf("%s", b)
+		}
 	}
 }

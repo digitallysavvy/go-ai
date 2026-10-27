@@ -3,6 +3,7 @@ package acp
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
@@ -48,6 +49,35 @@ type ColdSessionState struct {
 	ResponseFormat           *harness.ResponseFormat `json:"responseFormat,omitempty"`
 	OutputSchemaMapping      *OutputSchemaMapping    `json:"outputSchemaMapping,omitempty"`
 	PermissionModeMapping    *PermissionModeMapping  `json:"permissionModeMapping,omitempty"`
+}
+
+// UnmarshalJSON applies the zod `.default([])` of `tools` and `builtinTools`
+// (acpTurnStartConfigSchema), so a persisted configuration without them is
+// re-sent to the bridge with empty arrays rather than null.
+func (c *TurnStartConfig) UnmarshalJSON(data []byte) error {
+	type plain TurnStartConfig
+	var v plain
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*c = TurnStartConfig(v)
+	c.Tools = nonNilToolSpecs(c.Tools)
+	c.BuiltinTools = nonNilBuiltinTools(c.BuiltinTools)
+	return nil
+}
+
+// UnmarshalJSON applies the zod `.default([])` of `tools` and `builtinTools`
+// (acpColdSessionStateSchema).
+func (c *ColdSessionState) UnmarshalJSON(data []byte) error {
+	type plain ColdSessionState
+	var v plain
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*c = ColdSessionState(v)
+	c.Tools = nonNilToolSpecs(c.Tools)
+	c.BuiltinTools = nonNilBuiltinTools(c.BuiltinTools)
+	return nil
 }
 
 // createTurnStartConfigInput is the input of createTurnStartConfig.

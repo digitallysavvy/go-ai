@@ -2,6 +2,7 @@ package acp
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
@@ -65,6 +66,12 @@ func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 		}
 	}
 	switch typ {
+	case TypeToolCallCandidate, TypeQuestionRequest, TypeQuestionResolved:
+		if err := validateACPFrame(typ, fields); err != nil {
+			return nil, seq, err
+		}
+	}
+	switch typ {
 	case TypeToolCallCandidate:
 		var f ToolCallCandidateFrame
 		if err := json.Unmarshal(data, &f); err != nil {
@@ -85,6 +92,44 @@ func decodeOutbound(data []byte) (bridge.OutboundMessage, *float64, error) {
 		return f, seq, nil
 	}
 	return bridge.DecodeOutbound(data)
+}
+
+// validateACPFrame checks the keys the TS zod schemas of the ACP extension
+// frames require: a string `requestId`, and a `toolCall` (required on
+// candidates, optional but not null on question requests) that is an object
+// with string `toolCallId` and `title` (the `z.custom<ACPToolCall>` check).
+func validateACPFrame(typ string, fields map[string]json.RawMessage) error {
+	invalid := func(key string) error {
+		return fmt.Errorf("acp: invalid %s frame: %q is missing or has the wrong type", typ, key)
+	}
+	var requestID string
+	if raw, ok := fields["requestId"]; !ok || string(raw) == "null" || json.Unmarshal(raw, &requestID) != nil {
+		return invalid("requestId")
+	}
+	toolCallOK := func(raw json.RawMessage) bool {
+		var tc struct {
+			ToolCallID json.RawMessage `json:"toolCallId"`
+			Title      json.RawMessage `json:"title"`
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(raw, &obj) != nil || obj == nil || json.Unmarshal(raw, &tc) != nil {
+			return false
+		}
+		var str string
+		return len(tc.ToolCallID) > 0 && tc.ToolCallID[0] == '"' && json.Unmarshal(tc.ToolCallID, &str) == nil &&
+			len(tc.Title) > 0 && tc.Title[0] == '"' && json.Unmarshal(tc.Title, &str) == nil
+	}
+	switch typ {
+	case TypeToolCallCandidate:
+		if !toolCallOK(fields["toolCall"]) {
+			return invalid("toolCall")
+		}
+	case TypeQuestionRequest:
+		if raw, ok := fields["nativeToolCall"]; ok && !toolCallOK(raw) {
+			return invalid("nativeToolCall")
+		}
+	}
+	return nil
 }
 
 // StartMessage is the ACP inbound `start` frame: the shared harness-v1 base

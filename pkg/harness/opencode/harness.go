@@ -303,11 +303,7 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 	channelOpts := bridge.ChannelOptions{
 		Connect: bridge.NewBridgeConnectFunc(launched.Endpoint, bridge.BridgeConnectOptions{
 			Name: "OpenCode bridge", OpenRetryTimeout: timeout, StartContext: ctx,
-			OnHello: func(h *bridge.Hello) {
-				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
-					supportsUserMessageResponses.Store(*h.Capabilities.ExperimentalUserMessageResponses)
-				}
-			},
+			OnHello: trackUserMessageResponses(&supportsUserMessageResponses),
 		}),
 		Reconnect: settings.Reconnect, OnBridgeError: onBridgeErr, OnDiagnostic: onDiagnostic,
 	}
@@ -370,4 +366,11 @@ func resolveInactiveBuiltinToolNames(filtering *harness.BuiltinToolFiltering) *[
 		}
 	}
 	return &inactive
+}
+
+// trackUserMessageResponses records the capability of each bridge-hello,
+// including a later one without it. Mirrors TS `onHello`
+// (`supportsUserMessageResponses = hello.capabilities?.experimental_userMessageResponses === true`).
+func trackUserMessageResponses(supported *atomic.Bool) func(*bridge.Hello) {
+	return func(h *bridge.Hello) { supported.Store(h.SupportsUserMessageResponses()) }
 }
