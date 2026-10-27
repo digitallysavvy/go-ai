@@ -803,6 +803,10 @@ func (d *turnDriver) run() {
 		d.flushBufferedResultChunks()
 		if !finished {
 			d.discardCurrentStep()
+			// TS then calls `result.finish(undefined)`, which still ends the
+			// stream with a finish part: the last step's finish reason
+			// ('other' before any step) and the summed usage.
+			d.pendingFinishChunk = d.unreportedFinishChunk()
 		}
 	} else if finished {
 		if d.in.OnTurnFinished != nil {
@@ -821,13 +825,7 @@ func (d *turnDriver) run() {
 			d.fail(errors.New(unclosedStepErrorMessage))     //nolint:staticcheck // exact TS parity string
 			return
 		}
-		reason := types.FinishReason("other")
-		raw := ""
-		if n := len(d.completedSteps); n > 0 {
-			reason = d.completedSteps[n-1].FinishReason
-			raw = d.completedSteps[n-1].RawFinishReason
-		}
-		d.pendingFinishChunk = &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, RawFinishReason: raw}
+		d.pendingFinishChunk = d.unreportedFinishChunk()
 	}
 	// Push the terminal finish chunk (if any) only now, after
 	// OnTurnFinished has already run — see pendingFinishChunk's doc.
@@ -835,6 +833,20 @@ func (d *turnDriver) run() {
 		d.stream.push(*d.pendingFinishChunk)
 	}
 	d.stream.closeOK()
+}
+
+// unreportedFinishChunk is the finish part of TS `result.finish(undefined)`
+// for a turn whose adapter sent no terminal `finish`: the last completed
+// step's finish reason ('other' before any step). Usage is left off so the
+// summed step usage stands.
+func (d *turnDriver) unreportedFinishChunk() *provider.StreamChunk {
+	reason := types.FinishReason("other")
+	raw := ""
+	if n := len(d.completedSteps); n > 0 {
+		reason = d.completedSteps[n-1].FinishReason
+		raw = d.completedSteps[n-1].RawFinishReason
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, RawFinishReason: raw}
 }
 
 type turnOutcome int
@@ -2686,6 +2698,7 @@ func (d *turnDriver) publishSuspendedOutcomes() {
 func (d *turnDriver) discardCurrentStep() {
 	d.bufferedResultChunks = nil
 	d.resetStepAccum()
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeDiscardStep})
 }
 
 func (d *turnDriver) recordExecError(toolCallID string, err error) {
