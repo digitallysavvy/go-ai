@@ -79,5 +79,6 @@ For docs-site changes, also run `npm ci && npm run build` in `website/`.
 - **Examples** that hold several `main` programs in one directory need a
   `//go:build ignore` tag on each file.
 - **Minimum Go version** is 1.26; CI tests 1.26 and 1.27.
-- Keep `pkg/internal/third_party/qjs` on wazero v1.9.x; newer versions break the
-  code-mode sandbox (see `.github/dependabot.yml`).
+- wazero is pinned at v1.12.0 (code mode's qjs and the fx libfx core share it).
+  Bump it only deliberately, with the full `pkg/codemode`, qjs and
+  `GOAI_FX_WASM_TEST=1 ./pkg/harness/fx/...` suites (see `.github/dependabot.yml`).

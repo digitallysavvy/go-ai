@@ -9,8 +9,9 @@
 //   - RuntimeLibfx (opt-in): the libfx core, fx-core.wasm, runs in the host
 //     process on wazero, as TS @ai-sdk/harness-fx (pinned to ai e64ed82f27)
 //     does. Its built-in tools (LibfxBuiltinTools) run as commands in the
-//     session sandbox; the host makes the model requests. AI Gateway
-//     authentication only for now.
+//     session sandbox; the host makes the model requests. It authenticates
+//     with AI Gateway or a codex or grok subscription and connects HTTP and
+//     SSE MCP servers from the host.
 package fx
 
 import (
