@@ -393,6 +393,10 @@ func TestURLValidation(t *testing.T) {
 		{"http://127.1/", "url_not_allowed"},
 		{"http://2130706433/", "url_not_allowed"},
 		{"https://metadata.google.internal./", "url_not_allowed"},
+		{"http://ｌｏｃａｌｈｏｓｔ/", "url_not_allowed"},
+		{"http://127。0。0。1/", "url_not_allowed"},
+		{"http://%6c%6f%63%61%6c%68%6f%73%74/", "invalid_url"},
+		{"http://metadata.google.ｉｎｔｅｒｎａｌ/", "url_not_allowed"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.url[:min(len(tt.url), 40)], func(t *testing.T) {
@@ -548,7 +552,7 @@ func TestRedirects(t *testing.T) {
 		}
 	})
 	t.Run("blocks redirects to private addresses", func(t *testing.T) {
-		for _, target := range []string{"http://169.254.169.254/", "http://localhost/", "http://metadata.internal/", "http://[::1]/"} {
+		for _, target := range []string{"http://169.254.169.254/", "http://localhost/", "http://metadata.internal/", "http://[::1]/", "http://ｌｏｃａｌｈｏｓｔ/", "http://metadata.google.ｉｎｔｅｒｎａｌ/"} {
 			ft := fixed(307, "", "Location", target)
 			errOut(t, run(t, newTool(t, Options{Transport: ft}), "https://example.com/", 0), "url_not_allowed")
 			if ft.count() != 1 {
