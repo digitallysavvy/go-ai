@@ -854,7 +854,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// from processStream or ReadAll once the stream completes.
 	telSystem := ""
 	var telMessages []types.Message
-	if telemetrySettings != nil && telemetrySettings.RecordInputs {
+	// A nil *Options records inputs (integrations treat it the same way).
+	if telemetrySettings == nil || telemetrySettings.RecordInputs {
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)

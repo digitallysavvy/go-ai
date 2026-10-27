@@ -856,7 +856,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// the fire function is a no-op.
 	telSystem := ""
 	var telMessages []types.Message
-	if telemetrySettings != nil && telemetrySettings.RecordInputs {
+	// A nil *Options records inputs (integrations treat it the same way).
+	if telemetrySettings == nil || telemetrySettings.RecordInputs {
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
