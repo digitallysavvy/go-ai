@@ -34,6 +34,28 @@ func TestHostToolContent(t *testing.T) {
 	if _, _, err := hostToolContent(TypedToolResult{Type: "libfx.tool-result", Images: []ToolImage{{Type: "image"}}}); err == nil {
 		t.Error("an image without a mime type was accepted")
 	}
+	// libfx hostToolContent: images past the limit without a sourceRef fail
+	// as "tool images exceed the result limit"; a referenced image's data is
+	// dropped first, also when only the encoded result is too large.
+	big := strings.Repeat("A", 3<<20)
+	img := func(ref string) ToolImage {
+		return ToolImage{Type: "image", MimeType: "image/png", Data: big, SourceRef: ref}
+	}
+	if _, _, err := hostToolContent(TypedToolResult{Type: "libfx.tool-result", Images: []ToolImage{img(""), img(""), img("")}}); err == nil || err.Error() != "tool images exceed the result limit" {
+		t.Errorf("unreferenced images over the limit = %v", err)
+	}
+	got, _, err := hostToolContent(TypedToolResult{Type: "libfx.tool-result", Images: []ToolImage{img(""), img("ref://b"), img("ref://c")}})
+	if err != nil || strings.Count(got, big) != 1 || !strings.Contains(got, `"sourceRef":"ref://c"`) {
+		t.Errorf("referenced images over the limit = %d bytes, %v", len(got), err)
+	}
+	two := strings.Repeat("A", 4<<20-100)
+	got, _, err = hostToolContent(TypedToolResult{Type: "libfx.tool-result", Text: strings.Repeat("t", 200), Images: []ToolImage{{Type: "image", MimeType: "image/png", Data: two}, {Type: "image", MimeType: "image/png", Data: two, SourceRef: "ref://x"}}})
+	if err != nil || strings.Count(got, two) != 1 {
+		t.Errorf("an encoded result over the limit kept referenced data: %d bytes, %v", len(got), err)
+	}
+	if got, _, _ := hostToolContent(TypedToolResult{Type: "libfx.tool-result", Text: "<b>&", Images: []ToolImage{}}); got != `{"text":"<b>&","images":[]}` {
+		t.Errorf("content is not JSON.stringify output: %s", got)
+	}
 }
 
 func TestNormalizeHostTools(t *testing.T) {
