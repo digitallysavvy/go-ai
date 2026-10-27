@@ -357,3 +357,5 @@ func suspendFromEmit(t *testing.T, session harness.Session) <-chan *harness.Cont
 	t.Error("the turn never started suspending")
 	return out
 }
+
+func b64(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
