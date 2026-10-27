@@ -41,3 +41,16 @@ func TestR46GlobAndLsSortByUTF16CodeUnits(t *testing.T) {
 		t.Errorf("ls = %q, want %q", got, want)
 	}
 }
+
+// JavaScript's sort puts a string before every longer string it prefixes,
+// including across a surrogate pair.
+func TestR46SortUTF16PrefixFirst(t *testing.T) {
+	got := []string{"ab", "a", "😀x", "😀", "Ａ", ""}
+	sortUTF16(got)
+	want := []string{"", "a", "ab", "😀", "😀x", "Ａ"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sortUTF16 = %q, want %q", got, want)
+		}
+	}
+}
