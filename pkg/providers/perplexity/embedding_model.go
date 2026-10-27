@@ -103,6 +103,14 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 		}
 	}
 
+	// TS parseProviderOptions throws InvalidArgumentError for a bad
+	// dimensions (non-integer, <= 0) or an unknown encodingFormat.
+	if opts != nil {
+		if _, err := providerutils.ParseProviderOptions("perplexity", opts.ProviderOptions, embeddingOptionsSchema); err != nil {
+			return nil, err
+		}
+	}
+
 	perplexityOpts := extractEmbeddingOptions(opts)
 	encodingFormat := perplexityOpts.EncodingFormat
 	if encodingFormat == "" {
@@ -154,9 +162,11 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	}
 	if response.Usage != nil {
 		result.Usage = types.EmbeddingUsage{
+			// zod number() accepts fractions; Tokens keeps them, the
+			// integral counters truncate.
 			Tokens:      float64(response.Usage.PromptTokens),
-			InputTokens: response.Usage.PromptTokens,
-			TotalTokens: response.Usage.PromptTokens,
+			InputTokens: int(response.Usage.PromptTokens),
+			TotalTokens: int(response.Usage.PromptTokens),
 		}
 		if response.Usage.Cost != nil {
 			var inputCost, totalCost interface{}
@@ -185,6 +195,12 @@ func (m *EmbeddingModel) DoEmbedMany(ctx context.Context, inputs []string, opts 
 	return result, nil
 }
 
+// embeddingOptionsSchema is perplexityEmbeddingModelOptions.
+var embeddingOptionsSchema = providerutils.OptionSchema{
+	"dimensions":     providerutils.OptPositive(true),
+	"encodingFormat": providerutils.OptEnum("base64_int8", "base64_binary"),
+}
+
 func extractEmbeddingOptions(opts *provider.EmbedModelOptions) PerplexityEmbeddingModelOptions {
 	if opts == nil || opts.ProviderOptions == nil {
 		return PerplexityEmbeddingModelOptions{}
@@ -203,6 +219,9 @@ func extractEmbeddingOptions(opts *provider.EmbedModelOptions) PerplexityEmbeddi
 		case int:
 			result.Dimensions = &n
 		case float64:
+			iv := int(n)
+			result.Dimensions = &iv
+		case int64:
 			iv := int(n)
 			result.Dimensions = &iv
 		}
@@ -254,7 +273,7 @@ type perplexityEmbeddingResponse struct {
 }
 
 type perplexityEmbeddingUsage struct {
-	PromptTokens int                      `json:"prompt_tokens"`
+	PromptTokens pplxNumber               `json:"prompt_tokens"`
 	Cost         *perplexityEmbeddingCost `json:"cost,omitempty"`
 }
 

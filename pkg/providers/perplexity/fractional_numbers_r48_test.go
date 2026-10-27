@@ -1,8 +1,11 @@
 package perplexity
 
 import (
+	"errors"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -76,6 +79,30 @@ func TestR48_DecisionFractionalUsage(t *testing.T) {
 		}
 		if *result.Usage.InputTokens != 12 || *result.Usage.OutputTokens != 12 {
 			t.Fatalf("%v: usage = %+v", in, result.Usage)
+		}
+	}
+}
+
+func TestR48_EmbeddingFractionalPromptTokensAndOptionValidation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"embedding":"AQI="}],"usage":{"prompt_tokens":12.5}}`))
+	}))
+	defer srv.Close()
+	m := NewEmbeddingModel(New(Config{BaseURL: srv.URL, APIKey: "k"}), "pplx-embed-v1-4b")
+	res, err := m.DoEmbedMany(t.Context(), []string{"a"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.Tokens != 12.5 || res.Usage.InputTokens != 12 {
+		t.Fatalf("usage = %+v", res.Usage)
+	}
+	for _, bad := range []map[string]interface{}{
+		{"dimensions": 1.5}, {"dimensions": 0}, {"dimensions": "x"}, {"encodingFormat": "float"},
+	} {
+		_, err := m.DoEmbedMany(t.Context(), []string{"a"}, &provider.EmbedModelOptions{ProviderOptions: map[string]interface{}{"perplexity": bad}})
+		var ia *providererrors.InvalidArgumentError
+		if !errors.As(err, &ia) {
+			t.Fatalf("%v: err = %v", bad, err)
 		}
 	}
 }
