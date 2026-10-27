@@ -2063,6 +2063,35 @@ func citationProviderMetadata(citation langChainCitation) map[string]interface{}
 	return metadata
 }
 
+// hasForbiddenPrototypeKey mirrors secure-json-parse: an object at any depth
+// with an own `__proto__` key, or a `constructor` object with an own
+// `prototype` key, is rejected.
+func hasForbiddenPrototypeKey(v interface{}) bool {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		if _, ok := x["__proto__"]; ok {
+			return true
+		}
+		if c, ok := x["constructor"].(map[string]interface{}); ok {
+			if _, has := c["prototype"]; has {
+				return true
+			}
+		}
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func parseArgs(raw interface{}) interface{} {
 	switch v := raw.(type) {
 	case nil:
@@ -2071,8 +2100,11 @@ func parseArgs(raw interface{}) interface{} {
 		if v == "" {
 			return map[string]interface{}{}
 		}
+		// Tool call arguments are model output and untrusted: TS uses
+		// secureJsonParse (TS #16320), so a payload carrying `__proto__` or
+		// `constructor.prototype` keys falls back to {} like invalid JSON.
 		var decoded interface{}
-		if err := json.Unmarshal([]byte(v), &decoded); err == nil {
+		if err := json.Unmarshal([]byte(v), &decoded); err == nil && !hasForbiddenPrototypeKey(decoded) {
 			return decoded
 		}
 		return map[string]interface{}{}
