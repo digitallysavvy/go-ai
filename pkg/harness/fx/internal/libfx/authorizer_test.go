@@ -787,3 +787,24 @@ func TestAuthorizerReplacedRotationStaysSaved(t *testing.T) {
 		t.Fatalf("the replaced rotation was saved %d times", len(store.saved))
 	}
 }
+
+// A codex agent never adds credentials to Grok's endpoints, nor a grok
+// agent to Codex's.
+func TestSubscriptionSpecsAreProviderScoped(t *testing.T) {
+	for provider, other := range map[string]string{"codex": "https://cli-chat-proxy.grok.com/v1/responses", "grok": "https://chatgpt.com/backend-api/codex/responses"} {
+		z, err := newAuthorizer(subscriptionSpecs(provider), SubscriptionAuth{Credentials: func(context.Context, CredentialRequest) (Credentials, error) { return Credentials{}, nil }}, (&authNetwork{}).fetch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if z.specFor(other) != nil {
+			t.Errorf("a %s agent authorizes %s", provider, other)
+		}
+		own := codexResponsesEndpoint
+		if provider == "grok" {
+			own = grokProxyOrigin + grokResponsesPath
+		}
+		if s := z.specFor(own); s == nil || s.provider != provider {
+			t.Errorf("a %s agent does not authorize %s", provider, own)
+		}
+	}
+}

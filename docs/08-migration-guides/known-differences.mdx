@@ -104,7 +104,9 @@ Two details differ:
 - **Subscription hardening.** Like libfx, Go masks the subscription tokens a
   failed response repeats in its body; it also masks them in response
   headers of any status, masks both the rejected and the refreshed tokens
-  after a `401` retry, bounds OAuth token responses at 1 MiB, and refuses a
+  after a `401` retry, adds credentials only to the selected provider's
+  endpoints (libfx would also authorize Grok endpoints on a codex agent and
+  the reverse), bounds OAuth token responses at 1 MiB, and refuses a
   redirect that would carry the credentials to another origin. Of `https://x.ai`
   the core may reach only `https://x.ai/cli/stable`, where the grok provider
   reads the Grok CLI version without credentials.

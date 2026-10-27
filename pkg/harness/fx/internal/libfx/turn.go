@@ -175,7 +175,7 @@ func StartAgent(ctx context.Context, opts AgentOptions) (*Agent, error) {
 		if opts.Subscription == nil || opts.Subscription.Credentials == nil {
 			return nil, fmt.Errorf("provider %q needs a credentials() function", opts.Provider)
 		}
-		auth, err := newAuthorizer([]*subscriptionSpec{codexSubscription, grokSubscription}, *opts.Subscription, fetch)
+		auth, err := newAuthorizer(subscriptionSpecs(opts.Provider), *opts.Subscription, fetch)
 		if err != nil {
 			return nil, err
 		}

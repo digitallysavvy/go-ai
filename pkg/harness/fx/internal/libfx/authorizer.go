@@ -223,6 +223,22 @@ var grokSubscription = &subscriptionSpec{
 	},
 }
 
+// subscriptionSpecs are the specs an agent of provider authorizes. libfx
+// registers both codex and grok for either provider, and its credentials
+// callback is asked for the request's provider; a host that returns its
+// one subscription whatever is asked (as the fx session does) would then
+// send a ChatGPT token to Grok's endpoints. Go authorizes only the selected
+// provider's endpoints (a hardening).
+func subscriptionSpecs(provider string) []*subscriptionSpec {
+	switch provider {
+	case "codex":
+		return []*subscriptionSpec{codexSubscription}
+	case "grok":
+		return []*subscriptionSpec{grokSubscription}
+	}
+	return nil
+}
+
 // tokenString checks a required, bounded credential field.
 func tokenString(value, name, label string) error {
 	if value == "" {
