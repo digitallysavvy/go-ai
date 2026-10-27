@@ -33,23 +33,23 @@ func TestEnrichSpanValuesSanitizedLikeTS(t *testing.T) {
 	}
 	for _, dropped := range []string{"obj", "null", "mixed", "bad_nums", "objs", "struct"} {
 		if v, ok := got[dropped]; ok {
-			t.Errorf("%s kept as %v", dropped, v.Emit())
+			t.Errorf("%s kept as %v", dropped, v.String())
 		}
 	}
 	if v := got["strs"]; v.Type() != attribute.STRINGSLICE || len(v.AsStringSlice()) != 2 {
-		t.Errorf("strs = %v", v.Emit())
+		t.Errorf("strs = %v", v.String())
 	}
 	if v := got["nums"]; v.Type() != attribute.FLOAT64SLICE || len(v.AsFloat64Slice()) != 2 {
-		t.Errorf("nums = %v", v.Emit())
+		t.Errorf("nums = %v", v.String())
 	}
 	if v := got["i32"]; v.Type() != attribute.INT64 || v.AsInt64() != 7 {
-		t.Errorf("i32 = %v", v.Emit())
+		t.Errorf("i32 = %v", v.String())
 	}
 	if v := got["f32"]; v.Type() != attribute.FLOAT64 || v.AsFloat64() != 1.5 {
-		t.Errorf("f32 = %v", v.Emit())
+		t.Errorf("f32 = %v", v.String())
 	}
 	if v := got["plain_bool"]; v.Type() != attribute.BOOL {
-		t.Errorf("plain_bool = %v", v.Emit())
+		t.Errorf("plain_bool = %v", v.String())
 	}
 }
 
@@ -70,16 +70,16 @@ func TestRuntimeContextAttributesFlattenLikeTS(t *testing.T) {
 		got[string(kv.Key)] = kv.Value
 	}
 	if v := got["ai.settings.context.tags"]; v.Type() != attribute.STRINGSLICE || len(v.AsStringSlice()) != 2 {
-		t.Errorf("tags = %v", v.Emit())
+		t.Errorf("tags = %v", v.String())
 	}
 	if v := got["ai.settings.context.labels.env"]; v.AsString() != "prod" {
-		t.Errorf("labels.env = %v (all %v)", v.Emit(), got)
+		t.Errorf("labels.env = %v (all %v)", v.String(), got)
 	}
 	if v := got["ai.settings.context.user.plan"]; v.AsString() != "pro" {
-		t.Errorf("user.plan = %v", v.Emit())
+		t.Errorf("user.plan = %v", v.String())
 	}
 	if v := got["ai.settings.context.n"]; v.Type() != attribute.INT64 || v.AsInt64() != 3 {
-		t.Errorf("n = %v", v.Emit())
+		t.Errorf("n = %v", v.String())
 	}
 	if _, ok := got["ai.settings.context.mixed"]; ok {
 		t.Error("mixed-type array kept")
