@@ -45,6 +45,13 @@ type SpeechModelOptions struct {
 	ApplyTextNormalization          string
 	ApplyLanguageTextNormalization  *bool
 	EnableLogging                   *bool
+
+	// Streaming holds options for ai.ExperimentalStreamSpeech.
+	Streaming *StreamingSpeechOptions
+
+	// Dialogue streams the speech as Text-to-Dialogue (eleven_v3 and
+	// eleven_v4 models, ai.ExperimentalStreamSpeech only).
+	Dialogue *DialogueOptions
 }
 
 // NewSpeechModel creates a new ElevenLabs speech synthesis model
@@ -145,13 +152,28 @@ func (m *SpeechModel) buildRequestArgs(opts *provider.SpeechGenerateOptions) (ma
 
 	voiceSettings := map[string]interface{}{}
 	warnings := make([]types.Warning, 0)
+	elevenLabsOptions, hasOptions := extractSpeechModelOptions(opts.ProviderOptions)
+	if hasOptions && elevenLabsOptions.Streaming != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.elevenlabs.streaming",
+			Details: "Streaming options apply only to streaming speech (ExperimentalStreamSpeech) and were ignored.",
+		})
+	}
+	if hasOptions && elevenLabsOptions.Dialogue != nil {
+		warnings = append(warnings, types.Warning{
+			Type:    "unsupported",
+			Feature: "providerOptions.elevenlabs.dialogue",
+			Details: "Dialogue options apply only to streaming speech (ExperimentalStreamSpeech) and were ignored.",
+		})
+	}
 	if opts.Language != "" {
 		body["language_code"] = opts.Language
 	}
 	if opts.Speed != nil {
 		voiceSettings["speed"] = *opts.Speed
 	}
-	if elevenLabsOptions, ok := extractSpeechModelOptions(opts.ProviderOptions); ok {
+	if hasOptions {
 		applySpeechModelOptions(body, voiceSettings, queryParams, elevenLabsOptions)
 	}
 	if len(voiceSettings) > 0 {
@@ -326,6 +348,12 @@ func parseSpeechModelOptionsMap(raw map[string]interface{}) SpeechModelOptions {
 	if v, ok := raw["enableLogging"].(bool); ok {
 		opts.EnableLogging = &v
 	}
+	if v, ok := raw["streaming"].(map[string]interface{}); ok {
+		opts.Streaming = parseStreamingSpeechOptions(v)
+	}
+	if v, ok := raw["dialogue"].(map[string]interface{}); ok {
+		opts.Dialogue = parseDialogueOptions(v)
+	}
 	return opts
 }
 
@@ -416,6 +444,8 @@ var elevenLabsSpeechOptionsSchema = func() providerutils.OptionSchema {
 		"applyTextNormalization":         providerutils.OptEnum("auto", "on", "off"),
 		"applyLanguageTextNormalization": providerutils.OptBool,
 		"enableLogging":                  providerutils.OptBool,
+		"streaming":                      streamingSpeechOptionsCheck(),
+		"dialogue":                       dialogueOptionsCheck(),
 	}
 }()
 

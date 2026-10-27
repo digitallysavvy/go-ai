@@ -35,6 +35,9 @@ func New(cfg Config) *Provider {
 	if baseURL == "" {
 		baseURL = "https://api.elevenlabs.io"
 	}
+	// Keep the resolved URL: the WebSocket models derive their endpoints from
+	// config.BaseURL, which would otherwise stay empty with the default API.
+	cfg.BaseURL = baseURL
 	if cfg.APIKey == "" {
 		cfg.APIKey = os.Getenv("ELEVENLABS_API_KEY")
 	}
