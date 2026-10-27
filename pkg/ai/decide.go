@@ -236,6 +236,10 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 
 	var result *provider.DecisionResult
 	err = withEmbedRetry(ctx, resolvedMaxRetries, func(callCtx context.Context) error {
+		// TS abortSignal?.throwIfAborted() before every attempt.
+		if err := callCtx.Err(); err != nil {
+			return err
+		}
 		res, callErr := model.DoDecide(callCtx, provider.DecisionCallOptions{
 			State:           preparedState,
 			Questions:       opts.Questions,
