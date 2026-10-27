@@ -899,3 +899,29 @@ func TestRunCodeMode_NonObjectToolInputIsRejected(t *testing.T) {
 		t.Fatal("execute must not run for a non-object input")
 	}
 }
+
+// TS reports a failed validation with details.input set to the sandbox's
+// argument, not the schema-defaulted value.
+func TestRunCodeMode_InvalidToolInputDetailsKeepRawInput(t *testing.T) {
+	tools := ToolSet{"echo": {
+		Name: "echo",
+		Parameters: map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"a": map[string]interface{}{"type": "string", "default": "x"},
+				"n": map[string]interface{}{"type": "number"},
+			},
+			"required": []interface{}{"n"},
+		},
+		Execute: func(ctx context.Context, input map[string]interface{}, opts types.ToolExecutionOptions) (interface{}, error) {
+			return input, nil
+		},
+	}}
+	_, err := RunCodeMode(context.Background(), RunInput{JS: `return await tools.echo({b: 1});`, Tools: tools})
+	var toolErr *ToolError
+	if !errors.As(err, &toolErr) {
+		t.Fatalf("err = %v, want *ToolError", err)
+	}
+	details, _ := toolErr.ErrorDetails().(map[string]interface{})
+	assertDeepEqual(t, details["input"], map[string]interface{}{"b": float64(1)})
+}

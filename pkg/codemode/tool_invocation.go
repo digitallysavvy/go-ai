@@ -226,11 +226,14 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		// passes validation.value (not the raw input) on to execute. Apply
 		// defaults before validating for the same effect (schema.Validate
 		// alone does not fill defaults).
+		// The error details carry the input as the sandbox passed it (TS
+		// reports `input`, not validation.value).
+		rawInput := inputVal
 		input = applyToolInputDefaults(input, validator)
 		if verr := validator.Validate(input); verr != nil {
 			return "", NewToolError(
 				"Invalid input for tool \""+toolName+"\": "+verr.Error(),
-				map[string]interface{}{"toolName": toolName, "input": input, "cause": verr.Error()},
+				map[string]interface{}{"toolName": toolName, "input": rawInput, "cause": verr.Error()},
 			)
 		}
 	}

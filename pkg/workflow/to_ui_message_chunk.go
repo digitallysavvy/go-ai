@@ -147,6 +147,10 @@ func ToUIMessageChunk(part ModelCallStreamPart) (ai.UIMessageChunk, bool) {
 		if tr == nil {
 			return nil, false
 		}
+		// TS workflow toUIMessageChunk (e64ed82f27) sends only toolCallId and
+		// output/errorText here: unlike the core converter it never forwards
+		// providerExecuted, providerMetadata, dynamic or preliminary, even
+		// when ToolResult.ProviderExecutedSet is true.
 		if tr.Error != nil {
 			return ai.UIMessageChunk{"type": "tool-output-error", "toolCallId": tr.ToolCallID, "errorText": tr.Error.Error()}, true
 		}

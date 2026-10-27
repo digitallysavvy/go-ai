@@ -175,7 +175,8 @@ type HTTPTransportConfig struct {
 	InitialSessionID string
 
 	// OnSessionIDChange is called whenever the server assigns or changes the
-	// session id (from an `mcp-session-id` response header).
+	// session id (from an `mcp-session-id` response header), and with "" when
+	// an expired session id is cleared (TS calls it with undefined).
 	OnSessionIDChange func(sessionID string) `json:"-"`
 
 	// OnSessionExpired is called when the server responds 404 to a request
@@ -299,18 +300,22 @@ func (t *HTTPTransport) setSessionID(sessionID string) {
 	}
 }
 
-// expireSessionID clears the session id after the server responds 404 to a
-// request that carried it, matching TS HTTPTransport.expireSessionId (hash
-// 241a8c5).
+// expireSessionID handles a 404 to a request that carried the session id
+// expired, matching TS HttpMCPTransport.expireSessionId: when expired is still
+// the current session id it is cleared (so OnSessionIDChange
+// fires with ""), and OnSessionExpired fires either way.
 func (t *HTTPTransport) expireSessionID(expired string) {
 	t.mu.Lock()
-	if t.sessionID != expired {
-		t.mu.Unlock()
-		return
+	cleared := t.sessionID == expired && expired != ""
+	if cleared {
+		t.sessionID = ""
 	}
-	t.sessionID = ""
+	onChange := t.onSessionIDChange
 	onExpired := t.onSessionExpired
 	t.mu.Unlock()
+	if cleared && onChange != nil {
+		onChange("")
+	}
 	if onExpired != nil {
 		onExpired(expired)
 	}
@@ -651,6 +656,14 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		if resp == nil {
 			return fail(NewTransportError("failed to send request", fmt.Errorf("nil HTTP response")))
 		}
+		// TS applySessionIdFromResponse runs on every response, a 401 included,
+		// before the retry, so the retried request carries a session id the
+		// 401 assigned. It is a no-op for the modern (2026-07-28) protocol era.
+		if !t.isModernProtocol() {
+			if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
+				t.setSessionID(sessionID)
+			}
+		}
 		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 || (!t.oauthConfigured() && !t.auth.enabled()) {
 			break
 		}
@@ -680,16 +693,6 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		if err := t.auth.setBearer(ctx, req.Header); err != nil {
 			return fail(NewTransportError("failed to load OAuth tokens", err))
-		}
-	}
-
-	// Matching TS applySessionIdFromResponse/the 404 handling in send(),
-	// both are no-ops entirely for the modern (2026-07-28) protocol era:
-	// `if (this.isModernProtocol()) return;` and
-	// `if (!this.isModernProtocol() && sessionIdForRequest) { ... }`.
-	if !t.isModernProtocol() {
-		if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
-			t.setSessionID(sessionID)
 		}
 	}
 

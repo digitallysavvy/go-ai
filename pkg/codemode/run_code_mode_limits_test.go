@@ -45,7 +45,10 @@ func TestRunCodeModeHonorsEmptyToolCallID(t *testing.T) {
 }
 
 func TestExecutionPolicyRejectsLimitsAboveRunMaximum(t *testing.T) {
-	for _, p := range []ExecutionPolicy{{TimeoutMs: 2_147_483_648}, {MaxResultBytes: 1 << 40}} {
+	if aboveRunLimit == 0 {
+		t.Skip("32-bit int cannot exceed the run limit")
+	}
+	for _, p := range []ExecutionPolicy{{TimeoutMs: aboveRunLimit}, {MaxResultBytes: aboveRunLimit}} {
 		_, err := RunCodeMode(context.Background(), RunInput{JS: "return 1;", Options: &Options{ExecutionPolicy: &p}})
 		if err == nil || !strings.Contains(err.Error(), "must be at most 2147483647.") {
 			t.Fatalf("policy %+v: err = %v", p, err)
