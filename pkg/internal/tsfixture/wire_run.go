@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -328,7 +329,7 @@ func RunWireCall(ctx context.Context, srv *WireServer, s WireSuite, p provider.P
 		if err != nil {
 			return nil, err
 		}
-		return wireDecide(ctx, dm, arg)
+		return wireDecide(ctx, dm, arg, c)
 	case "video":
 		m, ok := p.(interface {
 			VideoModel(string) (provider.VideoModelV3, error)
@@ -1204,7 +1205,26 @@ func hasFn(v interface{}) bool {
 	return false
 }
 
-func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]interface{}) (map[string]interface{}, error) {
+// decideStateValues returns the recorded text of each state part's `value`
+// (nil where absent), keeping the TS object key order that the decoded arg
+// maps lose.
+func decideStateValues(c WireCall) []json.RawMessage {
+	var args []struct {
+		State []struct {
+			Value json.RawMessage `json:"value"`
+		} `json:"state"`
+	}
+	if json.Unmarshal(c.argsRaw, &args) != nil || len(args) == 0 {
+		return nil
+	}
+	out := make([]json.RawMessage, len(args[0].State))
+	for i, p := range args[0].State {
+		out[i] = p.Value
+	}
+	return out
+}
+
+func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]interface{}, c WireCall) (map[string]interface{}, error) {
 	opts := provider.DecisionCallOptions{
 		Headers:         strMap(arg["headers"]),
 		ProviderOptions: objMap(arg["providerOptions"]),
@@ -1221,14 +1241,20 @@ func wireDecide(ctx context.Context, m provider.DecisionModel, arg map[string]in
 	switch st := arg["state"].(type) {
 	case []interface{}:
 		var parts []provider.DecisionStatePart
-		for _, pv := range st {
+		rawValues := decideStateValues(c)
+		for i, pv := range st {
 			pm, _ := pv.(map[string]interface{})
 			switch pm["type"] {
 			case "text":
 				txt, _ := pm["text"].(string)
 				parts = append(parts, provider.DecisionTextPart(txt))
 			case "json":
-				parts = append(parts, provider.DecisionJSONPart(pm["value"]))
+				value := pm["value"]
+				if i < len(rawValues) && len(rawValues[i]) > 0 {
+					// A TS object keeps insertion order; a Go map would sort.
+					value = providerutils.OrderLike(value, rawValues[i])
+				}
+				parts = append(parts, provider.DecisionJSONPart(value))
 			case "file":
 				fd, ok := fileDataFromTS(pm["data"])
 				if !ok {
