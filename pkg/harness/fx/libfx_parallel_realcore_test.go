@@ -323,27 +323,19 @@ func TestLibfxRealCoreParsedOutputColdReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer session.DoDestroy(ctx) //nolint:errcheck
-	suspended := make(chan *harness.ContinueTurnState, 1)
+	suspended := make(chan (<-chan *harness.ContinueTurnState), 1)
 	var once sync.Once
 	before := &partLog{}
 	before.on = func(p harness.StreamPart) {
 		if p.PartType() == harness.PartTypeTextDelta {
-			once.Do(func() {
-				go func() {
-					st, err := session.DoSuspendTurn(ctx)
-					if err != nil {
-						t.Errorf("suspend: %v", err)
-					}
-					suspended <- st
-				}()
-			})
+			once.Do(func() { suspended <- suspendFromEmit(t, session) })
 		}
 	}
 	control, err := session.DoPromptTurn(ctx, harness.PromptTurnOptions{TurnSettings: opts, Prompt: harness.TextPrompt("Reply."), Emit: before.emit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	continueFrom := <-suspended
+	continueFrom := <-<-suspended
 	_ = waitDone(t, control)
 	if continueFrom == nil {
 		t.Fatal("no continuation")

@@ -51,19 +51,12 @@ func TestLibfxRealCoreReplaysCompletedEffectWithoutRerunning(t *testing.T) {
 	}
 	defer session.DoDestroy(ctx) //nolint:errcheck
 	hasResult := newSignal()
-	var suspended chan *harness.ContinueTurnState
-	suspended = make(chan *harness.ContinueTurnState, 1)
+	suspended := make(chan (<-chan *harness.ContinueTurnState), 1)
 	before := &partLog{}
 	before.on = func(p harness.StreamPart) {
 		if p.PartType() == harness.PartTypeToolResult {
+			suspended <- suspendFromEmit(t, session)
 			hasResult.fire()
-			go func() {
-				st, err := session.DoSuspendTurn(ctx)
-				if err != nil {
-					t.Errorf("suspend: %v", err)
-				}
-				suspended <- st
-			}()
 		}
 	}
 	opts := harness.TurnSettings{Model: "anthropic/claude-haiku-4-5"}
@@ -72,7 +65,7 @@ func TestLibfxRealCoreReplaysCompletedEffectWithoutRerunning(t *testing.T) {
 		t.Fatal(err)
 	}
 	hasResult.wait(t)
-	continueFrom := <-suspended
+	continueFrom := <-<-suspended
 	_ = waitDone(t, control)
 	mu.Lock()
 	if len(effects) != 1 {

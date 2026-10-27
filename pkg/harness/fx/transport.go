@@ -618,18 +618,17 @@ func (t *transport) fetch(req *http.Request) (*http.Response, error) {
 		return sseResponse(resp.StatusCode, h, string(data)), nil
 	}
 
-	pr, pw := io.Pipe()
+	pipe := newFramePipe()
 	t.tasks.Add(1)
 	go func() {
 		defer t.tasks.Done()
 		defer resp.Body.Close() //nolint:errcheck
 		// The core closing its body (an aborted stream) ends the pump.
-		err := t.pump(ctx, index, record, resp.Body, pw)
-		_ = pw.CloseWithError(err)
+		pipe.closeWrite(t.pump(ctx, index, record, resp.Body, pipe))
 	}()
 	h := cloneHeader(resp.Header)
 	h.Del("Content-Length")
-	return &http.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: h, Body: pr, ContentLength: -1}, nil
+	return &http.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: h, Body: pipe, ContentLength: -1}, nil
 }
 
 func jsString(v any) string {
@@ -656,9 +655,88 @@ func (t *transport) recordAtLocked(index int) *fxModelRecord {
 	return nil
 }
 
+// framePipe is the body the core reads a live response from. Writes never
+// block on the reader, so the pump records a response as fast as it
+// arrives, whatever the core's pace (a TS TransformStream likewise queues
+// writes). The record already holds the whole response, so the buffer adds
+// no new bound.
+type framePipe struct {
+	mu      sync.Mutex
+	buf     []byte
+	err     error // set by closeWrite; io.EOF for a clean end
+	closed  bool  // the reader closed
+	changed chan struct{}
+}
+
+func newFramePipe() *framePipe { return &framePipe{changed: make(chan struct{})} }
+
+func (p *framePipe) signalLocked() {
+	close(p.changed)
+	p.changed = make(chan struct{})
+}
+
+func (p *framePipe) write(data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return io.ErrClosedPipe
+	}
+	p.buf = append(p.buf, data...)
+	p.signalLocked()
+	return nil
+}
+
+func (p *framePipe) closeWrite(err error) {
+	if err == nil {
+		err = io.EOF
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err == nil {
+		p.err = err
+	}
+	p.signalLocked()
+}
+
+func (p *framePipe) Read(b []byte) (int, error) {
+	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return 0, io.ErrClosedPipe
+		}
+		if len(p.buf) > 0 {
+			n := copy(b, p.buf)
+			p.buf = p.buf[n:]
+			p.mu.Unlock()
+			return n, nil
+		}
+		if p.err != nil {
+			err := p.err
+			p.mu.Unlock()
+			return 0, err
+		}
+		wait := p.changed
+		p.mu.Unlock()
+		<-wait
+	}
+}
+
+func (p *framePipe) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closed = true
+	p.buf = nil
+	p.signalLocked()
+	return nil
+}
+
 // pump copies the live stream to the core frame by frame, recording it and
-// holding tool and terminal frames until the batch is published.
-func (t *transport) pump(ctx context.Context, index int, record *fxModelRecord, src io.Reader, pw *io.PipeWriter) error {
+// holding tool and terminal frames until the batch is published. A read
+// that ends the stream is recorded, and the record completed and saved,
+// before its frames are released, so the core cannot act on the end of a
+// response its record does not hold yet.
+func (t *transport) pump(ctx context.Context, index int, record *fxModelRecord, src io.Reader, out *framePipe) error {
 	p := t.o.protocol
 	var pending []byte
 	holding, terminal := false, false
@@ -673,6 +751,7 @@ func (t *transport) pump(ctx context.Context, index int, record *fxModelRecord, 
 			return rerr
 		}
 		pending = append(pending, buf[:n]...)
+		var release []byte
 		for {
 			start, end := frameBoundary(pending)
 			if start < 0 {
@@ -696,30 +775,24 @@ func (t *transport) pump(ctx context.Context, index int, record *fxModelRecord, 
 			}
 			if holding {
 				held = append(held, frame...)
-			} else if _, err := pw.Write(frame); err != nil {
-				return err
+			} else {
+				release = append(release, frame...)
 			}
 		}
 		if errors.Is(rerr, io.EOF) {
+			if err := t.completeRecord(ctx, record, pending, terminal); err != nil {
+				return err
+			}
+			if err := out.write(release); err != nil {
+				return err
+			}
 			break
 		}
-	}
-	if len(pending) > 0 {
-		t.o.mu.Lock()
-		record.Body += string(t.o.broker.redact(pending))
-		t.o.mu.Unlock()
-	}
-	if strings.TrimSpace(string(pending)) != "" {
-		return fmt.Errorf("%s stream ended with an incomplete event.", p.label()) //nolint:staticcheck // matches TS SDK's exact error text
-	}
-	if !terminal {
-		return fmt.Errorf("%s stream ended before a terminal event.", p.label()) //nolint:staticcheck // matches TS SDK's exact error text
-	}
-	t.o.mu.Lock()
-	record.Complete = true
-	t.o.mu.Unlock()
-	if err := t.o.save(ctx); err != nil {
-		return err
+		if len(release) > 0 {
+			if err := out.write(release); err != nil {
+				return err
+			}
+		}
 	}
 	t.o.mu.Lock()
 	t.collectToolCallsLocked(record, index)
@@ -734,9 +807,30 @@ func (t *transport) pump(ctx context.Context, index int, record *fxModelRecord, 
 		return errTurnSuspended
 	}
 	if len(held) > 0 {
-		if _, err := pw.Write(held); err != nil {
+		if err := out.write(held); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// completeRecord validates the end of a live stream and marks its record
+// complete.
+func (t *transport) completeRecord(ctx context.Context, record *fxModelRecord, pending []byte, terminal bool) error {
+	p := t.o.protocol
+	if len(pending) > 0 {
+		t.o.mu.Lock()
+		record.Body += string(t.o.broker.redact(pending))
+		t.o.mu.Unlock()
+	}
+	if strings.TrimSpace(string(pending)) != "" {
+		return fmt.Errorf("%s stream ended with an incomplete event.", p.label()) //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	if !terminal {
+		return fmt.Errorf("%s stream ended before a terminal event.", p.label()) //nolint:staticcheck // matches TS SDK's exact error text
+	}
+	t.o.mu.Lock()
+	record.Complete = true
+	t.o.mu.Unlock()
+	return t.o.save(ctx)
 }

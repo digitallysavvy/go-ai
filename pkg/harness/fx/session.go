@@ -395,6 +395,10 @@ type activeTurn struct {
 	fast      *bool
 	ultrafast *bool
 
+	// caller is the DoPromptTurn/DoContinueTurn ctx: its cancellation is
+	// the caller's abort, read synchronously at every abort check. ctx is
+	// the turn's own ctx, cancelled by that abort or by a suspension.
+	caller context.Context
 	ctx    context.Context
 	cancel context.CancelCauseFunc
 	done   chan struct{}
@@ -429,7 +433,7 @@ func newActiveTurn(ctx context.Context, s *libfxSession, turn *fxTurnState, emit
 	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
 	a := &activeTurn{
 		s: s, turn: turn, settings: settings, fast: fast, ultrafast: ultrafast,
-		ctx: tctx, cancel: cancel, done: make(chan struct{}),
+		caller: ctx, ctx: tctx, cancel: cancel, done: make(chan struct{}),
 		emitTarget: emit, emitted: map[string]bool{},
 		results: map[string]harness.ToolResultSubmission{}, approvals: map[string]fxApproval{},
 		registered: map[string]registeredTool{}, toolRequests: map[string]int{},
@@ -506,8 +510,8 @@ func (a *activeTurn) notifyLocked() {
 // it held) or the turn is aborted.
 func (a *activeTurn) waitForLocked(get func() bool) error {
 	for {
-		if err := a.ctx.Err(); err != nil {
-			return context.Cause(a.ctx)
+		if err := a.abortErr(); err != nil {
+			return err
 		}
 		if get() {
 			return nil
@@ -522,7 +526,14 @@ func (a *activeTurn) waitForLocked(get func() bool) error {
 	}
 }
 
+// abortErr is the turn's abort reason once the caller aborted or the turn
+// is suspending (TS signal.throwIfAborted).
 func (a *activeTurn) abortErr() error {
+	if a.caller.Err() != nil {
+		cause := context.Cause(a.caller)
+		a.cancel(cause)
+		return cause
+	}
 	if a.ctx.Err() != nil {
 		return context.Cause(a.ctx)
 	}
@@ -810,8 +821,10 @@ func (a *activeTurn) executeTool(name string, impl func(ctx context.Context, inp
 					return nil, err
 				}
 				output, execErr := impl(a.ctx, value)
-				if execErr != nil && a.ctx.Err() != nil {
-					return nil, context.Cause(a.ctx)
+				if execErr != nil {
+					if aerr := a.abortErr(); aerr != nil {
+						return nil, aerr
+					}
 				}
 				s.mu.Lock()
 				if execErr != nil {
@@ -1097,7 +1110,7 @@ func (a *activeTurn) runBody() error {
 	needCheckpoint := s.state.Checkpoint == ""
 	s.mu.Unlock()
 	if needCheckpoint {
-		cp, err := engine.Checkpoint(a.ctx)
+		cp, err := engine.Checkpoint(context.WithoutCancel(a.ctx))
 		if err != nil {
 			return err
 		}
@@ -1150,7 +1163,7 @@ func (a *activeTurn) runBody() error {
 	}
 	s.mu.Unlock()
 	a.deliver()
-	cp, err := engine.Checkpoint(a.ctx)
+	cp, err := engine.Checkpoint(context.WithoutCancel(a.ctx))
 	if err != nil {
 		return err
 	}
@@ -1177,8 +1190,8 @@ func (a *activeTurn) drain(rt fxTurn) error {
 			break
 		}
 		if err != nil {
-			if a.ctx.Err() != nil {
-				return context.Cause(a.ctx)
+			if aerr := a.abortErr(); aerr != nil {
+				return aerr
 			}
 			return err
 		}

@@ -323,3 +323,37 @@ func startOpts(sb *fakeSandbox, sessionID string) harness.StartOptions {
 func textOutput(v string) types.ToolResultOutput {
 	return types.ToolResultOutput{Type: types.ToolResultOutputText, Value: v}
 }
+
+// suspendFromEmit starts DoSuspendTurn from inside an Emit callback and
+// returns once the turn is suspending, the way TS's synchronous
+// `suspending = true` in doSuspendTurn() behaves for an emit handler. The
+// continuation arrives on the returned channel.
+func suspendFromEmit(t *testing.T, session harness.Session) <-chan *harness.ContinueTurnState {
+	out := make(chan *harness.ContinueTurnState, 1)
+	s := session.(*libfxSession)
+	s.mu.Lock()
+	a := s.active
+	s.mu.Unlock()
+	go func() {
+		st, err := session.DoSuspendTurn(context.Background())
+		if err != nil {
+			t.Errorf("suspend: %v", err)
+		}
+		out <- st
+	}()
+	if a == nil {
+		return out
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		suspending := a.suspending
+		s.mu.Unlock()
+		if suspending {
+			return out
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Error("the turn never started suspending")
+	return out
+}
