@@ -194,8 +194,8 @@ var wireSuites = map[string]tsfixture.WireSuite{
 		return deepgram.New(deepgram.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
 	"elevenlabs": {Skip: map[string]string{
-		"~should warn about and ignore streaming-only options": "warning text names ExperimentalStreamSpeech (Go) instead of experimental_streamSpeech (TS); covered by speech_generation_test.go",
-		"~should warn about and ignore dialogue options":       "warning text names ExperimentalStreamSpeech (Go) instead of experimental_streamSpeech (TS); covered by speech_generation_test.go",
+		"~should warn about and ignore streaming-only options": "warning text names ExperimentalStreamSpeech (Go) instead of experimental_streamSpeech (TS); covered by speech_stream_test.go",
+		"~should warn about and ignore dialogue options":       "warning text names ExperimentalStreamSpeech (Go) instead of experimental_streamSpeech (TS); covered by speech_stream_test.go",
 	}, Provider: simple(func(b, k string, h map[string]string) provider.Provider {
 		return elevenlabs.New(elevenlabs.Config{APIKey: k, BaseURL: b, Headers: h})
 	})},
