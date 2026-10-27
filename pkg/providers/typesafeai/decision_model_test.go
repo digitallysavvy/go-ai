@@ -12,7 +12,6 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // Ported from packages/typesafe-ai/src/typesafe-ai-decision-model.test.ts,
@@ -403,19 +402,6 @@ func TestDecisionModel_PreservesSingleJSONPartAsNativeJSON(t *testing.T) {
 		if !reflect.DeepEqual(got["state"], value) {
 			t.Fatalf("state = %v, want %v", got["state"], value)
 		}
-	}
-}
-
-// TS: "rejects file evidence before sending a text-only decision request"
-func TestDecisionModel_RejectsFileEvidence(t *testing.T) {
-	got, err := typeSafeDecideWithState(t, []provider.DecisionStatePart{
-		provider.DecisionFilePart(types.FileContent{MediaType: "image/png", FileData: types.FileData{Type: types.FileDataTypeData, DataString: "AAAA"}}),
-	})
-	if !providererrors.IsUnsupportedFunctionalityError(err) {
-		t.Fatalf("err = %v", err)
-	}
-	if got != nil {
-		t.Fatalf("a request was sent: %v", got)
 	}
 }
 

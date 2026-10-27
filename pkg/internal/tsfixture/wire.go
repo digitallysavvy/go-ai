@@ -21,6 +21,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -547,8 +548,70 @@ func readMultipart(ct string, body []byte) ([]mpPart, error) {
 			return parts, err
 		}
 		b, _ := io.ReadAll(p)
-		parts = append(parts, mpPart{p.FormName(), p.FileName(), p.Header.Get("Content-Type"), b})
+		parts = append(parts, mpPart{p.FormName(), p.FileName(), p.Header.Get("Content-Type"), normalizeRandomAssetRefs(p.FormName(), b)})
 	}
+}
+
+var randomAssetRef = regexp.MustCompile(`^[A-Za-z0-9]{16}$`)
+
+// normalizeRandomAssetRefs replaces the random 16-character image references
+// the TypeSafe decision request generates (TS and Go draw different ones) with
+// a stable name derived from the asset's part, everywhere the request uses it.
+func normalizeRandomAssetRefs(name string, data []byte) []byte {
+	if name != "request" {
+		return data
+	}
+	var req struct {
+		Assets map[string]struct {
+			Part string `json:"part"`
+		} `json:"assets"`
+	}
+	if json.Unmarshal(data, &req) != nil || len(req.Assets) == 0 {
+		return data
+	}
+	var doc map[string]interface{}
+	if json.Unmarshal(data, &doc) != nil {
+		return data
+	}
+	repl := map[string]string{}
+	for ref, a := range req.Assets {
+		if randomAssetRef.MatchString(ref) {
+			repl[ref] = "<ref:" + a.Part + ">"
+		}
+	}
+	if len(repl) == 0 {
+		return data
+	}
+	var walk func(v interface{}) interface{}
+	walk = func(v interface{}) interface{} {
+		switch x := v.(type) {
+		case string:
+			for k, r := range repl {
+				x = strings.ReplaceAll(x, k, r)
+			}
+			return x
+		case []interface{}:
+			for i := range x {
+				x[i] = walk(x[i])
+			}
+			return x
+		case map[string]interface{}:
+			out := make(map[string]interface{}, len(x))
+			for k, e := range x {
+				if r, ok := repl[k]; ok {
+					k = r
+				}
+				out[k] = walk(e)
+			}
+			return out
+		}
+		return v
+	}
+	out, err := json.Marshal(walk(doc))
+	if err != nil {
+		return data
+	}
+	return out
 }
 
 func diffMultipart(label, tsCT string, tsBody []byte, goCT string, goBody []byte) []string {
