@@ -100,7 +100,7 @@ func TestFxMCPConfiguresTransport(t *testing.T) {
 		if tc.typ != nil {
 			entry["type"] = tc.typ
 		}
-		rt, err := createFxMCPRuntime(context.Background(), map[string]any{"context7": entry})
+		rt, err := createFxMCPRuntime(context.Background(), map[string]any{"context7": entry}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -118,7 +118,7 @@ func TestFxMCPConfiguresTransport(t *testing.T) {
 
 func TestFxMCPSkipsDisabledEntries(t *testing.T) {
 	configs := stubConnect(t)
-	rt, err := createFxMCPRuntime(context.Background(), map[string]any{"disabled": map[string]any{"disabled": true, "headers": []any{}, "type": "stdio"}})
+	rt, err := createFxMCPRuntime(context.Background(), map[string]any{"disabled": map[string]any{"disabled": true, "headers": []any{}, "type": "stdio"}}, nil)
 	if err != nil || len(*configs) != 0 || len(rt.tools) != 0 {
 		t.Fatalf("%v %v %v", err, *configs, rt)
 	}
@@ -131,7 +131,7 @@ func TestFxMCPRejectsUnsupportedServers(t *testing.T) {
 		map[string]any{"url": "https://mcp.context7.com/mcp", "type": "websocket"},
 	} {
 		configs := stubConnect(t)
-		_, err := createFxMCPRuntime(context.Background(), map[string]any{"context7": config})
+		_, err := createFxMCPRuntime(context.Background(), map[string]any{"context7": config}, nil)
 		if !harness.IsCapabilityUnsupportedError(err) {
 			t.Fatalf("%v: err = %v", config, err)
 		}
@@ -158,7 +158,7 @@ func TestFxMCPIdentifiesInvalidFields(t *testing.T) {
 		for k, v := range tc.fields {
 			entry[k] = v
 		}
-		_, err := createFxMCPRuntime(context.Background(), map[string]any{"context7": entry})
+		_, err := createFxMCPRuntime(context.Background(), map[string]any{"context7": entry}, nil)
 		if err == nil || !strings.HasPrefix(err.Error(), "Invalid fx MCP server context7 field "+tc.field+":") {
 			t.Fatalf("err = %v", err)
 		}
@@ -188,7 +188,7 @@ func TestFxMCPClosesClientsAfterLaterFailure(t *testing.T) {
 			_, err := createFxMCPRuntime(context.Background(), map[string]any{
 				"first":  map[string]any{"url": "https://mcp.context7.com/mcp"},
 				"second": secondConfig,
-			})
+			}, nil)
 			if err == nil {
 				t.Fatal("no error")
 			}
@@ -389,5 +389,51 @@ func TestLibfxMCPStdioServerFailsTheTurn(t *testing.T) {
 	}
 	if len(m.opts()) != 0 {
 		t.Fatal("the runtime started")
+	}
+}
+
+// TS connects mcpServers in object key order; Go takes MCPServerOrder,
+// then the names it omits sorted, and ignores names it does not configure.
+func TestFxMCPServerOrder(t *testing.T) {
+	servers := func() map[string]any {
+		return map[string]any{
+			"zeta":  map[string]any{"url": "https://zeta.example/mcp"},
+			"alpha": map[string]any{"url": "https://alpha.example/mcp"},
+			"mid":   map[string]any{"url": "https://mid.example/mcp"},
+		}
+	}
+	for _, tc := range []struct {
+		order []string
+		want  []string
+	}{
+		{nil, []string{"alpha", "mid", "zeta"}},
+		{[]string{"zeta", "mid", "alpha"}, []string{"zeta", "mid", "alpha"}},
+		{[]string{"missing", "zeta", "zeta"}, []string{"zeta", "alpha", "mid"}},
+	} {
+		var clients []any
+		for range 3 {
+			clients = append(clients, &fakeMCP{pages: [][]mcp.MCPTool{{{Name: "t"}}}})
+		}
+		configs := stubConnect(t, clients...)
+		rt, err := createFxMCPRuntime(context.Background(), servers(), tc.order)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var urls, tools []string
+		for _, c := range *configs {
+			urls = append(urls, c.URL)
+		}
+		for _, tool := range rt.tools {
+			tools = append(tools, tool.name)
+		}
+		var wantURLs, wantTools []string
+		for _, name := range tc.want {
+			wantURLs = append(wantURLs, "https://"+name+".example/mcp")
+			wantTools = append(wantTools, "mcp_"+name+"_t")
+		}
+		if strings.Join(urls, ",") != strings.Join(wantURLs, ",") || strings.Join(tools, ",") != strings.Join(wantTools, ",") {
+			t.Errorf("order %v: connected %v, tools %v", tc.order, urls, tools)
+		}
+		_ = rt.close()
 	}
 }

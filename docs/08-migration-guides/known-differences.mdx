@@ -109,9 +109,9 @@ Two details differ:
   the core may reach only `https://x.ai/cli/stable`, where the grok provider
   reads the Grok CLI version without credentials.
 - **MCP server order.** Go maps have no insertion order, so `MCPServers` are
-  connected, and their tools listed, in server-name order; TS uses the
-  object's key order. Structured MCP tool output is serialized with sorted
-  object keys.
+  connected, and their tools listed, in server-name order unless
+  `Settings.MCPServerOrder` gives the TS object's key order. Structured MCP
+  tool output is serialized with sorted object keys.
 
 ## Features that are TypeScript-only (not ported)
 

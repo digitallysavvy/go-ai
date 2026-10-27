@@ -185,16 +185,33 @@ func (r *fxMCPRuntime) close() error {
 	return errors.Join(errs...)
 }
 
-// createFxMCPRuntime mirrors TS createFxMcpRuntime. Servers are taken in
-// name order (a Go map has no insertion order). A failure closes every
-// client opened so far.
-func createFxMCPRuntime(ctx context.Context, servers map[string]any) (*fxMCPRuntime, error) {
-	rt := &fxMCPRuntime{}
+// mcpServerNames is the TS Object.entries(mcpServers) order: the names in
+// order (Settings.MCPServerOrder) that servers has, then the rest sorted.
+func mcpServerNames(servers map[string]any, order []string) []string {
 	names := make([]string, 0, len(servers))
-	for name := range servers {
-		names = append(names, name)
+	seen := make(map[string]bool, len(servers))
+	for _, name := range order {
+		if _, ok := servers[name]; ok && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
 	}
-	sort.Strings(names)
+	rest := make([]string, 0, len(servers)-len(names))
+	for name := range servers {
+		if !seen[name] {
+			rest = append(rest, name)
+		}
+	}
+	sort.Strings(rest)
+	return append(names, rest...)
+}
+
+// createFxMCPRuntime mirrors TS createFxMcpRuntime. Servers are taken in
+// mcpServerNames order (a Go map has no insertion order). A failure closes
+// every client opened so far.
+func createFxMCPRuntime(ctx context.Context, servers map[string]any, order []string) (*fxMCPRuntime, error) {
+	rt := &fxMCPRuntime{}
+	names := mcpServerNames(servers, order)
 	var instructions []string
 	for _, name := range names {
 		config, err := parseFxMCPServerConfig(name, servers[name])

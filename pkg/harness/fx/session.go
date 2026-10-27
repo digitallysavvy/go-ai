@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 
@@ -238,11 +239,24 @@ func (s *libfxSession) turnSignature(settings harness.TurnSettings, responseForm
 		Effort         string                        `json:"effort,omitempty"`
 		Fast           *bool                         `json:"fast,omitempty"`
 		Ultrafast      *bool                         `json:"ultrafast,omitempty"`
+		MCPServerOrder []string                      `json:"mcpServerOrder,omitempty"`
 	}{settings.Model, settings.Skills, settings.Instructions, settings.Tools, responseFormat, s.start.BuiltinToolFiltering,
-		s.start.PermissionMode, s.h.settings.MCPServers, s.h.settings.Effort, fast, ultrafast}
+		s.start.PermissionMode, s.h.settings.MCPServers, s.h.settings.Effort, fast, ultrafast, s.mcpServerOrder()}
 	data, _ := jsstr.Marshal(sig)
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// mcpServerOrder is the server order a continued turn must keep: nil
+// while it is the default sorted order, so signatures from before
+// Settings.MCPServerOrder are unchanged.
+func (s *libfxSession) mcpServerOrder() []string {
+	servers := s.h.settings.MCPServers
+	names := mcpServerNames(servers, s.h.settings.MCPServerOrder)
+	if sort.StringsAreSorted(names) {
+		return nil
+	}
+	return names
 }
 
 // promptJSON converts a harness prompt to the libfx prompt (TS toPrompt).
@@ -1165,7 +1179,7 @@ func (a *activeTurn) runBody() error {
 	if err != nil {
 		return err
 	}
-	mcpRuntime, err := createFxMCPRuntime(a.ctx, s.h.settings.MCPServers)
+	mcpRuntime, err := createFxMCPRuntime(a.ctx, s.h.settings.MCPServers, s.h.settings.MCPServerOrder)
 	if err != nil {
 		return err
 	}
