@@ -21,6 +21,9 @@ func TestR47_ErrorBodyNotMatchingSchemaFallsBackToStatusText(t *testing.T) {
 		`{"detail":[{"x":1}]}`:       "Bad Gateway",
 		`[1]`:                        "Bad Gateway",
 		`{"error":{"message":"no"}}`: "no",
+		`{"message":5}`:              "Bad Gateway",
+		`{"message":null}`:           "Bad Gateway",
+		`{"message":"m"}`:            "m",
 	} {
 		_, model := newPerplexityTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Req", "7")
