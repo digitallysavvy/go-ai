@@ -315,16 +315,8 @@ func (m *ResponsesLanguageModel) buildRequestBody(opts *provider.GenerateOptions
 	copy(include, xaiOpts.Include)
 	if xaiOpts.Store != nil && !*xaiOpts.Store {
 		body["store"] = false
-		hasEncrypted := false
-		for _, v := range include {
-			if v == "reasoning.encrypted_content" {
-				hasEncrypted = true
-				break
-			}
-		}
-		if !hasEncrypted {
-			include = append(include, "reasoning.encrypted_content")
-		}
+		// TS appends reasoning.encrypted_content without a duplicate check.
+		include = append(include, "reasoning.encrypted_content")
 	}
 	// TS: `options.include ? [...options.include] : undefined` -- an empty
 	// array is truthy, so `include: []` is sent when the option is present.
