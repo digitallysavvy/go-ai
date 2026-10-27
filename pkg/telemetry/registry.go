@@ -1039,87 +1039,90 @@ func customSpanAttributes(ctx context.Context, ctorEnrich EnrichSpanFunc, settin
 // enrichAttribute converts one EnrichSpan value like TS sanitizeAttributes
 // followed by OTel's attribute check: strings, booleans and finite numbers
 // are kept; an array keeps its primitives when they all have one type (and,
-// for numbers, are all finite); anything else (null, objects, mixed arrays)
-// is dropped.
+// for numbers, are all finite); anything else (null, objects, mixed or empty
+// arrays) is dropped. Go types JS does not have are read by kind: a named
+// string or number type is that primitive, every integer and float kind is a
+// number, and a pointer is the value it points at.
 func enrichAttribute(key string, value interface{}) (attribute.KeyValue, bool) {
-	switch v := value.(type) {
-	case nil:
+	rv, ok := derefValue(reflect.ValueOf(value))
+	if !ok {
 		return attribute.KeyValue{}, false
-	case string:
-		return attribute.String(key, v), true
-	case bool:
-		return attribute.Bool(key, v), true
-	case int:
-		return attribute.Int(key, v), true
-	case int8:
-		return attribute.Int64(key, int64(v)), true
-	case int16:
-		return attribute.Int64(key, int64(v)), true
-	case int32:
-		return attribute.Int64(key, int64(v)), true
-	case int64:
-		return attribute.Int64(key, v), true
-	case uint8:
-		return attribute.Int64(key, int64(v)), true
-	case uint16:
-		return attribute.Int64(key, int64(v)), true
-	case uint32:
-		return attribute.Int64(key, int64(v)), true
-	case uint:
-		if uint64(v) > math.MaxInt64 {
-			return finiteFloat64Attr(key, float64(v))
+	}
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			// Bytes are binary data (a JS Uint8Array is not an attribute
+			// value), not a list of numbers.
+			return attribute.KeyValue{}, false
 		}
-		return attribute.Int64(key, int64(v)), true
-	case uint64:
-		if v > math.MaxInt64 {
-			return finiteFloat64Attr(key, float64(v))
+		return enrichArrayAttribute(key, rv)
+	case reflect.String:
+		return attribute.String(key, rv.String()), true
+	case reflect.Bool:
+		return attribute.Bool(key, rv.Bool()), true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return attribute.Int64(key, rv.Int()), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if u := rv.Uint(); u <= math.MaxInt64 {
+			return attribute.Int64(key, int64(u)), true
 		}
-		return attribute.Int64(key, int64(v)), true
-	case float32:
-		return finiteFloat64Attr(key, float64(v))
-	case float64:
-		return finiteFloat64Attr(key, v)
-	case []string:
-		return attribute.StringSlice(key, v), true
-	case []bool:
-		return attribute.BoolSlice(key, v), true
-	case []int:
-		return attribute.IntSlice(key, v), true
-	case []int64:
-		return attribute.Int64Slice(key, v), true
-	case []float64:
-		if finite, ok := finiteFloat64Slice(v); ok {
-			return attribute.Float64Slice(key, finite), true
-		}
-		return attribute.KeyValue{}, false
-	case []interface{}:
-		return enrichArrayAttribute(key, v)
+		return finiteFloat64Attr(key, float64(rv.Uint()))
+	case reflect.Float32, reflect.Float64:
+		return finiteFloat64Attr(key, rv.Float())
 	}
 	return attribute.KeyValue{}, false
 }
 
-// enrichArrayAttribute is sanitizeAttributeValue for a mixed array: only the
-// string, number and boolean items count, and they must share one type.
-func enrichArrayAttribute(key string, items []interface{}) (attribute.KeyValue, bool) {
+// derefValue follows pointers and interfaces; false for an invalid value or
+// a nil pointer (TS null).
+func derefValue(rv reflect.Value) (reflect.Value, bool) {
+	for rv.IsValid() && (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface) {
+		if rv.IsNil() {
+			return reflect.Value{}, false
+		}
+		rv = rv.Elem()
+	}
+	return rv, rv.IsValid()
+}
+
+// enrichArrayAttribute is sanitizeAttributeValue for an array: only the
+// string, number and boolean items count, and they must share one type, so
+// an empty array is dropped. A slice whose element type is an integer kind
+// stays an int64 slice; other numbers are float64s.
+func enrichArrayAttribute(key string, items reflect.Value) (attribute.KeyValue, bool) {
 	var strs []string
 	var nums []float64
+	var ints []int64
 	var bools []bool
-	for _, item := range items {
-		switch v := item.(type) {
-		case string:
-			strs = append(strs, v)
-		case bool:
-			bools = append(bools, v)
-		case float64:
-			nums = append(nums, v)
-		case float32:
-			nums = append(nums, float64(v))
-		case int:
-			nums = append(nums, float64(v))
-		case int64:
-			nums = append(nums, float64(v))
-		case int32:
-			nums = append(nums, float64(v))
+	intElems := true
+	switch items.Type().Elem().Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+	default:
+		intElems = false
+	}
+	for n := 0; n < items.Len(); n++ {
+		item, ok := derefValue(items.Index(n))
+		if !ok {
+			continue
+		}
+		switch item.Kind() {
+		case reflect.String:
+			strs = append(strs, item.String())
+		case reflect.Bool:
+			bools = append(bools, item.Bool())
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			nums = append(nums, float64(item.Int()))
+			ints = append(ints, item.Int())
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			u := item.Uint()
+			nums = append(nums, float64(u))
+			if u > math.MaxInt64 {
+				intElems = false
+			}
+			ints = append(ints, int64(u))
+		case reflect.Float32, reflect.Float64:
+			nums = append(nums, item.Float())
 		}
 	}
 	kinds := 0
@@ -1136,6 +1139,8 @@ func enrichArrayAttribute(key string, items []interface{}) (attribute.KeyValue, 
 		return attribute.StringSlice(key, strs), true
 	case len(bools) > 0:
 		return attribute.BoolSlice(key, bools), true
+	case intElems:
+		return attribute.Int64Slice(key, ints), true
 	}
 	if finite, ok := finiteFloat64Slice(nums); ok {
 		return attribute.Float64Slice(key, finite), true
