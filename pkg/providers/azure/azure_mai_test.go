@@ -664,3 +664,25 @@ func TestAzureMaiTranscription_RejectsUnsupportedAudioFormat(t *testing.T) {
 		t.Fatalf("err = %v, want InvalidArgumentError", err)
 	}
 }
+
+// TS postFormDataToApi / postJsonToApi accept any 2xx (response.ok), not only 200.
+func TestAzureSpeechTranscription_Accepts2xxOtherThan200(t *testing.T) {
+	server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(stdhttp.StatusCreated)
+		_, _ = w.Write([]byte(`{"combinedPhrases":[{"text":"hi"}]}`))
+	}))
+	defer server.Close()
+	p, err := New(Config{APIKey: "k", ResourceName: "r", SpeechBaseURL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := p.TranscriptionModel("mai-transcribe-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := model.DoTranscribe(context.Background(), &provider.TranscriptionOptions{Audio: []byte{1}, MimeType: "audio/wav"})
+	if err != nil || result.Text != "hi" {
+		t.Fatalf("result=%v err=%v", result, err)
+	}
+}
