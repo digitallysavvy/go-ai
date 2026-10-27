@@ -61,7 +61,7 @@ type AuthOptions struct {
 // invalid_grant from an authorization-code exchange is returned as-is.
 func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions) (AuthResult, error) {
 	refreshAttempt := &oauthRefreshAttempt{}
-	result, err := authInternal(ctx, provider, options, refreshAttempt)
+	result, err := authInternal(ctx, provider, options, refreshAttempt, nil)
 	if err == nil {
 		return result, nil
 	}
@@ -91,7 +91,7 @@ func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions
 				return "", ierr
 			}
 		}
-		return authInternal(ctx, provider, options, nil)
+		return authInternal(ctx, provider, options, nil, nil)
 	}
 
 	if IsInvalidGrantError(err) && refreshAttempt.tokens != nil {
@@ -103,10 +103,14 @@ func Auth(ctx context.Context, provider OAuthClientProvider, options AuthOptions
 		// does not indicate that existing tokens are invalid, so the error
 		// propagates without invalidating credentials or retrying (TS
 		// #22055).
+		// Keep the binding validated before the refresh, even when deleting
+		// the rejected tokens removes the provider's only copy of it (TS
+		// #23579).
+		retryASInfo := oauthASInfoFromCredentials(refreshAttempt.tokens.Issuer, refreshAttempt.tokens.AuthorizationServer, refreshAttempt.tokens.TokenEndpoint)
 		if ierr := invalidateOAuthTokens(ctx, provider, refreshAttempt.tokens); ierr != nil {
 			return "", ierr
 		}
-		return authInternal(ctx, provider, options, nil)
+		return authInternal(ctx, provider, options, nil, retryASInfo)
 	}
 
 	return "", err
@@ -140,7 +144,7 @@ func invalidateOAuthTokens(ctx context.Context, provider OAuthClientProvider, to
 	return nil
 }
 
-func authInternal(ctx context.Context, provider OAuthClientProvider, options AuthOptions, refreshAttempt *oauthRefreshAttempt) (AuthResult, error) {
+func authInternal(ctx context.Context, provider OAuthClientProvider, options AuthOptions, refreshAttempt *oauthRefreshAttempt, retryASInfo *OAuthAuthorizationServerInformation) (AuthResult, error) {
 	if options.ResourceMetadataURL != nil {
 		if err := AssertOAuthResourceMetadataURLSameOrigin(options.ServerURL, options.ResourceMetadataURL.String()); err != nil {
 			return "", err
@@ -233,6 +237,12 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 		return "", err
 	}
 
+	if retryASInfo != nil {
+		if err := AssertOAuthAuthorizationServerInformationMatches(*retryASInfo, currentASInfo); err != nil {
+			return "", err
+		}
+	}
+
 	clientMetadata := provider.ClientMetadata()
 	selectedScope := SelectOAuthScope(options.Scope, resourceMetadata, clientMetadata)
 
@@ -244,17 +254,53 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 		clientInformation = info
 	}
 
-	if clientInformation != nil && clientInformation.Issuer != "" {
+	var tokens *OAuthTokens
+	if !options.HasAuthorizationCode {
+		tokens, err = provider.Tokens(ctx)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	if clientInformation != nil {
+		// A flow pin must never override the issuer attached to the
+		// credentials (TS #23579).
+		if clientInformation.Issuer != "" && clientInformation.Issuer != currentASInfo.Issuer {
+			return "", &MCPClientOAuthError{
+				Code:    OAuthErrorCodeAuthorizationServerMismatch,
+				Message: "OAuth authorization server does not match the issuer of the client credentials",
+			}
+		}
+		if info := oauthASInfoFromCredentials(clientInformation.Issuer, clientInformation.AuthorizationServer, clientInformation.TokenEndpoint); info != nil {
+			if err := AssertOAuthAuthorizationServerInformationMatches(*info, currentASInfo); err != nil {
+				return "", err
+			}
+		}
+
 		storedASInfo := callbackASInfo
 		if storedASInfo == nil {
-			storedASInfo, err = getStoredOAuthAuthorizationServerInformation(ctx, provider, clientInformation, nil)
+			storedASInfo, err = getStoredOAuthAuthorizationServerInformation(ctx, provider, clientInformation, tokens)
 			if err != nil {
 				return "", err
 			}
 		}
+		if storedASInfo == nil {
+			storedASInfo = retryASInfo
+		}
 		if storedASInfo != nil {
 			if err := AssertOAuthAuthorizationServerInformationMatches(*storedASInfo, currentASInfo); err != nil {
 				return "", err
+			}
+		}
+
+		// Do not turn an MCP server's choice of authorization server into a
+		// trust binding for an existing secret. Dynamic registration below
+		// binds newly issued credentials.
+		_, customAuth := provider.(OAuthClientAuthenticator)
+		if (clientInformation.ClientSecret != "" || customAuth) && clientInformation.Issuer == "" && storedASInfo == nil {
+			return "", &MCPClientOAuthError{
+				Code:    OAuthErrorCodeAuthorizationServerMismatch,
+				Message: "OAuth client credentials must be bound to an authorization server: configure their issuer or store authorization server information",
 			}
 		}
 	}
@@ -342,11 +388,6 @@ func authInternal(ctx context.Context, provider OAuthClientProvider, options Aut
 			return "", err
 		}
 		return AuthResultAuthorized, nil
-	}
-
-	tokens, err := provider.Tokens(ctx)
-	if err != nil {
-		return "", err
 	}
 
 	// Refresh only when stored credentials match the current AS pin.

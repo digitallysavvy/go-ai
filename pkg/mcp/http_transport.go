@@ -1338,6 +1338,11 @@ func (t *HTTPTransport) SetProtocolVersion(version string) {
 // StreamableHTTPClientTransport.supportsProtocolVersionDiscovery.
 func (t *HTTPTransport) SupportsProtocolVersionDiscovery() bool { return true }
 
+// WaitsForProtocolVersionDiscovery reports that the client waits for the
+// `server/discover` response instead of falling back to `initialize` after
+// the 1 s probe timeout (TS HttpMCPTransport.waitsForProtocolVersionDiscovery).
+func (t *HTTPTransport) WaitsForProtocolVersionDiscovery() bool { return true }
+
 // SupportsMCPToolParameterHeaders reports that HTTPTransport supports
 // binding tool call arguments to HTTP headers via `x-mcp-header` (hash
 // 0c60a40), matching TS StreamableHTTPClientTransport.supportsMcpToolParameterHeaders.

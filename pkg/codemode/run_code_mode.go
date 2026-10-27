@@ -82,6 +82,10 @@ func RunCodeMode(ctx context.Context, input RunInput) (interface{}, error) {
 		outerToolCall = fmt.Sprintf("code-mode-%d", atomic.AddInt64(&invocationCounter, 1))
 	}
 
+	// One CPU budget per invocation: a continuation resume starts fresh. The
+	// bridge pauses it while a host tool runs (time waiting on tools does not
+	// count) and runInSandbox runs it.
+	ctx = withCPUBudget(ctx, newCPUBudget(policy.CPUTimeoutMs))
 	bridge := newToolBridge(ctx, input, options, policy, outerToolCall, prepared.replayLedger, prepared.resumePendings, prepared.resumeResolutions)
 	// Mirrors TypeScript's stripSnippetTypes (run package,
 	// dist/utils/source-cache.js), which catches *any* stripper error and

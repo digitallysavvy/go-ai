@@ -1,0 +1,125 @@
+---
+title: Web Fetch Tool
+description: "API reference for pkg/toolwebfetch, a Go port of the AI SDK web fetch tool: fetches a URL with SSRF-safe validation and returns HTML as markdown."
+---
+
+# Web Fetch Tool
+
+`pkg/toolwebfetch` is a Go port of the TypeScript AI SDK's first-party web
+fetch tool (`@ai-sdk/tool-web-fetch`). The model calls a `webFetch` function
+tool with a URL. HTML pages are converted to markdown with the main content
+extracted, and text formats are returned as is. JavaScript is not executed.
+Failures are returned as results so the model can recover.
+
+**Experimental:** this package may change in a minor version.
+
+```go
+import "github.com/digitallysavvy/go-ai/pkg/toolwebfetch"
+```
+
+## Security model
+
+The tool fetches untrusted URLs, and the model chooses them, so it applies the
+SDK's SSRF-safe download validation (the same checks as `ai.Download`,
+including the `.local`, `.localhost` and `.internal` suffixes and IDN spellings
+of blocked hostnames):
+
+- GET requests only, with no cookies or credentials. URLs that contain
+  credentials are rejected.
+- Every hop, including each redirect, is checked against the domain filter and
+  against local, private and reserved addresses before it is requested.
+  Redirects are followed manually, at most 5.
+- The default transport validates and pins DNS results at connect time. If you
+  set `Options.Transport`, it must do the same.
+- The response size (`MaxBytes`, default 10 MiB) and the time per call
+  (`TimeoutMs`, default 30 seconds, redirects included) are bounded.
+- `RequireURLInUserMessage` limits fetching to URLs that appear in user
+  messages, so the model cannot construct URLs to exfiltrate data. Only user
+  text counts, and URLs are compared whole, not as substrings.
+- Error messages never repeat the requested URL, so a rejected URL cannot
+  authorize itself by appearing in a tool result.
+
+Treat fetched content as untrusted data, not as instructions.
+
+## CreateWebFetchTool
+
+```go
+func CreateWebFetchTool(opts Options) (types.Tool, error)
+```
+
+```go
+type Options struct {
+    AllowedDomains          []string // only these domains and their subdomains (nil: unset)
+    BlockedDomains          []string // never these domains or their subdomains
+    RequireURLInUserMessage bool
+    MaxLength               *int // characters per call, default 50,000
+    MaxBytes                *int // response bytes, default 10 MiB
+    TimeoutMs               *int // per call, 1 to 2,147,483,647, default 30,000
+    Transport               http.RoundTripper
+    ContentSelector         string
+}
+```
+
+`AllowedDomains` and `BlockedDomains` cannot be combined, take bare domains
+such as `"example.com"` (no scheme, port, path or wildcard), and are
+normalized (lowercase, punycode, no trailing dot). An empty non-nil
+`AllowedDomains` allows nothing. Invalid options return
+`*errors.InvalidArgumentError` (`pkg/provider/errors`).
+
+The tool input is `{ "url": string, "offset": integer (optional) }`.
+
+## Results
+
+A successful call returns a `DocumentOutput`; a failure returns an
+`ErrorOutput` (the call itself only fails when the call's context is
+cancelled).
+
+| Type | Fields |
+| --- | --- |
+| `DocumentOutput` | `type` (`"document"`), `url`, `finalUrl`, `contentType`, `title`, `content`, `offset`, `totalLength`, `nextOffset` |
+| `ErrorOutput` | `type` (`"error"`), `url`, `errorCode`, `message`, `statusCode` |
+
+Error codes: `invalid_url`, `url_not_allowed`, `url_not_in_user_message`,
+`http_error`, `timeout`, `too_large`, `too_many_redirects`,
+`unsupported_content_type`, `conversion_failed`, `network_error`.
+
+Content longer than `MaxLength` is cut, and `nextOffset` says where to
+continue: call the tool again with that `offset`. Converted pages are cached
+for five minutes (up to 16 pages), so continuing does not download the page
+again. The model sees a document as a text block with `URL`, `Title` and
+`Content-Type` headers, and an error as an error-text block.
+
+```go
+webFetch, err := toolwebfetch.CreateWebFetchTool(toolwebfetch.Options{
+    AllowedDomains:          []string{"example.com"},
+    RequireURLInUserMessage: true,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+result, err := ai.GenerateText(ctx, ai.GenerateTextOptions{
+    Model:  model,
+    Tools:  []types.Tool{webFetch},
+    Prompt: "Summarize https://example.com/guide",
+})
+```
+
+See the runnable example in
+[`examples/toolwebfetch`](https://github.com/digitallysavvy/go-ai/tree/main/examples/toolwebfetch).
+
+## Differences from TypeScript
+
+- HTML is converted by a built-in extractor (the `golang.org/x/net/html`
+  parser) rather than defuddle. It keeps `<main>`, `<article>` or similar
+  content, drops navigation, footers, forms, scripts and hidden elements, and
+  renders headings, paragraphs, lists, links, images, code, quotes and tables.
+  Output for complex pages differs from defuddle's.
+- `ContentSelector` replaces `defuddleOptions.contentSelector` and supports a
+  tag name, `#id`, `.class` and `[attr]` parts in one compound selector, and
+  comma-separated alternatives. Other CSS syntax never matches.
+- `Transport` (an `http.RoundTripper`) replaces the custom `fetch` option.
+- `MaxLength` and `offset` count Unicode code points rather than UTF-16 code
+  units, so a character outside the Basic Multilingual Plane is never split.
+- Network error messages name a system error such as `ENOTFOUND` or
+  `ECONNREFUSED` when one is known.

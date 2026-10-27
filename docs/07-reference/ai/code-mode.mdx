@@ -79,6 +79,48 @@ tool catalog with `ToolDiscoveryConversation`) persist across steps in
 `GenerateText`, `StreamText` and `ToolLoopAgent`, and `PrepareStep`'s
 `InitialMessages` stays the raw prompt, as in TS.
 
+## Execution limits
+
+`Options.ExecutionPolicy` (`*ExecutionPolicy`) bounds each sandbox invocation.
+Two of its limits bound time, and they measure different things:
+
+| Field | Default | Measures | Error |
+| --- | --- | --- | --- |
+| `TimeoutMs` | `30_000` | Wall-clock time for the invocation, including time spent waiting on host tools. | `*TimeoutError` (`CODE_MODE_TIMEOUT`) |
+| `CPUTimeoutMs` | `10_000` | CPU time of the sandboxed code only. Time spent waiting on host tools does not count. | `*CPUTimeoutError` (`CODE_MODE_CPU_TIMEOUT`, details `cpuTimeoutMs`) |
+
+`CPUTimeoutMs` only takes effect when it is lower than `TimeoutMs`. Each
+continuation resume starts with a fresh CPU budget. A zero field uses its
+default; a negative value is rejected.
+
+The Go sandbox runs on one goroutine, so `CPUTimeoutMs` is measured as the
+wall time the sandbox spends running JavaScript, paused for the whole of each
+host tool call. A heavily loaded machine can therefore consume the budget
+faster than true CPU time would.
+
+<Note>
+  The `CPUTimeoutMs` default (10 seconds) also applies to callers upgrading
+  from v0.5.2, as it does in the TypeScript SDK: a script that spends more than
+  10 seconds in pure JavaScript, which previously ran up to `TimeoutMs`, now
+  fails with `*CPUTimeoutError`. Raise `CPUTimeoutMs` (and `TimeoutMs`) to keep
+  the old behavior.
+</Note>
+
+```go
+result, err := codemode.RunCodeMode(ctx, codemode.RunInput{
+    JS:    `return await tools.slowLookup({})`,
+    Tools: tools,
+    Options: &codemode.Options{ExecutionPolicy: &codemode.ExecutionPolicy{
+        TimeoutMs:    60_000, // allow long tool waits
+        CPUTimeoutMs: 2_000,  // but stop runaway sandbox loops quickly
+    }},
+})
+var cpuErr *codemode.CPUTimeoutError
+if errors.As(err, &cpuErr) {
+    // the script itself used too much CPU
+}
+```
+
 ## TypeScript in model-written code
 
 Before running, code-mode strips TypeScript annotations from the source with

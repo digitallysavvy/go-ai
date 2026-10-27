@@ -154,6 +154,19 @@ A provider can also implement these. `Auth` checks for them with a type assertio
 
 `mcp.OAuthClientInformationFull` is the full result of Dynamic Client Registration: the registered metadata plus the client credentials.
 
+Pre-registered confidential clients (a `ClientSecret`, or a provider implementing `mcp.OAuthClientAuthenticator`) must be bound to their authorization server: set `Issuer` on the client information, or store authorization server information. Otherwise `mcp.Auth` fails with an authorization-server mismatch before sending the secret, because the MCP server chooses which authorization server is discovered. An `Issuer` that differs from the discovered server is always rejected, even when a stored flow pin points at it. `ValidateAuthorizationServerURL` restricts the discovered server but does not replace this binding. When a refresh fails with `invalid_grant`, the binding carried by the rejected tokens still guards the fresh authorization attempt.
+
+<Note>
+  Upgrading from v0.5.2: pre-registered confidential credentials that have no
+  `Issuer` and no stored authorization server information (the old code skipped
+  validation for them) now fail with an authorization-server mismatch error, as
+  in the TypeScript SDK. There is no automatic migration. Set `Issuer` on the
+  client information to the authorization server the secret was registered with
+  (or return it from `OAuthAuthorizationServerInformationStore`). Credentials
+  obtained by dynamic registration already carry their binding and keep
+  working.
+</Note>
+
 ## Discovery
 
 | Function | Description |

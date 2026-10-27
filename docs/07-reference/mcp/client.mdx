@@ -130,6 +130,8 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `Env` | `[]string` | Env are additional environment variables to set, in "KEY=VALUE" form (the os.Environ()/exec.Cmd.Env convention). The child process does not inherit the full parent environment: only Env plus a small safe allowlist of inherited vars (PATH, HOME, etc. — see getEnvironment) are passed through, mirroring TS mcp-stdio/get-environment.ts. |
 | `WorkingDir` | `string` | WorkingDir is the working directory for the command |
 | `Config` | `TransportConfig` | Config is the base transport configuration |
+| `Shell` | `bool` | Shell runs the command through the platform shell (TS StdioConfig.shell = true): `sh -c` on Unix, ComSpec (`cmd.exe /d /s /c`) on Windows. This lets command shims and shell wrappers run, but Command and Args are joined with spaces and are NOT escaped, so never build them from untrusted input. Default false: the command is executed directly. |
+| `ShellPath` | `string` | ShellPath selects a specific shell executable (TS StdioConfig.shell = "&lt;path&gt;") and implies Shell. Unix shells are invoked as `<path> -c`. |
 | `Stderr` | `io.Writer` | Stderr receives the child's stderr (TS StdioConfig.stderr). Nil inherits the parent's stderr (os.Stderr), TS's default 'inherit'. Use io.Discard to drop it. When Config.EnableLogging is set and Stderr is nil, stderr lines are logged as "MCP stderr: ..." instead. |
 | `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics such as a stdout line that is not a valid JSON-RPC message (TS onerror). Such lines are skipped instead of ending the connection. |
 
@@ -211,6 +213,7 @@ A transport can implement these interfaces. The client checks for them with a ty
 | `mcp.MCPToolParameterHeadersTransport` | Support binding tool arguments to HTTP headers (see below). |
 | `mcp.ProtocolVersionTransport` | Receive the protocol version negotiated during initialize. |
 | `mcp.ProtocolVersionDiscoveryTransport` | Support probing `server/discover` before falling back to `initialize`. Only `HTTPTransport` does. |
+| `mcp.ProtocolVersionDiscoveryWaiter` | Optional: a transport reporting `WaitsForProtocolVersionDiscovery() == true` is waited on (bounded by the `Connect` context) instead of falling back after the 1 s probe timeout. `HTTPTransport` does; stdio and custom transports keep the timeout. |
 | `mcp.SendOptionsTransport` | Accept `mcp.MCPTransportSendOptions` on each send. |
 | `mcp.SSEClient` | A custom SSE-capable client for the HTTP and SSE transports. |
 
@@ -244,7 +247,7 @@ A tool input schema can mark a property with `x-mcp-header`. The client then sen
 | `mcp.LatestLegacyProtocolVersion` | `"2025-11-25"`. Negotiated with `initialize`. |
 | `mcp.ProtocolVersion` | The legacy version the client sends in `initialize`. |
 | `mcp.SupportedProtocolVersions` | Every version the client understands, in order of preference. |
-| `mcp.DefaultProtocolDiscoveryTimeoutMS` | How long the client waits for a `server/discover` response before it falls back to `initialize`. |
+| `mcp.DefaultProtocolDiscoveryTimeoutMS` | How long the client waits for a `server/discover` response before it falls back to `initialize`. Not applied to transports that implement `mcp.ProtocolVersionDiscoveryWaiter` (Streamable HTTP). |
 | `mcp.ModernProtocolErrorCodes` | JSON-RPC error codes a server uses for a hard failure during modern-era discovery. |
 
 `mcp.DiscoverResult` is the result of `server/discover`. `mcp.DiscoverResultServerInfo(result)` extracts the server info from its metadata.
@@ -580,7 +583,7 @@ func main() {}
 | `mcp.MCPEventWebhookGapArgs`, `mcp.MCPEventWebhookTerminatedArgs` | Arguments for `OnGap` and `OnTerminated`. |
 | `mcp.NullableOf(v)` | Builds a set `mcp.Nullable`; `mcp.NullableNull[T]()` builds an explicit null. |
 | `mcp.MCPEventAdapterTransport` | Transport metadata given to `CreateAdapter`; `Type` is `mcp.MCPEventTransportHTTP`, `mcp.MCPEventTransportSSE` or `mcp.MCPEventTransportCustom`. |
-| `mcp.ManagedSubscribeInput`, `mcp.ManagedSubscription` | Managed subscription input and record. `mcp.ManagedSubscriptionStatus` is `mcp.ManagedSubscriptionPending`, `mcp.ManagedSubscriptionActive`, `mcp.ManagedSubscriptionNeedsAuth`, `mcp.ManagedSubscriptionStopped`, `mcp.ManagedSubscriptionExpired` or `mcp.ManagedSubscriptionFailed`. |
+| `mcp.ManagedSubscribeInput`, `mcp.ManagedSubscription` | Managed subscription input and record. `ManagedSubscribeInput.TTLMs` is a `mcp.Nullable[int64]`: a lifetime in milliseconds, or `mcp.NullableNull[int64]()` to watch until stopped. `ExpiresAt` appears only on the returned record. `mcp.ManagedSubscriptionStatus` is `mcp.ManagedSubscriptionPending`, `mcp.ManagedSubscriptionActive`, `mcp.ManagedSubscriptionNeedsAuth`, `mcp.ManagedSubscriptionStopped`, `mcp.ManagedSubscriptionExpired` or `mcp.ManagedSubscriptionFailed`. |
 | `mcp.ListManagedSubscriptionsInput`, `mcp.ListManagedSubscriptionsResult` | Managed listing input and result page. |
 
 Managed adapters receive a `context.Context` instead of TS request options: cancel it or set a deadline to bound a call. Cancelling does not cancel an already accepted remote subscription.

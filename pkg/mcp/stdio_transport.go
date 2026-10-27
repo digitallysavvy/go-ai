@@ -22,6 +22,8 @@ type StdioTransport struct {
 	args       []string
 	env        []string
 	workingDir string
+	shell      bool
+	shellPath  string
 
 	// Process
 	cmd    *exec.Cmd
@@ -69,6 +71,17 @@ type StdioTransportConfig struct {
 	// Config is the base transport configuration
 	Config TransportConfig
 
+	// Shell runs the command through the platform shell (TS StdioConfig.shell
+	// = true): `sh -c` on Unix, ComSpec (`cmd.exe /d /s /c`) on Windows. This
+	// lets command shims and shell wrappers run, but Command and Args are
+	// joined with spaces and are NOT escaped, so never build them from
+	// untrusted input. Default false: the command is executed directly.
+	Shell bool
+
+	// ShellPath selects a specific shell executable (TS StdioConfig.shell =
+	// "<path>") and implies Shell. Unix shells are invoked as `<path> -c`.
+	ShellPath string
+
 	// Stderr receives the child's stderr (TS StdioConfig.stderr). Nil
 	// inherits the parent's stderr (os.Stderr), TS's default 'inherit'. Use
 	// io.Discard to drop it. When Config.EnableLogging is set and Stderr is
@@ -111,6 +124,8 @@ func NewStdioTransport(config StdioTransportConfig) *StdioTransport {
 		args:       config.Args,
 		env:        config.Env,
 		workingDir: config.WorkingDir,
+		shell:      config.Shell || config.ShellPath != "",
+		shellPath:  config.ShellPath,
 		config:     config.Config,
 		onError:    config.OnError,
 		stderrW:    config.Stderr,
@@ -134,7 +149,7 @@ func (t *StdioTransport) Connect(ctx context.Context) error {
 	// lifetime is the transport's (Close), not that of the context passed to
 	// Connect, which callers routinely cancel once setup is done (TS start()
 	// has no such signal).
-	t.cmd = exec.Command(t.command, t.args...)
+	t.cmd = newStdioCommand(t.command, t.args, t.shell, t.shellPath)
 	// Mirrors TS createChildProcess: the child's env is the caller-supplied
 	// Env merged with a safe allowlist of inherited parent env vars, not a
 	// blind inherit of the whole parent environment.
@@ -372,4 +387,15 @@ func (t *StdioTransport) writeSem() chan struct{} {
 		t.writeSemCh = make(chan struct{}, 1)
 	}
 	return t.writeSemCh
+}
+
+// newStdioCommand builds the child command. With shell set it mirrors Node's
+// spawn `shell` option: the command and args are joined with spaces (without
+// escaping) and handed to the shell.
+func newStdioCommand(command string, args []string, shell bool, shellPath string) *exec.Cmd {
+	if !shell {
+		return exec.Command(command, args...)
+	}
+	line := strings.Join(append([]string{command}, args...), " ")
+	return shellCommand(shellPath, line)
 }

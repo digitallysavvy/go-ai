@@ -788,8 +788,8 @@ func TestManagedMCPEventsDelegateToAdapter(t *testing.T) {
 	}
 	ctx := context.Background()
 	before := tr.count("events/subscribe")
-	got, err := managed.Subscribe(ctx, ManagedSubscribeInput{Name: "comment.created", IdempotencyKey: "intent_1", ExpiresAt: NullableNull[string]()})
-	if err != nil || got != ops.sub || ops.last.IdempotencyKey != "intent_1" {
+	got, err := managed.Subscribe(ctx, ManagedSubscribeInput{Name: "comment.created", IdempotencyKey: "intent_1", TTLMs: NullableNull[int64]()})
+	if err != nil || got != ops.sub || ops.last.IdempotencyKey != "intent_1" || !ops.last.TTLMs.Set || ops.last.TTLMs.Value != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	if _, err := managed.GetSubscription(ctx, "managed_1"); err != nil {

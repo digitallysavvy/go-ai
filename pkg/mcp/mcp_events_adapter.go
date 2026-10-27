@@ -31,7 +31,9 @@ type ManagedSubscription struct {
 }
 
 // ManagedSubscribeInput is the input to ManagedMCPEvents.Subscribe
-// (TS ManagedSubscribeInput). Set exactly one of TTLMs or ExpiresAt.
+// (TS ManagedSubscribeInput). TTLMs is required: set a duration or an
+// explicit null (NullableNull) to watch until stopped. expiresAt is a response
+// field only (ManagedSubscription.ExpiresAt), not a creation input.
 type ManagedSubscribeInput struct {
 	Name      string
 	Arguments map[string]interface{}
@@ -39,10 +41,9 @@ type ManagedSubscribeInput struct {
 	Context map[string]interface{}
 	// IdempotencyKey is reused to recover an uncertain create result.
 	IdempotencyKey string
-	// TTLMs is the requested lifetime in milliseconds.
-	TTLMs *int64
-	// ExpiresAt is an RFC 3339 deadline; a Set null means until stopped.
-	ExpiresAt Nullable[string]
+	// TTLMs is the application lifetime in milliseconds, or an explicit null
+	// (NullableNull) to watch until explicitly stopped.
+	TTLMs Nullable[int64]
 }
 
 // ListManagedSubscriptionsInput filters ManagedMCPEvents.ListSubscriptions.

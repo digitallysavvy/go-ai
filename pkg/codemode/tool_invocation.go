@@ -134,6 +134,13 @@ func (b *toolBridge) invoke(toolName, inputJSON string) (outputJSON string, err 
 		}
 	}()
 
+	// The sandbox is blocked for the whole host call: time spent in tools,
+	// approval callbacks and validation does not count toward the CPU budget.
+	if budget := cpuBudgetFrom(b.ctx); budget != nil {
+		budget.pause()
+		defer budget.resume()
+	}
+
 	if cErr := b.ctx.Err(); cErr != nil {
 		return "", NewAbortedError()
 	}

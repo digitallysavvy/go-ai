@@ -406,8 +406,14 @@ func (c *MCPClient) tryProtocolDiscovery(ctx context.Context) (bool, error) {
 		versionTransport.SetProtocolVersion(c.protocolVersion)
 	}
 
-	discoverCtx, cancel := context.WithTimeout(ctx, time.Duration(DefaultProtocolDiscoveryTimeoutMS)*time.Millisecond)
-	defer cancel()
+	// Transports that always answer (Streamable HTTP) are waited on: a slow
+	// modern server is not a legacy signal (TS #22042).
+	discoverCtx := ctx
+	if waiter, ok := c.transport.(ProtocolVersionDiscoveryWaiter); !ok || !waiter.WaitsForProtocolVersionDiscovery() {
+		var cancel context.CancelFunc
+		discoverCtx, cancel = context.WithTimeout(ctx, time.Duration(DefaultProtocolDiscoveryTimeoutMS)*time.Millisecond)
+		defer cancel()
+	}
 
 	var result DiscoverResult
 	if err := c.call(discoverCtx, "server/discover", map[string]interface{}{}, &result); err != nil {

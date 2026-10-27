@@ -303,7 +303,15 @@ func extractMCPStructuredOutput(result CallToolResult, outputSchema schema.Schem
 }
 
 // convertToModelOutput converts a tool result to model-readable output
+//
+// Primitive and nullish outputs (for example from an outputSchema or an
+// application wrapper that serializes the result) are handled before the
+// MCP envelope check: a string is text, anything else without MCP content is
+// JSON, with nil staying a JSON null (TS #23935).
 func (c *MCPToolConverter) convertToModelOutput(result interface{}) types.ToolResultOutput {
+	if text, ok := result.(string); ok {
+		return types.ToolResultOutput{Type: types.ToolResultOutputText, Value: text}
+	}
 	mcpResult, ok := result.(CallToolResult)
 	if !ok {
 		if ptr, ptrOK := result.(*CallToolResult); ptrOK && ptr != nil {

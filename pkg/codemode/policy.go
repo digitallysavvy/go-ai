@@ -10,6 +10,13 @@ type ExecutionPolicy struct {
 	// TimeoutMs bounds wall-clock execution time. Default: 30_000.
 	TimeoutMs int
 
+	// CPUTimeoutMs bounds the CPU time sandboxed code uses in one
+	// invocation. Time spent waiting on host tools does not count toward it
+	// (TimeoutMs, by contrast, includes tool waits). Only takes effect when
+	// lower than TimeoutMs. Each continuation resume starts with a fresh
+	// budget. Exceeding it fails with *CPUTimeoutError. Default: 10_000.
+	CPUTimeoutMs int
+
 	// MemoryLimitBytes bounds the sandbox's WASM linear memory. Default:
 	// 64 * 1024 * 1024.
 	MemoryLimitBytes int
@@ -55,6 +62,7 @@ type ExecutionPolicy struct {
 // code-mode/src/run-code-mode.ts DEFAULT_* constants.
 const (
 	DefaultTimeoutMs                 = 30_000
+	DefaultCPUTimeoutMs              = 10_000
 	DefaultMemoryLimitBytes          = 64 * 1024 * 1024
 	DefaultMaxStackSizeBytes         = 2 * 1024 * 1024
 	DefaultMaxResultBytes            = 1024 * 1024
@@ -74,6 +82,7 @@ const maxRunLimit = 2_147_483_647
 // resolvedPolicy is ExecutionPolicy with every field defaulted.
 type resolvedPolicy struct {
 	TimeoutMs                 int
+	CPUTimeoutMs              int
 	MemoryLimitBytes          int
 	MaxStackSizeBytes         int
 	MaxResultBytes            int
@@ -100,6 +109,7 @@ type resolvedPolicy struct {
 func resolveExecutionPolicy(p *ExecutionPolicy) (resolvedPolicy, error) {
 	r := resolvedPolicy{
 		TimeoutMs:                 DefaultTimeoutMs,
+		CPUTimeoutMs:              DefaultCPUTimeoutMs,
 		MemoryLimitBytes:          DefaultMemoryLimitBytes,
 		MaxStackSizeBytes:         DefaultMaxStackSizeBytes,
 		MaxResultBytes:            DefaultMaxResultBytes,
@@ -120,6 +130,7 @@ func resolveExecutionPolicy(p *ExecutionPolicy) (resolvedPolicy, error) {
 		dst  *int
 	}{
 		{"timeoutMs", p.TimeoutMs, &r.TimeoutMs},
+		{"cpuTimeoutMs", p.CPUTimeoutMs, &r.CPUTimeoutMs},
 		{"memoryLimitBytes", p.MemoryLimitBytes, &r.MemoryLimitBytes},
 		{"maxStackSizeBytes", p.MaxStackSizeBytes, &r.MaxStackSizeBytes},
 		{"maxResultBytes", p.MaxResultBytes, &r.MaxResultBytes},
