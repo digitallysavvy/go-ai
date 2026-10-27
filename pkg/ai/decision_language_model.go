@@ -347,8 +347,14 @@ func isImageMediaType(mediaType string) bool {
 // (id, type, instructions, criteria).
 func decisionRubric(id, questionType string, instructions, criteria interface{}, withCriteria bool) providerutils.OrderedMap {
 	r := providerutils.OrderedMap{
-		Keys: []string{"id", "type", "instructions"},
-		Vals: map[string]interface{}{"id": id, "type": questionType, "instructions": instructions},
+		Keys: []string{"id", "type"},
+		Vals: map[string]interface{}{"id": id, "type": questionType},
+	}
+	// A criteria-only question carries no instructions key (TS leaves an
+	// undefined instructions out of the JSON prompt).
+	if instructions != nil {
+		r.Keys = append(r.Keys, "instructions")
+		r.Vals["instructions"] = instructions
 	}
 	if withCriteria {
 		r.Keys = append(r.Keys, "criteria")

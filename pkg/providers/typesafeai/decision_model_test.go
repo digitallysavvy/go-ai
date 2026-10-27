@@ -511,3 +511,26 @@ func TestDecisionModel_MalformedBoxAnswer(t *testing.T) {
 		t.Fatal("expected an invalid response error")
 	}
 }
+
+// TS #23470: criteria-only questions are sent without instructions.
+func TestDecisionModel_CriteriaOnlyQuestionOmitsInstructions(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":{"requestsRefund":{"type":"noul","noul":0.9}}}`))
+	}))
+	defer server.Close()
+	model, _ := New(Config{APIKey: "k", BaseURL: server.URL}).DecisionModel("jev-latest")
+	_, err := model.DoDecide(t.Context(), provider.DecisionCallOptions{
+		State:     "x",
+		Questions: map[string]provider.DecisionQuestion{"requestsRefund": {Type: "boolean", Criteria: map[string]interface{}{"true": "Refund"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := gotBody["questions"].(map[string]interface{})["requestsRefund"].(map[string]interface{})
+	if _, ok := q["instructions"]; ok || q["type"] != "noul" {
+		t.Fatalf("question = %#v", q)
+	}
+}

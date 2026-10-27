@@ -481,7 +481,10 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 	for _, id := range sortedQuestionIDs(questions) {
 		q := questions[id]
 		field := fmt.Sprintf("questions.%s", id)
-		if !isDecisionInput(q.Instructions) {
+		// Instructions may be omitted (nil) for choice, score and boolean
+		// questions when the provider supports criteria-only questions; a box
+		// question always needs them (TS #23470).
+		if (q.Type == "box" || q.Instructions != nil) && !isDecisionInput(q.Instructions) {
 			return invalidDecisionInput(field, "instructions must be a JSON-compatible string, object, or array")
 		}
 
@@ -500,8 +503,8 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 			}
 		case "score":
 			criteria, ok := q.Criteria.([]interface{})
-			if !ok || len(criteria) < 2 {
-				return invalidDecisionInput(field, "score criteria must contain at least two ordered levels")
+			if !ok || len(criteria) == 0 {
+				return invalidDecisionInput(field, "score criteria must contain at least one ordered level")
 			}
 			for _, v := range criteria {
 				if v != nil && !isDecisionInput(v) {
@@ -509,6 +512,21 @@ func validateDecisionInput(state interface{}, questions map[string]provider.Deci
 				}
 			}
 		case "boolean":
+			if q.Instructions == nil {
+				criteria, ok := isDecisionRecord(q.Criteria)
+				described := false
+				if ok {
+					for _, v := range criteria {
+						if v != nil {
+							described = true
+							break
+						}
+					}
+				}
+				if !described {
+					return invalidDecisionInput(field, "boolean questions require instructions or at least one non-null criterion")
+				}
+			}
 			if q.Criteria != nil {
 				criteria, ok := isDecisionRecord(q.Criteria)
 				if !ok {

@@ -99,9 +99,10 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		if wireType == "boolean" {
 			wireType = "noul"
 		}
-		entry := map[string]interface{}{
-			"type":         wireType,
-			"instructions": q.Instructions,
+		entry := map[string]interface{}{"type": wireType}
+		// Instructions are optional for criteria-only questions.
+		if q.Instructions != nil {
+			entry["instructions"] = q.Instructions
 		}
 		if q.Type == "box" {
 			// A box question is sent as {type, instructions} only.

@@ -121,9 +121,10 @@ func (m *DecisionModel) handleError(ctx context.Context, err error) error {
 func encodeGatewayDecisionQuestions(questions map[string]provider.DecisionQuestion) map[string]interface{} {
 	out := make(map[string]interface{}, len(questions))
 	for id, q := range questions {
-		wire := map[string]interface{}{
-			"type":         q.Type,
-			"instructions": q.Instructions,
+		wire := map[string]interface{}{"type": q.Type}
+		// Instructions are optional for criteria-only questions.
+		if q.Instructions != nil {
+			wire["instructions"] = q.Instructions
 		}
 		if q.Criteria != nil {
 			wire["criteria"] = q.Criteria

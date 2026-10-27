@@ -20,14 +20,16 @@ type DecisionQuestion struct {
 	Type string
 
 	// Instructions is a JSON-compatible string, map[string]interface{}, or
-	// []interface{}.
+	// []interface{}. It may be nil for choice, score and boolean questions
+	// when the criteria define the judgment (a boolean question then needs a
+	// non-nil criterion); a box question always needs it.
 	Instructions interface{}
 
 	// Criteria is interpreted according to Type:
 	//   - "choice": a nonempty map[string]interface{} of option name ->
 	//     description (nil description allowed, key must still be present).
-	//   - "score": a []interface{} of at least two ordered levels (nil
-	//     entries allowed).
+	//   - "score": a []interface{} of at least one ordered level (nil entries
+	//     allowed); providers may require more.
 	//   - "boolean": optional; when non-nil, a map[string]interface{} with
 	//     only "true"/"false" keys.
 	//   - "box": unused (a box question has instructions only).

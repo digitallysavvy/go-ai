@@ -69,7 +69,7 @@ func main() {
 There are four question types:
 
 - `choice` picks one option from a nonempty `Criteria` map of option name to description (a `nil` description is allowed). The answer has `Choice` and, when the model reports it, a `Probabilities` distribution.
-- `score` places the state on an ordered rubric. `Criteria` is a slice of at least two levels, indexed from zero. The answer has a fractional `Score` between `0` and the last level.
+- `score` places the state on an ordered rubric. `Criteria` is a slice of at least one level, indexed from zero (some providers require more). The answer has a fractional `Score` between `0` and the last level.
 - `boolean` estimates `P(true)` as a probability in `[0, 1]`. `Criteria` is optional and may only describe `"true"` and `"false"`.
 - `box` locates a region of an image. It has `Instructions` only (no `Criteria`). The answer's `Box` holds `Top`, `Bottom`, `Left` and `Right` edges in `[0, 1]`, measured from the image's top-left corner, with `Left < Right` and `Top < Bottom`; anything else fails with `*errors.InvalidResponseDataError`. Only models that list `"box"` in `SupportedQuestionTypes` accept it (currently TypeSafe AI). The OpenAI, Anthropic, Google and Gateway models reject it with `*errors.DecisionUnsupportedQuestionTypeError` before any download or provider call.
 
@@ -127,6 +127,7 @@ Decision models represent a refusal as an answer of `Type: "refusal"`, which is 
 | Anthropic | `anthropic.Provider.DecisionModel(id)` | Wraps the Messages model with `ai.NewDecisionLanguageModel`. |
 | Google | `google.Provider.DecisionModel(id)` | Wraps the Gemini model with `ai.NewDecisionLanguageModel`. |
 | AI Gateway | `gateway.Provider.DecisionModel(id)` | Calls `POST /decision-model`. Supports conditional model fallbacks. |
+| Perplexity | `perplexity.Provider.DecisionModel(id)` | Calls `POST /v1/decisions`. Choice, score and boolean; PNG/JPEG/WebP images. |
 | TypeSafe AI | `typesafeai.Provider.DecisionModel(id)` | Text-only. Supports choice, score, boolean and box questions. |
 
 Pass a model ID string as `Model` to resolve it through `Provider` (or the AI Gateway when `Provider` is nil). The model registry and `registry.NewCustomProvider` resolve decision models through `ResolveDecisionModel` and `CustomProviderOptions.DecisionModels`.

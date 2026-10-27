@@ -459,10 +459,24 @@ func decisionImageContent(part provider.DecisionStatePart) (map[string]interface
 }
 
 func decisionQuestionWire(name string, q provider.DecisionQuestion) map[string]interface{} {
-	instructions := decisionToText(q.Instructions)
+	// A criteria-only question (nil instructions) is sent without them.
+	hasInstructions := q.Instructions != nil
+	instructions := ""
+	if hasInstructions {
+		instructions = decisionToText(q.Instructions)
+	}
+	withInstructions := func(question map[string]interface{}) map[string]interface{} {
+		if hasInstructions {
+			question["instructions"] = instructions
+		}
+		return question
+	}
 	switch q.Type {
 	case "boolean":
-		sections := []string{instructions}
+		sections := []string{}
+		if hasInstructions {
+			sections = append(sections, instructions)
+		}
 		if criteria, ok := q.Criteria.(map[string]interface{}); ok {
 			if v := criteria["true"]; v != nil {
 				sections = append(sections, "Criteria for true:\n"+decisionToText(v))
@@ -487,7 +501,7 @@ func decisionQuestionWire(name string, q provider.DecisionQuestion) map[string]i
 			}
 			choices = append(choices, choice)
 		}
-		return map[string]interface{}{"type": "choice", "name": name, "instructions": instructions, "choices": choices}
+		return withInstructions(map[string]interface{}{"type": "choice", "name": name, "choices": choices})
 	default: // score
 		criteria, _ := q.Criteria.([]interface{})
 		levels := make([]interface{}, 0, len(criteria))
@@ -499,7 +513,7 @@ func decisionQuestionWire(name string, q provider.DecisionQuestion) map[string]i
 			}
 			levels = append(levels, level)
 		}
-		return map[string]interface{}{"type": "score", "name": name, "instructions": instructions, "levels": levels}
+		return withInstructions(map[string]interface{}{"type": "score", "name": name, "levels": levels})
 	}
 }
 

@@ -421,3 +421,16 @@ func TestDecisionLanguageModel_RubricKeyOrder(t *testing.T) {
 		t.Fatalf("choice option key order: %s", prompt)
 	}
 }
+
+// TS #23470: criteria-only questions appear in the prompt without an
+// instructions key.
+func TestDecisionRubric_OmitsNilInstructions(t *testing.T) {
+	r := decisionRubric("q", "score", nil, []interface{}{"Low", "High"}, true)
+	if got := r.Keys; len(got) != 3 || got[0] != "id" || got[1] != "type" || got[2] != "criteria" {
+		t.Fatalf("keys = %v", got)
+	}
+	withInstructions := decisionRubric("q", "score", "How severe?", []interface{}{"Low"}, true)
+	if got := withInstructions.Keys; len(got) != 4 || got[2] != "instructions" {
+		t.Fatalf("keys = %v", got)
+	}
+}
