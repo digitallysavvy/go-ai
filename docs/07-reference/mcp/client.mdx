@@ -130,6 +130,8 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `Env` | `[]string` | Env are additional environment variables to set, in "KEY=VALUE" form (the os.Environ()/exec.Cmd.Env convention). The child process does not inherit the full parent environment: only Env plus a small safe allowlist of inherited vars (PATH, HOME, etc. — see getEnvironment) are passed through, mirroring TS mcp-stdio/get-environment.ts. |
 | `WorkingDir` | `string` | WorkingDir is the working directory for the command |
 | `Config` | `TransportConfig` | Config is the base transport configuration |
+| `Shell` | `bool` | Shell runs the command through the platform shell (TS StdioConfig.shell = true): `sh -c` on Unix, ComSpec (`cmd.exe /d /s /c`) on Windows. This lets command shims and shell wrappers run, but Command and Args are joined with spaces and are NOT escaped, so never build them from untrusted input. Default false: the command is executed directly. |
+| `ShellPath` | `string` | ShellPath selects a specific shell executable (TS StdioConfig.shell = "&lt;path&gt;") and implies Shell. Unix shells are invoked as `<path> -c`. |
 | `Stderr` | `io.Writer` | Stderr receives the child's stderr (TS StdioConfig.stderr). Nil inherits the parent's stderr (os.Stderr), TS's default 'inherit'. Use io.Discard to drop it. When Config.EnableLogging is set and Stderr is nil, stderr lines are logged as "MCP stderr: ..." instead. |
 | `OnError` | `func(error)` | OnError, when set, receives non-fatal diagnostics such as a stdout line that is not a valid JSON-RPC message (TS onerror). Such lines are skipped instead of ending the connection. |
 

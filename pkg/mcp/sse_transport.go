@@ -213,11 +213,16 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		if statusText == "" {
 			statusText = resp.Status
 		}
+		// TS #19430: keep the (bounded) response body on the error.
+		text := string(readErrorBody(resp.Body))
 		message := fmt.Sprintf("MCP SSE Transport Error: %d %s", resp.StatusCode, statusText)
+		if text != "" {
+			message += ": " + text
+		}
 		if resp.StatusCode == http.StatusMethodNotAllowed {
 			message += ". This server does not support SSE transport. Try using `http` transport instead"
 		}
-		err := NewMCPClientError(0, strings.TrimSpace(message), nil, WithMCPHTTPResponse(resp.StatusCode, t.url, ""))
+		err := NewMCPClientError(0, strings.TrimSpace(message), nil, WithMCPHTTPResponse(resp.StatusCode, t.url, text))
 		t.reportError(err)
 		return err
 	}
