@@ -528,7 +528,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 
 	sessionArgs := sessionParams{
 		sessionID: opts.SessionID, harnessID: settings.HarnessID,
-		modelMapping: settings.ModelMapping, sessionMeta: settings.SessionMeta,
+		modelMapping: settings.ModelMapping, streamStartFallbackModelID: settings.StreamStartFallbackModelID, sessionMeta: settings.SessionMeta,
 		instructionMapping: settings.InstructionMapping, outputSchemaMapping: settings.OutputSchemaMapping,
 		askUserQuestions: settings.AskUserQuestions, agentIdentity: agentIdentity,
 		authenticationProfile: authProfile, builtinTools: builtinToolCatalog,

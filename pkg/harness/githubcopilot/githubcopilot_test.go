@@ -282,3 +282,18 @@ func TestCreateGitHubCopilot(t *testing.T) {
 		t.Errorf("HarnessID() = %q, want github-copilot", h.HarnessID())
 	}
 }
+
+// TS #23940: the AI Gateway model is the COPILOT_MODEL the CLI runs with and
+// the fallback reported on stream-start parts without a model.
+func TestBuildConfig_GatewayModelFallback(t *testing.T) {
+	cfg, err := BuildConfig(Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.StreamStartFallbackModelID != "openai/gpt-5.5" {
+		t.Fatalf("StreamStartFallbackModelID = %q", cfg.StreamStartFallbackModelID)
+	}
+	if cfg.ProviderAuthentication.GatewayEnv["COPILOT_MODEL"] != GatewayModel {
+		t.Fatalf("COPILOT_MODEL = %v", cfg.ProviderAuthentication.GatewayEnv["COPILOT_MODEL"])
+	}
+}

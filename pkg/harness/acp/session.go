@@ -21,6 +21,7 @@ type sessionParams struct {
 	channel                      *bridge.Channel
 	proc                         providerutils.SandboxProcess // nil on attach
 	modelMapping                 ModelMapping
+	streamStartFallbackModelID   string
 	sessionMeta                  map[string]any
 	instructionMapping           *InstructionMapping
 	outputSchemaMapping          *OutputSchemaMapping
@@ -663,11 +664,30 @@ func deserializeBridgePart(part *harness.ErrorPart, harnessID string) error {
 	return part.AsError()
 }
 
+// withStreamStartModel fills in the configured fallback model on stream-start
+// parts that report none (Settings.StreamStartFallbackModelID).
+func (s *session) withStreamStartModel(emit harness.EmitFunc) harness.EmitFunc {
+	fallback := s.p.streamStartFallbackModelID
+	if fallback == "" || emit == nil {
+		return emit
+	}
+	return func(part harness.StreamPart) {
+		if start, ok := part.(*harness.StreamStartPart); ok && start.ModelID == "" {
+			filled := *start
+			filled.ModelID = fallback
+			part = &filled
+		}
+		emit(part)
+	}
+}
+
 func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptions) (harness.PromptControl, error) {
+	opts.Emit = s.withStreamStartModel(opts.Emit)
 	return s.doTurn(ctx, opts.Skills, opts.Instructions, opts.ResponseFormat, opts.Prompt, opts.Model, opts.Tools, opts.Emit, false)
 }
 
 func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnOptions) (harness.PromptControl, error) {
+	opts.Emit = s.withStreamStartModel(opts.Emit)
 	if err := validateSkills(opts.Skills); err != nil {
 		return nil, err
 	}
@@ -739,11 +759,11 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 		}
 		if turnStartConfig.Model != "" {
 			msg.Model = turnStartConfig.Model
-			if turnStartConfig.ModelMapping != nil {
-				mm := *turnStartConfig.ModelMapping
-				msg.ModelMapping = &mm
-			}
 		}
+		// The bridge always receives the current model mapping, so it can read
+		// the resolved model from the session state (TS #23940).
+		mm := s.p.modelMapping
+		msg.ModelMapping = &mm
 		if s.p.instructionMapping != nil {
 			msg.InstructionMapping = s.p.instructionMapping
 			if opts.Instructions != "" {
@@ -844,9 +864,9 @@ func (s *session) doTurn(ctx context.Context, skills []harness.Skill, instructio
 		}
 		if model != "" {
 			msg.Model = model
-			mm := s.p.modelMapping
-			msg.ModelMapping = &mm
 		}
+		mm := s.p.modelMapping
+		msg.ModelMapping = &mm
 		if s.p.instructionMapping != nil {
 			msg.InstructionMapping = s.p.instructionMapping
 			if instructions != "" {
