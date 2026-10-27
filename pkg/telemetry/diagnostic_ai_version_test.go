@@ -67,7 +67,6 @@ type versionRecorder struct {
 	mu      sync.Mutex
 	start   string
 	end     string
-	toolVer string
 	toolCtx string
 }
 
