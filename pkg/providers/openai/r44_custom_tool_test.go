@@ -49,3 +49,28 @@ data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custo
 		t.Fatalf("replayed item = %#v", input[0])
 	}
 }
+
+// TS finish providerMetadata always carries responseId (null until
+// response.created arrives).
+func TestR44_FinishMetadataAlwaysHasResponseID(t *testing.T) {
+	for name, sse := range map[string]string{
+		"completed": `data: {"type":"response.completed","response":{"id":"","usage":{"input_tokens":1,"output_tokens":1}}}` + "\n\n",
+		"eof":       "",
+	} {
+		stream := newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)
+		var finish *provider.StreamChunk
+		for {
+			c, err := stream.Next()
+			if err != nil || c == nil {
+				break
+			}
+			if c.Type == provider.ChunkTypeFinish {
+				finish = c
+			}
+		}
+		if finish == nil || !strings.Contains(string(finish.ProviderMetadata), `"responseId":null`) {
+			t.Errorf("%s: finish metadata = %v", name, finish)
+		}
+		_ = stream.Close()
+	}
+}
