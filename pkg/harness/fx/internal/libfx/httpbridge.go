@@ -157,6 +157,10 @@ func (st *stream) run(fetch FetchFunc, method, rawURL string, headers, body []by
 		return
 	}
 	defer resp.Body.Close() //nolint:errcheck
+	// Closing the body on abort unblocks a Read that ignores ctx (a custom
+	// Fetch), so the pump never outlives the stream.
+	stop := context.AfterFunc(st.ctx, func() { _ = resp.Body.Close() })
+	defer stop()
 	for {
 		buf := make([]byte, streamChunkBytes)
 		n, rerr := resp.Body.Read(buf)

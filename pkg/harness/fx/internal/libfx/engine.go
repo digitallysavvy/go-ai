@@ -335,11 +335,12 @@ func (e *Engine) handleCoreRequest(msg rpcMessage) {
 		_ = json.Unmarshal(msg.Params, &p)
 		ctx, release := e.inst.newEffect()
 		res, err := e.executeTool(ctx, p.Name, p.Input, p.ToolCallID)
+		aborted := ctx.Err() != nil
 		release()
 		if err != nil {
 			res = ToolResult{Content: err.Error(), IsError: true}
 		}
-		if res.Cancelled || ctx.Err() != nil {
+		if res.Cancelled || aborted {
 			return
 		}
 		result := map[string]any{"content": res.Content, "isError": res.IsError}
@@ -408,8 +409,12 @@ func (e *Engine) Request(ctx context.Context, method string, params any) (json.R
 	e.pending[id] = ch
 	e.mu.Unlock()
 	if err := e.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
-		e.forget(id)
-		return nil, err
+		if !errors.Is(err, errStdinClosed) {
+			e.forget(id)
+			return nil, err
+		}
+		// The core is exiting; the dispatcher fails the request with the
+		// exit error.
 	}
 	select {
 	case r := <-ch:
