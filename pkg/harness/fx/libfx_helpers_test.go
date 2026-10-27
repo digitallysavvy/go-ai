@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
+	"github.com/digitallysavvy/go-ai/pkg/harness/fx/internal/libfx/libfxtest"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
@@ -292,24 +293,13 @@ func (g *gatewayServer) body(i int) string {
 	return g.bodies[i]
 }
 
-// requireLibfxWasm skips unless the pinned fx-core.wasm is cached (or may
-// be downloaded with GOAI_FX_WASM_TEST=1).
+// requireLibfxWasm returns a source for the pinned, cached fx-core.wasm,
+// or skips or fails as libfxtest.RequireWasm decides.
 func requireLibfxWasm(t *testing.T) *WasmSource {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	if os.Getenv("GOAI_FX_WASM_TEST") == "1" {
-		if err := PrepareWasm(ctx, nil); err != nil {
-			t.Fatalf("GOAI_FX_WASM_TEST=1 but fx-core.wasm could not be prepared: %v", err)
-		}
-		return &WasmSource{Offline: true}
-	}
-	if err := PrepareWasm(ctx, &WasmSource{Offline: true}); err != nil {
-		if errors.Is(err, ErrWasmUnavailable) {
-			t.Skipf("fx-core.wasm %s is not cached; set GOAI_FX_WASM_TEST=1 to download it: %v", LibfxVersion, err)
-		}
-		t.Fatal(err)
-	}
+	libfxtest.RequireWasm(t, LibfxVersion, func(ctx context.Context, offline bool) error {
+		return PrepareWasm(ctx, &WasmSource{Offline: offline})
+	}, func(err error) bool { return errors.Is(err, ErrWasmUnavailable) })
 	return &WasmSource{Offline: true}
 }
 

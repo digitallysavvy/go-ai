@@ -34,7 +34,29 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      # The libfx runtime tests boot the real fx-core.wasm. Its pinned version
+      # and sha256 come from pin_gen.go, so a pin bump changes the cache key.
+      - name: Read the fx-core.wasm pin
+        id: fxpin
+        run: |
+          pin=pkg/harness/fx/internal/libfx/pin_gen.go
+          echo "version=$(sed -n 's/^[[:space:]]*Version *= *"\([^"]*\)"/\1/p' "$pin")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sed -n 's/^[[:space:]]*WasmSHA256 *= *"\([0-9a-f]*\)"/\1/p' "$pin")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache fx-core.wasm
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-ai/fx/${{ steps.fxpin.outputs.version }}
+          key: fx-wasm-${{ runner.os }}-${{ steps.fxpin.outputs.sha256 }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            fx-wasm-${{ runner.os }}-${{ steps.fxpin.outputs.sha256 }}-
+
       - name: Run tests
+        # GOAI_FX_WASM_TEST=1 makes the real fx-core.wasm tests required: they
+        # download the pinned module on a cache miss and fail, not skip,
+        # when it cannot be prepared.
+        env:
+          GOAI_FX_WASM_TEST: '1'
         run: go test -v -race -coverprofile=coverage.out ./...
 
       # Coverage of the SDK packages (pkg/...), written to the run's Summary page.
