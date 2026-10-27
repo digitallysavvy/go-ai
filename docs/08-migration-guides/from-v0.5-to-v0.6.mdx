@@ -222,3 +222,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   falls through to the other approval rules. Policies that relied on "no match
   means deny" must return an explicit deny (for example a Rego `default`
   rule).
+- **Telemetry span attributes from `EnrichSpan` and runtime context follow
+  TS.** An `EnrichSpan` value that is an object, a struct, `nil` or a
+  mixed-type array is now dropped; v0.5 wrote it as a JSON string attribute.
+  A `[]interface{}` of one primitive type becomes a typed slice attribute,
+  and Go's other integer and float kinds stay numbers. A runtime context
+  value that is an object (any string-keyed map, a struct or a pointer to
+  one) is flattened into `ai.settings.context.<path>` attributes instead of
+  one JSON string. If a dashboard or query reads those JSON strings, read the
+  flattened keys, or return primitives from `EnrichSpan`.

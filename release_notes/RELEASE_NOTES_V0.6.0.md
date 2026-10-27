@@ -289,6 +289,12 @@ Each item has before/after code in the
   other approval rules.
   **Migration:** policies that relied on "no match means deny" must return an
   explicit deny (for example a Rego `default` rule).
+- **`EnrichSpan` and runtime context span attributes follow TS.** An
+  `EnrichSpan` object, struct, `nil` or mixed-type array value is dropped
+  instead of written as a JSON string, and a runtime context object is
+  flattened into `ai.settings.context.<path>` attributes.
+  **Migration:** queries on the old JSON-string attributes must read the
+  flattened keys, or `EnrichSpan` must return primitives.
 
 ---
 
@@ -298,6 +304,12 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Core
 
+- **Telemetry ignores events for calls it never saw start.** As in TS, the
+  OpenTelemetry integrations create call state only at an operation start.
+  An event for an unknown call id no longer creates state or falls back to
+  the span in `ctx`, which could end the caller's span or another
+  integration instance's spans. The legacy `GenerateAgent` loop now sends
+  the same `user-agent` tags as `Generate`.
 - **Generated IDs use the TS formats.** Approval IDs come from the call's
   ID generator (`InternalOptions.GenerateID`), and the defaults are TS's:
   `aitxt-` plus 24 characters for text calls and the agent loop, `aiobj-`
@@ -427,6 +439,8 @@ in v0.5.3.
 
 ### Core
 
+- `toolbash` keeps its truncation notice past 2^31 output characters on
+  32-bit builds.
 - `GenerateObject`/`StreamObject` sent the response format type as
   `json_schema`/`json_object` instead of `json`, so many providers dropped
   JSON mode or the schema. (v0.5.3)
@@ -452,6 +466,8 @@ in v0.5.3.
 
 ### Providers
 
+- Gemini, Google and Vertex `doGenerate` and batch results no longer fail
+  on a stray `error` key (TS `responseSchema`).
 - AI Gateway: the language model speaks the V4 wire protocol; V4 responses
   failed to decode.
 - Bedrock Anthropic (InvokeModel) streaming returned no content. Bedrock
