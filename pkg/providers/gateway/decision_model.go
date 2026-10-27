@@ -66,6 +66,12 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		"stateParts": stateParts,
 		"questions":  encodeGatewayDecisionQuestions(opts.Questions),
 	}
+	if opts.MaxOutputTokens != nil {
+		body["maxOutputTokens"] = *opts.MaxOutputTokens
+	}
+	if opts.Reasoning != nil {
+		body["reasoning"] = string(*opts.Reasoning)
+	}
 	if len(opts.ProviderOptions) > 0 {
 		body["providerOptions"] = opts.ProviderOptions
 	}

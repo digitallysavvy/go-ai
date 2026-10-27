@@ -39,11 +39,15 @@ type DecideOnStartEvent struct {
 	// OperationID is the canonical operation name ("ai.decide").
 	OperationID string
 	// RuntimeContext is the user-defined runtime context passed via options.
-	RuntimeContext  interface{}
-	Provider        string
-	ModelID         string
-	State           interface{}
-	Questions       map[string]provider.DecisionQuestion
+	RuntimeContext interface{}
+	Provider       string
+	ModelID        string
+	State          interface{}
+	Questions      map[string]provider.DecisionQuestion
+	// MaxOutputTokens is the maximum number of output tokens requested.
+	MaxOutputTokens *int
+	// Reasoning is the reasoning effort requested.
+	Reasoning       *types.ReasoningLevel
 	MaxRetries      int
 	Headers         map[string]string
 	ProviderOptions map[string]interface{}
@@ -95,6 +99,14 @@ type DecideOptions struct {
 	// Questions maps question ID -> question.
 	Questions map[string]provider.DecisionQuestion
 
+	// MaxOutputTokens is the maximum number of output tokens for models that
+	// support it. Must be an integer >= 1.
+	MaxOutputTokens *int
+
+	// Reasoning is the reasoning effort for models that support it.
+	// Language-model adapters default to none.
+	Reasoning *types.ReasoningLevel
+
 	// MaxRetries is the maximum number of retries for transient provider
 	// failures. Defaults to 2.
 	MaxRetries      *int
@@ -122,6 +134,12 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		return nil, err
 	}
 
+	if opts.MaxOutputTokens != nil && *opts.MaxOutputTokens < 1 {
+		return nil, &providererrors.InvalidArgumentError{
+			Field:   "maxOutputTokens",
+			Message: "maxOutputTokens must be >= 1",
+		}
+	}
 	if err := validateDecisionInput(opts.State, opts.Questions); err != nil {
 		return nil, err
 	}
@@ -158,6 +176,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		ModelID:         model.ModelID(),
 		State:           opts.State,
 		Questions:       opts.Questions,
+		MaxOutputTokens: opts.MaxOutputTokens,
+		Reasoning:       opts.Reasoning,
 		MaxRetries:      resolvedMaxRetries,
 		Headers:         opts.Headers,
 		ProviderOptions: opts.ProviderOptions,
@@ -213,6 +233,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		res, callErr := model.DoDecide(callCtx, provider.DecisionCallOptions{
 			State:           preparedState,
 			Questions:       opts.Questions,
+			MaxOutputTokens: opts.MaxOutputTokens,
+			Reasoning:       opts.Reasoning,
 			Headers:         headers,
 			ProviderOptions: opts.ProviderOptions,
 		})

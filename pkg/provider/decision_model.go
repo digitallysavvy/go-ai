@@ -260,6 +260,14 @@ type DecisionCallOptions struct {
 	// Questions maps question ID -> question.
 	Questions map[string]DecisionQuestion
 
+	// MaxOutputTokens is the maximum number of output tokens for models that
+	// support it (an integer >= 1; nil means unset).
+	MaxOutputTokens *int
+
+	// Reasoning is the reasoning effort for models that support it.
+	// Language-model adapters default to types.ReasoningNone when nil.
+	Reasoning *types.ReasoningLevel
+
 	Headers         map[string]string
 	ProviderOptions map[string]interface{}
 }

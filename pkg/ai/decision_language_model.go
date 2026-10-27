@@ -214,8 +214,12 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 	}
 
 	reasoning := types.ReasoningNone
+	if opts.Reasoning != nil {
+		reasoning = *opts.Reasoning
+	}
 	genResult, err := e.model.DoGenerate(ctx, &provider.GenerateOptions{
 		Reasoning: &reasoning,
+		MaxTokens: opts.MaxOutputTokens,
 		Prompt: types.Prompt{
 			System: decisionLanguageModelSystemPrompt,
 			Messages: []types.Message{

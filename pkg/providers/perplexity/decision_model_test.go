@@ -14,6 +14,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // Ported from packages/perplexity/src/perplexity-decision-model.test.ts.
@@ -528,3 +529,21 @@ func TestDecisionModel_SingleScoreLevel(t *testing.T) {
 }
 
 func providerutilsInvalidJSON() string { return "Invalid JSON response" }
+
+// TS #23590.
+func TestDecisionModel_WarnsAboutUnsupportedMaxOutputTokensAndReasoning(t *testing.T) {
+	s := newDecisionServer(t, fixtureBody(t), 200)
+	opts := decisionOptions()
+	n, level := 512, types.ReasoningHigh
+	opts.MaxOutputTokens, opts.Reasoning = &n, &level
+	result, err := s.model(t, "pplx-decider-latest").DoDecide(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 2 || result.Warnings[0].Feature != "maxOutputTokens" || result.Warnings[1].Feature != "reasoning" {
+		t.Fatalf("warnings = %#v", result.Warnings)
+	}
+	if len(s.bodies[0]) != 3 {
+		t.Fatalf("request keys = %v", s.bodies[0])
+	}
+}

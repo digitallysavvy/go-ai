@@ -253,12 +253,19 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		return nil, providererrors.NewInvalidResponseDataError(rawBody, "Decisions must return exactly one answer for every question.")
 	}
 
+	var unsupported []types.Warning
+	if opts.MaxOutputTokens != nil {
+		unsupported = append(unsupported, types.Warning{Type: "unsupported", Feature: "maxOutputTokens"})
+	}
+	if opts.Reasoning != nil {
+		unsupported = append(unsupported, types.Warning{Type: "unsupported", Feature: "reasoning"})
+	}
 	two := 2
 	result := &provider.DecisionResult{
 		Answers: answers,
 		// The Decisions API reports probabilities and scores to two decimal places.
 		Rounding: &provider.DecisionRounding{ProbabilityDecimals: &two, ScoreDecimals: &two},
-		Warnings: decisionUnsupportedOptionWarnings(opts.ProviderOptions),
+		Warnings: append(unsupported, decisionUnsupportedOptionWarnings(opts.ProviderOptions)...),
 		Response: &provider.DecisionResponseInfo{
 			ModelID: m.modelID,
 			Headers: providerutils.ExtractHeaders(httpResp.Headers),

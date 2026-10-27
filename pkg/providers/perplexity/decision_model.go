@@ -187,6 +187,12 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 	}
 
 	var warnings []types.Warning
+	if opts.MaxOutputTokens != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "maxOutputTokens"})
+	}
+	if opts.Reasoning != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning"})
+	}
 	if perplexityOpts, ok := opts.ProviderOptions["perplexity"].(map[string]interface{}); ok {
 		keys := make([]string, 0, len(perplexityOpts))
 		for k := range perplexityOpts {

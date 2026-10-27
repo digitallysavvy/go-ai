@@ -93,6 +93,13 @@ func (m *DecisionModel) DoDecide(ctx context.Context, opts provider.DecisionCall
 		}
 	}
 
+	if opts.MaxOutputTokens != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "maxOutputTokens"})
+	}
+	if opts.Reasoning != nil {
+		warnings = append(warnings, types.Warning{Type: "unsupported", Feature: "reasoning"})
+	}
+
 	requestQuestions := make(map[string]interface{}, len(opts.Questions))
 	for id, q := range opts.Questions {
 		wireType := q.Type
