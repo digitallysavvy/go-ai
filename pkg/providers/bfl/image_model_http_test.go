@@ -593,8 +593,9 @@ func TestBFLImageModel_FailedDownloadIsStatusTextProviderError(t *testing.T) {
 		Prompt:          "x",
 		ProviderOptions: map[string]interface{}{"blackForestLabs": map[string]interface{}{"pollIntervalMillis": 1}},
 	})
-	var pe *providerrors.ProviderError
-	if !errors.As(err, &pe) || pe.StatusCode != 404 || pe.Message != "Not Found" {
+	// Unwrapped, like TS (getFromApi errors propagate unchanged).
+	pe, ok := err.(*providerrors.ProviderError)
+	if !ok || pe.StatusCode != 404 || pe.Message != "Not Found" {
 		t.Fatalf("err = %v (%#v)", err, pe)
 	}
 }

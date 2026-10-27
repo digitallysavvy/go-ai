@@ -598,8 +598,9 @@ func TestSpeechStream_ObjectErrorTextKeepsWireOrder(t *testing.T) {
 }
 
 func TestToElevenLabsStreamOutputFormat_ErrorQuotesLikeJSONStringify(t *testing.T) {
-	_, err := toElevenLabsStreamOutputFormat(&provider.AudioFormat{Type: "audio/x<é>\t"})
-	want := "ElevenLabs streaming speech does not support the output format {\"type\":\"audio/x<é>\\t\"}."
+	_, err := toElevenLabsStreamOutputFormat(&provider.AudioFormat{Type: "audio/x<é>\t\x01\u2028"})
+	// JSON.stringify: \u0001 (Go %q would write \x01), U+2028 raw, no HTML escaping.
+	want := "ElevenLabs streaming speech does not support the output format {\"type\":\"audio/x<é>\\t\\u0001\u2028\"}."
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %v, want it to contain %s", err, want)
 	}

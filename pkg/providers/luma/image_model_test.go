@@ -3,7 +3,6 @@ package luma
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -425,8 +424,9 @@ func TestDoGenerate_FailedDownloadIsStatusTextProviderError(t *testing.T) {
 	})
 	defer server.Close()
 	_, err := model.DoGenerate(context.Background(), &provider.ImageGenerateOptions{Prompt: "x"})
-	var pe *providererrors.ProviderError
-	if !errors.As(err, &pe) || pe.StatusCode != 404 || pe.Message != "Not Found" {
+	// Unwrapped, like TS (getFromApi errors propagate unchanged).
+	pe, ok := err.(*providererrors.ProviderError)
+	if !ok || pe.StatusCode != 404 || pe.Message != "Not Found" {
 		t.Fatalf("err = %v (%#v)", err, pe)
 	}
 }
