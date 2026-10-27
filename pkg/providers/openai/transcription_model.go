@@ -177,6 +177,11 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
+	// TS appends model before file.
+	if err := writer.WriteField("model", m.modelID); err != nil {
+		return nil, "", err
+	}
+
 	// Add file
 	fileHeader := textproto.MIMEHeader{}
 	fileHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="file"; filename="audio.%s"`, getExtensionFromMimeType(opts.MimeType)))
@@ -191,11 +196,6 @@ func (m *TranscriptionModel) buildMultipartBody(opts *provider.TranscriptionOpti
 	}
 	if _, err := part.Write(opts.Audio); err != nil {
 		return nil, "", fmt.Errorf("failed to write audio data: %w", err)
-	}
-
-	// Add model
-	if err := writer.WriteField("model", m.modelID); err != nil {
-		return nil, "", err
 	}
 
 	openaiOpts := transcriptionOpenAIOptions(opts.ProviderOptions)
