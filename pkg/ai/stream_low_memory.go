@@ -185,6 +185,22 @@ func (s *StreamTextSingleConsumerResult) Usage() types.Usage { return s.r.Usage(
 // over all steps.
 func (s *StreamTextSingleConsumerResult) TotalUsage() types.Usage { return s.r.TotalUsage() }
 
+// PartialOutput returns the most recently parsed partial structured output
+// (nil without an Output option). It does not consume the stream and is safe
+// to call while streaming (TS partialOutputStream, as a snapshot like
+// StreamTextResult.PartialOutput).
+func (s *StreamTextSingleConsumerResult) PartialOutput() any { return s.r.PartialOutput() }
+
+// ElementStreamSingleConsumer claims the stream and publishes the elements of
+// a streamed array output as they complete (TS elementStream). It is
+// ElementStream for a single-consumer result.
+func ElementStreamSingleConsumer[ELEMENT any](s *StreamTextSingleConsumerResult, opts ElementStreamOptions[ELEMENT]) (<-chan ElementStreamResult[ELEMENT], error) {
+	if err := s.claim(); err != nil {
+		return nil, err
+	}
+	return ElementStream[ELEMENT](s.r, opts), nil
+}
+
 // Err waits for the generation to finish and returns its error, if any.
 func (s *StreamTextSingleConsumerResult) Err() error { return s.r.Err() }
 

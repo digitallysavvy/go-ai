@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/schema"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -175,4 +176,38 @@ func TestStreamText_DefaultStillReplays(t *testing.T) {
 	if first != "xxxxx" || second != "xxxxx" || res.Text() != "xxxxx" {
 		t.Fatalf("first=%q second=%q text=%q", first, second, res.Text())
 	}
+}
+
+func TestStreamTextLowMemory_ElementStreamAndPartialOutput(t *testing.T) {
+	t.Parallel()
+
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(ctx context.Context, opts *provider.GenerateOptions) (provider.TextStream, error) {
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: `{"elements":[{"title":"a"}`},
+				{Type: provider.ChunkTypeText, Text: `,{"title":"b"}]}`},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop, Usage: &types.Usage{}},
+			}), nil
+		},
+	}
+	res, err := StreamTextLowMemory(context.Background(), StreamTextOptions{Model: model, Prompt: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := ElementStreamSingleConsumer[map[string]string](res, ElementStreamOptions[map[string]string]{ElementSchema: schema.NewSimpleJSONSchema(map[string]interface{}{"type": "object"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var titles []string
+	for e := range ch {
+		titles = append(titles, e.Element["title"])
+	}
+	if strings.Join(titles, ",") != "a,b" {
+		t.Fatalf("elements = %v", titles)
+	}
+	// the stream is claimed: a second consumer fails
+	if _, err := res.Stream(); !errors.Is(err, ErrStreamAlreadyConsumed) {
+		t.Fatalf("second consumer err = %v", err)
+	}
+	_ = res.PartialOutput()
 }

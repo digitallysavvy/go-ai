@@ -395,7 +395,7 @@ for {
 fmt.Println(res.TotalUsage()) // completion metadata does not consume the stream
 ```
 
-The result (`*ai.StreamTextSingleConsumerResult`) has `Stream`, `ConsumeStream`, `ToUIMessageStream`, `ToUIMessageStreamResponse`, `PipeUIMessageStreamToResponse`, `ToTextStreamResponse`, `PipeTextStreamToResponse`, `FinishReason`, `RawFinishReason`, `Usage`, `TotalUsage`, `Err` and `Close`. Final-content accessors such as `Text`, `Content`, `Steps`, `ResponseMessages` and `Output` are not available; use `StreamText` when you need them or independent readers.
+The result (`*ai.StreamTextSingleConsumerResult`) has `Stream`, `ConsumeStream`, `ToUIMessageStream`, `ToUIMessageStreamResponse`, `PipeUIMessageStreamToResponse`, `ToTextStreamResponse`, `PipeTextStreamToResponse`, `FinishReason`, `RawFinishReason`, `Usage`, `TotalUsage`, `PartialOutput` (latest partial structured output), `Err` and `Close`. `ai.ElementStreamSingleConsumer` is the single-consumer form of `ai.ElementStream`. Final-content accessors such as `Text`, `Content`, `Steps`, `ResponseMessages` and `Output` are not available; use `StreamText` when you need them or independent readers.
 
 Choose **one** stream accessor, response helper or `ConsumeStream` call. A second attempt fails with `ai.ErrStreamAlreadyConsumed`, and there is no replay after completion. Start a consumer before you read completion metadata, because the generation only finishes while its output is consumed. Closing the stream (or the result) cancels the generation.
 
