@@ -60,8 +60,8 @@ func TestDialHelloTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a timeout error")
 	}
-	if !strings.Contains(err.Error(), "did not send bridge-hello") {
-		t.Fatalf("err = %v, want it to mention \"did not send bridge-hello\"", err)
+	if got, want := err.Error(), "The harness bridge did not send bridge-hello within 100ms."; got != want {
+		t.Fatalf("err = %q, want TS text %q", got, want)
 	}
 }
 
