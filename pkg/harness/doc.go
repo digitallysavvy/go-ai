@@ -39,7 +39,7 @@
 // Reference: https://goaisdk.com/docs/reference/ai/harness-sandbox-vercel.
 //
 // Provenance: this package is the Go port of @ai-sdk/harness from the Vercel AI
-// SDK for TypeScript (pinned to ai@7.0.113). All JSON shapes are
+// SDK for TypeScript (pinned to ai@7.0.153, TS e64ed82f27). All JSON shapes are
 // wire-compatible with the TypeScript schemas, so a Go host can talk to the
 // unchanged TypeScript in-sandbox bridge and resume sessions created by a
 // TypeScript host, and the reverse. TypeScript prefixes spec types with

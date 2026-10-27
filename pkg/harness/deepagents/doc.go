@@ -1,5 +1,5 @@
 // Package deepagents is the Go host-side port of the TypeScript
-// `@ai-sdk/harness-deepagents` adapter (pinned to ai@7.0.113): it wraps the
+// `@ai-sdk/harness-deepagents` adapter (pinned to ai@7.0.153, TS e64ed82f27): it wraps the
 // `deepagents` LangGraph JS agent, which runs inside the embedded in-sandbox
 // Node bridge (pkg/harness/bridges.DeepAgents). The Go host never runs the
 // vendor SDK: it spawns the unchanged bridge, speaks the harness-v1 bridge
