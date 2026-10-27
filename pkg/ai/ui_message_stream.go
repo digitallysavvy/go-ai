@@ -2524,8 +2524,10 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.ToolApprovalResponse.Reason != "" {
 			part["reason"] = chunk.ToolApprovalResponse.Reason
 		}
-		if chunk.ToolApprovalResponse.ProviderExecuted {
-			part["providerExecuted"] = true
+		// TS forwards providerExecuted when it is not undefined, so an
+		// explicit false (ProviderExecutedSet) is kept.
+		if chunk.ToolApprovalResponse.ProviderExecuted || chunk.ToolApprovalResponse.ProviderExecutedSet {
+			part["providerExecuted"] = chunk.ToolApprovalResponse.ProviderExecuted
 		}
 		out = append(out, part)
 	case provider.ChunkTypeToolOutputDenied:
@@ -2575,8 +2577,8 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 			if chunk.ToolResult.ApprovalReason != nil {
 				response["reason"] = *chunk.ToolResult.ApprovalReason
 			}
-			if chunk.ToolResult.ProviderExecuted {
-				response["providerExecuted"] = true
+			if chunk.ToolResult.ProviderExecuted || chunk.ToolResult.ProviderExecutedSet {
+				response["providerExecuted"] = chunk.ToolResult.ProviderExecuted
 			}
 			out = append(out, response)
 			if chunk.ToolResult.ApprovalStatus == types.ToolApprovalStatusDenied {
@@ -2633,8 +2635,13 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 				part["toolMetadata"] = chunk.ToolResult.ToolMetadata
 			}
 		}
+		// TS forwards providerExecuted when it is not undefined. An approved
+		// result's flag came from its tool call (for the approval response);
+		// the locally executed output itself has none in TS.
 		if chunk.ToolResult.ProviderExecuted {
 			part["providerExecuted"] = true
+		} else if chunk.ToolResult.ProviderExecutedSet && chunk.ToolResult.ApprovalStatus != types.ToolApprovalStatusApproved {
+			part["providerExecuted"] = false
 		}
 		if isDynamicTool(chunk.ToolResult.ToolName, chunk.ToolResult.Dynamic) {
 			part["dynamic"] = true

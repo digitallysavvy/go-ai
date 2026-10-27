@@ -174,6 +174,29 @@ func (i OpenTelemetry) customAttrs(ctx context.Context, settings *Settings, opts
 	return customSpanAttributes(ctx, i.enrichSpan, settings, opts)
 }
 
+// childEnrichOptions is what TS getSpanAttributes passes enrichSpan for a
+// child span: the root operation id (state.operationId), the call id and the
+// call's runtime context (state.runtimeContext).
+func (i OpenTelemetry) childEnrichOptions(spanType SpanType, callID string) EnrichSpanOptions {
+	opts := EnrichSpanOptions{SpanType: spanType, CallID: callID}
+	if st := genAILoadedState(i.stateKey(callID)); st != nil {
+		st.mu.Lock()
+		opts.OperationType = st.operationType
+		opts.RuntimeContext = st.runtimeContext
+		st.mu.Unlock()
+	}
+	return opts
+}
+
+// rootRuntimeContext is the runtime context TS passes enrichSpan for a root
+// span and keeps as state.runtimeContext: none for object and audio roots.
+func rootRuntimeContext(operationType string, runtimeContext map[string]interface{}) map[string]interface{} {
+	if isLegacyObjectOperation(operationType) || isAudioOperation(operationType) {
+		return nil
+	}
+	return runtimeContext
+}
+
 // genAI span-tracking state, kept separate from LegacyOpenTelemetry's own
 // otelModelCallSpans/stepSpanKey so the two integrations never collide when
 // both are registered at once.
@@ -218,6 +241,10 @@ type genAICallState struct {
 	// generateObject/streamObject use onObjectStepStart/End, which open the
 	// chat span directly under the root, with no agent_step span.
 	operationType string
+	// runtimeContext is TS state.runtimeContext: the root's runtime context
+	// (none for object and audio roots), replaced by each step's. EnrichSpan
+	// receives it for child spans.
+	runtimeContext map[string]interface{}
 }
 
 var genAICallStates sync.Map // map[string]*genAICallState, keyed by CallID
@@ -230,6 +257,18 @@ func genAIState(callID string) *genAICallState {
 	}
 	v, _ := genAICallStates.LoadOrStore(callID, &genAICallState{})
 	return v.(*genAICallState)
+}
+
+// genAILoadedState returns OpenTelemetry's call state for callID without
+// creating it (TS this.callStates.get), or nil.
+func genAILoadedState(callID string) *genAICallState {
+	if callID == "" {
+		return nil
+	}
+	if v, ok := genAICallStates.Load(callID); ok {
+		return v.(*genAICallState)
+	}
+	return nil
 }
 
 // genAIBaseSupplemental returns the root span's supplemental attributes
@@ -350,7 +389,8 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
 		SpanType:       SpanTypeOperation,
 		OperationType:  e.OperationType,
-		RuntimeContext: e.RuntimeContext,
+		CallID:         e.CallID,
+		RuntimeContext: rootRuntimeContext(e.OperationType, e.RuntimeContext),
 	}); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
@@ -477,6 +517,7 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st.baseSupp = baseSupp
 		st.tracer = tracer
 		st.operationType = e.OperationType
+		st.runtimeContext = rootRuntimeContext(e.OperationType, e.RuntimeContext)
 		st.mu.Unlock()
 	}
 	return ctx
@@ -565,11 +606,18 @@ func (i OpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepStartEven
 	// 1". Go's StepNumber is 0-indexed (stepIndex), so add 1 (H3 follow-up 5).
 	spanName := "step " + itoa(e.StepNumber+1)
 	ctx, stepSpan := tracer.Start(ctx, spanName, trace.WithSpanKind(trace.SpanKindInternal))
-	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
-		SpanType:       SpanTypeStep,
-		OperationType:  e.OperationType,
-		RuntimeContext: e.RuntimeContext,
-	}); len(attrs) > 0 {
+	// TS onStepStart: state.runtimeContext = event.runtimeContext.
+	if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
+		st.mu.Lock()
+		st.runtimeContext = e.RuntimeContext
+		st.mu.Unlock()
+	}
+	enrichOpts := i.childEnrichOptions(SpanTypeStep, e.CallID)
+	enrichOpts.RuntimeContext = e.RuntimeContext
+	if enrichOpts.OperationType == "" {
+		enrichOpts.OperationType = e.OperationType
+	}
+	if attrs := i.customAttrs(ctx, e.Settings, enrichOpts); len(attrs) > 0 {
 		stepSpan.SetAttributes(attrs...)
 	}
 	stepSpan.SetAttributes(attribute.String("gen_ai.operation.name", "agent_step"))
@@ -628,11 +676,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		spanName += " " + e.ModelID
 	}
 	ctx, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
-	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
-		SpanType:      SpanTypeLanguageModel,
-		OperationType: "ai.generateText",
-		CallID:        e.CallID,
-	}); len(attrs) > 0 {
+	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeLanguageModel, e.CallID)); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
 	attrs := []attribute.KeyValue{
@@ -898,6 +942,9 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 		}
 		recorded[tc.ToolCallID] = true
 		_, toolSpan := tracer.Start(inferenceCtx, "execute_tool "+tc.ToolName, trace.WithSpanKind(trace.SpanKindInternal))
+		if custom := i.customAttrs(inferenceCtx, e.Settings, i.childEnrichOptions(SpanTypeTool, e.CallID)); len(custom) > 0 {
+			toolSpan.SetAttributes(custom...)
+		}
 		toolSpan.SetAttributes(
 			attribute.String("gen_ai.operation.name", "execute_tool"),
 			attribute.String("gen_ai.tool.name", tc.ToolName),
@@ -994,11 +1041,7 @@ func (i OpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelCallSta
 		spanName += " " + e.ModelID
 	}
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
-	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
-		SpanType:      SpanTypeEmbedding,
-		OperationType: e.OperationID,
-		CallID:        callID,
-	}); len(attrs) > 0 {
+	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeEmbedding, e.CallID)); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
 	span.SetAttributes(
@@ -1114,11 +1157,7 @@ func (i OpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModelCallSt
 		spanName += " " + e.ModelID
 	}
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
-	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
-		SpanType:      SpanTypeReranking,
-		OperationType: e.OperationID,
-		CallID:        callID,
-	}); len(attrs) > 0 {
+	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeReranking, e.CallID)); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
 	span.SetAttributes(
@@ -1200,7 +1239,8 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	// registered — could return the other integration's "current" span).
 	var span trace.Span
 	if e.CallID != "" {
-		if st := genAIState(i.stateKey(e.CallID)); st != nil {
+		// TS `if (!state || !parentContext) return;`.
+		if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			span = st.stepSpan
 			if span == nil {
@@ -1208,8 +1248,10 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 			}
 			st.mu.Unlock()
 		}
-	}
-	if span == nil {
+		if span == nil {
+			return ctx
+		}
+	} else {
 		span = trace.SpanFromContext(ctx)
 	}
 	if !span.IsRecording() {
@@ -1217,10 +1259,7 @@ func (i OpenTelemetry) OnToolExecutionStart(ctx context.Context, e TelemetryTool
 	}
 	tracer := genAIChildTracer(i.stateKey(e.CallID), span)
 	ctx, child := tracer.Start(trace.ContextWithSpan(ctx, span), "execute_tool "+e.ToolName, trace.WithSpanKind(trace.SpanKindInternal))
-	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
-		SpanType: SpanTypeTool,
-		CallID:   e.ToolCallID,
-	}); len(attrs) > 0 {
+	if attrs := i.customAttrs(ctx, e.Settings, i.childEnrichOptions(SpanTypeTool, e.CallID)); len(attrs) > 0 {
 		child.SetAttributes(attrs...)
 	}
 	child.SetAttributes(
@@ -1254,7 +1293,7 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 	// trace.SpanFromContext(ctx).
 	var span trace.Span
 	if e.CallID != "" {
-		if st := genAIState(i.stateKey(e.CallID)); st != nil {
+		if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
 			st.mu.Lock()
 			span = st.toolSpans[e.ToolCallID]
 			if span != nil {
@@ -1262,8 +1301,12 @@ func (i OpenTelemetry) OnToolExecutionEnd(ctx context.Context, e TelemetryToolCa
 			}
 			st.mu.Unlock()
 		}
-	}
-	if span == nil {
+		// TS `if (!toolSpanEntry) return;`: the span in ctx may belong to
+		// another integration or to the caller.
+		if span == nil {
+			return
+		}
+	} else {
 		span = trace.SpanFromContext(ctx)
 	}
 	if !span.IsRecording() {

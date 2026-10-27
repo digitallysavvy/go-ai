@@ -66,9 +66,11 @@ func eagerApprovalChunks(
 		ApprovalID:       pre.id,
 		ApprovalReason:   approval.Reason,
 		ProviderExecuted: tool.ProviderExecuted,
-		ProviderMetadata: mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata),
-		ToolMetadata:     call.ToolMetadata,
-		Dynamic:          call.Dynamic,
+		// TS approval parts carry toolCall.providerExecuted.
+		ProviderExecutedSet: call.ProviderExecutedSet,
+		ProviderMetadata:    mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata),
+		ToolMetadata:        call.ToolMetadata,
+		Dynamic:             call.Dynamic,
 	}}
 	if approval.Status == types.ToolApprovalStatusDenied {
 		reason := ""

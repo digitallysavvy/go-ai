@@ -20,7 +20,11 @@ const (
 	SpanTypeDecision      SpanType = "experimental_decision"
 )
 
-// EnrichSpanOptions describes a span that is about to be created.
+// EnrichSpanOptions describes a span that is about to be created. The
+// OpenTelemetry (GenAI) integration passes what TS enrichSpan receives: the
+// call's operation (for example "ai.streamText"; a decision model call has its
+// own operation id), the call ID, and the call's runtime context (none for
+// object and audio calls).
 type EnrichSpanOptions struct {
 	SpanType       SpanType
 	OperationType  string

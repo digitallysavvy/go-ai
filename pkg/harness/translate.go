@@ -37,6 +37,10 @@ type TranslateOptions struct {
 type ToolCallInfo struct {
 	Input            map[string]interface{}
 	ProviderExecuted bool
+	// ProviderExecutedSet reports that the call defined providerExecuted
+	// (types.ToolCall.ProviderExecutedSet). TS copies it onto the tool-result
+	// only when it is not undefined, so an explicit false is kept.
+	ProviderExecutedSet bool
 }
 
 func (o TranslateOptions) isProviderExecuted(toolCallID string) bool {
@@ -156,9 +160,11 @@ func TranslatePart(part StreamPart, opts TranslateOptions) []provider.StreamChun
 				ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: p.Result,
 				Input:            call.Input,
 				ProviderExecuted: hasCall && call.ProviderExecuted,
-				Dynamic:          p.Dynamic,
-				Preliminary:      p.Preliminary,
-				ProviderMetadata: convertProviderMetadata(p.ProviderMetadata),
+				// TS `...(toolCall?.providerExecuted !== undefined ? {...} : {})`.
+				ProviderExecutedSet: hasCall && (call.ProviderExecuted || call.ProviderExecutedSet),
+				Dynamic:             p.Dynamic,
+				Preliminary:         p.Preliminary,
+				ProviderMetadata:    convertProviderMetadata(p.ProviderMetadata),
 			},
 		}}
 

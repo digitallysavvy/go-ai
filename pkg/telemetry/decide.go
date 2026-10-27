@@ -469,6 +469,8 @@ func (i OpenTelemetry) OnDecideStart(ctx context.Context, e DecideStartEvent) co
 		st.rootSpan = span
 		st.baseSupp = baseSupp
 		st.tracer = tracer
+		st.operationType = e.OperationID
+		st.runtimeContext = e.RuntimeContext
 		st.mu.Unlock()
 	}
 	return ctx
@@ -508,11 +510,10 @@ func (i OpenTelemetry) OnDecisionModelCallStart(ctx context.Context, e DecisionM
 		spanName += " " + e.ModelID
 	}
 	_, span := tracer.Start(trace.ContextWithSpan(ctx, parent), spanName, trace.WithSpanKind(trace.SpanKindClient))
-	if attrs := i.customAttrs(ctx, e.Settings, EnrichSpanOptions{
-		SpanType:      SpanTypeDecision,
-		OperationType: e.OperationID,
-		CallID:        e.CallID,
-	}); len(attrs) > 0 {
+	// TS: operationId: event.operationId, runtimeContext: state.runtimeContext.
+	enrichOpts := i.childEnrichOptions(SpanTypeDecision, e.CallID)
+	enrichOpts.OperationType = e.OperationID
+	if attrs := i.customAttrs(ctx, e.Settings, enrichOpts); len(attrs) > 0 {
 		span.SetAttributes(attrs...)
 	}
 	span.SetAttributes(

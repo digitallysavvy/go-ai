@@ -3751,14 +3751,15 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 		input = call.Arguments
 	}
 	toolCall := types.ToolCall{
-		ID:               result.ToolCallID,
-		ToolName:         result.ToolName,
-		Title:            result.Title,
-		Arguments:        input,
-		ProviderExecuted: result.ProviderExecuted,
-		ProviderMetadata: result.ProviderMetadata,
-		ToolMetadata:     result.ToolMetadata,
-		Dynamic:          result.Dynamic,
+		ID:                  result.ToolCallID,
+		ToolName:            result.ToolName,
+		Title:               result.Title,
+		Arguments:           input,
+		ProviderExecuted:    result.ProviderExecuted,
+		ProviderExecutedSet: result.ProviderExecutedSet,
+		ProviderMetadata:    result.ProviderMetadata,
+		ToolMetadata:        result.ToolMetadata,
+		Dynamic:             result.Dynamic,
 	}
 	if hasCall {
 		toolCall = call

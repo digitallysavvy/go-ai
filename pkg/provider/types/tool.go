@@ -608,6 +608,14 @@ type ToolResult struct {
 	// This affects error handling and validation behavior
 	ProviderExecuted bool `json:"providerExecuted,omitempty"`
 
+	// ProviderExecutedSet marks ProviderExecuted as explicitly set, so an
+	// explicit false is kept where TS forwards `providerExecuted` whenever it
+	// is not undefined: the UI tool-output chunks of a result without an
+	// approval, and the automatic approval response built from an approved
+	// or denied result (TS copies the tool call's providerExecuted). It
+	// follows ToolCall.ProviderExecutedSet. Never serialized.
+	ProviderExecutedSet bool `json:"-"`
+
 	// ProviderMetadata carries provider-specific metadata associated with this tool result.
 	ProviderMetadata map[string]interface{} `json:"providerMetadata,omitempty"`
 
