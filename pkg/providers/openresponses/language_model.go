@@ -1637,7 +1637,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: respErr.Message,
-			Err:  s.streamProviderError(respErr),
+			Err:  s.streamProviderError(event, respErr),
 		}, true
 
 	case "error":
@@ -1651,7 +1651,7 @@ func (s *openResponsesStream) handleStreamEvent(event *StreamEvent) (*provider.S
 		return &provider.StreamChunk{
 			Type: provider.ChunkTypeError,
 			Text: event.Error.Message,
-			Err:  s.streamProviderError(event.Error),
+			Err:  s.streamProviderError(event, event.Error),
 		}, true
 
 	default:
@@ -1797,13 +1797,22 @@ func (s *openResponsesStream) queueFlush() {
 // embedded ResponseError into a *providererrors.StreamProviderError,
 // applying getResponseErrorMetadata when set. Mirrors TS's
 // createOpenResponsesStreamError.
-func (s *openResponsesStream) streamProviderError(respErr *ResponseError) *providererrors.StreamProviderError {
+func (s *openResponsesStream) streamProviderError(event *StreamEvent, respErr *ResponseError) *providererrors.StreamProviderError {
 	var statusCode *int
 	var retryable *bool
 	if s.getResponseErrorMetadata != nil {
 		statusCode, retryable = s.getResponseErrorMetadata(respErr)
 	}
-	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, "", respErr.Code, statusCode, retryable, respErr)
+	// TS createProviderStreamError({message, type: chunk.type, code, ...metadata,
+	// data: chunk}): the type is the event type and the data is the whole chunk.
+	var data interface{} = respErr
+	if len(event.Raw) > 0 {
+		var chunk interface{}
+		if json.Unmarshal(event.Raw, &chunk) == nil {
+			data = chunk
+		}
+	}
+	return providererrors.NewStreamProviderError(respErr.Message, s.providerName, event.Type, respErr.Code, statusCode, retryable, data)
 }
 
 // wireNumberPresent reports whether raw[object][key] is a JSON number.
