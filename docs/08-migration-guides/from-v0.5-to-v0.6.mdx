@@ -110,3 +110,9 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Wrapper providers no longer fall back to `OPENAI_API_KEY`.** Baseten,
   Cerebras, DeepInfra, Fireworks, Together, Vertex MaaS and the Azure
   delegates read only their own API key environment variable.
+- **Failed generated-media downloads in BFL, Luma and fal return
+  `*providererrors.ProviderError`.** As in TS, a non-2xx response when the
+  provider fetches the generated image or audio is a provider error whose
+  message is the HTTP status text, returned unwrapped. Match it with
+  `errors.As` on `*providererrors.ProviderError` and its `StatusCode` instead
+  of `*providererrors.DownloadError`.
