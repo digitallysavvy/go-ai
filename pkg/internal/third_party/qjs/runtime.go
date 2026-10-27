@@ -46,12 +46,7 @@ func createGlobalCompiledModule(
 	compilationMutex.Lock()
 	defer compilationMutex.Unlock()
 
-	var qjsBytes []byte
-	if len(quickjsWasmBytes) > 0 && len(quickjsWasmBytes[0]) > 0 {
-		qjsBytes = quickjsWasmBytes[0]
-	} else {
-		qjsBytes = wasmBytes
-	}
+	qjsBytes := qjsBytesFor(quickjsWasmBytes...)
 
 	// Calculate hash of the bytes to check if we need to recompile
 	currentHash := hashBytes(qjsBytes)
@@ -81,6 +76,15 @@ func createGlobalCompiledModule(
 	return nil
 }
 
+// qjsBytesFor returns the override module bytes when given, else the
+// embedded qjs.wasm.
+func qjsBytesFor(quickjsWasmBytes ...[]byte) []byte {
+	if len(quickjsWasmBytes) > 0 && len(quickjsWasmBytes[0]) > 0 {
+		return quickjsWasmBytes[0]
+	}
+	return wasmBytes
+}
+
 // New creates a QuickJS runtime with optional configuration.
 func New(options ...Option) (runtime *Runtime, err error) {
 	defer func() {
@@ -107,6 +111,9 @@ func New(options ...Option) (runtime *Runtime, err error) {
 	); err != nil {
 		return nil, fmt.Errorf("failed to create global compiled module: %w", err)
 	}
+	compilationMutex.Lock()
+	runtimeConfig := cachedRuntimeConfig
+	compilationMutex.Unlock()
 
 	runtime = &Runtime{
 		option:   option,
@@ -116,8 +123,20 @@ func New(options ...Option) (runtime *Runtime, err error) {
 
 	runtime.wrt = wazero.NewRuntimeWithConfig(
 		option.Context,
-		cachedRuntimeConfig,
+		runtimeConfig,
 	)
+
+	// go-ai patch (wazero v1.12.0): a CompiledModule may only be
+	// instantiated by the Runtime that compiled it. Since v1.12.0 wazero
+	// matches imported function signatures by per-Runtime type IDs, so
+	// reusing the global compiledQJSModule here fails with "signature
+	// mismatch". Compile against this Runtime instead; the shared
+	// CompilationCache in runtimeConfig makes this a decode plus a cache
+	// hit, not a recompile.
+	compiled, err := runtime.wrt.CompileModule(option.Context, qjsBytesFor(option.QuickJSWasmBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile qjs module: %w", err)
+	}
 
 	if _, err := wsp1.Instantiate(option.Context, runtime.wrt); err != nil {
 		return nil, fmt.Errorf("failed to instantiate WASI: %w", err)
@@ -151,7 +170,7 @@ func New(options ...Option) (runtime *Runtime, err error) {
 	// coverage.
 	if runtime.module, err = runtime.wrt.InstantiateModule(
 		option.Context,
-		compiledQJSModule,
+		compiled,
 		wazero.NewModuleConfig().
 			WithStartFunctions(option.StartFunctionName).
 			WithSysWalltime().

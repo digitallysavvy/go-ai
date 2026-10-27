@@ -753,3 +753,22 @@ Size 1,283,460 bytes (was 1,283,463; sha256 c91dd469...ba787d19 superseded).
 **Tests.** `wasm_stack_check_patch_test.go` (this package) and
 `pkg/codemode/stack_overflow_test.go`; mutation-checked by restoring the
 previous qjs.wasm (they fail/panic with the out-of-bounds trap).
+
+## wazero v1.12.0: compile per Runtime
+
+wazero v1.12.0 matches an imported function's signature by type IDs that
+belong to one `wazero.Runtime`. Upstream qjs compiles `qjs.wasm` once, in a
+throwaway Runtime, and instantiates that `CompiledModule` in a fresh Runtime
+per `New`. Under v1.12.0 every `New` then fails with
+`import func[env.jsFunctionProxy]: signature mismatch: i32i64i32i32_i64 != i32i64i32i32_i64`.
+
+The patch in `runtime.go` (marked `go-ai patch (wazero v1.12.0)`) compiles
+the module again in each `New`'s own Runtime. The process-wide
+`CompilationCache` is unchanged, so the machine code is a cache hit; the
+remaining cost is wazero decoding and validating the 1.28 MB module.
+
+Measured on darwin/arm64 (`New` + `Close`, `NoFSMount`, 30 iterations x 3):
+about 4.5 ms per `New` on v1.9.0, about 20 to 40 ms on v1.12.0 with this
+patch. Module isolation is unchanged: each `New` still gets its own Runtime,
+store and linear memory. The full `pkg/codemode` and qjs suites pass under
+`-race` with the same pass/skip set as v1.9.0.
