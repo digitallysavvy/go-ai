@@ -188,7 +188,8 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 	ch := make(chan sandboxOutcome, 1)
 	go func() {
 		// Pin the sandbox to one OS thread so the CPU budget can read that
-		// thread's CPU time (cpu_meter_linux.go, cpu_meter_darwin.go).
+		// thread's CPU time (cpu_meter_linux.go, cpu_meter_darwin.go,
+		// cpu_meter_windows.go).
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		var out sandboxOutcome
@@ -296,7 +297,7 @@ func runInSandbox(ctx context.Context, policy resolvedPolicy, drive func(jsCtx *
 // tool-thrown and script-thrown JavaScript errors as plain errors whose
 // message is preserved verbatim (RunCodeMode further prefers a preserved
 // *typed* CodeModeError captured by the tool bridge, when one caused the
-// failure; see toolBridge.lastCodeModeErr).
+// failure; see toolBridge.preservedCodeModeErr).
 func classifySandboxFailure(err error, outerCtx context.Context, policy resolvedPolicy, budget *cpuBudget) error {
 	msg := err.Error()
 	if looksLikeContextCancellation(msg) {

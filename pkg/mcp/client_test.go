@@ -585,7 +585,7 @@ func TestGetSerializableToolsNotInitialized(t *testing.T) {
 		t.Fatal("expected error when calling GetSerializableTools without initialization")
 	}
 
-	if err.Error() != "client not initialized" {
+	if err.Error() != "Attempted to send a request from a closed client" {
 		t.Errorf("unexpected error message: %s", err.Error())
 	}
 }

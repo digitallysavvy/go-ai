@@ -194,6 +194,15 @@ func NewToolError(message string, details interface{}) *ToolError {
 	return &ToolError{NewError(message, "CODE_MODE_TOOL_ERROR", details)}
 }
 
+// newHostToolFailedError is the sanitized error for a host tool that failed
+// with an error that is not a CodeModeError. TS throws
+// `new RunError('Host tool failed.', 'CODE_MODE_HOST_TOOL_ERROR')`; Go keeps
+// the *ToolError type with TS's code.
+func newHostToolFailedError(toolName string, cause error) *ToolError {
+	return &ToolError{NewError("Host tool failed.", "CODE_MODE_HOST_TOOL_ERROR",
+		map[string]interface{}{"toolName": toolName, "cause": cause.Error()})}
+}
+
 // ToolApprovalRequiredError is raised when a host tool requires approval but
 // no approval decision was obtained (approval mode "callback" with no
 // OnApprovalRequired callback configured, or the callback returned no
@@ -209,6 +218,12 @@ func NewToolApprovalRequiredError(toolName string, input interface{}, toolCallID
 	)}
 }
 
+// As lets errors.As match a *ToolError target: TS
+// CodeModeToolApprovalRequiredError extends CodeModeToolError.
+func (e *ToolApprovalRequiredError) As(target interface{}) bool {
+	return asToolError(e.BaseError, target)
+}
+
 // ToolApprovalDeniedError is raised when a host tool's approval was denied.
 // Mirrors TypeScript's CodeModeToolApprovalDeniedError.
 type ToolApprovalDeniedError struct{ *BaseError }
@@ -222,4 +237,18 @@ func NewToolApprovalDeniedError(toolName string, input interface{}, toolCallID, 
 		details["reason"] = reason
 	}
 	return &ToolApprovalDeniedError{NewError(msg, "CODE_MODE_TOOL_APPROVAL_DENIED", details)}
+}
+
+// As lets errors.As match a *ToolError target: TS
+// CodeModeToolApprovalDeniedError extends CodeModeToolError.
+func (e *ToolApprovalDeniedError) As(target interface{}) bool {
+	return asToolError(e.BaseError, target)
+}
+
+func asToolError(base *BaseError, target interface{}) bool {
+	if t, ok := target.(**ToolError); ok {
+		*t = &ToolError{base}
+		return true
+	}
+	return false
 }
