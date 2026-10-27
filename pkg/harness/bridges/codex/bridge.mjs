@@ -1342,12 +1342,14 @@ const CODEX_CLI_PATH = fileURLToPath(new URL("./node_modules/@openai/codex/bin/c
 function createCodexAppServerRuntime() {
 	let client;
 	let loadedThreadId;
+	let loadedThreadModel;
 	let loadedConfig;
 	let activeTurn;
 	const close = async () => {
 		const previous = client;
 		client = void 0;
 		loadedThreadId = void 0;
+		loadedThreadModel = void 0;
 		loadedConfig = void 0;
 		await previous?.close();
 	};
@@ -1505,6 +1507,7 @@ function createCodexAppServerRuntime() {
 					params: { threadId: loadedThreadId }
 				}) });
 				loadedThreadId = void 0;
+				loadedThreadModel = void 0;
 			}
 			if (trustedHook != null) assertTrustedApplyPatchHook({
 				response: await raceWithProcess({ operation: runningClient.request({
@@ -1547,9 +1550,18 @@ function createCodexAppServerRuntime() {
 					method: threadMethod
 				});
 				loadedThreadId = currentTurn.threadId;
+				loadedThreadModel = {
+					requestedModel: codexModel,
+					modelId: readOptionalString(asRecord(threadResponse)?.model)
+				};
 			}
 			handler.announceThread(currentTurn.threadId);
-			emit({ type: "stream-start" });
+			const threadModel = loadedThreadModel;
+			const streamStartModelId = threadModel != null && threadModel.requestedModel === codexModel && threadModel.modelId != null ? threadModel.modelId : codexModel;
+			emit({
+				type: "stream-start",
+				...streamStartModelId ? { modelId: streamStartModelId } : {}
+			});
 			currentTurn.turnId = readNestedString({
 				value: await raceWithProcess({ operation: runningClient.request({
 					method: "turn/start",
@@ -1625,11 +1637,18 @@ function createTurnParams({ threadId, start, codexModel, disableEnvironments = f
 	return {
 		threadId,
 		...disableEnvironments ? { environments: [] } : {},
-		input: [{
+		input: typeof start.prompt === "string" ? [{
 			type: "text",
 			text: start.prompt,
 			text_elements: []
-		}],
+		}] : start.prompt.map((part) => part.type === "text" ? {
+			type: "text",
+			text: part.text,
+			text_elements: []
+		} : {
+			type: "image",
+			url: `data:${part.mediaType};base64,${part.data}`
+		}),
 		approvalPolicy: "never",
 		sandboxPolicy: {
 			type: "externalSandbox",
@@ -1738,6 +1757,9 @@ function assertSuccessfulTurn(result) {
 }
 function asRecord(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function readOptionalString(value) {
+	return typeof value === "string" && value.length > 0 ? value : void 0;
 }
 //#endregion
 //#region src/bridge/codex-step-tracker.ts

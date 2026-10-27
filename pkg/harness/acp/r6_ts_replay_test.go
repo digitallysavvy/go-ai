@@ -26,9 +26,11 @@ func TestTSReplay_RejectsUnstableHarnessIDs(t *testing.T) {
 	}
 }
 
-// TS: 'requires an exact npm package version'.
+// TS: 'requires an exact npm package version' (deprecated npm-simple shim).
 func TestTSReplay_RequiresExactNPMVersion(t *testing.T) {
-	_, err := CreateACP(testSettings(func(s *Settings) { s.Source.PackageVersion = "^1.1.4" }))
+	_, err := CreateACP(testSettings(func(s *Settings) {
+		s.Source = Source{Type: SourceNPMSimple, PackageName: "test-acp-agent", PackageVersion: "^1.1.4"}
+	}))
 	if err == nil || !strings.Contains(err.Error(), "exact semantic version") {
 		t.Fatalf("err = %v", err)
 	}
@@ -36,7 +38,7 @@ func TestTSReplay_RequiresExactNPMVersion(t *testing.T) {
 
 // TS: 'resolves the latest dist-tag when no package version is pinned'.
 func TestTSReplay_UnpinnedPackageResolvesLatest(t *testing.T) {
-	h, err := CreateACP(testSettings())
+	h, err := CreateACP(testSettings(func(s *Settings) { s.Source = Source{Type: SourceNPMSimple, PackageName: "test-acp-agent"} }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,12 +48,12 @@ func TestTSReplay_UnpinnedPackageResolvesLatest(t *testing.T) {
 	}
 	found := false
 	for _, f := range b.Files {
-		if strings.HasSuffix(f.Path, "/implementation/package.json") && strings.Contains(string(f.Content), `"test-acp-agent": "latest"`) {
+		if strings.HasSuffix(f.Path, "/install.sh") && strings.Contains(f.Content, "'test-acp-agent@latest'") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("implementation/package.json does not pin the latest dist-tag")
+		t.Fatal("install.sh does not install the latest dist-tag")
 	}
 }
 
@@ -138,7 +140,8 @@ func newBasicSandbox(srv *bridgetest.Server) basicSandbox {
 // 'uses a basic sandbox session with explicit bridge settings' and
 // 'requires a sandbox id for custom bridge token minting'.
 func TestTSReplay_BasicSandboxSession(t *testing.T) {
-	srv := newServer(t, "tok", func(*bridgetest.Turn, map[string]any) {})
+	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	t.Cleanup(srv.Close)
 	start := func(mut func(*Settings)) (harness.Session, error) {
 		h, err := CreateACP(testSettings(mut))
 		if err != nil {

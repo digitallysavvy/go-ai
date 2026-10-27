@@ -5,14 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -118,10 +116,10 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	// An unsupported prompt is rejected before the turn is wired, so the
 	// failure leaves no listeners or abort watcher behind (an already-aborted
 	// call never builds the start message, like TS).
-	var text string
+	var content harnessutil.PromptContent
 	if ctx.Err() == nil {
 		var err error
-		if text, err = extractUserText(opts.Prompt); err != nil {
+		if content, err = harnessutil.ExtractPromptContent(opts.Prompt); err != nil {
 			return nil, err
 		}
 	}
@@ -130,7 +128,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		return control, nil
 	}
 
-	frame := s.buildStartFrame(text, opts.TurnSettings, opts.ResponseFormat)
+	frame := s.buildStartFrame(content, opts.TurnSettings, opts.ResponseFormat)
 	s.mu.Lock()
 	frame.Continue, frame.ResumeSessionID = s.resumeFields()
 	s.pendingResumeFlag = false
@@ -156,7 +154,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 	}
 	s.mu.Unlock()
 	if rerun {
-		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat)
+		frame := s.buildStartFrame(harnessutil.PromptContent{Text: "Continue."}, opts.TurnSettings, opts.ResponseFormat)
 		s.mu.Lock()
 		// Unlike a prompt turn, a rerun continuation always rehydrates: the
 		// exact conversation when known, else `continue: true`.
@@ -187,10 +185,10 @@ func (s *session) resumeFields() (continueFlag bool, resumeSessionID string) {
 	return false, ""
 }
 
-func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *harness.ResponseFormat) *StartFrame {
+func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.TurnSettings, rf *harness.ResponseFormat) *StartFrame {
 	frame := &StartFrame{
 		StartBase: bridge.StartBase{
-			Prompt: prompt, Tools: ts.Tools, Model: ts.Model, ResponseFormat: rf,
+			Prompt: prompt.Text, Tools: ts.Tools, Model: ts.Model, ResponseFormat: rf,
 			PermissionMode: s.opts.permissionMode, BuiltinToolFiltering: s.opts.builtinToolFiltering,
 		},
 		Instructions: ts.Instructions,
@@ -199,6 +197,9 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 	}
 	if s.opts.maxTurns > 0 {
 		frame.MaxTurns = &s.opts.maxTurns
+	}
+	if !prompt.IsText() {
+		frame.PromptContent = &prompt
 	}
 	frame.AgentProgressSummaries = s.opts.agentProgressSummaries
 	frame.ForwardSubagentText = s.opts.forwardSubagentText
@@ -537,24 +538,3 @@ func (c *promptControl) SubmitUserMessage(ctx context.Context, text string) erro
 	}
 	return c.userMessages.Submit(ctx, text)
 }
-
-// extractUserText mirrors TS `extractUserText`: a bare string prompt, or a
-// user message whose content is only text parts.
-func extractUserText(prompt harness.Prompt) (string, error) {
-	if prompt.Message == nil {
-		return prompt.Text, nil
-	}
-	var parts []string
-	for _, part := range prompt.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The claude-code harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return joinLinesDouble(parts), nil
-}
-
-func joinLinesDouble(parts []string) string { return strings.Join(parts, "\n\n") }

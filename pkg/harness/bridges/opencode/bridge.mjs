@@ -1783,6 +1783,22 @@ function positionalIdIndex(input) {
 	return Number.isInteger(oneBasedIndex) && oneBasedIndex > 0 ? oneBasedIndex - 1 : void 0;
 }
 //#endregion
+//#region src/bridge/opencode-prompt.ts
+function toOpenCodePromptParts(prompt) {
+	if (typeof prompt === "string") return [{
+		type: "text",
+		text: prompt
+	}];
+	return prompt.map((part) => part.type === "text" ? {
+		type: "text",
+		text: part.text
+	} : {
+		type: "file",
+		mime: part.mediaType,
+		url: `data:${part.mediaType};base64,${part.data}`
+	});
+}
+//#endregion
 //#region src/bridge/index.ts
 const NATIVE_TO_COMMON = {
 	view: "read",
@@ -2088,7 +2104,7 @@ async function legacySessionGet({ client, sessionId }) {
 async function legacySessionCreate({ client }) {
 	return client.session.create({});
 }
-async function legacySessionPrompt({ client, sessionId, start, prompt: promptText }) {
+async function legacySessionPrompt({ client, sessionId, start, prompt }) {
 	const session = client.session;
 	return (session.promptAsync ?? session.prompt).call(session, {
 		sessionID: sessionId,
@@ -2098,10 +2114,7 @@ async function legacySessionPrompt({ client, sessionId, start, prompt: promptTex
 			type: "json_schema",
 			schema: start.responseFormat.schema
 		} } : {},
-		parts: [{
-			type: "text",
-			text: promptText ?? start.prompt
-		}]
+		parts: toOpenCodePromptParts(prompt)
 	});
 }
 async function legacySessionAbort({ client, sessionId }) {
@@ -2337,7 +2350,8 @@ async function runPrompt({ client, sessionId, start, turn, emit }) {
 			prompted = await legacySessionPrompt({
 				client,
 				sessionId,
-				start
+				start,
+				prompt: start.prompt
 			});
 		} catch (error) {
 			promptRequestSettled.resolve(void 0);

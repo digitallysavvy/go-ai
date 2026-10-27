@@ -190,13 +190,14 @@ func TestGetBootstrapCachesAcrossCalls(t *testing.T) {
 
 // TS: "passes the harness client app to the bridge environment"
 func TestDoStartSpawnsBridgeWithClientAppAndToken(t *testing.T) {
-	srv := newServer(t, "", func(*bridgetest.Turn, map[string]any) {})
+	// The default random token is unknown to the test, so the server accepts any.
+	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h := CreateDeepAgents()
 	// No MintBridgeToken override: exercise the default random-token path.
-	// The fake server's fixed Token ("") never matches, so the dial itself
-	// may fail — this test only checks what the adapter did *before*
-	// connecting (the spawn command and environment), which happen first.
+	// This test only checks what the adapter did *before* connecting (the
+	// spawn command and environment), which happen first.
 	_, _ = h.DoStart(context.Background(), harness.StartOptions{
 		SessionID: "test-session", SessionWorkDir: "/vercel/sandbox/deepagents-test-session",
 		SandboxSession: sandbox,
@@ -561,12 +562,6 @@ func TestResolveAuthenticationModeAndEnv(t *testing.T) {
 	gwEnv := resolveEnv(harness.AuthMode(harness.AuthModeAIGateway), env)
 	if gwEnv["ANTHROPIC_API_KEY"] != "gw-key" || gwEnv["ANTHROPIC_BASE_URL"] == "" {
 		t.Fatalf("resolveEnv(ai-gateway) = %v", gwEnv)
-	}
-}
-
-func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
-	if _, err := extractUserText(harness.TextPrompt("hi")); err != nil {
-		t.Fatalf("extractUserText(text) error = %v", err)
 	}
 }
 

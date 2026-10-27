@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"github.com/digitallysavvy/go-ai/pkg/internal/sdkversion"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -39,6 +40,11 @@ type DecideStartEvent struct {
 	Questions  interface{}
 	MaxRetries int
 	Headers    map[string]string
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // DecideEndEvent is emitted after the decide operation completes
@@ -47,6 +53,11 @@ type DecideEndEvent struct {
 	DecideStartEvent
 	// Answers is JSON-encoded as ai.decision.answers (output-gated).
 	Answers interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // DecisionModelCallStartEvent is emitted immediately before the
@@ -61,6 +72,11 @@ type DecisionModelCallStartEvent struct {
 	ModelID       string
 	State         interface{}
 	Questions     interface{}
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 // DecisionModelCallEndEvent is emitted after the decision model call
@@ -81,6 +97,11 @@ type DecisionModelCallEndEvent struct {
 	// gen_ai.response.model.
 	ResponseID      string
 	ResponseModelID string
+
+	// AIVersion is the version of the Go AI SDK that emitted the event. The
+	// Fire* helpers set it, overwriting any caller value. Mirrors the TS
+	// `aiVersion` field the telemetry dispatcher adds to every event (TS #23958).
+	AIVersion string
 }
 
 type decideStartHandler interface {
@@ -154,6 +175,7 @@ type evaluationModelCallEndHandler interface {
 // its own root/nested spans from its own callId-keyed state rather than
 // trace.SpanFromContext(ctx).
 func FireOnDecideStart(ctx context.Context, e DecideStartEvent) context.Context {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return ctx
 	}
@@ -171,6 +193,7 @@ func FireOnDecideStart(ctx context.Context, e DecideStartEvent) context.Context 
 
 // FireOnDecideEnd publishes and fans out a decide-operation end event.
 func FireOnDecideEnd(ctx context.Context, e DecideEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -187,6 +210,7 @@ func FireOnDecideEnd(ctx context.Context, e DecideEndEvent) {
 // FireOnDecisionModelCallStart publishes and fans out a
 // decision-model-call start event.
 func FireOnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}
@@ -203,6 +227,7 @@ func FireOnDecisionModelCallStart(ctx context.Context, e DecisionModelCallStartE
 // FireOnDecisionModelCallEnd publishes and fans out a
 // decision-model-call end event.
 func FireOnDecisionModelCallEnd(ctx context.Context, e DecisionModelCallEndEvent) {
+	e.AIVersion = sdkversion.Version
 	if telemetryDisabled(e.Settings) {
 		return
 	}

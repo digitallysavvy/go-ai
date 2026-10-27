@@ -25,12 +25,12 @@ func TestBasicSandboxSessionRequiresExplicitBridgeSettings(t *testing.T) {
 		mut  func(*codex.Settings)
 		want string
 	}{
-		{"no port", func(s *codex.Settings) { s.PortEndpoint = endpoint }, "The codex harness requires an explicit `port` when using a basic sandbox session."},
-		{"no endpoint", func(s *codex.Settings) { s.Port = 4319 }, "The codex harness requires an explicit `portEndpoint` when using a basic sandbox session."},
+		{"no port", func(s *codex.Settings) { s.PortEndpoint = endpoint }, "The harness requires an explicit `port` setting when using a basic sandbox session."},
+		{"no endpoint", func(s *codex.Settings) { s.Port = 4319 }, "The harness requires an explicit `portEndpoint` setting when using a basic sandbox session."},
 		{"mint without id", func(s *codex.Settings) {
 			s.Port, s.PortEndpoint = 4319, endpoint
 			s.MintBridgeToken = func(id string) string { return id }
-		}, "The codex harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id."},
+		}, "The harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var s codex.Settings

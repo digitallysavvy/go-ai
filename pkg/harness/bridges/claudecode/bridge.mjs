@@ -730,7 +730,7 @@ function createEmitStreamEvent({ state, emit, emitWarning, emitTerminalError, on
 	let streamStarted = false;
 	return (msg) => {
 		const type = msg.type;
-		if (!streamStarted) {
+		if (!streamStarted && type !== "command_lifecycle") {
 			const initModel = type === "system" && msg.subtype === "init" && typeof msg.model === "string" ? msg.model : void 0;
 			emit({
 				type: "stream-start",
@@ -1902,10 +1902,17 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 		type: "user",
 		message: {
 			role: "user",
-			content: [{
+			content: typeof options.content === "string" ? [{
 				type: "text",
-				text: options.text
-			}]
+				text: options.content
+			}] : options.content.map((part) => part.type === "text" ? part : {
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: part.mediaType,
+					data: part.data
+				}
+			})
 		},
 		parent_tool_use_id: null,
 		uuid: options.messageId,
@@ -1950,7 +1957,7 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 					sentInitial = true;
 					return {
 						value: toUserMessage({
-							text: initialUserMessage,
+							content: initialUserMessage,
 							messageId: initialMessageId
 						}),
 						done: false
@@ -1965,7 +1972,7 @@ function createQueryInput({ initialUserMessage, userMessages, abortSignal }) {
 				sentMessageIds.add(nextMessage.value.messageId);
 				return {
 					value: toUserMessage({
-						text: nextMessage.value.text,
+						content: nextMessage.value.text,
 						messageId: nextMessage.value.messageId,
 						priority: "next"
 					}),

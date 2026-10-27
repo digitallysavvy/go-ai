@@ -367,7 +367,7 @@ func (c *Channel) Open(ctx context.Context, resume bool) error {
 	c.activeConnect = handle
 	c.mu.Unlock()
 
-	conn, err := c.connectOnce(connectCtx)
+	conn, err := c.connectOnce(WithConnectReason(connectCtx, ConnectReasonOpen))
 
 	c.mu.Lock()
 	if c.activeConnect == handle {
@@ -669,7 +669,7 @@ func (c *Channel) reconnectLoop() {
 		c.activeConnect = ahandle
 		c.mu.Unlock()
 
-		conn, err := c.connectOnce(actx)
+		conn, err := c.connectOnce(WithConnectReason(actx, ConnectReasonReconnect))
 
 		timer.Stop()
 		c.mu.Lock()

@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { argv, env, execPath, pid, stdout } from "node:process";
@@ -685,7 +685,13 @@ const providerAuthenticationSchema = z.discriminatedUnion("type", [z.object({ ty
 	type: z.literal("ai-gateway"),
 	env: profileRecordSchema
 })]);
+const agentLaunchSchema = z.object({
+	command: z.string(),
+	args: z.array(z.string()),
+	home: z.string().optional()
+});
 const bridgeConfigurationSchema = z.object({
+	agent: agentLaunchSchema,
 	authentication: authenticationSchema.optional(),
 	providerAuthentication: providerAuthenticationSchema.optional(),
 	providerEnvironment: z.record(z.string(), z.string()).optional(),
@@ -696,10 +702,8 @@ const bridgeConfigurationSchema = z.object({
 	nonTextContentTypes: z.array(z.literal("image")).optional()
 });
 async function readACPBridgeEnvironment({ env }) {
-	const serialized = env[ACP_BRIDGE_CONFIGURATION_ENV];
-	if (serialized == null) return {};
 	try {
-		const result = bridgeConfigurationSchema.safeParse(JSON.parse(serialized));
+		const result = bridgeConfigurationSchema.safeParse(JSON.parse(env["AI_SDK_ACP_BRIDGE_CONFIGURATION"] ?? ""));
 		if (result.success) return result.data;
 	} catch {}
 	throw new Error("ACP bridge configuration environment is invalid.");
@@ -749,6 +753,10 @@ function resolveSource({ source, gateway }) {
 }
 //#endregion
 //#region src/v1/bridge/protocol-configuration.ts
+function isACPImagePromptSupported({ initialization, nonTextContentTypes }) {
+	const promptCapabilities = initialization.agentCapabilities?.promptCapabilities;
+	return isRecord$8(promptCapabilities) && promptCapabilities.image === true || nonTextContentTypes?.includes("image") === true;
+}
 function createACPInitializeRequest({ protocolVersion, clientApp, authentication, clientCapabilities: configuredClientCapabilities, supportsBooleanSessionConfigOptions = false }) {
 	let clientCapabilities = mergeRecords({
 		left: authentication?.clientCapabilities ?? {},
@@ -785,7 +793,7 @@ function mergeRecords({ left, right }) {
 	const result = { ...left };
 	for (const [key, value] of Object.entries(right)) {
 		const previous = result[key];
-		result[key] = isRecord$7(previous) && isRecord$7(value) ? mergeRecords({
+		result[key] = isRecord$8(previous) && isRecord$8(value) ? mergeRecords({
 			left: previous,
 			right: value
 		}) : value;
@@ -797,10 +805,10 @@ function requireGateway({ gateway }) {
 	return gateway;
 }
 function asRecord(value) {
-	if (!isRecord$7(value)) throw new Error("ACP profile data must resolve to an object.");
+	if (!isRecord$8(value)) throw new Error("ACP profile data must resolve to an object.");
 	return value;
 }
-function isRecord$7(value) {
+function isRecord$8(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
@@ -866,27 +874,27 @@ function captureACPStream({ stream }) {
 }
 function getRawSessionUpdate({ message }) {
 	const record = message;
-	if (record.method !== "session/update" || !isRecord$6(record.params)) return { isSessionUpdate: false };
+	if (record.method !== "session/update" || !isRecord$7(record.params)) return { isSessionUpdate: false };
 	const params = record.params;
 	return {
 		isSessionUpdate: true,
 		value: params.update,
-		canFilterUnknown: typeof params.sessionId === "string" && isRecord$6(params.update)
+		canFilterUnknown: typeof params.sessionId === "string" && isRecord$7(params.update)
 	};
 }
 function sessionUpdatesMatch({ rawUpdate, update }) {
-	if (!isRecord$6(rawUpdate)) return false;
+	if (!isRecord$7(rawUpdate)) return false;
 	if (rawUpdate.sessionUpdate !== update.sessionUpdate) return false;
 	if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") return rawUpdate.toolCallId === update.toolCallId;
 	if (update.sessionUpdate === "user_message_chunk" || update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk") return rawUpdate.messageId === update.messageId;
 	return true;
 }
 function getStringProperty$1({ value, property }) {
-	if (!isRecord$6(value)) return void 0;
+	if (!isRecord$7(value)) return void 0;
 	const propertyValue = value[property];
 	return typeof propertyValue === "string" ? propertyValue : void 0;
 }
-function isRecord$6(value) {
+function isRecord$7(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
@@ -1281,10 +1289,10 @@ function resolveBuiltinTool({ programmaticName, metadata, title, kind, rawInput,
 	});
 }
 function findMostSpecificSchemaMatch({ rawInput, schemaMatches }) {
-	if (!isRecord$5(rawInput)) return void 0;
+	if (!isRecord$6(rawInput)) return void 0;
 	const rawInputKeys = Object.keys(rawInput);
 	const coverageOf = (tool) => {
-		const properties = isRecord$5(tool.inputSchema) ? isRecord$5(tool.inputSchema.properties) ? tool.inputSchema.properties : {} : {};
+		const properties = isRecord$6(tool.inputSchema) ? isRecord$6(tool.inputSchema.properties) ? tool.inputSchema.properties : {} : {};
 		return rawInputKeys.filter((key) => key in properties).length;
 	};
 	const highestCoverage = Math.max(...schemaMatches.map(coverageOf));
@@ -1333,7 +1341,7 @@ function findBuiltinToolsInMetadata({ metadata, builtinToolsByName }) {
 	};
 }
 function matchesBuiltinToolInput({ rawInput, inputSchema }) {
-	if (!isRecord$5(rawInput) || !isRecord$5(inputSchema)) return false;
+	if (!isRecord$6(rawInput) || !isRecord$6(inputSchema)) return false;
 	if (inputSchema.type !== "object") return false;
 	const required = inputSchema.required;
 	if (!Array.isArray(required) || required.length === 0 || !required.every((property) => typeof property === "string")) return false;
@@ -1341,7 +1349,7 @@ function matchesBuiltinToolInput({ rawInput, inputSchema }) {
 		rawInput,
 		inputSchema
 	})) return false;
-	const properties = isRecord$5(inputSchema.properties) ? inputSchema.properties : {};
+	const properties = isRecord$6(inputSchema.properties) ? inputSchema.properties : {};
 	return Object.entries(properties).filter(([, schema]) => isJSONSchemaDiscriminator({ schema })).every(([property, schema]) => {
 		if (!Object.prototype.hasOwnProperty.call(rawInput, property)) return false;
 		return matchesJSONSchemaValue({
@@ -1351,12 +1359,12 @@ function matchesBuiltinToolInput({ rawInput, inputSchema }) {
 	});
 }
 function hasRequiredBuiltinToolInput({ rawInput, inputSchema }) {
-	if (!isRecord$5(inputSchema) || inputSchema.type !== "object") return true;
-	if (!isRecord$5(rawInput)) return false;
+	if (!isRecord$6(inputSchema) || inputSchema.type !== "object") return true;
+	if (!isRecord$6(rawInput)) return false;
 	const required = inputSchema.required;
 	if (!Array.isArray(required) || required.length === 0) return true;
 	if (!required.every((property) => typeof property === "string")) return true;
-	const properties = isRecord$5(inputSchema.properties) ? inputSchema.properties : {};
+	const properties = isRecord$6(inputSchema.properties) ? inputSchema.properties : {};
 	return required.every((property) => {
 		if (!Object.prototype.hasOwnProperty.call(rawInput, property)) return false;
 		return matchesJSONSchemaValue({
@@ -1366,11 +1374,11 @@ function hasRequiredBuiltinToolInput({ rawInput, inputSchema }) {
 	});
 }
 function isJSONSchemaDiscriminator({ schema }) {
-	return isRecord$5(schema) && ("const" in schema || Array.isArray(schema.enum) && schema.enum.length === 1);
+	return isRecord$6(schema) && ("const" in schema || Array.isArray(schema.enum) && schema.enum.length === 1);
 }
 function matchesJSONSchemaValue({ value, schema }) {
 	if (schema === true) return true;
-	if (schema === false || !isRecord$5(schema)) return false;
+	if (schema === false || !isRecord$6(schema)) return false;
 	if ("const" in schema && !Object.is(value, schema.const)) return false;
 	if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => Object.is(value, candidate))) return false;
 	for (const alternatives of [schema.anyOf, schema.oneOf]) if (Array.isArray(alternatives) && !alternatives.some((alternative) => matchesJSONSchemaValue({
@@ -1385,7 +1393,7 @@ function matchesJSONSchemaValue({ value, schema }) {
 		case "number": return typeof value === "number" && Number.isFinite(value);
 		case "string": return typeof value === "string";
 		case "array": return Array.isArray(value);
-		case "object": return isRecord$5(value);
+		case "object": return isRecord$6(value);
 		default: return true;
 	}
 }
@@ -1431,7 +1439,7 @@ function createACPToolCall({ state }) {
 		...Array.isArray(state.values.locations) ? { locations: state.values.locations } : {},
 		...Object.prototype.hasOwnProperty.call(state.values, "rawInput") ? { rawInput: state.values.rawInput } : {},
 		...Object.prototype.hasOwnProperty.call(state.values, "rawOutput") ? { rawOutput: state.values.rawOutput } : {},
-		...state.values._meta === null || isRecord$5(state.values._meta) ? { _meta: state.values._meta } : {}
+		...state.values._meta === null || isRecord$6(state.values._meta) ? { _meta: state.values._meta } : {}
 	};
 }
 function isACPToolKind(value) {
@@ -1443,7 +1451,7 @@ function isACPToolCallStatus(value) {
 function emitFileChanges({ state, emit }) {
 	const content = Array.isArray(state.values.content) ? state.values.content : [];
 	for (const item of content) {
-		if (!isRecord$5(item) || item.type !== "diff") continue;
+		if (!isRecord$6(item) || item.type !== "diff") continue;
 		const path = getStringProperty({
 			value: item,
 			property: "path"
@@ -1534,11 +1542,11 @@ function toSafeJSONValue({ value, fallback, seen = /* @__PURE__ */ new Set() }) 
 	return result;
 }
 function getStringProperty({ value, property }) {
-	if (!isRecord$5(value)) return void 0;
+	if (!isRecord$6(value)) return void 0;
 	const propertyValue = value[property];
 	return typeof propertyValue === "string" ? propertyValue : void 0;
 }
-function isRecord$5(value) {
+function isRecord$6(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 function mapACPUsage({ usage }) {
@@ -1636,7 +1644,7 @@ function isQualifiedHostToolName({ name, serverName, toolName }) {
 }
 function resolveHostToolCall({ toolCall, serverName, toolNames }) {
 	const rawInput = toolCall.rawInput;
-	if (!isRecord$4(rawInput)) return void 0;
+	if (!isRecord$5(rawInput)) return void 0;
 	const envelopeKind = classifyHostToolInputEnvelope({ rawInput });
 	if (envelopeKind === "ambiguous") return void 0;
 	const matches = [];
@@ -1646,20 +1654,20 @@ function resolveHostToolCall({ toolCall, serverName, toolNames }) {
 			serverName,
 			toolName
 		});
-		const isDirect = toolCall.name === toolName && isRecord$4(toolCall._meta) && toolCall._meta.serverName === serverName;
-		if (envelopeKind === "deferred-tool" && isQualified(rawInput.tool_name) && isRecord$4(rawInput.tool_input) && (toolCall.name == null || toolCall.name === "use_tool" || isQualified(toolCall.name))) matches.push({
+		const isDirect = toolCall.name === toolName && isRecord$5(toolCall._meta) && toolCall._meta.serverName === serverName;
+		if (envelopeKind === "deferred-tool" && isQualified(rawInput.tool_name) && isRecord$5(rawInput.tool_input) && (toolCall.name == null || toolCall.name === "use_tool" || isQualified(toolCall.name))) matches.push({
 			toolName,
 			input: rawInput.tool_input
 		});
-		else if (envelopeKind === "provider-tool" && rawInput.providerIdentifier === serverName && rawInput.toolName === toolName && isRecord$4(rawInput.args) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
+		else if (envelopeKind === "provider-tool" && rawInput.providerIdentifier === serverName && rawInput.toolName === toolName && isRecord$5(rawInput.args) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
 			toolName,
 			input: rawInput.args
 		});
-		else if (envelopeKind === "server-tool" && rawInput.server === serverName && rawInput.tool === toolName && isRecord$4(rawInput.arguments) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
+		else if (envelopeKind === "server-tool" && rawInput.server === serverName && rawInput.tool === toolName && isRecord$5(rawInput.arguments) && (toolCall.name == null || isQualified(toolCall.name))) matches.push({
 			toolName,
 			input: rawInput.arguments
 		});
-		else if (envelopeKind === "origin-operation" && rawInput.origin === serverName && rawInput.operation === toolName && isRecord$4(rawInput.arguments) && (toolCall.name == null || toolCall.name === toolName || isQualified(toolCall.name))) matches.push({
+		else if (envelopeKind === "origin-operation" && rawInput.origin === serverName && rawInput.operation === toolName && isRecord$5(rawInput.arguments) && (toolCall.name == null || toolCall.name === toolName || isQualified(toolCall.name))) matches.push({
 			toolName,
 			input: rawInput.arguments
 		});
@@ -1670,7 +1678,7 @@ function resolveHostToolCall({ toolCall, serverName, toolNames }) {
 	}
 	return matches.length === 1 ? matches[0] : void 0;
 }
-function isRecord$4(value) {
+function isRecord$5(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
@@ -1904,9 +1912,9 @@ function hasConflictingHostToolPermission({ toolCall, observed, call, serverName
 		name: toolCall.name,
 		serverName,
 		toolName: call.toolName
-	}) && !(toolCall.name === "use_tool" && isRecord$3(observed.rawInput) && classifyHostToolInputEnvelope({ rawInput: observed.rawInput }) === "deferred-tool")) return true;
+	}) && !(toolCall.name === "use_tool" && isRecord$4(observed.rawInput) && classifyHostToolInputEnvelope({ rawInput: observed.rawInput }) === "deferred-tool")) return true;
 	if (toolCall.rawInput === void 0) return false;
-	if (!isRecord$3(toolCall.rawInput)) return true;
+	if (!isRecord$4(toolCall.rawInput)) return true;
 	const fingerprint = canonicalFingerprint({ value: toolCall.rawInput });
 	const inputFingerprint = canonicalFingerprint({ value: call.input });
 	if (fingerprint === canonicalFingerprint({ value: observed.rawInput }) || fingerprint === inputFingerprint) return false;
@@ -1926,7 +1934,7 @@ function hasPortableEvidence({ candidate, invocation }) {
 	let hasToolName = false;
 	let hasInput = false;
 	for (const evidence of candidate.evidence) {
-		if (isRecord$3(evidence) && typeof evidence.toolCallId === "string") {
+		if (isRecord$4(evidence) && typeof evidence.toolCallId === "string") {
 			const call = resolveHostToolCall({
 				toolCall: evidence,
 				serverName: invocation.serverName,
@@ -1963,7 +1971,7 @@ function hasPortableEvidence({ candidate, invocation }) {
 			hasServerIdentity = true;
 			hasToolName = true;
 		}
-		if (typeof deferredToolName === "string" && isRecord$3(deferredToolInput) && hasDelimitedPair({
+		if (typeof deferredToolName === "string" && isRecord$4(deferredToolInput) && hasDelimitedPair({
 			value: deferredToolName,
 			serverName: invocation.serverName,
 			toolName: invocation.toolName
@@ -1988,7 +1996,7 @@ function hasPortableEvidence({ candidate, invocation }) {
 	return hasServerIdentity && hasToolName && hasInput;
 }
 function resolvePermissionHostTool({ toolCall, serverName, toolName }) {
-	if (!isRecord$3(toolCall.rawInput)) return void 0;
+	if (!isRecord$4(toolCall.rawInput)) return void 0;
 	const call = resolveHostToolCall({
 		toolCall,
 		serverName,
@@ -2105,7 +2113,7 @@ function getProperty({ value, property }) {
 	if (value == null || typeof value !== "object" || Array.isArray(value)) return;
 	return Reflect.get(value, property);
 }
-function isRecord$3(value) {
+function isRecord$4(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 function isTerminalToolUpdate(message) {
@@ -2225,7 +2233,7 @@ function setStringAtPath({ record, path, value }) {
 	return {
 		...record,
 		[key]: remainingPath.length === 0 ? value : setStringAtPath({
-			record: isRecord$2(record[key]) ? record[key] : {},
+			record: isRecord$3(record[key]) ? record[key] : {},
 			path: remainingPath,
 			value
 		})
@@ -2234,12 +2242,12 @@ function setStringAtPath({ record, path, value }) {
 function assertSafePath({ path }) {
 	if (path.length === 0 || path.some((segment) => segment.length === 0 || UNSAFE_PATH_SEGMENTS.has(segment))) throw new Error("ACP instruction mapping path must contain only safe, non-empty property names.");
 }
-function isRecord$2(value) {
+function isRecord$3(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 //#endregion
 //#region src/v1/bridge/host-tool-mcp-server.ts
-const VERSION = "1.0.90";
+const VERSION = "1.0.103";
 function createHostToolMCPServer({ tools, revision = 1, invoke, onListTools }) {
 	let catalog = createCatalog({
 		revision,
@@ -2603,7 +2611,7 @@ async function handleRequest({ request, credential, state, serverName, nonTextCo
 	});
 }
 async function handleCatalogNext({ body, state }) {
-	if (!isRecord$1(body) || !Number.isSafeInteger(body.afterRevision) || body.afterRevision < 0) throw new RelayRequestError({
+	if (!isRecord$2(body) || !Number.isSafeInteger(body.afterRevision) || body.afterRevision < 0) throw new RelayRequestError({
 		status: 400,
 		message: "Invalid host tool catalog poll request."
 	});
@@ -2619,7 +2627,7 @@ async function handleCatalogNext({ body, state }) {
 	} : { revision: state.revision };
 }
 function handleCatalogSeen({ body, state }) {
-	if (!isRecord$1(body) || !Number.isSafeInteger(body.revision) || body.revision < 1 || body.revision > state.revision) throw new RelayRequestError({
+	if (!isRecord$2(body) || !Number.isSafeInteger(body.revision) || body.revision < 1 || body.revision > state.revision) throw new RelayRequestError({
 		status: 400,
 		message: "Invalid host tool catalog acknowledgment."
 	});
@@ -2641,7 +2649,7 @@ async function handleInvocation({ body, state, serverName, nonTextContentTypes, 
 		status: 409,
 		message: "No ACP prompt turn is active."
 	});
-	if (!isRecord$1(body) || typeof body.requestId !== "string" || typeof body.toolName !== "string" || !isRecord$1(body.input) || !Number.isSafeInteger(body.catalogRevision)) throw new RelayRequestError({
+	if (!isRecord$2(body) || typeof body.requestId !== "string" || typeof body.toolName !== "string" || !isRecord$2(body.input) || !Number.isSafeInteger(body.catalogRevision)) throw new RelayRequestError({
 		status: 400,
 		message: "Invalid host tool relay request."
 	});
@@ -2799,7 +2807,7 @@ function closeServer({ server }) {
 		});
 	});
 }
-function isRecord$1(value) {
+function isRecord$2(value) {
 	return value != null && typeof value === "object" && !Array.isArray(value);
 }
 var RelayRequestError = class extends Error {
@@ -2982,7 +2990,7 @@ async function refreshHostToolCatalog({ relay, tools, harnessId, timeoutMs }) {
 	})) return;
 	throw new HarnessBridgeCapabilityUnsupportedError({
 		harnessId,
-		message: `The ACP implementation did not load the active harness-owned MCP tool catalog to revision ${catalog.revision} before the next prompt, so host tools cannot be exposed safely.`
+		message: `The ACP agent did not load the active harness-owned MCP tool catalog to revision ${catalog.revision} before the next prompt, so host tools cannot be exposed safely.`
 	});
 }
 //#endregion
@@ -3163,22 +3171,58 @@ function unsupported({ harnessId, message }) {
 	});
 }
 //#endregion
+//#region src/v1/bridge/resolve-acp-model-id.ts
+/**
+* Reads the model an ACP agent reports as currently selected for a session.
+*
+* `sessionState` is a raw `session/new`, `session/load`, `session/resume`,
+* `session/set_config_option`, or `session/set_model` response, or a
+* `config_option_update` session update. It is read without schema parsing
+* because some agents (GitHub Copilot, Grok Build) report the model through
+* the non-standard `models.currentModelId` field, which the ACP SDK types do
+* not include.
+*/
+function resolveACPModelId({ sessionState, modelMapping }) {
+	if (!isRecord$1(sessionState)) return void 0;
+	const fromConfigOption = () => {
+		const configOptions = Array.isArray(sessionState.configOptions) ? sessionState.configOptions.filter(isRecord$1) : [];
+		return nonEmptyString(((modelMapping?.type === "session-config-option" ? configOptions.find((candidate) => candidate.id === modelMapping.path) : void 0) ?? configOptions.find((candidate) => candidate.category === "model"))?.currentValue);
+	};
+	const fromSessionModel = () => isRecord$1(sessionState.models) ? nonEmptyString(sessionState.models.currentModelId) : void 0;
+	return modelMapping?.type === "session-model" ? fromSessionModel() ?? fromConfigOption() : fromConfigOption() ?? fromSessionModel();
+}
+function nonEmptyString(value) {
+	return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function isRecord$1(value) {
+	return value != null && typeof value === "object" && !Array.isArray(value);
+}
+//#endregion
 //#region src/v1/bridge/model-mapping.ts
+/**
+* Applies the requested model to the ACP session and returns the model the
+* agent reports as selected afterwards, falling back to the requested model
+* when the agent's response does not report one. Returns `undefined` when no
+* model is requested.
+*/
 async function configureACPModel({ agent, sessionId, model, mapping }) {
-	if (model == null) return;
+	if (model == null) return void 0;
 	if (mapping == null) throw new Error("ACP model mapping is required when a model is set.");
-	if (mapping.type === "session-model") {
-		await agent.request("session/set_model", {
+	if (mapping.type === "session-model") return resolveACPModelId({
+		sessionState: await agent.request("session/set_model", {
 			sessionId,
 			[mapping.path]: model
-		});
-		return;
-	}
-	await agent.request(acp.methods.agent.session.setConfigOption, {
-		sessionId,
-		configId: mapping.path,
-		value: model
-	});
+		}),
+		modelMapping: mapping
+	}) ?? model;
+	return resolveACPModelId({
+		sessionState: await agent.request(acp.methods.agent.session.setConfigOption, {
+			sessionId,
+			configId: mapping.path,
+			value: model
+		}),
+		modelMapping: mapping
+	}) ?? model;
 }
 //#endregion
 //#region src/v1/bridge/recovered-session.ts
@@ -3332,15 +3376,10 @@ const bridgeStateDir = requireArg({
 	value: args.bridgeStateDir,
 	name: "--bridge-state-dir"
 });
-const implementationDir = requireArg({
-	value: args.implementationDir,
-	name: "--implementation-dir"
-});
 const bridgeType = requireArg({
 	value: args.bridgeType,
 	name: "--bridge-type"
 });
-const implementation = await readImplementationDescriptor({ path: `${implementationDir}/implementation.json` });
 const bridgeConfiguration = await readACPBridgeEnvironment({ env });
 let child;
 let agentResponseStreamFailure;
@@ -3348,6 +3387,7 @@ let connection;
 let session;
 let recoveredSessionUpdates;
 let recoveredSessionId;
+let sessionSupportsImagePrompts = false;
 let sessionConfigurationFingerprint;
 let streamCapture;
 let initializationDiagnostic;
@@ -3356,6 +3396,7 @@ let catalogRefreshError;
 let sessionConfigurationFailure;
 let historicalUpdatesSuppressed = false;
 let coldRestorationMethod;
+let currentModelId;
 let activePermissionController;
 let activeQuestionRequest;
 await runBridge({
@@ -3392,6 +3433,10 @@ async function runTurn(start, turn) {
 			start,
 			turn
 		}));
+		if (!sessionSupportsImagePrompts && start.prompt.some((part) => part.type === "image")) throw new HarnessBridgeCapabilityUnsupportedError({
+			harnessId: bridgeType,
+			message: "The ACP agent does not advertise support for image prompts."
+		});
 	} catch (error) {
 		if (HarnessBridgeCapabilityUnsupportedError.isInstance(error)) throw error;
 		throw createACPBridgeError({
@@ -3458,12 +3503,13 @@ async function runTurn(start, turn) {
 		});
 		return;
 	}
-	await configureACPModel({
+	const configuredModelId = await configureACPModel({
 		agent: connection.agent,
 		sessionId: activeSession.sessionId,
 		model: start.model,
 		mapping: start.modelMapping
 	});
+	if (configuredModelId != null) currentModelId = configuredModelId;
 	let rejectCancellationFailure;
 	const cancellationFailure = new Promise((_, reject) => {
 		rejectCancellationFailure = reject;
@@ -3491,7 +3537,11 @@ async function runTurn(start, turn) {
 			rejectCancellationFailure(cancellationFailureError);
 		}
 	};
-	turn.emit({ type: "stream-start" });
+	const streamStartModelId = currentModelId ?? start.model;
+	turn.emit({
+		type: "stream-start",
+		...streamStartModelId ? { modelId: streamStartModelId } : {}
+	});
 	const emitStreamEvent = createEmitStreamEvent({
 		emit: (event) => turn.emit(event),
 		emitToolCallCandidate: ({ toolCall }) => {
@@ -3576,6 +3626,10 @@ async function runTurn(start, turn) {
 				});
 			}
 			if (message.kind === "session_update") {
+				if (message.update.sessionUpdate === "config_option_update") currentModelId = resolveACPModelId({
+					sessionState: message.update,
+					modelMapping: start.modelMapping
+				}) ?? currentModelId;
 				const captured = streamCapture?.takeForUpdate({ update: message.update });
 				hostToolAuthorization.observeUpdate({ update: message.update });
 				for (const rawValue of captured?.precedingRawValues ?? []) emitStreamEvent.raw({ rawValue });
@@ -3638,11 +3692,10 @@ async function ensureSession({ start, turn }) {
 		sessionMeta: bridgeConfiguration.sessionMeta,
 		environment: { ...createChildEnvironment({
 			launchEnv,
-			implementationDir,
-			privateHome: implementation.privateHome
+			home: bridgeConfiguration.agent.home
 		}) }
 	});
-	child = spawn(`${implementationDir}/${implementation.executablePath}`, [...implementation.args], {
+	child = spawn(bridgeConfiguration.agent.command, [...bridgeConfiguration.agent.args], {
 		cwd: workDir,
 		env: instructionConfiguration.environment,
 		shell: false,
@@ -3722,6 +3775,10 @@ async function ensureSession({ start, turn }) {
 	validateACPProtocolVersion({
 		requested: acp.PROTOCOL_VERSION,
 		initialization
+	});
+	sessionSupportsImagePrompts = isACPImagePromptSupported({
+		initialization,
+		nonTextContentTypes: bridgeConfiguration.nonTextContentTypes
 	});
 	if (authentication != null) await authenticate({
 		agent: connection.agent,
@@ -3816,6 +3873,10 @@ async function ensureSession({ start, turn }) {
 		throw error;
 	}
 	session = createdSession;
+	currentModelId = resolveACPModelId({
+		sessionState: createdSession.newSessionResponse,
+		modelMapping: start.modelMapping
+	});
 	initializationDiagnostic = createACPInitializationDiagnostic({
 		initialization,
 		sessionId: createdSession.sessionId
@@ -3893,7 +3954,7 @@ function resolveGatewayValues({ clientApp }) {
 		clientAppVersion: clientApp.version
 	};
 }
-function createChildEnvironment({ launchEnv, implementationDir, privateHome }) {
+function createChildEnvironment({ launchEnv, home }) {
 	const blocked = /* @__PURE__ */ new Set([
 		"BRIDGE_CHANNEL_TOKEN",
 		"BRIDGE_WS_PORT",
@@ -3907,8 +3968,7 @@ function createChildEnvironment({ launchEnv, implementationDir, privateHome }) {
 		...Object.fromEntries(Object.entries(env).filter(([key, value]) => !blocked.has(key) && value != null)),
 		...launchEnv
 	};
-	if (!privateHome) return environment;
-	const home = `${implementationDir}/home`;
+	if (home == null) return environment;
 	const inheritedPath = environment.PATH;
 	return {
 		...environment,
@@ -3955,17 +4015,6 @@ function promptActiveSession({ session, agent, prompt, meta }) {
 	}, (error) => updates.reject(error));
 	return response;
 }
-async function readImplementationDescriptor({ path }) {
-	const text = await readFile(path, "utf8");
-	const value = await new Response(text, { headers: { "content-type": "application/json" } }).json();
-	if (!isRecord(value) || typeof value.executablePath !== "string" || typeof value.privateHome !== "boolean" || !Array.isArray(value.args) || !value.args.every((item) => typeof item === "string") || !Array.isArray(value.envKeys) || !value.envKeys.every((item) => typeof item === "string")) throw new Error("Invalid ACP implementation descriptor.");
-	return {
-		executablePath: value.executablePath,
-		privateHome: value.privateHome,
-		args: value.args,
-		envKeys: value.envKeys
-	};
-}
 function parseArgs({ args }) {
 	const result = {};
 	for (let index = 0; index < args.length; index++) {
@@ -3973,7 +4022,6 @@ function parseArgs({ args }) {
 		if (value == null) continue;
 		if (args[index] === "--workdir") result.workDir = value;
 		else if (args[index] === "--bridge-state-dir") result.bridgeStateDir = value;
-		else if (args[index] === "--implementation-dir") result.implementationDir = value;
 		else if (args[index] === "--bridge-type") result.bridgeType = value;
 	}
 	return result;

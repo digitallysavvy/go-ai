@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 )
 
 // ThinkingConfig controls Anthropic extended thinking for the Deep Agents
@@ -62,4 +63,21 @@ type StartMessage struct {
 	SkillsChanged  bool              `json:"skillsChanged,omitempty"`
 	RecursionLimit *int              `json:"recursionLimit,omitempty"`
 	Headers        map[string]string `json:"headers,omitempty"`
+
+	// PromptContent carries text plus inline images. When nil the prompt is
+	// the plain string StartBase.Prompt. Mirrors TS `harnessPromptContentSchema`.
+	PromptContent *harnessutil.PromptContent `json:"-"`
+}
+
+// MarshalJSON encodes PromptContent (when set) as the `prompt` field, in place
+// of the plain-string StartBase.Prompt.
+func (f StartMessage) MarshalJSON() ([]byte, error) {
+	type plain StartMessage
+	if f.PromptContent == nil {
+		return json.Marshal(plain(f))
+	}
+	return json.Marshal(struct {
+		plain
+		Prompt harnessutil.PromptContent `json:"prompt"`
+	}{plain(f), *f.PromptContent})
 }

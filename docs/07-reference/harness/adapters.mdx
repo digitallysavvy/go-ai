@@ -213,11 +213,44 @@ Each adapter is its own package under `pkg/harness`. Every adapter has a `Harnes
 | `harness/grokbuild` | `grokbuild.CreateGrokBuild(...Settings) (harness.Harness, error)` | Grok Build, through ACP. |
 | `harness/acp` | `acp.CreateACP(Settings) (harness.Harness, error)` | Any runtime that speaks the Agent Client Protocol. The Cursor, GitHub Copilot and Grok Build adapters are configurations of it. |
 
+### Image input
+
+User messages can carry inline images next to text. `harnessutil.ExtractPromptContent` normalizes a `harness.Prompt` into plain text (a bare string, or a message whose parts are all text, joined with a blank line) or into ordered text and base64 image parts. Claude Code, Codex, OpenCode, Deep Agents and the ACP-based adapters use it.
+
+Pass an image as an `types.ImageContent`, or as a `types.FileContent` whose media type starts with `image`. The data can be bytes, a base64 string, or a base64 `data:` URL. When the media type is only `image` or `image/*`, it is taken from the `data:` URL or detected from the bytes.
+
+The helper rejects these inputs with a `*harness.CapabilityUnsupportedError`, before any turn starts:
+
+- remote image URLs
+- provider file references
+- `data:` URLs that are not base64 encoded
+- images whose media type cannot be detected
+- files that are not images
+- content parts other than text, image and file
+
+```go
+msg := types.Message{
+	Role: types.RoleUser,
+	Content: []types.ContentPart{
+		types.TextContent{Text: "What is in this image?"},
+		types.FileContent{MediaType: "image/png", Data: pngBytes},
+	},
+}
+result, err := agent.ExecuteWithMessages(ctx, []types.Message{msg})
+```
+
+See `examples/harness/image-input` for a runnable program.
+
 ### Adapter notes
 
-- **ACP image tool output.** `acp.Settings.NonTextContentTypes` declares the non-text tool model output the runtime can deliver to its model. Text is always supported. The only value is `acp.NonTextContentImage`, which the Cursor and Grok Build adapters set. For a runtime that does not declare it, image content from a tool's `toModelOutput` transformation is omitted and the bridge writes a warning to stderr. The fx adapter does not declare it, so it receives text only.
+- **ACP single bridge manifest.** The separate `implementation/` install layer is gone. A `SourceNPMLocked` source is the complete bridge installation: its `package.json` and lockfile replace the bridge's own, so they must also declare every dependency of the ACP bridge manifest at the same version. A `SourceInstallCommand` source installs the bridge's own manifest, then runs the command through `install.sh` with `HOME` set to `<bootstrap dir>/home`. The agent starts from the launch command the host passes to the bridge, and the `--implementation-dir` bridge argument no longer exists. `SourceNPMSimple` is deprecated because TS removed it. It still works as a shim for an install command that runs `npm install --global --prefix "$HOME/.local" <package>@<version>` in the private home.
+- **ACP saved sessions from earlier builds do not resume.** The lifecycle state key is now `agentIdentity` (it was `implementationIdentity`), the identity digest covers a different payload, and the persisted `providerKind` no longer accepts `implementation-default`. TS invalidates every earlier ACP session the same way. An affected session is rejected when the agent validates the saved state, with "Lifecycle state failed schema validation for harness '<id>': ACP lifecycle state data: agentIdentity must be a string." (the TS zod failure for the missing `agentIdentity` key). State that carries `agentIdentity` but was written for a different agent configuration fails with "ACP lifecycle state is incompatible with the configured agent." Start a new session. Sandboxes bootstrapped by an earlier build also keep the old `implementation/` directory, which the new bridge does not use. This applies to the Cursor, GitHub Copilot, Grok Build and fx adapters.
+- **Bridge connection.** Bridge-backed adapters (Claude Code, Codex, Deep Agents, OpenCode and the ACP adapters) share `bridge.NewBridgeConnectFunc`. A connection counts as established only after the bridge sends `bridge-hello`. The initial open retries for the startup timeout and is cancelled by the context of the start call. A reconnect makes a single attempt, because the channel retries it itself. `bridge.ConnectReasonFromContext` tells a connect function which of the two it is serving. Basic sandbox sessions need `Port` and `PortEndpoint`, and `MintBridgeToken` needs a sandbox id. The errors use the harness-neutral TS wording, for example "The harness requires an explicit `port` setting when using a basic sandbox session." Unlike TS, a bridge that rejects the connection as unauthorized (close code 1008) is retried until the startup timeout, because the Go WebSocket client does not expose close codes.
+- **Resolved model.** Every adapter reports the model it ran with in the `stream-start` part's `modelId`, also when the prompt sets no model. The ACP bridge reads it from the session state, so the start frame now always carries the model mapping. Codex uses the model from its thread response. Claude Code ignores its `command_lifecycle` frames when it picks the model. GitHub Copilot in AI Gateway mode exposes no model over ACP, so `stream-start` parts without one report `githubcopilot.GatewayModel` through `acp.Settings.StreamStartFallbackModelID`.
+- **ACP image prompts.** User messages with inline images reach the agent as ACP image content blocks. The bridge rejects an image prompt with a `*harness.CapabilityUnsupportedError` when the agent does not advertise `promptCapabilities.image` and `NonTextContentTypes` does not declare `image`. `acp.TextContentBlock` is now an alias of `acp.ContentBlock`, which has the new image fields.
+- **ACP image tool output.** `acp.Settings.NonTextContentTypes` declares the non-text tool model output the runtime can deliver to its model. Text is always supported. The only value is `acp.NonTextContentImage`, which the Cursor, GitHub Copilot and Grok Build adapters set. GitHub Copilot only processes tool output images with direct GitHub authentication; with AI Gateway the CLI passes only the text. It also enables image prompts when the ACP agent does not advertise image prompt support. For a runtime that does not declare it, image content from a tool's `toModelOutput` transformation is omitted and the bridge writes a warning to stderr. The fx adapter does not declare it, so it receives text only.
 - **ACP `pnpmWorkspaceYaml`.** In `acp.Source`, an empty `PnpmWorkspaceYAML` means unset. TS rejects an explicitly empty `pnpmWorkspaceYaml`; Go treats it the same as omitting the field.
-- **Client attribution.** Adapters send their identity as `<name>/<version>` in the `User-Agent` and `x-client-app` headers. The name is `ai-sdk-harness-<id>` (for example `ai-sdk-harness-claude-code/1.0.155`) with a single `/`, as RFC 9110 requires. Earlier builds sent `ai-sdk/harness-<id>/<version>`. The ACP implementation identity includes the client app, so ACP session state saved by an earlier build no longer resumes ("incompatible with the configured implementation"); start a new session.
+- **Client attribution.** Adapters send their identity as `<name>/<version>` in the `User-Agent` and `x-client-app` headers. The name is `ai-sdk-harness-<id>` (for example `ai-sdk-harness-claude-code/1.0.155`) with a single `/`, as RFC 9110 requires. Earlier builds sent `ai-sdk/harness-<id>/<version>`. The ACP agent identity includes the client app, so a change to it invalidates saved ACP session state.
 - **ACP AI Gateway profile.** When `CredentialBrokering` or `CredentialForwarding` is configured and the provider authentication resolves to AI Gateway, the host resolves the `ProviderAuthentication.GatewayEnv` profile itself. It places the resolved variables (credentials replaced by sandbox placeholders when brokered) in the bridge process environment and tells the bridge `providerEnvironment` is empty. Without either option, the bridge resolves the profile from `AI_SDK_ACP_GATEWAY_*` at startup.
 - **ACP cancellation.** Cancelling the context of an ACP prompt sends `abort` to the bridge and the turn settles with the cancellation error once the bridge reports `finish` (or the connection closes), so the final events are still delivered and the session accepts the next prompt. `context.Cause` of the cancelled context is the error returned.
 - **ACP permission mapping.** `acp.PermissionModeMapping` always has all three modes; a nil target is an explicit no-op for that mode (`null` on the wire). TS also accepts a partial mapping, which it ignores outside the implementation identity; set `UnsetAllowReads`, `UnsetAllowEdits` or `UnsetAllowAll` for the left-out modes to get the same behavior (a partial mapping is never sent to the bridge). With no flag set the mapping is complete. The struct stays comparable with `==`.
@@ -247,6 +280,7 @@ Each adapter is its own package under `pkg/harness`. Every adapter has a `Harnes
 | `PortEndpoint` | `*harness.PortEndpoint` | PortEndpoint overrides the host endpoint used to reach the bridge. Required together with Port for a sandbox that is not a harness.NetworkSandboxSession. |
 | `StartupTimeout` | `time.Duration` | StartupTimeout bounds how long to wait for the bridge to announce its port. Defaults to 120s. |
 | `Reconnect` | `bridge.ReconnectOptions` | Reconnect tunes reconnection after an established bridge connection drops. |
+| `OnDebug` | `func(bridge.ChannelDebugEvent)` | OnDebug is called with bridge connection lifecycle events: reconnect attempts, successful reconnects, and "reconnect-failed" once the connection is closed for good. Hosts that cache idle sessions can use it to reattach before sending the next prompt. The Cause of a failed reconnect can contain connection details, so avoid logging it as is. It runs on the connection's goroutine, so it must not block. |
 | `MintBridgeToken` | `harness.MintBridgeTokenCallback` | MintBridgeToken creates the bridge channel token. Defaults to a random 32-byte hex token. Requires the sandbox to expose an ID. |
 
 {/* /gen:fields */}

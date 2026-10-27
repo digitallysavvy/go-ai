@@ -1,6 +1,11 @@
 package opencode
 
-import "github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+import (
+	"encoding/json"
+
+	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
+	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+)
 
 // Start operation discriminators.
 const (
@@ -30,6 +35,23 @@ type StartMessage struct {
 	// A nil pointer means no filtering; a pointer to an empty slice means
 	// filtering is active but nothing is disabled (sent as `[]`, like TS).
 	InactiveBuiltinToolNames *[]string `json:"inactiveBuiltinToolNames,omitempty"`
+
+	// PromptContent carries text plus inline images. When nil the prompt is
+	// the plain string StartBase.Prompt. Mirrors TS `harnessPromptContentSchema`.
+	PromptContent *harnessutil.PromptContent `json:"-"`
+}
+
+// MarshalJSON encodes PromptContent (when set) as the `prompt` field, in place
+// of the plain-string StartBase.Prompt.
+func (f StartMessage) MarshalJSON() ([]byte, error) {
+	type plain StartMessage
+	if f.PromptContent == nil {
+		return json.Marshal(plain(f))
+	}
+	return json.Marshal(struct {
+		plain
+		Prompt harnessutil.PromptContent `json:"prompt"`
+	}{plain(f), *f.PromptContent})
 }
 
 // builtinToolNames is the ordered key set of TS `OPENCODE_BUILTIN_TOOLS`

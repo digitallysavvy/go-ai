@@ -23,7 +23,7 @@ func TestValidateLifecycleStateDataDeepChecksStartConfigMembers(t *testing.T) {
 		"text format":     `,"responseFormat":{"type":"text"}`,
 	}
 	for name, extra := range ok {
-		if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","turnStartConfig":` + base(extra) + `}`)); err != nil {
+		if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","turnStartConfig":` + base(extra) + `}`)); err != nil {
 			t.Errorf("%s: valid config rejected: %v", name, err)
 		}
 	}
@@ -50,16 +50,16 @@ func TestValidateLifecycleStateDataDeepChecksStartConfigMembers(t *testing.T) {
 		"output mapping bad":     `,"outputSchemaMapping":{"type":"session-prompt-meta","path":[""]}`,
 	}
 	for name, extra := range bad {
-		if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","turnStartConfig":` + base(extra) + `}`)); err == nil {
+		if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","turnStartConfig":` + base(extra) + `}`)); err == nil {
 			t.Errorf("%s: invalid turnStartConfig accepted", name)
 		}
 	}
 	// coldSession shares the tool checks.
-	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","coldSession":{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all","tools":[{"name":3}]}}`)); err == nil {
+	if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","coldSession":{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all","tools":[{"name":3}]}}`)); err == nil {
 		t.Error("coldSession with a malformed tool accepted")
 	}
 	// coldSession omits model/debug: those keys are not checked.
-	if err := v.ValidateLifecycleStateData([]byte(`{"implementationIdentity":"i","coldSession":{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all","model":1,"debug":5}}`)); err != nil {
+	if err := v.ValidateLifecycleStateData([]byte(`{"agentIdentity":"i","coldSession":{"version":1,"configurationFingerprint":"f","permissionMode":"allow-all","model":1,"debug":5}}`)); err != nil {
 		t.Errorf("coldSession must ignore omitted keys: %v", err)
 	}
 }

@@ -76,6 +76,11 @@ type Settings struct {
 	MintBridgeToken      harness.MintBridgeTokenCallback
 }
 
+// GatewayModel is the AI Gateway model the Copilot CLI runs with in BYOK mode
+// (TS `GITHUB_COPILOT_GATEWAY_MODEL`). It is also reported on stream-start
+// parts that carry no model.
+const GatewayModel = "openai/gpt-5.5"
+
 // CreateGitHubCopilot returns the GitHub Copilot harness-v1 adapter, wiring
 // BuildConfig's acp.Settings into a live harness.Harness via acp.CreateACP.
 // Mirrors TS `createGitHubCopilot()`.
@@ -126,7 +131,11 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 		ResolveAuthenticationEnvironment: func(ctx context.Context, auth AuthenticationMode, env map[string]string) (map[string]string, error) {
 			return ResolveSubscriptionEnvironment(ctx, ResolveSubscriptionEnvironmentOptions{Auth: auth, Env: env})
 		},
-		HostToolMCPTransport:   acp.HostToolMCPHTTP,
+		HostToolMCPTransport: acp.HostToolMCPHTTP,
+		// Images from tool outputs are only processed with direct GitHub Copilot
+		// authentication: with AI Gateway the CLI does not fetch the model
+		// catalog and passes only the text of a tool output.
+		NonTextContentTypes:    []acp.NonTextContentType{acp.NonTextContentImage},
 		ForwardEnv:             []string{"COPILOT_GH_HOST", "GH_HOST"},
 		CredentialEnv:          []string{"COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"},
 		CredentialBrokering:    CredentialBrokering,
@@ -138,12 +147,15 @@ func BuildConfig(settings Settings) (acp.Settings, error) {
 				"COPILOT_PROVIDER_TYPE":     "openai",
 				"COPILOT_PROVIDER_API_KEY":  map[string]any{"$source": "gateway-api-key"},
 				"COPILOT_PROVIDER_WIRE_API": "responses",
-				"COPILOT_MODEL":             "openai/gpt-5.5",
+				"COPILOT_MODEL":             GatewayModel,
 				"COPILOT_PROVIDER_HEADERS":  map[string]any{"$source": "client-app", "prefix": "x-client-app: "},
 			},
 		},
-		ModelMapping:    acp.ModelMapping{Type: acp.ModelMappingSessionConfigOption, Path: "model"},
-		SkillsDirectory: ".copilot/skills",
+		ModelMapping: acp.ModelMapping{Type: acp.ModelMappingSessionConfigOption, Path: "model"},
+		// Copilot's BYOK (AI Gateway) mode exposes no model over ACP and the CLI
+		// requires COPILOT_MODEL, so the gateway model is what the session runs.
+		StreamStartFallbackModelID: GatewayModel,
+		SkillsDirectory:            ".copilot/skills",
 		InstructionMapping: &acp.InstructionMapping{
 			Type:     acp.InstructionMappingFilesystem,
 			FilePath: ".copilot/copilot-instructions.md",

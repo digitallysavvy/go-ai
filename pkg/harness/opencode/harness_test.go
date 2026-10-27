@@ -477,7 +477,9 @@ func TestDoPromptTurn_DrainsAbortedTurnBeforeNextTurn(t *testing.T) {
 }
 
 func TestDoStartSpawnsBridgeWithSkillsDirFlag(t *testing.T) {
-	srv := newServer(t, "", func(*bridgetest.Turn, map[string]any) {})
+	// The default random token is unknown to the test, so the server accepts any.
+	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode()
 	if err != nil {
@@ -601,12 +603,6 @@ func TestSplitOpenCodeModel(t *testing.T) {
 	providerID, modelID, model = SplitOpenCodeModel("", "openai")
 	if providerID != "" || modelID != "" || model != "" {
 		t.Fatalf("SplitOpenCodeModel(empty) = (%q, %q, %q), want all empty", providerID, modelID, model)
-	}
-}
-
-func TestExtractUserTextRejectsNonTextParts(t *testing.T) {
-	if _, err := extractUserText(harness.TextPrompt("hi")); err != nil {
-		t.Fatalf("extractUserText(text) error = %v", err)
 	}
 }
 

@@ -533,24 +533,24 @@ func TestTSReplay_LifecycleIdentityMismatchRejected(t *testing.T) {
 	if v, ok := second.(harness.LifecycleStateValidator); !ok || v.ValidateLifecycleStateData(resume.Data) != nil {
 		t.Fatal("a structurally valid state must validate against any identity")
 	}
-	// A legacy providerKind spelling stays structurally valid.
+	// TS #23761 dropped the legacy `implementation-default` providerKind.
 	var data map[string]any
 	_ = json.Unmarshal(resume.Data, &data)
 	data["authenticationProfile"].(map[string]any)["providerKind"] = "implementation-default"
 	legacy, _ := json.Marshal(data)
-	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(legacy); err != nil {
-		t.Fatalf("legacy providerKind rejected: %v", err)
+	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(legacy); err == nil {
+		t.Fatal("legacy providerKind accepted")
 	}
 	_, err = second.DoStart(context.Background(), harness.StartOptions{SessionID: "session-1", SandboxSession: sandbox, SessionWorkDir: "/w", ResumeFrom: resume})
-	if err == nil || !strings.Contains(err.Error(), "ACP lifecycle state is incompatible with the configured implementation.") {
+	if err == nil || !strings.Contains(err.Error(), "ACP lifecycle state is incompatible with the configured agent.") {
 		t.Fatalf("err = %v", err)
 	}
 	// Structurally broken state data is rejected up front.
 	if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(`{"bridge":{"port":1}}`)); err == nil {
-		t.Fatal("state without implementationIdentity must be rejected")
+		t.Fatal("state without agentIdentity must be rejected")
 	}
 	// zod .optional() rejects explicit nulls.
-	for _, bad := range []string{`{"implementationIdentity":"x","bridge":null}`, `{"implementationIdentity":"x","acpSessionId":null}`} {
+	for _, bad := range []string{`{"agentIdentity":"x","bridge":null}`, `{"agentIdentity":"x","acpSessionId":null}`} {
 		if err := first.(harness.LifecycleStateValidator).ValidateLifecycleStateData(json.RawMessage(bad)); err == nil {
 			t.Fatalf("%s must be rejected", bad)
 		}
@@ -1260,19 +1260,19 @@ func TestLifecycleStateNestedNullsRejectedLikeZod(t *testing.T) {
 	}
 	v := h.(harness.LifecycleStateValidator)
 	const br = `"bridge":{"port":1,"token":"t","lastSeenEventId":0`
-	if err := v.ValidateLifecycleStateData(json.RawMessage(`{"implementationIdentity":"i",` + br + `}}`)); err != nil {
+	if err := v.ValidateLifecycleStateData(json.RawMessage(`{"agentIdentity":"i",` + br + `}}`)); err != nil {
 		t.Fatalf("valid state rejected: %v", err)
 	}
 	bad := []string{
-		`{"implementationIdentity":"i","bridge":{"port":1,"token":null,"lastSeenEventId":0}}`,
-		`{"implementationIdentity":"i","bridge":{"port":null,"token":"t","lastSeenEventId":0}}`,
-		`{"implementationIdentity":"i","bridge":{"port":1,"token":"t","lastSeenEventId":null}}`,
-		`{"implementationIdentity":"i",` + br + `,"sandboxId":null}}`,
-		`{"implementationIdentity":"i",` + br + `,"stateDir":null}}`,
-		`{"implementationIdentity":"i","authenticationProfile":{"digest":null,"providerKind":"direct"}}`,
-		`{"implementationIdentity":"i","authenticationProfile":{"digest":"d","providerKind":"direct","acpMethodId":null}}`,
-		`{"implementationIdentity":"i","authenticationProfile":{"digest":"d","providerKind":"direct","providerMode":null}}`,
-		`{"implementationIdentity":"i","recovery":{"mode":"disk-replay","reason":null}}`,
+		`{"agentIdentity":"i","bridge":{"port":1,"token":null,"lastSeenEventId":0}}`,
+		`{"agentIdentity":"i","bridge":{"port":null,"token":"t","lastSeenEventId":0}}`,
+		`{"agentIdentity":"i","bridge":{"port":1,"token":"t","lastSeenEventId":null}}`,
+		`{"agentIdentity":"i",` + br + `,"sandboxId":null}}`,
+		`{"agentIdentity":"i",` + br + `,"stateDir":null}}`,
+		`{"agentIdentity":"i","authenticationProfile":{"digest":null,"providerKind":"direct"}}`,
+		`{"agentIdentity":"i","authenticationProfile":{"digest":"d","providerKind":"direct","acpMethodId":null}}`,
+		`{"agentIdentity":"i","authenticationProfile":{"digest":"d","providerKind":"direct","providerMode":null}}`,
+		`{"agentIdentity":"i","recovery":{"mode":"disk-replay","reason":null}}`,
 	}
 	for _, b := range bad {
 		if err := v.ValidateLifecycleStateData(json.RawMessage(b)); err == nil {

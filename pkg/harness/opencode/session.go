@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,7 +12,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -440,7 +438,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if err != nil {
 		return nil, err
 	}
-	promptText, err := extractUserText(opts.Prompt)
+	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
 	if err != nil {
 		control.settleError(err)
 		return nil, err
@@ -460,7 +458,10 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 		return nil, err
 	}
 	msg.Operation = OperationPrompt
-	msg.Prompt = promptText
+	msg.Prompt = content.Text
+	if !content.IsText() {
+		msg.PromptContent = &content
+	}
 	msg.Tools = opts.Tools
 	msg.ResponseFormat = opts.ResponseFormat
 	msg.Instructions = opts.Instructions
@@ -730,7 +731,7 @@ func teardownProc(proc providerutils.SandboxProcess) {
 }
 
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeSessionID string, helloTimeout time.Duration, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
-	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port)
+	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, HarnessID)
 	if err != nil {
 		return nil, false
 	}
@@ -740,8 +741,8 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	}
 	var supportsUserMessageResponses atomic.Bool
 	channel := bridge.NewChannel(bridge.ChannelOptions{
-		Connect: bridge.NewConnectFunc(endpoint, bridge.DialOptions{
-			Name: "OpenCode bridge", WaitForHello: true, HelloTimeout: helloTimeout,
+		Connect: bridge.NewBridgeConnectFunc(endpoint, bridge.BridgeConnectOptions{
+			Name: "OpenCode bridge",
 			OnHello: func(h *bridge.Hello) {
 				if h.Capabilities != nil && h.Capabilities.ExperimentalUserMessageResponses != nil {
 					supportsUserMessageResponses.Store(*h.Capabilities.ExperimentalUserMessageResponses)
@@ -763,23 +764,4 @@ func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.San
 	p.bridgeToken = coords.Token
 	p.supportsUserMessageResponses = supportsUserMessageResponses.Load
 	return newSession(p), true
-}
-
-// extractUserText reduces the prompt to plain user text; non-text parts are
-// unsupported. Mirrors TS `extractUserText`.
-func extractUserText(p harness.Prompt) (string, error) {
-	if p.Message == nil {
-		return p.Text, nil
-	}
-	var parts []string
-	for _, part := range p.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The OpenCode harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return strings.Join(parts, "\n\n"), nil
 }

@@ -21,7 +21,6 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
 	"github.com/digitallysavvy/go-ai/pkg/internal/jsonorder"
-	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -172,7 +171,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	if err != nil {
 		return nil, err
 	}
-	text, err := extractUserText(opts.Prompt)
+	content, err := harnessutil.ExtractPromptContent(opts.Prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +180,7 @@ func (s *session) DoPromptTurn(ctx context.Context, opts harness.PromptTurnOptio
 	// TS builds the start message (consuming the pending resume thread id) and
 	// clears the recovery flag whether or not the start is still sent: an
 	// already-aborted turn settled in wireTurn and sendStart skips the frame.
-	frame := s.buildStartFrame(text, opts.TurnSettings, opts.ResponseFormat, restartThread, true)
+	frame := s.buildStartFrame(content, opts.TurnSettings, opts.ResponseFormat, restartThread, true)
 	// Recovery starts a native turn once. Later continuations attach to it.
 	s.mu.Lock()
 	s.rerunContinue = false
@@ -215,7 +214,7 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 	}
 	s.mu.Unlock()
 	if rerun {
-		frame := s.buildStartFrame("Continue.", opts.TurnSettings, opts.ResponseFormat, restartThread, false)
+		frame := s.buildStartFrame(harnessutil.PromptContent{Text: "Continue."}, opts.TurnSettings, opts.ResponseFormat, restartThread, false)
 		if ctx.Err() == nil {
 			if err := s.opts.channel.Send(frame); err != nil {
 				control.settleError(err)
@@ -226,10 +225,10 @@ func (s *session) DoContinueTurn(ctx context.Context, opts harness.ContinueTurnO
 	return control, nil
 }
 
-func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *harness.ResponseFormat, restartThread, useFirstPromptResume bool) *StartFrame {
+func (s *session) buildStartFrame(prompt harnessutil.PromptContent, ts harness.TurnSettings, rf *harness.ResponseFormat, restartThread, useFirstPromptResume bool) *StartFrame {
 	frame := &StartFrame{
 		StartBase: bridge.StartBase{
-			Prompt: prompt, Tools: ts.Tools, Model: firstNonEmpty(ts.Model, s.opts.model), ResponseFormat: rf,
+			Prompt: prompt.Text, Tools: ts.Tools, Model: firstNonEmpty(ts.Model, s.opts.model), ResponseFormat: rf,
 			PermissionMode: s.opts.permissionMode, BuiltinToolFiltering: s.opts.builtinToolFiltering, Debug: s.opts.debug,
 		},
 		Instructions:    ts.Instructions,
@@ -239,6 +238,9 @@ func (s *session) buildStartFrame(prompt string, ts harness.TurnSettings, rf *ha
 		MCPServers:      s.opts.mcpServers,
 		Headers:         s.opts.headers,
 		RestartThread:   restartThread,
+	}
+	if !prompt.IsText() {
+		frame.PromptContent = &prompt
 	}
 	s.mu.Lock()
 	if useFirstPromptResume {
@@ -547,24 +549,6 @@ func (c *promptControl) SubmitUserMessage(ctx context.Context, text string) erro
 // buffered parts channel — the live cursor may have moved on by then, so
 // this must not pin "now").
 func (c *promptControl) PinCheckpoint() (release func()) { return c.checkpoint.Pin() }
-
-// extractUserText mirrors TS `extractUserText`.
-func extractUserText(prompt harness.Prompt) (string, error) {
-	if prompt.Message == nil {
-		return prompt.Text, nil
-	}
-	var parts []string
-	for _, part := range prompt.Message.Content {
-		text, ok := part.(types.TextContent)
-		if !ok {
-			return "", harness.NewCapabilityUnsupportedError(
-				fmt.Sprintf("The codex harness does not yet support user message parts of type '%s'. Pass a string or a user message whose content contains only text parts.", part.ContentType()),
-				HarnessID, nil)
-		}
-		parts = append(parts, text.Text)
-	}
-	return strings.Join(parts, "\n\n"), nil
-}
 
 // writeJSCanonicalJSON serializes v byte-for-byte like the TS fingerprint's
 // JSON.stringify with a key-sorting replacer: keys sorted by UTF-16 code unit,
