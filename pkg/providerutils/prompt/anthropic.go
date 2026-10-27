@@ -1173,6 +1173,17 @@ func (c *anthropicConverter) convertToolResultContentBlock(block types.ToolResul
 func (c *anthropicConverter) convertToolResultFile(f anthropicFile) (map[string]interface{}, error) {
 	topLevel := topLevelMediaType(f.mediaType)
 	switch f.kind {
+	case types.FileDataTypeReference:
+		fileID, err := providerutils.ResolveProviderReference(f.reference, "anthropic")
+		if err != nil {
+			return nil, err
+		}
+		c.addBeta(AnthropicBetaFilesAPI)
+		blockType := "document"
+		if topLevel == "image" {
+			blockType = "image"
+		}
+		return map[string]interface{}{"type": blockType, "source": map[string]interface{}{"type": "file", "file_id": fileID}}, nil
 	case types.FileDataTypeURL:
 		if topLevel == "image" {
 			return map[string]interface{}{"type": "image", "source": map[string]interface{}{"type": "url", "url": f.url}}, nil
