@@ -32,8 +32,8 @@ func TestPerCallTimeoutOverridesConfig(t *testing.T) {
 // prepareCall never sees the call's timeout, and generate/stream use
 // `timeout ?? preparedCall.timeout`.
 func TestPerCallTimeoutWinsOverPrepareCallTimeout(t *testing.T) {
-	prepared, callMs := time.Hour, time.Millisecond
-	call := &ai.TimeoutConfig{ToolMs: &callMs}
+	prepared, callTimeoutDur := time.Hour, time.Millisecond
+	call := &ai.TimeoutConfig{ToolMs: &callTimeoutDur}
 	agent := NewToolLoopAgent(AgentConfig{
 		PrepareCall: func(_ context.Context, c PrepareCallConfig) PrepareCallConfig {
 			c.Timeout = &ai.TimeoutConfig{ToolMs: &prepared}
