@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/harness"
 	"github.com/digitallysavvy/go-ai/pkg/harness/bridge"
 	"github.com/digitallysavvy/go-ai/pkg/harness/harnessutil"
+	"github.com/digitallysavvy/go-ai/pkg/harness/internal/posixpath"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 )
 
@@ -191,9 +192,11 @@ func (h *openCodeHarness) DoStart(ctx context.Context, opts harness.StartOptions
 		return nil, err
 	}
 	stateDir := harness.StateDirectoryPath(sandboxHomeDir)
-	bootstrapDir := stateDir + "/" + BootstrapDir
+	bootstrapDir := posixpath.Resolve(stateDir, BootstrapDir)
 	workDir := opts.SessionWorkDir
-	skillsDir := sandboxHomeDir + "/.agents/skills"
+	// TS path.posix.join(sandboxHomeDir, '.agents', 'skills'): a HOME with a
+	// trailing slash yields no double slash.
+	skillsDir := posixpath.Join(sandboxHomeDir, ".agents", "skills")
 	sessionDataDir := harness.SessionDataDirectoryPath(stateDir, opts.SessionID)
 	bridgeStateDir := sessionDataDir + "/bridge"
 	timeout := settings.StartupTimeout
