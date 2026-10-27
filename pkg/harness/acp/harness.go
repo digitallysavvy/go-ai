@@ -367,12 +367,8 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 	if isNetwork {
 		sandboxID = networkSession.ID()
 	}
-	if err := validateBasicSandboxSettings(sandboxSession, settings.Port, settings.PortEndpoint, settings.HarnessID); err != nil {
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, settings.HarnessID); err != nil {
 		return nil, err
-	}
-	if settings.MintBridgeToken != nil && sandboxID == "" {
-		return nil, unsupported(settings.HarnessID, fmt.Sprintf(
-			"The %s ACP harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", settings.HarnessID))
 	}
 
 	// Mirrors TS `startOptions.continueFrom ?? startOptions.resumeFrom?.continueFrom`.
@@ -651,9 +647,9 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		}
 	}
 
-	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
+	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, settings.HarnessID)
 	if err != nil {
-		return nil, wrapPortError(err, settings.HarnessID)
+		return nil, err
 	}
 	token := mintBridgeToken(settings.MintBridgeToken, sandboxID)
 
@@ -704,7 +700,7 @@ func (h *acpHarness) DoStart(ctx context.Context, opts harness.StartOptions) (ha
 		BridgeStateDir: bridgeStateDir, BridgeType: settings.HarnessID, StartupTimeout: timeout,
 		ReplayFromDisk: respawnStrategy != nil && respawnStrategy.mode == acpRecoveryDiskReplay,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
-			return resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort, settings.HarnessID)
+			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, settings.HarnessID)
 		},
 	})
 	if err != nil {
@@ -805,37 +801,6 @@ func mintBridgeToken(cb harness.MintBridgeTokenCallback, sandboxID string) strin
 		return bridge.CreateBridgeToken()
 	}
 	return cb(sandboxID)
-}
-
-func validateBasicSandboxSettings(sandboxSession providerutils.SandboxSession, port int, portEndpoint *harness.PortEndpoint, harnessID string) error {
-	if _, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
-		return nil
-	}
-	if port == 0 {
-		return unsupported(harnessID, fmt.Sprintf("The %s ACP harness requires an explicit `port` when using a basic sandbox session.", harnessID))
-	}
-	if portEndpoint == nil {
-		return unsupported(harnessID, fmt.Sprintf("The %s ACP harness requires an explicit `portEndpoint` when using a basic sandbox session.", harnessID))
-	}
-	return nil
-}
-
-func resolveBridgeEndpoint(ctx context.Context, sandboxSession providerutils.SandboxSession, override *harness.PortEndpoint, port int, harnessID string) (harness.PortEndpoint, error) {
-	if override != nil {
-		return *override, nil
-	}
-	if n, ok := harness.AsNetworkSandboxSession(sandboxSession); ok {
-		return n.GetPortEndpoint(ctx, harness.PortEndpointOptions{Port: port, Protocol: harness.PortProtocolWS})
-	}
-	return harness.PortEndpoint{}, unsupported(harnessID, fmt.Sprintf("The %s ACP harness requires an explicit `portEndpoint` when using a basic sandbox session.", harnessID))
-}
-
-func wrapPortError(err error, harnessID string) error {
-	if err == bridge.ErrNoPort {
-		return unsupported(harnessID, fmt.Sprintf(
-			"The %s ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or configure the harness `port`.", harnessID))
-	}
-	return err
 }
 
 func uniqueStrings(values []string) []string {

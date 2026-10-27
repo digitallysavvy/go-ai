@@ -101,19 +101,8 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 	if isNetwork {
 		sandboxID = networkSandbox.ID()
 	}
-	if !isNetwork {
-		if settings.Port == 0 {
-			return nil, harness.NewCapabilityUnsupportedError(
-				"The Claude Code harness requires an explicit `port` when using a basic sandbox session.", HarnessID, nil)
-		}
-		if settings.PortEndpoint == nil {
-			return nil, harness.NewCapabilityUnsupportedError(
-				"The Claude Code harness requires an explicit `portEndpoint` when using a basic sandbox session.", HarnessID, nil)
-		}
-	}
-	if settings.MintBridgeToken != nil && sandboxID == "" {
-		return nil, harness.NewCapabilityUnsupportedError(
-			"The Claude Code harness cannot use `mintBridgeToken` with a sandbox session that does not expose an id.", HarnessID, nil)
+	if err := bridge.ValidateBridgeSandboxSettings(sandboxSession, sandboxID, settings.Port, settings.PortEndpoint, settings.MintBridgeToken, HarnessID); err != nil {
+		return nil, err
 	}
 
 	var resumeData resumeStateData
@@ -268,10 +257,9 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		}
 	}
 
-	port, err := bridge.ResolveBridgePort(sandboxSession, settings.Port)
+	port, err := bridge.ResolveBridgePortOrUnsupported(sandboxSession, settings.Port, HarnessID)
 	if err != nil {
-		return nil, harness.NewCapabilityUnsupportedError(
-			"The claude-code harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or pass `New(Settings{Port: ...})`.", HarnessID, err)
+		return nil, err
 	}
 	token := bridge.CreateBridgeToken()
 	if settings.MintBridgeToken != nil {
@@ -288,7 +276,7 @@ func (h *Harness) DoStart(ctx context.Context, opts harness.StartOptions) (harne
 		BridgeType:     HarnessID,
 		StartupTimeout: timeout,
 		ResolveEndpoint: func(ctx context.Context, boundPort int) (harness.PortEndpoint, error) {
-			return bridge.ResolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, boundPort)
+			return bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, boundPort, HarnessID)
 		},
 	})
 	if err != nil {

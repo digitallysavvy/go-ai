@@ -110,10 +110,10 @@ func TestDoStartPersistsBoundBridgePort(t *testing.T) {
 
 func (s boundPortSandbox) Restricted() providerutils.SandboxSession { return s }
 
-func TestWrapPortErrorMessageMatchesTS(t *testing.T) {
-	err := wrapPortError(bridge.ErrNoPort, "h")
-	want := "The h ACP harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or configure the harness `port`."
-	if err == nil || !strings.Contains(err.Error(), want) {
+func TestPortErrorMessageMatchesTS(t *testing.T) {
+	_, err := bridge.ResolveBridgePortOrUnsupported(basicSandbox{}, 0, "h")
+	want := "The harness needs a TCP port exposed by the sandbox. Create the sandbox with `ports: [<port>]` or configure the harness `port` setting."
+	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %q", err, want)
 	}
 }

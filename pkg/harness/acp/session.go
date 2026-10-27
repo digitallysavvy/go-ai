@@ -1103,7 +1103,7 @@ func restoreColdACPSession(ctx context.Context, channel *bridge.Channel, harness
 }
 
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeData resumeStateData, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, error) {
-	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port, settings.HarnessID)
+	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, settings.HarnessID)
 	if err != nil {
 		return nil, err
 	}

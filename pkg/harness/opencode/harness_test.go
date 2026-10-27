@@ -477,7 +477,9 @@ func TestDoPromptTurn_DrainsAbortedTurnBeforeNextTurn(t *testing.T) {
 }
 
 func TestDoStartSpawnsBridgeWithSkillsDirFlag(t *testing.T) {
-	srv := newServer(t, "", func(*bridgetest.Turn, map[string]any) {})
+	// The default random token is unknown to the test, so the server accepts any.
+	srv := bridgetest.NewServer(bridgetest.Options{AnyToken: true})
+	t.Cleanup(srv.Close)
 	sandbox := newFakeSandbox(srv)
 	h, err := CreateOpenCode()
 	if err != nil {

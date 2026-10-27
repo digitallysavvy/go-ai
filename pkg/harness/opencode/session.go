@@ -731,7 +731,7 @@ func teardownProc(proc providerutils.SandboxProcess) {
 }
 
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, resumeSessionID string, helloTimeout time.Duration, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
-	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port)
+	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, HarnessID)
 	if err != nil {
 		return nil, false
 	}

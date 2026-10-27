@@ -343,7 +343,7 @@ func teardown(channel *bridge.Channel, proc providerutils.SandboxProcess, operat
 // returns the resulting session. On any failure it returns ok=false so the
 // caller falls through to a fresh spawn.
 func attachToRunningBridge(ctx context.Context, sandboxSession providerutils.SandboxSession, settings Settings, coords *bridgeCoords, isContinue bool, onBridgeErr func(*harness.ErrorPart), onDiagnostic func(bridge.OutboundMessage), p sessionParams) (*session, bool) {
-	endpoint, err := resolveBridgeEndpoint(ctx, sandboxSession, settings.PortEndpoint, coords.Port)
+	endpoint, err := bridge.ResolveBridgeEndpointOrUnsupported(ctx, sandboxSession, settings.PortEndpoint, coords.Port, HarnessID)
 	if err != nil {
 		return nil, false
 	}
