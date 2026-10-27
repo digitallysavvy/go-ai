@@ -4242,6 +4242,11 @@ func (s *responsesStream) handleOutputItemDone(e responses.OutputItemDoneEvent) 
 				&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ID: toolCall.toolCallID},
 			)
 		}
+		// TS emits the final tool-call only for an item that was announced by
+		// output_item.added and whose status is "completed".
+		if toolCall == nil || item.Status != "completed" {
+			return nil, false
+		}
 		rawArgs := marshalNoEscape(map[string]interface{}{
 			"callId":    item.CallID,
 			"operation": item.Operation,
