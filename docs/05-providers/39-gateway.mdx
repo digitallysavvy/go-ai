@@ -206,6 +206,21 @@ result, err := ai.GenerateImage(context.Background(), ai.GenerateImageOptions{
 
 `gateway.NewTranscriptionModel` transcribes audio through the Gateway's `/transcription-model` endpoint. When a request asks for xAI speaker diarization (`providerOptions` `"xai"` or `"spacexai"` with `"diarize": true`) on a `spacexai/` or `xai/` model, but the Gateway response contains no `speaker` metadata, the result carries an `unsupported` warning (`providerOptions.xai.diarize`: "AI Gateway does not currently expose xAI speaker diarization metadata."). When speaker data is present in the response (for example in `ProviderMetadata["xai"]["words"]`), no warning is added.
 
+## Streaming speech (experimental)
+
+`gateway.NewSpeechModel` also implements `provider.SpeechStreamer`, so it works with `ai.ExperimentalStreamSpeech`. Text is streamed to the Gateway's `/speech-model` WebSocket (subprotocol `ai-gateway-speech.v1`) and audio streams back. The WebSocket URL is built from the provider's configured base URL, so credentials are sent only to that host.
+
+```go
+model := provider.ExperimentalSpeech("elevenlabs/eleven-flash-v2.5")
+
+result, err := ai.ExperimentalStreamSpeech(ctx, ai.StreamSpeechOptions{
+    Model: model,
+    Text:  "Hello from the Gateway.",
+})
+```
+
+`provider.GetSpeechToken(ctx, modelID, nil)` mints a short-lived, speech-bound client secret (`vcst_...`) and returns it with the WebSocket URL, so a client can stream without holding your Gateway credential. Call it on your server only. See [Streaming speech](../03-ai-sdk-core/37-speech.mdx#streaming-speech-experimental).
+
 ## Embeddings
 
 ```go
