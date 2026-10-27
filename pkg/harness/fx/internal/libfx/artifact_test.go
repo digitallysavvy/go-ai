@@ -266,3 +266,27 @@ func TestResolveDownloadsAndCachesThePinnedModule(t *testing.T) {
 		t.Fatalf("cache hit: %+v %v", mod, err)
 	}
 }
+
+// A tarball whose entries before fx-core.wasm decompress past the cap is
+// refused instead of being inflated without bound.
+func TestExtractWasmBoundsDecompression(t *testing.T) {
+	old := maxTarballUnpackedBytes
+	maxTarballUnpackedBytes = 1 << 20
+	t.Cleanup(func() { maxTarballUnpackedBytes = old })
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	_ = tw.WriteHeader(&tar.Header{Name: "package/aaa-padding", Mode: 0o644, Size: 2 << 20, Typeflag: tar.TypeReg})
+	_, _ = tw.Write(make([]byte, 2<<20))
+	_ = tw.WriteHeader(&tar.Header{Name: tarballWasmPath, Mode: 0o644, Size: 8, Typeflag: tar.TypeReg})
+	_, _ = tw.Write([]byte("\x00asm\x01\x00\x00\x00"))
+	_ = tw.Close()
+	_ = gz.Close()
+	if _, err := extractWasm(bytes.NewReader(buf.Bytes())); err == nil {
+		t.Fatal("tarball past the decompression cap accepted")
+	}
+	maxTarballUnpackedBytes = old
+	if got, err := extractWasm(bytes.NewReader(buf.Bytes())); err != nil || string(got) != "\x00asm\x01\x00\x00\x00" {
+		t.Fatalf("within the cap: %q, %v", got, err)
+	}
+}

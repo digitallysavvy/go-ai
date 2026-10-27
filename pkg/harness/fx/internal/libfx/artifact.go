@@ -40,6 +40,11 @@ const (
 	downloadTimeout = 3 * time.Minute
 )
 
+// maxTarballUnpackedBytes caps the decompressed tar stream (48 MB for
+// 0.0.14). A URL tarball is not covered by the registry's sha512, so this
+// bounds a gzip bomb ahead of the wanted entry. A var so tests can lower it.
+var maxTarballUnpackedBytes int64 = 256 << 20
+
 // ErrWasmUnavailable is matched (errors.Is) by *UnavailableError: no usable
 // fx-core.wasm could be found or fetched.
 var ErrWasmUnavailable = errors.New("libfx: fx-core.wasm is unavailable")
@@ -411,14 +416,15 @@ func cleanupTemp(f *os.File) {
 }
 
 // extractWasm streams a gzip tarball and returns the regular-file entry
-// named exactly package/fx-core.wasm, capped at maxWasmBytes.
+// named exactly package/fx-core.wasm, capped at maxWasmBytes. Nothing is
+// written to disk, and at most maxTarballUnpackedBytes are decompressed.
 func extractWasm(r io.Reader) ([]byte, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, err
 	}
 	defer gz.Close() //nolint:errcheck
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(io.LimitReader(gz, maxTarballUnpackedBytes))
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {
