@@ -272,14 +272,16 @@ func describe(ctx context.Context, wasm []byte) ([]importDef, []string, error) {
 		}
 		imports = append(imports, importDef{Module: module, Name: name, Params: valueTypes(d.ParamTypes()), Results: valueTypes(d.ResultTypes())})
 	}
-	var exports []string
-	for name := range cm.ExportedFunctions() {
-		exports = append(exports, "func "+name)
+	// Pin only the exports the host calls or reads: a () -> () _start and
+	// the memory. Other exports are not part of the host interface.
+	start, ok := cm.ExportedFunctions()["_start"]
+	if !ok || len(start.ParamTypes()) != 0 || len(start.ResultTypes()) != 0 {
+		return nil, nil, errors.New("fx-core.wasm does not export _start() -> ()")
 	}
-	for name := range cm.ExportedMemories() {
-		exports = append(exports, "memory "+name)
+	if _, ok := cm.ExportedMemories()["memory"]; !ok {
+		return nil, nil, errors.New("fx-core.wasm does not export its memory as \"memory\"")
 	}
-	return imports, exports, nil
+	return imports, []string{"func _start", "memory memory"}, nil
 }
 
 type pin struct {
