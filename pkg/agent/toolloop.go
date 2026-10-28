@@ -1160,6 +1160,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			}
 			return nil, fmt.Errorf("step %d failed: %w", stepNum+1, stepTimeoutErr)
 		}
+		// TS generateText `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`:
+		// a run aborted after a step ended (e.g. while a tool that ignores
+		// ctx ran) fails before the next step's PrepareCall and step events.
+		if ctx.Err() != nil {
+			abortErr := context.Cause(ctx)
+			if a.config.OnChainError != nil {
+				a.config.OnChainError(abortErr)
+			}
+			return nil, fmt.Errorf("step %d failed: %w", stepNum+1, abortErr)
+		}
 	}
 
 	// Call OnChainEnd callback (successful completion)
