@@ -279,8 +279,12 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			}, nil
 		}
 
-		// Response metadata is emitted once, from the first event that has any.
-		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0 || len(s.ResponseHeaders) > 0) {
+		// Response metadata is emitted once, from the first event that has any
+		// (TS `Object.values(getResponseMetadata(value)).some(Boolean)`): a
+		// placeholder event with empty id/model and created 0 is skipped. The
+		// headers are not part of that check (TS returns them on the doStream
+		// result); a stream with no metadata event reports them at its end.
+		if !s.metadataEmitted && (chunkData.ID != "" || chunkData.Model != "" || chunkData.Created != 0) {
 			s.metadataEmitted = true
 			meta := &provider.ResponseMetadata{ID: chunkData.ID, ModelID: chunkData.Model, Headers: s.ResponseHeaders}
 			if chunkData.Created != 0 {
@@ -506,6 +510,13 @@ func (s *OpenAICompatStream) endStream(err error) (*provider.StreamChunk, error)
 	// Order matches TS flush(): close any still-open reasoning block, then
 	// finalize the tool calls, before the error/finish chunks.
 	var pending []*provider.StreamChunk
+	if !s.metadataEmitted && len(s.ResponseHeaders) > 0 {
+		s.metadataEmitted = true
+		pending = append(pending, &provider.StreamChunk{
+			Type:             provider.ChunkTypeResponseMetadata,
+			ResponseMetadata: &provider.ResponseMetadata{Headers: s.ResponseHeaders},
+		})
+	}
 	if s.isActiveReasoning {
 		s.isActiveReasoning = false
 		pending = append(pending, &provider.StreamChunk{

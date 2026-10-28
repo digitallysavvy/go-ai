@@ -752,6 +752,22 @@ type StreamTextResult struct {
 // *StreamTextResult back (review finding F6 — approval resume must not run
 // before StreamText returns).
 func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult, error) {
+	// TS startStreamText starts the steering run before anything else, so a
+	// steering object that was already used is the first error, and a call
+	// that fails before its stream starts still ends the run ('error').
+	steeringRun, err := startSteeringRun(opts.ExperimentalSteering)
+	if err != nil {
+		return nil, err
+	}
+	result, err := streamTextInternal(ctx, opts, steeringRun)
+	if err != nil {
+		steeringRun.end(SteeringError)
+		return nil, err
+	}
+	return result, nil
+}
+
+func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun *steeringRun) (*StreamTextResult, error) {
 	// Validate options. These are pure, in-memory checks with no I/O — the Go
 	// equivalent of the synchronous `prepareRetries` throw inside TS's
 	// DefaultStreamTextResult constructor, which happens before its async
@@ -789,11 +805,6 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries in
 	// the DefaultStreamTextResult constructor.
 	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
-		return nil, err
-	}
-
-	steeringRun, err := startSteeringRun(opts.ExperimentalSteering)
-	if err != nil {
 		return nil, err
 	}
 
@@ -1186,15 +1197,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if prepared.Reasoning != nil {
 			stepReasoningLevel = prepared.Reasoning
 		}
-		// TS prepareStepCallSettings validates the step's settings.
-		if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
-			if stepCancel != nil {
-				stepCancel()
-			}
-			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-			r.fail(err)
-			return
-		}
 	}
 
 	// Apply deferred tool discovery (ai.ToolSearch) and tool-caller routing
@@ -1215,6 +1217,17 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepTools = orderStepTools(stepTools, stepToolOrder)
 	stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
 	opts.ExperimentalSandbox = stepSandbox
+	// TS prepareStepCallSettings validates the step's settings after the
+	// step's tools are prepared and its steering messages resolved, before
+	// the model call (whose prompt conversion and step start come later).
+	if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+		if stepCancel != nil {
+			stepCancel()
+		}
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+		r.fail(err)
+		return
+	}
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
 	responseFormat := opts.ResponseFormat
@@ -3332,12 +3345,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if prepared.Reasoning != nil {
 				nextReasoningLevel = prepared.Reasoning
 			}
-			// TS prepareStepCallSettings validates the step's settings.
-			if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
-				nextStepCancel()
-				r.err = err
-				break
-			}
 		}
 
 		nextTools = r.toolSearchState.Apply(nextTools, r.cbToolsCtx, nextSandbox)
@@ -3374,6 +3381,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		currentExecutionTools = append([]types.Tool(nil), nextExecutionTools...)
 		currentToolChoice = nextToolChoice
 		opts.ExperimentalSandbox = nextSandbox
+		// TS prepareStepCallSettings validates the step's settings after the
+		// step's tools are prepared, before the model call.
+		if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
+			nextStepCancel()
+			r.err = err
+			break
+		}
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
