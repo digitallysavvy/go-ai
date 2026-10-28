@@ -63,3 +63,28 @@ func TestR56StreamEmptyFunctionCallNameIsToolCall(t *testing.T) {
 		}
 	}
 }
+
+// r56: TS checks executableCode and codeExecutionResult before text, so a
+// thought part that also carries code is a code execution call/result, not
+// reasoning (generate; the stream already does this).
+func TestR56ConvertResponseThoughtCodePartIsCodeExecution(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"candidates":[{"content":{"parts":[`+
+		`{"executableCode":{"language":"PYTHON","code":"print(1)"},"text":"t","thought":true},`+
+		`{"codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"},"text":"u","thought":true}`+
+		`]},"finishReason":"STOP"}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponse(resp, newToolNameMapping(nil))
+	if len(result.Content) != 2 {
+		t.Fatalf("content = %#v, want a code call and its result", result.Content)
+	}
+	call, ok := result.Content[0].(types.ToolCallContent)
+	if !ok || call.ToolName != "code_execution" || !call.ProviderExecuted {
+		t.Fatalf("content[0] = %#v, want code_execution call", result.Content[0])
+	}
+	if r, ok := result.Content[1].(types.ToolResultContent); !ok || r.ToolCallID != call.ToolCallID {
+		t.Fatalf("content[1] = %#v, want its result", result.Content[1])
+	}
+}

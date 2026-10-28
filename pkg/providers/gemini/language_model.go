@@ -439,31 +439,9 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			}
 			continue
 		}
-		// Thought text → ReasoningContent. TS routes a part by its data field
-		// first (`'text' in part`): a thought part without a text key (a
-		// functionCall, executableCode or server tool part flagged thought)
-		// is converted like any other part, as the stream does.
-		if part.Thought && !part.textAbsent {
-			var sigMeta json.RawMessage
-			if part.ThoughtSignature != "" {
-				// TS carries the signature in providerMetadata.google
-				// .thoughtSignature; Signature stays for existing callers.
-				sigMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
-					"thoughtSignature": part.ThoughtSignature,
-				}))
-			}
-			if part.Text != "" {
-				result.Content = append(result.Content, types.ReasoningContent{
-					Text:             part.Text,
-					Signature:        part.ThoughtSignature,
-					ProviderMetadata: sigMeta,
-				})
-			} else if sigMeta != nil && !part.textAbsent {
-				attachSignatureToLastContent(result, sigMeta)
-			}
-			continue
-		}
-		// Code execution parts. TS parses these for both Google and Vertex.
+		// Code execution parts. TS parses these for both Google and Vertex,
+		// and checks them before text: a thought part carrying both
+		// executableCode and text is a code execution call.
 		if part.ExecutableCode != nil && part.ExecutableCode.Code != "" {
 			toolCallID := m.generateID()
 			lastCodeExecID = toolCallID
@@ -491,6 +469,30 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			// Do not clear lastCodeExecID: TS associates a result only with the
 			// most recently seen executable code part, but does not reset the
 			// pointer, matching google-language-model.ts convertGenerateContentResponse.
+			continue
+		}
+		// Thought text → ReasoningContent. TS routes a part by its data field
+		// first (`'text' in part`): a thought part without a text key (a
+		// functionCall, executableCode or server tool part flagged thought)
+		// is converted like any other part, as the stream does.
+		if part.Thought && !part.textAbsent {
+			var sigMeta json.RawMessage
+			if part.ThoughtSignature != "" {
+				// TS carries the signature in providerMetadata.google
+				// .thoughtSignature; Signature stays for existing callers.
+				sigMeta, _ = json.Marshal(m.cfg.wrapProviderMetadata(map[string]interface{}{
+					"thoughtSignature": part.ThoughtSignature,
+				}))
+			}
+			if part.Text != "" {
+				result.Content = append(result.Content, types.ReasoningContent{
+					Text:             part.Text,
+					Signature:        part.ThoughtSignature,
+					ProviderMetadata: sigMeta,
+				})
+			} else if sigMeta != nil && !part.textAbsent {
+				attachSignatureToLastContent(result, sigMeta)
+			}
 			continue
 		}
 		// Regular text → TextContent (ThoughtSignature forwarded via ProviderMetadata).
