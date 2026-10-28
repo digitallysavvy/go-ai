@@ -592,9 +592,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			// is always enqueued at step.start.
 			s.hasFunction = true
 			open.argsString = ""
-			if open.toolName == "" {
-				open.toolName = "unknown"
-			}
+			open.toolName = block.nameOr("unknown")
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}})
 			open.startEmitted = true
 		default:
@@ -696,7 +694,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if args, ok := objectArguments(delta.Arguments); ok {
 				open.args, open.argsRaw = args, delta.Arguments
 			}
-			if delta.Name != "" && open.blockType == "mcp_server_tool_call" {
+			if (delta.nameSet || delta.Name != "") && open.blockType == "mcp_server_tool_call" {
 				open.toolName = delta.Name
 			}
 		case isBuiltinInteractionsToolResult(open.blockType) && delta.Type == open.blockType:
@@ -709,7 +707,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if delta.IsError != nil {
 				open.isError = *delta.IsError
 			}
-			if delta.Name != "" && open.blockType == "mcp_server_tool_result" {
+			if (delta.nameSet || delta.Name != "") && open.blockType == "mcp_server_tool_result" {
 				open.toolName = delta.Name
 			}
 		}

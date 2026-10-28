@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -147,6 +148,71 @@ func TestR56InteractionsLooseFallbackDispatchesByEventType(t *testing.T) {
 		}
 		if !sawBoom {
 			t.Fatal("no boom error part")
+		}
+	})
+}
+
+// r56: TS `name ?? fallback` keeps an empty step name: a function_call step
+// named "" is not "unknown", and an MCP step or delta named "" is not
+// "mcp_server_tool".
+func TestR56InteractionsEmptyStepNameIsKept(t *testing.T) {
+	t.Run("stream function_call", func(t *testing.T) {
+		chunks := runInteractionsFrames(t,
+			`{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"c1","name":""}}`,
+			`{"event_type":"step.stop","index":0}`,
+			looseCompleted)
+		var start, call *types.ToolCall
+		for _, c := range chunks {
+			switch c.Type {
+			case provider.ChunkTypeToolInputStart:
+				start = c.ToolCall
+			case provider.ChunkTypeToolCall:
+				call = c.ToolCall
+			}
+		}
+		if start == nil || start.ToolName != "" || call == nil || call.ToolName != "" {
+			t.Fatalf("start = %#v call = %#v, want empty names", start, call)
+		}
+	})
+
+	t.Run("stream function_call without name", func(t *testing.T) {
+		chunks := runInteractionsFrames(t,
+			`{"event_type":"step.start","index":0,"step":{"type":"function_call","id":"c1"}}`,
+			`{"event_type":"step.stop","index":0}`,
+			looseCompleted)
+		for _, c := range chunks {
+			if c.Type == provider.ChunkTypeToolCall && c.ToolCall.ToolName != "unknown" {
+				t.Fatalf("tool name = %q, want unknown", c.ToolCall.ToolName)
+			}
+		}
+	})
+
+	t.Run("stream mcp delta", func(t *testing.T) {
+		chunks := runInteractionsFrames(t,
+			`{"event_type":"step.start","index":0,"step":{"type":"mcp_server_tool_call","id":"m1","name":"srv"}}`,
+			`{"event_type":"step.delta","index":0,"delta":{"type":"mcp_server_tool_call","name":""}}`,
+			`{"event_type":"step.stop","index":0}`,
+			looseCompleted)
+		var call *types.ToolCall
+		for _, c := range chunks {
+			if c.Type == provider.ChunkTypeToolCall {
+				call = c.ToolCall
+			}
+		}
+		if call == nil || call.ToolName != "" {
+			t.Fatalf("tool call = %#v, want empty name from the delta", call)
+		}
+	})
+
+	t.Run("generate mcp", func(t *testing.T) {
+		var blocks []interactionsContentBlock
+		if err := json.Unmarshal([]byte(`[{"type":"mcp_server_tool_call","id":"m1","name":"","arguments":{}},{"type":"mcp_server_tool_call","id":"m2","arguments":{}}]`), &blocks); err != nil {
+			t.Fatal(err)
+		}
+		m := &InteractionsLanguageModel{}
+		_, calls, _ := m.parseOutputs(blocks, "")
+		if len(calls) != 2 || calls[0].ToolName != "" || calls[1].ToolName != "mcp_server_tool" {
+			t.Fatalf("calls = %#v, want \"\" then mcp_server_tool", calls)
 		}
 	})
 }
