@@ -81,6 +81,13 @@ func (s *interleaveSSEServer) endStreams() {
 
 func (s *interleaveSSEServer) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
+		// A pending POST, so a Send overlaps Close and Connect.
+		_, delay, _ := s.pick()
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -212,8 +219,21 @@ func runSSEInterleaving(t *testing.T, seed int64) {
 			_ = tr.Connect(ctx)
 		}()
 	}
+	// Send overlapping Close: it must return (Close aborts its POST).
+	send := func(ctx context.Context) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = tr.Send(ctx, &MCPMessage{JSONRpc: "2.0", Method: "notifications/initialized"})
+		}()
+	}
 	for i, n := 0, 4+rng.Intn(6); i < n; i++ {
-		switch rng.Intn(5) {
+		switch rng.Intn(6) {
+		case 5:
+			ctx, cancel := context.WithCancel(context.Background())
+			cancels = append(cancels, cancel)
+			send(ctx)
+			ops = append(ops, "send")
 		case 0, 1:
 			ctx, cancel := context.WithCancel(context.Background())
 			cancels = append(cancels, cancel)
@@ -318,9 +338,42 @@ func runHTTPInterleaving(t *testing.T, seed int64) {
 	baseline := countGoroutines(httpInterleaveGoroutines...)
 	rng := rand.New(rand.NewSource(seed))
 	var active atomic.Int64
+	var srvMu sync.Mutex
+	srvRng := rand.New(rand.NewSource(seed + 2))
+	pick := func(n int) int {
+		srvMu.Lock()
+		defer srvMu.Unlock()
+		return srvRng.Intn(n)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			// Send overlapping Close: an accepted notification, a JSON
+			// response, or an event-stream response that stays open.
+			switch pick(3) {
+			case 0:
+				w.WriteHeader(http.StatusAccepted)
+			case 1:
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+			default:
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = fmt.Fprint(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n")
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(time.Duration(pick(4)) * time.Millisecond):
+				}
+			}
+			return
+		}
 		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if r.Header.Get("Authorization") == "" || pick(4) == 0 {
+			// An OAuth refresh on the inbound GET's goroutine, racing Close.
+			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		active.Add(1)
@@ -336,12 +389,27 @@ func runHTTPInterleaving(t *testing.T, seed int64) {
 	defer srv.Close()
 	httpTransport := &http.Transport{DisableKeepAlives: true}
 	defer httpTransport.CloseIdleConnections()
+	var gaveUp atomic.Bool
 	var delayMu sync.Mutex
 	delayRng := rand.New(rand.NewSource(seed + 1))
-	tr := NewHTTPTransport(HTTPTransportConfig{
+	// Some runs close the transport from OnError, which TS allows; that
+	// Close may run on a background goroutine Close waits for.
+	closeOnError := rng.Intn(3) == 0
+	var tr *HTTPTransport
+	tr = NewHTTPTransport(HTTPTransportConfig{
 		URL:                    srv.URL + "/mcp",
 		InitialProtocolVersion: "2025-06-18",
 		HTTPClient:             &http.Client{Transport: httpTransport},
+		// A retried inbound GET the server rejects again ends that GET
+		// chain (TS gives up after one authorization).
+		OnError: func(err error) {
+			if strings.Contains(err.Error(), "GET SSE failed: 401") {
+				gaveUp.Store(true)
+			}
+			if closeOnError {
+				_ = tr.Close()
+			}
+		},
 		OAuth: &OAuthConfig{RefreshTokenFunc: func(ctx context.Context, _ *OAuthConfig) (string, time.Duration, error) {
 			delayMu.Lock()
 			d := time.Duration(delayRng.Intn(3)) * time.Millisecond
@@ -360,7 +428,15 @@ func runHTTPInterleaving(t *testing.T, seed int64) {
 	var lastCloseEnd int64
 	var okConnectStarts []int64
 	for i, n := 0, 3+rng.Intn(6); i < n; i++ {
-		if rng.Intn(2) == 0 {
+		op := rng.Intn(3)
+		if op == 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_ = tr.Send(context.Background(), &MCPMessage{JSONRpc: "2.0", ID: 1, Method: "tools/list"})
+			}()
+			ops = append(ops, "send")
+		} else if op == 0 {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -409,14 +485,14 @@ func runHTTPInterleaving(t *testing.T, seed int64) {
 	live := tr.sseLifecycleCtx != nil && !tr.sseClosing && tr.sseLifecycleCtx.Err() == nil
 	tr.sseMu.Unlock()
 	for _, start := range okConnectStarts {
-		if start > lastCloseEnd && !connected {
+		if start > lastCloseEnd && !connected && !closeOnError {
 			fail("a Connect that started after every Close returned nil, but the transport is closed")
 		}
 	}
-	if connected != live {
+	if connected != live && !closeOnError {
 		fail("connected=%v but inbound SSE lifecycle live=%v", connected, live)
 	}
-	if connected && !waitFor(2*time.Second, func() bool { return active.Load() > 0 }) {
+	if connected && !waitFor(2*time.Second, func() bool { return active.Load() > 0 || gaveUp.Load() }) {
 		fail("connected with no inbound SSE stream")
 	}
 
