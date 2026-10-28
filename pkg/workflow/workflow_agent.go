@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"sort"
@@ -1336,13 +1337,16 @@ type prepareCallRunner struct {
 }
 
 // callOptions builds the options a PrepareCall hook receives for a step.
+// Headers, ProviderOptions and ToolsContext are copies, so a hook that edits
+// them in place leaves the agent's maps alone (other runs read them
+// concurrently).
 func (r *prepareCallRunner) callOptions(c agent.PrepareCallConfig) LanguageModelCallOptions {
 	pctx := r.pctx
 	return LanguageModelCallOptions{
 		StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
 		Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
-		Headers: pctx.baseHeaders, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
-		RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
+		Headers: maps.Clone(pctx.baseHeaders), Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: maps.Clone(c.ProviderOptions),
+		RuntimeContext: c.RuntimeContext, ToolsContext: maps.Clone(c.ToolsContext), ExperimentalSandbox: c.ExperimentalSandbox,
 		PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData,
 		StopWhen: pctx.stopWhen, ActiveTools: pctx.activeTools, ExperimentalDownload: pctx.download,
 		MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
@@ -1568,7 +1572,9 @@ func (s *stepCallSettings) base(pctx prepareCallContext) (map[string]string, *in
 			return p.Headers, p.MaxRetries
 		}
 	}
-	return pctx.baseHeaders, pctx.maxRetries
+	// A copy: a hook that edits the map in place must not change the
+	// agent's Headers (and race with its other runs).
+	return maps.Clone(pctx.baseHeaders), pctx.maxRetries
 }
 
 func (s *stepCallSettings) put(headers map[string]string, maxRetries *int) {
@@ -1599,8 +1605,8 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		opts := LanguageModelCallOptions{
 			StepNumber: o.StepNumber, Model: o.Model, System: o.System, AllowSystemInMessages: allowSystem, Messages: o.Messages, Tools: o.Tools, ToolChoice: o.ToolChoice,
 			Temperature: o.Temperature, MaxTokens: o.MaxOutputTokens, TopP: o.TopP, TopK: o.TopK, FrequencyPenalty: o.FrequencyPenalty, PresencePenalty: o.PresencePenalty,
-			StopSequences: o.StopSequences, Seed: o.Seed, Reasoning: o.Reasoning, ProviderOptions: o.ProviderOptions, Headers: baseHeaders,
-			RuntimeContext: o.RuntimeContext, ToolsContext: o.ToolsContext, ExperimentalSandbox: o.ExperimentalSandbox,
+			StopSequences: o.StopSequences, Seed: o.Seed, Reasoning: o.Reasoning, ProviderOptions: maps.Clone(o.ProviderOptions), Headers: baseHeaders,
+			RuntimeContext: o.RuntimeContext, ToolsContext: maps.Clone(o.ToolsContext), ExperimentalSandbox: o.ExperimentalSandbox,
 			PreviousSteps: o.Steps, AccumulatedUsage: o.AccumulatedUsage,
 			StopWhen: pctx.stopWhen, ActiveTools: activeTools, ExperimentalDownload: pctx.download,
 			MaxRetries: baseMaxRetries, Timeout: pctx.timeout,

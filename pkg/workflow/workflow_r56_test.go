@@ -408,3 +408,56 @@ func TestWorkflowStreamNoOnEndAfterAbort(t *testing.T) {
 		t.Fatalf("OnEnd = %d, OnAbort = %d; want 0 and at least 1", ends, aborts)
 	}
 }
+
+// A hook that edits the Headers, ProviderOptions or ToolsContext map it was
+// given in place must not change the agent's maps: they are shared by every run of the agent, and concurrent
+// runs would race on the map.
+func TestWorkflowHookHeadersEditDoesNotLeakToAgent(t *testing.T) {
+	for _, hook := range []string{"PrepareCall", "PrepareStep"} {
+		for _, stream := range []bool{false, true} {
+			t.Run(hook+"/"+map[bool]string{false: "generate", true: "stream"}[stream], func(t *testing.T) {
+				edit := func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					if o.Headers != nil {
+						o.Headers["x-h"] = "edited"
+					}
+					if o.ProviderOptions != nil {
+						o.ProviderOptions["edited"] = true
+					}
+					if o.ToolsContext != nil {
+						o.ToolsContext["edited"] = true
+					}
+					return o, nil
+				}
+				cfg := WorkflowAgent{
+					Model: &r56CallModel{}, Headers: map[string]string{"x-pc": "base"},
+					ProviderOptions: map[string]interface{}{"p": map[string]interface{}{}},
+					ToolsContext:    map[string]interface{}{"t": "tc"},
+				}
+				if hook == "PrepareCall" {
+					cfg.PrepareCall = edit
+				} else {
+					cfg.PrepareStep = edit
+				}
+				w, err := NewWorkflowAgent(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var wg sync.WaitGroup
+				for i := 0; i < 4; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						_ = r56Run(t, w, stream)
+					}()
+				}
+				wg.Wait()
+				if _, ok := w.Headers["x-h"]; ok || len(w.Headers) != 1 {
+					t.Fatalf("agent Headers = %v, want unchanged", w.Headers)
+				}
+				if len(w.ProviderOptions) != 1 || len(w.ToolsContext) != 1 {
+					t.Fatalf("agent ProviderOptions = %v, ToolsContext = %v, want unchanged", w.ProviderOptions, w.ToolsContext)
+				}
+			})
+		}
+	}
+}
