@@ -72,12 +72,17 @@ func (a *transportAuth) setBearer(ctx context.Context, header http.Header) error
 
 // tokenChanged reports whether the provider now holds an access token other
 // than the one a request was sent with (another request already refreshed it).
-func (a *transportAuth) tokenChanged(ctx context.Context, requestAuthorization string) bool {
+// A Tokens error is returned, as TS accessTokenChanged lets tokens() throw out
+// of the request instead of running the OAuth flow.
+func (a *transportAuth) tokenChanged(ctx context.Context, requestAuthorization string) (bool, error) {
 	tokens, err := a.provider.Tokens(ctx)
-	if err != nil || tokens == nil || tokens.AccessToken == "" {
-		return false
+	if err != nil {
+		return false, err
 	}
-	return requestAuthorization != "Bearer "+tokens.AccessToken
+	if tokens == nil || tokens.AccessToken == "" {
+		return false, nil
+	}
+	return requestAuthorization != "Bearer "+tokens.AccessToken, nil
 }
 
 // authorize runs the OAuth recovery for a 401 response (TS authorizeOnce plus

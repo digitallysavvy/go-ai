@@ -446,7 +446,11 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		if t.auth.enabled() {
 			// Another request may already have refreshed the token (TS
 			// accessTokenChanged): retry with it instead of re-authorizing.
-			if t.auth.tokenChanged(ctx, req.Header.Get("Authorization")) {
+			changed, err := t.auth.tokenChanged(ctx, req.Header.Get("Authorization"))
+			if err != nil {
+				return t.sendFailed(ctx, NewTransportError("failed to load OAuth tokens", err))
+			}
+			if changed {
 				continue
 			}
 			if err := t.auth.authorize(ctx, resp); err != nil {
