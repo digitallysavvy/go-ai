@@ -233,7 +233,13 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 			if err := t.auth.authorize(ctx, resp); err != nil {
-				return fail(err)
+				// TS authorizeOnce is not tied to the abort signal, so its
+				// failure is reported even after close().
+				stopWatch()
+				cancel()
+				t.releaseHandshake(gen)
+				t.reportError(err)
+				return err
 			}
 			continue
 		}
