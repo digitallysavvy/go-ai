@@ -1565,6 +1565,11 @@ type anthropicStream struct {
 	// synthesized) until the underlying stream ends.
 	spliced bool
 
+	// lastBlockType is TS's stream-wide `blockType`: the type of the most
+	// recent content_block_start (fallback excluded), cleared by every
+	// content_block_stop. signature_delta only counts while it is "thinking".
+	lastBlockType string
+
 	// responseHeaders / responseTimestamp are repeated on the response-metadata
 	// chunk emitted at message_start (see the message_start case).
 	responseHeaders   map[string]string
@@ -1840,6 +1845,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
 				// Malformed start event: skip gracefully
 				continue
+			}
+			if start.ContentBlock.Type != "fallback" {
+				s.lastBlockType = start.ContentBlock.Type
 			}
 			switch start.ContentBlock.Type {
 			case "tool_use":
@@ -2419,14 +2427,20 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				if block == nil {
 					continue
 				}
-				// When this delta belongs to the synthetic json tool block, emit it
-				// directly as a text chunk rather than accumulating for a tool call.
-				if block.blockType == "json-response-tool" {
+				// TS: once the json response tool has started, input deltas only
+				// go to text-like blocks (as text); otherwise only to tool calls.
+				if s.isJsonResponseFromTool {
+					if !isTextLikeBlock(block.blockType) {
+						continue
+					}
 					return &provider.StreamChunk{
 						Type: provider.ChunkTypeText,
 						ID:   strconv.Itoa(delta.Index),
 						Text: delta.Delta.PartialJSON,
 					}, nil
+				}
+				if block.blockType != "tool-call" {
+					continue
 				}
 				partialJSON := delta.Delta.PartialJSON
 				// Toolset member input is emitted once the block is complete.
@@ -2471,7 +2485,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// reasoning-delta with delta: '' (previously dropped entirely,
 				// causing unsigned thinking blocks to be replayed and rejected by
 				// Anthropic).
-				if block := s.contentBlocks[delta.Index]; block != nil && block.blockType == "reasoning" {
+				if s.lastBlockType == "thinking" {
 					metadata, _ := json.Marshal(map[string]interface{}{
 						"anthropic": map[string]interface{}{"signature": delta.Delta.Signature},
 					})
@@ -2533,6 +2547,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			}
 			block := s.contentBlocks[stop.Index]
 			delete(s.contentBlocks, stop.Index)
+			s.lastBlockType = "" // TS resets blockType on every content_block_stop
 
 			if block != nil && block.blockType == "tool-call" {
 				// Parse the accumulated JSON into ToolCall.Arguments.
