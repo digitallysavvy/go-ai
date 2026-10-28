@@ -288,7 +288,47 @@ func (p *Part) UnmarshalJSON(b []byte) error {
 	if auxErr == nil && aux.ToolCall != nil && len(aux.ToolCall.Args) > 0 && string(aux.ToolCall.Args) != "null" {
 		p.toolCallArgsRaw = string(aux.ToolCall.Args)
 	}
+	p.applyPartUnion(b)
 	return nil
+}
+
+// applyPartUnion keeps only the fields of the first TS content-part union
+// member the wire part matches (getContentSchema: functionCall, inlineData,
+// toolCall, toolResponse, then executableCode/codeExecutionResult/text). zod
+// strips the keys a member does not declare, so a functionCall part that also
+// carries text is only a function call, and a toolCall without a string id
+// (or an inlineData without mimeType/data) is the last member, which drops it.
+func (p *Part) applyPartUnion(b []byte) {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal(b, &keys) != nil {
+		return
+	}
+	hasStrings := func(key string, fields ...string) bool {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(keys[key], &obj) != nil || obj == nil {
+			return false
+		}
+		for _, f := range fields {
+			var s string
+			if json.Unmarshal(obj[f], &s) != nil || obj[f] == nil || string(obj[f]) == "null" {
+				return false
+			}
+		}
+		return true
+	}
+	sig := p.ThoughtSignature
+	switch {
+	case p.FunctionCall != nil:
+		*p = Part{FunctionCall: p.FunctionCall, ThoughtSignature: sig, textAbsent: true}
+	case p.InlineData != nil && hasStrings("inlineData", "mimeType", "data"):
+		*p = Part{InlineData: p.InlineData, Thought: p.Thought, ThoughtSignature: sig, textAbsent: true}
+	case p.ToolCall != nil && hasStrings("toolCall", "toolType", "id"):
+		*p = Part{ToolCall: p.ToolCall, toolCallArgsRaw: p.toolCallArgsRaw, ThoughtSignature: sig, textAbsent: true}
+	case p.ToolResponse != nil && hasStrings("toolResponse", "toolType", "id"):
+		*p = Part{ToolResponse: p.ToolResponse, ThoughtSignature: sig, textAbsent: true}
+	default:
+		p.InlineData, p.ToolCall, p.ToolResponse, p.toolCallArgsRaw = nil, nil, nil, ""
+	}
 }
 
 // Part represents a single part in a Gemini content block.
