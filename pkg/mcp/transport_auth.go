@@ -41,6 +41,9 @@ type authFlight struct {
 	done   chan struct{}
 	result AuthResult
 	err    error
+	// canceled is set when the flow failed because the caller that ran it
+	// canceled its ctx.
+	canceled bool
 }
 
 func newTransportAuth(provider OAuthClientProvider, serverURL string, httpClient *http.Client) *transportAuth {
@@ -92,30 +95,40 @@ func (a *transportAuth) authorize(ctx context.Context, resp *http.Response) erro
 }
 
 func (a *transportAuth) authorizeOnce(ctx context.Context, resourceMetadataURL *url.URL, scope string) (AuthResult, error) {
-	a.mu.Lock()
-	flight := a.inflight
-	if flight == nil {
-		flight = &authFlight{done: make(chan struct{})}
-		a.inflight = flight
-		a.mu.Unlock()
-		flight.result, flight.err = Auth(ctx, a.provider, AuthOptions{
-			ServerURL:           a.serverURL,
-			ResourceMetadataURL: resourceMetadataURL,
-			Scope:               scope,
-			HTTPClient:          a.httpClient,
-		})
+	for {
 		a.mu.Lock()
-		a.inflight = nil
+		flight := a.inflight
+		if flight == nil {
+			flight = &authFlight{done: make(chan struct{})}
+			a.inflight = flight
+			a.mu.Unlock()
+			flight.result, flight.err = Auth(ctx, a.provider, AuthOptions{
+				ServerURL:           a.serverURL,
+				ResourceMetadataURL: resourceMetadataURL,
+				Scope:               scope,
+				HTTPClient:          a.httpClient,
+			})
+			flight.canceled = flight.err != nil && ctx.Err() != nil
+			a.mu.Lock()
+			a.inflight = nil
+			a.mu.Unlock()
+			close(flight.done)
+			return flight.result, flight.err
+		}
 		a.mu.Unlock()
-		close(flight.done)
-		return flight.result, flight.err
-	}
-	a.mu.Unlock()
 
-	select {
-	case <-flight.done:
-		return flight.result, flight.err
-	case <-ctx.Done():
-		return "", ctx.Err()
+		select {
+		case <-flight.done:
+			// TS authorizeOnce shares one auth() promise that no request's
+			// abort signal cancels. Go runs the flow under the first caller's
+			// ctx, so a flow that ended because that caller gave up is not
+			// this caller's result: run it again.
+			if flight.canceled && ctx.Err() == nil {
+				continue
+			}
+			return flight.result, flight.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
 	}
 }
