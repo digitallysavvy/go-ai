@@ -116,8 +116,8 @@ type HTTPTransport struct {
 	// `AbortSignal.any([transportSignal, options.signal])`. sseConnCancel
 	// cancels just the current inbound GET/read, used when the negotiated
 	// protocol switches to modern mid-flight. sseClosing gates every place
-	// that would otherwise race a WaitGroup.Add against Close()'s Wait:
-	// startInboundSSE (sseWG) and the POST-response SSE reader (postSSEWG).
+	// that would otherwise start a background goroutine after Close() stopped
+	// waiting: startInboundSSE and the POST-response SSE reader.
 	sseMu                sync.Mutex
 	sseLifecycleCtx      context.Context
 	sseLifecycleCancel   context.CancelFunc
@@ -130,13 +130,77 @@ type HTTPTransport struct {
 	// scheduled; Close must stop all of them, not wait for one to fire.
 	sseReconnectTimers map[*time.Timer]struct{}
 	lastInboundEventID string
-	sseWG              sync.WaitGroup
 
-	// postSSEWG tracks background goroutines draining a text/event-stream
-	// POST response (readMCPHTTPSSEMessages), so Close() can wait for them to
-	// exit rather than leaking them, matching this slice's "goroutines must
-	// exit" requirement (TS has no equivalent: JS has no goroutines to leak).
-	postSSEWG sync.WaitGroup
+	// bg tracks the background goroutines (inbound SSE GETs, pending
+	// reconnect timers, and readers draining a text/event-stream POST
+	// response) so Close() can wait for them to exit rather than leak them
+	// (TS has no equivalent: JS has no goroutines to leak).
+	bg bgTracker
+}
+
+// bgTracker counts a transport's background goroutines for Close to wait on.
+// A goroutine running a user callback (OnError, OnSessionIDChange,
+// OnSessionExpired) is not waited for: TS lets onerror call close(), and
+// Close waiting for the goroutine that called it would deadlock. Such a
+// goroutine exits once its callback returns, as Close has canceled its
+// context by then.
+type bgTracker struct {
+	mu         sync.Mutex
+	running    int
+	inCallback int
+	changed    chan struct{}
+}
+
+func (b *bgTracker) notifyLocked() {
+	if b.changed != nil {
+		close(b.changed)
+		b.changed = nil
+	}
+}
+
+func (b *bgTracker) add() {
+	b.mu.Lock()
+	b.running++
+	b.mu.Unlock()
+}
+
+func (b *bgTracker) done() {
+	b.mu.Lock()
+	b.running--
+	b.notifyLocked()
+	b.mu.Unlock()
+}
+
+// callback runs a user callback from a background goroutine.
+func (b *bgTracker) callback(fn func()) {
+	b.mu.Lock()
+	b.inCallback++
+	b.notifyLocked()
+	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		b.inCallback--
+		b.mu.Unlock()
+	}()
+	fn()
+}
+
+// wait returns once every background goroutine has exited or is running a
+// user callback.
+func (b *bgTracker) wait() {
+	for {
+		b.mu.Lock()
+		if b.running <= b.inCallback {
+			b.mu.Unlock()
+			return
+		}
+		if b.changed == nil {
+			b.changed = make(chan struct{})
+		}
+		ch := b.changed
+		b.mu.Unlock()
+		<-ch
+	}
 }
 
 // errMCPRequestTimeout is the cancellation cause of a POST that exceeded the
@@ -506,7 +570,6 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	t.closeGen++
 	t.mu.Unlock()
 	t.stopInboundSSE()
-	t.postSSEWG.Wait()
 
 	t.mu.Lock()
 	t.connected = false
@@ -843,14 +906,13 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			return fail(NewMCPClientError(0, "MCP HTTP Transport Error: text/event-stream response without body", nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		}
 		// Guard the handoff with the same sseClosing flag (and sseMu lock)
-		// startInboundSSE uses for sseWG: postSSEWG.Add must never race
-		// Close()'s postSSEWG.Wait, so a transport that is already closing
-		// drains and discards the stream here instead of starting a
-		// goroutine Close() might already have stopped waiting for.
+		// startInboundSSE uses: a transport that is already closing drains
+		// and discards the stream here instead of starting a goroutine
+		// Close() might already have stopped waiting for.
 		t.sseMu.Lock()
 		closing := t.sseClosing
 		if !closing {
-			t.postSSEWG.Add(1)
+			t.bg.add()
 		}
 		t.sseMu.Unlock()
 		if closing {
@@ -863,7 +925,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 			timeoutTimer.Stop()
 		}
 		go func() {
-			defer t.postSSEWG.Done()
+			defer t.bg.done()
 			t.readMCPHTTPSSEMessages(reqCtx, release, resp.Body)
 		}()
 		return nil
@@ -973,7 +1035,7 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release cont
 		}
 		if err != nil {
 			if ctx.Err() == nil {
-				t.reportError(NewTransportError("failed to read event-stream response", err))
+				t.bgReportError(NewTransportError("failed to read event-stream response", err))
 			}
 			return
 		}
@@ -982,7 +1044,7 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release cont
 		}
 		msg, err := parseMCPMessage([]byte(event.Data))
 		if err != nil {
-			t.reportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
+			t.bgReportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
 		t.queueReceivedMessages([]*MCPMessage{msg})
@@ -1009,6 +1071,13 @@ func (t *HTTPTransport) isModernProtocol() bool {
 func (t *HTTPTransport) reportError(err error) {
 	if t.onError != nil {
 		t.onError(err)
+	}
+}
+
+// bgReportError is reportError from a background goroutine (see bgTracker).
+func (t *HTTPTransport) bgReportError(err error) {
+	if t.onError != nil {
+		t.bg.callback(func() { t.onError(err) })
 	}
 }
 
@@ -1078,14 +1147,14 @@ func (t *HTTPTransport) stopInboundSSE() {
 
 	for timer := range timers {
 		if timer.Stop() {
-			// The timer's callback (which would have called sseWG.Done()
+			// The timer's callback (which would have called bg.done()
 			// itself) will now never run, so account for its earlier
-			// sseWG.Add(1) here.
-			t.sseWG.Done()
+			// bg.add() here.
+			t.bg.done()
 		}
 	}
 
-	t.sseWG.Wait()
+	t.bg.wait()
 }
 
 // closeInboundSSEConnection cancels only the current inbound SSE connection,
@@ -1116,11 +1185,11 @@ func (t *HTTPTransport) startInboundSSE(triedAuth bool, resumeToken string) {
 		return
 	}
 	lifecycleCtx := t.sseLifecycleCtx
-	t.sseWG.Add(1)
+	t.bg.add()
 	t.sseMu.Unlock()
 
 	go func() {
-		defer t.sseWG.Done()
+		defer t.bg.done()
 		t.openInboundSSE(lifecycleCtx, triedAuth, resumeToken)
 	}()
 }
@@ -1149,19 +1218,19 @@ func (t *HTTPTransport) scheduleInboundSSEReconnection() {
 	attempts := t.sseReconnectAttempts
 	if inboundSSEMaxRetries > 0 && attempts >= inboundSSEMaxRetries {
 		t.sseMu.Unlock()
-		t.reportError(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Maximum reconnection attempts (%d) exceeded.", inboundSSEMaxRetries), nil))
+		t.bgReportError(NewMCPClientError(0, fmt.Sprintf("MCP HTTP Transport Error: Maximum reconnection attempts (%d) exceeded.", inboundSSEMaxRetries), nil))
 		return
 	}
 	delay := nextInboundReconnectDelay(attempts)
 	t.sseReconnectAttempts = attempts + 1
 	resumeToken := t.lastInboundEventID
 	lifecycleCtx := t.sseLifecycleCtx
-	t.sseWG.Add(1)
+	t.bg.add()
 	var timer *time.Timer
 	// The callback takes sseMu before reading timer, and timer is assigned
 	// below while sseMu is still held, so the callback always sees it.
 	timer = time.AfterFunc(delay, func() {
-		defer t.sseWG.Done()
+		defer t.bg.done()
 		t.sseMu.Lock()
 		delete(t.sseReconnectTimers, timer)
 		closing := t.sseClosing
@@ -1209,7 +1278,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	req, err := http.NewRequestWithContext(connCtx, http.MethodGet, t.url, nil)
 	if err != nil {
 		connCancel()
-		t.reportError(NewTransportError("failed to create inbound SSE request", err))
+		t.bgReportError(NewTransportError("failed to create inbound SSE request", err))
 		// Matches TS: a thrown error while building the request/headers falls
 		// into openInboundSse's outer catch, which schedules a reconnect.
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
@@ -1231,7 +1300,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		if expired {
 			if err := t.refreshOAuthToken(connCtx); err != nil {
 				connCancel()
-				t.reportError(NewTransportError("failed to refresh OAuth token", err))
+				t.bgReportError(NewTransportError("failed to refresh OAuth token", err))
 				return
 			}
 			token, _, ok = t.oauthTokenSnapshot()
@@ -1242,7 +1311,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 	}
 	if err := t.auth.setBearer(connCtx, req.Header); err != nil {
 		connCancel()
-		t.reportError(NewTransportError("failed to load OAuth tokens", err))
+		t.bgReportError(NewTransportError("failed to load OAuth tokens", err))
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
@@ -1259,18 +1328,18 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		if aborted {
 			return
 		}
-		t.reportError(NewTransportError("failed to establish inbound SSE connection", err))
+		t.bgReportError(NewTransportError("failed to establish inbound SSE connection", err))
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
 	if resp == nil {
 		connCancel()
-		t.reportError(NewTransportError("failed to establish inbound SSE connection", fmt.Errorf("nil HTTP response")))
+		t.bgReportError(NewTransportError("failed to establish inbound SSE connection", fmt.Errorf("nil HTTP response")))
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
 	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
-		t.setSessionID(sessionID)
+		t.bg.callback(func() { t.setSessionID(sessionID) })
 	}
 
 	// 401: run the OAuth refresh once (reusing the single-flight path used by
@@ -1283,12 +1352,12 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		if t.auth.enabled() {
 			if err := t.auth.authorize(connCtx, resp); err != nil {
 				connCancel()
-				t.reportError(err)
+				t.bgReportError(err)
 				return
 			}
 		} else if err := t.refreshOAuthToken(connCtx); err != nil {
 			connCancel()
-			t.reportError(NewTransportError("failed to refresh OAuth token", err))
+			t.bgReportError(NewTransportError("failed to refresh OAuth token", err))
 			return
 		}
 		connCancel()
@@ -1317,11 +1386,11 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 			resp.Body.Close() //nolint:errcheck
 		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
-			t.expireSessionID(sessionIDForRequest)
+			t.bg.callback(func() { t.expireSessionID(sessionIDForRequest) })
 		}
 		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, responseStatusText(resp))
 		// TS reports only the status and URL here, not the response body.
-		t.reportError(NewMCPClientError(0, message, nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
+		t.bgReportError(NewMCPClientError(0, message, nil, WithMCPHTTPStatus(resp.StatusCode), WithMCPHTTPURL(t.url)))
 		connCancel()
 		return
 	}
@@ -1357,7 +1426,12 @@ func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel
 			if connCtx.Err() != nil {
 				return
 			}
-			t.reportError(NewTransportError("failed to read inbound SSE event", err))
+			t.bgReportError(NewTransportError("failed to read inbound SSE event", err))
+			// TS checks the abort signal after onerror, which may have
+			// closed the transport.
+			if connCtx.Err() != nil {
+				return
+			}
 			t.scheduleInboundSSEReconnection()
 			return
 		}
@@ -1373,7 +1447,7 @@ func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel
 		}
 		msg, err := parseMCPMessage([]byte(event.Data))
 		if err != nil {
-			t.reportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
+			t.bgReportError(&MCPClientError{Message: "MCP HTTP Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
 		t.queueReceivedMessages([]*MCPMessage{msg})
