@@ -241,6 +241,8 @@ start. `workflow.NormalizeUIMessageStreamParts(ctx, chunks)` repairs text and re
 The `OnEnd` event of a `WorkflowAgent` also carries `Messages`, the final conversation: the
 instructions as a system message, the input messages after `PrepareCall` and after resolved tool
 approvals were replaced by their tool results, then every step's response messages.
+To continue the conversation from it, drop the leading system message (or set
+`AllowSystemInMessages`), since `Messages` rejects system messages by default.
 
 ## Serializable Schemas And Tools
 

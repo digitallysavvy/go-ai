@@ -644,6 +644,13 @@ These match TS and are unlikely to need code changes, but can change output.
   opens (it ran early only when approvals were resumed), so the root reports
   the prepared model and settings; messages a `PrepareCall` returns replace
   the prompt, as in TS.
+- **The `WorkflowAgent` `OnEnd` event's `Messages` start from the
+  conversation the loop ran on**, as TS: the instructions as a system
+  message, the input messages after `PrepareCall` and the approval resume
+  (resolved approvals replaced by their tool results, consecutive tool
+  messages combined), then each step's messages. Drop the leading system
+  message (or set `AllowSystemInMessages`) before passing them back as
+  `Messages`.
 
 ---
 
@@ -803,6 +810,11 @@ in v0.5.3.
   request's cancellation; it runs the flow again, as TS `authorizeOnce` is
   tied to no request's signal. An inbound SSE reconnect resumes from the
   last event id seen when its backoff timer fires.
+- MCP `SSETransport`: a 401 whose token re-read fails returns the
+  `AuthProvider`'s `Tokens` error instead of running the OAuth flow, as TS.
+  The shared OAuth flow and the `OAuthConfig` token refresh are released
+  when a provider callback or `RefreshTokenFunc` panics, so later requests
+  no longer hang on them.
 
 ---
 
