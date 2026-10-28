@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 )
 
 // tokensFailAfterProvider returns its tokens for the first okCalls Tokens
@@ -69,5 +70,50 @@ func TestSSETransportSend401TokensErrorInAccessTokenChangedFailsWithoutAuth(t *t
 	}
 	if len(server.requests) != 1 {
 		t.Fatalf("server requests = %v, want 1 (no retry)", server.requests)
+	}
+}
+
+// TS authorizeOnce clears authPromise in .finally, so a flow that throws does
+// not block later 401s. A provider callback (or the auth HTTP client) that
+// panicked left Go's flight in place: every later authorization waited on it
+// until its own ctx ended.
+func TestTransportAuthPanickingFlowIsReleased(t *testing.T) {
+	provider := newFakeOAuthProvider()
+	var mu sync.Mutex
+	calls := 0
+	client := &http.Client{Transport: oauthRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			panic("auth transport exploded")
+		}
+		return nil, errors.New("offline")
+	})}
+	a := newTransportAuth(provider, "https://auth.example.com/mcp", client)
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected the panic to reach the caller that ran the flow")
+			}
+		}()
+		_, _ = a.authorizeOnce(context.Background(), nil, "")
+	}()
+	a.mu.Lock()
+	inflight := a.inflight
+	a.mu.Unlock()
+	if inflight != nil {
+		t.Fatal("the panicked flow is still in flight")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := a.authorizeOnce(ctx, nil, ""); err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second authorization err = %v, want a fresh flow's error", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("auth requests = %d, want a second flow to run", calls)
 	}
 }
