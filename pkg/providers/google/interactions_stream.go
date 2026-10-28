@@ -528,9 +528,8 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if event.Interaction.ID != "" {
 				s.interactionID = event.Interaction.ID
 			}
-			if event.Interaction.ServiceTier != "" {
-				s.serviceTier = event.Interaction.ServiceTier
-			}
+			// TS reads service_tier only from interaction.completed (and
+			// the response header), never from interaction.created.
 			s.buffer = append(s.buffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{

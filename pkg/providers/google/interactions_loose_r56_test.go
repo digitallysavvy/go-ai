@@ -216,3 +216,16 @@ func TestR56InteractionsEmptyStepNameIsKept(t *testing.T) {
 		}
 	})
 }
+
+// r56: TS reads the service tier from interaction.completed (or the
+// response header) only; a service_tier on interaction.created is ignored.
+func TestR56InteractionsCreatedServiceTierIgnored(t *testing.T) {
+	chunks := runInteractionsFrames(t,
+		`{"event_type":"interaction.created","interaction":{"id":"v1","service_tier":"flex"}}`,
+		looseCompleted)
+	for _, c := range chunks {
+		if c.Type == provider.ChunkTypeFinish && strings.Contains(string(c.ProviderMetadata), "serviceTier") {
+			t.Fatalf("finish metadata = %s, want no serviceTier", c.ProviderMetadata)
+		}
+	}
+}
