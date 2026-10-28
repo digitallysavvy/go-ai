@@ -64,8 +64,6 @@ type stream struct {
 	lastFinishMessage        string
 	lastPromptFeedback       json.RawMessage
 	lastUsageMetadata        *UsageMetadata
-	// lastServiceTier is the last top-level chunk serviceTier (fallback only).
-	lastServiceTier string
 
 	// activeStreamingToolCalls is a LIFO stack of in-progress streamed
 	// function calls, mirroring TS `activeStreamingToolCalls`. A continuation
@@ -374,9 +372,6 @@ func (s *stream) processSSEEvent(chunkData Response) {
 	if chunkData.UsageMetadata != nil {
 		s.lastUsageMetadata = chunkData.UsageMetadata
 	}
-	if chunkData.ServiceTier != "" {
-		s.lastServiceTier = chunkData.ServiceTier
-	}
 
 	if chunkData.PromptFeedback != nil && s.confirmedPromptBlockReason == "" {
 		s.lastPromptFeedback = chunkData.PromptFeedback
@@ -638,10 +633,10 @@ func (s *stream) buildFinishMeta() json.RawMessage {
 		meta["usageMetadata"] = json.RawMessage("null")
 	}
 	// serviceTier is always emitted (null when absent) to match TS SDK behavior.
-	// TS: usage?.serviceTier of the final (merged) usage metadata; the
-	// top-level chunk serviceTier is only a Go fallback for older responses.
-	serviceTier := s.lastServiceTier
-	if s.lastUsageMetadata != nil && s.lastUsageMetadata.ServiceTier != "" {
+	// TS: usage?.serviceTier of the final (merged) usage metadata. A
+	// top-level chunk serviceTier is not read.
+	serviceTier := ""
+	if s.lastUsageMetadata != nil {
 		serviceTier = s.lastUsageMetadata.ServiceTier
 	}
 	if serviceTier != "" {

@@ -653,7 +653,7 @@ func drainChunks(t *testing.T, s *stream) []*provider.StreamChunk {
 
 func TestStreamServiceTierAccumulated(t *testing.T) {
 	// First chunk sets serviceTier; second chunk has text + finish.
-	chunk1 := `{"serviceTier":"SERVICE_TIER_STANDARD","candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
+	chunk1 := `{"usageMetadata":{"serviceTier":"SERVICE_TIER_STANDARD"},"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
 	chunk2 := `{"candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
 
 	s := newTestStream(sseStream(chunk1, chunk2))
@@ -731,8 +731,8 @@ func TestStreamServiceTierNullWhenAbsent(t *testing.T) {
 
 func TestStreamServiceTierLastValueWins(t *testing.T) {
 	// When multiple chunks set serviceTier, the last non-empty value wins.
-	chunk1 := `{"serviceTier":"SERVICE_TIER_STANDARD","candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
-	chunk2 := `{"serviceTier":"SERVICE_TIER_PRIORITY","candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
+	chunk1 := `{"usageMetadata":{"serviceTier":"SERVICE_TIER_STANDARD"},"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}`
+	chunk2 := `{"usageMetadata":{"serviceTier":"SERVICE_TIER_PRIORITY"},"candidates":[{"content":{"parts":[{"text":"!"}]},"finishReason":"STOP"}]}`
 
 	s := newTestStream(sseStream(chunk1, chunk2))
 	chunks := drainChunks(t, s)
@@ -897,6 +897,22 @@ func TestStream_ResponseIDArrivingInLaterChunkIsEmitted(t *testing.T) {
 // TS reads serviceTier from the final usage metadata only: an earlier chunk's
 // tier is not carried over when the last usage object has none.
 func TestStream_ServiceTierComesFromFinalUsage(t *testing.T) {
+	// A top-level serviceTier is not read (TS usage?.serviceTier only).
+	t.Run("top-level ignored", func(t *testing.T) {
+		s := newTestStream(sseStream(`{"serviceTier":"SERVICE_TIER_PRIORITY","candidates":[{"content":{"parts":[{"text":"Hi"}]},"finishReason":"STOP"}]}`))
+		defer s.Close() //nolint:errcheck
+		for _, c := range drainChunks(t, s) {
+			if c.Type == provider.ChunkTypeFinish {
+				var m map[string]map[string]interface{}
+				if err := json.Unmarshal(c.ProviderMetadata, &m); err != nil {
+					t.Fatal(err)
+				}
+				if v, ok := m["google"]["serviceTier"]; !ok || v != nil {
+					t.Errorf("serviceTier = %v (present %v), want null", v, ok)
+				}
+			}
+		}
+	})
 	tier := func(events ...string) string {
 		s := newTestStream(sseStream(events...))
 		defer s.Close() //nolint:errcheck

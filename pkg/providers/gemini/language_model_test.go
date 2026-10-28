@@ -714,6 +714,24 @@ func TestConvertResponse_ServiceTierAbsentInMetadataWhenNotSet(t *testing.T) {
 	}
 }
 
+// TS reads serviceTier from usageMetadata only: a top-level serviceTier in
+// the body leaves it null.
+func TestConvertResponse_TopLevelServiceTierIgnored(t *testing.T) {
+	m := makeTestModel("gemini-2.5-pro")
+	var resp Response
+	if err := json.Unmarshal([]byte(`{"serviceTier":"SERVICE_TIER_PRIORITY","usageMetadata":{"promptTokenCount":1},"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}]}`), &resp); err != nil {
+		t.Fatal(err)
+	}
+	result := m.convertResponse(resp, nil)
+	googleMeta, ok := result.ProviderMetadata["google"].(map[string]json.RawMessage)
+	if !ok {
+		t.Fatal("expected google providerMetadata")
+	}
+	if raw := googleMeta["serviceTier"]; string(raw) != "null" {
+		t.Errorf("serviceTier = %s, want null", raw)
+	}
+}
+
 func TestBuildRequest_Gemini3InjectsThoughtSignatureSentinel(t *testing.T) {
 	model := makeTestModel("gemini-3-pro-preview")
 	body, _, warnings, _ := model.buildRequest(context.Background(), &provider.GenerateOptions{
