@@ -559,6 +559,12 @@ These match TS and are unlikely to need code changes, but can change output.
   cannot be resolved fails the run before a tool executes (tool calls run
   concurrently); input callbacks use the execution tool set, like TS
   `stepExecutionTools`.
+- **An empty, non-nil `ActiveTools` leaves no tools active in the legacy
+  `ToolLoopAgent` loop**, as TS `filterActiveTools` and `GenerateText`;
+  v0.5.x ignored it and sent every tool. Only a nil `ActiveTools` keeps
+  all tools. A tool call against such an emptied set is a
+  `NoSuchToolError` ("Available tools: .") that `RepairToolCall` can
+  repair, as in TS.
 
 ### Providers
 
