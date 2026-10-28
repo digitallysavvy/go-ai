@@ -889,7 +889,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
 	}
 	if normErr != nil {
-		r.fail(normErr)
+		r.failBeforeStream(ctx, opts, normErr)
 		return
 	}
 	prompt = normalizedPrompt
@@ -1057,7 +1057,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// caller already has this *StreamTextResult and reads the error via
 		// Err()/ReadAll()/Stream(), matching review finding F6.
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: resumeErr})
-		r.fail(resumeErr)
+		r.failBeforeStream(ctx, opts, resumeErr)
 		return
 	}
 	initialResponseMessages := resumed.responseMessages
@@ -1142,7 +1142,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 					stepCancel()
 				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-				r.fail(err)
+				r.failBeforeStream(ctx, opts, err)
 				return
 			}
 			stepInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
@@ -1236,7 +1236,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-		r.fail(err)
+		r.failBeforeStream(ctx, opts, err)
 		return
 	}
 
@@ -1252,7 +1252,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 					stepCancel()
 				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: rfErr})
-				r.fail(rfErr)
+				r.failBeforeStream(ctx, opts, rfErr)
 				return
 			}
 			responseFormat = rf
@@ -1265,7 +1265,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
-		r.fail(normErr)
+		r.failBeforeStream(ctx, opts, normErr)
 		return
 	}
 	if toolResultsErr := validateStepToolResults(stepPrompt.Messages, opts.Tools); toolResultsErr != nil {
@@ -1273,7 +1273,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: toolResultsErr})
-		r.fail(toolResultsErr)
+		r.failBeforeStream(ctx, opts, toolResultsErr)
 		return
 	}
 	stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
@@ -1544,6 +1544,26 @@ func (r *StreamTextResult) notifyStepError(ctx context.Context, onStepError func
 	step := *r.openStep
 	r.openStep = nil
 	Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, onStepError)
+}
+
+// failBeforeStream ends a run that failed before its first model stream was
+// open (prompt standardization or conversion, approval resume, PrepareStep
+// results, step settings). TS runs all of it inside streamText's async
+// pipeline, whose catch adds an `error` part after `start`, so onError is
+// called with it, as for a model call that fails to open. An abort is left to
+// fail.
+func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamTextOptions, err error) {
+	if !isAbortErr(ctx, err) {
+		wrapped := wrapGatewayError(err)
+		if opts.OnError != nil {
+			safeInvoke(func() { opts.OnError(ctx, wrapped) })
+		}
+		if r.chunkBuf != nil {
+			r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
+			r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()})
+		}
+	}
+	r.fail(err)
 }
 
 // fail records a failure that happened before the per-step stream loop ever

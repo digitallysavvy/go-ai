@@ -511,6 +511,12 @@ These match TS and are unlikely to need code changes, but can change output.
   step (and call) whose only reasoning is a reasoning file, as TS counts
   reasoning-file parts (new `ReasoningFiles` on the step-end and finish
   events).
+- **A `StreamText` run that fails before its first model stream opens** (an
+  invalid prompt, a missing tool result, a failed approval resume, invalid
+  `PrepareStep` instructions or settings) now calls `OnError` and its full
+  stream carries `start` and an `error` chunk, as TS streamText reports these
+  through the same error part as a model call that fails to open. `Err()` is
+  unchanged.
 - **Telemetry: a canceled or timed-out `GenerateText` reports `OnError`, not
   `OnAbort`**, as TS `generateText` has no abort telemetry: the root and step
   spans carry the error status. The legacy `ToolLoopAgent` loop does the
