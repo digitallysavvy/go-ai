@@ -389,6 +389,18 @@ These match TS and are unlikely to need code changes, but can change output.
   no terminator) is dropped, as in TS; v0.5.x dispatched it. This applies to
   every SSE provider and the AI Gateway video reader, which now uses the
   shared parser (multi-line data joined, `[DONE]` skipped).
+- **A call that fails before its loop starts still ends its steering
+  run**, as TS: `GenerateText` and `StreamText` start the
+  `ExperimentalSteering` run before any validation, so a reused steering
+  object is the first error and waiting `Steer` handles resolve as not
+  delivered (`error`) instead of waiting forever (review round 55).
+- **`GenerateText` and the legacy `ToolLoopAgent` loop stop before the next
+  step when the call was aborted after a step ended** (for example while a
+  tool that ignores `ctx` ran), as TS `throwIfAborted`: no `PrepareStep` /
+  `PrepareCall`, step start or step error is reported for that step. A
+  `PrepareStep` `MaxOutputTokens` override below 1 is now rejected after the
+  step's tools are prepared (and, in `GenerateText`, after the prompt is
+  converted), as TS `prepareStepCallSettings` (review round 55).
 - **Batch tool definitions are compared as TS does.** `ExperimentalStartBatch`
   compares each request's prepared tools (resolved `DescriptionFunc`
   descriptions, the JSON input schema, input examples, provider options,
