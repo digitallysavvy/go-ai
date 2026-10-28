@@ -389,6 +389,17 @@ These match TS and are unlikely to need code changes, but can change output.
   no terminator) is dropped, as in TS; v0.5.x dispatched it. This applies to
   every SSE provider and the AI Gateway video reader, which now uses the
   shared parser (multi-line data joined, `[DONE]` skipped).
+- **Batch tool definitions are compared as TS does.** `ExperimentalStartBatch`
+  compares each request's prepared tools (resolved `DescriptionFunc`
+  descriptions, the JSON input schema, input examples, provider options,
+  strict; provider tool ID and args) and no longer compares `Title` or
+  `OutputSchema`. Requests are validated one at a time, so the first
+  request's error is reported first (review round 55).
+- **OpenAI-compatible streams (Fireworks, Together, Ollama, GMI Cloud, Vertex
+  xAI, Z.AI) take the response ID, model and timestamp from the first event
+  that has them**, skipping a placeholder event with empty values, as TS. With
+  response headers set they used to come from the first event, so a
+  placeholder made them empty (review round 55).
 - **With `IncludeRawChunks`, the raw chunk for a payload that is not valid
   JSON has a nil `Raw`** (TS `rawValue: undefined`), in every SSE provider
   and Bedrock. It used to carry the payload text.

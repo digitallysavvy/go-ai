@@ -2,17 +2,18 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providers/gateway"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	toolutil "github.com/digitallysavvy/go-ai/pkg/providerutils/tool"
 	"github.com/digitallysavvy/go-ai/pkg/version"
@@ -172,9 +173,6 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 	if err := validateBatchRequests(opts.Requests); err != nil {
 		return nil, err
 	}
-	if err := validateBatchToolCompatibility(opts.Requests); err != nil {
-		return nil, err
-	}
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
@@ -194,11 +192,12 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 	urlChecker := SupportedURLCheckerFromPatterns(batchAPI.SupportedURLs())
 
 	providerRequests := make([]provider.BatchV4Request, 0, len(opts.Requests))
+	toolsByName := map[string]interface{}{}
 	for _, req := range opts.Requests {
 		if err := callCtx.Err(); err != nil {
 			return nil, err
 		}
-		pr, buildErr := buildBatchProviderRequest(callCtx, req, urlChecker)
+		pr, buildErr := buildBatchProviderRequest(callCtx, req, urlChecker, toolsByName)
 		if buildErr != nil {
 			return nil, buildErr
 		}
@@ -621,7 +620,8 @@ func validateBatchRequests(requests []BatchRequest) error {
 			return err
 		}
 		id := req.id()
-		if strings.TrimSpace(id) == "" {
+		// TS `request.id.trim().length === 0` (JavaScript whitespace).
+		if providerutils.JSTrim(id) == "" {
 			return &providererrors.InvalidArgumentError{
 				Field:   "requests",
 				Message: "request IDs must not be empty",
@@ -638,53 +638,64 @@ func validateBatchRequests(requests []BatchRequest) error {
 	return nil
 }
 
-// validateBatchToolCompatibility rejects batches where the same tool name is
-// given different definitions across requests. Mirrors TypeScript's
-// validateCompatibleTools (compares definitions, not the Execute closures).
-func validateBatchToolCompatibility(requests []BatchRequest) error {
-	byName := make(map[string]types.Tool)
-	for _, req := range requests {
-		if req.Text == nil {
-			continue
-		}
-		for _, tool := range req.Text.Tools {
-			if prev, ok := byName[tool.Name]; ok {
-				if !toolDefinitionsEqual(prev, tool) {
-					return &providererrors.InvalidArgumentError{
-						Field:   "requests",
-						Message: fmt.Sprintf("tool %q must have the same definition in every batch request", tool.Name),
-					}
-				}
-				continue
+// validateCompatibleBatchTools rejects a request whose prepared tools give a
+// tool name already seen in an earlier request a different definition
+// (TS validateCompatibleTools over the prepareTools output, compared with
+// isDeepEqualData). tools are the request's tools after the descriptions are
+// resolved and toolOrder is applied; toolsByName carries the definitions of
+// the earlier requests.
+func validateCompatibleBatchTools(tools []types.Tool, toolsByName map[string]interface{}) error {
+	for i := range tools {
+		def := preparedBatchToolDefinition(&tools[i])
+		if prev, ok := toolsByName[tools[i].Name]; ok && !reflect.DeepEqual(prev, def) {
+			return &providererrors.InvalidArgumentError{
+				Field:   "requests",
+				Message: fmt.Sprintf("tool %q must have the same definition in every batch request", tools[i].Name),
 			}
-			byName[tool.Name] = tool
 		}
+		toolsByName[tools[i].Name] = def
 	}
 	return nil
 }
 
-// toolDefinitionsEqual compares the provider-facing definition of two tools,
-// ignoring Execute/approval/context closures that cannot be meaningfully
-// compared with reflect.DeepEqual.
-func toolDefinitionsEqual(a, b types.Tool) bool {
-	return a.Name == b.Name &&
-		a.Description == b.Description &&
-		a.Title == b.Title &&
-		toolStrictEqual(a.Strict, b.Strict) &&
-		a.ProviderExecuted == b.ProviderExecuted &&
-		reflect.DeepEqual(a.Parameters, b.Parameters) &&
-		reflect.DeepEqual(a.OutputSchema, b.OutputSchema)
-}
-
-// toolStrictEqual compares two *bool Tool.Strict values by value (nil means
-// "unset"), not by pointer identity — a plain a == b comparison after
-// Tool.Strict became *bool would almost always be false even when both sides
-// are, say, a fresh `true` pointer (hand-off: "Tool.Strict bool -> *bool").
-func toolStrictEqual(a, b *bool) bool {
-	if a == nil || b == nil {
-		return a == b
+// preparedBatchToolDefinition is the provider-facing definition TS
+// prepareTools builds for a tool: {type:'provider', name, id, args} for a
+// provider tool, else {type:'function', name, inputSchema, description?,
+// inputExamples?, providerOptions?, strict?}. It is normalized through JSON so
+// that, like isDeepEqualData, object key order and Go value types don't
+// matter.
+func preparedBatchToolDefinition(tool *types.Tool) interface{} {
+	def := map[string]interface{}{"name": tool.Name}
+	if tool.Type == types.ToolTypeProviderDefined {
+		def["type"] = "provider"
+		def["id"] = tool.ProviderID
+		def["args"] = tool.ProviderArgs
+	} else {
+		def["type"] = "function"
+		// The schema as sent (toolutil.ResolveToolSchemas output).
+		def["inputSchema"] = tool.Parameters
+		if tool.Description != "" {
+			def["description"] = tool.Description
+		}
+		if tool.InputExamples != nil {
+			def["inputExamples"] = tool.InputExamples
+		}
+		if tool.ProviderOptions != nil {
+			def["providerOptions"] = tool.ProviderOptions
+		}
+		if tool.Strict != nil {
+			def["strict"] = *tool.Strict
+		}
 	}
-	return *a == *b
+	data, err := json.Marshal(def)
+	if err != nil {
+		return def
+	}
+	var normalized interface{}
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		return def
+	}
+	return normalized
 }
 
 func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) error {
@@ -703,7 +714,7 @@ func validateBatchReference(batchAPI provider.BatchV4, batch BatchReference) err
 	return nil
 }
 
-func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker promptutils.URLSupportChecker) (provider.BatchV4Request, error) {
+func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker promptutils.URLSupportChecker, toolsByName map[string]interface{}) (provider.BatchV4Request, error) {
 	switch {
 	case req.Text != nil:
 		t := req.Text
@@ -715,6 +726,15 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		// remote file URLs the batch interface can't consume directly are
 		// inlined before the request is sent.
 		if err := promptutils.ValidatePromptInput(t.Prompt, t.Messages); err != nil {
+			return provider.BatchV4Request{}, err
+		}
+		// Mirrors TypeScript's `prepareTools({ tools, toolOrder, toolsContext })`
+		// in packages/ai/src/batch/batch.ts: dynamic tool descriptions are
+		// resolved via toolsContext, then tools are reordered per toolOrder.
+		// TS then runs validateCompatibleTools on the prepared tools.
+		resolvedTools := resolveStepTools(ctx, t.Tools, t.ToolsContext, nil)
+		resolvedTools = orderStepTools(resolvedTools, t.ToolOrder)
+		if err := validateCompatibleBatchTools(toolutil.ResolveToolSchemas(resolvedTools), toolsByName); err != nil {
 			return provider.BatchV4Request{}, err
 		}
 		// TS prepareLanguageModelCallOptions(request), before the prompt is
@@ -738,11 +758,6 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		if err := validateStepToolResults(normalizedPrompt.Messages, t.Tools); err != nil {
 			return provider.BatchV4Request{}, err
 		}
-		// Mirrors TypeScript's `prepareTools({ tools, toolOrder, toolsContext })`
-		// in packages/ai/src/batch/batch.ts: dynamic tool descriptions are
-		// resolved via toolsContext, then tools are reordered per toolOrder.
-		resolvedTools := resolveStepTools(ctx, t.Tools, t.ToolsContext, nil)
-		resolvedTools = orderStepTools(resolvedTools, t.ToolOrder)
 		genOpts := provider.GenerateOptions{
 			Prompt:           normalizedPrompt,
 			Temperature:      t.Temperature,
