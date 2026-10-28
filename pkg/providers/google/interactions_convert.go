@@ -480,6 +480,12 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
 				continue
 			}
+			// TS filePartToImageBlock: text data is not representable as an image.
+			if b.FileData.Type == types.FileDataTypeText || (b.FileData.Type == "" && b.Text != "") {
+				msg := "google.interactions: tool-result image part with `data.type === \"text\"` is not representable as an image; part dropped."
+				warnings = append(warnings, types.Warning{Type: "other", Message: msg, Details: msg})
+				continue
+			}
 			file := types.FileContent{FileData: b.FileData, Data: b.Data, MediaType: b.MediaType, URL: b.URL, Reference: b.Reference, Text: b.Text}
 			ib, ws, err := fileContentToInteractionBlock(file, "")
 			if err != nil {
@@ -645,6 +651,13 @@ func compactMessagesForInteraction(messages []types.Message, interactionID strin
 				}
 			}
 			if matches {
+				// TS drops the results of the message's tool-call parts; Go
+				// carries them inline and in msg.ToolCalls.
+				for _, part := range msg.Content {
+					if tc, ok := part.(types.ToolCallContent); ok {
+						droppedToolCalls[tc.ToolCallID] = true
+					}
+				}
 				for _, call := range msg.ToolCalls {
 					droppedToolCalls[call.ID] = true
 				}
@@ -715,7 +728,8 @@ func reasoningSummary(text string) interface{} {
 func thoughtText(summary []interactionsContentBlock) string {
 	var parts []string
 	for _, item := range summary {
-		if item.Type == "text" {
+		// TS: item.type === 'text' && typeof item.text === 'string'.
+		if item.Type == "text" && !item.textAbsent {
 			parts = append(parts, item.Text)
 		}
 	}

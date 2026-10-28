@@ -434,10 +434,9 @@ func (s *bedrockConverseStream) handleContentBlockDelta(value map[string]interfa
 		return
 	}
 
-	if toolUse, ok := delta["toolUse"].(map[string]interface{}); ok {
-		if _, ok := toolUse["input"].(string); !ok {
-			return
-		}
+	// A toolUse without a string input is not the toolUse member, so the
+	// union goes on to the reasoningContent members.
+	if toolUse, ok := delta["toolUse"].(map[string]interface{}); ok && isString(toolUse["input"]) {
 		block, exists := s.contentBlocks[idx]
 		if !exists || block.Kind != "tool-call" {
 			return
@@ -457,6 +456,11 @@ func (s *bedrockConverseStream) handleContentBlockDelta(value map[string]interfa
 
 	// Citation deltas and other future delta shapes are accepted without
 	// erroring but currently produce no stream chunk.
+}
+
+func isString(v interface{}) bool {
+	_, ok := v.(string)
+	return ok
 }
 
 func (s *bedrockConverseStream) handleReasoningDelta(idx int, rc map[string]interface{}) {

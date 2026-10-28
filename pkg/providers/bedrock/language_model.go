@@ -159,12 +159,17 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 	}
 
 	additionalModelRequestFields := map[string]interface{}{}
+	// TS sends amazonBedrockOptions.additionalModelRequestFields whenever it
+	// is set, so an empty providerOptions object (or one emptied by the
+	// jsonTool output_config.format strip) still reaches the wire as {}.
+	additionalFieldsProvided := false
 	if m.options != nil {
 		for k, v := range m.options.AdditionalModelRequestFields {
 			additionalModelRequestFields[k] = v
 		}
 	}
 	if raw, ok := amazonBedrockOptions["additionalModelRequestFields"].(map[string]interface{}); ok {
+		additionalFieldsProvided = true
 		for k, v := range raw {
 			additionalModelRequestFields[k] = v
 		}
@@ -477,7 +482,7 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		"messages": messages,
 		"system":   system,
 	}
-	if len(additionalModelRequestFields) > 0 {
+	if additionalFieldsProvided || len(additionalModelRequestFields) > 0 {
 		body["additionalModelRequestFields"] = additionalModelRequestFields
 	}
 	if isAnthropic {
@@ -601,6 +606,22 @@ func normalizePromptMessages(prompt types.Prompt) []types.Message {
 // hasAnyTools filtering. Returns the filtered messages and whether anything
 // was removed.
 func filterToolContent(messages []types.Message) ([]types.Message, bool) {
+	// TS filters only when some message holds a tool call or result; otherwise
+	// the prompt (empty messages included) is used as is. An assistant
+	// message's legacy Message.ToolCalls count as tool-call parts (the
+	// converter turns them into toolUse blocks).
+	hasToolContent := false
+	for _, msg := range messages {
+		for _, part := range withLegacyToolCalls(msg) {
+			switch part.(type) {
+			case types.ToolCallContent, types.ToolResultContent:
+				hasToolContent = true
+			}
+		}
+	}
+	if !hasToolContent {
+		return messages, false
+	}
 	removed := false
 	out := make([]types.Message, 0, len(messages))
 	for _, msg := range messages {
@@ -608,8 +629,9 @@ func filterToolContent(messages []types.Message) ([]types.Message, bool) {
 			out = append(out, msg)
 			continue
 		}
-		filteredContent := make([]types.ContentPart, 0, len(msg.Content))
-		for _, part := range msg.Content {
+		content := withLegacyToolCalls(msg)
+		filteredContent := make([]types.ContentPart, 0, len(content))
+		for _, part := range content {
 			switch part.(type) {
 			case types.ToolCallContent, types.ToolResultContent:
 				removed = true
@@ -620,8 +642,9 @@ func filterToolContent(messages []types.Message) ([]types.Message, bool) {
 		if len(filteredContent) > 0 {
 			clone := msg
 			clone.Content = filteredContent
+			clone.ToolCalls = nil
 			out = append(out, clone)
-		} else if len(msg.Content) > 0 {
+		} else if len(content) > 0 {
 			removed = true
 		}
 	}

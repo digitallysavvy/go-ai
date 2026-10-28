@@ -765,11 +765,12 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	}
 	result.RawFinishReason = response.StopReason
 
-	// Extract context management (check root level first, then usage block)
+	// Root-level context_management, as TS reads it. Go-only: fall back to
+	// the legacy usage.context_management (kept for v0.5.2 callers; a known
+	// difference, TS's schema strips that key).
 	if response.ContextManagement != nil {
 		result.ContextManagement = response.ContextManagement
 	} else if response.Usage.ContextManagement != nil {
-		// Fallback to legacy location in usage block
 		result.ContextManagement = response.Usage.ContextManagement
 	}
 	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
@@ -1308,7 +1309,7 @@ type anthropicResponse struct {
 	StopSequence string                `json:"stop_sequence,omitempty"`
 	StopDetails  *anthropicStopDetails `json:"stop_details,omitempty"`
 	Usage        anthropicUsage        `json:"usage"`
-	// Root-level context management (new location - takes precedence)
+	// Root-level context management (TS location; takes precedence).
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Container info returned when a container was used/created
 	Container *anthropicContainerResponse `json:"container,omitempty"`
@@ -1324,7 +1325,7 @@ type anthropicUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`     // v6.0
-	// Legacy location for context management (fallback)
+	// Legacy location for context management (Go-only fallback, known difference)
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Iterations breakdown when compaction is used
 	Iterations []UsageIteration `json:"iterations,omitempty"`
@@ -1588,6 +1589,10 @@ type anthropicStream struct {
 	// no message_delta of its own.
 	curFinishReason    types.FinishReason
 	curRawFinishReason string
+	// contextManagement mirrors TS's stream-wide contextManagement: set by
+	// a message_delta that carries context_management and never cleared, so
+	// a later message_stop without its own message_delta still reports it.
+	contextManagement *ContextManagementResponse
 
 	// requestBody is the raw request body that opened this stream, exposed
 	// via RequestBody() (provider.StreamRequestBody, hand-off: "stream
@@ -2685,13 +2690,13 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					OutputTokens             *int `json:"output_tokens,omitempty"`
 					CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
 					CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
-					// Legacy location for context management
+					// Legacy location for context management (Go-only fallback)
 					ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 					// Iterations breakdown for compaction
 					Iterations          []UsageIteration              `json:"iterations,omitempty"`
 					OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
 				} `json:"usage"`
-				// Root-level context management (new location - takes precedence)
+				// Root-level context management (TS location; takes precedence).
 				ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 				// Container info (with skills, if any) from message_delta
 				Container *anthropicContainerResponse `json:"container,omitempty"`
@@ -2729,6 +2734,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				Usage map[string]interface{} `json:"usage"`
 			}
 			if json.Unmarshal([]byte(event.Data), &deltaRaw) == nil && len(deltaRaw.Usage) > 0 {
+				// The delta usage is a loose object, but its iterations and
+				// output_tokens_details are plain z.object schemas (stripped).
+				stripUsageRawToSchema(deltaRaw.Usage)
 				if s.usage.Raw == nil {
 					s.usage.Raw = map[string]interface{}{}
 				}
@@ -2769,11 +2777,15 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					Usage:           &usage,
 				}
 
-				// Extract context management (check root level first, then usage block)
+				// TS: contextManagement is stream-wide; a message_delta with
+				// context_management replaces it and one without keeps the
+				// earlier value (also for later messages' finishes). Go-only:
+				// the legacy usage.context_management is a fallback when the
+				// root-level value is absent (known difference, v0.5.2 callers).
 				if delta.ContextManagement != nil {
-					chunk.ContextManagement = delta.ContextManagement
+					s.contextManagement = delta.ContextManagement
 				} else if delta.Usage.ContextManagement != nil {
-					chunk.ContextManagement = delta.Usage.ContextManagement
+					s.contextManagement = delta.Usage.ContextManagement
 				}
 				// The finish chunk is emitted on message_stop so later deltas
 				// (e.g. final safeguard results) are included.
@@ -2925,7 +2937,10 @@ func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
 	chunk := s.finish
 	usage := convertAnthropicUsage(s.usage)
 	chunk.Usage = &usage
-	chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, chunk.ContextManagement, s.providerOptionsName, s.usedCustomProviderKey, metadataExtras{
+	if s.contextManagement != nil {
+		chunk.ContextManagement = s.contextManagement
+	}
+	chunk.ProviderMetadata = anthropicProviderMetadataRaw(s.usage, s.stopSequence, s.stopDetails, s.container, s.contextManagement, s.providerOptionsName, s.usedCustomProviderKey, metadataExtras{
 		inputTransformations: s.inputTransformations,
 		safeguardResults:     s.safeguardResults,
 	})
