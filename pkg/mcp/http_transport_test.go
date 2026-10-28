@@ -16,13 +16,41 @@ import (
 )
 
 func TestNewHTTPTransportUsesCustomHTTPClient(t *testing.T) {
-	custom := &http.Client{Timeout: 123 * time.Millisecond}
+	rt := &http.Transport{}
+	custom := &http.Client{Timeout: 123 * time.Millisecond, Transport: rt}
 	transport := NewHTTPTransport(HTTPTransportConfig{InitialProtocolVersion: LatestLegacyProtocolVersion,
 		URL:        "http://localhost:9999/mcp",
 		HTTPClient: custom,
 	})
-	if transport.client != custom {
-		t.Fatal("expected custom HTTP client to be used")
+	if transport.client.Transport != rt || transport.streamClient.Transport != rt {
+		t.Fatal("expected the custom HTTP client's transport to be used")
+	}
+	if transport.client.Timeout != 123*time.Millisecond {
+		t.Fatalf("client timeout = %v, want the custom client's 123ms", transport.client.Timeout)
+	}
+}
+
+// The caller's client is not modified: NewHTTPTransport used to set its
+// redirect policy and timeout in place, which changed every other use of a
+// shared client such as http.DefaultClient.
+func TestNewHTTPTransportDoesNotModifyCustomHTTPClient(t *testing.T) {
+	custom := &http.Client{}
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:        "http://localhost:9999/mcp",
+		HTTPClient: custom,
+		TimeoutMS:  250,
+	})
+	if custom.CheckRedirect != nil {
+		t.Error("custom client's CheckRedirect was set")
+	}
+	if custom.Timeout != 0 {
+		t.Errorf("custom client's Timeout = %v, want 0", custom.Timeout)
+	}
+	if transport.client.CheckRedirect == nil {
+		t.Error("transport client has no redirect policy")
+	}
+	if transport.client.Timeout != 250*time.Millisecond {
+		t.Errorf("transport client timeout = %v, want 250ms", transport.client.Timeout)
 	}
 }
 

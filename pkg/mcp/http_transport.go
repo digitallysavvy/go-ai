@@ -235,7 +235,9 @@ type HTTPTransportConfig struct {
 	Config TransportConfig
 
 	// HTTPClient is an optional custom HTTP client used for all MCP HTTP requests.
-	// Useful for TLS customization, proxy settings, and custom dialers.
+	// Useful for TLS customization, proxy settings, and custom dialers. The
+	// transport uses a copy of it, so the request timeout and redirect policy
+	// it applies do not change the client itself.
 	HTTPClient *http.Client
 
 	// SSEClient is an optional custom SSE-capable client used instead of
@@ -315,11 +317,18 @@ func NewHTTPTransport(config HTTPTransportConfig) *HTTPTransport {
 	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
 	// No default: TS fetch has no request timeout, the caller's ctx governs.
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
+	// A caller's client is copied, not modified: setting its timeout or
+	// redirect policy would change every other use of it (http.DefaultClient,
+	// for one) and race with them.
+	var httpClient *http.Client
+	if config.HTTPClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
-	} else if httpClient.Timeout == 0 && timeout > 0 {
-		httpClient.Timeout = timeout
+	} else {
+		c := *config.HTTPClient
+		httpClient = &c
+		if httpClient.Timeout == 0 && timeout > 0 {
+			httpClient.Timeout = timeout
+		}
 	}
 
 	// Default redirect policy: error on redirect (security-first posture for MCP).
@@ -1060,13 +1069,18 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx, lifecycleCtx context.Context
 		if err == io.EOF {
 			return
 		}
+		// ctx follows lifecycleCtx only asynchronously, so a read error right
+		// after an OnError that called Close must check lifecycleCtx too: TS
+		// close() aborts the reader, which ends it with an AbortError that is
+		// not reported.
+		aborted := ctx.Err() != nil || (lifecycleCtx != nil && lifecycleCtx.Err() != nil)
 		if err != nil {
-			if ctx.Err() == nil {
+			if !aborted {
 				t.bgReportError(NewTransportError("failed to read event-stream response", err))
 			}
 			return
 		}
-		if ctx.Err() != nil || (lifecycleCtx != nil && lifecycleCtx.Err() != nil) {
+		if aborted {
 			return
 		}
 		if event.Event != "" && event.Event != "message" {
@@ -1368,7 +1382,9 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		t.maybeScheduleInboundSSEReconnect(lifecycleCtx)
 		return
 	}
-	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
+	// TS applySessionIdFromResponse is a no-op for the modern protocol era,
+	// which a SetProtocolVersion can switch to while this GET is in flight.
+	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" && !t.isModernProtocol() {
 		t.setSessionIDVia(sessionID, t.bg.callback)
 	}
 
