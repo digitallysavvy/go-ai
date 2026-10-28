@@ -346,6 +346,33 @@ These match TS and are unlikely to need code changes, but can change output.
   reasoning parts with a newline.
 - **fx:** the sandbox `realpath` output is decoded like Node
   `Buffer#toString('utf8')` (one U+FFFD per ill-formed sequence).
+- **A harness turn's terminal finish opens no step**: after a suspended
+  turn discards its open step the full stream no longer repeats
+  `start-step` before `finish`, and a turn with no step ends with the
+  `finish` part only. A general `NewStreamTextResultFromParts` stream whose
+  only step ends directly in `finish` keeps its UI `finish-step` and
+  `OnStepEnd`.
+- **A harness turn paused for host input ends with the last step's finish
+  reason** (`tool-calls` for the step closed at the pause, `other` before any
+  step), like TS `result.finish()`, instead of an empty one.
+- **`CreateUIMessageStreamWithOptions` injects the response message id into
+  every `start` chunk that has none**, like TS: an earlier `start` with its
+  own id no longer changes what later ones get, and an explicit empty id is
+  kept.
+- **A legacy `ToolLoopAgent` `PrepareCall` override that switches
+  integrations keeps the loop's context for later steps** (total timeout,
+  run id, tool-call telemetry and event call ids); only the new root's span
+  comes from the sibling root.
+- **Telemetry:** the legacy integration records `ai.response.reasoning` for a
+  step (and call) whose only reasoning is a reasoning file, as TS counts
+  reasoning-file parts (new `ReasoningFiles` on the step-end and finish
+  events).
+- **fx `glob`:** braces expand like minimatch (`{1..3}`, `{a..e..2}`,
+  padded and reverse sequences, `${...}`, `{a},b}`, at most 100000
+  expansions), and patterns are preprocessed like Node `path.matchesGlob`
+  (`.` and empty segments dropped, `a/../b` resolved, `**/..` and
+  second-phase merges). A pattern over 64 KiB fails with "pattern is too
+  long".
 - **Telemetry ignores events for calls it never saw start.** As in TS, the
   OpenTelemetry integrations create call state only at an operation start.
   An event for an unknown call id no longer creates state or falls back to
