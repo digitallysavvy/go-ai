@@ -326,6 +326,26 @@ These match TS and are unlikely to need code changes, but can change output.
   without one, and `EnrichSpan` values are sanitized by Go kind** (empty
   arrays and byte slices dropped, pointers and named types read as their
   value).
+- **A harness turn suspended before the adapter's `finish` still ends with a
+  finish part** (finish reason `other`, the open step discarded), as TS
+  `result.finish(undefined)`. `ToUIMessageStream` maps a call-level finish
+  that follows step parts to the UI `finish` part only, with no
+  `finish-step` and no closing of open text or reasoning blocks.
+- **A legacy `ToolLoopAgent` `PrepareCall` telemetry override that switches
+  integrations gives the new integrations a root span of their own** (reused
+  if a later step switches back); every root ends with the call.
+- **`GenerateObject` and `StreamObject` check the output settings before
+  `MaxRetries`**, so invalid output settings are reported first, as in TS.
+- **Telemetry:** the GenAI object root records the prompt in
+  `gen_ai.input.messages`; SemConv message parts keep the TS key order
+  (`{"type":...,"content":...}`); a provider-executed tool error that is not
+  an `error` sets the tool span's error status without a message; the legacy
+  integration records an empty object text as `ai.response.object` and
+  `ai.response.reasoning` for any reasoning part, also one with empty text
+  (new `TelemetryStepEndEvent.ReasoningParts`); harness telemetry joins
+  reasoning parts with a newline.
+- **fx:** the sandbox `realpath` output is decoded like Node
+  `Buffer#toString('utf8')` (one U+FFFD per ill-formed sequence).
 - **Telemetry ignores events for calls it never saw start.** As in TS, the
   OpenTelemetry integrations create call state only at an operation start.
   An event for an unknown call id no longer creates state or falls back to
@@ -601,6 +621,8 @@ Notable ones:
   close code and reason.
 - When a `StreamObject` stream itself fails (`Next()` returns an error), Go
   still runs the end callbacks and ends telemetry; TS skips them.
+- When a `StreamObject` stream ends without a finish part, Go still parses
+  the object; TS reports no object and leaves `object` unsettled.
 - Google batch `Cursor` and `WebhookURL`, and the response `nextPageToken`,
   treat `""` as absent; Perplexity usage counts such as `12.5` are truncated.
 

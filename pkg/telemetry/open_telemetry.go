@@ -432,7 +432,21 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 			span.SetAttributes(attribute.String("gen_ai.system_instructions", string(b)))
 		}
 	}
-	if recordInputs && len(e.Messages) > 0 {
+	if recordInputs && isObjectOperation {
+		// TS onObjectOperationStart: formatModelMessages({prompt, messages}),
+		// a string prompt first as the user message, recorded even when empty.
+		messages := e.Messages
+		if e.Prompt != "" {
+			messages = append([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: e.Prompt}}}}, e.Messages...)
+		}
+		formatted := formatInputMessages(messages)
+		if formatted == nil {
+			formatted = []semConvInputMessage{}
+		}
+		if b, err := jsonstr.Marshal(formatted); err == nil {
+			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
+		}
+	} else if recordInputs && len(e.Messages) > 0 {
 		if b, err := jsonstr.Marshal(formatInputMessages(e.Messages)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
@@ -981,23 +995,15 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			if err, ok := out.Error.(error); ok {
 				RecordErrorOnSpan(toolSpan, err)
 			} else if out.Error != nil {
-				toolSpan.SetStatus(codes.Error, jsonOrString(out.Error))
+				// TS recordErrorOnSpan: a thrown value that is not an Error
+				// sets the error status with no message or exception event.
+				toolSpan.SetStatus(codes.Error, "")
 			}
 		}
 		toolSpan.End()
 	}
 
 	entry.span.End()
-}
-
-func jsonOrString(v interface{}) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	if b, err := jsonstr.Marshal(v); err == nil {
-		return string(b)
-	}
-	return ""
 }
 
 // baseUsageAttrs returns the GenAI SemConv usage attributes. cacheCreation
@@ -1602,13 +1608,13 @@ func (i OpenTelemetry) onAudioOperationEnd(span trace.Span, e TelemetryFinishEve
 		// never does.
 		if !isSpeech {
 			span.SetAttributes(attribute.String("ai.response.text", e.Text))
-			// A plain map, not semConvOutputMessage: TS's inline JSON for
+			// {role, parts}, not semConvOutputMessage: TS's inline JSON for
 			// this attribute has no finish_reason key (unlike the shared
 			// chat-response formatter), since audio operations have no
 			// finish reason at all.
-			if b, err := jsonstr.Marshal([]map[string]interface{}{{
-				"role":  "assistant",
-				"parts": []semConvPart{{"type": "text", "content": e.Text}},
+			if b, err := jsonstr.Marshal([]semConvInputMessage{{
+				Role:  "assistant",
+				Parts: []semConvPart{{"type": "text", "content": e.Text}},
 			}}); err == nil {
 				span.SetAttributes(attribute.String("gen_ai.output.messages", string(b)))
 			}

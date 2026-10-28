@@ -53,6 +53,12 @@ provider sending an error part), Go still calls `OnStepEnd` and `OnEnd` with
 the error and ends the call's telemetry. TypeScript never runs its flush
 handler in that case, so it calls neither and leaves the root span open.
 
+When the stream ends cleanly without a finish part, Go still parses and
+validates the accumulated text and returns the object (finish reason
+`other`). TypeScript only parses the object in its finish handler, so there
+it calls `onFinish` with no object and no error, and `result.object` never
+settles.
+
 ## Video generation webhook suspension in workflows
 
 TypeScript's `experimental_generateVideo` can durably suspend a Vercel

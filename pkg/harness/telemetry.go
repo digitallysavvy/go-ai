@@ -365,13 +365,15 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 		return
 	}
 	telemetry.FireOnStepEnd(d.telStepCtx, telemetry.TelemetryStepEndEvent{
-		Settings:         d.in.Telemetry,
-		CallID:           d.telCallID,
-		StepNumber:       stepNumber,
-		FinishReason:     string(step.FinishReason),
-		Usage:            telemetryUsageFromTypesUsage(step.Usage),
-		Text:             step.Text,
-		Reasoning:        step.ReasoningText,
+		Settings:     d.in.Telemetry,
+		CallID:       d.telCallID,
+		StepNumber:   stepNumber,
+		FinishReason: string(step.FinishReason),
+		Usage:        telemetryUsageFromTypesUsage(step.Usage),
+		Text:         step.Text,
+		// TS legacy ai.response.reasoning joins the parts with "\n".
+		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
+		ReasoningParts:   step.Reasoning,
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		Files:            step.Files,
@@ -440,7 +442,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 		ModelProvider: "harness:" + d.in.Harness.HarnessID(),
 		ModelID:       d.modelID,
 		Text:          finalStep.Text,
-		Reasoning:     finalStep.ReasoningText,
+		Reasoning:     telemetry.JoinReasoning(finalStep.Reasoning),
 		ToolCalls:     toolCalls,
 		// TS passes toolResults of every step and finalStep.reasoning; the
 		// GenAI integration formats them into gen_ai.output.messages.

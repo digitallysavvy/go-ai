@@ -336,7 +336,7 @@ func TestOpenTelemetryOnStartUsesSystemNotPrompt(t *testing.T) {
 		t.Fatal("expected gen_ai.system_instructions to be set")
 	}
 	got := v.(string)
-	if got != `[{"content":"Be helpful","type":"text"}]` {
+	if got != `[{"type":"text","content":"Be helpful"}]` {
 		t.Fatalf("gen_ai.system_instructions = %s, want the SemConv shape for e.System, not e.Prompt", got)
 	}
 }
@@ -365,7 +365,7 @@ func TestOpenTelemetryOnStartInputMessages(t *testing.T) {
 	if !ok {
 		t.Fatal("expected gen_ai.input.messages to be set")
 	}
-	want := `[{"role":"user","parts":[{"content":"hi","type":"text"}]}]`
+	want := `[{"role":"user","parts":[{"type":"text","content":"hi"}]}]`
 	if v.(string) != want {
 		t.Fatalf("gen_ai.input.messages = %s, want %s", v, want)
 	}
@@ -400,7 +400,7 @@ func TestOpenTelemetryLanguageModelCallOutputMessagesSemConvShape(t *testing.T) 
 	if !ok {
 		t.Fatal("expected gen_ai.output.messages to be set")
 	}
-	want := `[{"role":"assistant","parts":[{"content":"hello","type":"text"}],"finish_reason":"stop"}]`
+	want := `[{"role":"assistant","parts":[{"type":"text","content":"hello"}],"finish_reason":"stop"}]`
 	if v.(string) != want {
 		t.Fatalf("gen_ai.output.messages = %s, want %s", v, want)
 	}
@@ -808,7 +808,7 @@ func TestOpenTelemetryObjectRootEndOutputMessages(t *testing.T) {
 		t.Fatal("missing root span")
 	}
 	raw, ok := attrValue(root, "gen_ai.output.messages")
-	if !ok || raw != `[{"role":"assistant","parts":[{"content":"{\"name\":\"Ann\"}","type":"text"}],"finish_reason":"stop"}]` {
+	if !ok || raw != `[{"role":"assistant","parts":[{"type":"text","content":"{\"name\":\"Ann\"}"}],"finish_reason":"stop"}]` {
 		t.Errorf("gen_ai.output.messages = %v (ok=%v)", raw, ok)
 	}
 	if _, ok := attrValue(root, "gen_ai.usage.cache_creation.input_tokens"); ok {
