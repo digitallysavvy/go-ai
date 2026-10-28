@@ -23,7 +23,7 @@ type looseHook interface {
 // counterpart of that raw dispatch.
 func looseDecode(data []byte, v interface{}) {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
 		return
 	}
 	looseDecodeValue(data, rv.Elem())
@@ -40,7 +40,7 @@ func looseDecodeValue(data []byte, rv reflect.Value) {
 		return
 	}
 	switch rv.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		elem := reflect.New(rv.Type().Elem())
 		if elem.Elem().Kind() == reflect.Struct && !strings.HasPrefix(trimmed, "{") {
 			return
