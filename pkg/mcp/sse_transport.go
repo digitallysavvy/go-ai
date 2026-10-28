@@ -75,7 +75,9 @@ type SSETransportConfig struct {
 	// Config is the base transport configuration.
 	Config TransportConfig
 
-	// HTTPClient is an optional custom HTTP client used for GET and POST requests.
+	// HTTPClient is an optional custom HTTP client used for GET and POST
+	// requests. The transport uses a copy of it, so the request timeout and
+	// redirect policy it applies do not change the client itself.
 	HTTPClient *http.Client
 
 	// SSEClient is an optional custom SSE-capable client used instead of
@@ -103,11 +105,18 @@ func NewSSETransport(config SSETransportConfig) *SSETransport {
 	timeout := time.Duration(config.TimeoutMS) * time.Millisecond
 	// No default: TS fetch has no request timeout, the caller's ctx governs.
 
-	httpClient := config.HTTPClient
-	if httpClient == nil {
+	// A caller's client is copied, not modified (as in NewHTTPTransport):
+	// setting its timeout or redirect policy would change every other use of
+	// it (http.DefaultClient, for one) and race with them.
+	var httpClient *http.Client
+	if config.HTTPClient == nil {
 		httpClient = &http.Client{Timeout: timeout}
-	} else if httpClient.Timeout == 0 && timeout > 0 {
-		httpClient.Timeout = timeout
+	} else {
+		c := *config.HTTPClient
+		httpClient = &c
+		if httpClient.Timeout == 0 && timeout > 0 {
+			httpClient.Timeout = timeout
+		}
 	}
 
 	if config.Config.Redirect != MCPRedirectFollow {

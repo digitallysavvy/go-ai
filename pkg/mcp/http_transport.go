@@ -1267,7 +1267,6 @@ func (t *HTTPTransport) scheduleInboundSSEReconnection() {
 	}
 	delay := nextInboundReconnectDelay(attempts)
 	t.sseReconnectAttempts = attempts + 1
-	resumeToken := t.lastInboundEventID
 	lifecycleCtx := t.sseLifecycleCtx
 	t.bg.add()
 	var timer *time.Timer
@@ -1278,6 +1277,9 @@ func (t *HTTPTransport) scheduleInboundSSEReconnection() {
 		t.sseMu.Lock()
 		delete(t.sseReconnectTimers, timer)
 		closing := t.sseClosing
+		// TS reads this.lastInboundEventId when the timer fires: another
+		// inbound GET may have received events during the backoff.
+		resumeToken := t.lastInboundEventID
 		t.sseMu.Unlock()
 		if closing || lifecycleCtx == nil || lifecycleCtx.Err() != nil {
 			return

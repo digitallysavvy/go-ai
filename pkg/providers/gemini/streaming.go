@@ -297,6 +297,11 @@ func (s *stream) continueStream() bool {
 	next, err := s.continueFn(token)
 	if err != nil {
 		s.continuationErr = true
+		// TS enqueues the failure as a parse result with rawValue undefined,
+		// so includeRawChunks emits a raw part ahead of the error part.
+		if s.includeRawChunks {
+			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw})
+		}
 		// TS emits the thrown error itself as the error part (so callers can
 		// match it by type, e.g. an APICallError); do not wrap it.
 		s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{
