@@ -410,6 +410,12 @@ type TelemetryStepFinishEvent struct {
 	// part's text is empty (TS `reasoning.length > 0`).
 	ReasoningParts []types.ReasoningContent
 
+	// ReasoningFiles are the step's reasoning file parts. TS counts them in
+	// `reasoning.length > 0`, so the legacy integration records
+	// ai.response.reasoning (their text is empty) for a step with only
+	// reasoning files.
+	ReasoningFiles []types.ReasoningFileContent
+
 	// ToolCalls made by the model in this step.
 	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	ToolCalls []types.ToolCall
@@ -500,6 +506,9 @@ type TelemetryFinishEvent struct {
 	// step and the reasoning parts of the final step.
 	ToolResults    []types.ToolResult
 	ReasoningParts []types.ReasoningContent
+	// ReasoningFiles are the final step's reasoning file parts (see
+	// TelemetryStepFinishEvent.ReasoningFiles).
+	ReasoningFiles []types.ReasoningFileContent
 	// Object holds the parsed result for ai.generateObject/ai.streamObject,
 	// emitted as ai.response.object (output-gated, JSON-encoded) instead of
 	// ai.response.text/reasoning/toolCalls/files, mirroring TS's
@@ -2351,8 +2360,9 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		if recordOutputs {
 			stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
 		}
-		// TS: event.reasoning.length > 0 ? joined text : undefined.
-		if recordOutputs && (e.Reasoning != "" || len(e.ReasoningParts) > 0) {
+		// TS: event.reasoning.length > 0 ? joined text : undefined (reasoning
+		// holds the reasoning file parts too).
+		if recordOutputs && (e.Reasoning != "" || len(e.ReasoningParts) > 0 || len(e.ReasoningFiles) > 0) {
 			stepSpan.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
 		}
 		if recordOutputs {
@@ -2590,7 +2600,7 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 		// Empty text is recorded too (TS `event.text ?? undefined`).
 		span.SetAttributes(attribute.String("ai.response.text", e.Text))
 		// TS: finalStep.reasoning.length > 0 ? joined text : undefined.
-		if e.Reasoning != "" || len(e.ReasoningParts) > 0 {
+		if e.Reasoning != "" || len(e.ReasoningParts) > 0 || len(e.ReasoningFiles) > 0 {
 			span.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
 		}
 		if s, ok := legacyToolCallsJSON(e.ToolCalls); ok {

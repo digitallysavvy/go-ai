@@ -1872,6 +1872,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				Text:             genResult.Text,
 				Reasoning:        telemetry.JoinReasoning(stepTelReasoning),
 				ReasoningParts:   stepTelReasoning,
+				ReasoningFiles:   reasoningFilesOf(genResult.Content),
 				ToolCalls:        genResult.ToolCalls,
 				ToolResults:      stepResult.ToolResults,
 				Files:            stepTelFiles,
@@ -2039,6 +2040,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ToolCalls:        result.ToolCalls,
 		ToolResults:      result.ToolResults,
 		ReasoningParts:   result.Reasoning,
+		ReasoningFiles:   reasoningFilesOf(result.FinalStep.Content),
 		Files:            result.Files,
 		ProviderMetadata: result.ProviderMetadata,
 		Settings:         telemetrySettings,
@@ -2743,6 +2745,15 @@ func telemetryFinalReasoningOf(steps []types.StepResult) []types.ReasoningConten
 		return nil
 	}
 	return steps[len(steps)-1].Reasoning
+}
+
+// telemetryFinalReasoningFilesOf returns the reasoning file parts of the
+// final step.
+func telemetryFinalReasoningFilesOf(steps []types.StepResult) []types.ReasoningFileContent {
+	if len(steps) == 0 {
+		return nil
+	}
+	return reasoningFilesOf(steps[len(steps)-1].Content)
 }
 
 func telemetryUsageFromUsage(usage types.Usage) telemetry.TelemetryUsage {

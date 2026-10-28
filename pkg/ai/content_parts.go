@@ -132,6 +132,23 @@ func reasoningPartsOf(content []types.ContentPart) []types.ReasoningContent {
 	return out
 }
 
+// reasoningFilesOf returns the reasoning file parts of content (TS
+// StepResult.reasoning holds them next to the reasoning parts).
+func reasoningFilesOf(content []types.ContentPart) []types.ReasoningFileContent {
+	var out []types.ReasoningFileContent
+	for _, p := range content {
+		switch v := p.(type) {
+		case types.ReasoningFileContent:
+			out = append(out, v)
+		case *types.ReasoningFileContent:
+			if v != nil {
+				out = append(out, *v)
+			}
+		}
+	}
+	return out
+}
+
 func generateResultContentParts(result *types.GenerateResult) []types.ContentPart {
 	if result == nil {
 		return nil

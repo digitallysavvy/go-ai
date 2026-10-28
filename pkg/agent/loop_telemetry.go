@@ -428,6 +428,7 @@ func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *
 		ToolCalls:      allToolCalls,
 		ToolResults:    allToolResults,
 		ReasoningParts: last.Reasoning,
+		ReasoningFiles: loopReasoningFiles(last.Content),
 		// TS onEndEvent.files spans every step.
 		Files:            allFiles,
 		ProviderMetadata: last.ProviderMetadata,
@@ -435,6 +436,23 @@ func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *
 		RuntimeContext:   telemetryRuntimeContextFor(root.settings, a.runtimeContext()),
 		ToolsContext:     telemetryToolsContextFor(root.settings, a.config.ToolsContext),
 	})
+}
+
+// loopReasoningFiles returns the reasoning file parts of a step's content
+// (TS StepResult.reasoning holds them next to the reasoning parts).
+func loopReasoningFiles(content []types.ContentPart) []types.ReasoningFileContent {
+	var out []types.ReasoningFileContent
+	for _, p := range content {
+		switch v := p.(type) {
+		case types.ReasoningFileContent:
+			out = append(out, v)
+		case *types.ReasoningFileContent:
+			if v != nil {
+				out = append(out, *v)
+			}
+		}
+	}
+	return out
 }
 
 // loopStepTelemetry tracks the open step (and model-call) span of one step.
@@ -491,6 +509,7 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		Text:             step.Text,
 		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ReasoningParts:   step.Reasoning,
+		ReasoningFiles:   loopReasoningFiles(step.Content),
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		Files:            step.Files,
