@@ -1730,26 +1730,26 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if ovr.Output != nil {
 		output = ovr.Output
 	}
-	inputMessages := initialMessages
-	if len(inputMessages) == 0 {
-		prompt := govr.Prompt
-		if ovr.Prompt != "" {
-			prompt = ovr.Prompt
-		}
-		if prompt == "" {
-			prompt = w.Prompt
-		}
-		if prompt != "" {
-			inputMessages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
-		}
+	basePrompt := govr.Prompt
+	if ovr.Prompt != "" {
+		basePrompt = ovr.Prompt
 	}
+	if basePrompt == "" {
+		basePrompt = w.Prompt
+	}
+	// endBase is the conversation the run starts from; GenerateWithOptions and
+	// StreamWithOptions replace it once PrepareCall and the approval resume
+	// have settled it (see earlyPrepare.setConversation).
+	endBase := &[]types.Message{}
+	*endBase = workflowConversationBase(system, instructionMessages, initialMessages, basePrompt)
 	onEnd := mergeFinish(resolveEnd(w.OnEnd, w.OnFinish), mergeFinish(resolveEnd(govr.OnEnd, govr.OnFinish), resolveEnd(ovr.OnEnd, ovr.OnFinish)))
 	if onEnd != nil {
 		inner := onEnd
 		// TS WorkflowAgent's onEnd event carries `messages`: the final
-		// conversation (input messages plus every step's response messages).
+		// conversation (the converted prompt the loop started from, then every
+		// step's response messages).
 		onEnd = func(ctx context.Context, e ai.OnFinishEvent) {
-			messages := append([]types.Message(nil), inputMessages...)
+			messages := append([]types.Message(nil), *endBase...)
 			for _, step := range e.Steps {
 				messages = append(messages, step.Response.Messages...)
 			}
@@ -1848,7 +1848,34 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
 		OnEndEvent:                     onEnd,
 	}
-	return agent.NewToolLoopAgent(cfg), &earlyPrepare{cfg: cfg, runner: runner, callConcurrencySet: callConcurrencySet}
+	return agent.NewToolLoopAgent(cfg), &earlyPrepare{cfg: cfg, runner: runner, callConcurrencySet: callConcurrencySet, endBase: endBase}
+}
+
+// workflowConversationBase is the conversation TS WorkflowAgent's loop starts
+// from (convertToLanguageModelPrompt of the standardized prompt): the
+// instructions as system messages, then the messages, or the prompt as a user
+// message, with consecutive tool messages combined into one.
+func workflowConversationBase(system string, instructionMessages, messages []types.Message, prompt string) []types.Message {
+	var out []types.Message
+	switch {
+	case len(instructionMessages) > 0:
+		out = append(out, instructionMessages...)
+	case system != "":
+		out = append(out, types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: system}}})
+	}
+	if len(messages) == 0 && prompt != "" {
+		messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
+	}
+	for _, msg := range messages {
+		if n := len(out); n > 0 && msg.Role == types.RoleTool && out[n-1].Role == types.RoleTool {
+			merged := out[n-1]
+			merged.Content = append(append([]types.ContentPart(nil), merged.Content...), msg.Content...)
+			out[n-1] = merged
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 // earlyPrepare runs the PrepareCall hook ahead of the agent loop (see
@@ -1857,6 +1884,23 @@ type earlyPrepare struct {
 	cfg                agent.AgentConfig
 	runner             *prepareCallRunner
 	callConcurrencySet bool
+	// endBase is the start of the conversation the onEnd event reports.
+	endBase *[]types.Message
+}
+
+// setConversation records the conversation the run starts the loop with:
+// after PrepareCall (its instructions and messages) and the approval resume
+// (the cleaned history plus the resumed tool results), as TS onEnd's
+// `messages` begins with the prompt the loop was given.
+func (e *earlyPrepare) setConversation(prepared *LanguageModelCallOptions, messages []types.Message, prompt string) {
+	if e == nil || e.endBase == nil {
+		return
+	}
+	system, instructionMessages := e.cfg.System, e.cfg.InstructionMessages
+	if prepared != nil {
+		system, instructionMessages = prepared.System, prepared.InstructionMessages
+	}
+	*e.endBase = workflowConversationBase(system, instructionMessages, messages, prompt)
 }
 
 // run is the PrepareCall hook over the call's unresolved messages, with the
@@ -2068,6 +2112,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	if err := validateWorkflowToolResults(opts.Messages, effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts)); err != nil {
 		return nil, err
 	}
+	early.setConversation(prepared, opts.Messages, opts.Prompt)
 	// TS opens the workflow root (telemetryDispatcher.onStart) only after the
 	// approved history tools ran and the prompt was converted, so its messages
 	// are the cleaned post-resolution history and a failure before this point
@@ -2276,6 +2321,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	if err := validateWorkflowToolResults(opts.Messages, effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{})); err != nil {
 		return nil, err
 	}
+	early.setConversation(prepared, opts.Messages, opts.Prompt)
 	// The root opens after the approved history tools ran, with the cleaned
 	// messages, as in GenerateWithOptions (TS onStart order). The span ends
 	// as soon as the underlying stream is obtained: the streaming happens as

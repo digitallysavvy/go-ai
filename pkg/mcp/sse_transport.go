@@ -446,7 +446,11 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		if t.auth.enabled() {
 			// Another request may already have refreshed the token (TS
 			// accessTokenChanged): retry with it instead of re-authorizing.
-			if t.auth.tokenChanged(ctx, req.Header.Get("Authorization")) {
+			changed, err := t.auth.tokenChanged(ctx, req.Header.Get("Authorization"))
+			if err != nil {
+				return t.sendFailed(ctx, NewTransportError("failed to load OAuth tokens", err))
+			}
+			if changed {
 				continue
 			}
 			if err := t.auth.authorize(ctx, resp); err != nil {
@@ -733,13 +737,17 @@ func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
 	t.refreshCh = make(chan struct{})
 	t.refreshMu.Unlock()
 
-	err := t.doRefreshOAuthToken(ctx)
-
-	t.refreshMu.Lock()
-	t.refreshErr = err
-	close(t.refreshCh)
-	t.refreshCh = nil
-	t.refreshMu.Unlock()
+	// The refresh is released even when RefreshTokenFunc panics, so later
+	// refreshes do not wait on it forever (see transportAuth.runFlight).
+	err := errOAuthRefreshPanicked
+	defer func() {
+		t.refreshMu.Lock()
+		t.refreshErr = err
+		close(t.refreshCh)
+		t.refreshCh = nil
+		t.refreshMu.Unlock()
+	}()
+	err = t.doRefreshOAuthToken(ctx)
 	return err
 }
 

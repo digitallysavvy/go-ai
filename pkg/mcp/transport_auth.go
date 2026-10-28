@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"sync"
@@ -72,12 +73,17 @@ func (a *transportAuth) setBearer(ctx context.Context, header http.Header) error
 
 // tokenChanged reports whether the provider now holds an access token other
 // than the one a request was sent with (another request already refreshed it).
-func (a *transportAuth) tokenChanged(ctx context.Context, requestAuthorization string) bool {
+// A Tokens error is returned, as TS accessTokenChanged lets tokens() throw out
+// of the request instead of running the OAuth flow.
+func (a *transportAuth) tokenChanged(ctx context.Context, requestAuthorization string) (bool, error) {
 	tokens, err := a.provider.Tokens(ctx)
-	if err != nil || tokens == nil || tokens.AccessToken == "" {
-		return false
+	if err != nil {
+		return false, err
 	}
-	return requestAuthorization != "Bearer "+tokens.AccessToken
+	if tokens == nil || tokens.AccessToken == "" {
+		return false, nil
+	}
+	return requestAuthorization != "Bearer "+tokens.AccessToken, nil
 }
 
 // authorize runs the OAuth recovery for a 401 response (TS authorizeOnce plus
@@ -102,17 +108,7 @@ func (a *transportAuth) authorizeOnce(ctx context.Context, resourceMetadataURL *
 			flight = &authFlight{done: make(chan struct{})}
 			a.inflight = flight
 			a.mu.Unlock()
-			flight.result, flight.err = Auth(ctx, a.provider, AuthOptions{
-				ServerURL:           a.serverURL,
-				ResourceMetadataURL: resourceMetadataURL,
-				Scope:               scope,
-				HTTPClient:          a.httpClient,
-			})
-			flight.canceled = flight.err != nil && ctx.Err() != nil
-			a.mu.Lock()
-			a.inflight = nil
-			a.mu.Unlock()
-			close(flight.done)
+			a.runFlight(ctx, flight, resourceMetadataURL, scope)
 			return flight.result, flight.err
 		}
 		a.mu.Unlock()
@@ -132,3 +128,37 @@ func (a *transportAuth) authorizeOnce(ctx context.Context, resourceMetadataURL *
 		}
 	}
 }
+
+// runFlight runs the shared OAuth flow and always releases it, like TS
+// authorizeOnce's `.finally(() => { this.authPromise = undefined })`: a
+// provider callback that panics must not leave the flight in place, or every
+// later 401 would wait on it until its own ctx ended. The waiters then see an
+// error and the panic continues in the caller that ran the flow.
+func (a *transportAuth) runFlight(ctx context.Context, flight *authFlight, resourceMetadataURL *url.URL, scope string) {
+	completed := false
+	defer func() {
+		if !completed {
+			flight.err = errAuthFlowPanicked
+		}
+		flight.canceled = flight.err != nil && ctx.Err() != nil
+		a.mu.Lock()
+		a.inflight = nil
+		a.mu.Unlock()
+		close(flight.done)
+	}()
+	flight.result, flight.err = Auth(ctx, a.provider, AuthOptions{
+		ServerURL:           a.serverURL,
+		ResourceMetadataURL: resourceMetadataURL,
+		Scope:               scope,
+		HTTPClient:          a.httpClient,
+	})
+	completed = true
+}
+
+// errAuthFlowPanicked is what requests waiting on a shared OAuth flow get when
+// the flow panicked in the request that ran it.
+var errAuthFlowPanicked = errors.New("mcp: OAuth authorization panicked")
+
+// errOAuthRefreshPanicked is what callers waiting on a shared OAuthConfig
+// token refresh get when RefreshTokenFunc panicked in the caller that ran it.
+var errOAuthRefreshPanicked = errors.New("mcp: OAuth token refresh panicked")

@@ -238,8 +238,9 @@ client already has: raw parts and UI chunks are not one to one, so never use a U
 start. `workflow.NormalizeUIMessageStreamParts(ctx, chunks)` repairs text and reasoning part framing
 (missing starts, replayed chunks, `reset-step`).
 
-The `OnEnd` event of a `WorkflowAgent` also carries `Messages`, the final conversation (input messages
-plus every step's response messages).
+The `OnEnd` event of a `WorkflowAgent` also carries `Messages`, the final conversation: the
+instructions as a system message, the input messages after `PrepareCall` and after resolved tool
+approvals were replaced by their tool results, then every step's response messages.
 
 ## Serializable Schemas And Tools
 
