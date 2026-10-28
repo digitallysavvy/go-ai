@@ -54,6 +54,12 @@ type TelemetryStartEvent struct {
 	// streamText/generateObject/streamObject), used to build
 	// gen_ai.input.messages on the root span (fc15550, 12cfe40).
 	Messages []types.Message
+	// InstructionMessages are the call's instructions given as system
+	// messages (TS instructions: SystemModelMessage[]), only populated when
+	// inputs are recorded. The GenAI integration records one
+	// gen_ai.system_instructions part per message; System is used when it
+	// is empty.
+	InstructionMessages []types.Message
 	// ValueCount is populated for batch value operations such as embedMany.
 	ValueCount int
 	// Dimensions is the requested embedding output dimensions, when set
@@ -180,6 +186,16 @@ type LanguageModelCallStartEvent struct {
 	// System carries the effective system/instructions text for this call,
 	// used for gen_ai.system_instructions in the GenAI integration.
 	System string
+	// InstructionMessages are the step instructions given as system messages
+	// (TS instructions: SystemModelMessage[]): the GenAI chat span records one
+	// gen_ai.system_instructions part per message, and System is used when it
+	// is empty.
+	InstructionMessages []types.Message
+	// Messages are the step's messages as the caller sees them (TS
+	// languageModelCallStartEvent.messages), which the GenAI chat span of a
+	// text call formats into gen_ai.input.messages. When nil it formats the
+	// messages of Prompt instead.
+	Messages []types.Message
 
 	// Request settings, used for gen_ai.request.* in the GenAI integration.
 	Temperature      *float64

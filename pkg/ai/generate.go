@@ -863,12 +863,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// embed them in the returned context.  When no integration is registered
 	// the fire function is a no-op.
 	telSystem := ""
-	var telMessages []types.Message
+	var telMessages, telInstructionMessages []types.Message
 	// A nil *Options records inputs (integrations treat it the same way).
 	if telemetrySettings.ShouldRecordInputs() {
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
+			telInstructionMessages = instructionMessages
 		}
 		// TS's GenerateTextStartEvent.messages is always the *normalized*
 		// message list (initialPrompt.messages from standardizePrompt),
@@ -886,25 +887,26 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// event to track its own root span by CallID.
 	callID := internalGenerateCallID(opts.Internal)()
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:           callID,
-		OperationType:    "ai.generateText",
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		Settings:         telemetrySettings,
-		System:           telSystem,
-		Messages:         telMessages,
-		Headers:          opts.Headers,
-		MaxOutputTokens:  opts.MaxTokens,
-		Temperature:      opts.Temperature,
-		TopP:             opts.TopP,
-		TopK:             opts.TopK,
-		PresencePenalty:  opts.PresencePenalty,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		StopSequences:    opts.StopSequences,
-		Seed:             opts.Seed,
-		MaxRetries:       &generateTextMaxRetries,
-		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
+		CallID:              callID,
+		OperationType:       "ai.generateText",
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		Settings:            telemetrySettings,
+		System:              telSystem,
+		Messages:            telMessages,
+		InstructionMessages: telInstructionMessages,
+		Headers:             opts.Headers,
+		MaxOutputTokens:     opts.MaxTokens,
+		Temperature:         opts.Temperature,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		PresencePenalty:     opts.PresencePenalty,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		MaxRetries:          &generateTextMaxRetries,
+		RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 
 	// liveResult is the result under construction. The deferred abort handler
@@ -1374,21 +1376,23 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// should be parented under the step span, not the (by-then-ended)
 		// model-call span.
 		modelCallCtx := telemetry.FireOnLanguageModelCallStart(stepCtx, telemetry.LanguageModelCallStartEvent{
-			Settings:         telemetrySettings,
-			CallID:           callID,
-			ModelProvider:    stepModel.Provider(),
-			ModelID:          stepModel.ModelID(),
-			Prompt:           genOpts.Prompt,
-			Tools:            genOpts.Tools,
-			System:           stepSystem,
-			Temperature:      genOpts.Temperature,
-			MaxOutputTokens:  genOpts.MaxTokens,
-			TopP:             genOpts.TopP,
-			TopK:             genOpts.TopK,
-			PresencePenalty:  genOpts.PresencePenalty,
-			FrequencyPenalty: genOpts.FrequencyPenalty,
-			StopSequences:    genOpts.StopSequences,
-			Seed:             genOpts.Seed,
+			Settings:            telemetrySettings,
+			CallID:              callID,
+			ModelProvider:       stepModel.Provider(),
+			ModelID:             stepModel.ModelID(),
+			Prompt:              genOpts.Prompt,
+			Messages:            stepMessages,
+			InstructionMessages: stepInstructionMessages,
+			Tools:               genOpts.Tools,
+			System:              stepSystem,
+			Temperature:         genOpts.Temperature,
+			MaxOutputTokens:     genOpts.MaxTokens,
+			TopP:                genOpts.TopP,
+			TopK:                genOpts.TopK,
+			PresencePenalty:     genOpts.PresencePenalty,
+			FrequencyPenalty:    genOpts.FrequencyPenalty,
+			StopSequences:       genOpts.StopSequences,
+			Seed:                genOpts.Seed,
 		})
 
 		// Call the model with step context

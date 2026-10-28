@@ -218,6 +218,7 @@ func (d *turnDriver) telStepStart() {
 		ModelID:       d.modelID,
 		System:        d.in.Instructions,
 		Prompt:        types.Prompt{Messages: d.promptMessages()},
+		Messages:      d.promptMessages(),
 		Tools:         toolSpecsAsTypesTools(d.in.ToolSpecs),
 	})
 }

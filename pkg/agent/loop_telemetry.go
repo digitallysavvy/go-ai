@@ -537,6 +537,7 @@ func (s *loopStepTelemetry) modelCallStart(c PrepareCallConfig, model interface 
 		ModelProvider:    model.Provider(),
 		ModelID:          model.ModelID(),
 		Prompt:           prompt,
+		Messages:         c.Messages,
 		Tools:            genTools,
 		System:           c.System,
 		Temperature:      c.Temperature,

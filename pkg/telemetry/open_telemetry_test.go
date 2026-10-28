@@ -103,14 +103,19 @@ func TestOpenTelemetryLanguageModelCallStartRequestParams(t *testing.T) {
 	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tracer})
 	settings := &Settings{IsEnabled: Bool(true)}
 
-	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "call-1"})
+	temp := 0.7
+	maxTokens := 512
+	seed := 42
+	// TS reads the chat span's request settings from the root call
+	// (state.settings).
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{
+		OperationType: "ai.generateText", Settings: settings, CallID: "call-1",
+		Temperature: &temp, MaxOutputTokens: &maxTokens, Seed: &seed, StopSequences: []string{"STOP"},
+	})
 	// H5: OnLanguageModelCallStart parents the "chat" span under the
 	// integration's own step span, resolved by CallID (mirrors TS's
 	// state.stepContext requirement), so OnStepStart must fire first.
 	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", StepNumber: 0, CallID: "call-1"})
-	temp := 0.7
-	maxTokens := 512
-	seed := 42
 	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{
 		Settings:        settings,
 		CallID:          "call-1",
