@@ -601,6 +601,20 @@ func normalizePromptMessages(prompt types.Prompt) []types.Message {
 // hasAnyTools filtering. Returns the filtered messages and whether anything
 // was removed.
 func filterToolContent(messages []types.Message) ([]types.Message, bool) {
+	// TS filters only when some message holds a tool call or result; otherwise
+	// the prompt (empty messages included) is used as is.
+	hasToolContent := false
+	for _, msg := range messages {
+		for _, part := range msg.Content {
+			switch part.(type) {
+			case types.ToolCallContent, types.ToolResultContent:
+				hasToolContent = true
+			}
+		}
+	}
+	if !hasToolContent {
+		return messages, false
+	}
 	removed := false
 	out := make([]types.Message, 0, len(messages))
 	for _, msg := range messages {

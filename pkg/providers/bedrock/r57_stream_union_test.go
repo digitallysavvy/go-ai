@@ -41,3 +41,34 @@ func TestR57BedrockStreamToolUseWithoutStringInputFallsToReasoning(t *testing.T)
 		t.Fatalf("reasoning = %q, want %q", reasoning, "think")
 	}
 }
+
+// r57: TS filters tool content only when the prompt holds a tool call or
+// result; with none, the prompt goes to the converter unchanged (an empty
+// assistant message is not dropped) and no toolContent warning is added.
+func TestR57BedrockNoToolsWithoutToolContentKeepsPrompt(t *testing.T) {
+	model := NewLanguageModel(&Provider{}, "amazon.nova-pro-v1:0")
+	msgs := []types.Message{
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "a"}}},
+		{Role: types.RoleAssistant, Content: []types.ContentPart{}},
+		{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "b"}}},
+	}
+	got, removed := filterToolContent(msgs)
+	if removed || len(got) != 3 {
+		t.Fatalf("filterToolContent = %d messages, removed=%v; want the 3 messages unchanged", len(got), removed)
+	}
+	args, err := model.getArgs(&provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range args.Warnings {
+		if w.Feature == "toolContent" {
+			t.Fatalf("unexpected toolContent warning: %+v", w)
+		}
+	}
+	// With tool content, empty messages are dropped together with the parts.
+	withTool := append([]types.Message{{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "c", ToolName: "t"}}}}, msgs...)
+	got, removed = filterToolContent(withTool)
+	if !removed || len(got) != 2 {
+		t.Fatalf("filterToolContent with a tool call = %d messages, removed=%v; want 2, true", len(got), removed)
+	}
+}
