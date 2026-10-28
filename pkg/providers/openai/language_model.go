@@ -1268,10 +1268,16 @@ type openAIStream struct {
 	metadataEmitted  bool
 	pendingRaw       []*provider.StreamChunk
 	pendingMetadata  *provider.StreamChunk
-	outputStarted    bool
-	providerName     string
-	responseHeaders  http.Header
-	requestBody      interface{}
+	// outputStarted is set once the stream is past TS
+	// throwIfOpenAIStreamErrorBeforeOutput's peek: a chunk with content, tool
+	// calls or annotations arrived, a chunk failed to parse, or the stream
+	// ended. Until then an error frame fails the call and nothing is handed out
+	// (held keeps the chunks produced so far).
+	outputStarted   bool
+	held            []*provider.StreamChunk
+	providerName    string
+	responseHeaders http.Header
+	requestBody     interface{}
 
 	// compat marks an OpenAI-compatible wrapper (reasoning deltas, no
 	// annotations/logprobs); metaKey is the providerMetadata namespace.
@@ -1354,6 +1360,8 @@ func (s *openAIStream) Close() error {
 // Next returns the next chunk in the stream
 func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 	for {
+		s.settleHeld()
+
 		// Emit any fully-assembled chunks before reading more SSE events.
 		if len(s.flushQueue) > 0 {
 			chunk := s.flushQueue[0]
@@ -1424,18 +1432,16 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			}
 		}
 		if perr != nil {
+			// TS returns the stream from the peek on a chunk that fails to parse.
+			s.outputStarted = true
 			s.queueRawChunk(event.Data)
 			s.finishErrored = true
-			errorChunk := &provider.StreamChunk{
+			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeError,
 				Text: msg,
 				Err:  perr,
-			}
-			if len(s.flushQueue) > 0 {
-				s.flushQueue = append(s.flushQueue, errorChunk)
-				continue
-			}
-			return errorChunk, nil
+			})
+			continue
 		}
 		rawChunk := s.rawChunk(event.Data)
 		if len(chunkData.Error) > 0 {
@@ -1443,6 +1449,7 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			// models; the openai-compatible chat model emits an error part.
 			if !s.outputStarted && !s.compat {
 				s.flushQueue = nil
+				s.held = nil
 				s.pendingRaw = nil
 				s.pendingMetadata = nil
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
@@ -1489,6 +1496,17 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 			s.usage = chunkData.Usage
 		}
 
+		// TS isOpenAIChatOutputChunk: any choice with content, tool calls or
+		// annotations ends the peek for an error frame.
+		for _, c := range chunkData.Choices {
+			var text string
+			_ = json.Unmarshal(c.Delta.Content, &text) //nolint:errcheck // null / non-string content is not output
+			if text != "" || len(c.Delta.ToolCalls) > 0 || len(c.Delta.Annotations) > 0 {
+				s.outputStarted = true
+				break
+			}
+		}
+
 		produced := false
 		emit := func(c *provider.StreamChunk) {
 			if !produced {
@@ -1499,7 +1517,6 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 				s.flushPendingMetadata()
 			}
 			s.flushQueue = append(s.flushQueue, c)
-			s.outputStarted = true
 		}
 
 		if len(chunkData.Choices) > 0 {
@@ -1594,7 +1611,6 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 					}
 					s.flushPendingMetadata()
 				}
-				s.outputStarted = true
 				s.finishErrored = false
 				s.finishSeen = true
 				s.finishRaw = *choice.FinishReason
@@ -1610,6 +1626,24 @@ func (s *openAIStream) Next() (*provider.StreamChunk, error) {
 		// Empty chunk, get next
 		continue
 
+	}
+}
+
+// settleHeld holds the chunks produced before the first output chunk of a
+// native OpenAI stream, so an error frame arriving first can still fail the
+// call with nothing handed out (TS throwIfOpenAIStreamErrorBeforeOutput), and
+// releases them in order once the peek is over.
+func (s *openAIStream) settleHeld() {
+	if s.compat || s.outputStarted {
+		if len(s.held) > 0 {
+			s.flushQueue = append(s.held, s.flushQueue...)
+			s.held = nil
+		}
+		return
+	}
+	if len(s.flushQueue) > 0 {
+		s.held = append(s.held, s.flushQueue...)
+		s.flushQueue = nil
 	}
 }
 
@@ -1676,6 +1710,8 @@ func (s *openAIStream) closeBlocksAndToolCalls() {
 // endStream queues the terminal finish chunk (usage, provider metadata) once
 // the SSE stream has ended, then marks the stream as complete.
 func (s *openAIStream) endStream() {
+	// TS returns the stream from the peek when the source ends.
+	s.outputStarted = true
 	if !s.finished {
 		s.finished = true
 		s.flushPendingMetadata()

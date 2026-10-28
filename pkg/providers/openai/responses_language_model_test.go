@@ -2841,6 +2841,13 @@ data: {"type":"response.failed","sequence_number":1,"response":{"id":"resp_1","i
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
+	// response.created's metadata is held until the stream is handed out (TS
+	// early-error peek), so it precedes the finish.
+	if chunk.Type == provider.ChunkTypeResponseMetadata {
+		if chunk, err = stream.Next(); err != nil {
+			t.Fatalf("Next() error = %v", err)
+		}
+	}
 	if chunk.Type != provider.ChunkTypeFinish || chunk.RawFinishReason != "max_output_tokens" {
 		t.Fatalf("finish chunk = %#v, want RawFinishReason=max_output_tokens", chunk)
 	}

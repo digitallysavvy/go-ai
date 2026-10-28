@@ -3,6 +3,7 @@ package openresponses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	"io"
@@ -1250,6 +1251,21 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 				s.pendingEventData, s.hasPendingEvent = eventData, true
 				raw := streaming.RawChunkValue(eventData)
 				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
+			}
+		}
+
+		// TS validates each chunk with z.any(), so JSON that is not an object
+		// (a number, string, array or boolean) passes and matches no event
+		// type; null passes validation too but `chunk.type` then throws a
+		// TypeError that errors the whole stream.
+		if trimmed := strings.TrimLeft(eventData, " \t\r\n"); trimmed != "" && trimmed[0] != '{' {
+			var probe interface{}
+			if json.Unmarshal([]byte(eventData), &probe) == nil {
+				if probe == nil {
+					s.err = errors.New("Cannot read properties of null (reading 'type')") //nolint:staticcheck // ST1005: TypeError text from TS
+					return nil, s.err
+				}
+				continue
 			}
 		}
 

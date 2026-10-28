@@ -443,16 +443,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 		RawResponse: resp,
 	}
 	if resp.Usage == nil {
-		// TS doGenerate: a response without usage reports explicit zeros.
-		zero := int64(0)
-		z := func() *int64 { v := zero; return &v }
-		result.Usage = types.Usage{
-			InputTokens:   z(),
-			OutputTokens:  z(),
-			TotalTokens:   z(),
-			InputDetails:  &types.InputTokenDetails{NoCacheTokens: z(), CacheReadTokens: z(), CacheWriteTokens: z()},
-			OutputDetails: &types.OutputTokenDetails{TextTokens: z(), ReasoningTokens: z()},
-		}
+		result.Usage = xaiZeroUsage()
 	}
 	if resp.Usage != nil && resp.Usage.CostInUsdTicks != nil {
 		result.ProviderMetadata = map[string]interface{}{
@@ -777,6 +768,20 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	result.RawFinishReason = resp.Status
 
 	return result, nil
+}
+
+// xaiZeroUsage is the usage TS reports when a response carries none (doGenerate
+// without usage, a stream with no terminal usage): explicit zeros, cacheWrite
+// included, and no raw usage.
+func xaiZeroUsage() types.Usage {
+	z := func() *int64 { v := int64(0); return &v }
+	return types.Usage{
+		InputTokens:   z(),
+		OutputTokens:  z(),
+		TotalTokens:   z(),
+		InputDetails:  &types.InputTokenDetails{NoCacheTokens: z(), CacheReadTokens: z(), CacheWriteTokens: z()},
+		OutputDetails: &types.OutputTokenDetails{TextTokens: z(), ReasoningTokens: z()},
+	}
 }
 
 // resolveProviderToolNames scans the registered tools list and returns a map of
@@ -1691,7 +1696,7 @@ func (s *xaiResponsesStream) queueFlush() {
 	}
 	usage := s.finishUsage
 	if usage == nil {
-		zero := convertXAIResponsesUsage(&responses.ResponsesAPIUsage{})
+		zero := xaiZeroUsage()
 		usage = &zero
 	}
 	s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
