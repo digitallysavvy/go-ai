@@ -950,9 +950,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
 					safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: callID, Steps: abortSteps, Reason: reason}) })
 				}
-				telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason, Steps: abortSteps})
-				return
 			}
+			// TS generateText has no abort telemetry: an abort or timeout is
+			// reported through telemetry onError like any other failure, so
+			// the spans record it as an error.
 			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		}
 	}()
@@ -1409,15 +1410,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			// Close the step span (and, for the GenAI integration, the nested
 			// "chat" span) right here: they were opened in modelCallCtx/stepCtx,
 			// local to this loop iteration, which never gets threaded back into
-			// the outer ctx the deferred FireOnAbort/FireOnError below (line
-			// ~825) uses for the root span — so without this, they'd leak
-			// (H4 item 2). No error status is recorded for an abort, matching
-			// TS onAbort's plain span.end().
-			stepErr := err
-			if isAbortErr(stepCtx, err) {
-				stepErr = nil
-			}
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: stepErr})
+			// the outer ctx the deferred FireOnError above uses for the root
+			// span — so without this, they'd leak
+			// (H4 item 2). TS generateText reports an abort through
+			// onStepError too, so the spans record it as an error.
+			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			return nil, err
 		}
 		lastStructuredOutputText = genResult.StructuredOutputText

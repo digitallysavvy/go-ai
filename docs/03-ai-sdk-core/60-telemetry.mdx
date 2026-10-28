@@ -176,7 +176,7 @@ The built-in `telemetry.OpenTelemetry` and `telemetry.LegacyOpenTelemetry` integ
 
 ### Abort and Performance Events
 
-Telemetry integrations can implement `OnAbort(context.Context, telemetry.TelemetryAbortEvent)`. The SDK emits this event when generation is canceled or aborted and closes the active OpenTelemetry span so traces do not remain open.
+Telemetry integrations can implement `OnAbort(context.Context, telemetry.TelemetryAbortEvent)`. The SDK emits this event when `StreamText` or a harness turn is canceled or aborted and closes the active OpenTelemetry span so traces do not remain open. As in TypeScript, `GenerateText` (and the legacy `ToolLoopAgent` loop, which runs like it) has no abort event: a canceled or timed-out call is reported through `OnError`, so its spans carry the error status. The `GenerateTextOptions.OnAbortEvent` callback still fires.
 
 Model calls are made inside the telemetry context returned by `OnStart` and `OnStepStart`. If an integration stores span context or request-scoped values in the returned context, provider calls and tool execution receive that context.
 

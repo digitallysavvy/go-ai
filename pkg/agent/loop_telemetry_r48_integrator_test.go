@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -58,13 +57,3 @@ func TestLoopRootEndsOnErrorAndAbortAfterTelemetryOverride(t *testing.T) {
 	}
 }
 
-// A run whose context expired is an abort even when the error does not wrap
-// the context error (GenerateText checks the context too).
-func TestLegacyLoopExpiredContextIsAbort(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
-	defer cancel()
-	<-ctx.Done()
-	if !isAbort(ctx, errors.New("provider gave up")) {
-		t.Fatal("an error under an expired context is not an abort")
-	}
-}

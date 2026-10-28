@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -348,18 +347,6 @@ func telemetryUsage(u types.Usage) telemetry.TelemetryUsage {
 	return out
 }
 
-// isAbort reports whether err ends the run as an abort: a cancellation or a
-// timeout, as GenerateText classifies them (TS timeouts are abort signals).
-func isAbort(ctx context.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	return ctx != nil && ctx.Err() != nil
-}
-
 // beginLoopTelemetry opens the root span unless the caller already did.
 func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types.Message) (context.Context, *loopTelemetry) {
 	settings := a.loopTelemetrySettings()
@@ -397,15 +384,9 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 // call id.
 func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *AgentResult, err error) {
 	if err != nil {
-		if isAbort(ctx, err) {
-			var steps []types.StepResult
-			if result != nil {
-				steps = result.Steps
-			}
-			telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: root.settings, CallID: root.callID, Reason: err, Steps: steps})
-		} else {
-			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: root.settings, CallID: root.callID, Error: err})
-		}
+		// The loop runs as generateText does in TS, which has no abort
+		// telemetry: an abort or timeout is reported through onError.
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: root.settings, CallID: root.callID, Error: err})
 		return
 	}
 	if result == nil {
@@ -505,15 +486,13 @@ func loopPromptMessages(c PrepareCallConfig) []types.Message {
 	return append(out, c.Messages...)
 }
 
-// fail closes the step span after an error (no error status for an abort).
+// fail closes the step span after an error, an abort included (TS
+// generateText reports aborts through onStepError).
 func (s *loopStepTelemetry) fail(err error) {
 	if s == nil || s.closed {
 		return
 	}
 	s.closed = true
-	if isAbort(s.stepCtx, err) {
-		err = nil
-	}
 	telemetry.FireOnStepError(s.errCtx, telemetry.TelemetryErrorEvent{Settings: s.lt.settings, CallID: s.lt.callID, Error: err})
 }
 

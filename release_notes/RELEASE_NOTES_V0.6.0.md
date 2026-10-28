@@ -379,6 +379,10 @@ These match TS and are unlikely to need code changes, but can change output.
   step (and call) whose only reasoning is a reasoning file, as TS counts
   reasoning-file parts (new `ReasoningFiles` on the step-end and finish
   events).
+- **Telemetry: a canceled or timed-out `GenerateText` reports `OnError`, not
+  `OnAbort`**, as TS `generateText` has no abort telemetry: the root and step
+  spans carry the error status. The legacy `ToolLoopAgent` loop does the
+  same. `GenerateTextOptions.OnAbortEvent`/`OnAbort` still fire.
 - **UI message streams fail on an out-of-sequence chunk**, as TS: while
   `CreateUIMessageStreamWithOptions`/`ToUIMessageStream` build the message for
   an `OnEnd`/`OnStepEnd` callback, a chunk with no matching part (a
