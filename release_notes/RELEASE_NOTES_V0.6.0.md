@@ -663,6 +663,9 @@ in v0.5.3.
   nothing is set), as TS does.
 - Google and Vertex `Generate` keeps tool calls and code execution parts
   that the API flags `thought: true`; they were dropped.
+- Google and Vertex `providerMetadata.serviceTier` comes only from
+  `usageMetadata.serviceTier`, as in TS; a top-level `serviceTier` in the
+  response body no longer fills it.
 
 ### Workflow, MCP, code mode and harness
 
@@ -722,6 +725,13 @@ in v0.5.3.
 - The harness file reporter writes TS's record shapes: usage detail
   objects, an empty `modelId`, the prompt text as a string message, and a
   runtime tool error's value.
+- MCP `NewHTTPTransport` no longer modifies the `HTTPClient` you pass
+  (v0.5.2 set its `Timeout` and `CheckRedirect` in place, changing every
+  other use of a shared client such as `http.DefaultClient`); it uses a
+  copy with the MCP redirect policy and timeout.
+- MCP `HTTPTransport` reports no read error from a POST event stream after
+  `Close`, and ignores an inbound GET's `mcp-session-id` once the protocol
+  is 2026-07-28, as TS.
 
 ---
 
