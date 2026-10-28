@@ -37,8 +37,9 @@ type Response struct {
 	PromptFeedback json.RawMessage `json:"promptFeedback,omitempty"`
 	// ResponseID is the provider-assigned response ID (TS: response.responseId).
 	ResponseID string `json:"responseId,omitempty"`
-	// ServiceTier is kept for compatibility with older responses. Current
-	// Gemini API responses report it inside usageMetadata.
+	// ServiceTier is kept for compatibility. The API reports the service
+	// tier inside usageMetadata, and only that one reaches provider metadata
+	// (TS usageMetadata?.serviceTier).
 	ServiceTier string `json:"serviceTier,omitempty"`
 }
 

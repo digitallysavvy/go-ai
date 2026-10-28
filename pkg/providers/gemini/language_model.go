@@ -698,6 +698,8 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 	} else {
 		meta["finishMessage"] = json.RawMessage("null")
 	}
+	// TS serviceTier: usageMetadata?.serviceTier ?? null. A top-level
+	// serviceTier in the body is not read.
 	serviceTier := ""
 	if response.UsageMetadata != nil {
 		if um, err := json.Marshal(response.UsageMetadata); err == nil {
@@ -706,9 +708,6 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 		serviceTier = response.UsageMetadata.ServiceTier
 	} else {
 		meta["usageMetadata"] = json.RawMessage("null")
-	}
-	if serviceTier == "" {
-		serviceTier = response.ServiceTier
 	}
 	if serviceTier != "" {
 		st, _ := json.Marshal(serviceTier)
