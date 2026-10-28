@@ -752,6 +752,22 @@ type StreamTextResult struct {
 // *StreamTextResult back (review finding F6 — approval resume must not run
 // before StreamText returns).
 func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult, error) {
+	// TS startStreamText starts the steering run before anything else, so a
+	// steering object that was already used is the first error, and a call
+	// that fails before its stream starts still ends the run ('error').
+	steeringRun, err := startSteeringRun(opts.ExperimentalSteering)
+	if err != nil {
+		return nil, err
+	}
+	result, err := streamTextInternal(ctx, opts, steeringRun)
+	if err != nil {
+		steeringRun.end(SteeringError)
+		return nil, err
+	}
+	return result, nil
+}
+
+func streamTextInternal(ctx context.Context, opts StreamTextOptions, steeringRun *steeringRun) (*StreamTextResult, error) {
 	// Validate options. These are pure, in-memory checks with no I/O — the Go
 	// equivalent of the synchronous `prepareRetries` throw inside TS's
 	// DefaultStreamTextResult constructor, which happens before its async
@@ -789,11 +805,6 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries in
 	// the DefaultStreamTextResult constructor.
 	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
-		return nil, err
-	}
-
-	steeringRun, err := startSteeringRun(opts.ExperimentalSteering)
-	if err != nil {
 		return nil, err
 	}
 

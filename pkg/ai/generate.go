@@ -784,6 +784,19 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			err = wrapGatewayError(err)
 		}
 	}()
+	// TS generateText starts the steering run before anything else, so a
+	// steering object that was already used is the first error, and a call
+	// that fails before its loop starts (e.g. an invalid prompt) still ends
+	// the run, resolving waiting steering messages as not delivered.
+	steeringRun, steeringErr := startSteeringRun(opts.ExperimentalSteering)
+	if steeringErr != nil {
+		return nil, steeringErr
+	}
+	defer func() {
+		if err != nil {
+			steeringRun.end(steeringEndReasonFor(ctx, err))
+		}
+	}()
 	// Validate options
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
@@ -802,6 +815,34 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err != nil {
 		return nil, err
 	}
+	// TS logs these after the tool search state, before prepareRetries.
+	// Warn (once, up front) when a streaming-only timeout setting is passed
+	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
+	// getFirstChunkTimeoutMs/getChunkTimeoutMs unsupportedTimeoutWarnings).
+	// TimeoutConfig.FirstChunk corresponds to TS firstChunkMs, PerChunk to
+	// TS chunkMs (audit row 106ea59 / WG-TIMEOUT); both only apply to
+	// streaming.
+	if opts.Timeout != nil {
+		var unsupportedTimeoutWarnings []types.Warning
+		if opts.Timeout.FirstChunk != nil {
+			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "timeout.firstChunkMs",
+				Details: "The firstChunkMs timeout is only supported by streaming functions.",
+			})
+		}
+		if opts.Timeout.PerChunk != nil {
+			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
+				Type:    "unsupported",
+				Feature: "timeout.chunkMs",
+				Details: "The chunkMs timeout is only supported by streaming functions.",
+			})
+		}
+		if len(unsupportedTimeoutWarnings) > 0 {
+			logModelWarnings(unsupportedTimeoutWarnings, opts.Model.Provider(), opts.Model.ModelID())
+		}
+	}
+
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
@@ -835,33 +876,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	toolsContext := opts.ToolsContext
 	if toolsContext == nil {
 		toolsContext = map[string]interface{}{}
-	}
-
-	// Warn (once, up front) when a streaming-only timeout setting is passed
-	// to the non-streaming GenerateText (TS 349afe7 / generate-text.ts
-	// getFirstChunkTimeoutMs/getChunkTimeoutMs unsupportedTimeoutWarnings).
-	// TimeoutConfig.FirstChunk corresponds to TS firstChunkMs, PerChunk to
-	// TS chunkMs (audit row 106ea59 / WG-TIMEOUT); both only apply to
-	// streaming.
-	if opts.Timeout != nil {
-		var unsupportedTimeoutWarnings []types.Warning
-		if opts.Timeout.FirstChunk != nil {
-			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "timeout.firstChunkMs",
-				Details: "The firstChunkMs timeout is only supported by streaming functions.",
-			})
-		}
-		if opts.Timeout.PerChunk != nil {
-			unsupportedTimeoutWarnings = append(unsupportedTimeoutWarnings, types.Warning{
-				Type:    "unsupported",
-				Feature: "timeout.chunkMs",
-				Details: "The chunkMs timeout is only supported by streaming functions.",
-			})
-		}
-		if len(unsupportedTimeoutWarnings) > 0 {
-			logModelWarnings(unsupportedTimeoutWarnings, opts.Model.Provider(), opts.Model.ModelID())
-		}
 	}
 
 	// Standardize the prompt first: TS standardizePrompt throws before any
@@ -932,10 +946,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// named result, which would otherwise hide them.
 	var liveResult *GenerateTextResult
 
-	steeringRun, steeringErr := startSteeringRun(opts.ExperimentalSteering)
-	if steeringErr != nil {
-		return nil, steeringErr
-	}
 	// steeringEndReason says why waiting steering messages are not delivered
 	// when the loop ends.
 	steeringEndReason := SteeringFinished
