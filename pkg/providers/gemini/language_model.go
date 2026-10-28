@@ -156,6 +156,8 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 			}
 		}
 	}
+	// TS response.body is the last request's rawValue, not the summed usage.
+	result.RawResponse = response
 	result.Warnings = append(warnings, result.Warnings...)
 	result.RawRequest = reqBody
 	result.ResponseHeaders = providerutils.ExtractHeaders(resp.Headers)
