@@ -1852,13 +1852,6 @@ type earlyPrepare struct {
 	callConcurrencySet bool
 }
 
-// hasApprovalResponses reports whether the messages hold tool approval
-// responses an approval resume would act on.
-func hasApprovalResponses(messages []types.Message) bool {
-	collected, err := ai.CollectToolApprovals(messages)
-	return err == nil && (len(collected.ApprovedToolApprovals) > 0 || len(collected.DeniedToolApprovals) > 0)
-}
-
 // run is the PrepareCall hook over the call's unresolved messages, with the
 // first-step configuration the agent loop would hand it. It returns nil when
 // there is no hook to run.
