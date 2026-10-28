@@ -460,7 +460,12 @@ type turnDriver struct {
 	hostOutcomes map[string]hostToolOutcome
 	stepNumber   int
 	stepOpen     bool
-	startCalled  bool
+	// stepHasContent is TS `currentStepContent.length > 0`: the open step
+	// recorded a text, reasoning, tool call, tool result or approval part
+	// (tool input, source, file and custom parts do not count). A terminal
+	// finish with such content and no finish-step fails the turn.
+	stepHasContent bool
+	startCalled    bool
 
 	// hostInputPauseRequested/deferredPauseFinishStep/ignoredFinishStep/
 	// hostToolCallIDsAwaitingEcho implement TS #23260's parallel/sequential
@@ -821,7 +826,7 @@ func (d *turnDriver) run() {
 		if d.in.OnTurnFailed != nil {
 			d.in.OnTurnFailed()
 		}
-		if d.stepOpen {
+		if d.stepHasContent {
 			d.telError(errors.New(unclosedStepErrorMessage)) //nolint:staticcheck // exact TS parity string
 			d.fail(errors.New(unclosedStepErrorMessage))     //nolint:staticcheck // exact TS parity string
 			return
@@ -1190,6 +1195,13 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			return false, false, ep.AsError()
 		}
 
+		switch display.(type) {
+		case *TextStartPart, *TextDeltaPart, *ReasoningStartPart, *ReasoningDeltaPart,
+			*ToolCallPart, *ToolResultPart, *ToolApprovalRequestPart:
+			// TS appendToCurrentStepContent records these parts.
+			d.stepHasContent = true
+		}
+
 		if tc, isCall := display.(*ToolCallPart); isCall {
 			rawTC := part.(*ToolCallPart)
 			d.rawToolCallsByID[tc.ToolCallID] = tc
@@ -1303,7 +1315,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// unclosed step, so with completed steps the turn ends (OnEnd)
 			// and the later lifecycle.error is a no-op.
 			d.telEnd(d.completedSteps, *usage)
-			if d.stepOpen {
+			if d.stepHasContent {
 				// TS calls onTurnFinished for the terminal finish and then
 				// result.finish() fails the result in place (an error part):
 				// it does not throw, so no onTurnFailed, no "harness turn
@@ -1602,6 +1614,7 @@ func (d *turnDriver) resetStepAccum() {
 	d.stepApprovalRequests = nil
 	d.toolExecMs = map[string]int64{}
 	d.stepOpen = false
+	d.stepHasContent = false
 	d.ignoredFinishStep = nil
 }
 

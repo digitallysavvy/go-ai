@@ -332,6 +332,10 @@ These match TS and are unlikely to need code changes, but can change output.
   without an adapter `finish` (host-input pause, stop condition, suspension)
   has a finish part carrying the last step's provider metadata and the summed
   step usage, like TS `finish()`.
+- **A harness turn fails with the unclosed-step error only when the open step
+  recorded content** (text, reasoning, a tool call, result or approval), as TS
+  `currentStepContent.length > 0`. A step that only saw tool-input, source,
+  file or replayed parts before the terminal `finish` no longer fails it.
 - **A harness turn suspended before the adapter's `finish` still ends with a
   finish part** (finish reason `other`, the open step discarded), as TS
   `result.finish(undefined)`. `ToUIMessageStream` maps a call-level finish
