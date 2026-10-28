@@ -207,6 +207,18 @@ These details differ:
   `types.Usage` holds integers. `providerMetadata.perplexity.usage` and
   `toolCalls` invocation counts are truncated the same way.
 
+## Gemini and Perplexity streaming
+
+- **`[DONE]` marker.** Gemini and Perplexity streams stop reading at a `[DONE]`
+  SSE marker. TS `parseJsonEventStream` skips the marker and keeps reading, so
+  events after it reach TS callers but not Go callers.
+- **Accept header.** Streaming requests send `Accept: text/event-stream`, an
+  SDK-wide Go convention. TS sends no `Accept` header.
+- **Google usage metadata merge.** When a long-decode response spans several
+  requests, the summed `usageMetadata` keeps the earlier `serviceTier` and
+  `trafficType` if a later request sends an explicit `null`. TS merges with
+  `{...a, ...b}`, so the `null` overrides the earlier value.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
