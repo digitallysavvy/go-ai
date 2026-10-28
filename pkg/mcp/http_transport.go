@@ -70,6 +70,10 @@ type HTTPTransport struct {
 	connected       bool
 	protocolVersion string
 	mu              sync.Mutex
+	// closeGen counts Close calls, so a Connect that a Close overlaps (during
+	// its OAuth refresh, or before its inbound SSE lifecycle started) can
+	// tell and stay closed instead of starting a GET nothing will stop.
+	closeGen uint64
 
 	// Configuration
 	config TransportConfig
@@ -411,6 +415,7 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 		return errHTTPTransportAlreadyStarted()
 	}
 	hasOAuth := t.oauth != nil
+	closeGen := t.closeGen
 	t.mu.Unlock()
 
 	// If OAuth is configured, get access token
@@ -427,6 +432,10 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 		t.mu.Unlock()
 		return errHTTPTransportAlreadyStarted()
 	}
+	if t.closeGen != closeGen {
+		t.mu.Unlock()
+		return errHTTPTransportClosedDuringStart()
+	}
 	t.connected = true
 	t.mu.Unlock()
 
@@ -438,7 +447,26 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	if !t.isModernProtocol() {
 		t.startInboundSSE(false, "")
 	}
+	// A Close that ran after connected was set but before the lifecycle
+	// started found nothing to stop: stop what this Connect started.
+	t.mu.Lock()
+	closed := t.closeGen != closeGen
+	t.mu.Unlock()
+	if closed {
+		t.stopInboundSSE()
+		t.mu.Lock()
+		t.connected = false
+		t.mu.Unlock()
+		return errHTTPTransportClosedDuringStart()
+	}
 	return nil
+}
+
+// errHTTPTransportClosedDuringStart is what Connect returns when Close runs
+// while it is starting. TS start() cannot interleave with close() (it has no
+// await before creating its abortController); a Go Connect can.
+func errHTTPTransportClosedDuringStart() *MCPClientError {
+	return NewMCPClientError(0, "MCP HTTP Transport Error: Transport closed while starting", nil)
 }
 
 // sessionTerminateTimeout bounds the session-termination DELETE in Close when
@@ -475,6 +503,7 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	t.sseMu.Unlock()
 	t.mu.Lock()
 	started = started || t.connected
+	t.closeGen++
 	t.mu.Unlock()
 	t.stopInboundSSE()
 	t.postSSEWG.Wait()

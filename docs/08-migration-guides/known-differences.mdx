@@ -103,6 +103,9 @@ These details differ:
   blocks both call `onerror` with the same error.
 - `SSETransport.Connect` interrupted by `Close` before the endpoint event
   returns an error. TypeScript's `start()` never settles once it is aborted.
+  `HTTPTransport.Connect` interrupted by `Close` (for example while it
+  refreshes an OAuth token) also returns an error and leaves the transport
+  closed; TypeScript's `start()` cannot be interrupted.
 - `Connect` after `Close` starts the transport again, as in v0.5.
   TypeScript's HTTP transport fails with "Transport already started", and
   its stdio transport never finishes starting.
