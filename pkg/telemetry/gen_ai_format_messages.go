@@ -1,8 +1,10 @@
 package telemetry
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/digitallysavvy/go-ai/pkg/internal/intsafe"
@@ -17,10 +19,59 @@ import (
 // TS's gen-ai-format-messages.test.ts cases as goldens.
 
 // semConvPart is a single {type, ...} part in a SemConv message, mirroring
-// TS's SemConvPart discriminated union. Field sets vary by "type", so a plain
-// map (rather than a Go struct per variant) mirrors the TS union most
-// directly and keeps JSON output byte-identical in shape.
-type semConvPart = map[string]interface{}
+// TS's SemConvPart discriminated union. Field sets vary by "type", so a map
+// (rather than a Go struct per variant) mirrors the TS union most directly.
+// It marshals its keys in the order the TS object literals declare them
+// (semConvPartKeyOrder), not sorted.
+type semConvPart map[string]interface{}
+
+// semConvPartKeyOrder is the key order of every TS SemConvPart literal:
+// {type, content}, {type, id, name, arguments}, {type, id, response},
+// {type, modality, mime_type, uri|content}, {type, approval_id, approved,
+// reason} and {type, kind} all follow it.
+var semConvPartKeyOrder = []string{"type", "id", "name", "arguments", "response", "modality", "mime_type", "uri", "content", "approval_id", "approved", "reason", "kind"}
+
+// MarshalJSON writes the part's keys in TS literal order; keys outside that
+// order follow, sorted.
+func (p semConvPart) MarshalJSON() ([]byte, error) {
+	keys := make([]string, 0, len(p))
+	seen := make(map[string]bool, len(p))
+	for _, k := range semConvPartKeyOrder {
+		if _, ok := p[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	var rest []string
+	for k := range p {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	out := []byte{'{'}
+	for i, k := range keys {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		buf.Reset()
+		if err := enc.Encode(k); err != nil {
+			return nil, err
+		}
+		out = append(out, bytes.TrimRight(buf.Bytes(), "\n")...)
+		out = append(out, ':')
+		buf.Reset()
+		if err := enc.Encode(p[k]); err != nil {
+			return nil, err
+		}
+		out = append(out, bytes.TrimRight(buf.Bytes(), "\n")...)
+	}
+	return append(out, '}'), nil
+}
 
 // semConvInputMessage mirrors TS's SemConvInputMessage ({role, parts}).
 type semConvInputMessage struct {
