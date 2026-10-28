@@ -2039,13 +2039,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		telUsage.OutputTextTokens = result.Usage.OutputDetails.TextTokens
 		telUsage.ReasoningTokens = result.Usage.OutputDetails.ReasoningTokens
 	}
+	// TS onEndEvent.model is the final step's model (a PrepareStep model
+	// override included).
+	endProvider, endModelID := finalStepModel(result.Steps, opts.Model.Provider(), opts.Model.ModelID())
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:           callID,
 		OperationType:    "ai.generateText",
 		FinishReason:     string(result.FinishReason),
 		Usage:            telUsage,
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
+		ModelProvider:    endProvider,
+		ModelID:          endModelID,
 		Text:             result.Text,
 		Reasoning:        telemetry.JoinReasoning(result.Reasoning),
 		ToolCalls:        result.ToolCalls,
@@ -2151,6 +2154,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 
 	return result, nil
+}
+
+// finalStepModel is the provider and model id of the last step (TS
+// onEndEvent.model: lastStep.model), or the fallback when there is none.
+func finalStepModel(steps []types.StepResult, provider, modelID string) (string, string) {
+	if n := len(steps); n > 0 && (steps[n-1].Model.Provider != "" || steps[n-1].Model.ModelID != "") {
+		return steps[n-1].Model.Provider, steps[n-1].Model.ModelID
+	}
+	return provider, modelID
 }
 
 // toolCallEventCallbacks groups the per-tool-call structured event callbacks

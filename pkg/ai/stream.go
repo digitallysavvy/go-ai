@@ -3637,13 +3637,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		_ = json.Unmarshal(r.providerMetadata, &streamProviderMeta)
 	}
 	r.mu.Unlock()
+	endProvider, endModelID := finalStepModel(allSteps, r.cbModelProvider, r.cbModelID)
 	telemetry.FireOnEnd(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),
 		Usage:            streamTelUsage,
-		ModelProvider:    r.cbModelProvider,
-		ModelID:          r.cbModelID,
+		ModelProvider:    endProvider,
+		ModelID:          endModelID,
 		Text:             r.finalStepText(),
 		Reasoning:        streamReasoningText,
 		ToolCalls:        streamToolCalls,
@@ -4712,13 +4713,14 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		_ = json.Unmarshal(r.providerMetadata, &readAllProviderMeta)
 	}
 	r.mu.Unlock()
+	endProvider, endModelID := finalStepModel([]types.StepResult{step}, r.cbModelProvider, r.cbModelID)
 	telemetry.FireOnEnd(r.telemetryCtx, telemetry.TelemetryFinishEvent{
 		CallID:           r.cbCallID,
 		OperationType:    "ai.streamText",
 		FinishReason:     string(r.finishReason),
 		Usage:            readAllTelUsage,
-		ModelProvider:    r.cbModelProvider,
-		ModelID:          r.cbModelID,
+		ModelProvider:    endProvider,
+		ModelID:          endModelID,
 		Text:             r.text,
 		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ToolCalls:        step.ToolCalls,
