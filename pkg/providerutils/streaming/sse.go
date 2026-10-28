@@ -300,7 +300,10 @@ func RawChunkValue(data string) interface{} {
 	return raw
 }
 
-// IsStreamDone checks if an SSE event signals the stream is done
+// IsStreamDone reports whether an SSE event is the `[DONE]` sentinel that
+// OpenAI-style streams send. Only the data counts: TS parseJsonEventStream
+// ignores SSE event names entirely and skips just `data === '[DONE]'`, so a
+// frame named `event: done` that carries a JSON payload is an ordinary chunk.
 func IsStreamDone(event *SSEEvent) bool {
-	return event.Data == "[DONE]" || event.Event == "done"
+	return event.Data == "[DONE]"
 }

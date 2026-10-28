@@ -14,9 +14,9 @@ import (
 // OpenAICompatStream implements the accumulate-and-flush streaming pattern for
 // any provider that uses the OpenAI chat completions SSE format.
 //
-// Security: tool call arguments are accumulated across all SSE deltas and only
-// emitted when finish_reason is received, preventing early finalization based on
-// JSON parsability of intermediate fragments.
+// Tool call argument deltas stream live once function.name is known; the
+// finalized tool-call parts are emitted only when the stream ends (TS flush()),
+// never early on the JSON parsability of an intermediate fragment.
 //
 // Embed this struct in provider-specific stream types to inherit Next/Err/Close.
 type OpenAICompatStream struct {
@@ -52,9 +52,10 @@ type OpenAICompatStream struct {
 	// If it returns ("", false), standard processing continues unchanged.
 	OnReasoningDelta func(eventBytes []byte) (text string, ok bool)
 
-	// ResponseHeaders are the HTTP response headers; the first event carrying
-	// id/model/created (or any header) yields one ChunkTypeResponseMetadata,
-	// like TS's once-only response-metadata part.
+	// ResponseHeaders are the HTTP response headers. The first event carrying
+	// id/model/created yields one ChunkTypeResponseMetadata (with these
+	// headers), like TS's once-only response-metadata part; a stream with no
+	// such event reports the headers alone at its end.
 	ResponseHeaders map[string]string
 	metadataEmitted bool
 

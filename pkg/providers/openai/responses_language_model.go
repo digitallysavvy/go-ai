@@ -108,7 +108,12 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
 			message = fmt.Sprintf("Responses API returned no output (%s)", resp.IncompleteDetails.Reason)
 		}
-		return nil, providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
+		// TS APICallError({statusCode: 500, isRetryable: false}): retrying
+		// cannot produce output for this request.
+		noOutput := providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
+		notRetryable := false
+		noOutput.Retryable = &notRetryable
+		return nil, noOutput
 	}
 
 	approvalFromPrompt := extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)
@@ -3148,7 +3153,11 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 					s.firstItemIDByOutputIndex[e.OutputIndex] = e.Item.ID
 				}
 			}
-			s.markOutputStarted()
+			// TS isResponseOutputChunk: an item type the chunk schema does not
+			// model is an unknown_chunk, which does not end the early-error peek.
+			if providerutils.IsModeledResponsesItemType(e.Item.Type) {
+				s.markOutputStarted()
+			}
 			switch e.Item.Type {
 			case "function_call":
 				suppress := responses.IsUndeclaredParallelToolCall(e.Item.Name, s.tools)
@@ -3746,7 +3755,14 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 				continue
 			}
-			s.markOutputStarted()
+			// An unmodeled item type is TS unknown_chunk: not output.
+			var doneItem struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal(e.Item, &doneItem) //nolint:errcheck // schema-checked above
+			if providerutils.IsModeledResponsesItemType(doneItem.Type) {
+				s.markOutputStarted()
+			}
 			chunk, ok := s.handleOutputItemDone(e)
 			if ok {
 				return chunk, nil
@@ -3904,6 +3920,12 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if ok {
 				return chunk, nil
 			}
+			continue
+
+		case "response.function_call_arguments.done":
+			// Modeled by the TS chunk schema (so an output chunk that ends the
+			// early-error peek) but handled through output_item.done.
+			s.markOutputStarted()
 			continue
 
 		default:

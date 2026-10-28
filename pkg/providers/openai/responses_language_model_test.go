@@ -2623,6 +2623,10 @@ func TestResponsesLanguageModel_DoGenerateNoOutputReturnsDescriptiveError(t *tes
 	if !strings.Contains(err.Error(), "Responses API returned no output (max_output_tokens)") {
 		t.Fatalf("error = %v, want descriptive no-output message", err)
 	}
+	// TS isRetryable: false (a 500 would otherwise be retried).
+	if provErr.IsRetryable() {
+		t.Fatal("no-output error is retryable, want isRetryable false")
+	}
 }
 
 // TestResponsesLanguageModel_DoGenerateEmbeddedErrorMapsTo400 covers row

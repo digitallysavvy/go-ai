@@ -574,7 +574,10 @@ type StreamTextResult struct {
 
 	// initialStepCtx/Cancel keep the first step timeout alive across StreamText
 	// returning and the lazy stream consumer starting.
-	initialStepCtx    context.Context
+	initialStepCtx context.Context
+	// totalParentCtx is the context the total timeout was armed on, so a
+	// total deadline is told apart from the caller's cancellation.
+	totalParentCtx    context.Context
 	initialStepCancel context.CancelFunc
 
 	// telemetryCtx is the context returned by FireOnStart, with any integration
@@ -944,6 +947,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// returns almost immediately (previously this defer fired essentially
 	// immediately after starting the background goroutine, cancelling the
 	// total-timeout context before step 1 could stream anything).
+	// totalParentCtx tells the total deadline apart from the caller's own
+	// cancellation or deadline.
+	r.totalParentCtx = ctx
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
 		var cancel context.CancelFunc
 		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
@@ -1403,9 +1409,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	if err != nil {
 		// stepCancel runs only after the error is classified below: a cancelled
 		// step context would make every open failure look like a step timeout.
-		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
+		if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 			err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
-		} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+		} else if opts.Timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
 			err = wrapTimeoutError(TimeoutReasonTotal, err)
 		}
 		// Close the still-open step span and the model-call/"chat" span
@@ -1944,8 +1950,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if err != nil {
 				if errors.Is(chunkDeadlineCtx.Err(), context.DeadlineExceeded) && chunkDeadlineReason != "" {
 					err = wrapTimeoutError(chunkDeadlineReason, chunkDeadlineCtx.Err())
-				} else if errors.Is(stepCtx.Err(), context.DeadlineExceeded) && r.timeout != nil && r.timeout.HasPerStep() {
+				} else if r.timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 					err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+				} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
+					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 				r.err = err
 				if isAbortErr(ctx, err) {
@@ -2763,7 +2771,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// instead of finishing as if the model had stopped.
 			if toolsErr != nil && ctx.Err() != nil {
 				abortErr := toolsErr
-				if r.timeout != nil && r.timeout.HasTotal() {
+				if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
 					abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
 				}
 				r.err = abortErr
@@ -2773,8 +2781,16 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			attachToolApprovalSignatures(stepToolResults, opts.ExperimentalToolApprovalSecret)
 		}
-		if stepCtx.Err() != nil && r.timeout != nil && r.timeout.HasPerStep() {
-			r.err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+		if stepCtx.Err() != nil && r.timeout.HasPerStep() {
+			switch {
+			case deadlineFired(stepCtx, ctx):
+				r.err = wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
+			case r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx):
+				r.err = wrapTimeoutError(TimeoutReasonTotal, ctx.Err())
+			default:
+				// The caller cancelled: an abort, not a timeout.
+				r.err = stepCtx.Err()
+			}
 			fireAbort(r.err)
 			cancelStep()
 			break
@@ -3527,9 +3543,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if err != nil {
 			// nextStepCancel runs after the error is classified: a cancelled
 			// step context would make every open failure look like a step timeout.
-			if r.timeout != nil && r.timeout.HasPerStep() && nextStepCtx.Err() != nil {
+			if r.timeout.HasPerStep() && deadlineFired(nextStepCtx, ctx) {
 				err = wrapTimeoutError(TimeoutReasonStep, nextStepCtx.Err())
-			} else if r.timeout != nil && r.timeout.HasTotal() && ctx.Err() != nil {
+			} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
 			}
 			r.err = wrapGatewayError(err)

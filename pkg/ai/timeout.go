@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -39,6 +40,18 @@ func (e *TimeoutError) Unwrap() error {
 		return nil
 	}
 	return e.Err
+}
+
+// deadlineFired reports whether ctx ended because a deadline armed on it
+// passed while parent was still live: one of this SDK's timeouts, not the
+// caller's cancellation or the caller's own deadline. TS tells them apart the
+// same way: an expired AbortSignal.timeout rejects with a TimeoutError, an
+// abort with the abort reason.
+func deadlineFired(ctx, parent context.Context) bool {
+	if ctx == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return false
+	}
+	return parent == nil || parent.Err() == nil
 }
 
 func wrapTimeoutError(reason TimeoutReason, err error) error {

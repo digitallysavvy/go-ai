@@ -987,7 +987,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		}
 	}()
 
-	// Apply total timeout if configured
+	// Apply total timeout if configured. totalParent tells the total
+	// deadline apart from the caller's own cancellation or deadline.
+	totalParent := ctx
 	var cancel context.CancelFunc
 	if opts.Timeout != nil && opts.Timeout.HasTotal() {
 		ctx, cancel = opts.Timeout.CreateTimeoutContext(ctx, "total")
@@ -1124,7 +1126,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// step callbacks are not called for it.
 		if stepNum > 1 && ctx.Err() != nil {
 			abortErr := context.Cause(ctx)
-			if opts.Timeout != nil && opts.Timeout.HasTotal() {
+			if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
 				abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
 			}
 			return nil, abortErr
@@ -1447,9 +1449,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		genResult, err := doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
 		if err != nil {
 			if opts.Timeout != nil {
-				if opts.Timeout.HasPerStep() && stepCtx.Err() != nil {
+				if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 					err = wrapTimeoutError(TimeoutReasonStep, err)
-				} else if opts.Timeout.HasTotal() && ctx.Err() != nil {
+				} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 			}
@@ -1679,9 +1681,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				return nil, failure
 			}
 			if err != nil {
-				if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+				if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 					err = wrapTimeoutError(TimeoutReasonStep, err)
-				} else if opts.Timeout != nil && opts.Timeout.HasTotal() && ctx.Err() != nil {
+				} else if opts.Timeout.HasTotal() && deadlineFired(ctx, totalParent) {
 					err = wrapTimeoutError(TimeoutReasonTotal, err)
 				}
 				var conversionErr *toolResultModelOutputError
@@ -2014,7 +2016,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		// good, so the next iteration's throwIfAborted() rejects with the
 		// step TimeoutError (a tool that swallowed the abort does not
 		// prevent it).
-		if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
+		if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {
 			return nil, wrapTimeoutError(TimeoutReasonStep, stepCtx.Err())
 		}
 	}

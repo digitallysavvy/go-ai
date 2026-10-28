@@ -149,8 +149,15 @@ func TestIsStreamDone(t *testing.T) {
 	if !IsStreamDone(&SSEEvent{Data: "[DONE]"}) {
 		t.Fatal("expected [DONE] to be recognized")
 	}
-	if !IsStreamDone(&SSEEvent{Event: "done"}) {
-		t.Fatal("expected done event to be recognized")
+	// TS ignores SSE event names: only the [DONE] data is the sentinel.
+	if IsStreamDone(&SSEEvent{Event: "done"}) {
+		t.Fatal("an event named done with no [DONE] data must not end the stream")
+	}
+	if IsStreamDone(&SSEEvent{Event: "done", Data: `{"choices":[]}`}) {
+		t.Fatal("an event named done carrying JSON must not end the stream")
+	}
+	if !IsStreamDone(&SSEEvent{Event: "done", Data: "[DONE]"}) {
+		t.Fatal("expected [DONE] data under any event name to be recognized")
 	}
 	if IsStreamDone(&SSEEvent{Event: "message", Data: "hello"}) {
 		t.Fatal("did not expect regular event to be done")
