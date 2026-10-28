@@ -120,6 +120,11 @@ These details differ:
   process on its `close` event and throws "StdioClientTransport not
   connected". Go learns of the exit only through `Close`, which waits on
   the process.
+- `HTTPTransport.Close` waits for its background goroutines (inbound SSE,
+  reconnect timers, readers of event-stream POST responses), except one
+  that is inside an `OnError`, `OnSessionIDChange` or `OnSessionExpired`
+  callback, so that the callback can call `Close`. That goroutine exits
+  once its callback returns.
 
 ## fx: libfx runtime
 
