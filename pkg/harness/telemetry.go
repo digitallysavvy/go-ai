@@ -64,10 +64,11 @@ func promptText(p Prompt) string {
 // promptMessages is the turn's `messages` field in lifecycle callbacks and
 // telemetry (TS `input.prompt == null ? [] : [{role:'user', content:
 // promptToText(input.prompt)}]`): one user message with the prompt's plain
-// text, or none for a continuation, which carries no fresh prompt.
+// text, or an empty list (not nil: telemetry records `[]`) for a
+// continuation, which carries no fresh prompt.
 func (d *turnDriver) promptMessages() []types.Message {
 	if d.in.Mode == "continue" {
-		return nil
+		return []types.Message{}
 	}
 	return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: promptText(d.in.Prompt)}}}}
 }

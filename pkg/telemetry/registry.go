@@ -1368,18 +1368,24 @@ func legacyPromptJSON(isObjectOp bool, system, prompt string, messages, instruct
 	} else if system != "" {
 		sys = system
 	}
+	// An empty, non-nil message list is recorded as [] (TS messages: []);
+	// only nil (TS undefined) is left out.
+	var msgs *[]types.Message
+	if messages != nil {
+		msgs = &messages
+	}
 	if isObjectOp {
 		v := struct {
-			System   interface{}     `json:"system,omitempty"`
-			Prompt   string          `json:"prompt,omitempty"`
-			Messages []types.Message `json:"messages,omitempty"`
-		}{System: sys, Prompt: prompt, Messages: messages}
+			System   interface{}      `json:"system,omitempty"`
+			Prompt   string           `json:"prompt,omitempty"`
+			Messages *[]types.Message `json:"messages,omitempty"`
+		}{System: sys, Prompt: prompt, Messages: msgs}
 		return legacyJSONOrEmpty(v)
 	}
 	v := struct {
-		System   interface{}     `json:"system,omitempty"`
-		Messages []types.Message `json:"messages,omitempty"`
-	}{System: sys, Messages: messages}
+		System   interface{}      `json:"system,omitempty"`
+		Messages *[]types.Message `json:"messages,omitempty"`
+	}{System: sys, Messages: msgs}
 	return legacyJSONOrEmpty(v)
 }
 

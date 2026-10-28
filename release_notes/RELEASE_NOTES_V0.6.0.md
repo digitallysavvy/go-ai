@@ -390,6 +390,10 @@ These match TS and are unlikely to need code changes, but can change output.
   `gen_ai.system_instructions` of its root), and its steps pass the step's
   instruction messages to the chat span (`gen_ai.system_instructions`) and
   to the legacy step span's `ai.prompt.messages`.
+- **Telemetry:** a harness continuation turn (no fresh prompt) records its
+  empty message list like TS `messages: []`: legacy `ai.prompt` is
+  `{"messages":[]}` and the GenAI root `gen_ai.input.messages` is `[]`
+  instead of being left out.
 - **GenAI telemetry:** the text root and chat spans format the caller-facing
   messages like TS `formatModelMessages` (image parts as `uri`/`blob`, parts
   the TS converter does not map, such as an assistant custom part or a tool
