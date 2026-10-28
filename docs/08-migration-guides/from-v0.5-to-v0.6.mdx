@@ -132,6 +132,24 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   _ = hook
   ```
 
+- **A caller cancellation is no longer a `*ai.TimeoutError`.** With
+  `Timeout.Total` or `Timeout.PerStep` set, cancelling the context passed to
+  `GenerateText` or `StreamText` used to come back wrapped in a
+  `*ai.TimeoutError`; it now comes back as the cancellation error
+  (`context.Canceled`), as TS rejects with the abort reason. A total deadline
+  that fires during a step reports `Reason: total`, not `step`. Check for the
+  cancellation before the timeout:
+
+  ```go
+  var te *ai.TimeoutError
+  switch {
+  case errors.Is(err, context.Canceled):
+  	// the caller cancelled (v0.5: a TimeoutError)
+  case errors.As(err, &te):
+  	// one of the SDK's own deadlines: te.Reason is total, step or chunk
+  }
+  ```
+
 - **`MaxTokens` below 1 is rejected.** As TS
   `prepareLanguageModelCallOptions`, `GenerateText`, `StreamText`,
   `GenerateObject`, `StreamObject`, batch text requests, `PrepareStep`

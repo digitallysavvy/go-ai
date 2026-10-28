@@ -198,6 +198,13 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **A caller cancellation is not a `*ai.TimeoutError`** (review round 56).
+  With `Timeout.Total` or `Timeout.PerStep` set, a cancelled context came
+  back as a step or total `*ai.TimeoutError` (also in v0.5.x); it now comes
+  back as the cancellation error, as TS rejects with the abort reason. A
+  total deadline that fires during a step reports `Reason: total` instead of
+  `step`. **Migration:** check `errors.Is(err, context.Canceled)` before
+  `errors.As(err, &timeoutErr)`.
 - **`WorkflowAgent` `PrepareStep` overrides carry over to later steps**, as
   TS's model-call iterator (`currentModel`, `conversationPrompt`,
   `currentGenerationSettings`): the next step's hook starts from the previous
@@ -629,6 +636,12 @@ These match TS and are unlikely to need code changes, but can change output.
   spent in `PrepareStep` counts toward `Timeout.PerStep`.
 
 ### Providers
+
+- An SSE event named `done` that carries a JSON payload is an ordinary chunk in
+  every OpenAI-compatible and SSE provider stream; only `data: [DONE]` ends
+  the stream, as TS `parseJsonEventStream` ignores event names. OpenAI
+  Responses and Open Responses no longer retry the "returned no output" 500
+  error (TS `isRetryable: false`) (review round 56).
 
 - **Provider IDs follow TS `config.provider`**: `groq.chat`, `mistral.embedding`,
   `openai.image` and so on (they were the bare provider name). Telemetry
