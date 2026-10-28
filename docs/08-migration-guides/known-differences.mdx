@@ -262,6 +262,15 @@ correlating events with their run.
   stream path (`doStreamStep`) does not check it and sends the value to the
   provider.
 
+## JSON payloads with `__proto__`
+
+Go accepts JSON with a `__proto__` key or a `constructor.prototype` member
+in provider responses and stream chunks. TS `secureJsonParse` rejects those
+payloads (a `JSONParseError`) as a guard against JavaScript prototype
+pollution. Go `encoding/json` decodes into maps and structs, which have no
+prototypes, so there is nothing to guard against, and rejecting the
+payloads would only turn valid JSON into errors.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime

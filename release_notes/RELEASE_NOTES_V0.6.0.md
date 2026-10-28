@@ -911,6 +911,10 @@ Notable ones:
 - After a read error on its stream, MCP `SSETransport` is disconnected and
   `Send` fails with "Not connected"; TS stays connected, but replies over the
   dead stream never arrive.
+- JSON payloads with a `__proto__` key or a `constructor.prototype` member
+  are accepted. TS `secureJsonParse` rejects them to guard against
+  JavaScript prototype pollution; Go `encoding/json` has no prototypes, so
+  rejecting them would only turn valid JSON into errors.
 
 ---
 
