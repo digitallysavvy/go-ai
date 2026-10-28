@@ -166,6 +166,38 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	// Connect returns does not drop the connection.
 	reqCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	stopWatch := context.AfterFunc(ctx, cancel)
+	// Install the stream's abort handle before the GET, as TS start() creates
+	// its abortController first: a Close during the handshake aborts the
+	// request instead of being lost. A Connect still in flight is superseded
+	// and its request or stream is aborted, so its reader cannot leak.
+	t.mu.Lock()
+	prevCancel, prevBody := t.cancel, t.streamBody
+	t.streamGen++
+	gen := t.streamGen
+	t.cancel = cancel
+	t.streamCtx = reqCtx
+	t.streamBody = nil
+	t.mu.Unlock()
+	if prevCancel != nil {
+		prevCancel()
+	}
+	if prevBody != nil {
+		prevBody.Close() //nolint:errcheck
+	}
+	// fail ends a handshake that never started a reader. Once Close (or a
+	// later Connect) owns the transport, TS is silent: the aborted fetch
+	// returns without onerror.
+	fail := func(err error) error {
+		stopWatch()
+		cancel()
+		if !t.releaseHandshake(gen) {
+			return errSSEClosedDuringConnect()
+		}
+		if ctx.Err() == nil {
+			t.reportError(err)
+		}
+		return err
+	}
 	var resp *http.Response
 	// TS fails the connection when an OK response has no body (`!response.ok
 	// || !response.body`); only a custom SSEClient can return one.
@@ -173,14 +205,12 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, t.url, nil)
 		if err != nil {
-			stopWatch()
-			cancel()
-			return NewTransportError("failed to create SSE request", err)
+			return fail(NewTransportError("failed to create SSE request", err))
 		}
 		if err := t.applyHeaders(ctx, req, map[string]string{"Accept": "text/event-stream"}); err != nil {
-			stopWatch()
-			cancel()
-			return NewTransportError("failed to load OAuth tokens", err)
+			// TS: a failing tokens() throws into establishConnection's catch,
+			// which reports it.
+			return fail(NewTransportError("failed to load OAuth tokens", err))
 		}
 
 		client := SSEClient(t.streamClient)
@@ -189,14 +219,11 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		}
 		resp, err = client.Do(req)
 		if err != nil {
-			stopWatch()
-			cancel()
-			return NewTransportError("failed to establish SSE connection", err)
+			// TS reports a failed fetch through onerror unless it was aborted.
+			return fail(NewTransportError("failed to establish SSE connection", err))
 		}
 		if resp == nil {
-			stopWatch()
-			cancel()
-			return NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response"))
+			return fail(NewTransportError("failed to establish SSE connection", fmt.Errorf("nil HTTP response")))
 		}
 		missingBody = resp.Body == nil
 		if missingBody {
@@ -206,10 +233,7 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, mcpMaxErrorBodyBytes))
 			resp.Body.Close() //nolint:errcheck
 			if err := t.auth.authorize(ctx, resp); err != nil {
-				stopWatch()
-				cancel()
-				t.reportError(err)
-				return err
+				return fail(err)
 			}
 			continue
 		}
@@ -217,8 +241,6 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || missingBody {
 		defer resp.Body.Close() //nolint:errcheck
-		stopWatch()
-		cancel()
 		statusText := responseStatusText(resp)
 		// TS #19430: keep the (bounded) response body on the error.
 		text := string(readErrorBody(resp.Body))
@@ -229,19 +251,21 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 		if resp.StatusCode == http.StatusMethodNotAllowed {
 			message += ". This server does not support SSE transport. Try using `http` transport instead"
 		}
-		err := NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, text))
-		t.reportError(err)
-		return err
+		return fail(NewMCPClientError(0, message, nil, WithMCPHTTPResponse(resp.StatusCode, t.url, text)))
 	}
 
 	ready := make(chan error, 1)
 	t.mu.Lock()
+	if t.streamGen != gen {
+		// Close (or a later Connect) ran during the handshake.
+		t.mu.Unlock()
+		stopWatch()
+		cancel()
+		resp.Body.Close() //nolint:errcheck
+		return errSSEClosedDuringConnect()
+	}
 	t.streamBody = resp.Body
-	t.cancel = cancel
-	t.streamCtx = reqCtx
 	t.streamErr = nil
-	t.streamGen++
-	gen := t.streamGen
 	t.mu.Unlock()
 	go t.readSSEStream(resp.Body, gen, ready)
 
@@ -249,22 +273,49 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 	case err := <-ready:
 		stopWatch()
 		if err != nil {
-			if t.isStaleStream(gen) {
-				// Close ran while Connect waited: it already reset the
-				// transport (and a later Connect may own it now), and TS
-				// reports nothing once aborted.
-				return err
+			// A stale stream means Close ran while Connect waited: it
+			// already reset the transport (and a later Connect may own it
+			// now), and TS reports nothing once aborted.
+			if t.closeStream(gen) {
+				t.reportError(err)
 			}
-			t.closeWithoutCallback()
-			t.reportError(err)
 			return err
 		}
 		return nil
 	case <-ctx.Done():
 		stopWatch()
-		t.closeWithoutCallback()
+		// Close only this Connect's stream: a Close and a later Connect may
+		// have replaced it while ctx ended.
+		t.closeStream(gen)
 		return ctx.Err()
 	}
+}
+
+// releaseHandshake clears the abort handle a failed handshake installed and
+// reports whether gen was still the current stream (no Close or later
+// Connect since).
+func (t *SSETransport) releaseHandshake(gen uint64) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.streamGen != gen {
+		return false
+	}
+	t.cancel = nil
+	t.streamCtx = nil
+	t.streamBody = nil
+	return true
+}
+
+// closeStream closes the transport if gen is still its current stream and
+// reports whether it did.
+func (t *SSETransport) closeStream(gen uint64) bool {
+	t.mu.Lock()
+	if t.streamGen != gen {
+		t.mu.Unlock()
+		return false
+	}
+	t.closeLocked()
+	return true
 }
 
 // Close closes the SSE stream and clears the locked endpoint.
@@ -275,6 +326,12 @@ func (t *SSETransport) Close() error {
 
 func (t *SSETransport) closeWithoutCallback() {
 	t.mu.Lock()
+	t.closeLocked()
+}
+
+// closeLocked resets the transport and aborts its stream. It is called with
+// t.mu held and releases it.
+func (t *SSETransport) closeLocked() {
 	body := t.streamBody
 	cancel := t.cancel
 	t.connected = false
@@ -584,7 +641,15 @@ func (t *SSETransport) readSSEStream(body io.ReadCloser, gen uint64, ready chan<
 			t.reportError(&MCPClientError{Message: "MCP SSE Transport Error: Failed to parse message", Cause: err})
 			continue
 		}
+		// Queue only while this stream is current: a Close and reconnect
+		// between the stale check above and here must not deliver it.
+		t.mu.Lock()
+		if t.streamGen != gen {
+			t.mu.Unlock()
+			return
+		}
 		t.queueReceivedMessages([]*MCPMessage{msg})
+		t.mu.Unlock()
 	}
 }
 
