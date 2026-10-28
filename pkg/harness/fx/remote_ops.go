@@ -74,7 +74,60 @@ func (r *remoteOps) realpath(ctx context.Context, target string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("Unable to resolve sandbox path: %s", target) //nolint:staticcheck // matches TS SDK's exact error text
 	}
-	return strings.TrimSuffix(string(decoded), "\x00"), nil
+	return strings.TrimSuffix(nodeUTF8String(decoded), "\x00"), nil
+}
+
+// nodeUTF8String is Node's Buffer#toString('utf8'): each maximal ill-formed
+// subsequence (WHATWG UTF-8 decode) becomes one U+FFFD, so a path that is not
+// valid UTF-8 resolves to the same string TS uses.
+func nodeUTF8String(b []byte) string {
+	if utf8.Valid(b) {
+		return string(b)
+	}
+	var sb strings.Builder
+	for len(b) > 0 {
+		r, size := utf8.DecodeRune(b)
+		if r != utf8.RuneError || size > 1 {
+			sb.Write(b[:size])
+			b = b[size:]
+			continue
+		}
+		sb.WriteRune(utf8.RuneError)
+		b = b[maximalIllFormedPrefix(b):]
+	}
+	return sb.String()
+}
+
+// maximalIllFormedPrefix is the length of the ill-formed sequence at the
+// start of b that the WHATWG decoder replaces with one U+FFFD: a lead byte
+// and the continuation bytes that could still have completed it.
+func maximalIllFormedPrefix(b []byte) int {
+	var need int
+	lo, hi := byte(0x80), byte(0xBF)
+	switch c := b[0]; {
+	case c >= 0xC2 && c <= 0xDF:
+		need = 1
+	case c == 0xE0:
+		need, lo = 2, 0xA0
+	case c == 0xED:
+		need, hi = 2, 0x9F
+	case c >= 0xE1 && c <= 0xEF:
+		need = 2
+	case c == 0xF0:
+		need, lo = 3, 0x90
+	case c == 0xF4:
+		need, hi = 3, 0x8F
+	case c >= 0xF1 && c <= 0xF3:
+		need = 3
+	default:
+		return 1
+	}
+	n := 1
+	for n <= need && n < len(b) && b[n] >= lo && b[n] <= hi {
+		n++
+		lo, hi = 0x80, 0xBF
+	}
+	return n
 }
 
 // canonicalRoot resolves the workspace once; like TS, a failure is kept.
