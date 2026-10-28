@@ -547,9 +547,6 @@ func effectiveWorkflowTools(w *WorkflowAgent, streamOpts WorkflowStreamOptions, 
 	return tools
 }
 
-// workflowTelemetryRuntimeContext returns the subset of the runtime context
-// that Telemetry.IncludeRuntimeContext opts in, so workflow-level telemetry
-// events never carry unselected keys (TS #23340). It is always non-nil.
 // workflowTelemetryToolsContext is the tools context a telemetry event
 // carries: one entry per tool, holding only the keys IncludeToolsContext
 // selects for it (TS filterToolsContext).
@@ -607,6 +604,9 @@ func workflowStartEvent(operation, callID, modelProvider, modelID string, settin
 	return e
 }
 
+// workflowTelemetryRuntimeContext returns the subset of the runtime context
+// that Telemetry.IncludeRuntimeContext opts in, so workflow-level telemetry
+// events never carry unselected keys (TS #23340). It is always non-nil.
 func workflowTelemetryRuntimeContext(settings *ai.TelemetrySettings, runtimeContext interface{}) map[string]interface{} {
 	out := map[string]interface{}{}
 	if settings == nil || len(settings.IncludeRuntimeContext) == 0 || runtimeContext == nil {
