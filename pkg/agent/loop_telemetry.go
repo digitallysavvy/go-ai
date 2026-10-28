@@ -483,12 +483,26 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		ModelProvider:  c.Model.Provider(),
 		ModelID:        c.Model.ModelID(),
 		ToolChoice:     c.ToolChoice,
-		PromptMessages: c.Messages,
+		PromptMessages: loopPromptMessages(c),
 		StepTools:      c.Tools,
 		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext),
 		ToolsContext:   telemetryToolsContextFor(lt.settings, c.ToolsContext),
 	})
 	return &loopStepTelemetry{lt: lt, stepCtx: stepCtx, errCtx: stepCtx}
+}
+
+// loopPromptMessages is the step's prompt messages for the step span (TS
+// promptMessages): instructions given as system messages come first, as the
+// step's prompt places them (see executeStep).
+func loopPromptMessages(c PrepareCallConfig) []types.Message {
+	if len(c.InstructionMessages) == 0 {
+		return c.Messages
+	}
+	out := make([]types.Message, 0, len(c.InstructionMessages)+len(c.Messages))
+	for _, m := range c.InstructionMessages {
+		out = append(out, types.Message{Role: types.RoleSystem, Content: m.Content, ProviderOptions: m.ProviderOptions})
+	}
+	return append(out, c.Messages...)
 }
 
 // fail closes the step span after an error (no error status for an abort).
@@ -540,22 +554,25 @@ func (s *loopStepTelemetry) modelCallStart(c PrepareCallConfig, model interface 
 		return nil
 	}
 	ctx := telemetry.FireOnLanguageModelCallStart(s.stepCtx, telemetry.LanguageModelCallStartEvent{
-		Settings:         s.lt.settings,
-		CallID:           s.lt.callID,
-		ModelProvider:    model.Provider(),
-		ModelID:          model.ModelID(),
-		Prompt:           prompt,
-		Messages:         c.Messages,
-		Tools:            genTools,
-		System:           c.System,
-		Temperature:      c.Temperature,
-		MaxOutputTokens:  c.MaxTokens,
-		TopP:             c.TopP,
-		TopK:             c.TopK,
-		PresencePenalty:  c.PresencePenalty,
-		FrequencyPenalty: c.FrequencyPenalty,
-		StopSequences:    c.StopSequences,
-		Seed:             c.Seed,
+		Settings:      s.lt.settings,
+		CallID:        s.lt.callID,
+		ModelProvider: model.Provider(),
+		ModelID:       model.ModelID(),
+		Prompt:        prompt,
+		Messages:      c.Messages,
+		Tools:         genTools,
+		System:        c.System,
+		// TS languageModelCallStart instructions: the step's instruction
+		// messages when they were given as messages.
+		InstructionMessages: c.InstructionMessages,
+		Temperature:         c.Temperature,
+		MaxOutputTokens:     c.MaxTokens,
+		TopP:                c.TopP,
+		TopK:                c.TopK,
+		PresencePenalty:     c.PresencePenalty,
+		FrequencyPenalty:    c.FrequencyPenalty,
+		StopSequences:       c.StopSequences,
+		Seed:                c.Seed,
 	})
 	s.errCtx = ctx
 	return ctx

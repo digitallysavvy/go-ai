@@ -373,7 +373,9 @@ These match TS and are unlikely to need code changes, but can change output.
   `JSON.stringify({system: instructions})`, instead of their joined text. A
   string `System` is still a string. The legacy `ToolLoopAgent` root now
   carries `AgentConfig.InstructionMessages` (also the GenAI
-  `gen_ai.system_instructions` of its root).
+  `gen_ai.system_instructions` of its root), and its steps pass the step's
+  instruction messages to the chat span (`gen_ai.system_instructions`) and
+  to the legacy step span's `ai.prompt.messages`.
 - **GenAI telemetry:** the text root and chat spans format the caller-facing
   messages like TS `formatModelMessages` (image parts as `uri`/`blob`, parts
   the TS converter does not map, such as an assistant custom part or a tool

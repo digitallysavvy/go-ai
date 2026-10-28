@@ -65,3 +65,54 @@ func TestR51LoopRootInstructionMessages(t *testing.T) {
 		t.Errorf("RecordInputs false: InstructionMessages = %v", e.InstructionMessages)
 	}
 }
+
+// The legacy loop's step and chat telemetry carry the step's instruction
+// messages too: the GenAI chat span records them as
+// gen_ai.system_instructions (TS languageModelCallStart instructions), and
+// the legacy step span's ai.prompt.messages starts with them, as the step's
+// prompt does.
+func TestR51LoopStepTelemetryInstructionMessages(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	tel := &ai.TelemetrySettings{Integrations: []telemetry.TelemetryIntegration{
+		telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")}),
+		telemetry.NewOpenTelemetry(telemetry.OpenTelemetryOptions{Tracer: tp.Tracer("genai")}),
+	}}
+	model := &testutil.MockLanguageModel{
+		ModelName: "m",
+		DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "hi", FinishReason: types.FinishReasonStop}, nil
+		},
+	}
+	a := NewToolLoopAgent(AgentConfig{
+		Model:     model,
+		Telemetry: tel,
+		InstructionMessages: []types.Message{
+			{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "be brief"}}},
+		},
+	})
+	if _, err := a.Execute(context.Background(), "Hello"); err != nil {
+		t.Fatal(err)
+	}
+	var sawChat, sawStep bool
+	for _, s := range rec.Ended() {
+		for _, kv := range s.Attributes() {
+			switch {
+			case s.Name() == "chat m" && kv.Key == "gen_ai.system_instructions":
+				sawChat = true
+				if v := kv.Value.AsString(); v != `[{"type":"text","content":"be brief"}]` {
+					t.Errorf("chat gen_ai.system_instructions = %s", v)
+				}
+			case s.Name() == "ai.generateText.doGenerate" && kv.Key == "ai.prompt.messages":
+				sawStep = true
+				if v := kv.Value.AsString(); !strings.HasPrefix(v, `[{"role":"system","content":[{"type":"text","text":"be brief"`) {
+					t.Errorf("step ai.prompt.messages = %s", v)
+				}
+			}
+		}
+	}
+	if !sawChat || !sawStep {
+		t.Fatalf("chat system instructions seen = %v, step prompt messages seen = %v", sawChat, sawStep)
+	}
+}
