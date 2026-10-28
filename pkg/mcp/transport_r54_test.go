@@ -117,3 +117,43 @@ func TestTransportAuthPanickingFlowIsReleased(t *testing.T) {
 		t.Fatalf("auth requests = %d, want a second flow to run", calls)
 	}
 }
+
+// A RefreshTokenFunc that panics must not leave the single-flight refresh in
+// place for the HTTP and SSE transports either.
+func TestOAuthRefreshPanicIsReleased(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	cfg := func() *OAuthConfig {
+		return &OAuthConfig{AccessToken: "old", RefreshTokenFunc: func(context.Context, *OAuthConfig) (string, time.Duration, error) {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n%2 == 1 {
+				panic("refresh exploded")
+			}
+			return "new", time.Hour, nil
+		}}
+	}
+	refreshers := map[string]func(context.Context) error{
+		"http": NewHTTPTransport(HTTPTransportConfig{URL: "https://example.com/mcp", OAuth: cfg()}).refreshOAuthToken,
+		"sse":  NewSSETransport(SSETransportConfig{URL: "https://example.com/sse", OAuth: cfg()}).refreshOAuthToken,
+	}
+	for name, refresh := range refreshers {
+		t.Run(name, func(t *testing.T) {
+			func() {
+				defer func() {
+					if recover() == nil {
+						t.Fatal("expected the panic to reach the caller")
+					}
+				}()
+				_ = refresh(context.Background())
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := refresh(ctx); err != nil {
+				t.Fatalf("second refresh err = %v, want a fresh refresh to succeed", err)
+			}
+		})
+	}
+}

@@ -158,3 +158,7 @@ func (a *transportAuth) runFlight(ctx context.Context, flight *authFlight, resou
 // errAuthFlowPanicked is what requests waiting on a shared OAuth flow get when
 // the flow panicked in the request that ran it.
 var errAuthFlowPanicked = errors.New("mcp: OAuth authorization panicked")
+
+// errOAuthRefreshPanicked is what callers waiting on a shared OAuthConfig
+// token refresh get when RefreshTokenFunc panicked in the caller that ran it.
+var errOAuthRefreshPanicked = errors.New("mcp: OAuth token refresh panicked")

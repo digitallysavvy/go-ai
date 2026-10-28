@@ -737,13 +737,17 @@ func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
 	t.refreshCh = make(chan struct{})
 	t.refreshMu.Unlock()
 
-	err := t.doRefreshOAuthToken(ctx)
-
-	t.refreshMu.Lock()
-	t.refreshErr = err
-	close(t.refreshCh)
-	t.refreshCh = nil
-	t.refreshMu.Unlock()
+	// The refresh is released even when RefreshTokenFunc panics, so later
+	// refreshes do not wait on it forever (see transportAuth.runFlight).
+	err := errOAuthRefreshPanicked
+	defer func() {
+		t.refreshMu.Lock()
+		t.refreshErr = err
+		close(t.refreshCh)
+		t.refreshCh = nil
+		t.refreshMu.Unlock()
+	}()
+	err = t.doRefreshOAuthToken(ctx)
 	return err
 }
 
