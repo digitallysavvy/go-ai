@@ -989,14 +989,13 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				args = map[string]interface{}{}
 			}
 			// TS: toolUseId || generateId(), name ?? `tool-${generateId()}`.
+			// The schema requires a string name, so an empty name is kept
+			// (only a nullish one would fall back).
 			rawID := part.ToolUse.ToolUseID
 			if rawID == "" {
 				rawID = streaming.GenerateID()
 			}
 			name := part.ToolUse.Name
-			if name == "" {
-				name = "tool-" + streaming.GenerateID()
-			}
 			call := types.ToolCall{
 				ID:        normalizeToolCallID(rawID, isMistral),
 				ToolName:  name,

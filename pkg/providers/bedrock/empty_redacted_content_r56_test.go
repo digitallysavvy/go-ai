@@ -39,3 +39,21 @@ func TestR56BedrockGenerateEmptyRedactedContentIsReasoning(t *testing.T) {
 		t.Fatalf("metadata = %s, want amazonBedrock.redactedContent \"\"", r.ProviderMetadata)
 	}
 }
+
+// r56: the TS schema requires toolUse.name to be a string, and
+// `name ?? tool-${id}` keeps an empty one.
+func TestR56BedrockGenerateEmptyToolNameIsKept(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"output":{"message":{"role":"assistant","content":[{"toolUse":{"toolUseId":"t1","name":"","input":{}}}]}},"stopReason":"tool_use","usage":{"inputTokens":1,"outputTokens":2,"totalTokens":3}}`))
+	}))
+	defer server.Close()
+	m := newHTTPTestBedrockModel(t, server, "amazon.nova-pro-v1:0")
+	res, err := m.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "hi"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolCalls) != 1 || res.ToolCalls[0].ID != "t1" || res.ToolCalls[0].ToolName != "" {
+		t.Fatalf("tool calls = %#v, want t1 with an empty name", res.ToolCalls)
+	}
+}
