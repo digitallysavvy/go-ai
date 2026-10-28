@@ -260,6 +260,9 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 				s.finishReason = mapBedrockFinishReason(stopReason, s.isJSONResponseFromTool)
 				s.rawFinishReason = stopReason
 			}
+			// TS reassigns stopSequence on every messageStop (`?? null`).
+			s.stopSequence = nil
+			s.stopSequenceSet = false
 			if amf, ok := payload["additionalModelResponseFields"].(map[string]interface{}); ok {
 				if delta, ok := amf["delta"].(map[string]interface{}); ok {
 					if ss, ok := delta["stop_sequence"].(string); ok {
@@ -293,34 +296,52 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 }
 
 func (s *bedrockConverseStream) handleMetadata(metadata map[string]interface{}) {
+	// TS builds a fresh metadata payload for each metadata event and, when it
+	// is non-empty, replaces providerMetadata with it (no merge across events).
+	payload := map[string]interface{}{}
 	if usage, ok := metadata["usage"].(map[string]interface{}); ok {
 		usageBytes, _ := json.Marshal(usage)
 		s.usage = convertBedrockConverseUsage(usageBytes)
 		s.hasUsage = true
 
 		meta := map[string]interface{}{}
-		if v, ok := usage["cacheWriteInputTokens"]; ok {
+		if v := usage["cacheWriteInputTokens"]; v != nil {
 			meta["cacheWriteInputTokens"] = v
 		}
-		if v, ok := usage["cacheDetails"]; ok {
+		if v := usage["cacheDetails"]; v != nil {
 			meta["cacheDetails"] = v
 		}
 		if len(meta) > 0 {
-			s.ensureProviderMetadata()
-			s.providerMetadataPayload["usage"] = meta
+			payload["usage"] = meta
 		}
 	}
-	if trace, ok := metadata["trace"]; ok && trace != nil {
-		s.ensureProviderMetadata()
-		s.providerMetadataPayload["trace"] = trace
+	if trace := metadata["trace"]; jsTruthy(trace) {
+		payload["trace"] = trace
 	}
-	if pc, ok := metadata["performanceConfig"]; ok && pc != nil {
-		s.ensureProviderMetadata()
-		s.providerMetadataPayload["performanceConfig"] = pc
+	if pc := metadata["performanceConfig"]; pc != nil {
+		payload["performanceConfig"] = pc
 	}
-	if st, ok := metadata["serviceTier"]; ok && st != nil {
-		s.ensureProviderMetadata()
-		s.providerMetadataPayload["serviceTier"] = st
+	if st := metadata["serviceTier"]; st != nil {
+		payload["serviceTier"] = st
+	}
+	if len(payload) > 0 {
+		s.providerMetadataPayload = payload
+	}
+}
+
+// jsTruthy reports whether a decoded JSON value is truthy in JavaScript.
+func jsTruthy(v interface{}) bool {
+	switch x := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return x
+	case float64:
+		return x != 0
+	case string:
+		return x != ""
+	default:
+		return true // objects and arrays
 	}
 }
 
