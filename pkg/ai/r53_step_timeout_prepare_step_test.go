@@ -90,7 +90,7 @@ func TestR53StreamNextStepTimeoutCoversPrepareStep(t *testing.T) {
 		Tools: []types.Tool{{Name: "noop", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 			return "done", nil
 		}}},
-		StopWhen: []StopCondition{StepCountIs(3)},
+		StopWhen: []StopCondition{IsStepCount(3)},
 		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
 			if o.StepNumber == 1 {
 				time.Sleep(80 * time.Millisecond)
@@ -139,7 +139,7 @@ func TestR53StreamDoesNotWriteIntoCallerMessages(t *testing.T) {
 		Tools: []types.Tool{{Name: "noop", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
 			return "done", nil
 		}}},
-		StopWhen: []StopCondition{StepCountIs(3)},
+		StopWhen: []StopCondition{IsStepCount(3)},
 		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
 			if o.StepNumber == 0 {
 				return PrepareStepOptions{Messages: base[:1]}

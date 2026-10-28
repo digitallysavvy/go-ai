@@ -29,7 +29,7 @@ func TestR53ParseToolCallEmptyActiveToolsRepairs(t *testing.T) {
 				Prompt:      "hi",
 				Tools:       tc.tools,
 				ActiveTools: tc.active,
-				StopWhen:    []StopCondition{StepCountIs(1)},
+				StopWhen:    []StopCondition{IsStepCount(1)},
 				RepairToolCall: func(context.Context, ToolCallRepairOptions) (*types.ToolCall, error) {
 					repairs++
 					return nil, nil

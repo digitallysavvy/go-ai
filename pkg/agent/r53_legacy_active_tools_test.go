@@ -39,7 +39,7 @@ func TestR53LegacyLoopEmptyActiveToolsSendsNoTools(t *testing.T) {
 				Model:       model,
 				Tools:       []types.Tool{{Name: "weather", Parameters: map[string]interface{}{"type": "object"}}},
 				ActiveTools: tc.active,
-				StopWhen:    []ai.StopCondition{ai.StepCountIs(1)},
+				StopWhen:    []ai.StopCondition{ai.IsStepCount(1)},
 			})
 			if _, err := a.Execute(context.Background(), "hi"); err != nil {
 				t.Fatal(err)
@@ -64,7 +64,7 @@ func TestR53LegacyLoopRepairGetsStepMessages(t *testing.T) {
 			return "ok", nil
 		}}},
 		InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "be brief"}}}},
-		StopWhen:            []ai.StopCondition{ai.StepCountIs(1)},
+		StopWhen:            []ai.StopCondition{ai.IsStepCount(1)},
 		RepairToolCall: func(_ context.Context, o ai.ToolCallRepairOptions) (*types.ToolCall, error) {
 			got = o.Messages
 			return nil, nil
