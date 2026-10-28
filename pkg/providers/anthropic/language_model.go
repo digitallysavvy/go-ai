@@ -765,10 +765,13 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	}
 	result.RawFinishReason = response.StopReason
 
-	// TS reads only the root-level context_management (its response schema
-	// has no usage.context_management, so one there is stripped).
+	// Root-level context_management, as TS reads it. Go-only: fall back to
+	// the legacy usage.context_management (kept for v0.5.2 callers; a known
+	// difference, TS's schema strips that key).
 	if response.ContextManagement != nil {
 		result.ContextManagement = response.ContextManagement
+	} else if response.Usage.ContextManagement != nil {
+		result.ContextManagement = response.Usage.ContextManagement
 	}
 	result.ProviderMetadata = withCustomProviderKeyMetadata(anthropicProviderMetadata(response.Usage, response.StopSequence, response.StopDetails, response.Container, result.ContextManagement, metadataExtras{
 		inputTransformations: rawJSONValue(response.InputTransformations),
@@ -1306,7 +1309,7 @@ type anthropicResponse struct {
 	StopSequence string                `json:"stop_sequence,omitempty"`
 	StopDetails  *anthropicStopDetails `json:"stop_details,omitempty"`
 	Usage        anthropicUsage        `json:"usage"`
-	// Root-level context management (TS reads only this location).
+	// Root-level context management (TS location; takes precedence).
 	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Container info returned when a container was used/created
 	Container *anthropicContainerResponse `json:"container,omitempty"`
@@ -1322,6 +1325,8 @@ type anthropicUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // v6.0
 	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`     // v6.0
+	// Legacy location for context management (Go-only fallback, known difference)
+	ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 	// Iterations breakdown when compaction is used
 	Iterations []UsageIteration `json:"iterations,omitempty"`
 	// OutputTokensDetails carries thinking_tokens (reasoning share of output).
@@ -2685,11 +2690,13 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					OutputTokens             *int `json:"output_tokens,omitempty"`
 					CacheReadInputTokens     *int `json:"cache_read_input_tokens,omitempty"`
 					CacheCreationInputTokens *int `json:"cache_creation_input_tokens,omitempty"`
+					// Legacy location for context management (Go-only fallback)
+					ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 					// Iterations breakdown for compaction
 					Iterations          []UsageIteration              `json:"iterations,omitempty"`
 					OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
 				} `json:"usage"`
-				// Root-level context management (TS reads only this location).
+				// Root-level context management (TS location; takes precedence).
 				ContextManagement *ContextManagementResponse `json:"context_management,omitempty"`
 				// Container info (with skills, if any) from message_delta
 				Container *anthropicContainerResponse `json:"container,omitempty"`
@@ -2772,9 +2779,13 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 
 				// TS: contextManagement is stream-wide; a message_delta with
 				// context_management replaces it and one without keeps the
-				// earlier value (also for later messages' finishes).
+				// earlier value (also for later messages' finishes). Go-only:
+				// the legacy usage.context_management is a fallback when the
+				// root-level value is absent (known difference, v0.5.2 callers).
 				if delta.ContextManagement != nil {
 					s.contextManagement = delta.ContextManagement
+				} else if delta.Usage.ContextManagement != nil {
+					s.contextManagement = delta.Usage.ContextManagement
 				}
 				// The finish chunk is emitted on message_stop so later deltas
 				// (e.g. final safeguard results) are included.

@@ -372,35 +372,68 @@ func TestParseContextManagement_RootLevel(t *testing.T) {
 	assert.Equal(t, 1500, edit.ClearedInputTokens)
 }
 
-// TestParseContextManagement_UsageLevelIgnored: TS reads only the root-level
-// context_management (its schema has no usage.context_management, so zod strips
-// it). A value under usage is not reported, in generate or stream.
-func TestParseContextManagement_UsageLevelIgnored(t *testing.T) {
+// TestParseContextManagement_UsageLevelFallback: Go-only known difference
+// (kept for v0.5.2 callers). TS reads only the root-level context_management;
+// Go falls back to the legacy usage.context_management when the root value is
+// absent, in generate and stream, and the root value takes precedence.
+func TestParseContextManagement_UsageLevelFallback(t *testing.T) {
 	usageOnly := `"usage":{"input_tokens":100,"output_tokens":50,"context_management":{"applied_edits":[{"type":"clear_thinking_20251015","cleared_thinking_turns":3,"cleared_input_tokens":2000}]}}`
+	root := `"context_management":{"applied_edits":[{"type":"clear_tool_uses_20250919","cleared_tool_uses":5,"cleared_input_tokens":1500}]}`
+	usageWant := `{"appliedEdits":[{"clearedInputTokens":2000,"clearedThinkingTurns":3,"type":"clear_thinking_20251015"}]}`
+	rootWant := `{"appliedEdits":[{"clearedInputTokens":1500,"clearedToolUses":5,"type":"clear_tool_uses_20250919"}]}`
 
-	t.Run("generate", func(t *testing.T) {
+	generate := func(t *testing.T, body string) *types.GenerateResult {
+		t.Helper()
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"Hello"}],"model":"claude-sonnet-4-5","stop_reason":"end_turn",` + usageOnly + `}`))
+			_, _ = w.Write([]byte(body))
 		}))
 		defer server.Close()
 		model, err := New(Config{APIKey: "k", BaseURL: server.URL}).LanguageModel("claude-sonnet-4-5")
 		require.NoError(t, err)
 		result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
 		require.NoError(t, err)
-		assert.Nil(t, result.ContextManagement)
-		meta := result.ProviderMetadata["anthropic"].(map[string]interface{})
-		assert.Nil(t, meta["contextManagement"])
+		return result
+	}
+	head := `{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"Hello"}],"model":"claude-sonnet-4-5","stop_reason":"end_turn",`
+
+	t.Run("generate", func(t *testing.T) {
+		result := generate(t, head+usageOnly+`}`)
+		cm, ok := result.ContextManagement.(*ContextManagementResponse)
+		require.True(t, ok)
+		edit, ok := cm.AppliedEdits[0].(*AppliedClearThinkingEdit)
+		require.True(t, ok)
+		assert.Equal(t, 3, edit.ClearedThinkingTurns)
+		assert.Equal(t, 2000, edit.ClearedInputTokens)
+		meta, err := json.Marshal(result.ProviderMetadata["anthropic"].(map[string]interface{})["contextManagement"])
+		require.NoError(t, err)
+		assert.JSONEq(t, usageWant, string(meta))
 	})
 
+	t.Run("generate root takes precedence", func(t *testing.T) {
+		result := generate(t, head+root+`,`+usageOnly+`}`)
+		cm, ok := result.ContextManagement.(*ContextManagementResponse)
+		require.True(t, ok)
+		_, ok = cm.AppliedEdits[0].(*AppliedClearToolUsesEdit)
+		assert.True(t, ok)
+	})
+
+	start := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n"
+	stop := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
 	t.Run("stream", func(t *testing.T) {
-		sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
-			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}," + usageOnly + "}\n\n" +
-			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		sse := start + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}," + usageOnly + "}\n\n" + stop
 		finishes := collectFinishChunks(t, sse)
 		require.Len(t, finishes, 1)
-		assert.Nil(t, finishes[0].ContextManagement)
-		assert.Equal(t, "null", string(finishMetaField(t, finishes[0], "contextManagement")))
+		require.NotNil(t, finishes[0].ContextManagement)
+		assert.JSONEq(t, usageWant, string(finishMetaField(t, finishes[0], "contextManagement")))
+	})
+
+	t.Run("stream root takes precedence", func(t *testing.T) {
+		sse := start + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}," + root + "," + usageOnly + "}\n\n" + stop
+		finishes := collectFinishChunks(t, sse)
+		require.Len(t, finishes, 1)
+		assert.JSONEq(t, rootWant, string(finishMetaField(t, finishes[0], "contextManagement")))
 	})
 }
 
