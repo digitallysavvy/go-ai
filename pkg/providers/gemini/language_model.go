@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -213,6 +214,11 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 	return streaming.NewWarningsStream(textStream, warnings), nil
 }
 
+// jsonResponseToolModelPattern is TS getArgs' /(^|\/)gemini-/i: unlike the
+// capability patterns it does not treat a "." as a prefix separator, so an id
+// such as "eu.gemini-2.0-flash" is not rewritten to use a JSON response tool.
+var jsonResponseToolModelPattern = regexp.MustCompile(`(?i)(^|/)gemini-`)
+
 // withJSONResponseTool returns opts rewritten to request structured output
 // through a synthetic JSON response tool when the model cannot combine a JSON
 // response format with function tools, plus the tool's name ("" when no
@@ -221,7 +227,7 @@ func (m *LanguageModel) DoStream(ctx context.Context, opts *provider.GenerateOpt
 // only with automatic tool choice, so a forced tool choice (required / a
 // specific tool) also needs the response tool (TS #21989).
 func (m *LanguageModel) withJSONResponseTool(opts *provider.GenerateOptions) (*provider.GenerateOptions, string) {
-	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) || !geminiModelPattern.MatchString(m.modelID) {
+	if !providerutils.NeedsJSONResponseTool(opts.ResponseFormat, opts.Tools) || !jsonResponseToolModelPattern.MatchString(m.modelID) {
 		return opts, ""
 	}
 	forced := opts.ToolChoice.Type == types.ToolChoiceRequired || opts.ToolChoice.Type == types.ToolChoiceTool
