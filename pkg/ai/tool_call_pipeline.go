@@ -506,32 +506,44 @@ func invokeToolInputCallbacks(ctx context.Context, calls []types.ToolCall, tools
 			continue
 		}
 		tool := findToolForCall(call, tools)
-		if tool == nil || (tool.OnInputStart == nil && tool.OnInputAvailable == nil) {
+		if tool == nil {
 			continue
 		}
-		toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
-		if err != nil {
+		if err := invokeToolInputCallbacksFor(ctx, call, tool, messages, toolsContext); err != nil {
 			return err
 		}
-		if tool.OnInputStart != nil {
-			if err := tool.OnInputStart(ctx, types.OnInputStartOptions{
-				ToolCallID: call.ID,
-				Messages:   messages,
-				Context:    toolContext,
-			}); err != nil {
-				return err
-			}
+	}
+	return nil
+}
+
+// invokeToolInputCallbacksFor runs one valid call's OnInputStart and then
+// OnInputAvailable, validating the tool context first when either is set.
+func invokeToolInputCallbacksFor(ctx context.Context, call types.ToolCall, tool *types.Tool, messages []types.Message, toolsContext map[string]interface{}) error {
+	if tool.OnInputStart == nil && tool.OnInputAvailable == nil {
+		return nil
+	}
+	toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
+	if err != nil {
+		return err
+	}
+	if tool.OnInputStart != nil {
+		if err := tool.OnInputStart(ctx, types.OnInputStartOptions{
+			ToolCallID: call.ID,
+			Messages:   messages,
+			Context:    toolContext,
+		}); err != nil {
+			return err
 		}
-		if tool.OnInputAvailable != nil {
-			if err := tool.OnInputAvailable(ctx, types.OnInputAvailableOptions{
-				Input:      call.Arguments,
-				Value:      call.Arguments, //nolint:staticcheck // deprecated alias of Input, kept for callbacks still reading it
-				ToolCallID: call.ID,
-				Messages:   messages,
-				Context:    toolContext,
-			}); err != nil {
-				return err
-			}
+	}
+	if tool.OnInputAvailable != nil {
+		if err := tool.OnInputAvailable(ctx, types.OnInputAvailableOptions{
+			Input:      call.Arguments,
+			Value:      call.Arguments, //nolint:staticcheck // deprecated alias of Input, kept for callbacks still reading it
+			ToolCallID: call.ID,
+			Messages:   messages,
+			Context:    toolContext,
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -1580,12 +1580,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.StaticToolCalls = filterStaticToolCalls(result.ToolCalls)
 		result.DynamicToolCalls = filterDynamicToolCalls(result.ToolCalls)
 
-		// Notify the tools that the tool calls are available (TS order:
-		// OnInputStart then OnInputAvailable, valid calls only).
-		if err := invokeToolInputCallbacks(stepCtx, genResult.ToolCalls, stepTools, stepMessages, toolsContext); err != nil {
-			return nil, err
-		}
-
 		workflowBlocked := workflowBlockedToolStep(opts.Internal, genResult.FinishReason, stepResult.Content)
 		// With no tools at all the model's calls are all invalid (NoSuchTool)
 		// or provider-executed dynamic calls; TS still answers every invalid
@@ -1594,6 +1588,18 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if len(stepTools) == 0 {
 			toolsToExecute = invalidClientToolCalls(genResult.ToolCalls)
 		}
+		resolveApprovals := len(toolsToExecute) > 0 && !workflowBlocked && len(stepTools) > 0
+
+		// Notify the tools that the tool calls are available and resolve each
+		// call's approval in the same pass, before any tool runs (TS
+		// generateText: per valid call with a known tool, OnInputStart, then
+		// OnInputAvailable, then resolveToolApproval; an error fails the call).
+		approvalIDs := toolCallEventCallbacks{generateID: generateID}
+		preApprovals, err := notifyToolCallsAndResolveApprovals(stepCtx, genResult.ToolCalls, stepExecutionTools, stepMessages, runtimeContext, toolsContext, opts.ToolApproval, resolveApprovals, approvalIDs.newApprovalID)
+		if err != nil {
+			return nil, err
+		}
+
 		if len(toolsToExecute) > 0 && !workflowBlocked {
 			// Execute tools with context flow (v6.0) and structured callbacks (v6.1)
 			toolCallbacks := toolCallEventCallbacks{
@@ -1617,12 +1623,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				toolExecutionMs:     map[string]int64{},
 				generateID:          generateID,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
-			}
-			// TS resolves every call's approval before executing any tool; a
-			// resolution error fails the call.
-			preApprovals, err := preResolveToolApprovals(stepCtx, toolsToExecute, stepExecutionTools, stepMessages, runtimeContext, toolsContext, opts.ToolApproval, toolCallbacks.newApprovalID)
-			if err != nil {
-				return nil, err
 			}
 			toolCallbacks.preApprovals = preApprovals
 			// Tools run inside the step context: the TS step timeout aborts the
@@ -2236,17 +2236,29 @@ func unwrapToolCallFailure(err error) error {
 	return nil
 }
 
-// preResolveToolApprovals resolves the approval of every valid call with a
-// known tool before any tool runs, in call order, as TS generateText does
-// in its tool-call notification loop: a resolution error fails the call
-// before any tool executes. Approval ids are generated in call order.
-func preResolveToolApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}, newID func() string) (map[string]preResolvedApproval, error) {
+// notifyToolCallsAndResolveApprovals runs, for every valid call with a known
+// tool and in call order, the tool's OnInputStart and OnInputAvailable and
+// then (when resolveApprovals is set) the call's approval, as TS
+// generateText does in its tool-call notification loop: an error in either
+// fails the call before any tool executes. Approval ids are generated in call
+// order, only for calls whose approval applies.
+func notifyToolCallsAndResolveApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}, resolveApprovals bool, newID func() string) (map[string]preResolvedApproval, error) {
 	if toolsCtx == nil {
 		toolsCtx = map[string]interface{}{}
 	}
 	out := map[string]preResolvedApproval{}
 	for _, call := range calls {
-		if call.Invalid || findToolForCall(call, tools) == nil {
+		if call.Invalid {
+			continue
+		}
+		tool := findToolForCall(call, tools)
+		if tool == nil {
+			continue
+		}
+		if err := invokeToolInputCallbacksFor(ctx, call, tool, messages, toolsCtx); err != nil {
+			return nil, err
+		}
+		if !resolveApprovals {
 			continue
 		}
 		approval, err := resolveToolApproval(ctx, call, tools, messages, runtimeCtx, toolsCtx, toolApproval)
