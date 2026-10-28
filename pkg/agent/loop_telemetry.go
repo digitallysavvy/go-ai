@@ -464,6 +464,7 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		Usage:            telemetryUsage(step.Usage),
 		Text:             step.Text,
 		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
+		ReasoningParts:   step.Reasoning,
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		Files:            step.Files,

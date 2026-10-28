@@ -405,6 +405,11 @@ type TelemetryStepFinishEvent struct {
 	// value. Integrations should check Settings.ShouldRecordOutputs() before recording.
 	Reasoning string
 
+	// ReasoningParts are the step's reasoning parts. The legacy integration
+	// records ai.response.reasoning whenever there is one, even when every
+	// part's text is empty (TS `reasoning.length > 0`).
+	ReasoningParts []types.ReasoningContent
+
 	// ToolCalls made by the model in this step.
 	// Integrations should check Settings.ShouldRecordOutputs() before recording.
 	ToolCalls []types.ToolCall
@@ -2346,7 +2351,8 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 		if recordOutputs {
 			stepSpan.SetAttributes(attribute.String("ai.response.text", e.Text))
 		}
-		if recordOutputs && e.Reasoning != "" {
+		// TS: event.reasoning.length > 0 ? joined text : undefined.
+		if recordOutputs && (e.Reasoning != "" || len(e.ReasoningParts) > 0) {
 			stepSpan.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
 		}
 		if recordOutputs {
@@ -2583,7 +2589,8 @@ func (i LegacyOpenTelemetry) legacyOnGenerateEnd(span trace.Span, e TelemetryFin
 	if recordOutputs {
 		// Empty text is recorded too (TS `event.text ?? undefined`).
 		span.SetAttributes(attribute.String("ai.response.text", e.Text))
-		if e.Reasoning != "" {
+		// TS: finalStep.reasoning.length > 0 ? joined text : undefined.
+		if e.Reasoning != "" || len(e.ReasoningParts) > 0 {
 			span.SetAttributes(attribute.String("ai.response.reasoning", e.Reasoning))
 		}
 		if s, ok := legacyToolCallsJSON(e.ToolCalls); ok {

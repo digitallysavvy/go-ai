@@ -82,7 +82,7 @@ func TestR49ProviderToolErrorValueStatusHasNoMessage(t *testing.T) {
 }
 
 // TS onObjectStepEnd records ai.response.object for an empty object text too:
-// JSON.parse('') throws, so the raw "" is recorded.
+// JSON.parse(”) throws, so the raw "" is recorded.
 func TestR49LegacyObjectStepRecordsEmptyObjectText(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
@@ -97,5 +97,29 @@ func TestR49LegacyObjectStepRecordsEmptyObjectText(t *testing.T) {
 	}
 	if v, ok := attrValue(span, "ai.response.object"); !ok || v != "" {
 		t.Fatalf("ai.response.object = %v (ok=%v), want \"\"", v, ok)
+	}
+}
+
+// TS legacy ai.response.reasoning is recorded whenever the step (or final
+// step) has a reasoning part, also when its text is empty (redacted
+// reasoning).
+func TestR49LegacyReasoningRecordedForEmptyParts(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	parts := []types.ReasoningContent{{Text: ""}}
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", CallID: "g"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{OperationType: "ai.generateText", CallID: "g"})
+	integration.OnStepEnd(ctx, TelemetryStepEndEvent{OperationType: "ai.generateText", CallID: "g", FinishReason: "stop", ReasoningParts: parts})
+	integration.OnEnd(ctx, TelemetryFinishEvent{OperationType: "ai.generateText", CallID: "g", FinishReason: "stop", ReasoningParts: parts})
+	for _, name := range []string{"ai.generateText.doGenerate", "ai.generateText"} {
+		span := findSpan(rec, name)
+		if span == nil {
+			t.Fatalf("missing %s span", name)
+		}
+		if v, ok := attrValue(span, "ai.response.reasoning"); !ok || v != "" {
+			t.Errorf("%s ai.response.reasoning = %v (ok=%v), want \"\"", name, v, ok)
+		}
 	}
 }

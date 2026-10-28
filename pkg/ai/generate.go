@@ -1871,6 +1871,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				Usage:            stepTelUsage,
 				Text:             genResult.Text,
 				Reasoning:        telemetry.JoinReasoning(stepTelReasoning),
+				ReasoningParts:   stepTelReasoning,
 				ToolCalls:        genResult.ToolCalls,
 				ToolResults:      stepResult.ToolResults,
 				Files:            stepTelFiles,
