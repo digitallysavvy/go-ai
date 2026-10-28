@@ -3780,10 +3780,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			s.markOutputStarted()
 
 			var meta json.RawMessage
+			// TS reports the id from response.created only (null when it never arrived).
 			responseID := s.responseID
-			if responseID == "" {
-				responseID = e.Response.ID
-			}
 			{
 				// TS: { responseId, logprobs?, serviceTier?, reasoningContext? }.
 				fields := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
@@ -3839,10 +3837,8 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				rawFinishReason = e.Response.IncompleteDetails.Reason
 			}
 
+			// TS reports the id from response.created only (null when it never arrived).
 			responseID := s.responseID
-			if responseID == "" {
-				responseID = e.Response.ID
-			}
 			metaMap := map[string]interface{}{"responseId": nonEmptyOrNil(responseID)}
 			if len(s.logprobs) > 0 {
 				metaMap["logprobs"] = s.logprobs

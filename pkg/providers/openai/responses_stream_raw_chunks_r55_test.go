@@ -130,3 +130,20 @@ data: {"type":"response.failed","sequence_number":1,"response":{"id":"r1","incom
 		t.Fatalf("chunks =\n%v\nwant\n%v", got, want)
 	}
 }
+
+// TS reports providerMetadata.openai.responseId from response.created only; a
+// stream that never sends it reports null, whatever id the terminal event holds.
+func TestResponsesStreamFinishResponseIDNullWithoutCreated(t *testing.T) {
+	sse := `data: {"type":"response.completed","response":{"id":"r_late","usage":{"input_tokens":1,"output_tokens":1}}}
+
+`
+	s := newResponsesStream(io.NopCloser(strings.NewReader(sse)), false)
+	defer s.Close() //nolint:errcheck
+	c, err := s.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Type != provider.ChunkTypeFinish || !strings.Contains(string(c.ProviderMetadata), `"responseId":null`) {
+		t.Fatalf("finish = %s, want responseId null", c.ProviderMetadata)
+	}
+}
