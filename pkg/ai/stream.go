@@ -1780,6 +1780,18 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		forwardThroughTransformChain(startIdx+1, out)
 	}
 
+	// failNextStep ends the run when the next step cannot be prepared (its
+	// PrepareStep instructions or settings, or its prompt conversion). TS
+	// streamText catches the failed streamStep and enqueues an `error` part,
+	// which reaches onError (called once, after the loop) and the full stream.
+	failNextStep := func(err error) {
+		r.err = err
+		if onChunk != nil && !isAbortErr(ctx, err) {
+			wrapped := wrapGatewayError(err)
+			onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()})
+		}
+	}
+
 	// Push ChunkTypeStart exactly once, before the first step's provider
 	// stream is consumed, mirroring TS's `controller.enqueue({type:'start'})`
 	// at the top of the outer stream (stream-text.ts:1855), which runs
@@ -3324,7 +3336,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if len(prepared.InstructionMessages) > 0 {
 				if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
 					nextStepCancel()
-					r.err = err
+					failNextStep(err)
 					break
 				}
 				nextInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
@@ -3430,7 +3442,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// step's tools are prepared, before the model call.
 		if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
 			nextStepCancel()
-			r.err = err
+			failNextStep(err)
 			break
 		}
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
@@ -3439,12 +3451,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}, allowSystemMessages(opts.AllowSystemMessages, opts.AllowSystemInMessages), effectiveDownload(opts.ExperimentalDownload), supportedURLChecker(nextModel))
 		if normErr != nil {
 			nextStepCancel()
-			r.err = normErr
+			failNextStep(normErr)
 			break
 		}
 		if toolResultsErr := validateStepToolResults(nextPrompt.Messages, opts.Tools); toolResultsErr != nil {
 			nextStepCancel()
-			r.err = toolResultsErr
+			failNextStep(toolResultsErr)
 			break
 		}
 		nextPrompt = prependInstructionMessages(nextPrompt, nextInstructionMessages)

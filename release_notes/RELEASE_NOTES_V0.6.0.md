@@ -515,8 +515,10 @@ These match TS and are unlikely to need code changes, but can change output.
   invalid prompt, a missing tool result, a failed approval resume, invalid
   `PrepareStep` instructions or settings) now calls `OnError` and its full
   stream carries `start` and an `error` chunk, as TS streamText reports these
-  through the same error part as a model call that fails to open. `Err()` is
-  unchanged.
+  through the same error part as a model call that fails to open. A later
+  step that cannot be prepared (its prompt conversion, `PrepareStep`
+  instructions or settings) now ends the full stream with an `error` chunk
+  too. `Err()` is unchanged.
 - **Telemetry: a canceled or timed-out `GenerateText` reports `OnError`, not
   `OnAbort`**, as TS `generateText` has no abort telemetry: the root and step
   spans carry the error status. The legacy `ToolLoopAgent` loop does the
