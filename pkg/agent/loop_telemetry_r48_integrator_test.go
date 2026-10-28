@@ -56,4 +56,3 @@ func TestLoopRootEndsOnErrorAndAbortAfterTelemetryOverride(t *testing.T) {
 		})
 	}
 }
-
