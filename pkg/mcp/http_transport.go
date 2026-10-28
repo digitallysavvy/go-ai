@@ -647,6 +647,10 @@ func (t *HTTPTransport) SendWithHeaders(ctx context.Context, message *MCPMessage
 }
 
 func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHeaders map[string]string) error {
+	// TS send() starts with options.signal.throwIfAborted().
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.mu.Lock()
 	connected := t.connected
 	t.mu.Unlock()
