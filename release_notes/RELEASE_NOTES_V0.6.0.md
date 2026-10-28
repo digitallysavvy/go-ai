@@ -587,6 +587,8 @@ in v0.5.3.
   previous content, and a function call without a name is dropped.
 - Google and Vertex requests always carry `generationConfig` (`{}` when
   nothing is set), as TS does.
+- Google and Vertex `Generate` keeps tool calls and code execution parts
+  that the API flags `thought: true`; they were dropped.
 
 ### Workflow, MCP, code mode and harness
 
@@ -615,6 +617,11 @@ in v0.5.3.
   still tearing down stays connected; before, the `Close` could mark it
   disconnected after it returned while its inbound SSE GET kept running.
   (v0.5.3)
+- MCP `HTTPTransport` delivers no message and reports no error from an SSE
+  stream after `Close` (including a `Close` from `OnError`) or a caller
+  abort. `Close` no longer cancels, or waits for, an OAuth authorization
+  that the inbound SSE GET started after a 401; its failure is reported with
+  its own error, as in TS.
 - `WorkflowAgent.Generate`/`Stream` keep the positional prompt when the
   options struct has an empty `Prompt`. (v0.5.3)
 - Google and Vertex Interactions background streams stop after 3 empty
@@ -670,6 +677,9 @@ Notable ones:
   the object; TS reports no object and leaves `object` unsettled.
 - Google batch `Cursor` and `WebhookURL`, and the response `nextPageToken`,
   treat `""` as absent; Perplexity usage counts such as `12.5` are truncated.
+- After a read error on its stream, MCP `SSETransport` is disconnected and
+  `Send` fails with "Not connected"; TS stays connected, but replies over the
+  dead stream never arrive.
 
 ---
 

@@ -120,6 +120,12 @@ These details differ:
   process on its `close` event and throws "StdioClientTransport not
   connected". Go learns of the exit only through `Close`, which waits on
   the process.
+- After a read error on its stream (once the endpoint event has arrived),
+  `SSETransport` marks itself disconnected: `Send` fails with "Not
+  connected" and `Receive` returns the stream error. TypeScript only reports
+  the error through `onerror` and stays connected, so a later send still
+  POSTs, but its reply can never arrive over the dead stream. Go fails fast
+  instead, as in v0.5.
 - `HTTPTransport.Close` waits for its background goroutines (inbound SSE,
   reconnect timers, readers of event-stream POST responses), except one
   that is inside an `OnError`, `OnSessionIDChange` or `OnSessionExpired`
