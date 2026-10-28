@@ -372,42 +372,41 @@ func TestParseContextManagement_RootLevel(t *testing.T) {
 	assert.Equal(t, 1500, edit.ClearedInputTokens)
 }
 
-// TestParseContextManagement_UsageLevel tests parsing context management from usage block (legacy)
-func TestParseContextManagement_UsageLevel(t *testing.T) {
-	responseJSON := `{
-		"id": "msg_123",
-		"type": "message",
-		"role": "assistant",
-		"content": [{"type": "text", "text": "Hello"}],
-		"model": "claude-sonnet-4-5",
-		"stop_reason": "end_turn",
-		"usage": {
-			"input_tokens": 100,
-			"output_tokens": 50,
-			"context_management": {
-				"applied_edits": [{
-					"type": "clear_thinking_20251015",
-					"cleared_thinking_turns": 3,
-					"cleared_input_tokens": 2000
-				}]
-			}
-		}
-	}`
+// TestParseContextManagement_UsageLevelIgnored: TS reads only the root-level
+// context_management (its schema has no usage.context_management, so zod strips
+// it). A value under usage is not reported, in generate or stream.
+func TestParseContextManagement_UsageLevelIgnored(t *testing.T) {
+	usageOnly := `"usage":{"input_tokens":100,"output_tokens":50,"context_management":{"applied_edits":[{"type":"clear_thinking_20251015","cleared_thinking_turns":3,"cleared_input_tokens":2000}]}}`
 
-	var response anthropicResponse
-	err := json.Unmarshal([]byte(responseJSON), &response)
-	require.NoError(t, err)
-	require.NotNil(t, response.Usage.ContextManagement)
-	require.Len(t, response.Usage.ContextManagement.AppliedEdits, 1)
+	t.Run("generate", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"Hello"}],"model":"claude-sonnet-4-5","stop_reason":"end_turn",` + usageOnly + `}`))
+		}))
+		defer server.Close()
+		model, err := New(Config{APIKey: "k", BaseURL: server.URL}).LanguageModel("claude-sonnet-4-5")
+		require.NoError(t, err)
+		result, err := model.DoGenerate(context.Background(), &provider.GenerateOptions{Prompt: types.Prompt{Text: "x"}})
+		require.NoError(t, err)
+		assert.Nil(t, result.ContextManagement)
+		meta := result.ProviderMetadata["anthropic"].(map[string]interface{})
+		assert.Nil(t, meta["contextManagement"])
+	})
 
-	edit, ok := response.Usage.ContextManagement.AppliedEdits[0].(*AppliedClearThinkingEdit)
-	require.True(t, ok)
-	assert.Equal(t, 3, edit.ClearedThinkingTurns)
-	assert.Equal(t, 2000, edit.ClearedInputTokens)
+	t.Run("stream", func(t *testing.T) {
+		sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}," + usageOnly + "}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		finishes := collectFinishChunks(t, sse)
+		require.Len(t, finishes, 1)
+		assert.Nil(t, finishes[0].ContextManagement)
+		assert.Equal(t, "null", string(finishMetaField(t, finishes[0], "contextManagement")))
+	})
 }
 
-// TestParseContextManagement_RootLevelTakesPrecedence tests that root level is preferred
-func TestParseContextManagement_RootLevelTakesPrecedence(t *testing.T) {
+// TestParseContextManagement_RootLevelOnly: the root-level value is the one
+// decoded; the response struct has no usage-level slot.
+func TestParseContextManagement_RootLevelOnly(t *testing.T) {
 	responseJSON := `{
 		"id": "msg_123",
 		"type": "message",
@@ -438,24 +437,12 @@ func TestParseContextManagement_RootLevelTakesPrecedence(t *testing.T) {
 	var response anthropicResponse
 	err := json.Unmarshal([]byte(responseJSON), &response)
 	require.NoError(t, err)
-
-	// Both should be parsed
 	require.NotNil(t, response.ContextManagement)
-	require.NotNil(t, response.Usage.ContextManagement)
-
-	// Root level should have correct values
 	require.Len(t, response.ContextManagement.AppliedEdits, 1)
 	rootEdit, ok := response.ContextManagement.AppliedEdits[0].(*AppliedClearToolUsesEdit)
 	require.True(t, ok)
 	assert.Equal(t, 5, rootEdit.ClearedToolUses)
 	assert.Equal(t, 1500, rootEdit.ClearedInputTokens)
-
-	// Usage level should also have its values
-	require.Len(t, response.Usage.ContextManagement.AppliedEdits, 1)
-	usageEdit, ok := response.Usage.ContextManagement.AppliedEdits[0].(*AppliedClearToolUsesEdit)
-	require.True(t, ok)
-	assert.Equal(t, 1, usageEdit.ClearedToolUses)
-	assert.Equal(t, 100, usageEdit.ClearedInputTokens)
 }
 
 // TestGetBetaHeaders tests the beta header generation logic
