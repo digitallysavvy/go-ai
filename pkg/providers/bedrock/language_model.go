@@ -1029,9 +1029,13 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 
 	metadataPayload := map[string]interface{}{}
 	if len(resp.Trace) > 0 && string(resp.Trace) != "null" {
+		// TS: `response.trace && typeof response.trace === 'object'`.
 		var trace interface{}
 		if json.Unmarshal(resp.Trace, &trace) == nil {
-			metadataPayload["trace"] = trace
+			switch trace.(type) {
+			case map[string]interface{}, []interface{}:
+				metadataPayload["trace"] = trace
+			}
 		}
 	}
 	if len(resp.PerformanceConfig) > 0 {
@@ -1042,10 +1046,11 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 	}
 	if usageMap != nil {
 		usageMeta := map[string]interface{}{}
-		if v, ok := usageMap["cacheWriteInputTokens"]; ok {
+		// TS spreads each field only when it is `!= null`.
+		if v := usageMap["cacheWriteInputTokens"]; v != nil {
 			usageMeta["cacheWriteInputTokens"] = v
 		}
-		if v, ok := usageMap["cacheDetails"]; ok {
+		if v := usageMap["cacheDetails"]; v != nil {
 			usageMeta["cacheDetails"] = v
 		}
 		if len(usageMeta) > 0 {

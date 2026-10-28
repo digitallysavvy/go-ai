@@ -113,8 +113,14 @@ func TestWorkflowHookSystemReplacesInstructionMessages(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				model := &wfMockModel{}
 				hook := func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
-					if len(o.InstructionMessages) != 2 || len(o.InitialInstructionMessages) != 2 {
-						t.Errorf("hook saw %d / %d instruction messages, want 2", len(o.InstructionMessages), len(o.InitialInstructionMessages))
+					// A later step starts from the replaced instructions (TS keeps
+					// conversationPrompt[0]); the initial ones stay.
+					wantCurrent := 2
+					if o.StepNumber > 0 {
+						wantCurrent = 0
+					}
+					if len(o.InstructionMessages) != wantCurrent || len(o.InitialInstructionMessages) != 2 {
+						t.Errorf("step %d hook saw %d / %d instruction messages, want %d / 2", o.StepNumber, len(o.InstructionMessages), len(o.InitialInstructionMessages), wantCurrent)
 					}
 					o.System = "replaced"
 					return o, nil

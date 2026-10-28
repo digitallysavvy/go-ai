@@ -198,6 +198,16 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **`WorkflowAgent` `PrepareStep` overrides carry over to later steps**, as
+  TS's model-call iterator (`currentModel`, `conversationPrompt`,
+  `currentGenerationSettings`): the next step's hook starts from the previous
+  step's model, instructions, tool choice, active tools, runtime and tools
+  contexts and generation settings. v0.5.x reset them each step in
+  `Generate` and kept only the model and instructions in `Stream`. The
+  `OnEnd` messages follow a `PrepareStep` messages or instructions override.
+  **Migration:** a hook that overrides a value for one step must set it back
+  on later steps.
+
 - **`MaxTokens` below 1 is rejected** with `*errors.InvalidArgumentError`
   ("maxOutputTokens must be >= 1") by `GenerateText`, `StreamText`,
   `GenerateObject`, `StreamObject`, batch text requests, `PrepareStep`

@@ -469,7 +469,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				textParts = append(textParts, text)
 				textBlocks = append(textBlocks, types.TextContent{
 					Text:             text,
-					ProviderMetadata: anthropicCompactionMetadata(content.Signature),
+					ProviderMetadata: anthropicCompactionMetadata(content.Signature, content.HasSignature || content.Signature != ""),
 				})
 				byBlock[blockIdx] = append(byBlock[blockIdx], textBlocks[len(textBlocks)-1])
 			}
@@ -913,10 +913,11 @@ func anthropicCompactionText(raw json.RawMessage) (string, bool) {
 }
 
 // anthropicCompactionMetadata builds the providerMetadata.anthropic payload
-// for a compaction text block (TS: `{type: 'compaction', ...(signature && {signature})}`).
-func anthropicCompactionMetadata(signature string) json.RawMessage {
+// for a compaction text block (TS: `{type: 'compaction', ...(part.signature !=
+// null && {signature})}`, so an empty signature is kept).
+func anthropicCompactionMetadata(signature string, hasSignature bool) json.RawMessage {
 	meta := map[string]interface{}{"type": "compaction"}
-	if signature != "" {
+	if hasSignature {
 		meta["signature"] = signature
 	}
 	raw, err := json.Marshal(map[string]interface{}{"anthropic": meta})
@@ -1426,7 +1427,10 @@ type anthropicContent struct {
 	RawInput  json.RawMessage `json:"-"`
 	Thinking  string          `json:"thinking,omitempty"`  // For "thinking" type
 	Signature string          `json:"signature,omitempty"` // For "thinking" type
-	Data      string          `json:"data,omitempty"`      // For "redacted_thinking" type
+	// HasSignature reports a non-null wire signature, empty included (TS
+	// `part.signature != null`); set by UnmarshalJSON.
+	HasSignature bool   `json:"-"`
+	Data         string `json:"data,omitempty"` // For "redacted_thinking" type
 	// Citations holds the raw citation objects attached to a "text" content
 	// block (page_location, char_location, content_block_location,
 	// search_result_location, web_search_result_location, ...). Kept as raw
@@ -1560,6 +1564,11 @@ type anthropicStream struct {
 	// discarded (never surfaced as a chunk, and no finish chunk is
 	// synthesized) until the underlying stream ends.
 	spliced bool
+
+	// lastBlockType is TS's stream-wide `blockType`: the type of the most
+	// recent content_block_start (fallback excluded), cleared by every
+	// content_block_stop. signature_delta only counts while it is "thinking".
+	lastBlockType string
 
 	// responseHeaders / responseTimestamp are repeated on the response-metadata
 	// chunk emitted at message_start (see the message_start case).
@@ -1824,8 +1833,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					ToolUseID string          `json:"tool_use_id"`
 					IsError   *bool           `json:"is_error"`
 					Content   json.RawMessage `json:"content"`
-					// compaction fields
-					Signature string `json:"signature"`
+					// compaction fields (nil when absent or null: TS != null)
+					Signature *string `json:"signature"`
 					// redacted_thinking field
 					Data string `json:"data"`
 					// fallback fields
@@ -1836,6 +1845,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			if err := json.Unmarshal([]byte(event.Data), &start); err != nil {
 				// Malformed start event: skip gracefully
 				continue
+			}
+			if start.ContentBlock.Type != "fallback" {
+				s.lastBlockType = start.ContentBlock.Type
 			}
 			switch start.ContentBlock.Type {
 			case "tool_use":
@@ -2091,8 +2103,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// (TS content_block_start "compaction" case).
 				s.contentBlocks[start.Index] = &streamContentBlock{blockType: "compaction"}
 				meta := map[string]interface{}{"type": "compaction"}
-				if start.ContentBlock.Signature != "" {
-					meta["signature"] = start.ContentBlock.Signature
+				if start.ContentBlock.Signature != nil {
+					meta["signature"] = *start.ContentBlock.Signature
 				}
 				metaJSON, _ := json.Marshal(map[string]interface{}{"anthropic": meta})
 				textStart := &provider.StreamChunk{
@@ -2103,7 +2115,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// On-demand compaction blocks may arrive fully formed in
 				// content_block_start — without any following compaction_delta
 				// events — when both signature and content are present.
-				if start.ContentBlock.Signature != "" {
+				if start.ContentBlock.Signature != nil {
 					var text string
 					if err := json.Unmarshal(start.ContentBlock.Content, &text); err == nil && text != "" {
 						s.pending = append(s.pending, &provider.StreamChunk{
@@ -2415,14 +2427,20 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				if block == nil {
 					continue
 				}
-				// When this delta belongs to the synthetic json tool block, emit it
-				// directly as a text chunk rather than accumulating for a tool call.
-				if block.blockType == "json-response-tool" {
+				// TS: once the json response tool has started, input deltas only
+				// go to text-like blocks (as text); otherwise only to tool calls.
+				if s.isJsonResponseFromTool {
+					if !isTextLikeBlock(block.blockType) {
+						continue
+					}
 					return &provider.StreamChunk{
 						Type: provider.ChunkTypeText,
 						ID:   strconv.Itoa(delta.Index),
 						Text: delta.Delta.PartialJSON,
 					}, nil
+				}
+				if block.blockType != "tool-call" {
+					continue
 				}
 				partialJSON := delta.Delta.PartialJSON
 				// Toolset member input is emitted once the block is complete.
@@ -2467,7 +2485,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// reasoning-delta with delta: '' (previously dropped entirely,
 				// causing unsigned thinking blocks to be replayed and rejected by
 				// Anthropic).
-				if block := s.contentBlocks[delta.Index]; block != nil && block.blockType == "reasoning" {
+				if s.lastBlockType == "thinking" {
 					metadata, _ := json.Marshal(map[string]interface{}{
 						"anthropic": map[string]interface{}{"signature": delta.Delta.Signature},
 					})
@@ -2529,6 +2547,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			}
 			block := s.contentBlocks[stop.Index]
 			delete(s.contentBlocks, stop.Index)
+			s.lastBlockType = "" // TS resets blockType on every content_block_stop
 
 			if block != nil && block.blockType == "tool-call" {
 				// Parse the accumulated JSON into ToolCall.Arguments.

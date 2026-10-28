@@ -59,6 +59,10 @@ type SSETransport struct {
 	refreshMu  sync.Mutex
 	refreshCh  chan struct{}
 	refreshErr error
+	// refreshCanceled is set when the shared refresh failed because the
+	// caller that ran it canceled its ctx; a waiter whose own ctx is live
+	// runs the refresh again (as transportAuth.authorizeOnce does).
+	refreshCanceled bool
 }
 
 // SSETransportConfig contains configuration for legacy SSE transport.
@@ -720,15 +724,23 @@ func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
 		return fmt.Errorf("OAuth not configured")
 	}
 
-	t.refreshMu.Lock()
-	if t.refreshCh != nil {
+	for {
+		t.refreshMu.Lock()
+		if t.refreshCh == nil {
+			break // still holding refreshMu
+		}
 		ch := t.refreshCh
 		t.refreshMu.Unlock()
 		select {
 		case <-ch:
 			t.refreshMu.Lock()
-			err := t.refreshErr
+			err, canceled := t.refreshErr, t.refreshCanceled
 			t.refreshMu.Unlock()
+			// A refresh that ended because the caller that ran it gave up
+			// is not this caller's result: run it again.
+			if canceled && ctx.Err() == nil {
+				continue
+			}
 			return err
 		case <-ctx.Done():
 			return ctx.Err()
@@ -743,6 +755,7 @@ func (t *SSETransport) refreshOAuthToken(ctx context.Context) error {
 	defer func() {
 		t.refreshMu.Lock()
 		t.refreshErr = err
+		t.refreshCanceled = err != nil && ctx.Err() != nil
 		close(t.refreshCh)
 		t.refreshCh = nil
 		t.refreshMu.Unlock()

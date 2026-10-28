@@ -761,6 +761,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			ModelProvider:       callConfig.Model.Provider(), //nolint:staticcheck
 			ModelID:             callConfig.Model.ModelID(),
 			Instructions:        callConfig.System,
+			InstructionMessages: callConfig.InstructionMessages,
 			System:              callConfig.System, //nolint:staticcheck
 			Messages:            callConfig.Messages,
 			Tools:               callConfig.Tools,

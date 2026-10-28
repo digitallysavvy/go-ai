@@ -88,6 +88,10 @@ agent's, as in TypeScript). `ToolSet` entries (and `ResolveSerializableTools` re
 
 The agent's `PrepareCall` runs once per call, before the first step and before any `PrepareStep`; what it
 changes (messages, instructions, settings) applies to every step. `PrepareStep` runs before every step.
+What `PrepareStep` returns carries over to the following steps, as in TypeScript: the next step's hook
+starts from the previous step's model, instructions, messages, tool choice, active tools, runtime and
+tools contexts and generation settings, so an override stays in effect until a later step changes it
+(the sandbox is the only per-step value).
 
 Both option structs also accept the generation settings `Temperature`, `MaxTokens`, `TopP`, `TopK`,
 `FrequencyPenalty`, `PresencePenalty`, `StopSequences`, `Seed`, `Headers`, `Reasoning` and `ProviderOptions`.
@@ -240,7 +244,9 @@ start. `workflow.NormalizeUIMessageStreamParts(ctx, chunks)` repairs text and re
 
 The `OnEnd` event of a `WorkflowAgent` also carries `Messages`, the final conversation: the
 instructions as a system message, the input messages after `PrepareCall` and after resolved tool
-approvals were replaced by their tool results, then every step's response messages.
+approvals were replaced by their tool results, then every step's response messages. When a
+`PrepareStep` changed the instructions or messages, the conversation starts from the last step's
+prompt instead, followed by that step's response messages.
 To continue the conversation from it, drop the leading system message (or set
 `AllowSystemInMessages`), since `Messages` rejects system messages by default.
 
