@@ -18,6 +18,8 @@ func TestSSEParserNextAndErr(t *testing.T) {
 		"",
 		"event: done",
 		"data: [DONE]",
+		"",
+		"",
 	}, "\n")
 
 	p := NewSSEParser(strings.NewReader(input))
