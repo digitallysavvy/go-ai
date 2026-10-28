@@ -662,8 +662,15 @@ consumeLoop:
 					r.usage = *chunk.Usage
 				}
 				r.finishReason = chunk.FinishReason
-				if chunk.RawFinishReason != "" {
+				// A harness turn's terminal finish replaces the raw finish
+				// reason and provider metadata, also with none (TS
+				// HarnessStreamTextResult.finish(input) assigns
+				// input.finishReason.raw and input.providerMetadata).
+				if chunk.RawFinishReason != "" || opts.TerminalFinishClosesTurn {
 					r.rawFinishReason = chunk.RawFinishReason
+				}
+				if opts.TerminalFinishClosesTurn {
+					r.providerMetadata = nil
 				}
 				if len(chunk.ProviderMetadata) > 0 {
 					var md map[string]interface{}

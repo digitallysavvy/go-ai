@@ -326,6 +326,12 @@ These match TS and are unlikely to need code changes, but can change output.
   without one, and `EnrichSpan` values are sanitized by Go kind** (empty
   arrays and byte slices dropped, pointers and named types read as their
   value).
+- **A harness turn's result takes the raw finish reason and provider
+  metadata of the adapter's terminal `finish`, also when it has none**, as TS
+  `finish(input)` does, instead of keeping the last step's. A turn that ends
+  without an adapter `finish` (host-input pause, stop condition, suspension)
+  has a finish part carrying the last step's provider metadata and the summed
+  step usage, like TS `finish()`.
 - **A harness turn suspended before the adapter's `finish` still ends with a
   finish part** (finish reason `other`, the open step discarded), as TS
   `result.finish(undefined)`. `ToUIMessageStream` maps a call-level finish

@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -837,16 +838,27 @@ func (d *turnDriver) run() {
 
 // unreportedFinishChunk is the finish part of TS `result.finish(undefined)`
 // for a turn whose adapter sent no terminal `finish`: the last completed
-// step's finish reason ('other' before any step). Usage is left off so the
-// summed step usage stands.
+// step's finish reason and provider metadata ('other' and none before any
+// step) and the summed step usage (TS finish part `totalUsage`).
 func (d *turnDriver) unreportedFinishChunk() *provider.StreamChunk {
 	reason := types.FinishReason("other")
 	raw := ""
-	if n := len(d.completedSteps); n > 0 {
-		reason = d.completedSteps[n-1].FinishReason
-		raw = d.completedSteps[n-1].RawFinishReason
+	var metadata json.RawMessage
+	var total types.Usage
+	for _, step := range d.completedSteps {
+		total = total.Add(step.Usage)
 	}
-	return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, RawFinishReason: raw}
+	if n := len(d.completedSteps); n > 0 {
+		last := d.completedSteps[n-1]
+		reason = last.FinishReason
+		raw = last.RawFinishReason
+		if len(last.ProviderMetadata) > 0 {
+			if b, err := jsstr.Marshal(last.ProviderMetadata); err == nil {
+				metadata = b
+			}
+		}
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, RawFinishReason: raw, Usage: &total, ProviderMetadata: metadata}
 }
 
 type turnOutcome int
@@ -2050,7 +2062,11 @@ func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason) {
 	if !suspended && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
 	}
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(finishReason), RawFinishReason: finishReason.Raw})
+	// TS `result.finish()` with no input: the stop-boundary step's finish
+	// reason, provider metadata and the summed step usage.
+	finish := d.unreportedFinishChunk()
+	finish.FinishReason, finish.RawFinishReason = unifiedFinishReason(finishReason), finishReason.Raw
+	d.stream.push(*finish)
 	d.stream.closeOK()
 }
 
