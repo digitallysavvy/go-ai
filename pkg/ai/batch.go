@@ -717,6 +717,11 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		if err := promptutils.ValidatePromptInput(t.Prompt, t.Messages); err != nil {
 			return provider.BatchV4Request{}, err
 		}
+		// TS prepareLanguageModelCallOptions(request), before the prompt is
+		// converted.
+		if err := validateMaxOutputTokens(t.MaxTokens); err != nil {
+			return provider.BatchV4Request{}, err
+		}
 		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
 			ctx,
 			buildPrompt(t.Prompt, t.Messages, t.System),

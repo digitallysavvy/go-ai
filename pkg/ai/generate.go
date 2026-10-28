@@ -59,6 +59,18 @@ func validateMaxRetries(maxRetries *int) error {
 	return nil
 }
 
+// validateMaxOutputTokens mirrors TS prepareLanguageModelCallOptions: a
+// maxOutputTokens below 1 is an InvalidArgumentError (nil leaves it unset).
+func validateMaxOutputTokens(maxOutputTokens *int) error {
+	if maxOutputTokens != nil && *maxOutputTokens < 1 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "maxOutputTokens",
+			Message: "maxOutputTokens must be >= 1",
+		}
+	}
+	return nil
+}
+
 func preparedMaxRetries(maxRetries *int) int {
 	if maxRetries == nil {
 		return 2
@@ -793,6 +805,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err := validateMaxRetries(opts.MaxRetries); err != nil {
 		return nil, err
 	}
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
+	}
 	// TS generate-text.ts tags every call's headers with `ai/${VERSION}`
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
 	// right after validating retries, before the prompt is standardized.
@@ -1233,6 +1249,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 			if prepared.Reasoning != nil {
 				stepReasoningLevel = prepared.Reasoning
+			}
+			// TS prepareStepCallSettings validates the step's settings.
+			if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+				return nil, err
 			}
 		}
 

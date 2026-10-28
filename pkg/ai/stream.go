@@ -786,6 +786,11 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if err := validateStreamRetries(opts.StreamRetries); err != nil {
 		return nil, err
 	}
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries in
+	// the DefaultStreamTextResult constructor.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
+	}
 
 	steeringRun, err := startSteeringRun(opts.ExperimentalSteering)
 	if err != nil {
@@ -1180,6 +1185,15 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 		if prepared.Reasoning != nil {
 			stepReasoningLevel = prepared.Reasoning
+		}
+		// TS prepareStepCallSettings validates the step's settings.
+		if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+			if stepCancel != nil {
+				stepCancel()
+			}
+			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			r.fail(err)
+			return
 		}
 	}
 
@@ -3317,6 +3331,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if prepared.Reasoning != nil {
 				nextReasoningLevel = prepared.Reasoning
+			}
+			// TS prepareStepCallSettings validates the step's settings.
+			if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
+				nextStepCancel()
+				r.err = err
+				break
 			}
 		}
 

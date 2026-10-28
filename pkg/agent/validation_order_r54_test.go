@@ -34,3 +34,19 @@ func TestGenerateAgentValidatesToolCallConcurrencyThenMaxRetries(t *testing.T) {
 		t.Fatalf("model called %d times", model.callCount)
 	}
 }
+
+// TS generateText rejects maxOutputTokens < 1 (prepareLanguageModelCallOptions,
+// after prepareRetries); the legacy loop does so before the model call.
+func TestGenerateAgentRejectsMaxOutputTokensBelowOne(t *testing.T) {
+	zero := 0
+	model := &mockLanguageModel{}
+	a := NewToolLoopAgent(AgentConfig{Model: model, MaxTokens: &zero})
+	_, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) || invalid.Field != "maxOutputTokens" {
+		t.Fatalf("err = %v, want the maxOutputTokens error", err)
+	}
+	if model.callCount != 0 {
+		t.Fatalf("model called %d times", model.callCount)
+	}
+}

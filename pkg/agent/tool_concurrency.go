@@ -31,6 +31,18 @@ func validateAgentMaxRetries(n *int) error {
 	return nil
 }
 
+// validateAgentMaxOutputTokens mirrors TS prepareLanguageModelCallOptions: a
+// maxOutputTokens below 1 is an InvalidArgumentError.
+func validateAgentMaxOutputTokens(n *int) error {
+	if n != nil && *n < 1 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "maxOutputTokens",
+			Message: "maxOutputTokens must be >= 1",
+		}
+	}
+	return nil
+}
+
 // runToolCalls runs runCall for every tool call of a step in the legacy
 // AgentResult loop. At most AgentConfig.ToolCallConcurrency calls run at once;
 // when it is unset all calls of the step run concurrently, as in TS (Promise.all

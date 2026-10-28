@@ -1875,6 +1875,10 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if err := validateAgentMaxRetries(callConfig.MaxRetries); err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
+	// TS prepareLanguageModelCallOptions follows prepareRetries (generateText).
+	if err := validateAgentMaxOutputTokens(callConfig.MaxTokens); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
 	modelCallCtx := stepCtx
 	ai.Notify(stepCtx, ai.LanguageModelCallStartEvent{
 		CallID:              stepTel.callID(),
