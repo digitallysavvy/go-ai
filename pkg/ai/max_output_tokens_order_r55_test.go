@@ -50,3 +50,35 @@ func TestGenerateTextPrepareStepMaxOutputTokensCheckedAfterPromptConversion(t *t
 		t.Fatalf("err = %v, want the missing tool result error", err)
 	}
 }
+
+// TS streamText runs prepareTools (tool descriptions) before
+// prepareStepCallSettings rejects a prepareStep maxOutputTokens override.
+func TestStreamTextPrepareStepMaxOutputTokensCheckedAfterToolPreparation(t *testing.T) {
+	zero := 0
+	described := false
+	tool := types.Tool{
+		Name:       "lookup",
+		Parameters: map[string]interface{}{"type": "object"},
+		DescriptionFunc: func(context.Context, types.ToolDescriptionOptions) string {
+			described = true
+			return "look things up"
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  &testutil.MockLanguageModel{},
+		Prompt: "hi",
+		Tools:  []types.Tool{tool},
+		PrepareStep: func(_ context.Context, step PrepareStepOptions) PrepareStepOptions {
+			return PrepareStepOptions{MaxOutputTokens: &zero}
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamText err = %v", err)
+	}
+	if _, err := res.ReadAll(); !isMaxOutputTokensError(err) {
+		t.Fatalf("stream err = %v, want the maxOutputTokens error", err)
+	}
+	if !described {
+		t.Fatal("tool description was not resolved before the settings check")
+	}
+}

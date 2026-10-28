@@ -1197,15 +1197,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		if prepared.Reasoning != nil {
 			stepReasoningLevel = prepared.Reasoning
 		}
-		// TS prepareStepCallSettings validates the step's settings.
-		if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
-			if stepCancel != nil {
-				stepCancel()
-			}
-			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-			r.fail(err)
-			return
-		}
 	}
 
 	// Apply deferred tool discovery (ai.ToolSearch) and tool-caller routing
@@ -1226,6 +1217,17 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepTools = orderStepTools(stepTools, stepToolOrder)
 	stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
 	opts.ExperimentalSandbox = stepSandbox
+	// TS prepareStepCallSettings validates the step's settings after the
+	// step's tools are prepared and its steering messages resolved, before
+	// the model call (whose prompt conversion and step start come later).
+	if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+		if stepCancel != nil {
+			stepCancel()
+		}
+		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+		r.fail(err)
+		return
+	}
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
 	responseFormat := opts.ResponseFormat
@@ -3343,12 +3345,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			if prepared.Reasoning != nil {
 				nextReasoningLevel = prepared.Reasoning
 			}
-			// TS prepareStepCallSettings validates the step's settings.
-			if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
-				nextStepCancel()
-				r.err = err
-				break
-			}
 		}
 
 		nextTools = r.toolSearchState.Apply(nextTools, r.cbToolsCtx, nextSandbox)
@@ -3385,6 +3381,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		currentExecutionTools = append([]types.Tool(nil), nextExecutionTools...)
 		currentToolChoice = nextToolChoice
 		opts.ExperimentalSandbox = nextSandbox
+		// TS prepareStepCallSettings validates the step's settings after the
+		// step's tools are prepared, before the model call.
+		if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
+			nextStepCancel()
+			r.err = err
+			break
+		}
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
