@@ -287,3 +287,16 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   legacyScope, genAIScope := telemetry.LegacyTracerName, telemetry.GenAITracerName
   _, _ = legacyScope, genAIScope
   ```
+- **Tool approval and tool-context errors fail the call.** A tool context
+  that fails the tool's `ContextSchema`, an approval function whose context
+  fails it, an unknown approval status and an unsupported `ToolApproval`
+  value now end `GenerateText` with an error (and error `StreamText`'s stream
+  and the agents' runs), as in TS. v0.5 turned them into tool-error results
+  the model saw. A tool's own `Execute` error is still a tool error:
+
+  ```go
+  // v0.5: the call succeeded; result.ToolResults[0].Error held the error
+  // v0.6: the call fails with it
+  var validationErr *providererrors.ValidationError
+  _ = errors.As(err, &validationErr) // validationErr.Context.Field == "tool context"
+  ```

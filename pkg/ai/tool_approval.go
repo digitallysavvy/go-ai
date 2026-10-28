@@ -80,7 +80,8 @@ func ResolveToolApproval(
 
 // resolveToolApproval decides whether a tool call needs approval. It fails
 // closed: a configuration value or status it doesn't recognize is an error,
-// which reaches the model as a tool error instead of running the tool.
+// which fails the call (as a TS resolveToolApproval throw does) instead of
+// running the tool.
 func resolveToolApproval(
 	ctx context.Context,
 	call types.ToolCall,

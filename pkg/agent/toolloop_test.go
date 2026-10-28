@@ -1875,16 +1875,13 @@ func TestToolLoopAgent_InvalidToolContextReturnsValidationResult(t *testing.T) {
 		MaxSteps:     2,
 	})
 
-	result, err := agent.Execute(context.Background(), "test")
-	if err != nil {
-		t.Fatalf("Execute failed: %v", err)
-	}
-	if len(result.ToolResults) == 0 || result.ToolResults[0].Error == nil {
-		t.Fatalf("expected validation error result")
-	}
+	// TS executeToolCall validates the tool context outside its try: the
+	// run fails with the validation error (owner decision 2026-10-28; it was
+	// a tool-error result sent to the model).
+	_, err := agent.Execute(context.Background(), "test")
 	var validationErr *providererrors.ValidationError
-	if !errors.As(result.ToolResults[0].Error, &validationErr) {
-		t.Fatalf("expected validation error, got %T: %v", result.ToolResults[0].Error, result.ToolResults[0].Error)
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected validation error, got %T: %v", err, err)
 	}
 	if validationErr.Context == nil || validationErr.Context.Field != "tool context" || validationErr.Context.EntityName != "ctx_tool" {
 		t.Fatalf("validation context = %+v, want field tool context and entity ctx_tool", validationErr.Context)
@@ -3037,15 +3034,13 @@ func TestToolLoopAgentNativeApprovalSupportsGenericAndSingleFuncs(t *testing.T) 
 			},
 			StopWhen: []ai.StopCondition{ai.IsStepCount(1)},
 		})
-		result, err := agent.Execute(context.Background(), "start")
-		if err != nil {
-			t.Fatalf("Execute() error = %v", err)
+		_, err := agent.Execute(context.Background(), "start")
+		var validationErr *providererrors.ValidationError
+		if !errors.As(err, &validationErr) {
+			t.Fatalf("Execute() error = %T %v, want the tool context ValidationError (TS throws)", err, err)
 		}
 		if called {
 			t.Fatal("single approval callback should not run when context validation fails")
-		}
-		if len(result.ToolResults) != 1 || result.ToolResults[0].Error == nil {
-			t.Fatalf("tool results = %+v, want validation error", result.ToolResults)
 		}
 	})
 

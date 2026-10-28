@@ -163,6 +163,9 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 			}
 		}
 		executed, err = executeToolsLimited(ctx, executable, opts.tools, opts.runtimeContext, opts.toolsContext, noApproval, opts.usage, callbacks, opts.toolCallConcurrency)
+		if failure := unwrapToolCallFailure(err); failure != nil {
+			return out, failure
+		}
 		if err != nil {
 			return out, err
 		}

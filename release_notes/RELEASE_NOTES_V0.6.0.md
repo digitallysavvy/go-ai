@@ -116,8 +116,9 @@ earlier, upgrade to either.
 - **Legacy `ToolLoopAgent` loop fails closed on approvals.** `Execute` and
   `GenerateAgent` ran a tool when its approval resolved to an unknown status
   (a typo such as `"aproved"`) or `ToolApproval` held an unsupported type.
-  Both are now tool errors, as in `GenerateText`. The resolver is exported as
-  `ai.ResolveToolApproval`.
+  Both now fail the run with an error, as in `GenerateText` (see "Tool
+  approval and tool-context errors fail the call"). The resolver is exported
+  as `ai.ResolveToolApproval`.
 - **Gladia no longer sends the API key to a foreign `result_url`.** The poll
   URL comes from the server's response; credentials now go only to the
   configured API origin.
@@ -333,6 +334,18 @@ Each item has before/after code in the
   and `GenAITracerName`; `TracerName` is deprecated and unused.
   **Migration:** update instrumentation-scope filters or sampler rules that
   match `ai-sdk` or `go-ai`, or pass your own `Tracer`.
+- **Tool approval and tool-context errors fail the call** (owner decision
+  2026-10-28), as TS. When a tool approval cannot be resolved (an approval
+  function whose tool context fails its `ContextSchema`, an unknown status,
+  an unsupported `ToolApproval` value) or a tool context fails its
+  `ContextSchema` before execution, `GenerateText` returns the error,
+  `StreamText` errors the stream, and the agents and the legacy
+  `ToolLoopAgent` loop fail the run. v0.5.x sent these to the model as
+  tool-error results and continued. `GenerateText` also resolves every
+  call's approval before running any tool, as TS. Errors returned by a
+  tool's `Execute` still go to the model as tool errors.
+  **Migration:** fix the tool context or approval configuration, or handle
+  the returned `*errors.ValidationError` (field `tool context`).
 
 ---
 

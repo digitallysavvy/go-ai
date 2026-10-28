@@ -2011,17 +2011,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 		approval, approvalErr := a.resolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
 		if approvalErr != nil {
-			results = append(results, types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Error:            approvalErr,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
-			})
-			return results, nil
+			// TS generateText: a tool approval that cannot be resolved
+			// throws and fails the run (no tool-error result).
+			return nil, approvalErr
 		}
 		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
 			if !a.config.ToolApprover(call) {
@@ -2109,16 +2101,9 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 
 			toolContext, err := validateAgentToolContext(tool, call.ToolName, toolsContext[call.ToolName])
 			if err != nil {
-				results = append(results, types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Title:            call.Title,
-					Input:            call.Arguments,
-					Error:            err,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				})
-				return results, nil
+				// TS executeToolCall validates the tool context outside its
+				// try: a failure fails the run, not a tool-error result.
+				return nil, err
 			}
 
 			// Locally-executed tool: execute now

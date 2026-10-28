@@ -1618,10 +1618,20 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				generateID:          generateID,
 				executionBlocked:    !isToolExecutionAllowedFinishReason(genResult.FinishReason),
 			}
+			// TS resolves every call's approval before executing any tool; a
+			// resolution error fails the call.
+			preApprovals, err := preResolveToolApprovals(stepCtx, toolsToExecute, stepExecutionTools, stepMessages, runtimeContext, toolsContext, opts.ToolApproval, toolCallbacks.newApprovalID)
+			if err != nil {
+				return nil, err
+			}
+			toolCallbacks.preApprovals = preApprovals
 			// Tools run inside the step context: the TS step timeout aborts the
 			// whole step (mergedAbortSignal also feeds executeTools), and the
 			// tool spans parent under the step span.
 			toolResults, err := executeToolsConfigured(stepCtx, toolsToExecute, stepExecutionTools, runtimeContext, toolsContext, opts.ToolApproval, &result.Usage, toolCallbacks, toolCallConcurrency)
+			if failure := unwrapToolCallFailure(err); failure != nil {
+				return nil, failure
+			}
 			if err != nil {
 				if opts.Timeout != nil && opts.Timeout.HasPerStep() && stepCtx.Err() != nil && ctx.Err() == nil {
 					err = wrapTimeoutError(TimeoutReasonStep, err)
@@ -2202,6 +2212,57 @@ type toolResultModelOutputError struct {
 	err error
 }
 
+// toolCallFailureError is an error TS throws out of the tool-call handling,
+// failing the whole call instead of becoming a tool-error result: a tool
+// approval that cannot be resolved (for example an approval function whose
+// tool context fails its schema) or a tool context that fails its schema
+// before execution (TS resolveToolApproval and validateToolContext run
+// outside executeToolCall's try). Ordinary tool execution errors still
+// become tool errors.
+type toolCallFailureError struct {
+	err error
+}
+
+func (e *toolCallFailureError) Error() string { return e.err.Error() }
+func (e *toolCallFailureError) Unwrap() error { return e.err }
+
+// unwrapToolCallFailure returns the error a toolCallFailureError carries, or
+// nil when err is not one.
+func unwrapToolCallFailure(err error) error {
+	var failure *toolCallFailureError
+	if errors.As(err, &failure) {
+		return failure.err
+	}
+	return nil
+}
+
+// preResolveToolApprovals resolves the approval of every valid call with a
+// known tool before any tool runs, in call order, as TS generateText does
+// in its tool-call notification loop: a resolution error fails the call
+// before any tool executes. Approval ids are generated in call order.
+func preResolveToolApprovals(ctx context.Context, calls []types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}, newID func() string) (map[string]preResolvedApproval, error) {
+	if toolsCtx == nil {
+		toolsCtx = map[string]interface{}{}
+	}
+	out := map[string]preResolvedApproval{}
+	for _, call := range calls {
+		if call.Invalid || findToolForCall(call, tools) == nil {
+			continue
+		}
+		approval, err := resolveToolApproval(ctx, call, tools, messages, runtimeCtx, toolsCtx, toolApproval)
+		if err != nil {
+			return nil, err
+		}
+		pre := preResolvedApproval{approval: approval}
+		switch approval.Status {
+		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+			pre.id = newID()
+		}
+		out[call.ID] = pre
+	}
+	return out, nil
+}
+
 func (e *toolResultModelOutputError) Error() string {
 	if e == nil || e.err == nil {
 		return ""
@@ -2401,17 +2462,9 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 			}
 		}
 		if approvalErr != nil {
-			results[i] = types.ToolResult{
-				ToolCallID:       call.ID,
-				ToolName:         call.ToolName,
-				Title:            call.Title,
-				Input:            call.Arguments,
-				Error:            approvalErr,
-				ProviderExecuted: providerExecuted,
-				ProviderMetadata: providerMetadata,
-				ToolMetadata:     call.ToolMetadata,
-			}
-			continue
+			// TS resolveToolApproval throws: the call fails, no tool-error
+			// result is sent to the model.
+			return nil, &toolCallFailureError{err: approvalErr}
 		}
 		switch approval.Status {
 		case types.ToolApprovalStatusDenied:
@@ -2487,16 +2540,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 
 			toolContext, err := validateToolContextFor(tool, call.ToolName, toolsContext[call.ToolName])
 			if err != nil {
-				results[i] = types.ToolResult{
-					ToolCallID:       call.ID,
-					ToolName:         call.ToolName,
-					Title:            call.Title,
-					Input:            call.Arguments,
-					Error:            err,
-					ProviderMetadata: providerMetadata,
-					ToolMetadata:     call.ToolMetadata,
-				}
-				continue
+				// TS executeToolCall validates the tool context outside its
+				// try: a failure fails the call instead of becoming a tool
+				// error.
+				return nil, &toolCallFailureError{err: err}
 			}
 
 			// Emit OnToolCallStartEvent before execution.

@@ -2178,6 +2178,15 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				// model call, so no approval is requested for it.
 				if !withholdToolParts {
 					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret, remapGenerateID); handled {
+						if pre.err != nil {
+							// TS resolveToolApproval throws inside the
+							// stream transform: the stream errors.
+							r.err = pre.err
+							if isAbortErr(ctx, pre.err) {
+								fireAbort(pre.err)
+							}
+							break
+						}
 						eagerApprovals[refined.ID] = pre
 						stepContent = append(stepContent, approvalParts...)
 						pendingApprovalChunks = approvalChunks
@@ -2697,6 +2706,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			var conversionErr *toolResultModelOutputError
 			if errors.As(toolsErr, &conversionErr) {
 				r.err = conversionErr.Unwrap()
+				cancelStep()
+				break
+			}
+			// A tool context that fails its schema errors the stream (TS
+			// executeToolCall validates it outside its try).
+			if failure := unwrapToolCallFailure(toolsErr); failure != nil {
+				r.err = failure
 				cancelStep()
 				break
 			}
