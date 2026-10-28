@@ -222,7 +222,8 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// call naturally returns io.EOF once AWS closes the stream after the
 			// exception frame, which drives s.done=true and s.flush() below.
 			message := fmt.Sprintf("Amazon Bedrock stream failed with %s", payloadType)
-			if m, ok := payload["message"].(string); ok && m != "" {
+			// TS: `typeof error.message === 'string'`, so an empty message is kept.
+			if m, ok := payload["message"].(string); ok {
 				message = m
 			}
 			statusCode, isRetryable := bedrockStreamErrorMetadata(payloadType)
@@ -251,7 +252,8 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// message/type/statusCode/isRetryable/data via
 			// `...getAmazonBedrockStreamErrorMetadata(type)`) — leave Code nil
 			// rather than duplicating the exception type into it.
-			chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, payload)
+			// TS passes `data: chunk.rawValue`, the wrapped {[payloadType]: payload}.
+			chunkErr := providererrors.NewStreamProviderError(message, "amazon-bedrock", payloadType, nil, &statusCode, &isRetryable, value)
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: message, Err: chunkErr})
 			continue
 
