@@ -364,6 +364,22 @@ restart:
 	}
 }
 
+// summaryTextItem is a thought summary item, decoded loosely so one bad item
+// does not hide the others (TS checks each `typeof item.text === 'string'`).
+type summaryTextItem struct {
+	Type interface{} `json:"type"`
+	Text interface{} `json:"text"`
+}
+
+// text returns the item's text when it is a text item with a string text.
+func (i summaryTextItem) text() (string, bool) {
+	if i.Type != "text" {
+		return "", false
+	}
+	t, ok := i.Text.(string)
+	return t, ok
+}
+
 // hasStringEventType reports whether data is a JSON object whose event_type
 // is a string.
 func hasStringEventType(data string) bool {
@@ -530,9 +546,17 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 		switch block.Type {
 		case "thought":
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoningStart, ID: id})
-			for _, item := range block.Summary {
-				if item.Type == "text" && item.Text != "" {
-					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: id, Reasoning: item.Text})
+			// TS: `item?.type === 'text' && typeof item.text === 'string'`, so
+			// an empty summary text is still a (empty) reasoning delta.
+			var start struct {
+				Step struct {
+					Summary []summaryTextItem `json:"summary"`
+				} `json:"step"`
+			}
+			_ = json.Unmarshal([]byte(s.currentEventData), &start)
+			for _, item := range start.Step.Summary {
+				if text, ok := item.text(); ok {
+					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: id, Reasoning: text})
 				}
 			}
 		case "model_output":
@@ -635,9 +659,11 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			s.emitSources(annotationsToSources(delta.Annotations, s.newID))
 		case open.kind == "thought":
 			if delta.Type == "thought_summary" && len(delta.ContentRaw) > 0 {
-				var contentBlock interactionsContentBlock
-				if err := json.Unmarshal(delta.ContentRaw, &contentBlock); err == nil && contentBlock.Type == "text" && contentBlock.Text != "" {
-					s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: open.id, Reasoning: contentBlock.Text})
+				var item summaryTextItem
+				if json.Unmarshal(delta.ContentRaw, &item) == nil {
+					if text, ok := item.text(); ok {
+						s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: open.id, Reasoning: text})
+					}
 				}
 			}
 			if delta.Type == "thought_signature" && delta.Signature != "" {
