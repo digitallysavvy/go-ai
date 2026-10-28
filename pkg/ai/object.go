@@ -803,16 +803,16 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
 	}
+	// Validate mode-specific requirements (TS validateObjectGenerationInput),
+	// before maxRetries as TS calls prepareRetries after it.
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+		return nil, err
+	}
 	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
 	if maxRetryErr != nil {
 		return nil, maxRetryErr
 	}
 	opts.MaxRetries = &maxRetries
-
-	// Validate mode-specific requirements (TS validateObjectGenerationInput).
-	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
-		return nil, err
-	}
 
 	// TS generate-object.ts tags every call's headers with `ai/${VERSION}`
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
@@ -1754,14 +1754,16 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 	if opts.OutputMode == "" {
 		opts.OutputMode = ObjectModeObject
 	}
+	// TS streamObject validates the output settings before its result's
+	// constructor calls prepareRetries.
+	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
+		return nil, err
+	}
 	maxRetries, maxRetryErr := normalizeObjectMaxRetries(opts.MaxRetries)
 	if maxRetryErr != nil {
 		return nil, maxRetryErr
 	}
 	opts.MaxRetries = &maxRetries
-	if err := validateObjectGenerationInput(opts.OutputMode, opts.Schema != nil, opts.SchemaName, opts.SchemaDescription, opts.EnumValues); err != nil {
-		return nil, err
-	}
 
 	// Generate call ID and extract telemetry info for callback events.
 	callID := newCallID()
