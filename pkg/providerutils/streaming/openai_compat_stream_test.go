@@ -1093,3 +1093,35 @@ data: [DONE]
 		t.Fatalf("want function.name error, got %#v", chunks)
 	}
 }
+
+// TestOpenAICompatStream_EventNamedDoneIsAnOrdinaryChunk: TS
+// parseJsonEventStream reads only the SSE data and skips just `[DONE]`, so a
+// frame named `event: done` that carries a chat chunk is parsed like any
+// other and the stream keeps reading after it.
+func TestOpenAICompatStream_EventNamedDoneIsAnOrdinaryChunk(t *testing.T) {
+	sseData := `data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}
+
+event: done
+data: {"choices":[{"delta":{"content":" world"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+	stream := newTestStream(sseData)
+	defer stream.Close() //nolint:errcheck
+
+	chunks := collectStreamChunks(t, stream)
+	texts := compatChunksOfType(chunks, provider.ChunkTypeText)
+	if len(texts) != 2 || texts[0].Text != "Hello" || texts[1].Text != " world" {
+		t.Fatalf("text chunks = %#v, want Hello and \" world\"", texts)
+	}
+	finishes := compatChunksOfType(chunks, provider.ChunkTypeFinish)
+	if len(finishes) != 1 || finishes[0].FinishReason != types.FinishReasonStop {
+		t.Fatalf("finish chunks = %#v, want one stop finish", finishes)
+	}
+	if errs := compatChunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 {
+		t.Fatalf("unexpected error chunks %#v", errs)
+	}
+}
