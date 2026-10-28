@@ -394,6 +394,10 @@ These match TS and are unlikely to need code changes, but can change output.
   empty message list like TS `messages: []`: legacy `ai.prompt` is
   `{"messages":[]}` and the GenAI root `gen_ai.input.messages` is `[]`
   instead of being left out.
+- **Telemetry:** a harness step's legacy span records `ai.response.id`
+  (`{callId}-{n}`), `ai.response.model`, `ai.response.timestamp` and the
+  matching `gen_ai.response.*`, as TS `lifecycle.stepEnd` passes the step's
+  response.
 - **GenAI telemetry:** the text root and chat spans format the caller-facing
   messages like TS `formatModelMessages` (image parts as `uri`/`blob`, parts
   the TS converter does not map, such as an assistant custom part or a tool

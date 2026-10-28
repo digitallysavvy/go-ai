@@ -53,3 +53,50 @@ func TestR51ContinuationTurnRecordsEmptyMessages(t *testing.T) {
 		t.Errorf("GenAI gen_ai.input.messages = %q", genai)
 	}
 }
+
+// TS lifecycle.stepEnd passes the step's response (id {callId}-{n},
+// timestamp, model id); the legacy step span records them as
+// ai.response.id/model/timestamp and gen_ai.response.id/model.
+func TestR51HarnessLegacyStepSpanResponseAttrs(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			stop := FinishReason{Unified: FinishReasonStop}
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextStartPart{ID: "t1"}, &TextDeltaPart{ID: "t1", Delta: "hi"}, &TextEndPart{ID: "t1"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(), Model: "m",
+		Telemetry: &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{
+			telemetry.NewLegacyOpenTelemetry(telemetry.LegacyOpenTelemetryOptions{Tracer: tp.Tracer("legacy")}),
+		}},
+	})
+	drainRunPrompt(t, out)
+	steps := out.Result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d", len(steps))
+	}
+	attrs := map[string]string{}
+	for _, s := range rec.Ended() {
+		if s.Name() != "ai.generateText.doGenerate" {
+			continue
+		}
+		for _, kv := range s.Attributes() {
+			attrs[string(kv.Key)] = kv.Value.Emit()
+		}
+	}
+	wantID := steps[0].Response.ID
+	if wantID == "" || attrs["ai.response.id"] != wantID || attrs["gen_ai.response.id"] != wantID {
+		t.Errorf("response id attrs = %q/%q, want %q", attrs["ai.response.id"], attrs["gen_ai.response.id"], wantID)
+	}
+	if attrs["ai.response.model"] != "m" || attrs["gen_ai.response.model"] != "m" || attrs["ai.response.timestamp"] == "" {
+		t.Errorf("model/timestamp attrs = %q %q %q", attrs["ai.response.model"], attrs["gen_ai.response.model"], attrs["ai.response.timestamp"])
+	}
+}
