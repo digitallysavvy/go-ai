@@ -523,18 +523,19 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	if err := validateToolCallConcurrency(a.config.ToolCallConcurrency); err != nil {
 		return nil, err
 	}
-	// Open the telemetry root span (unless the caller already did) so the
-	// step, model-call and tool-call spans below have a parent; see
-	// loop_telemetry.go.
+	// runLoop opens the telemetry root span (unless the caller already did)
+	// once the first step's PrepareCall has run, so the step, model-call and
+	// tool-call spans have a parent; see loop_telemetry.go.
+	baseCtx := ctx
 	var lt *loopTelemetry
-	ctx, lt = a.beginLoopTelemetry(ctx, messages)
-	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)
-	result, err := a.runLoop(ctx, messages, callCallbacks, lt)
-	a.endLoopTelemetry(ctx, lt, result, err)
+	result, err := a.runLoop(ctx, messages, callCallbacks, &lt)
+	if lt != nil {
+		a.endLoopTelemetry(baseCtx, lt, result, err)
+	}
 	return result, err
 }
 
-func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, callCallbacks agentCallbacks, lt *loopTelemetry) (*AgentResult, error) {
+func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, callCallbacks agentCallbacks, ltOut **loopTelemetry) (*AgentResult, error) {
 	if a.config.Model.SpecificationVersion() == "" || a.config.Model.Provider() == "" || a.config.Model.ModelID() == "" {
 		return nil, fmt.Errorf("model must implement provider.LanguageModel metadata methods")
 	}
@@ -561,6 +562,17 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		ctx = context.WithValue(ctx, runIDKey, runID)
 	}
 
+	// The first step's PrepareCall runs before the root span opens, as TS
+	// ToolLoopAgent applies prepareCall before generateText reports its
+	// start: the root, the start event and the approval resumption use the
+	// prepared configuration, and step 0 runs with it (PrepareCall is not
+	// called again for it).
+	firstCallConfig := a.prepareCallConfig(ctx, 0, "", messages, nil, types.Usage{}, nil)
+	var lt *loopTelemetry
+	ctx, lt = a.beginLoopTelemetry(ctx, firstCallConfig)
+	ctx = context.WithValue(ctx, loopTelemetryKey{}, lt)
+	*ltOut = lt
+
 	// CB-T23: Merge settings-level callbacks with no per-call overrides.
 	// Per-call callback merging is used when ToolLoopAgent is called via
 	// dedicated generate/stream wrappers that accept per-call callbacks.
@@ -582,37 +594,39 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		a.config.OnChainStart(input, messages)
 	}
 
-	// CB-T23: Emit OnStartEvent
+	// CB-T23: Emit OnStartEvent with the prepared call (TS generateText's
+	// start event reports the prepareCall result).
+	fc := firstCallConfig
 	ai.Notify(ctx, ai.OnStartEvent{
-		Provider: a.config.Model.Provider(),
+		Provider: fc.Model.Provider(),
 		// ModelProvider/System are deprecated aliases of Provider/Instructions;
 		// set for callbacks still reading the old fields (mirrors
 		// generate.go's OnStartEvent population).
-		ModelProvider:       a.config.Model.Provider(), //nolint:staticcheck
-		ModelID:             a.config.Model.ModelID(),
-		Instructions:        a.config.System,
-		System:              a.config.System, //nolint:staticcheck
-		Messages:            messages,
-		Tools:               a.config.Tools,
-		ToolChoice:          a.config.ToolChoice,
-		Temperature:         a.config.Temperature,
-		MaxTokens:           a.config.MaxTokens,
-		TopP:                a.config.TopP,
-		TopK:                a.config.TopK,
-		FrequencyPenalty:    a.config.FrequencyPenalty,
-		PresencePenalty:     a.config.PresencePenalty,
-		StopSequences:       a.config.StopSequences,
-		Seed:                a.config.Seed,
-		ProviderOptions:     a.config.ProviderOptions,
+		ModelProvider:       fc.Model.Provider(), //nolint:staticcheck
+		ModelID:             fc.Model.ModelID(),
+		Instructions:        fc.System,
+		System:              fc.System, //nolint:staticcheck
+		Messages:            fc.Messages,
+		Tools:               fc.Tools,
+		ToolChoice:          fc.ToolChoice,
+		Temperature:         fc.Temperature,
+		MaxTokens:           fc.MaxTokens,
+		TopP:                fc.TopP,
+		TopK:                fc.TopK,
+		FrequencyPenalty:    fc.FrequencyPenalty,
+		PresencePenalty:     fc.PresencePenalty,
+		StopSequences:       fc.StopSequences,
+		Seed:                fc.Seed,
+		ProviderOptions:     fc.ProviderOptions,
 		ExperimentalContext: a.config.ExperimentalContext,
-		RuntimeContext:      a.runtimeContext(),
-		ToolsContext:        a.config.ToolsContext,
+		RuntimeContext:      fc.RuntimeContext,
+		ToolsContext:        fc.ToolsContext,
 	}, cbs.onStart)
 
-	// Apply total timeout if configured
+	// Apply total timeout if configured (TS `timeout ?? preparedCall.timeout`)
 	var cancel context.CancelFunc
-	if a.config.Timeout != nil && a.config.Timeout.HasTotal() {
-		ctx, cancel = a.config.Timeout.CreateTimeoutContext(ctx, "total")
+	if fc.Timeout != nil && fc.Timeout.HasTotal() {
+		ctx, cancel = fc.Timeout.CreateTimeoutContext(ctx, "total")
 		defer cancel()
 	}
 
@@ -624,26 +638,28 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		Warnings:    append([]types.Warning{}, a.warnings...),
 	}
 
-	// Current conversation state
-	currentMessages := make([]types.Message, len(messages))
-	copy(currentMessages, messages)
+	// Current conversation state: the prepared call's messages.
+	currentMessages := make([]types.Message, len(fc.Messages))
+	copy(currentMessages, fc.Messages)
 
 	// Resume tool approvals from the input messages before the first step
 	// (review finding F5): this loop previously signed approval requests
 	// (see agentToolResultsToContentParts) but never resumed them, so a
 	// history ending in an approved tool-approval-response silently
 	// continued without executing the tool or verifying its signature.
+	// TS generateText resumes them with the prepared call's tools, approval
+	// configuration and contexts.
 	resumed, resumeErr := ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
 		Messages:             currentMessages,
-		Tools:                a.config.Tools,
-		ToolApproval:         a.config.ToolApproval,
-		ToolsContext:         a.config.ToolsContext,
-		RuntimeContext:       a.runtimeContext(),
-		Secret:               a.config.ExperimentalToolApprovalSecret,
-		RefineToolInput:      a.config.ExperimentalRefineToolInput,
-		ToolCallConcurrency:  a.config.ToolCallConcurrency,
-		ModelProvider:        a.config.Model.Provider(),
-		ModelID:              a.config.Model.ModelID(),
+		Tools:                fc.Tools,
+		ToolApproval:         fc.ToolApproval,
+		ToolsContext:         fc.ToolsContext,
+		RuntimeContext:       fc.RuntimeContext,
+		Secret:               fc.ExperimentalToolApprovalSecret,
+		RefineToolInput:      fc.ExperimentalRefineToolInput,
+		ToolCallConcurrency:  fc.ToolCallConcurrency,
+		ModelProvider:        fc.Model.Provider(),
+		ModelID:              fc.Model.ModelID(),
 		OnToolExecutionStart: cbs.onToolCallStart,
 		OnToolExecutionEnd:   cbs.onToolCallFinish,
 	})
@@ -692,11 +708,19 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// Execute agent loop
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
 		stepIndex := stepNum - 1
-		callConfig := a.prepareStepCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+		var callConfig PrepareCallConfig
+		if stepIndex == 0 {
+			// Step 0 runs with the configuration prepared before the root
+			// opened, plus any messages the approval resumption added.
+			callConfig = a.finishStepCallConfig(ctx, stepIndex, fc)
+			callConfig.Messages = currentMessages
+		} else {
+			callConfig = a.prepareStepCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+		}
 		// A PrepareCall override of the telemetry settings (TS prepareCall
 		// `telemetry`) applies to this and the following steps' spans.
 		if callConfig.Telemetry != nil && callConfig.Telemetry != a.config.Telemetry {
-			ctx = a.adoptPreparedTelemetry(ctx, lt, callConfig.Telemetry, currentMessages)
+			ctx = a.adoptPreparedTelemetry(ctx, lt, callConfig.Telemetry, callConfig)
 		}
 
 		// Apply deferred tool discovery (ai.ToolSearch / types.Tool.DeferLoading)
@@ -1231,7 +1255,12 @@ func (a *ToolLoopAgent) prepareGenerateCallConfig(ctx context.Context, prompt st
 // GenerateText/StreamText, which do it per step after PrepareStep (TS
 // ToolLoopAgent passes the full tool set and activeTools to generateText).
 func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, prompt string, messages []types.Message, previousSteps []types.StepResult, accumulatedUsage types.Usage, customData interface{}) PrepareCallConfig {
-	callConfig := a.prepareCallConfig(ctx, stepNum, prompt, messages, previousSteps, accumulatedUsage, customData)
+	return a.finishStepCallConfig(ctx, stepNum, a.prepareCallConfig(ctx, stepNum, prompt, messages, previousSteps, accumulatedUsage, customData))
+}
+
+// finishStepCallConfig applies the per-step tool preparation of
+// prepareStepCallConfig to an already prepared configuration.
+func (a *ToolLoopAgent) finishStepCallConfig(ctx context.Context, stepNum int, callConfig PrepareCallConfig) PrepareCallConfig {
 	if len(callConfig.ActiveTools) > 0 {
 		callConfig.Tools = ai.FilterActiveTools(callConfig.Tools, callConfig.ActiveTools)
 	}

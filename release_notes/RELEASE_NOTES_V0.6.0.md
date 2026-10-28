@@ -522,6 +522,16 @@ These match TS and are unlikely to need code changes, but can change output.
 - **`GenerateImage` runs model calls in parallel** when `N` exceeds the
   model's per-call limit, and sums token usage across calls.
 
+- **The legacy `ToolLoopAgent` loop runs the first step's `PrepareCall`
+  before it opens its root span**, as TS `ToolLoopAgent` applies
+  `prepareCall` before `generateText` starts: the root (`ai.generateText`
+  start event), `OnStartEvent`, the total timeout and the tool-approval
+  resumption use the prepared model, instructions, messages, settings,
+  headers, retry count and tools, and step 0 runs with that configuration
+  (`PrepareCall` is not called a second time for it). A first-step override
+  that disables telemetry opens no root. The root's end event reports the
+  last step's model, runtime context and tools context, like TS `onEnd`.
+
 ### Providers
 
 - **Provider IDs follow TS `config.provider`**: `groq.chat`, `mistral.embedding`,

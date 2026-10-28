@@ -157,7 +157,7 @@ func sameValue(a, b reflect.Value) bool {
 // was disabled, it is opened now under the new settings. When the override
 // routes the steps to a different integration set than the loop's root, that
 // set gets a root of its own (see below); every root is ended at the end.
-func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTelemetry, settings *ai.TelemetrySettings, messages []types.Message) context.Context {
+func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTelemetry, settings *ai.TelemetrySettings, c PrepareCallConfig) context.Context {
 	if lt == nil || settings == nil || settings == lt.settings {
 		return ctx
 	}
@@ -166,7 +166,7 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 		if !telemetry.Enabled(lt.rootSettings) {
 			if telemetry.Enabled(settings) {
 				lt.rootSettings = settings
-				ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
+				ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, c))
 				lt.rootCtx = ctx
 			}
 			return ctx
@@ -198,7 +198,7 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 		lt.otherRoots = append(lt.otherRoots, current)
 		lt.rootSettings = settings
 		lt.callID = newTelemetryCallID()
-		root := telemetry.FireOnStart(base, a.loopStartEvent(lt.callID, settings, messages))
+		root := telemetry.FireOnStart(base, a.loopStartEvent(lt.callID, settings, c))
 		lt.rootCtx = root
 		return switchedRootCtx{Context: ctx, root: root, base: base}
 	}
@@ -207,7 +207,7 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 	lt.ownsRoot = true
 	lt.rootSettings = settings
 	lt.callID = newTelemetryCallID()
-	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
+	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, c))
 	lt.rootCtx = ctx
 	return ctx
 }
@@ -240,46 +240,53 @@ func sameContextValue(a, b any) bool {
 
 // loopStartEvent is the root start event of the legacy loop: call-level
 // request settings and the retry count, as GenerateText reports them on its
-// start event (TS onGenerateStart). Used for the loop's own root span and for
-// one opened late by a PrepareCall telemetry override.
-func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySettings, messages []types.Message) telemetry.TelemetryStartEvent {
+// start event (TS onGenerateStart). c is the call's prepared configuration
+// (TS ToolLoopAgent applies prepareCall before generateText opens its root),
+// so the root reports the PrepareCall model, instructions, settings and
+// headers. Used for the loop's own root span and for one opened late by a
+// PrepareCall telemetry override.
+func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySettings, c PrepareCallConfig) telemetry.TelemetryStartEvent {
+	model := c.Model
+	if model == nil {
+		model = a.config.Model
+	}
 	var sys string
 	var instructionMessages []types.Message
 	// A nil *Options records inputs (integrations treat it the same way).
 	if settings.ShouldRecordInputs() {
-		sys = a.config.System
+		sys = c.System
 		// Instructions given as system messages (TS instructions:
 		// SystemModelMessage[]) are the root's instructions, as GenerateText
 		// reports them on its start event.
-		if len(a.config.InstructionMessages) > 0 {
-			instructionMessages = append([]types.Message(nil), a.config.InstructionMessages...)
+		if len(c.InstructionMessages) > 0 {
+			instructionMessages = append([]types.Message(nil), c.InstructionMessages...)
 		}
 	}
 	maxRetries := 2
-	if a.config.MaxRetries != nil {
-		maxRetries = *a.config.MaxRetries
+	if c.MaxRetries != nil {
+		maxRetries = *c.MaxRetries
 	}
 	return telemetry.TelemetryStartEvent{
 		CallID:              callID,
 		OperationType:       "ai.generateText",
-		ModelProvider:       a.config.Model.Provider(),
-		ModelID:             a.config.Model.ModelID(),
+		ModelProvider:       model.Provider(),
+		ModelID:             model.ModelID(),
 		Settings:            settings,
 		System:              sys,
-		Messages:            messages,
+		Messages:            c.Messages,
 		InstructionMessages: instructionMessages,
-		Headers:             loopHeaders(a.config.Headers),
-		MaxOutputTokens:     a.config.MaxTokens,
-		Temperature:         a.config.Temperature,
-		TopP:                a.config.TopP,
-		TopK:                a.config.TopK,
-		PresencePenalty:     a.config.PresencePenalty,
-		FrequencyPenalty:    a.config.FrequencyPenalty,
-		StopSequences:       a.config.StopSequences,
-		Seed:                a.config.Seed,
+		Headers:             loopHeaders(c.Headers),
+		MaxOutputTokens:     c.MaxTokens,
+		Temperature:         c.Temperature,
+		TopP:                c.TopP,
+		TopK:                c.TopK,
+		PresencePenalty:     c.PresencePenalty,
+		FrequencyPenalty:    c.FrequencyPenalty,
+		StopSequences:       c.StopSequences,
+		Seed:                c.Seed,
 		MaxRetries:          &maxRetries,
-		RuntimeContext:      telemetryRuntimeContextFor(settings, a.runtimeContext()),
-		ToolsContext:        telemetryToolsContextFor(settings, a.config.ToolsContext),
+		RuntimeContext:      telemetryRuntimeContextFor(settings, c.RuntimeContext),
+		ToolsContext:        telemetryToolsContextFor(settings, c.ToolsContext),
 	}
 }
 
@@ -347,14 +354,21 @@ func telemetryUsage(u types.Usage) telemetry.TelemetryUsage {
 	return out
 }
 
-// beginLoopTelemetry opens the root span unless the caller already did.
-func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types.Message) (context.Context, *loopTelemetry) {
+// beginLoopTelemetry opens the root span unless the caller already did. c is
+// the first step's prepared configuration: its telemetry settings (when
+// PrepareCall set them) are the root's.
+func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, c PrepareCallConfig) (context.Context, *loopTelemetry) {
 	settings := a.loopTelemetrySettings()
 	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
+		// The caller's root was opened under the configured settings; a
+		// PrepareCall override opens a root of its own (adoptPreparedTelemetry).
 		return ctx, &loopTelemetry{settings: settings, callID: id}
 	}
+	if c.Telemetry != nil {
+		settings = c.Telemetry
+	}
 	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true, baseCtx: ctx}
-	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
+	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, c))
 	if telemetry.Enabled(settings) {
 		lt.rootCtx = ctx
 	}
@@ -405,13 +419,23 @@ func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *
 		allToolResults = append(allToolResults, step.ToolResults...)
 		allFiles = append(allFiles, step.Files...)
 	}
+	// TS onEndEvent: model and runtimeContext are the last step's, and
+	// toolsContext is the call's latest (a prepareStep override included).
+	provider, modelID := a.config.Model.Provider(), a.config.Model.ModelID()
+	runtimeContext, toolsContext := a.runtimeContext(), a.config.ToolsContext
+	if len(result.Steps) > 0 {
+		if last.Model.Provider != "" || last.Model.ModelID != "" {
+			provider, modelID = last.Model.Provider, last.Model.ModelID
+		}
+		runtimeContext, toolsContext = last.RuntimeContext, last.ToolsContext
+	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
 		CallID:         root.callID,
 		OperationType:  "ai.generateText",
 		FinishReason:   string(result.FinishReason),
 		Usage:          telemetryUsage(result.Usage),
-		ModelProvider:  a.config.Model.Provider(),
-		ModelID:        a.config.Model.ModelID(),
+		ModelProvider:  provider,
+		ModelID:        modelID,
 		Text:           result.Text,
 		Reasoning:      telemetry.JoinReasoning(last.Reasoning),
 		ToolCalls:      allToolCalls,
@@ -422,8 +446,8 @@ func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *
 		Files:            allFiles,
 		ProviderMetadata: last.ProviderMetadata,
 		Settings:         root.settings,
-		RuntimeContext:   telemetryRuntimeContextFor(root.settings, a.runtimeContext()),
-		ToolsContext:     telemetryToolsContextFor(root.settings, a.config.ToolsContext),
+		RuntimeContext:   telemetryRuntimeContextFor(root.settings, runtimeContext),
+		ToolsContext:     telemetryToolsContextFor(root.settings, toolsContext),
 	})
 }
 

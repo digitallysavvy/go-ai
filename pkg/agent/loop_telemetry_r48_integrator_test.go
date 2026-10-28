@@ -18,12 +18,17 @@ type failingLoopModel struct {
 	err error
 }
 
-func (m *failingLoopModel) DoGenerate(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+func (m *failingLoopModel) DoGenerate(ctx context.Context, opts *provider.GenerateOptions) (*types.GenerateResult, error) {
+	if m.callCount < len(m.responses) {
+		return m.mockLanguageModel.DoGenerate(ctx, opts)
+	}
 	return nil, m.err
 }
 
-// A run that fails or is aborted after a PrepareCall override disabled
-// telemetry still ends the loop's root with the settings it started with.
+// A run that fails or is aborted after a later step's PrepareCall override
+// disabled telemetry still ends the loop's root with the settings it started
+// with. (Step 0's PrepareCall runs before the root opens, so disabling
+// telemetry there opens no root, as in TS.)
 func TestLoopRootEndsOnErrorAndAbortAfterTelemetryOverride(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -40,10 +45,18 @@ func TestLoopRootEndsOnErrorAndAbortAfterTelemetryOverride(t *testing.T) {
 			base := &telemetry.Options{IsEnabled: telemetry.Bool(true), Integrations: []telemetry.TelemetryIntegration{integration}}
 			off := &telemetry.Options{IsEnabled: telemetry.Bool(false), Integrations: []telemetry.TelemetryIntegration{integration}}
 			a := NewToolLoopAgent(AgentConfig{
-				Model:     &failingLoopModel{err: tc.err},
+				Model: &failingLoopModel{err: tc.err, mockLanguageModel: mockLanguageModel{responses: []types.GenerateResult{{
+					FinishReason: types.FinishReasonToolCalls,
+					ToolCalls:    []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+				}}}},
+				Tools: []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					return "ok", nil
+				}}},
 				Telemetry: base,
 				PrepareCall: func(_ context.Context, c PrepareCallConfig) PrepareCallConfig {
-					c.Telemetry = off
+					if c.StepNumber >= 1 {
+						c.Telemetry = off
+					}
 					return c
 				},
 			})
