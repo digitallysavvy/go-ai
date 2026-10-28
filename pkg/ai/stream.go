@@ -494,6 +494,9 @@ type StreamTextResult struct {
 	stepReopenModel   provider.LanguageModel
 	stepReopenGenOpts *provider.GenerateOptions
 	stepReopenCtx     context.Context
+	// stepReopenMaxRetries is the step's maxRetries (the call's unless
+	// InternalOptions.StepCallSettings overrides it).
+	stepReopenMaxRetries *int
 
 	// stepReopenTelemetryStepCtx carries the step span this step's
 	// telemetry.FireOnStepStart already created (fired before DoStream was
@@ -1199,6 +1202,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 	}
 
+	stepHeaders, stepMaxRetries := opts.Internal.stepCallSettings(opts.Headers, opts.MaxRetries)
+
 	// Apply deferred tool discovery (ai.ToolSearch) and tool-caller routing
 	// (ExperimentalToolCallers). stepTools becomes the model-visible set;
 	// stepExecutionTools is used to look up the tool actually invoked.
@@ -1304,7 +1309,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		PresencePenalty:       stepPresencePenalty,
 		StopSequences:         stepStopSequences,
 		Seed:                  stepSeed,
-		Headers:               opts.Headers,
+		Headers:               stepHeaders,
 		Tools:                 toolutil.ResolveToolSchemas(stepTools),
 		ToolChoice:            stepToolChoice,
 		IncludeRawChunks:      includeRawChunksValue(include),
@@ -1393,7 +1398,8 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.stepReopenModel = stepModel
 	r.stepReopenGenOpts = genOpts
 	r.stepReopenCtx = modelCallCtx
-	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
+	r.stepReopenMaxRetries = stepMaxRetries
+	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, stepMaxRetries)
 	if err != nil {
 		// stepCancel runs only after the error is classified below: a cancelled
 		// step context would make every open failure look like a step timeout.
@@ -2451,7 +2457,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					if s := r.currentStream(); s != nil {
 						_ = s.Close()
 					}
-					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, r.stepReopenModel, r.stepReopenGenOpts, opts.MaxRetries)
+					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, r.stepReopenModel, r.stepReopenGenOpts, r.stepReopenMaxRetries)
 					if reopenErr != nil {
 						r.err = reopenErr
 						// Close this iteration's still-open step span
@@ -3347,6 +3353,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 		}
 
+		nextHeaders, nextMaxRetries := opts.Internal.stepCallSettings(opts.Headers, opts.MaxRetries)
+
 		nextTools = r.toolSearchState.Apply(nextTools, r.cbToolsCtx, nextSandbox)
 		nextExecutionTools, nextModelTools, nextToolCallerMessages := PrepareToolsForToolCallers(nextTools, r.resolvedToolCallers)
 		nextTools = nextModelTools
@@ -3438,7 +3446,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			PresencePenalty:       nextPresencePenalty,
 			StopSequences:         nextStopSequences,
 			Seed:                  nextSeed,
-			Headers:               opts.Headers,
+			Headers:               nextHeaders,
 			Tools:                 toolutil.ResolveToolSchemas(nextTools),
 			ToolChoice:            nextToolChoice,
 			IncludeRawChunks:      includeRawChunksValue(r.cbInclude),
@@ -3513,7 +3521,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.stepReopenModel = nextModel
 		r.stepReopenGenOpts = nextGenOpts
 		r.stepReopenCtx = nextModelCallCtx
-		newStream, err := doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, opts.MaxRetries)
+		r.stepReopenMaxRetries = nextMaxRetries
+		newStream, err := doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, nextMaxRetries)
 		if err != nil {
 			// nextStepCancel runs after the error is classified: a cancelled
 			// step context would make every open failure look like a step timeout.

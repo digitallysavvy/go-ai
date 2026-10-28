@@ -31,6 +31,25 @@ type InternalOptions struct {
 	// reported once). Plain StreamText keeps executing tools after an error
 	// part, as TS streamText does. Used by WorkflowAgent.
 	StopOnStreamError bool
+
+	// StepCallSettings, when set, is called right after a StreamText step's
+	// PrepareStep and returns the headers and maxRetries for that step's model
+	// call; ok=false keeps the call's own. TS WorkflowAgent's prepareStep can
+	// override both (mergePrepareStepGenerationSettings), core prepareStep
+	// cannot. Used by WorkflowAgent's stream path.
+	StepCallSettings func() (headers map[string]string, maxRetries *int, ok bool)
+}
+
+// stepCallSettings returns the headers and maxRetries for a step's model
+// call: the StepCallSettings override when it gives one, else the call's.
+func (o *InternalOptions) stepCallSettings(headers map[string]string, maxRetries *int) (map[string]string, *int) {
+	if o == nil || o.StepCallSettings == nil {
+		return headers, maxRetries
+	}
+	if h, r, ok := o.StepCallSettings(); ok {
+		return h, r
+	}
+	return headers, maxRetries
 }
 
 // providerResultFinishAllowed reports whether TS WorkflowAgent processes the
