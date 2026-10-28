@@ -561,6 +561,11 @@ func workflowTelemetryToolsContext(settings *ai.TelemetrySettings, toolsContext 
 	return out
 }
 
+// workflowRootOperation is the root's operationId. TS WorkflowAgent.generate
+// and stream share one execute path whose onStart always reports
+// 'ai.workflowAgent.stream'.
+const workflowRootOperation = "ai.workflowAgent.stream"
+
 // workflowStartEvent is the WorkflowAgent root start event: the call's
 // messages, request settings, retry count (default 2), headers (tagged
 // ai-sdk-agent/workflow) and contexts after prepareCall, as TS
@@ -738,11 +743,14 @@ type workflowApprovalResumeOptions struct {
 	toolApprovalSecret  []byte
 	onToolStart         ToolExecutionStartCallback
 	onToolEnd           ToolExecutionEndCallback
-	// telemetrySettings, when set, wraps each approved tool's execution in an
-	// OTel tool call span parented under ctx's current span (27d294d) — the
-	// caller is expected to have already started the workflow-level
-	// operation span so this has a root to parent under.
+	// telemetrySettings, when set, dispatches each approved tool's execution
+	// start and end to the telemetry integrations.
 	telemetrySettings *telemetrypkg.Options
+	// telemetryCallID is the call ID those tool events carry. The resume runs
+	// before the workflow root opens (TS order), so no integration has state
+	// for it yet and, as in TS, no tool span is recorded; an ID is still set
+	// so the OTel integrations do not fall back to an ambient span in ctx.
+	telemetryCallID string
 	// toolCallConcurrency bounds concurrent approved tool executions; 0 means
 	// unbounded.
 	toolCallConcurrency int
@@ -1053,11 +1061,9 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 			ToolsContext:        opts.toolsContext,
 		})
 	}
-	// Fire the OTel tool call span for this pre-step approved-tool execution
-	// under ctx's current span, so it is grouped under the root operation
-	// span rather than dropped for lack of a parent (27d294d).
 	toolCtx := telemetrypkg.FireOnToolCallStart(ctx, telemetrypkg.TelemetryToolCallStartEvent{
 		Settings:   opts.telemetrySettings,
+		CallID:     opts.telemetryCallID,
 		ToolCallID: call.ID,
 		ToolName:   call.ToolName,
 		Args:       call.Arguments,
@@ -1075,6 +1081,7 @@ func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call typ
 	})
 	telemetrypkg.FireOnToolCallFinish(toolCtx, telemetrypkg.TelemetryToolCallFinishEvent{
 		Settings:   opts.telemetrySettings,
+		CallID:     opts.telemetryCallID,
 		ToolCallID: call.ID,
 		ToolName:   call.ToolName,
 		Args:       call.Arguments,
@@ -2030,18 +2037,11 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 	}
 	modelProvider, modelID := workflowModelInfo(model)
-	// Start the workflow-level operation span before any pre-step approved
-	// tool execution, mirroring TS WorkflowAgent's telemetryDispatcher.onStart
-	// for 'ai.workflowAgent.generate' (stream-text-iterator.ts). Without this,
-	// approval-resume tool execution has no root span to parent under and its
-	// tool span is silently skipped (27d294d).
-	callID := newWorkflowCallID()
-	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent("ai.workflowAgent.generate", callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
+	callID := newWorkflowCallID()
 	var initialResponseMessages []types.Message
 	opts.Messages, _, err = processWorkflowApprovalResume(ctx, workflowApprovalResumeOptions{
 		initialResponse:     &initialResponseMessages,
@@ -2054,10 +2054,10 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
+		telemetryCallID:     callID,
 		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
 	if prepared != nil {
@@ -2066,9 +2066,15 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	// TS convertToLanguageModelPrompt rejects a history whose tool calls (or
 	// unresolved approval requests) lack tool results.
 	if err := validateWorkflowToolResults(opts.Messages, effectiveWorkflowTools(w, WorkflowStreamOptions{}, opts)); err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 		return nil, err
 	}
+	// TS opens the workflow root (telemetryDispatcher.onStart) only after the
+	// approved history tools ran and the prompt was converted, so its messages
+	// are the cleaned post-resolution history and a failure before this point
+	// dispatches no telemetry. The resume's tool events therefore find no
+	// root, as in TS, where the integration has no call state yet and records
+	// no tool span. Both TS methods open the root as 'ai.workflowAgent.stream'.
+	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
@@ -2241,18 +2247,8 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	modelProvider, modelID := workflowModelInfo(model)
-	// Start the workflow-level operation span before any pre-step approved
-	// tool execution, mirroring TS WorkflowAgent's telemetryDispatcher.onStart
-	// for 'ai.workflowAgent.stream' (stream-text-iterator.ts). Without this,
-	// approval-resume tool execution has no root span to parent under and its
-	// tool span is silently skipped (27d294d). The span is ended as soon as
-	// the underlying stream is obtained: the actual streaming happens
-	// asynchronously as the caller drains WorkflowStreamResult, under the
-	// child span the delegated ai.StreamText call creates for itself.
-	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent("ai.workflowAgent.stream", "", modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}
 	var prefixChunks []provider.StreamChunk
@@ -2266,10 +2262,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		onToolStart:         mergeToolStart(w.OnToolExecutionStart, opts.OnToolExecutionStart),
 		onToolEnd:           mergeToolEnd(w.OnToolExecutionEnd, opts.OnToolExecutionEnd),
 		telemetrySettings:   telemetrySettings,
+		telemetryCallID:     newWorkflowCallID(),
 		toolCallConcurrency: toolCallConcurrency,
 	})
 	if err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}
 	if prepared != nil {
@@ -2278,9 +2274,14 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// TS stream() awaits convertToLanguageModelPrompt before returning, so a
 	// history with unresolved tool calls rejects stream() itself.
 	if err := validateWorkflowToolResults(opts.Messages, effectiveWorkflowTools(w, opts, WorkflowGenerateOptions{})); err != nil {
-		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})
 		return nil, err
 	}
+	// The root opens after the approved history tools ran, with the cleaned
+	// messages, as in GenerateWithOptions (TS onStart order). The span ends
+	// as soon as the underlying stream is obtained: the streaming happens as
+	// the caller drains WorkflowStreamResult, under the child span the
+	// delegated ai.StreamText call creates for itself.
+	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, "", modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
 	if ctx != nil && ctx.Err() != nil {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})

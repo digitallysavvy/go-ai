@@ -201,7 +201,11 @@ func parseToolCallWithRepair(ctx context.Context, opts ParseToolCallOptions) (ty
 		refined, err := refineParsedToolCall(ctx, parsed, opts)
 		return refined, parsed, err
 	}
-	if len(opts.Tools) == 0 {
+	// TS `tools == null`: a nil slice means no tools at all, while an empty,
+	// non-nil set (ActiveTools filtering every tool out) still goes through
+	// doParseToolCall, so its NoSuchToolError lists the (empty) available
+	// tools and RepairToolCall runs.
+	if opts.Tools == nil {
 		// TS parseToolCall: `toolCall.providerExecuted && toolCall.dynamic`.
 		// A provider-executed call that isn't marked dynamic (e.g. Anthropic
 		// web_search/web_fetch, which rely on a matching registered tool)

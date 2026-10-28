@@ -1334,7 +1334,9 @@ func (a *ToolLoopAgent) prepareStepCallConfig(ctx context.Context, stepNum int, 
 // finishStepCallConfig applies the per-step tool preparation of
 // prepareStepCallConfig to an already prepared configuration.
 func (a *ToolLoopAgent) finishStepCallConfig(ctx context.Context, stepNum int, callConfig PrepareCallConfig) PrepareCallConfig {
-	if len(callConfig.ActiveTools) > 0 {
+	// TS filterActiveTools: an empty, non-nil ActiveTools leaves no tools
+	// active; only nil keeps them all.
+	if callConfig.ActiveTools != nil {
 		callConfig.Tools = ai.FilterActiveTools(callConfig.Tools, callConfig.ActiveTools)
 	}
 	if a.config.FilterActiveTools != nil {
@@ -1918,7 +1920,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if callConfig.Include != nil {
 		include = *callConfig.Include
 	}
-	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
+	// The repair function gets the step's messages (TS stepMessages), not the
+	// converted prompt with the instruction messages prepended.
+	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, callConfig.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}

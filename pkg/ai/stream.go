@@ -1064,6 +1064,13 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepStopSequences := opts.StopSequences
 	stepSeed := opts.Seed
 	stepReasoningLevel := opts.Reasoning
+	// The per-step timeout starts with the step, before PrepareStep, as TS
+	// streamStep arms its step timer first.
+	stepCtx := ctx
+	var stepCancel context.CancelFunc
+	if opts.Timeout != nil && opts.Timeout.HasPerStep() {
+		stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
+	}
 	if opts.PrepareStep != nil {
 		prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 			Model:                        stepModel,
@@ -1102,6 +1109,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 		if len(prepared.InstructionMessages) > 0 {
 			if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
+				if stepCancel != nil {
+					stepCancel()
+				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 				r.fail(err)
 				return
@@ -1187,12 +1197,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	stepTools = orderStepTools(stepTools, stepToolOrder)
 	stepExecutionTools = resolveStepTools(ctx, stepExecutionTools, toolsContext, stepSandbox)
 	opts.ExperimentalSandbox = stepSandbox
-
-	stepCtx := ctx
-	var stepCancel context.CancelFunc
-	if opts.Timeout != nil && opts.Timeout.HasPerStep() {
-		stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
-	}
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
 	responseFormat := opts.ResponseFormat
@@ -3050,7 +3054,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			responseContent,
 			recordedToolResults,
 		)
-		currentMessages = append(currentMessages, stepResponseMsgs...)
+		// Copy before appending: currentMessages may share its backing array
+		// with a caller's slice (a PrepareStep result, the prompt messages).
+		currentMessages = append(append([]types.Message(nil), currentMessages...), stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 		allSteps[len(allSteps)-1].Response.Messages = stepResponseMsgs
 		stepWarnings := append([]types.Warning(nil), r.warnings[stepWarningsStart:]...)
@@ -3197,6 +3203,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		nextStopSequences := opts.StopSequences
 		nextSeed := opts.Seed
 		nextReasoningLevel := opts.Reasoning
+		// The next step's timeout starts before its PrepareStep (TS streamStep).
+		nextStepCtx := ctx
+		nextStepCancel := func() {}
+		if r.timeout != nil && r.timeout.HasPerStep() {
+			nextStepCtx, nextStepCancel = r.timeout.CreateTimeoutContext(ctx, "step")
+		}
 		if opts.PrepareStep != nil {
 			initialSystem := r.cbInitialSystem
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
@@ -3237,6 +3249,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if len(prepared.InstructionMessages) > 0 {
 				if err := validateInstructionMessages(prepared.InstructionMessages); err != nil {
+					nextStepCancel()
 					r.err = err
 					break
 				}
@@ -3337,11 +3350,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		currentExecutionTools = append([]types.Tool(nil), nextExecutionTools...)
 		currentToolChoice = nextToolChoice
 		opts.ExperimentalSandbox = nextSandbox
-		nextStepCtx := ctx
-		nextStepCancel := func() {}
-		if r.timeout != nil && r.timeout.HasPerStep() {
-			nextStepCtx, nextStepCancel = r.timeout.CreateTimeoutContext(ctx, "step")
-		}
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),

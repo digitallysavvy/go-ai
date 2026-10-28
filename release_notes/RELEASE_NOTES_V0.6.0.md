@@ -306,6 +306,16 @@ Each item has before/after code in the
   to the step, as in TS.
   **Migration:** check `errors.Is(err, context.DeadlineExceeded)` for step
   timeouts.
+- **The legacy `ToolLoopAgent` per-step timeout covers the step's tool
+  execution**, as the TS step timeout aborts the signal the tools get.
+  v0.5.x ended the step deadline when the model call returned, so a slow
+  tool could keep running past it. A tool that used to finish after the
+  step deadline is now cancelled: its ctx is done at the deadline, and a
+  step whose timeout expired while its tools ran ends the run with the
+  step deadline (`context.DeadlineExceeded`) before the next step, even
+  when the tool swallowed the cancellation.
+  **Migration:** size `Timeout.PerStep` for the model call plus its tools,
+  or bound the run with `Timeout.Total` or a timeout inside the tool.
 - **UI message streams fail on an out-of-sequence chunk**, as TS: while
   `CreateUIMessageStreamWithOptions`/`ToUIMessageStream` build the message for
   an `OnEnd`/`OnStepEnd` callback, a chunk with no matching part (a
@@ -346,6 +356,15 @@ Each item has before/after code in the
   tool's `Execute` still go to the model as tool errors.
   **Migration:** fix the tool context or approval configuration, or handle
   the returned `*errors.ValidationError` (field `tool context`).
+- **The `WorkflowAgent` root span is `ai.workflowAgent.stream` for
+  `Generate` too, and opens after the resumed history tools**, as TS, whose
+  `generate` and `stream` share one path. v0.5.x named the generate root
+  `ai.workflowAgent.generate`. The approved tools from the message history
+  now run before the root opens, so the root's messages are the cleaned
+  history and those resumed tool calls get no tool span (TS has no root for
+  them yet); an error before that point reports no telemetry.
+  **Migration:** update queries or dashboards that match
+  `ai.workflowAgent.generate`.
 
 ---
 
@@ -540,10 +559,15 @@ These match TS and are unlikely to need code changes, but can change output.
   cannot be resolved fails the run before a tool executes (tool calls run
   concurrently); input callbacks use the execution tool set, like TS
   `stepExecutionTools`.
-- **The legacy `ToolLoopAgent` per-step timeout covers the step's tool
-  execution**, as the TS step timeout aborts the signal the tools get; a
-  step whose timeout expired while its tools ran ends the run with the step
-  deadline before the next step, even when a tool swallowed it.
+- **An empty, non-nil `ActiveTools` leaves no tools active in the legacy
+  `ToolLoopAgent` loop**, as TS `filterActiveTools` and `GenerateText`;
+  v0.5.x ignored it and sent every tool. Only a nil `ActiveTools` keeps
+  all tools. A tool call against such an emptied set is a
+  `NoSuchToolError` ("Available tools: .") that `RepairToolCall` can
+  repair, as in TS.
+- **The `GenerateText`/`StreamText` per-step timeout starts before
+  `PrepareStep`**, as TS arms its step timer at the top of each step: time
+  spent in `PrepareStep` counts toward `Timeout.PerStep`.
 
 ### Providers
 
@@ -633,6 +657,8 @@ in v0.5.3.
 
 - `toolbash` keeps its truncation notice past 2^31 output characters on
   32-bit builds.
+- `StreamText` no longer writes a step's response messages into a caller's
+  message slice (a `PrepareStep` result with spare capacity).
 - `GenerateObject`/`StreamObject` sent the response format type as
   `json_schema`/`json_object` instead of `json`, so many providers dropped
   JSON mode or the schema. (v0.5.3)
