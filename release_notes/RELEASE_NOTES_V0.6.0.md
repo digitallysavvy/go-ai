@@ -830,6 +830,19 @@ in v0.5.3.
   Bedrock clears the raw finish reason on a stream error and keeps an empty
   `redactedContent` and an empty `toolUse.name` in `Generate`
   (review round 56).
+- Anthropic streams keep `contextManagement` stream-wide, as TS: a later
+  message's finish without its own `context_management` reports the earlier
+  value (the Go-only `usage.context_management` fallback stays). The stream's
+  raw `message_delta` usage drops unknown keys in `iterations` and
+  `output_tokens_details`, as `Generate` does. Bedrock streams treat a
+  `toolUse` delta without a string `input` as a `reasoningContent` delta;
+  without tools, the prompt is filtered only when it holds tool calls or
+  results (including legacy `Message.ToolCalls`), so empty messages are no
+  longer dropped otherwise; an empty `additionalModelRequestFields` option is
+  sent as `{}`. Google interactions compaction drops the results of inline
+  tool-call parts, a thought summary item without a string `text` is skipped,
+  and an image tool-result file with text data is dropped with TS's warning
+  (review round 57).
 
 ### Workflow, MCP, code mode and harness
 
