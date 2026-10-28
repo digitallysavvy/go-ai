@@ -439,8 +439,11 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			}
 			continue
 		}
-		// Thought text → ReasoningContent.
-		if part.Thought {
+		// Thought text → ReasoningContent. TS routes a part by its data field
+		// first (`'text' in part`): a thought part without a text key (a
+		// functionCall, executableCode or server tool part flagged thought)
+		// is converted like any other part, as the stream does.
+		if part.Thought && !part.textAbsent {
 			var sigMeta json.RawMessage
 			if part.ThoughtSignature != "" {
 				// TS carries the signature in providerMetadata.google

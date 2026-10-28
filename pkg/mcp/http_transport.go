@@ -140,7 +140,8 @@ type HTTPTransport struct {
 
 // bgTracker counts a transport's background goroutines for Close to wait on.
 // A goroutine running a user callback (OnError, OnSessionIDChange,
-// OnSessionExpired) is not waited for: TS lets onerror call close(), and
+// OnSessionExpired, or the inbound GET's OAuth authorization, which runs the
+// AuthProvider's methods) is not waited for: TS lets onerror call close(), and
 // Close waiting for the goroutine that called it would deadlock. Such a
 // goroutine exits once its callback returns, as Close has canceled its
 // context by then.
@@ -708,7 +709,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 	// draining it. release must run exactly once the derived context is no
 	// longer needed; handedOff tracks whether that responsibility moved to a
 	// background goroutine (the SSE-reader case) instead of happening here.
-	reqCtx, releaseBase := t.deriveRequestContext(ctx)
+	reqCtx, lifecycleCtx, releaseBase := t.deriveRequestContext(ctx)
 	// The request timeout (the http.Client timeout would also cut off a
 	// streamed response body) is enforced by a timer that is disarmed once an
 	// event-stream response starts.
@@ -946,7 +947,7 @@ func (t *HTTPTransport) send(ctx context.Context, message *MCPMessage, extraHead
 		}
 		go func() {
 			defer t.bg.done()
-			t.readMCPHTTPSSEMessages(reqCtx, release, resp.Body)
+			t.readMCPHTTPSSEMessages(reqCtx, lifecycleCtx, release, resp.Body)
 		}()
 		return nil
 
@@ -1041,7 +1042,13 @@ func closeBodyWhenDone(ctx context.Context, body io.Closer) func() {
 // reported via OnError but does not stop the loop, matching TS's inner catch
 // around `parseJSONRPCMessage`. release is deriveRequestContext's cleanup
 // func for ctx, invoked once this goroutine is done with it.
-func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release context.CancelFunc, body io.ReadCloser) {
+//
+// Once ctx or lifecycleCtx (the transport-lifetime context ctx derives from,
+// nil before Connect) is done, no further event is delivered or reported: TS
+// close() and a caller abort cancel the reader, which discards the events
+// still buffered. lifecycleCtx is checked as well because ctx follows it only
+// asynchronously, and an OnError that calls Close resumes this loop at once.
+func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx, lifecycleCtx context.Context, release context.CancelFunc, body io.ReadCloser) {
 	defer release()
 	// TS close() cancels the reader, which cancels the body. A body from a
 	// custom SSEClient may not watch the request context, so close it when
@@ -1057,6 +1064,9 @@ func (t *HTTPTransport) readMCPHTTPSSEMessages(ctx context.Context, release cont
 			if ctx.Err() == nil {
 				t.bgReportError(NewTransportError("failed to read event-stream response", err))
 			}
+			return
+		}
+		if ctx.Err() != nil || (lifecycleCtx != nil && lifecycleCtx.Err() != nil) {
 			return
 		}
 		if event.Event != "" && event.Event != "message" {
@@ -1114,16 +1124,16 @@ func (t *HTTPTransport) bgReportError(err error) {
 // context.AfterFunc registers against the transport-lifetime context;
 // otherwise that watcher would sit blocked until Close() finally cancels it,
 // leaking one per Send() call for the life of the transport.
-func (t *HTTPTransport) deriveRequestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func (t *HTTPTransport) deriveRequestContext(ctx context.Context) (reqCtx, lifecycleCtx context.Context, release context.CancelFunc) {
 	t.sseMu.Lock()
-	lifecycleCtx := t.sseLifecycleCtx
+	lifecycleCtx = t.sseLifecycleCtx
 	t.sseMu.Unlock()
 	if lifecycleCtx == nil {
-		return ctx, func() {}
+		return ctx, nil, func() {}
 	}
 	reqCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(lifecycleCtx, cancel)
-	return reqCtx, func() {
+	return reqCtx, lifecycleCtx, func() {
 		stop()
 		cancel()
 	}
@@ -1370,9 +1380,15 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 			resp.Body.Close() //nolint:errcheck
 		}
 		if t.auth.enabled() {
-			if err := t.auth.authorize(connCtx, resp); err != nil {
+			// TS authorizeOnce is not tied to the abort signal: a Close during
+			// the flow does not cancel it, and its failure is still reported
+			// (a success then finds the transport aborted and stops). The flow
+			// runs the provider's callbacks, so Close does not wait for it.
+			var authErr error
+			t.bg.callback(func() { authErr = t.auth.authorize(context.WithoutCancel(connCtx), resp) })
+			if authErr != nil {
 				connCancel()
-				t.bgReportError(err)
+				t.bgReportError(authErr)
 				return
 			}
 		} else if err := t.refreshOAuthToken(connCtx); err != nil {
@@ -1456,6 +1472,12 @@ func (t *HTTPTransport) readInboundSSEStream(connCtx context.Context, connCancel
 			return
 		}
 
+		// TS close() (and a switch to the modern protocol) cancels the
+		// reader, discarding the events still buffered: an OnError that
+		// closed the transport must not see a later event delivered.
+		if connCtx.Err() != nil {
+			return
+		}
 		if event.ID != "" {
 			t.sseMu.Lock()
 			t.lastInboundEventID = event.ID

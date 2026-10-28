@@ -124,7 +124,10 @@ These details differ:
   reconnect timers, readers of event-stream POST responses), except one
   that is inside an `OnError`, `OnSessionIDChange` or `OnSessionExpired`
   callback, so that the callback can call `Close`. That goroutine exits
-  once its callback returns.
+  once its callback returns. It also does not wait for an OAuth
+  authorization the inbound SSE GET started after a 401: as in TypeScript,
+  `Close` does not cancel that flow, and its failure is still reported to
+  `OnError`.
 
 ## fx: libfx runtime
 

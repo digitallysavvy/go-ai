@@ -97,7 +97,7 @@ func TestHTTPTransportInboundSSEErrorShapes(t *testing.T) {
 	}()
 	var got error
 	h := NewHTTPTransport(HTTPTransportConfig{URL: srv.URL, OnError: func(err error) { got = err }})
-	h.readMCPHTTPSSEMessages(t.Context(), func() {}, pr)
+	h.readMCPHTTPSSEMessages(t.Context(), nil, func() {}, pr)
 	if !errors.As(got, &ce) || ce.Message != "MCP HTTP Transport Error: Failed to parse message" || ce.Cause == nil || ce.Data != nil {
 		t.Fatalf("parse error = %#v", got)
 	}
