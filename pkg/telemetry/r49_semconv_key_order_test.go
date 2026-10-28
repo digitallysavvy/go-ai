@@ -80,3 +80,22 @@ func TestR49ProviderToolErrorValueStatusHasNoMessage(t *testing.T) {
 		t.Fatalf("%d span events, want none", n)
 	}
 }
+
+// TS onObjectStepEnd records ai.response.object for an empty object text too:
+// JSON.parse('') throws, so the raw "" is recorded.
+func TestR49LegacyObjectStepRecordsEmptyObjectText(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewLegacyOpenTelemetry(LegacyOpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.streamObject", CallID: "o"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{OperationType: "ai.streamObject", CallID: "o"})
+	integration.OnStepEnd(ctx, TelemetryStepEndEvent{OperationType: "ai.streamObject", CallID: "o", FinishReason: "other"})
+	span := findSpan(rec, "ai.streamObject.doStream")
+	if span == nil {
+		t.Fatal("missing step span")
+	}
+	if v, ok := attrValue(span, "ai.response.object"); !ok || v != "" {
+		t.Fatalf("ai.response.object = %v (ok=%v), want \"\"", v, ok)
+	}
+}

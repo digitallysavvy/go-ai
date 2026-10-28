@@ -2316,8 +2316,9 @@ func (i LegacyOpenTelemetry) OnStepEnd(ctx context.Context, e TelemetryStepEndEv
 	if isLegacyObjectOperation(e.OperationType) {
 		// onObjectStepEnd: ai.response.object (re-parsed/re-stringified JSON
 		// text, falling back to the raw text on parse failure, mirroring TS's
-		// try/catch), no reasoning/toolCalls/files.
-		if recordOutputs && e.Text != "" {
+		// try/catch), no reasoning/toolCalls/files. Empty text is recorded as
+		// "" (JSON.parse throws, so TS records the raw text).
+		if recordOutputs {
 			objectAttr := e.Text
 			var parsed interface{}
 			if json.Unmarshal([]byte(e.Text), &parsed) == nil {
