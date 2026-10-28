@@ -234,11 +234,14 @@ func (t *SSETransport) Connect(ctx context.Context) error {
 			resp.Body.Close() //nolint:errcheck
 			if err := t.auth.authorize(ctx, resp); err != nil {
 				// TS authorizeOnce is not tied to the abort signal, so its
-				// failure is reported even after close().
+				// failure is reported even after close(); only the caller's
+				// own cancellation (Go-only) is not.
 				stopWatch()
 				cancel()
 				t.releaseHandshake(gen)
-				t.reportError(err)
+				if ctx.Err() == nil {
+					t.reportError(err)
+				}
 				return err
 			}
 			continue
@@ -358,6 +361,10 @@ func (t *SSETransport) closeLocked() {
 
 // Send posts a JSON-RPC message to the endpoint received from the SSE stream.
 func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
+	// TS send() starts with options.signal.throwIfAborted().
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	t.mu.Lock()
 	connected := t.connected
 	endpoint := t.endpoint
@@ -382,7 +389,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 
 	data, err := json.Marshal(message)
 	if err != nil {
-		return NewTransportError("failed to marshal message", err)
+		return t.sendFailed(ctx, NewTransportError("failed to marshal message", err))
 	}
 	if t.config.EnableLogging {
 		fmt.Printf("MCP SSE Send: %s\n", string(data))
@@ -397,10 +404,12 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 	for attempt := 0; attempt < 2; attempt++ {
 		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint.String(), bytes.NewReader(data))
 		if err != nil {
-			return NewTransportError("failed to create request", err)
+			return t.sendFailed(ctx, NewTransportError("failed to create request", err))
 		}
+		// TS builds the headers (authProvider.tokens()) inside attempt's try,
+		// so a failure is reported through onerror like a failed fetch.
 		if err := t.applyHeaders(ctx, req, map[string]string{"Content-Type": "application/json"}); err != nil {
-			return NewTransportError("failed to load OAuth tokens", err)
+			return t.sendFailed(ctx, NewTransportError("failed to load OAuth tokens", err))
 		}
 		sentToken, _, _ := t.oauthTokenSnapshot()
 
@@ -438,7 +447,7 @@ func (t *SSETransport) Send(ctx context.Context, message *MCPMessage) error {
 		}
 		if currentToken, _, _ := t.oauthTokenSnapshot(); currentToken == "" || currentToken == sentToken {
 			if err := t.refreshOAuthToken(ctx); err != nil {
-				return NewTransportError("failed to refresh OAuth token", err)
+				return t.sendFailed(ctx, NewTransportError("failed to refresh OAuth token", err))
 			}
 		}
 	}

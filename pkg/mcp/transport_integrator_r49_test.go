@@ -80,7 +80,7 @@ func TestHTTPTransportConnectDuringCloseTeardownStaysConnected(t *testing.T) {
 			return nil, req.Context().Err()
 		}),
 	})
-	transport.postSSEWG.Add(1) // a POST-response reader Close must wait for
+	transport.bg.add() // a POST-response reader Close must wait for
 	closed := make(chan struct{})
 	go func() { _ = transport.Close(); close(closed) }()
 	if !waitFor(2*time.Second, func() bool {
@@ -93,7 +93,7 @@ func TestHTTPTransportConnectDuringCloseTeardownStaysConnected(t *testing.T) {
 	connected := make(chan error, 1)
 	go func() { connected <- transport.Connect(context.Background()) }()
 	time.Sleep(50 * time.Millisecond)
-	transport.postSSEWG.Done()
+	transport.bg.done()
 	<-closed
 	var err error
 	select {
