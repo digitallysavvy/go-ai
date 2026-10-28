@@ -224,3 +224,54 @@ func TestSSETransportCanceledConnectKeepsNewerStream(t *testing.T) {
 		t.Fatal("the canceled first Connect closed the newer connection")
 	}
 }
+
+// A Close while HTTP Connect refreshes its OAuth token must leave the
+// transport closed: Connect used to finish afterwards, mark it connected and
+// open an inbound SSE GET on a fresh lifecycle that nothing would cancel.
+func TestHTTPTransportCloseDuringConnectStaysClosed(t *testing.T) {
+	refreshing := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var mu sync.Mutex
+	gets := 0
+	client := sseClientFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			mu.Lock()
+			gets++
+			mu.Unlock()
+		}
+		return &http.Response{StatusCode: http.StatusMethodNotAllowed, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	transport := NewHTTPTransport(HTTPTransportConfig{
+		URL:                    "http://example.test/mcp",
+		InitialProtocolVersion: "2025-06-18",
+		SSEClient:              client,
+		OAuth: &OAuthConfig{RefreshTokenFunc: func(ctx context.Context, _ *OAuthConfig) (string, time.Duration, error) {
+			once.Do(func() { close(refreshing) })
+			<-release
+			return "token", time.Hour, nil
+		}},
+	})
+	done := make(chan error, 1)
+	go func() { done <- transport.Connect(context.Background()) }()
+	<-refreshing
+	_ = transport.Close()
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("Connect succeeded after Close")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if transport.IsConnected() {
+		t.Fatal("transport connected after Close")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gets != 0 {
+		t.Fatalf("%d inbound SSE GETs after Close", gets)
+	}
+	// The transport can still be started again.
+	if err := transport.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect after Close: %v", err)
+	}
+	_ = transport.Close()
+}
