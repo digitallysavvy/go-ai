@@ -276,7 +276,13 @@ func waitForRepair(ctx context.Context, opts ParseToolCallOptions, parseErr erro
 		InputSchema: func(toolName string) (map[string]interface{}, error) {
 			tool := findToolForCall(types.ToolCall{ToolName: toolName}, tools)
 			if tool == nil {
-				return nil, &NoSuchToolError{ToolName: toolName, AvailableTools: toolNames(tools)}
+				// TS asSchema(getOwn(tools, toolName)?.inputSchema): an
+				// unknown tool has the empty object schema, not an error.
+				return map[string]interface{}{
+					"type":                 "object",
+					"properties":           map[string]interface{}{},
+					"additionalProperties": false,
+				}, nil
 			}
 			return toolInputJSONSchema(tool), nil
 		},
