@@ -478,7 +478,7 @@ consumeLoop:
 		// the public stream and the UI conversion alike.
 		if chunk.Type == provider.ChunkTypeStartStep {
 			stepStarted = true
-		} else if !stepStarted && opensExternalStep(chunk, step, stepNumber) {
+		} else if !stepStarted && opensExternalStep(chunk, step, stepNumber, opts.TerminalFinishClosesTurn) {
 			stepStarted = true
 			warnings := append([]types.Warning{}, step.warnings...)
 			startStep := provider.StreamChunk{Type: provider.ChunkTypeStartStep, Warnings: warnings}
@@ -490,6 +490,16 @@ consumeLoop:
 			}
 		}
 		if r.uiChunkBuf != nil {
+			// A lone first step that ends directly in ChunkTypeFinish is
+			// recorded as a step (see the ChunkTypeFinish case below). The UI
+			// conversion treats a ChunkTypeFinish after a start-step as the
+			// call-level finish only, so give it the step's own finish-step
+			// boundary first (its OnStepEnd and "finish-step" UI part).
+			if chunk.Type == provider.ChunkTypeFinish && stepNumber == 0 && !opts.TerminalFinishClosesTurn {
+				stepFinish := *chunk
+				stepFinish.Type = provider.ChunkTypeFinishStep
+				r.uiChunkBuf.push(stepFinish)
+			}
 			r.uiChunkBuf.push(*chunk)
 		}
 		// The public full stream carries the TS part set only (as StreamText).
@@ -799,14 +809,17 @@ func reasoningText(reasoning []types.ReasoningContent) string {
 // external stream's step, i.e. whether a 'start-step' part must precede it.
 // Lifecycle markers and a pure turn-closing finish (no content since the last
 // step boundary) do not open a step; error/abort chunks end the stream.
-func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, stepNumber int) bool {
+func opensExternalStep(chunk *provider.StreamChunk, step *externalStepAccum, stepNumber int, terminalFinishClosesTurn bool) bool {
 	switch chunk.Type {
 	case provider.ChunkTypeStreamStart, provider.ChunkTypeResponseMetadata,
 		provider.ChunkTypeFirstChunk, provider.ChunkTypeStreamFinish,
 		provider.ChunkTypeError, provider.ChunkTypeAbort, provider.ChunkTypeRaw:
 		return false
 	case provider.ChunkTypeFinish:
-		return step.hasUnclosedContent() || stepNumber == 0
+		// A harness turn's terminal finish closes the turn without opening a
+		// step (TS HarnessStreamTextResult.finish never calls startStep),
+		// also after a suspended turn discarded its open step.
+		return step.hasUnclosedContent() || (stepNumber == 0 && !terminalFinishClosesTurn)
 	case provider.ChunkTypeToolApprovalResponse, provider.ChunkTypeToolResult:
 		// A continuation response arrives between model calls and must not
 		// open a step (TS enqueueContinuation); an automatic one follows its
