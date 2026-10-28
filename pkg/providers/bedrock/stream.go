@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -149,8 +150,12 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 
-		var payload map[string]interface{}
-		if err := json.Unmarshal(event.Data, &payload); err != nil {
+		// Decode into interface{} like TS safeParseJSON: a payload that is valid
+		// JSON but not an object (5, "x", []) is not a parse error; it is wrapped
+		// under its payload type and then fails (or, for an unknown payload type,
+		// passes) schema validation below.
+		var rawPayload interface{}
+		if err := json.Unmarshal(event.Data, &rawPayload); err != nil {
 			// Mirrors TS doStream's !chunk.success branch (amazon-bedrock-chat-
 			// language-model.ts): report the error but keep reading — the stream
 			// is not aborted — and mark finishReason as error in case the stream
@@ -164,15 +169,24 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr})
 			continue
 		}
+		if rawPayload == nil {
+			// TS runs `delete (parsedDataResult.value as any).p` on the parsed
+			// value, which throws a TypeError for a JSON null and errors the whole
+			// stream (no error part, no finish part).
+			s.err = errors.New("Cannot convert undefined or null to object") //nolint:staticcheck // TS TypeError text
+			s.done = true
+			return nil, s.err
+		}
+		payload, _ := rawPayload.(map[string]interface{})
 		delete(payload, "p") // AWS event-stream padding hint; irrelevant to consumers.
 
 		// TS validates {payloadType: payload} against AmazonBedrockStreamSchema; a
 		// mismatch is an error part (the event is skipped) and the finish reason
 		// becomes error, like the unparsable-JSON branch above.
-		if verr := validateConverseStreamEvent(payloadType, payload); verr != nil {
+		if verr := validateConverseStreamEvent(payloadType, rawPayload); verr != nil {
 			s.finishReason = types.FinishReasonError
 			if s.includeRawChunks {
-				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{payloadType: payload}})
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{payloadType: rawPayload}})
 			}
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: verr.Message, Err: invalidConverseResponseError(verr)})
 			continue
@@ -182,7 +196,16 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		// amazon-bedrock-event-stream-response-handler.ts's
 		// `{ [payloadType]: parsedDataResult.value }`, so downstream handling
 		// matches the documented AmazonBedrockStreamSchema shape.
-		value := map[string]interface{}{payloadType: payload}
+		value := map[string]interface{}{payloadType: rawPayload}
+		if payload == nil {
+			// Only an unknown payload type can pass validation with a non-object
+			// payload; zod strips the unknown key, so TS emits the raw chunk and
+			// nothing else.
+			if s.includeRawChunks {
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: value})
+			}
+			continue
+		}
 		if s.includeRawChunks {
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: value})
 		}
