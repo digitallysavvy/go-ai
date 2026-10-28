@@ -99,7 +99,7 @@ func (s *interleaveSSEServer) serve(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 	switch mode {
 	case 0: // endpoint at once
-		fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
 	case 1: // endpoint after a delay
 		select {
 		case <-time.After(delay + time.Millisecond):
@@ -108,13 +108,13 @@ func (s *interleaveSSEServer) serve(w http.ResponseWriter, r *http.Request) {
 		case <-eof:
 			return
 		}
-		fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
 	case 2: // quiet: never sends the endpoint
 	case 3: // EOF before the endpoint
 		return
 	case 4: // endpoint, then a message
-		fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
-		fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/ping\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: endpoint\ndata: /messages\n\n")
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/ping\"}\n\n")
 	}
 	flusher.Flush()
 	select {

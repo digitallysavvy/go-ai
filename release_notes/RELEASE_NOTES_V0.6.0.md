@@ -416,6 +416,13 @@ These match TS and are unlikely to need code changes, but can change output.
 - **OpenAI-compatible providers** send assistant text as one string, replay
   reasoning as `reasoning_content`, and default `SupportsStructuredOutputs`
   to false.
+- **Gemini uses its JSON response tool only for `gemini-` model ids** (TS
+  `/(^|\/)gemini-/i`): a `.`-prefixed id such as `eu.gemini-2.0-flash` sends
+  `responseJsonSchema` with the function tools.
+- **Perplexity ignores loose `providerOptions.perplexity` keys named
+  `temperature`, `top_p`, `max_output_tokens` or `response_format`**; use the
+  call settings, as TS assigns those body keys from them. Perplexity
+  embeddings decode url-safe and unpadded base64, as TS does.
 - **Non-2xx responses with an empty or non-JSON body** use the HTTP status
   text as `ProviderError.Message` (`Bad Gateway`); the body stays in
   `ResponseBody`.
@@ -534,6 +541,15 @@ in v0.5.3.
   of a later `Connect`, and a `Connect` interrupted by `Close` returns an
   error instead of hanging. `HTTPTransport.Close` closes stream bodies, so a
   custom `SSEClient` body that ignores the request context cannot hang it.
+- MCP `SSETransport.Close` during `Connect`'s GET aborts it, and `Connect`
+  returns the transport-closed error. A second `Connect` in flight
+  supersedes the first. A failed SSE connect request is reported through
+  `OnError`, as in TS. `HTTPTransport.Connect` interrupted by `Close` returns
+  `MCP HTTP Transport Error: Transport closed while starting` and leaves the
+  transport closed. A `Connect` that starts while `HTTPTransport.Close` is
+  still tearing down stays connected; before, the `Close` could mark it
+  disconnected after it returned while its inbound SSE GET kept running.
+  (v0.5.3)
 - `WorkflowAgent.Generate`/`Stream` keep the positional prompt when the
   options struct has an empty `Prompt`. (v0.5.3)
 - Google and Vertex Interactions background streams stop after 3 empty
