@@ -13,7 +13,7 @@ import (
 // A PrepareCall timeout (TS `timeout ?? preparedCall.timeout`) bounds the
 // step's tool executions in the legacy loop, as it bounds the step.
 func TestGenerateAgentToolTimeoutFromPrepareCall(t *testing.T) {
-	toolMs := 20 * time.Millisecond
+	toolTimeout := 20 * time.Millisecond
 	model := &mockLanguageModel{responses: []types.GenerateResult{{
 		FinishReason: types.FinishReasonToolCalls,
 		ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "slow", Arguments: map[string]interface{}{}}},
@@ -31,7 +31,7 @@ func TestGenerateAgentToolTimeoutFromPrepareCall(t *testing.T) {
 		Model: model,
 		Tools: []types.Tool{slow},
 		PrepareCall: func(_ context.Context, c PrepareCallConfig) PrepareCallConfig {
-			c.Timeout = &ai.TimeoutConfig{ToolMs: &toolMs}
+			c.Timeout = &ai.TimeoutConfig{ToolMs: &toolTimeout}
 			return c
 		},
 	})
