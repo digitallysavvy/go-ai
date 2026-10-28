@@ -61,3 +61,17 @@ func TestR57InteractionsToolResultImageWithTextDataDropped(t *testing.T) {
 		})
 	}
 }
+
+// r57 integrator: a summary item whose text is not a string (number, object)
+// fails the strict decode; the loose decode leaves Text "" and marks it absent,
+// so it is not joined (TS typeof item.text === 'string').
+func TestR57InteractionsThoughtTextSkipsNonStringTextLoose(t *testing.T) {
+	var summary []interactionsContentBlock
+	looseDecode([]byte(`[{"type":"text","text":"a"},{"type":"text","text":5},{"type":"text","text":{"x":1}},{"type":"text","text":"b"}]`), &summary)
+	if len(summary) != 4 {
+		t.Fatalf("summary = %d items, want 4", len(summary))
+	}
+	if got := thoughtText(summary); got != "a\nb" {
+		t.Fatalf("thoughtText = %q, want %q", got, "a\nb")
+	}
+}
