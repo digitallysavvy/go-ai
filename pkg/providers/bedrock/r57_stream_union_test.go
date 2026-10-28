@@ -2,8 +2,10 @@ package bedrock
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -104,5 +106,40 @@ func TestR57BedrockEmptyAdditionalModelRequestFieldsSent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// r57 integrator: an assistant message's legacy Message.ToolCalls are tool-call
+// parts (the converter sends them as toolUse), so without tools they trigger
+// the filter and are removed, with the toolContent warning, whether or not the
+// message has other content.
+func TestR57BedrockNoToolsLegacyToolCallsFiltered(t *testing.T) {
+	model := NewLanguageModel(&Provider{}, "amazon.nova-pro-v1:0")
+	for _, content := range [][]types.ContentPart{{}, {types.TextContent{Text: "calling"}}} {
+		msgs := []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "a"}}},
+			{Role: types.RoleAssistant, Content: content, ToolCalls: []types.ToolCall{{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}}},
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "b"}}},
+		}
+		args, err := model.getArgs(&provider.GenerateOptions{Prompt: types.Prompt{Messages: msgs}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(args.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "toolUse") {
+			t.Fatalf("content %d parts: body still has toolUse: %s", len(content), body)
+		}
+		warned := false
+		for _, w := range args.Warnings {
+			if w.Feature == "toolContent" {
+				warned = true
+			}
+		}
+		if !warned {
+			t.Fatalf("content %d parts: no toolContent warning", len(content))
+		}
 	}
 }

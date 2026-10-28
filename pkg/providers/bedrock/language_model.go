@@ -607,10 +607,12 @@ func normalizePromptMessages(prompt types.Prompt) []types.Message {
 // was removed.
 func filterToolContent(messages []types.Message) ([]types.Message, bool) {
 	// TS filters only when some message holds a tool call or result; otherwise
-	// the prompt (empty messages included) is used as is.
+	// the prompt (empty messages included) is used as is. An assistant
+	// message's legacy Message.ToolCalls count as tool-call parts (the
+	// converter turns them into toolUse blocks).
 	hasToolContent := false
 	for _, msg := range messages {
-		for _, part := range msg.Content {
+		for _, part := range withLegacyToolCalls(msg) {
 			switch part.(type) {
 			case types.ToolCallContent, types.ToolResultContent:
 				hasToolContent = true
@@ -627,8 +629,9 @@ func filterToolContent(messages []types.Message) ([]types.Message, bool) {
 			out = append(out, msg)
 			continue
 		}
-		filteredContent := make([]types.ContentPart, 0, len(msg.Content))
-		for _, part := range msg.Content {
+		content := withLegacyToolCalls(msg)
+		filteredContent := make([]types.ContentPart, 0, len(content))
+		for _, part := range content {
 			switch part.(type) {
 			case types.ToolCallContent, types.ToolResultContent:
 				removed = true
@@ -639,8 +642,9 @@ func filterToolContent(messages []types.Message) ([]types.Message, bool) {
 		if len(filteredContent) > 0 {
 			clone := msg
 			clone.Content = filteredContent
+			clone.ToolCalls = nil
 			out = append(out, clone)
-		} else if len(msg.Content) > 0 {
+		} else if len(content) > 0 {
 			removed = true
 		}
 	}
