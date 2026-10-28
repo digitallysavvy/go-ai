@@ -188,6 +188,12 @@ These details differ:
     Invalid escape" (a segment with a Unicode posix class such as
     `[[:alpha:]]` next to a literal `-`, `,`, `#` or space), Go matches the
     segment instead of failing the tool.
+  - Brace patterns cost about what they cost in Node: minimatch's
+    second-phase merge is quadratic in the number of expansions, so
+    `{a,b}` repeated 17 times takes tens of seconds of CPU in both, and the
+    Go compile does not watch the context. Braces nested thousands of
+    levels deep make Node throw "Maximum call stack size exceeded"; Go
+    expands them, slowly.
 
 ## Harness file reporter
 

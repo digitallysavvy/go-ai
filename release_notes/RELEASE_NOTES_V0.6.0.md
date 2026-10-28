@@ -554,6 +554,9 @@ in v0.5.3.
 
 - Gemini, Google and Vertex `doGenerate` and batch results no longer fail
   on a stray `error` key (TS `responseSchema`).
+- Gemini, Google and Vertex: a long-decode response continued over several
+  requests reports the last request's body as `RawResponse`, not one with
+  the usage summed across requests.
 - AI Gateway: the language model speaks the V4 wire protocol; V4 responses
   failed to decode.
 - Bedrock Anthropic (InvokeModel) streaming returned no content. Bedrock
@@ -598,6 +601,11 @@ in v0.5.3.
   of a later `Connect`, and a `Connect` interrupted by `Close` returns an
   error instead of hanging. `HTTPTransport.Close` closes stream bodies, so a
   custom `SSEClient` body that ignores the request context cannot hang it.
+- MCP `HTTPTransport.Close` called from `OnError`, `OnSessionIDChange` or
+  `OnSessionExpired` no longer deadlocks (v0.5.x too). `SSETransport.Send`
+  reports token-load, encoding and OAuth refresh failures through
+  `OnError`, and both transports' `Send` with an already-canceled context
+  returns `ctx.Err()` itself, as TS `throwIfAborted` does.
 - MCP `SSETransport.Close` during `Connect`'s GET aborts it, and `Connect`
   returns the transport-closed error. A second `Connect` in flight
   supersedes the first. A failed SSE connect request is reported through
