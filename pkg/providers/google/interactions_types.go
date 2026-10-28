@@ -148,6 +148,15 @@ func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// afterLooseDecode keeps the wire usage object after a loose decode.
+func (u *interactionsUsage) afterLooseDecode(b []byte) {
+	u.raw = nil
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.raw = raw
+	}
+}
+
 type interactionsModalityTokens struct {
 	Modality string `json:"modality,omitempty"`
 	Tokens   *int64 `json:"tokens,omitempty"`

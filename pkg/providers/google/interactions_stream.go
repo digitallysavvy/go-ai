@@ -333,6 +333,13 @@ restart:
 			// unknownEvent fallback) requires a string event_type, so null,
 			// non-object JSON and objects without it fail validation.
 			err = errors.New("event_type: expected string")
+		} else if err != nil && hasStringEventType(event.Data) {
+			// TS: a known event_type whose payload fails its member schema
+			// matches the loose unknownEvent member and is still dispatched
+			// by event_type with the raw object.
+			payload = interactionsEvent{}
+			looseDecode([]byte(event.Data), &payload)
+			err = nil
 		}
 		if err != nil {
 			// TS: an unparsable chunk marks the interaction failed, is
