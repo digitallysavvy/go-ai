@@ -83,7 +83,7 @@ type loopRoot struct {
 }
 
 // sameIntegrations reports whether a and b dispatch to the same integrations
-// (an empty list means the globally registered ones).
+// (nil means the globally registered ones; an empty, non-nil list means none).
 func sameIntegrations(a, b *ai.TelemetrySettings) bool {
 	var as, bs []telemetry.TelemetryIntegration
 	if a != nil {
@@ -92,7 +92,7 @@ func sameIntegrations(a, b *ai.TelemetrySettings) bool {
 	if b != nil {
 		bs = b.Integrations
 	}
-	if len(as) != len(bs) {
+	if (as == nil) != (bs == nil) || len(as) != len(bs) {
 		return false
 	}
 	for i := range as {

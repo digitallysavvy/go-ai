@@ -315,6 +315,13 @@ Each item has before/after code in the
   is no longer called for them, nor a second time for an error chunk.
   **Migration:** emit each part's start chunk before its deltas, and treat a
   `*UIMessageStreamError` on the error channel as the stream's failure.
+- **An empty, non-nil `Telemetry.Integrations` means no integrations for
+  that call** (owner decision 2026-10-28), as TS `integrations: []`. v0.5.x
+  treated an empty slice like nil and used the globally registered
+  integrations. nil still uses the global ones, and a non-empty list
+  replaces them.
+  **Migration:** to use the global integrations, leave `Integrations` nil
+  instead of setting an empty slice.
 
 ---
 

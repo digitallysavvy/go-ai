@@ -73,8 +73,11 @@ type Options struct {
 	// included in telemetry per tool. Context is excluded by default.
 	IncludeToolsContext map[string]map[string]bool
 
-	// Integrations are per-call telemetry integrations. When non-empty, they
-	// replace globally registered integrations for this call.
+	// Integrations are per-call telemetry integrations. When non-nil, they
+	// replace the globally registered integrations for this call, as TS
+	// `integrations` does: an empty, non-nil slice means no integrations
+	// (nothing is emitted for the call). nil uses the global integrations.
+	// (v0.5.x treated an empty slice like nil.)
 	Integrations []TelemetryIntegration
 }
 

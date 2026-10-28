@@ -2951,8 +2951,11 @@ func snapshot() []TelemetryIntegration {
 	return append([]TelemetryIntegration(nil), integrations...)
 }
 
+// snapshotFor resolves the integrations of one call: per-call Integrations
+// when non-nil (an empty slice means none, as TS `integrations: []`), else
+// the global ones (TS `telemetry?.integrations != null ? ... : globals`).
 func snapshotFor(settings *Settings) []TelemetryIntegration {
-	if settings != nil && len(settings.Integrations) > 0 {
+	if settings != nil && settings.Integrations != nil {
 		return append([]TelemetryIntegration(nil), settings.Integrations...)
 	}
 	return snapshot()

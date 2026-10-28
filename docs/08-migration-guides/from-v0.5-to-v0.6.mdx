@@ -261,3 +261,16 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   checked, and `OnError` is no longer called for them. Emit each part's start
   chunk before its deltas, or check the error channel with
   `errors.As(err, &uiErr)` where `uiErr` is a `*ai.UIMessageStreamError`.
+- **An empty `Telemetry.Integrations` slice turns telemetry off for the
+  call.** As in TS, a non-nil `Integrations` replaces the globally
+  registered integrations, so `[]telemetry.TelemetryIntegration{}` now means
+  none: no spans or events for that call. v0.5 fell back to the global
+  integrations for an empty slice. Leave the field nil to use the globals:
+
+  ```go
+  // v0.5: an empty slice used the global integrations
+  tel := &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{}}
+  // v0.6: leave it nil for the global integrations
+  tel = &telemetry.Options{}
+  _ = tel
+  ```

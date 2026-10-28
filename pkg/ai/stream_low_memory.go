@@ -69,7 +69,13 @@ func lowMemoryNeedsContent(opts StreamTextOptions) bool {
 		settings = opts.ExperimentalTelemetry
 	}
 	if settings == nil || telemetry.Enabled(settings) {
-		telemetryOn = telemetry.HasIntegrations() || (settings != nil && len(settings.Integrations) > 0)
+		// TS: per-call integrations when set (an empty list means none),
+		// else the global ones.
+		if settings != nil && settings.Integrations != nil {
+			telemetryOn = len(settings.Integrations) > 0
+		} else {
+			telemetryOn = telemetry.HasIntegrations()
+		}
 	}
 	return len(opts.Tools) > 0 || opts.ToolChoice.Type != "" || opts.Output != nil ||
 		opts.PrepareStep != nil || len(opts.StopWhen) > 0 || opts.MaxSteps != nil ||
