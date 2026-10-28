@@ -241,6 +241,14 @@ These details differ:
   `trafficType` if a later request sends an explicit `null`. TS merges with
   `{...a, ...b}`, so the `null` overrides the earlier value.
 
+## WorkflowAgent root call ID
+
+TS gives every `WorkflowAgent` root (and its `executeTool` events) the
+literal call ID `'workflow-agent'`. Go gives each `Generate` or `Stream`
+call its own ID. A constant ID would collide in an integration's call-state
+map when two runs share an integration concurrently, and would break
+correlating events with their run.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
