@@ -1939,7 +1939,9 @@ func (d *turnDriver) finishForHostInputPause() error {
 	// own traced operation; ContinueGenerate/ContinueStream starts a fresh
 	// one with its own telStart.
 	d.telEnd(d.completedSteps, types.Usage{})
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish})
+	// TS `result.finish()` with no input: the last completed step's finish
+	// reason ('other' before any step) and the summed step usage.
+	d.stream.push(*d.unreportedFinishChunk())
 	d.stream.closeOK()
 	return nil
 }
