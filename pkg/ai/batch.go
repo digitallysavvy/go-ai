@@ -203,6 +203,11 @@ func ExperimentalStartBatch(ctx context.Context, opts StartBatchOptions) (*Start
 		}
 		providerRequests = append(providerRequests, pr)
 	}
+	// TS `operationAbortSignal?.throwIfAborted()` also runs after the last
+	// request is normalized: an abort then never reaches doStartBatch.
+	if err := callCtx.Err(); err != nil {
+		return nil, err
+	}
 
 	result, err := batchAPI.DoStartBatch(callCtx, provider.BatchV4StartOptions{
 		Requests:        providerRequests,
