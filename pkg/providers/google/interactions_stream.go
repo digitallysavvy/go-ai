@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -326,7 +327,14 @@ restart:
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 		var payload interactionsEvent
-		if err := json.Unmarshal([]byte(event.Data), &payload); err != nil {
+		err = json.Unmarshal([]byte(event.Data), &payload)
+		if err == nil && !hasStringEventType(event.Data) {
+			// Every member of TS googleInteractionsEventSchema (including the
+			// unknownEvent fallback) requires a string event_type, so null,
+			// non-object JSON and objects without it fail validation.
+			err = errors.New("event_type: expected string")
+		}
+		if err != nil {
 			// TS: an unparsable chunk marks the interaction failed, is
 			// surfaced as an error part and reading continues.
 			var chunkErr error
@@ -354,6 +362,19 @@ restart:
 			goto restart
 		}
 	}
+}
+
+// hasStringEventType reports whether data is a JSON object whose event_type
+// is a string.
+func hasStringEventType(data string) bool {
+	var probe struct {
+		EventType *json.RawMessage `json:"event_type"`
+	}
+	if json.Unmarshal([]byte(data), &probe) != nil || probe.EventType == nil {
+		return false
+	}
+	var eventType string
+	return json.Unmarshal(*probe.EventType, &eventType) == nil
 }
 
 func (s *interactionsStream) Err() error {
