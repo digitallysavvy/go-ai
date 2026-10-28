@@ -779,6 +779,18 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// an earlier step's ChunkTypeFinishStep (see
 		// TestNewStreamTextResultFromParts_ToUIMessageStream).
 		sawStepFinishStep := false
+		// sawStartStepChunk marks a source that carries genuine
+		// ChunkTypeStartStep parts: a StreamText or NewStreamTextResultFromParts
+		// full stream, whose ChunkTypeFinish is always the TS call-level
+		// 'finish' part. TS to-ui-message-chunk.ts maps 'finish' to the UI
+		// "finish" part only: no "finish-step", and no closing of text or
+		// reasoning blocks (a harness turn suspended mid-step ends with a
+		// bare 'finish' after its open step was discarded, and leaves those
+		// blocks open for the next slice). Only a raw provider stream, which
+		// has no ChunkTypeStartStep, still treats ChunkTypeFinish as its
+		// step boundary.
+		sawStartStepChunk := false
+		endedWithCallFinish := false
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -887,6 +899,13 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			if chunk.Type == provider.ChunkTypeText && chunk.Text == "" {
 				continue
 			}
+			if chunk.Type == provider.ChunkTypeStartStep {
+				sawStartStepChunk = true
+			}
+			callLevelFinish := chunk.Type == provider.ChunkTypeFinish && sawStartStepChunk
+			if callLevelFinish {
+				endedWithCallFinish = true
+			}
 			chunkForConversion := *chunk
 			switch chunk.Type {
 			case provider.ChunkTypeTextStart:
@@ -940,7 +959,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 					reasoningID = ""
 				}
 			case provider.ChunkTypeFinish, provider.ChunkTypeFinishStep:
-				closeOpenParts()
+				if !callLevelFinish {
+					closeOpenParts()
+				}
 			}
 
 			// Dedupe the "start-step" UI part within one step boundary (see
@@ -987,7 +1008,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				sawStepFinishStep = true
 			case provider.ChunkTypeFinish:
 				allowStepStartUI = true
-				if sawStepFinishStep {
+				if sawStepFinishStep || callLevelFinish {
 					skipStepBoundaryDup = true
 				}
 			case provider.ChunkTypeStreamFinish:
@@ -1029,7 +1050,9 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 			finishReason = types.FinishReasonOther
 		}
-		closeOpenParts()
+		if !endedWithCallFinish {
+			closeOpenParts()
+		}
 		if !sawFinishChunk && finishReason != "" {
 			processMessageMetadata(provider.StreamChunk{
 				Type:         provider.ChunkTypeFinish,
