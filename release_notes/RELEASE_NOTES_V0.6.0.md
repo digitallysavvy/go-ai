@@ -225,7 +225,9 @@ Each item has before/after code in the
   back to `prompt.messages`. A `PrepareStep` that returns different
   `Headers` replaces the call's, dropping the `ai-sdk-agent/workflow`
   user-agent suffix (TS). A run whose context is already cancelled fires
-  `OnStart` before `OnAbort`.
+  `OnStart` before `OnAbort`. `WorkflowRunMultiplexer` no longer treats an SSE
+  event named `done` as the end of a run and ends on a `{"type":"finish"}`
+  chunk, as TS `WorkflowChatTransport` does.
   **Migration:** a hook that overrides a value for one step must set it back
   on later steps.
 
