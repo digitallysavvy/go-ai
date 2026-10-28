@@ -133,7 +133,11 @@ func (m *LanguageModel) DoGenerate(ctx context.Context, opts *provider.GenerateO
 		if detail != "" {
 			message = fmt.Sprintf("Responses API returned no output (%s)", detail)
 		}
-		return nil, providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
+		// TS APICallError({statusCode: 500, isRetryable: false}).
+		noOutput := providererrors.NewProviderError(m.provider.config.Name, 500, "", message, nil)
+		notRetryable := false
+		noOutput.Retryable = &notRetryable
+		return nil, noOutput
 	}
 
 	// Convert response to GenerateResult

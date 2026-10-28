@@ -108,7 +108,12 @@ func (m *ResponsesLanguageModel) DoGenerate(ctx context.Context, opts *provider.
 		if resp.IncompleteDetails != nil && resp.IncompleteDetails.Reason != "" {
 			message = fmt.Sprintf("Responses API returned no output (%s)", resp.IncompleteDetails.Reason)
 		}
-		return nil, providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
+		// TS APICallError({statusCode: 500, isRetryable: false}): retrying
+		// cannot produce output for this request.
+		noOutput := providererrors.NewProviderError(m.Provider(), 500, "", message, nil)
+		notRetryable := false
+		noOutput.Retryable = &notRetryable
+		return nil, noOutput
 	}
 
 	approvalFromPrompt := extractApprovalRequestIDToToolCallIDFromPrompt(opts.Prompt)

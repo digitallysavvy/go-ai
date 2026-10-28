@@ -185,6 +185,11 @@ func TestOpenResponsesDoGenerateNoOutputReturnsDescriptiveError(t *testing.T) {
 	if !strings.Contains(err.Error(), "Responses API returned no output (max_output_tokens)") {
 		t.Fatalf("error = %v, want descriptive no-output message with incomplete reason", err)
 	}
+	// TS isRetryable: false (a 500 would otherwise be retried).
+	var provErr *providererrors.ProviderError
+	if !errors.As(err, &provErr) || provErr.StatusCode != 500 || provErr.IsRetryable() {
+		t.Fatalf("error = %#v, want a non-retryable 500 ProviderError", err)
+	}
 }
 
 // TestOpenResponsesDoGenerateEmbeddedErrorMapsTo400 covers row 75f86f4: a 200
