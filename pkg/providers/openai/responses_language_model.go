@@ -1424,6 +1424,14 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	hasFunctionCall := false
 	hasWebSearchActionSources, hasFileSearchResults := openAIResponseRetrievalFlags(resp.Output)
 	retrievedFileIDs := map[string]bool{}
+	// pushCall records a client tool call and puts its tool-call part in the
+	// content at the output item's position: TS doGenerate pushes every part
+	// in output order, so a function call that precedes a message stays ahead
+	// of its text (and of the next step's message items).
+	pushCall := func(tc types.ToolCall) {
+		toolCalls = append(toolCalls, tc)
+		result.Content = append(result.Content, responsesToolCallContent(tc))
+	}
 
 	for _, rawItem := range resp.Output {
 		// Peek at type field.
@@ -1477,7 +1485,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			// one tool call per nested recipient, when every recipient names
 			// a declared function tool.
 			if expanded, ok := responses.ExpandParallelToolCall(item.CallID, item.Name, item.Arguments, item.ID, tools, providerName); ok {
-				toolCalls = append(toolCalls, expanded...)
+				for _, tc := range expanded {
+					pushCall(tc)
+				}
 				continue
 			}
 			var args map[string]interface{}
@@ -1489,7 +1499,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				RawArguments:     item.Arguments,
 				ProviderMetadata: openAIResponsesToolCallMetadata(providerName, item.ID, item.Namespace, item.Async, item.Caller),
 			}
-			toolCalls = append(toolCalls, tc)
+			pushCall(tc)
 
 		case "apply_patch_call":
 			// Row 45f2b6a: decode into a tool call ({callId, operation}) and
@@ -1508,7 +1518,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if item.ID != nil {
 				itemID = *item.ID
 			}
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         openAIDeclaredToolName(tools, "openai.apply_patch", "apply_patch"),
 				Arguments:        args,
@@ -1557,7 +1567,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 				continue
 			}
 			args, rawArgs := computerCallArguments(item)
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               *item.CallID,
 				ToolName:         openAIDeclaredToolName(tools, "openai.computer", "computer"),
 				Arguments:        args,
@@ -1608,7 +1618,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			// TS: input: JSON.stringify(part.input) -- the JSON string literal
 			// of the raw custom tool text.
 			customRaw, _ := jsonstr.Marshal(item.Input)
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.CallID,
 				ToolName:         item.Name,
 				Arguments:        map[string]interface{}{"input": item.Input},
@@ -1700,13 +1710,15 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 		case "local_shell_call":
 			if tc, ok := openAILocalShellToolCall(providerName, tools, rawItem, false); ok {
-				toolCalls = append(toolCalls, tc)
+				pushCall(tc)
 			}
 
 		case "shell_call":
 			if tc, ok := openAIShellToolCall(providerName, tools, rawItem); ok {
-				toolCalls = append(toolCalls, tc)
-				if tc.ProviderExecuted {
+				if !tc.ProviderExecuted {
+					pushCall(tc)
+				} else {
+					toolCalls = append(toolCalls, tc)
 					// Hosted-container shell calls are provider-executed:
 					// TS reports the call in content next to its output.
 					result.Content = append(result.Content, types.ToolCallContent{
@@ -1792,7 +1804,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if isHosted {
 				tc.ProviderExecuted = true
 			}
-			toolCalls = append(toolCalls, tc)
+			pushCall(tc)
 
 		case "tool_search_output":
 			var item responses.ToolSearchOutputItem
@@ -2044,6 +2056,19 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 	result.ProviderMetadata = map[string]interface{}{providerName: meta}
 
 	return result, nil
+}
+
+// responsesToolCallContent is the tool-call content part of a decoded call.
+func responsesToolCallContent(tc types.ToolCall) types.ToolCallContent {
+	return types.ToolCallContent{
+		ToolCallID:       tc.ID,
+		ToolName:         tc.ToolName,
+		Input:            tc.RawArguments,
+		Arguments:        tc.Arguments,
+		ProviderExecuted: tc.ProviderExecuted,
+		ProviderMetadata: marshalOrNil(tc.ProviderMetadata),
+		Dynamic:          tc.Dynamic,
+	}
 }
 
 // normalizeResponsesLogprobs keeps only the fields the TS logprobs schema
