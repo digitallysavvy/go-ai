@@ -72,3 +72,37 @@ func TestR57BedrockNoToolsWithoutToolContentKeepsPrompt(t *testing.T) {
 		t.Fatalf("filterToolContent with a tool call = %d messages, removed=%v; want 2, true", len(got), removed)
 	}
 }
+
+// r57: TS sends providerOptions additionalModelRequestFields whenever it is
+// set: an empty object, or one the jsonTool mode empties by stripping
+// output_config.format, is sent as {}. Without the option nothing is sent.
+func TestR57BedrockEmptyAdditionalModelRequestFieldsSent(t *testing.T) {
+	model := NewLanguageModel(&Provider{}, "amazon.nova-pro-v1:0")
+	for name, tc := range map[string]struct {
+		opts map[string]interface{}
+		want bool
+	}{
+		"empty":          {map[string]interface{}{"additionalModelRequestFields": map[string]interface{}{}}, true},
+		"jsonTool strip": {map[string]interface{}{"structuredOutputMode": "jsonTool", "additionalModelRequestFields": map[string]interface{}{"output_config": map[string]interface{}{"format": map[string]interface{}{"type": "json_schema"}}}}, true},
+		"absent":         {map[string]interface{}{}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			args, err := model.getArgs(&provider.GenerateOptions{
+				Prompt:          types.Prompt{Text: "hi"},
+				ProviderOptions: map[string]interface{}{"amazonBedrock": tc.opts},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, ok := args.Body["additionalModelRequestFields"]
+			if ok != tc.want {
+				t.Fatalf("additionalModelRequestFields present = %v (%v), want %v", ok, got, tc.want)
+			}
+			if ok {
+				if m, _ := got.(map[string]interface{}); len(m) != 0 {
+					t.Fatalf("additionalModelRequestFields = %v, want {}", got)
+				}
+			}
+		})
+	}
+}
