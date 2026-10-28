@@ -238,6 +238,14 @@ var (
 	}
 )
 
+// IsModeledResponsesItemType reports whether an output_item.added/done item
+// type is one TS openaiResponsesChunkSchema models. An event carrying any other
+// item type parses as unknown_chunk, which TS isResponseOutputChunk does not
+// count as output.
+func IsModeledResponsesItemType(itemType string) bool {
+	return zRespModeledItemTypes[itemType]
+}
+
 // zBoolean is zodlite.Boolean (z.boolean()).
 var zBoolean = zodlite.Boolean
 
