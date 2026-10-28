@@ -168,10 +168,11 @@ These details differ:
   - The `toolStartInput` size limit measures the raw wire bytes, where TS
     measures `JSON.stringify(rawInput)`. They differ only near the 64 KiB
     limit.
-  - `realpath` decodes the core's base64 path strictly and keeps invalid
-    UTF-8 bytes; Node's `Buffer.from(..., 'base64').toString('utf8')` is
-    lenient and replaces them with U+FFFD. Only a path that is not valid
-    UTF-8 differs.
+  - `realpath` decodes the sandbox's base64 output strictly (standard
+    alphabet, padding required); Node's `Buffer.from(..., 'base64')` skips
+    characters outside the alphabet. Invalid UTF-8 in the decoded path
+    becomes U+FFFD in both. The `base64` command's own output decodes the
+    same way in both.
   - When a `bash` `timeout` passes, the error text is what the sandbox
     returns for a cancelled context (usually `context deadline exceeded`);
     TS gets the sandbox's rejection for a `TimeoutError` ("The operation was
