@@ -370,13 +370,23 @@ func (t *HTTPTransport) SessionID() string {
 }
 
 func (t *HTTPTransport) setSessionID(sessionID string) {
+	t.setSessionIDVia(sessionID, runNow)
+}
+
+// runNow runs a user callback on the calling (foreground) goroutine.
+func runNow(fn func()) { fn() }
+
+// setSessionIDVia records the session id, then runs OnSessionIDChange through
+// run: bg.callback on a background goroutine, so that Close waits for the
+// session id write and skips only the user callback.
+func (t *HTTPTransport) setSessionIDVia(sessionID string, run func(func())) {
 	t.mu.Lock()
 	changed := t.sessionID != sessionID
 	t.sessionID = sessionID
 	onChange := t.onSessionIDChange
 	t.mu.Unlock()
 	if changed && onChange != nil {
-		onChange(sessionID)
+		run(func() { onChange(sessionID) })
 	}
 }
 
@@ -385,6 +395,12 @@ func (t *HTTPTransport) setSessionID(sessionID string) {
 // the current session id it is cleared (so OnSessionIDChange
 // fires with ""), and OnSessionExpired fires either way.
 func (t *HTTPTransport) expireSessionID(expired string) {
+	t.expireSessionIDVia(expired, runNow)
+}
+
+// expireSessionIDVia is expireSessionID with the user callbacks run through
+// run (see setSessionIDVia).
+func (t *HTTPTransport) expireSessionIDVia(expired string, run func(func())) {
 	t.mu.Lock()
 	cleared := t.sessionID == expired && expired != ""
 	if cleared {
@@ -394,10 +410,10 @@ func (t *HTTPTransport) expireSessionID(expired string) {
 	onExpired := t.onSessionExpired
 	t.mu.Unlock()
 	if cleared && onChange != nil {
-		onChange("")
+		run(func() { onChange("") })
 	}
 	if onExpired != nil {
-		onExpired(expired)
+		run(func() { onExpired(expired) })
 	}
 }
 
@@ -1343,7 +1359,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 		return
 	}
 	if sessionID := resp.Header.Get("mcp-session-id"); sessionID != "" {
-		t.bg.callback(func() { t.setSessionID(sessionID) })
+		t.setSessionIDVia(sessionID, t.bg.callback)
 	}
 
 	// 401: run the OAuth refresh once (reusing the single-flight path used by
@@ -1390,7 +1406,7 @@ func (t *HTTPTransport) openInboundSSE(lifecycleCtx context.Context, triedAuth b
 			resp.Body.Close() //nolint:errcheck
 		}
 		if resp.StatusCode == http.StatusNotFound && sessionIDForRequest != "" {
-			t.bg.callback(func() { t.expireSessionID(sessionIDForRequest) })
+			t.expireSessionIDVia(sessionIDForRequest, t.bg.callback)
 		}
 		message := fmt.Sprintf("MCP HTTP Transport Error: GET SSE failed: %d %s", resp.StatusCode, responseStatusText(resp))
 		// TS reports only the status and URL here, not the response body.
