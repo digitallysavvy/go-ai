@@ -367,6 +367,13 @@ These match TS and are unlikely to need code changes, but can change output.
   step (and call) whose only reasoning is a reasoning file, as TS counts
   reasoning-file parts (new `ReasoningFiles` on the step-end and finish
   events).
+- **Telemetry:** legacy `ai.prompt` records instructions given as system
+  messages (`InstructionMessages`) as the message array
+  (`{"system":[{"role":"system","content":...}],...}`), as TS
+  `JSON.stringify({system: instructions})`, instead of their joined text. A
+  string `System` is still a string. The legacy `ToolLoopAgent` root now
+  carries `AgentConfig.InstructionMessages` (also the GenAI
+  `gen_ai.system_instructions` of its root).
 - **GenAI telemetry:** the text root and chat spans format the caller-facing
   messages like TS `formatModelMessages` (image parts as `uri`/`blob`, parts
   the TS converter does not map, such as an assistant custom part or a tool

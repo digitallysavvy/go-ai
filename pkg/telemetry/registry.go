@@ -1355,20 +1355,62 @@ func legacyJSONOrEmpty(v interface{}) string {
 // an array-of-parts object rather than a bare string; this is an accepted
 // Go-runtime type-system divergence (same one already present in
 // ai.prompt.messages / ai.prompt.tools elsewhere).
-func legacyPromptJSON(isObjectOp bool, system, prompt string, messages []types.Message) string {
+//
+// When the instructions were given as system messages (TS
+// `instructions: SystemModelMessage[]`), `system` is that array in the TS
+// SystemModelMessage shape ({role, content, providerOptions}, content the
+// message text) rather than the joined text, as `JSON.stringify` writes
+// `event.instructions`.
+func legacyPromptJSON(isObjectOp bool, system, prompt string, messages, instructionMessages []types.Message) string {
+	var sys interface{}
+	if len(instructionMessages) > 0 {
+		sys = legacySystemMessages(instructionMessages)
+	} else if system != "" {
+		sys = system
+	}
 	if isObjectOp {
 		v := struct {
-			System   string          `json:"system,omitempty"`
+			System   interface{}     `json:"system,omitempty"`
 			Prompt   string          `json:"prompt,omitempty"`
 			Messages []types.Message `json:"messages,omitempty"`
-		}{System: system, Prompt: prompt, Messages: messages}
+		}{System: sys, Prompt: prompt, Messages: messages}
 		return legacyJSONOrEmpty(v)
 	}
 	v := struct {
-		System   string          `json:"system,omitempty"`
+		System   interface{}     `json:"system,omitempty"`
 		Messages []types.Message `json:"messages,omitempty"`
-	}{System: system, Messages: messages}
+	}{System: sys, Messages: messages}
 	return legacyJSONOrEmpty(v)
+}
+
+// legacySystemMessage is the JSON shape of a TS SystemModelMessage
+// ({role: 'system', content: string, providerOptions?}).
+type legacySystemMessage struct {
+	Role            string                 `json:"role"`
+	Content         string                 `json:"content"`
+	ProviderOptions map[string]interface{} `json:"providerOptions,omitempty"`
+}
+
+// legacySystemMessages converts instruction messages to the TS
+// SystemModelMessage JSON shape. A Go system message holds its text in text
+// parts; their texts are concatenated into the single TS content string.
+func legacySystemMessages(messages []types.Message) []legacySystemMessage {
+	out := make([]legacySystemMessage, 0, len(messages))
+	for _, m := range messages {
+		var text strings.Builder
+		for _, part := range m.Content {
+			switch p := part.(type) {
+			case types.TextContent:
+				text.WriteString(p.Text)
+			case *types.TextContent:
+				if p != nil {
+					text.WriteString(p.Text)
+				}
+			}
+		}
+		out = append(out, legacySystemMessage{Role: "system", Content: text.String(), ProviderOptions: m.ProviderOptions})
+	}
+	return out
 }
 
 // legacyBaseAttrsKey is a private context key carrying the root span's
@@ -1501,7 +1543,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		// non-empty.
 		isObjectOp := e.OperationType == "ai.generateObject" || e.OperationType == "ai.streamObject"
 		if recordInputs {
-			if promptJSON := legacyPromptJSON(isObjectOp, e.System, e.Prompt, e.Messages); promptJSON != "" {
+			if promptJSON := legacyPromptJSON(isObjectOp, e.System, e.Prompt, e.Messages, e.InstructionMessages); promptJSON != "" {
 				span.SetAttributes(attribute.String("ai.prompt", promptJSON))
 			}
 		}

@@ -245,34 +245,42 @@ func sameContextValue(a, b any) bool {
 // one opened late by a PrepareCall telemetry override.
 func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySettings, messages []types.Message) telemetry.TelemetryStartEvent {
 	var sys string
+	var instructionMessages []types.Message
 	// A nil *Options records inputs (integrations treat it the same way).
 	if settings.ShouldRecordInputs() {
 		sys = a.config.System
+		// Instructions given as system messages (TS instructions:
+		// SystemModelMessage[]) are the root's instructions, as GenerateText
+		// reports them on its start event.
+		if len(a.config.InstructionMessages) > 0 {
+			instructionMessages = append([]types.Message(nil), a.config.InstructionMessages...)
+		}
 	}
 	maxRetries := 2
 	if a.config.MaxRetries != nil {
 		maxRetries = *a.config.MaxRetries
 	}
 	return telemetry.TelemetryStartEvent{
-		CallID:           callID,
-		OperationType:    "ai.generateText",
-		ModelProvider:    a.config.Model.Provider(),
-		ModelID:          a.config.Model.ModelID(),
-		Settings:         settings,
-		System:           sys,
-		Messages:         messages,
-		Headers:          loopHeaders(a.config.Headers),
-		MaxOutputTokens:  a.config.MaxTokens,
-		Temperature:      a.config.Temperature,
-		TopP:             a.config.TopP,
-		TopK:             a.config.TopK,
-		PresencePenalty:  a.config.PresencePenalty,
-		FrequencyPenalty: a.config.FrequencyPenalty,
-		StopSequences:    a.config.StopSequences,
-		Seed:             a.config.Seed,
-		MaxRetries:       &maxRetries,
-		RuntimeContext:   telemetryRuntimeContextFor(settings, a.runtimeContext()),
-		ToolsContext:     telemetryToolsContextFor(settings, a.config.ToolsContext),
+		CallID:              callID,
+		OperationType:       "ai.generateText",
+		ModelProvider:       a.config.Model.Provider(),
+		ModelID:             a.config.Model.ModelID(),
+		Settings:            settings,
+		System:              sys,
+		Messages:            messages,
+		InstructionMessages: instructionMessages,
+		Headers:             loopHeaders(a.config.Headers),
+		MaxOutputTokens:     a.config.MaxTokens,
+		Temperature:         a.config.Temperature,
+		TopP:                a.config.TopP,
+		TopK:                a.config.TopK,
+		PresencePenalty:     a.config.PresencePenalty,
+		FrequencyPenalty:    a.config.FrequencyPenalty,
+		StopSequences:       a.config.StopSequences,
+		Seed:                a.config.Seed,
+		MaxRetries:          &maxRetries,
+		RuntimeContext:      telemetryRuntimeContextFor(settings, a.runtimeContext()),
+		ToolsContext:        telemetryToolsContextFor(settings, a.config.ToolsContext),
 	}
 }
 
