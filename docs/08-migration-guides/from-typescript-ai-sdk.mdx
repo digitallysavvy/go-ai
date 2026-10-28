@@ -127,7 +127,7 @@ Go ships two mechanisms. Prefer the `Output` one; `GenerateObject`/`StreamObject
 | `UI_MESSAGE_STREAM_HEADERS` | `ai.UIMessageStreamHeaders()` | The `Pipe*` helpers set these on an `http.ResponseWriter` for you. |
 | `createAgentUIStreamResponse({ agent, uiMessages })` / `pipeAgentUIStreamToResponse({ response, agent, uiMessages })` | `agent.CreateAgentUIStreamResponseFromUIMessages` / `agent.PipeAgentUIStreamFromUIMessagesToResponse` | Validate and convert `useChat` messages, then stream the agent's reply. See [Agent UI Stream Helpers](../07-reference/ai/agent-ui-stream-helpers.mdx).
 | `readUIMessageStream(stream)` | `ai.ReadUIMessageStream(r io.Reader)` | `ui_message_stream.go`. |
-| chunk-sequence error passed to `onError` | `ai.UIMessageStreamError` / `ai.IsUIMessageStreamError(err)` | Typed error for malformed UI message stream sequences. |
+| chunk-sequence error (`AI_UIMessageStreamError`) | `ai.UIMessageStreamError` / `ai.IsUIMessageStreamError(err)` | Typed error for malformed UI message stream sequences. |
 | `lastAssistantMessageIsCompleteWithToolCalls` | `ai.LastAssistantMessageIsCompleteWithToolCalls(messages)` | Also `ai.LastAssistantMessageIsCompleteWithApprovalResponses`. |
 | `generateId()` / `createIdGenerator({...})` | `ai.GenerateID()` / `ai.CreateIDGenerator(ai.CreateIDGeneratorOptions{...})` | `pkg/ai/generate_id.go`. See [GenerateID reference](../07-reference/ai/generate-id.mdx). |
 

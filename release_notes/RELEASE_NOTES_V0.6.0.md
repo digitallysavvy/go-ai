@@ -373,6 +373,14 @@ These match TS and are unlikely to need code changes, but can change output.
   step (and call) whose only reasoning is a reasoning file, as TS counts
   reasoning-file parts (new `ReasoningFiles` on the step-end and finish
   events).
+- **UI message streams fail on an out-of-sequence chunk**, as TS: while
+  `CreateUIMessageStreamWithOptions`/`ToUIMessageStream` build the message for
+  an `OnEnd`/`OnStepEnd` callback, a chunk with no matching part (a
+  `text-delta` without `text-start`, a tool result for an unknown call) stops
+  the stream with a `*UIMessageStreamError` on the error channel and as the
+  failed `OnEnd` outcome; it used to go to `OnError` and the stream went on.
+  Without those callbacks the chunks are not processed at all, so `OnError`
+  is no longer called for them, nor a second time for an error chunk.
 - **Telemetry:** legacy `ai.prompt` records instructions given as system
   messages (`InstructionMessages`) as the message array
   (`{"system":[{"role":"system","content":...}],...}`), as TS
