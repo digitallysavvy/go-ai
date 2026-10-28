@@ -404,7 +404,13 @@ func (s *bedrockConverseStream) handleContentBlockDelta(value map[string]interfa
 		return
 	}
 
-	if text, ok := delta["text"].(string); ok && text != "" {
+	// TS parses delta with a zod union: the first matching member wins and
+	// strips every other key, so pick the member in union order before acting
+	// (an empty text with a toolUse beside it is still the text member).
+	if text, ok := delta["text"].(string); ok {
+		if text == "" {
+			return
+		}
 		if _, exists := s.contentBlocks[idx]; !exists {
 			s.contentBlocks[idx] = &bedrockStreamContentBlock{Kind: "text"}
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeTextStart, ID: strconv.Itoa(idx)})
@@ -419,7 +425,14 @@ func (s *bedrockConverseStream) handleContentBlockDelta(value map[string]interfa
 		return
 	}
 
+	if _, ok := delta["citation"].(map[string]interface{}); ok {
+		return
+	}
+
 	if toolUse, ok := delta["toolUse"].(map[string]interface{}); ok {
+		if _, ok := toolUse["input"].(string); !ok {
+			return
+		}
 		block, exists := s.contentBlocks[idx]
 		if !exists || block.Kind != "tool-call" {
 			return
@@ -449,12 +462,20 @@ func (s *bedrockConverseStream) handleReasoningDelta(idx int, rc map[string]inte
 		}
 	}
 
-	if text, ok := rc["text"].(string); ok && text != "" {
+	// Union order: the first reasoningContent member whose string field is
+	// present wins, even when that field is empty.
+	if text, ok := rc["text"].(string); ok {
+		if text == "" {
+			return
+		}
 		ensureReasoningBlock()
 		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: strconv.Itoa(idx), Reasoning: text})
 		return
 	}
-	if signature, ok := rc["signature"].(string); ok && signature != "" {
+	if signature, ok := rc["signature"].(string); ok {
+		if signature == "" {
+			return
+		}
 		ensureReasoningBlock()
 		meta := map[string]interface{}{
 			"amazonBedrock": map[string]interface{}{"signature": signature},
@@ -464,7 +485,10 @@ func (s *bedrockConverseStream) handleReasoningDelta(idx int, rc map[string]inte
 		s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeReasoning, ID: strconv.Itoa(idx), Reasoning: "", ProviderMetadata: data})
 		return
 	}
-	if redactedData, ok := rc["data"].(string); ok && redactedData != "" {
+	if redactedData, ok := rc["data"].(string); ok {
+		if redactedData == "" {
+			return
+		}
 		ensureReasoningBlock()
 		meta := map[string]interface{}{
 			"amazonBedrock": map[string]interface{}{"redactedData": redactedData},
