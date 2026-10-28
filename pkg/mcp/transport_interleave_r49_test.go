@@ -428,15 +428,15 @@ func runHTTPInterleaving(t *testing.T, seed int64) {
 	var lastCloseEnd int64
 	var okConnectStarts []int64
 	for i, n := 0, 3+rng.Intn(6); i < n; i++ {
-		op := rng.Intn(3)
-		if op == 2 {
+		switch rng.Intn(3) {
+		case 2:
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				_ = tr.Send(context.Background(), &MCPMessage{JSONRpc: "2.0", ID: 1, Method: "tools/list"})
 			}()
 			ops = append(ops, "send")
-		} else if op == 0 {
+		case 0:
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -448,7 +448,7 @@ func runHTTPInterleaving(t *testing.T, seed int64) {
 				}
 			}()
 			ops = append(ops, "connect")
-		} else {
+		default:
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
