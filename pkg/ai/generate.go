@@ -1091,6 +1091,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
 		stepStart := time.Now()
 		stepIndex := stepNum - 1
+		// The per-step timeout starts with the step, before PrepareStep, as
+		// TS arms its step timer at the top of the step loop.
+		stepCtx := ctx
+		var stepCancel context.CancelFunc
+		if opts.Timeout != nil && opts.Timeout.HasPerStep() {
+			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
+			defer stepCancel()
+		}
 		stepModel := opts.Model
 		stepSystem := instructionsForNextStep
 		stepInstructionMessages := instructionMessagesForNextStep
@@ -1250,14 +1258,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		toolsByName := make(map[string]*types.Tool, len(stepExecutionTools))
 		for i := range stepExecutionTools {
 			toolsByName[stepExecutionTools[i].Name] = &stepExecutionTools[i]
-		}
-
-		// Apply per-step timeout if configured
-		stepCtx := ctx
-		var stepCancel context.CancelFunc
-		if opts.Timeout != nil && opts.Timeout.HasPerStep() {
-			stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
-			defer stepCancel()
 		}
 
 		stepPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{

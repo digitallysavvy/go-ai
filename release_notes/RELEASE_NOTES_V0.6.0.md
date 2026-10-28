@@ -565,6 +565,9 @@ These match TS and are unlikely to need code changes, but can change output.
   all tools. A tool call against such an emptied set is a
   `NoSuchToolError` ("Available tools: .") that `RepairToolCall` can
   repair, as in TS.
+- **The `GenerateText`/`StreamText` per-step timeout starts before
+  `PrepareStep`**, as TS arms its step timer at the top of each step: time
+  spent in `PrepareStep` counts toward `Timeout.PerStep`.
 
 ### Providers
 
