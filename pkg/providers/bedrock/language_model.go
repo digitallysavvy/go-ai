@@ -855,7 +855,9 @@ type bedrockConverseReasoningContent struct {
 	RedactedReasoning *struct {
 		Data string `json:"data"`
 	} `json:"redactedReasoning"`
-	RedactedContent string `json:"redactedContent"`
+	// RedactedContent is a pointer: TS `'redactedContent' in part` keeps
+	// an empty value.
+	RedactedContent *string `json:"redactedContent"`
 }
 
 type bedrockConverseContentBlock struct {
@@ -954,11 +956,11 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 						"bedrock":       map[string]interface{}{"redactedData": rc.RedactedReasoning.Data},
 					}),
 				}
-			case rc.RedactedContent != "":
+			case rc.RedactedContent != nil:
 				reasoning = types.ReasoningContent{
 					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
-						"amazonBedrock": map[string]interface{}{"redactedContent": rc.RedactedContent},
-						"bedrock":       map[string]interface{}{"redactedContent": rc.RedactedContent},
+						"amazonBedrock": map[string]interface{}{"redactedContent": *rc.RedactedContent},
+						"bedrock":       map[string]interface{}{"redactedContent": *rc.RedactedContent},
 					}),
 				}
 			}
