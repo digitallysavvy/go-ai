@@ -367,6 +367,16 @@ These match TS and are unlikely to need code changes, but can change output.
   step (and call) whose only reasoning is a reasoning file, as TS counts
   reasoning-file parts (new `ReasoningFiles` on the step-end and finish
   events).
+- **GenAI telemetry:** the text root and chat spans format the caller-facing
+  messages like TS `formatModelMessages` (image parts as `uri`/`blob`, parts
+  the TS converter does not map, such as an assistant custom part or a tool
+  approval response, by type only); instruction messages are one
+  `gen_ai.system_instructions` part each instead of system messages in
+  `gen_ai.input.messages`; the chat span reports the root call's request
+  settings, not a `PrepareStep` override; file data that is an http(s)
+  string is a `uri` part. New `Messages` and `InstructionMessages` fields on
+  `LanguageModelCallStartEvent` and `InstructionMessages` on
+  `TelemetryStartEvent` carry the inputs.
 - **fx `glob`:** braces expand like minimatch (`{1..3}`, `{a..e..2}`,
   padded and reverse sequences, `${...}`, `{a},b}`, at most 100000
   expansions), and patterns are preprocessed like Node `path.matchesGlob`
