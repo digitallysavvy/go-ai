@@ -71,3 +71,25 @@ func TestStreamContextManagementCarriesAcrossMessages(t *testing.T) {
 		}
 	}
 }
+
+// TestStreamMessageDeltaRawUsageStripsNestedKeys: TS's message_delta usage is
+// a loose object, but its iterations items and output_tokens_details are plain
+// z.object schemas, so unknown keys there are stripped from the raw usage
+// (providerMetadata.anthropic.usage and usage.raw); top-level extras stay.
+func TestStreamMessageDeltaRawUsageStripsNestedKeys(t *testing.T) {
+	sse := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2,\"service_tier\":\"standard\",\"output_tokens_details\":{\"thinking_tokens\":1,\"extra\":1},\"iterations\":[{\"type\":\"message\",\"input_tokens\":1,\"output_tokens\":2,\"extra\":true}]}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	finishes := collectFinishChunks(t, sse)
+	if len(finishes) != 1 {
+		t.Fatalf("finish chunks = %d, want 1", len(finishes))
+	}
+	want := `{"input_tokens":1,"iterations":[{"input_tokens":1,"output_tokens":2,"type":"message"}],"output_tokens":2,"output_tokens_details":{"thinking_tokens":1},"service_tier":"standard"}`
+	if got := string(finishMetaField(t, finishes[0], "usage")); got != want {
+		t.Errorf("providerMetadata.anthropic.usage = %s, want %s", got, want)
+	}
+	raw, _ := json.Marshal(finishes[0].Usage.Raw)
+	if string(raw) != want {
+		t.Errorf("usage.raw = %s, want %s", raw, want)
+	}
+}

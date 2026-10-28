@@ -2727,6 +2727,9 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				Usage map[string]interface{} `json:"usage"`
 			}
 			if json.Unmarshal([]byte(event.Data), &deltaRaw) == nil && len(deltaRaw.Usage) > 0 {
+				// The delta usage is a loose object, but its iterations and
+				// output_tokens_details are plain z.object schemas (stripped).
+				stripUsageRawToSchema(deltaRaw.Usage)
 				if s.usage.Raw == nil {
 					s.usage.Raw = map[string]interface{}{}
 				}
