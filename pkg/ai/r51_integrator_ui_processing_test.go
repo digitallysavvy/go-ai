@@ -100,7 +100,7 @@ func TestR51IntegratorToUIStreamStopsReadingAfterProcessingFailure(t *testing.T)
 		{Type: provider.ChunkTypeText, Text: "hi"},
 		{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "unknown", ToolName: "t", Result: "x"}},
 	}}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	out, errCh := ToUIMessageStream(context.Background(), src, UIMessageStreamResultOptions{OnEnd: func(map[string]interface{}) {}})
 	done := make(chan error, 1)
 	go func() {
