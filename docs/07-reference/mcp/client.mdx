@@ -170,7 +170,7 @@ The child process does not inherit the whole parent environment. It gets `Env` p
 | `TimeoutMS` | `int` | TimeoutMS is the HTTP request timeout. |
 | `OAuth` | `*OAuthConfig` | OAuth configuration (optional). |
 | `Config` | `TransportConfig` | Config is the base transport configuration. |
-| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for GET and POST requests. |
+| `HTTPClient` | `*http.Client` | HTTPClient is an optional custom HTTP client used for GET and POST requests. The transport uses a copy of it, so the request timeout and redirect policy it applies do not change the client itself. |
 | `SSEClient` | `SSEClient` | SSEClient is an optional custom SSE-capable client used instead of HTTPClient when supplied. |
 | `AuthProvider` | `OAuthClientProvider` | AuthProvider enables the MCP OAuth flow: its tokens are sent as a bearer token, and a 401 response runs Auth once (shared by concurrent requests) before the request is retried. Matches TS SseMCPTransport's authProvider. When Auth cannot complete without user interaction the request fails with \*UnauthorizedError. |
 | `AuthHTTPClient` | `*http.Client` | AuthHTTPClient is the HTTP client used for the OAuth discovery, registration and token requests Auth makes (TS passes the transport's fetch). Nil uses Auth's default client. |
