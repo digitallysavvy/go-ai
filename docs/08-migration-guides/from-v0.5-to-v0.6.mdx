@@ -112,6 +112,26 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 ## Behavior changes that can need an edit
 
+- **`MaxTokens` below 1 is rejected.** As TS
+  `prepareLanguageModelCallOptions`, `GenerateText`, `StreamText`,
+  `GenerateObject`, `StreamObject`, batch text requests, `PrepareStep`
+  overrides and the legacy `ToolLoopAgent` fail with
+  `*errors.InvalidArgumentError` ("maxOutputTokens must be >= 1") when
+  `MaxTokens` is 0 or negative. v0.5 sent the value to the provider. Leave
+  `MaxTokens` nil for the provider default:
+
+  ```go
+  // v0.5: MaxTokens: &zero was sent as max_tokens: 0
+  // v0.6: leave it nil, or set a value of at least 1
+  maxTokens := 1024
+  opts := ai.GenerateTextOptions{MaxTokens: &maxTokens}
+  _ = opts
+  ```
+- **The legacy `ToolLoopAgent` rejects a negative `MaxRetries`.** A negative
+  `MaxRetries` (on the agent or from `PrepareCall`) now fails the run with
+  `*errors.InvalidArgumentError` ("maxRetries must be >= 0") before the
+  model call, as TS `prepareRetries`. v0.5 silently made no retries. Use 0
+  to disable retries.
 - **Code mode has a default 10 s CPU limit.** `ExecutionPolicy.CPUTimeoutMs`
   (default 10_000) stops guest JavaScript that runs longer than that in one
   invocation with `*codemode.CPUTimeoutError`. Time in host tools does not

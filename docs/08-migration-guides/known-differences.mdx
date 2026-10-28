@@ -249,6 +249,19 @@ call its own ID. A constant ID would collide in an integration's call-state
 map when two runs share an integration concurrently, and would break
 correlating events with their run.
 
+## Option validation timing
+
+- `StreamText` returns an invalid `Instructions` value (a non-system
+  message) as its error, synchronously. TS `streamText` validates the prompt
+  inside its async run, so the error arrives as an error part or a rejected
+  promise, after the `maxRetries` check. Go reports it the way its other
+  `StreamText` validation errors are reported, as v0.5.x did.
+- `WorkflowAgent.Stream` rejects a `MaxTokens` below 1 before the model call
+  (`InvalidArgumentError` "maxOutputTokens must be >= 1"), as
+  `WorkflowAgent.Generate` and TS `generateText` do. The TS WorkflowAgent
+  stream path (`doStreamStep`) does not check it and sends the value to the
+  provider.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime

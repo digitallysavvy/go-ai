@@ -198,6 +198,16 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **`MaxTokens` below 1 is rejected** with `*errors.InvalidArgumentError`
+  ("maxOutputTokens must be >= 1") by `GenerateText`, `StreamText`,
+  `GenerateObject`, `StreamObject`, batch text requests, `PrepareStep`
+  overrides and the legacy `ToolLoopAgent`, as TS. v0.5.x sent it to the
+  provider.
+  **Migration:** leave `MaxTokens` nil, or set it to at least 1.
+- **The legacy `ToolLoopAgent` rejects a negative `MaxRetries`**
+  ("maxRetries must be >= 0") before the model call, as TS. v0.5.x
+  silently made no retries.
+  **Migration:** use 0 to disable retries.
 - **Prompt validation matches TS `standardizePrompt`.** `GenerateText`,
   `StreamText`, `GenerateObject`, `StreamObject`, batch text requests and the
   agent calls return `*errors.InvalidPromptError` when neither or both of
@@ -374,6 +384,14 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Core
 
+- **SSE streams follow TS eventsource-parser 3.0.8 at the end of a
+  stream.** A final event with no closing blank line (or a last line with
+  no terminator) is dropped, as in TS; v0.5.x dispatched it. This applies to
+  every SSE provider and the AI Gateway video reader, which now uses the
+  shared parser (multi-line data joined, `[DONE]` skipped).
+- **With `IncludeRawChunks`, the raw chunk for a payload that is not valid
+  JSON has a nil `Raw`** (TS `rawValue: undefined`), in every SSE provider
+  and Bedrock. It used to carry the payload text.
 - **`StreamObject` keeps reading after a provider error part**, as TS. The
   first error part is the call's error (finish reason `error`), `OnError`
   fires once per error part, and the call's telemetry ends through `OnEnd`
@@ -845,6 +863,10 @@ Notable ones:
   Mistral accepts a call-level `Language`.
 - Streaming speech "closed before completion" errors omit the WebSocket
   close code and reason.
+- `StreamText` returns an invalid `Instructions` value synchronously, as its
+  other validation errors; TS reports it from the stream. `WorkflowAgent`
+  streams reject `MaxTokens` below 1, which the TS WorkflowAgent stream
+  path does not check.
 - When a `StreamObject` stream itself fails (`Next()` returns an error), Go
   still runs the end callbacks and ends telemetry; TS skips them.
 - When a `StreamObject` stream ends without a finish part, Go still parses
