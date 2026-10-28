@@ -657,6 +657,8 @@ in v0.5.3.
 
 - `toolbash` keeps its truncation notice past 2^31 output characters on
   32-bit builds.
+- `StreamText` no longer writes a step's response messages into a caller's
+  message slice (a `PrepareStep` result with spare capacity).
 - `GenerateObject`/`StreamObject` sent the response format type as
   `json_schema`/`json_object` instead of `json`, so many providers dropped
   JSON mode or the schema. (v0.5.3)
