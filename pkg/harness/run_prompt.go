@@ -1999,12 +1999,11 @@ func (d *turnDriver) releasePendingStopBoundary() {
 // suspendOrFinishNow settles the local *ai.StreamTextResult right now, ahead
 // of any later `finish` the adapter might still emit — used only by the
 // StopConditions early-stop path. finishReason is the last completed step's;
-// usage is deliberately left off the pushed chunk so the locally-summed
-// total stands, since this is not a real bridge-reported total the way a
-// genuine terminal `finish` carries one (contrast pauseForHostInput/the
-// FinishPart branch in consumeLoop). The telemetry span's turn total is the
-// sum of every completed step's usage (TS #22259), not just the last
-// step's.
+// the pushed chunk carries the summed step usage and the last step's
+// provider metadata, as TS `result.finish()` without input reports them
+// (contrast the FinishPart branch in consumeLoop, which carries the
+// bridge-reported total). The telemetry span's turn total is the sum of
+// every completed step's usage (TS #22259), not just the last step's.
 //
 // Whether the *underlying harness session's turn* survives this for a later
 // resume depends on d.in.OnStopConditionMet (wired to
