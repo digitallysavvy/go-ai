@@ -106,3 +106,30 @@ func TestR51GlobCompileContextSameResult(t *testing.T) {
 		t.Errorf("canceled compile = %v, %v", g, err)
 	}
 }
+
+// TS compiles the glob pattern in path.matchesGlob, per file found: with no
+// files a too-long pattern is never compiled and the tool returns [].
+func TestR51GlobNoFilesSkipsPatternCompile(t *testing.T) {
+	sb := newFakeSandbox()
+	sb.handle = func(_ context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+		if strings.Contains(opts.Command, "realpath") {
+			return providerutils.SandboxRunResult{Stdout: b64("/workspace\x00")}, nil
+		}
+		return providerutils.SandboxRunResult{}, nil
+	}
+	r := newRemoteOps(sb, "/workspace")
+	input, _ := json.Marshal(map[string]string{"pattern": strings.Repeat("a", 70000)})
+	out, err := r.execute(context.Background(), "glob", input)
+	if err != nil || !reflect.DeepEqual(out, []string{}) {
+		t.Errorf("glob with no files = %#v, %v; want [], nil", out, err)
+	}
+	sb.handle = func(_ context.Context, opts providerutils.SandboxProcessOptions) (providerutils.SandboxRunResult, error) {
+		if strings.Contains(opts.Command, "realpath") {
+			return providerutils.SandboxRunResult{Stdout: b64("/workspace\x00")}, nil
+		}
+		return providerutils.SandboxRunResult{Stdout: "/workspace/a\x00"}, nil
+	}
+	if _, err := r.execute(context.Background(), "glob", input); err == nil || err.Error() != "pattern is too long" {
+		t.Errorf("glob with a file = %v, want pattern is too long", err)
+	}
+}

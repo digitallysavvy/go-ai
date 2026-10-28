@@ -326,14 +326,19 @@ func (r *remoteOps) execute(ctx context.Context, name string, input json.RawMess
 		if res.ExitCode != 0 {
 			return nil, errors.New(res.Stderr)
 		}
-		re, err := globRegexpContext(ctx, in.Pattern)
-		if err != nil {
-			return nil, err
-		}
+		// TS compiles the pattern in path.matchesGlob, once per file, so with
+		// no files an invalid or too long pattern is never compiled and the
+		// result is empty.
+		var re *globPattern
 		files := []string{}
 		for _, file := range strings.Split(res.Stdout, "\x00") {
 			if file == "" {
 				continue
+			}
+			if re == nil {
+				if re, err = globRegexpContext(ctx, in.Pattern); err != nil {
+					return nil, err
+				}
 			}
 			if rel := posixRelative(target, file); re.MatchString(rel) {
 				files = append(files, rel)

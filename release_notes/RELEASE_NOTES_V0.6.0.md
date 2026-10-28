@@ -601,6 +601,9 @@ in v0.5.3.
   preprocessing) stops when the tool call's context ends, returning the
   context's error; a pattern such as `{a,b}` repeated 17 times took tens of
   seconds of CPU regardless. Results are unchanged.
+- fx `glob` with no files found returns `[]` without compiling the pattern,
+  as TS (which compiles it per file in `path.matchesGlob`), so a too long
+  pattern no longer fails an empty search.
 - ACP mapping and authentication settings were serialized with Go field
   names and never took effect. (v0.5.3)
 - A malformed ACP `askUserQuestions` tool result no longer crashes the host,
