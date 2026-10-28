@@ -322,6 +322,17 @@ Each item has before/after code in the
   replaces them.
   **Migration:** to use the global integrations, leave `Integrations` nil
   instead of setting an empty slice.
+- **Default telemetry tracer names match TS** (owner decision 2026-10-28).
+  Without a tracer of its own, `LegacyOpenTelemetry` (and `GetTracer`) uses
+  the global tracer named `"ai"` and the GenAI `OpenTelemetry` integration
+  the one named `"gen_ai"`, as TS `trace.getTracer('ai')` /
+  `trace.getTracer('gen_ai')`; v0.5.x used `"ai-sdk"`, and child spans
+  (steps, tool calls, embed, rerank, decide) used a separate `"go-ai"`
+  tracer. Child spans now use the root span's tracer, so a caller-supplied
+  `Tracer` names every span of the call. New constants `LegacyTracerName`
+  and `GenAITracerName`; `TracerName` is deprecated and unused.
+  **Migration:** update instrumentation-scope filters or sampler rules that
+  match `ai-sdk` or `go-ai`, or pass your own `Tracer`.
 
 ---
 

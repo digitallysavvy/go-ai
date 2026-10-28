@@ -835,7 +835,7 @@ func (i LegacyOpenTelemetry) stateKey(callID string) string { return instanceSta
 // LegacyOpenTelemetryOptions configures a LegacyOpenTelemetry integration.
 type LegacyOpenTelemetryOptions struct {
 	// Tracer is the OTel tracer to use. Defaults to the global tracer
-	// provider's "ai-sdk" tracer when nil.
+	// provider's "ai" tracer (LegacyTracerName) when nil, as TS.
 	Tracer trace.Tracer
 	// EnrichSpan adds custom attributes to spans as they are created.
 	// SDK-managed attributes win on key collisions. A per-call
@@ -852,10 +852,10 @@ func NewLegacyOpenTelemetry(opts LegacyOpenTelemetryOptions) LegacyOpenTelemetry
 
 // tracerFor resolves the tracer this integration should use: a no-op tracer
 // when telemetry is disabled, the constructor-configured tracer when set,
-// else the shared GetTracer fallback (global "ai-sdk" tracer).
+// else the shared GetTracer fallback (global "ai" tracer, as TS).
 func (i LegacyOpenTelemetry) tracerFor(settings *Settings) trace.Tracer {
 	if !Enabled(settings) {
-		return noop.NewTracerProvider().Tracer(TracerName)
+		return noop.NewTracerProvider().Tracer(LegacyTracerName)
 	}
 	if i.tracer != nil {
 		return i.tracer
@@ -941,8 +941,11 @@ type legacyCallState struct {
 	// span — mirrors TS's state.rerankSpan. Both are closed defensively by
 	// OnError/OnAbort (mirroring TS) so a provider failure that skips
 	// OnEmbedEnd/OnRerankEnd doesn't leak them.
-	embedSpans      map[string]trace.Span
-	rerankSpan      trace.Span
+	embedSpans map[string]trace.Span
+	rerankSpan trace.Span
+	// tracer is the tracer that started rootSpan; child spans use it too,
+	// as TS uses this.tracer for every span.
+	tracer          trace.Tracer
 	baseAttrs       []attribute.KeyValue
 	settings        legacySettings
 	runtimeCtxAttrs []attribute.KeyValue
@@ -988,6 +991,23 @@ func legacyDeleteState(callID string) {
 // trace.SpanFromContext(ctx); a callID with no recorded root span yields a
 // non-recording span, as TS returns when getCallState finds none. Like TS
 // getCallState it never creates call state.
+// legacyChildTracer returns the tracer that started the call's root span
+// (TS this.tracer), falling back to the parent span's provider's "ai" tracer.
+// key is the state key (i.stateKey(callID)).
+func legacyChildTracer(key string, parent trace.Span) trace.Tracer {
+	if key != "" {
+		if st := legacyLoadedState(key); st != nil {
+			st.mu.Lock()
+			t := st.tracer
+			st.mu.Unlock()
+			if t != nil {
+				return t
+			}
+		}
+	}
+	return parent.TracerProvider().Tracer(LegacyTracerName)
+}
+
 func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
 	if callID == "" {
 		return trace.SpanFromContext(ctx)
@@ -1494,6 +1514,7 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		st := legacyState(i.stateKey(e.CallID))
 		st.mu.Lock()
 		st.rootSpan = span
+		st.tracer = tracer
 		st.baseAttrs = baseAttrs
 		st.settings = settings
 		st.mu.Unlock()
@@ -1777,7 +1798,7 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	if !rootSpan.IsRecording() {
 		return ctx
 	}
-	tracer := rootSpan.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), rootSpan)
 	// Explicitly rebase ctx onto our own root span before creating the step
 	// span, so it nests correctly under LegacyOpenTelemetry's root even if
 	// ctx's ambient "current span" belongs to another registered integration.
@@ -1943,7 +1964,7 @@ func (i LegacyOpenTelemetry) OnEmbedStart(ctx context.Context, e EmbeddingModelC
 		return
 	}
 	callID := modelCallID(e.EmbedCallID, e.CallID, e.OperationID)
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), parent)
 	spanName := e.OperationID
 	if spanName == "" {
 		spanName = "ai.embed.doEmbed"
@@ -2038,7 +2059,7 @@ func (i LegacyOpenTelemetry) OnRerankStart(ctx context.Context, e RerankingModel
 		return
 	}
 	callID := modelCallID(e.CallID, e.OperationID)
-	tracer := parent.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), parent)
 	spanName := e.OperationID
 	if spanName == "" {
 		spanName = "ai.rerank.doRerank"
@@ -2147,7 +2168,7 @@ func (i LegacyOpenTelemetry) OnToolExecutionStart(ctx context.Context, e Telemet
 			return ctx
 		}
 	}
-	tracer := span.TracerProvider().Tracer("go-ai")
+	tracer := legacyChildTracer(i.stateKey(e.CallID), span)
 	ctx, child := tracer.Start(trace.ContextWithSpan(ctx, span), "ai.toolCall")
 	if attrs := customSpanAttributes(ctx, i.enrichSpan, e.Settings, EnrichSpanOptions{
 		SpanType: SpanTypeTool,

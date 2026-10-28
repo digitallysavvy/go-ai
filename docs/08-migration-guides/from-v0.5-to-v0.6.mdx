@@ -274,3 +274,16 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   tel = &telemetry.Options{}
   _ = tel
   ```
+- **Telemetry spans come from the `ai` and `gen_ai` tracers.** As in TS,
+  `LegacyOpenTelemetry` without a `Tracer` uses `otel.Tracer("ai")` and the
+  GenAI `OpenTelemetry` integration `otel.Tracer("gen_ai")`. v0.5 used
+  `"ai-sdk"` for root spans and `"go-ai"` for child spans. Every span of a
+  call now comes from the root's tracer, including a `Tracer` you pass.
+  Update filters on the instrumentation scope name:
+
+  ```go
+  // v0.5: spans had the instrumentation scope "ai-sdk" or "go-ai"
+  // v0.6: "ai" (legacy) or "gen_ai" (GenAI), or your own tracer's name
+  legacyScope, genAIScope := telemetry.LegacyTracerName, telemetry.GenAITracerName
+  _, _ = legacyScope, genAIScope
+  ```

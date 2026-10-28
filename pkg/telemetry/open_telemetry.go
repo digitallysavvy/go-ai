@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -32,7 +33,7 @@ import (
 // (otel/src/open-telemetry.ts).
 type OpenTelemetryOptions struct {
 	// Tracer is the OTel tracer to use. Defaults to the global tracer
-	// provider's "ai-sdk" tracer when nil.
+	// provider's "gen_ai" tracer (GenAITracerName) when nil, as TS.
 	Tracer trace.Tracer
 	// EnrichSpan adds custom attributes to spans as they are created.
 	// SDK-managed attributes win on key collisions. A per-call
@@ -167,7 +168,8 @@ func (i OpenTelemetry) tracerFor(settings *Settings) trace.Tracer {
 	if i.tracer != nil {
 		return i.tracer
 	}
-	return GetTracer(settings)
+	// TS `options.tracer ?? trace.getTracer('gen_ai')`.
+	return otel.Tracer(GenAITracerName)
 }
 
 func (i OpenTelemetry) customAttrs(ctx context.Context, settings *Settings, opts EnrichSpanOptions) []attribute.KeyValue {
@@ -389,7 +391,7 @@ func genAIChildTracer(callID string, parent trace.Span) trace.Tracer {
 			return t
 		}
 	}
-	return parent.TracerProvider().Tracer("go-ai")
+	return parent.TracerProvider().Tracer(GenAITracerName)
 }
 
 func isAudioOperation(operationType string) bool {
@@ -1910,7 +1912,7 @@ func itoa(n int) string {
 }
 
 func noopTracer() trace.Tracer {
-	return noop.NewTracerProvider().Tracer(TracerName)
+	return noop.NewTracerProvider().Tracer(GenAITracerName)
 }
 
 var _ TelemetryIntegration = OpenTelemetry{}
