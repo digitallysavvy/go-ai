@@ -884,6 +884,14 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				local.config.ToolCallConcurrency = callConfig.ToolCallConcurrency
 				stepAgent = &local
 			}
+			// The tool timeouts come from the step's timeout (a PrepareCall
+			// override included), as the step timeout does (TS
+			// `timeout ?? preparedCall.timeout` reaches executeToolCall).
+			if callConfig.Timeout != nil && callConfig.Timeout != stepAgent.config.Timeout {
+				local := *stepAgent
+				local.config.Timeout = callConfig.Timeout
+				stepAgent = &local
+			}
 			// The tool-call events report the step's model (a PrepareCall model
 			// override), not the agent's configured one.
 			if callConfig.Model != nil && callConfig.Model != stepAgent.config.Model {
