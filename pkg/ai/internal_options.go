@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -31,6 +32,61 @@ type InternalOptions struct {
 	// reported once). Plain StreamText keeps executing tools after an error
 	// part, as TS streamText does. Used by WorkflowAgent.
 	StopOnStreamError bool
+
+	// StepCallSettings, when set, is called right after a StreamText step's
+	// PrepareStep and returns the headers and maxRetries for that step's model
+	// call; ok=false keeps the call's own. TS WorkflowAgent's prepareStep can
+	// override both (mergePrepareStepGenerationSettings), core prepareStep
+	// cannot. Used by WorkflowAgent's stream path.
+	StepCallSettings func() (headers map[string]string, maxRetries *int, ok bool)
+
+	// EndOnError makes a StreamText run that fails (not aborts) still fire
+	// OnEndEvent, after OnError, with the steps completed so far, as TS
+	// WorkflowAgent's stream mode calls onEnd for every run that was not
+	// aborted. Plain StreamText fires no end event for a failed run, like TS
+	// streamText. Used by WorkflowAgent.
+	EndOnError bool
+}
+
+// notifyFailedEnd fires the end event of a failed run when
+// InternalOptions.EndOnError asks for it (TS WorkflowAgent notifyEnd: the last
+// step's text and finish reason, 'other' without steps, and the steps' total
+// usage).
+func notifyFailedEnd(ctx context.Context, internal *InternalOptions, onEndEvent func(context.Context, OnFinishEvent), callID string, runtimeContext interface{}, toolsContext map[string]interface{}, initialResponseMessages []types.Message, steps []types.StepResult) {
+	if internal == nil || !internal.EndOnError || onEndEvent == nil {
+		return
+	}
+	steps = append([]types.StepResult(nil), steps...)
+	e := OnFinishEvent{
+		CallID:              callID,
+		FinishReason:        types.FinishReasonOther,
+		Steps:               steps,
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
+	}
+	for _, step := range steps {
+		e.TotalUsage = e.TotalUsage.Add(step.Usage)
+	}
+	if n := len(steps); n > 0 {
+		last := steps[n-1]
+		e.StepNumber, e.Model, e.ModelProvider, e.ModelID = last.StepNumber, last.Model, last.Model.Provider, last.Model.ModelID
+		e.Text, e.FinishReason, e.RawFinishReason = last.Text, last.FinishReason, last.RawFinishReason
+	}
+	e.SetAggregatesFromSteps(steps, responseMessagesWithInitial(initialResponseMessages, steps))
+	Notify(ctx, e, onEndEvent)
+}
+
+// stepCallSettings returns the headers and maxRetries for a step's model
+// call: the StepCallSettings override when it gives one, else the call's.
+func (o *InternalOptions) stepCallSettings(headers map[string]string, maxRetries *int) (map[string]string, *int) {
+	if o == nil || o.StepCallSettings == nil {
+		return headers, maxRetries
+	}
+	if h, r, ok := o.StepCallSettings(); ok {
+		return h, r
+	}
+	return headers, maxRetries
 }
 
 // providerResultFinishAllowed reports whether TS WorkflowAgent processes the

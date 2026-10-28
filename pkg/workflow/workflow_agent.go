@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"sort"
@@ -1336,13 +1337,16 @@ type prepareCallRunner struct {
 }
 
 // callOptions builds the options a PrepareCall hook receives for a step.
+// Headers, ProviderOptions and ToolsContext are copies, so a hook that edits
+// them in place leaves the agent's maps alone (other runs read them
+// concurrently).
 func (r *prepareCallRunner) callOptions(c agent.PrepareCallConfig) LanguageModelCallOptions {
 	pctx := r.pctx
 	return LanguageModelCallOptions{
 		StepNumber: c.StepNumber, Model: c.Model, System: c.System, AllowSystemInMessages: c.AllowSystemInMessages, Messages: c.Messages, Tools: c.Tools, ToolChoice: c.ToolChoice, CallOptions: c.CallOptions,
 		Temperature: c.Temperature, MaxTokens: c.MaxTokens, TopP: c.TopP, TopK: c.TopK, FrequencyPenalty: c.FrequencyPenalty, PresencePenalty: c.PresencePenalty, StopSequences: c.StopSequences, Seed: c.Seed,
-		Headers: pctx.baseHeaders, Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: c.ProviderOptions,
-		RuntimeContext: c.RuntimeContext, ToolsContext: c.ToolsContext, ExperimentalSandbox: c.ExperimentalSandbox,
+		Headers: maps.Clone(pctx.baseHeaders), Reasoning: c.Reasoning, SendReasoning: c.SendReasoning, ProviderOptions: maps.Clone(c.ProviderOptions),
+		RuntimeContext: c.RuntimeContext, ToolsContext: maps.Clone(c.ToolsContext), ExperimentalSandbox: c.ExperimentalSandbox,
 		PreviousSteps: c.PreviousSteps, AccumulatedUsage: c.AccumulatedUsage, CustomData: c.CustomData,
 		StopWhen: pctx.stopWhen, ActiveTools: pctx.activeTools, ExperimentalDownload: pctx.download,
 		MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
@@ -1445,6 +1449,14 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			opts = st.overlay(opts)
 		}
 		st.mu.Unlock()
+		// The call's active tools (after PrepareCall) filter the tool set
+		// before a PrepareStep ActiveTools does, so a step can narrow but not
+		// widen it (TS passes the filtered set to the iterator, which filters
+		// it again by the step's active tools).
+		callActive := opts.ActiveTools
+		if callActive == nil {
+			callActive = pctx.activeTools
+		}
 		if stepsInline && stepHook != nil {
 			opts = persist.apply(opts)
 			mutated, err := stepHook(ctx, opts)
@@ -1475,10 +1487,10 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		}
 		effectiveActive := opts.ActiveTools
 		if effectiveActive == nil {
-			effectiveActive = pctx.activeTools
+			effectiveActive = callActive
 		}
-		if effectiveActive == nil {
-			effectiveActive = w.ActiveTools
+		if callActive != nil {
+			c.Tools = ai.FilterActiveTools(c.Tools, callActive)
 		}
 		c.ActiveTools = effectiveActive
 		if effectiveActive != nil {
@@ -1535,9 +1547,51 @@ func (p *stepPersistence) record(in, out LanguageModelCallOptions) {
 	p.mu.Unlock()
 }
 
+// stepCallSettings hands the headers and maxRetries a PrepareStep hook left
+// for the step to the streaming loop's model call (ai.InternalOptions
+// StepCallSettings): core PrepareStepOptions has no such fields, but TS
+// WorkflowAgent's prepareStep overrides both (mergePrepareStepGenerationSettings).
+type stepCallSettings struct {
+	mu         sync.Mutex
+	set        bool
+	headers    map[string]string
+	maxRetries *int
+	// runner, when set, holds PrepareCall's result: its headers and
+	// maxRetries are the base the first step's hook starts from.
+	runner *prepareCallRunner
+}
+
+// base returns the headers (without the user-agent suffix) and maxRetries a
+// step's hook starts from before any PrepareStep result persisted: the
+// PrepareCall result's when it ran, else the call's.
+func (s *stepCallSettings) base(pctx prepareCallContext) (map[string]string, *int) {
+	if s.runner != nil {
+		s.runner.st.mu.Lock()
+		defer s.runner.st.mu.Unlock()
+		if p := s.runner.st.prepared; p != nil {
+			return p.Headers, p.MaxRetries
+		}
+	}
+	// A copy: a hook that edits the map in place must not change the
+	// agent's Headers (and race with its other runs).
+	return maps.Clone(pctx.baseHeaders), pctx.maxRetries
+}
+
+func (s *stepCallSettings) put(headers map[string]string, maxRetries *int) {
+	s.mu.Lock()
+	s.set, s.headers, s.maxRetries = true, headers, maxRetries
+	s.mu.Unlock()
+}
+
+func (s *stepCallSettings) get() (map[string]string, *int, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.headers, s.maxRetries, s.set
+}
+
 // makePrepareStep adapts the WorkflowAgent PrepareStep hook to the streaming
 // loop's per-step hook so it runs before every step, not only the first.
-func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []types.Tool, allowSystem bool, persist *stepPersistence) func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions {
+func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []types.Tool, allowSystem bool, persist *stepPersistence, settings *stepCallSettings) func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions {
 	hook := w.stepHook(pctx)
 	if hook == nil {
 		return nil
@@ -1547,20 +1601,25 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		if activeTools == nil {
 			activeTools = pctx.activeTools
 		}
+		baseHeaders, baseMaxRetries := settings.base(pctx)
 		opts := LanguageModelCallOptions{
 			StepNumber: o.StepNumber, Model: o.Model, System: o.System, AllowSystemInMessages: allowSystem, Messages: o.Messages, Tools: o.Tools, ToolChoice: o.ToolChoice,
 			Temperature: o.Temperature, MaxTokens: o.MaxOutputTokens, TopP: o.TopP, TopK: o.TopK, FrequencyPenalty: o.FrequencyPenalty, PresencePenalty: o.PresencePenalty,
-			StopSequences: o.StopSequences, Seed: o.Seed, Reasoning: o.Reasoning, ProviderOptions: o.ProviderOptions,
-			RuntimeContext: o.RuntimeContext, ToolsContext: o.ToolsContext, ExperimentalSandbox: o.ExperimentalSandbox,
+			StopSequences: o.StopSequences, Seed: o.Seed, Reasoning: o.Reasoning, ProviderOptions: maps.Clone(o.ProviderOptions), Headers: baseHeaders,
+			RuntimeContext: o.RuntimeContext, ToolsContext: maps.Clone(o.ToolsContext), ExperimentalSandbox: o.ExperimentalSandbox,
 			PreviousSteps: o.Steps, AccumulatedUsage: o.AccumulatedUsage,
 			StopWhen: pctx.stopWhen, ActiveTools: activeTools, ExperimentalDownload: pctx.download,
-			MaxRetries: pctx.maxRetries, Timeout: pctx.timeout,
+			MaxRetries: baseMaxRetries, Timeout: pctx.timeout,
 			InitialInstructions: pctx.initialInstructions, InitialMessages: pctx.initialMessages,
 			InstructionMessages: o.InstructionMessages, InitialInstructionMessages: pctx.instructionMessages,
 		}
 		inSystem, inInstructionMessages := o.System, o.InstructionMessages
 		opts = persist.apply(opts)
 		mutated, err := hook(ctx, opts)
+		if err == nil && mutated.MaxRetries != nil && *mutated.MaxRetries < 0 {
+			// TS prepareRetries rejects the step's maxRetries.
+			err = &providererrors.InvalidArgumentError{Field: "maxRetries", Message: "maxRetries must be >= 0"}
+		}
 		if err != nil {
 			base := o.Model
 			if base == nil {
@@ -1570,6 +1629,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			return o
 		}
 		persist.record(opts, mutated)
+		settings.put(version.WithUserAgentSuffix(mutated.Headers, "ai-sdk-agent/workflow"), mutated.MaxRetries)
 		if mutated.Model != nil {
 			o.Model = mutated.Model
 		}
@@ -1759,7 +1819,12 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if len(ovr.Messages) > 0 {
 		initialMessages = ovr.Messages
 	}
-	activeTools := govr.ActiveTools
+	// TS options.activeTools ?? this.activeTools: the call's active tools,
+	// which PrepareCall sees and may replace.
+	activeTools := w.ActiveTools
+	if govr.ActiveTools != nil {
+		activeTools = govr.ActiveTools
+	}
 	if ovr.ActiveTools != nil {
 		activeTools = ovr.ActiveTools
 	}
@@ -1897,10 +1962,15 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	}
 	var stepAdapter func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions
 	persist := &stepPersistence{}
+	var settings *stepCallSettings
 	if streaming {
-		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages, persist)
+		settings = &stepCallSettings{}
+		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages, persist, settings)
 	}
 	prepareCall, runner := w.makePrepareCall(pctx, !streaming, persist)
+	if settings != nil {
+		settings.runner = runner
+	}
 	cfg := agent.AgentConfig{
 		ID: w.ID, Model: w.Model, System: system, InstructionMessages: instructionMessages, Prompt: w.Prompt, Tools: tools, StopWhen: withFinishReasonStop(stopWhen),
 		AllowSystemInMessages: allowSystemInMessages,
@@ -1932,7 +2002,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
 		OnEndEvent:                     onEnd,
 	}
-	return agent.NewToolLoopAgent(cfg), &earlyPrepare{cfg: cfg, runner: runner, callConcurrencySet: callConcurrencySet, endBase: endBase}
+	return agent.NewToolLoopAgent(cfg), &earlyPrepare{cfg: cfg, runner: runner, callConcurrencySet: callConcurrencySet, endBase: endBase, stepSettings: settings}
 }
 
 // workflowConversationBase is the conversation TS WorkflowAgent's loop starts
@@ -1970,6 +2040,20 @@ type earlyPrepare struct {
 	callConcurrencySet bool
 	// endBase is the start of the conversation the onEnd event reports.
 	endBase *[]types.Message
+	// stepSettings carries the stream PrepareStep's headers and maxRetries
+	// to the step's model call; nil outside the stream path.
+	stepSettings *stepCallSettings
+}
+
+// internalOptions returns the core internal options for the run: the shared
+// workflow options plus, in the stream path, the PrepareStep call settings.
+func (e *earlyPrepare) internalOptions() *ai.InternalOptions {
+	if e == nil || e.stepSettings == nil {
+		return workflowInternalOptions
+	}
+	internal := *workflowInternalOptions
+	internal.StepCallSettings = e.stepSettings.get
+	return &internal
 }
 
 // setConversation records the conversation the run starts the loop with:
@@ -2431,7 +2515,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: workflowInternalOptions},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: early.internalOptions()},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,
@@ -2470,7 +2554,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 // TimeoutError as aborts, so onAbort fires and onError does not).
 // workflowInternalOptions makes the loop continue after a provider-executed
 // tool call with no result (TS WorkflowAgent warns and sends an empty result).
-var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true}
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true}
 
 func isWorkflowAbort(ctx context.Context, err error) bool {
 	if ctx != nil && ctx.Err() != nil {
