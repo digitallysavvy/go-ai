@@ -611,6 +611,15 @@ These match TS and are unlikely to need code changes, but can change output.
   consumer stream still sees the stripped copy), and a runtime tool error's
   text is the `getErrorMessage` of its value (JSON for an object) instead of
   Go `%v` formatting.
+- **The `WorkflowAgent` root span's start event carries the call's
+  messages, request settings (`maxOutputTokens`..`seed`), `maxRetries`
+  (default 2), headers (tagged `ai-sdk-agent/workflow`) and tools context**,
+  as TS `telemetryDispatcher.onStart`, so the legacy root records
+  `ai.prompt`, `ai.settings.*` and `ai.request.headers.*` and the GenAI root
+  its request attributes. `PrepareCall` now always runs before the root
+  opens (it ran early only when approvals were resumed), so the root reports
+  the prepared model and settings; messages a `PrepareCall` returns replace
+  the prompt, as in TS.
 
 ---
 
