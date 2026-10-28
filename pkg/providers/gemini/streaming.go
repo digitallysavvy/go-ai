@@ -916,14 +916,15 @@ func (s *stream) processFuncCallPart(part Part) {
 
 	willContinueTrue := fc.WillContinue != nil && *fc.WillContinue
 
-	isStreamingChunk := fc.PartialArgsSet || (fc.Name != "" && willContinueTrue)
-	isTerminalChunk := fc.Name == "" && !fc.ArgsSet && !fc.PartialArgsSet && fc.WillContinue == nil
-	isCompleteCall := fc.Name != "" && fc.ArgsSet && !fc.PartialArgsSet
-	isNoArgsCompleteCall := fc.Name != "" && !fc.ArgsSet && !fc.PartialArgsSet && !willContinueTrue
+	hasName := fc.hasName()
+	isStreamingChunk := fc.PartialArgsSet || (hasName && willContinueTrue)
+	isTerminalChunk := !hasName && !fc.ArgsSet && !fc.PartialArgsSet && fc.WillContinue == nil
+	isCompleteCall := hasName && fc.ArgsSet && !fc.PartialArgsSet
+	isNoArgsCompleteCall := hasName && !fc.ArgsSet && !fc.PartialArgsSet && !willContinueTrue
 
 	switch {
 	case isStreamingChunk:
-		if fc.Name != "" {
+		if hasName {
 			toolCallID := fc.ID
 			if toolCallID == "" {
 				toolCallID = s.generateID()

@@ -193,6 +193,9 @@ func isConfirmedPromptBlockReason(blockReason string) bool {
 type FunctionCall struct {
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
+	// NameSet is true iff the wire JSON had a non-null "name" field. TS
+	// checks `name != null`, so an empty-string name still names a call.
+	NameSet bool `json:"-"`
 
 	// Args holds the parsed arguments object (order not significant — use
 	// ArgsRaw to reproduce the original wire key order). ArgsSet is true iff
@@ -220,12 +223,18 @@ type FunctionCall struct {
 	WillContinue *bool
 }
 
+// hasName reports TS `functionCall.name != null`: a decoded "name" field
+// (even "") or, for a value built in Go, a non-empty Name.
+func (f *FunctionCall) hasName() bool {
+	return f.NameSet || f.Name != ""
+}
+
 // UnmarshalJSON decodes a functionCall part, tracking field presence
 // (Args/PartialArgs "!= null") separately from Go's zero values.
 func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 	var raw struct {
 		ID           string          `json:"id"`
-		Name         string          `json:"name"`
+		Name         *string         `json:"name"`
 		Args         json.RawMessage `json:"args"`
 		PartialArgs  json.RawMessage `json:"partialArgs"`
 		WillContinue *bool           `json:"willContinue"`
@@ -234,7 +243,10 @@ func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	f.ID = raw.ID
-	f.Name = raw.Name
+	if raw.Name != nil {
+		f.Name = *raw.Name
+		f.NameSet = true
+	}
 	f.WillContinue = raw.WillContinue
 
 	if len(raw.Args) > 0 && string(raw.Args) != "null" {

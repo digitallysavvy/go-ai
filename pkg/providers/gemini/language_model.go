@@ -533,7 +533,7 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 		}
 		// TS: `'functionCall' in part && part.functionCall.name != null`; a
 		// call without a name is dropped.
-		if part.FunctionCall != nil && part.FunctionCall.Name != "" {
+		if part.FunctionCall != nil && part.FunctionCall.hasName() {
 			args := part.FunctionCall.Args
 			if args == nil {
 				args = map[string]interface{}{}
