@@ -550,6 +550,63 @@ func effectiveWorkflowTools(w *WorkflowAgent, streamOpts WorkflowStreamOptions, 
 // workflowTelemetryRuntimeContext returns the subset of the runtime context
 // that Telemetry.IncludeRuntimeContext opts in, so workflow-level telemetry
 // events never carry unselected keys (TS #23340). It is always non-nil.
+// workflowTelemetryToolsContext is the tools context a telemetry event
+// carries: one entry per tool, holding only the keys IncludeToolsContext
+// selects for it (TS filterToolsContext).
+func workflowTelemetryToolsContext(settings *ai.TelemetrySettings, toolsContext map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if settings == nil || len(settings.IncludeToolsContext) == 0 {
+		return out
+	}
+	for name, v := range toolsContext {
+		out[name] = workflowTelemetryRuntimeContext(&ai.TelemetrySettings{IncludeRuntimeContext: settings.IncludeToolsContext[name]}, v)
+	}
+	return out
+}
+
+// workflowStartEvent is the WorkflowAgent root start event: the call's
+// messages, request settings, retry count (default 2), headers (tagged
+// ai-sdk-agent/workflow) and contexts after prepareCall, as TS
+// telemetryDispatcher.onStart for the workflow operation.
+func workflowStartEvent(operation, callID, modelProvider, modelID string, settings *ai.TelemetrySettings, early *earlyPrepare, prepared *LanguageModelCallOptions, messages []types.Message, prompt string, runtimeContext interface{}, toolsContext map[string]interface{}) telemetrypkg.TelemetryStartEvent {
+	e := telemetrypkg.TelemetryStartEvent{
+		CallID:         callID,
+		OperationType:  operation,
+		ModelProvider:  modelProvider,
+		ModelID:        modelID,
+		Settings:       settings,
+		RuntimeContext: workflowTelemetryRuntimeContext(settings, runtimeContext),
+		ToolsContext:   workflowTelemetryToolsContext(settings, toolsContext),
+	}
+	if prompt == "" && early != nil {
+		prompt = early.cfg.Prompt
+	}
+	if len(messages) > 0 {
+		e.Messages = messages
+	} else if prompt != "" {
+		e.Messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
+	}
+	var maxRetries *int
+	if prepared != nil {
+		e.MaxOutputTokens, e.Temperature, e.TopP, e.TopK = prepared.MaxTokens, prepared.Temperature, prepared.TopP, prepared.TopK
+		e.PresencePenalty, e.FrequencyPenalty, e.StopSequences, e.Seed = prepared.PresencePenalty, prepared.FrequencyPenalty, prepared.StopSequences, prepared.Seed
+		e.Headers = version.WithUserAgentSuffix(prepared.Headers, "ai-sdk-agent/workflow")
+		maxRetries = prepared.MaxRetries
+	} else if early != nil {
+		c := early.cfg
+		e.MaxOutputTokens, e.Temperature, e.TopP, e.TopK = c.MaxTokens, c.Temperature, c.TopP, c.TopK
+		e.PresencePenalty, e.FrequencyPenalty, e.StopSequences, e.Seed = c.PresencePenalty, c.FrequencyPenalty, c.StopSequences, c.Seed
+		e.Headers = c.Headers
+		maxRetries = c.MaxRetries
+	}
+	retries := 2
+	if maxRetries != nil {
+		retries = *maxRetries
+	}
+	e.MaxRetries = &retries
+	return e
+}
+
 func workflowTelemetryRuntimeContext(settings *ai.TelemetrySettings, runtimeContext interface{}) map[string]interface{} {
 	out := map[string]interface{}{}
 	if settings == nil || len(settings.IncludeRuntimeContext) == 0 || runtimeContext == nil {
@@ -1795,13 +1852,6 @@ type earlyPrepare struct {
 	callConcurrencySet bool
 }
 
-// hasApprovalResponses reports whether the messages hold tool approval
-// responses an approval resume would act on.
-func hasApprovalResponses(messages []types.Message) bool {
-	collected, err := ai.CollectToolApprovals(messages)
-	return err == nil && (len(collected.ApprovedToolApprovals) > 0 || len(collected.DeniedToolApprovals) > 0)
-}
-
 // run is the PrepareCall hook over the call's unresolved messages, with the
 // first-step configuration the agent loop would hand it. It returns nil when
 // there is no hook to run.
@@ -1950,14 +2000,12 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		}
 	}
 	a, early := w.makeAgent(WorkflowStreamOptions{}, opts, false)
-	// TS runs prepareCall before it resolves tool approvals, so the hook sees
-	// the unresolved messages and its overrides reach the resume.
-	var prepared *LanguageModelCallOptions
-	if hasApprovalResponses(opts.Messages) {
-		var err error
-		if prepared, err = early.run(ctx, opts.Messages, opts.Prompt); err != nil {
-			return nil, err
-		}
+	// TS runs prepareCall before it opens the call's telemetry and resolves
+	// tool approvals, so the hook sees the unresolved messages and its
+	// overrides reach the root span and the resume.
+	prepared, err := early.run(ctx, opts.Messages, opts.Prompt)
+	if err != nil {
+		return nil, err
 	}
 	runtimeContext := firstNonNil(opts.RuntimeContext, w.RuntimeContext)
 	toolsContext := firstNonNilMap(opts.ToolsContext, w.ToolsContext)
@@ -1966,6 +2014,10 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	toolCallConcurrencyOverride := (*int)(nil)
 	if prepared != nil {
 		opts.Messages = prepared.Messages
+		if len(opts.Messages) > 0 {
+			// Messages from prepareCall take precedence over the prompt (TS).
+			opts.Prompt = ""
+		}
 		runtimeContext, toolsContext, sandbox = prepared.RuntimeContext, prepared.ToolsContext, prepared.ExperimentalSandbox
 		if prepared.Model != nil {
 			model = prepared.Model
@@ -1984,14 +2036,7 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	// approval-resume tool execution has no root span to parent under and its
 	// tool span is silently skipped (27d294d).
 	callID := newWorkflowCallID()
-	ctx = telemetrypkg.FireOnStart(ctx, telemetrypkg.TelemetryStartEvent{
-		CallID:         callID,
-		OperationType:  "ai.workflowAgent.generate",
-		ModelProvider:  modelProvider,
-		ModelID:        modelID,
-		Settings:       telemetrySettings,
-		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
-	})
+	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent("ai.workflowAgent.generate", callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
@@ -2166,14 +2211,12 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		telemetrySettings = opts.Telemetry
 	}
 	a, early := w.makeAgent(opts, WorkflowGenerateOptions{}, true)
-	// TS runs prepareCall before it resolves tool approvals, so the hook sees
-	// the unresolved messages and its overrides reach the resume.
-	var prepared *LanguageModelCallOptions
-	if hasApprovalResponses(opts.Messages) {
-		var err error
-		if prepared, err = early.run(ctx, opts.Messages, opts.Prompt); err != nil {
-			return nil, err
-		}
+	// TS runs prepareCall before it opens the call's telemetry and resolves
+	// tool approvals, so the hook sees the unresolved messages and its
+	// overrides reach the root span and the resume.
+	prepared, err := early.run(ctx, opts.Messages, opts.Prompt)
+	if err != nil {
+		return nil, err
 	}
 	runtimeContext := firstNonNil(opts.RuntimeContext, w.RuntimeContext)
 	toolsContext := firstNonNilMap(opts.ToolsContext, w.ToolsContext)
@@ -2182,6 +2225,10 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	toolCallConcurrencyOverride := (*int)(nil)
 	if prepared != nil {
 		opts.Messages = prepared.Messages
+		if len(opts.Messages) > 0 {
+			// Messages from prepareCall take precedence over the prompt (TS).
+			opts.Prompt = ""
+		}
 		runtimeContext, toolsContext, sandbox = prepared.RuntimeContext, prepared.ToolsContext, prepared.ExperimentalSandbox
 		if prepared.Model != nil {
 			model = prepared.Model
@@ -2202,13 +2249,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// the underlying stream is obtained: the actual streaming happens
 	// asynchronously as the caller drains WorkflowStreamResult, under the
 	// child span the delegated ai.StreamText call creates for itself.
-	ctx = telemetrypkg.FireOnStart(ctx, telemetrypkg.TelemetryStartEvent{
-		OperationType:  "ai.workflowAgent.stream",
-		ModelProvider:  modelProvider,
-		ModelID:        modelID,
-		Settings:       telemetrySettings,
-		RuntimeContext: workflowTelemetryRuntimeContext(telemetrySettings, runtimeContext),
-	})
+	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent("ai.workflowAgent.stream", "", modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	toolCallConcurrency, err := resolveToolCallConcurrency(toolCallConcurrencyOverride, opts.ToolCallConcurrency, w.ToolCallConcurrency)
 	if err != nil {
 		telemetrypkg.FireOnError(ctx, telemetrypkg.TelemetryErrorEvent{Settings: telemetrySettings, Error: err})

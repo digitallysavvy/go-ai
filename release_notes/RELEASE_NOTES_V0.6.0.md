@@ -522,6 +522,29 @@ These match TS and are unlikely to need code changes, but can change output.
 - **`GenerateImage` runs model calls in parallel** when `N` exceeds the
   model's per-call limit, and sums token usage across calls.
 
+- **The legacy `ToolLoopAgent` loop runs the first step's `PrepareCall`
+  before it opens its root span**, as TS `ToolLoopAgent` applies
+  `prepareCall` before `generateText` starts: the root (`ai.generateText`
+  start event), `OnStartEvent`, the total timeout and the tool-approval
+  resumption use the prepared model, instructions, messages, settings,
+  headers, retry count and tools, and step 0 runs with that configuration
+  (`PrepareCall` is not called a second time for it). A first-step override
+  that disables telemetry opens no root. The root's end event reports the
+  last step's model, runtime context and tools context, like TS `onEnd`.
+
+- **`GenerateText` and the legacy `ToolLoopAgent` loop notify each tool call
+  and resolve its approval in one pass, call by call**, as TS
+  `generateText`: `OnInputStart`, `OnInputAvailable`, then the approval of
+  the first call before the next call's callbacks. The legacy loop now
+  resolves every approval before running any tool, so an approval that
+  cannot be resolved fails the run before a tool executes (tool calls run
+  concurrently); input callbacks use the execution tool set, like TS
+  `stepExecutionTools`.
+- **The legacy `ToolLoopAgent` per-step timeout covers the step's tool
+  execution**, as the TS step timeout aborts the signal the tools get; a
+  step whose timeout expired while its tools ran ends the run with the step
+  deadline before the next step, even when a tool swallowed it.
+
 ### Providers
 
 - **Provider IDs follow TS `config.provider`**: `groq.chat`, `mistral.embedding`,
@@ -588,6 +611,15 @@ These match TS and are unlikely to need code changes, but can change output.
   consumer stream still sees the stripped copy), and a runtime tool error's
   text is the `getErrorMessage` of its value (JSON for an object) instead of
   Go `%v` formatting.
+- **The `WorkflowAgent` root span's start event carries the call's
+  messages, request settings (`maxOutputTokens`..`seed`), `maxRetries`
+  (default 2), headers (tagged `ai-sdk-agent/workflow`) and tools context**,
+  as TS `telemetryDispatcher.onStart`, so the legacy root records
+  `ai.prompt`, `ai.settings.*` and `ai.request.headers.*` and the GenAI root
+  its request attributes. `PrepareCall` now always runs before the root
+  opens (it ran early only when approvals were resumed), so the root reports
+  the prepared model and settings; messages a `PrepareCall` returns replace
+  the prompt, as in TS.
 
 ---
 

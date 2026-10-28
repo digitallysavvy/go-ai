@@ -58,10 +58,10 @@ func TestR51LoopRootInstructionMessages(t *testing.T) {
 	if !found {
 		t.Fatal("no ai.generateText root with ai.prompt")
 	}
-	if e := a.loopStartEvent("c", nil, nil); len(e.InstructionMessages) != 1 {
+	if e := a.loopStartEvent("c", nil, configuredCallConfig(a)); len(e.InstructionMessages) != 1 {
 		t.Errorf("start event InstructionMessages = %v", e.InstructionMessages)
 	}
-	if e := a.loopStartEvent("c", &ai.TelemetrySettings{RecordInputs: telemetry.Bool(false)}, nil); e.InstructionMessages != nil {
+	if e := a.loopStartEvent("c", &ai.TelemetrySettings{RecordInputs: telemetry.Bool(false)}, configuredCallConfig(a)); e.InstructionMessages != nil {
 		t.Errorf("RecordInputs false: InstructionMessages = %v", e.InstructionMessages)
 	}
 }

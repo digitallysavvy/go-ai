@@ -986,11 +986,6 @@ func legacyDeleteState(callID string) {
 	}
 }
 
-// legacyRootSpanFor resolves LegacyOpenTelemetry's own root span for callID.
-// An empty callID (a call site that doesn't populate CallID) falls back to
-// trace.SpanFromContext(ctx); a callID with no recorded root span yields a
-// non-recording span, as TS returns when getCallState finds none. Like TS
-// getCallState it never creates call state.
 // legacyChildTracer returns the tracer that started the call's root span
 // (TS this.tracer), falling back to the parent span's provider's "ai" tracer.
 // key is the state key (i.stateKey(callID)).
@@ -1008,6 +1003,11 @@ func legacyChildTracer(key string, parent trace.Span) trace.Tracer {
 	return parent.TracerProvider().Tracer(LegacyTracerName)
 }
 
+// legacyRootSpanFor resolves LegacyOpenTelemetry's own root span for callID.
+// An empty callID (a call site that doesn't populate CallID) falls back to
+// trace.SpanFromContext(ctx); a callID with no recorded root span yields a
+// non-recording span, as TS returns when getCallState finds none. Like TS
+// getCallState it never creates call state.
 func legacyRootSpanFor(callID string, ctx context.Context) trace.Span {
 	if callID == "" {
 		return trace.SpanFromContext(ctx)
@@ -1493,7 +1493,10 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		Seed:             e.Seed,
 		MaxRetries:       e.MaxRetries,
 	}
-	if e.OperationType == "ai.generateText" || e.OperationType == "ai.streamText" {
+	// TS onGenerateStart (every operation the other handlers do not take,
+	// the WorkflowAgent roots included) records stopSequences;
+	// onObjectOperationStart and the embed/rerank/audio handlers do not.
+	if legacyGenerateStartOperation(e.OperationType) {
 		settings.StopSequences = e.StopSequences
 	}
 	baseAttrs := legacyBaseAttrs(e.ModelProvider, e.ModelID, settings, e.Headers)
@@ -1610,6 +1613,18 @@ func (i LegacyOpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent)
 		}
 	}
 	return ctx // span is embedded via OTel context propagation
+}
+
+// legacyGenerateStartOperation reports whether TS LegacyOpenTelemetry.onStart
+// routes operationType to onGenerateStart: anything but the embed, rerank,
+// object and audio operations.
+func legacyGenerateStartOperation(operationType string) bool {
+	switch operationType {
+	case "ai.embed", "ai.embedMany", "ai.rerank", "ai.generateObject", "ai.streamObject",
+		"ai.generateSpeech", "ai.transcribe", "ai.streamTranscribe":
+		return false
+	}
+	return true
 }
 
 // legacyInheritedAttrs returns the attributes a nested span (doGenerate/
@@ -1832,9 +1847,9 @@ func (i LegacyOpenTelemetry) OnStepStart(ctx context.Context, e TelemetryStepSta
 	// any per-step override — mirroring TS onStepStart/onObjectStepStart,
 	// which both read from state.settings (set once at ai.<op>Start), never
 	// from per-step values. gen_ai.request.stop_sequences is only set for
-	// generateText/streamText (onObjectStepStart omits it), matching
-	// legacySettings.StopSequences only being populated for those two
-	// operation types in OnStart above.
+	// generateText/streamText steps (onObjectStepStart omits it); OnStart
+	// above populates legacySettings.StopSequences only for the operations TS
+	// routes to onGenerateStart.
 	if settings, ok := i.requestSettingsFor(ctx, e.CallID); ok {
 		if settings.FrequencyPenalty != nil {
 			if kv, ok := finiteFloat64Attr("gen_ai.request.frequency_penalty", *settings.FrequencyPenalty); ok {

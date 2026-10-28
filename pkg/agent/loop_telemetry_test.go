@@ -193,7 +193,7 @@ func TestAdoptPreparedTelemetryStartEventCarriesRequestSettings(t *testing.T) {
 	a := NewToolLoopAgent(AgentConfig{Model: &mockLanguageModel{}, Temperature: &temp})
 	override := &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}}
 	lt := &loopTelemetry{settings: &telemetry.Options{}, callID: "c1"}
-	_ = a.adoptPreparedTelemetry(context.Background(), lt, override, nil)
+	_ = a.adoptPreparedTelemetry(context.Background(), lt, override, configuredCallConfig(a))
 	if len(rec.starts) != 1 {
 		t.Fatalf("start events = %d, want 1", len(rec.starts))
 	}

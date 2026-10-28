@@ -11,17 +11,17 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 )
 
-// The loop's own root span is ended with the settings it was started with,
-// so a PrepareCall override that disables telemetry cannot leave it open; and
-// a root that was not opened because telemetry was off is opened when an
-// override turns telemetry on, so the step spans have their root.
+// The first step's PrepareCall runs before the root opens (TS prepareCall
+// precedes generateText): an override that disables telemetry opens no root,
+// and one that enables it opens the root under the override, so the step
+// spans have their root.
 func TestLoopRootFollowsPrepareCallTelemetryOverride(t *testing.T) {
 	for _, tc := range []struct {
 		name             string
 		baseOn, prepOn   bool
 		wantRoot, wantSt bool
 	}{
-		{"override disables", true, false, true, false},
+		{"override disables", true, false, false, false},
 		{"override enables", false, true, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
