@@ -208,6 +208,9 @@ Each item has before/after code in the
   In `Stream`, a `PrepareStep` `Headers` or `MaxRetries` now reaches the
   step's model call (it was ignored), and a negative `MaxRetries` fails the
   step with `*errors.InvalidArgumentError`, as in `Generate`.
+  A `PrepareStep` `ActiveTools` narrows the call's active tools instead of
+  widening them in `Generate`, and `PrepareCall`/`PrepareStep` see the
+  agent's `ActiveTools` when the call sets none.
   **Migration:** a hook that overrides a value for one step must set it back
   on later steps.
 

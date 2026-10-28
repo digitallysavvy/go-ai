@@ -1445,6 +1445,14 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 			opts = st.overlay(opts)
 		}
 		st.mu.Unlock()
+		// The call's active tools (after PrepareCall) filter the tool set
+		// before a PrepareStep ActiveTools does, so a step can narrow but not
+		// widen it (TS passes the filtered set to the iterator, which filters
+		// it again by the step's active tools).
+		callActive := opts.ActiveTools
+		if callActive == nil {
+			callActive = pctx.activeTools
+		}
 		if stepsInline && stepHook != nil {
 			opts = persist.apply(opts)
 			mutated, err := stepHook(ctx, opts)
@@ -1475,10 +1483,10 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		}
 		effectiveActive := opts.ActiveTools
 		if effectiveActive == nil {
-			effectiveActive = pctx.activeTools
+			effectiveActive = callActive
 		}
-		if effectiveActive == nil {
-			effectiveActive = w.ActiveTools
+		if callActive != nil {
+			c.Tools = ai.FilterActiveTools(c.Tools, callActive)
 		}
 		c.ActiveTools = effectiveActive
 		if effectiveActive != nil {
@@ -1805,7 +1813,12 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	if len(ovr.Messages) > 0 {
 		initialMessages = ovr.Messages
 	}
-	activeTools := govr.ActiveTools
+	// TS options.activeTools ?? this.activeTools: the call's active tools,
+	// which PrepareCall sees and may replace.
+	activeTools := w.ActiveTools
+	if govr.ActiveTools != nil {
+		activeTools = govr.ActiveTools
+	}
 	if ovr.ActiveTools != nil {
 		activeTools = ovr.ActiveTools
 	}

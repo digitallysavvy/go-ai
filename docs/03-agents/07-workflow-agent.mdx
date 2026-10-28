@@ -92,7 +92,8 @@ What `PrepareStep` returns carries over to the following steps, as in TypeScript
 starts from the previous step's model, instructions, messages, tool choice, active tools, runtime and
 tools contexts and generation settings, so an override stays in effect until a later step changes it
 (the sandbox is the only per-step value). The generation settings include `Headers` and `MaxRetries`,
-in `Stream` as in `Generate`.
+in `Stream` as in `Generate`. A `PrepareStep` `ActiveTools` narrows the call's active tools (the agent's or
+the call's `ActiveTools`, after `PrepareCall`); it cannot enable a tool outside them, as in TypeScript.
 
 Both option structs also accept the generation settings `Temperature`, `MaxTokens`, `TopP`, `TopK`,
 `FrequencyPenalty`, `PresencePenalty`, `StopSequences`, `Seed`, `Headers`, `Reasoning` and `ProviderOptions`.
