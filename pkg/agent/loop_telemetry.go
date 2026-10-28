@@ -24,7 +24,7 @@ type loopTelemetryKey struct{}
 // (opened by the caller with FireOnStart under callID). The legacy loop then
 // dispatches its step, model-call and tool-call events under that call ID
 // instead of opening a second root span. WorkflowAgent uses this so its
-// 'ai.workflowAgent.generate' root is the parent of the loop's step spans.
+// 'ai.workflowAgent.stream' root is the parent of the loop's step spans.
 func WithTelemetryCallID(ctx context.Context, callID string) context.Context {
 	return context.WithValue(ctx, telemetryCallIDKey{}, callID)
 }

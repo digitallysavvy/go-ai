@@ -250,6 +250,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   // v0.6
   if errors.Is(err, context.DeadlineExceeded) { /* step timed out */ }
   ```
+- **The legacy `ToolLoopAgent` step timeout now covers tool execution.**
+  In v0.5 the per-step deadline (`Timeout.PerStep`) ended when the model
+  call returned, so a tool could keep running past it. As in TS, the step
+  timeout now also bounds the step's tools: a tool that used to finish
+  after the step deadline is cancelled (its ctx is done), and the run ends
+  with `context.DeadlineExceeded` before the next step, even if the tool
+  ignored the cancellation. Size `Timeout.PerStep` for the model call plus
+  its tools, or use `Timeout.Total` or a timeout inside the tool instead.
+- **The `WorkflowAgent` root span is `ai.workflowAgent.stream` for
+  `Generate` too.** TS uses that operation ID for both methods; v0.5 named
+  the generate root `ai.workflowAgent.generate`. The root now opens after
+  the approved tools from the message history ran, so those resumed tool
+  calls get no tool span, as in TS. Update queries that match
+  `ai.workflowAgent.generate`.
 - **UI message streams fail on an out-of-sequence chunk.** When
   `CreateUIMessageStreamWithOptions` or `ToUIMessageStream` has an `OnEnd` or
   `OnStepEnd` callback, a chunk the message state cannot apply (a
