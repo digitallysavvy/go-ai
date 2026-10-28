@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -459,7 +460,12 @@ type turnDriver struct {
 	hostOutcomes map[string]hostToolOutcome
 	stepNumber   int
 	stepOpen     bool
-	startCalled  bool
+	// stepHasContent is TS `currentStepContent.length > 0`: the open step
+	// recorded a text, reasoning, tool call, tool result or approval part
+	// (tool input, source, file and custom parts do not count). A terminal
+	// finish with such content and no finish-step fails the turn.
+	stepHasContent bool
+	startCalled    bool
 
 	// hostInputPauseRequested/deferredPauseFinishStep/ignoredFinishStep/
 	// hostToolCallIDsAwaitingEcho implement TS #23260's parallel/sequential
@@ -820,7 +826,7 @@ func (d *turnDriver) run() {
 		if d.in.OnTurnFailed != nil {
 			d.in.OnTurnFailed()
 		}
-		if d.stepOpen {
+		if d.stepHasContent {
 			d.telError(errors.New(unclosedStepErrorMessage)) //nolint:staticcheck // exact TS parity string
 			d.fail(errors.New(unclosedStepErrorMessage))     //nolint:staticcheck // exact TS parity string
 			return
@@ -837,16 +843,27 @@ func (d *turnDriver) run() {
 
 // unreportedFinishChunk is the finish part of TS `result.finish(undefined)`
 // for a turn whose adapter sent no terminal `finish`: the last completed
-// step's finish reason ('other' before any step). Usage is left off so the
-// summed step usage stands.
+// step's finish reason and provider metadata ('other' and none before any
+// step) and the summed step usage (TS finish part `totalUsage`).
 func (d *turnDriver) unreportedFinishChunk() *provider.StreamChunk {
 	reason := types.FinishReason("other")
 	raw := ""
-	if n := len(d.completedSteps); n > 0 {
-		reason = d.completedSteps[n-1].FinishReason
-		raw = d.completedSteps[n-1].RawFinishReason
+	var metadata json.RawMessage
+	var total types.Usage
+	for _, step := range d.completedSteps {
+		total = total.Add(step.Usage)
 	}
-	return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, RawFinishReason: raw}
+	if n := len(d.completedSteps); n > 0 {
+		last := d.completedSteps[n-1]
+		reason = last.FinishReason
+		raw = last.RawFinishReason
+		if len(last.ProviderMetadata) > 0 {
+			if b, err := jsstr.Marshal(last.ProviderMetadata); err == nil {
+				metadata = b
+			}
+		}
+	}
+	return &provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: reason, RawFinishReason: raw, Usage: &total, ProviderMetadata: metadata}
 }
 
 type turnOutcome int
@@ -1178,6 +1195,13 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			return false, false, ep.AsError()
 		}
 
+		switch display.(type) {
+		case *TextStartPart, *TextDeltaPart, *ReasoningStartPart, *ReasoningDeltaPart,
+			*ToolCallPart, *ToolResultPart, *ToolApprovalRequestPart:
+			// TS appendToCurrentStepContent records these parts.
+			d.stepHasContent = true
+		}
+
 		if tc, isCall := display.(*ToolCallPart); isCall {
 			rawTC := part.(*ToolCallPart)
 			d.rawToolCallsByID[tc.ToolCallID] = tc
@@ -1291,7 +1315,7 @@ func (d *turnDriver) consumeLoop(partsCh <-chan StreamPart) (finished bool, alre
 			// unclosed step, so with completed steps the turn ends (OnEnd)
 			// and the later lifecycle.error is a no-op.
 			d.telEnd(d.completedSteps, *usage)
-			if d.stepOpen {
+			if d.stepHasContent {
 				// TS calls onTurnFinished for the terminal finish and then
 				// result.finish() fails the result in place (an error part):
 				// it does not throw, so no onTurnFailed, no "harness turn
@@ -1540,12 +1564,6 @@ func (d *turnDriver) ensureStepOpen() {
 		return
 	}
 	d.stepOpen = true
-	// The step's response id and model (TS `finishStep`: response.id
-	// `${callId}-${stepNumber}`, response.modelId). A metadata chunk opens no
-	// step of its own.
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{
-		ID: fmt.Sprintf("%s-%d", d.telCallID, d.stepNumber), Timestamp: time.Now(), ModelID: d.respModelID,
-	}})
 	d.telStepStart()
 	if d.in.Callbacks.OnStepStart != nil {
 		provider := "harness:" + d.in.Harness.HarnessID()
@@ -1590,6 +1608,7 @@ func (d *turnDriver) resetStepAccum() {
 	d.stepApprovalRequests = nil
 	d.toolExecMs = map[string]int64{}
 	d.stepOpen = false
+	d.stepHasContent = false
 	d.ignoredFinishStep = nil
 }
 
@@ -1839,7 +1858,12 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metada
 	}
 
 	// TS: `result.finishStep()` enqueues the finish-step part and returns the
-	// step; `lifecycle.stepEnd(step)` then reports that step.
+	// step; `lifecycle.stepEnd(step)` then reports that step. Its response is
+	// built there: id `${callId}-${stepNumber}`, the current model id and the
+	// time the step finished. A metadata chunk opens no step of its own.
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{
+		ID: fmt.Sprintf("%s-%d", d.telCallID, d.stepNumber), Timestamp: time.Now(), ModelID: d.respModelID,
+	}})
 	waiting := d.steps.expect()
 	d.stream.push(provider.StreamChunk{
 		Type:             provider.ChunkTypeFinishStep,
@@ -1975,12 +1999,11 @@ func (d *turnDriver) releasePendingStopBoundary() {
 // suspendOrFinishNow settles the local *ai.StreamTextResult right now, ahead
 // of any later `finish` the adapter might still emit — used only by the
 // StopConditions early-stop path. finishReason is the last completed step's;
-// usage is deliberately left off the pushed chunk so the locally-summed
-// total stands, since this is not a real bridge-reported total the way a
-// genuine terminal `finish` carries one (contrast pauseForHostInput/the
-// FinishPart branch in consumeLoop). The telemetry span's turn total is the
-// sum of every completed step's usage (TS #22259), not just the last
-// step's.
+// the pushed chunk carries the summed step usage and the last step's
+// provider metadata, as TS `result.finish()` without input reports them
+// (contrast the FinishPart branch in consumeLoop, which carries the
+// bridge-reported total). The telemetry span's turn total is the sum of
+// every completed step's usage (TS #22259), not just the last step's.
 //
 // Whether the *underlying harness session's turn* survives this for a later
 // resume depends on d.in.OnStopConditionMet (wired to
@@ -2050,7 +2073,11 @@ func (d *turnDriver) suspendOrFinishNow(finishReason FinishReason) {
 	if !suspended && d.in.OnTurnFinished != nil {
 		d.in.OnTurnFinished()
 	}
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: unifiedFinishReason(finishReason), RawFinishReason: finishReason.Raw})
+	// TS `result.finish()` with no input: the stop-boundary step's finish
+	// reason, provider metadata and the summed step usage.
+	finish := d.unreportedFinishChunk()
+	finish.FinishReason, finish.RawFinishReason = unifiedFinishReason(finishReason), finishReason.Raw
+	d.stream.push(*finish)
 	d.stream.closeOK()
 }
 

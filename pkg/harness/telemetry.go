@@ -64,10 +64,11 @@ func promptText(p Prompt) string {
 // promptMessages is the turn's `messages` field in lifecycle callbacks and
 // telemetry (TS `input.prompt == null ? [] : [{role:'user', content:
 // promptToText(input.prompt)}]`): one user message with the prompt's plain
-// text, or none for a continuation, which carries no fresh prompt.
+// text, or an empty list (not nil: telemetry records `[]`) for a
+// continuation, which carries no fresh prompt.
 func (d *turnDriver) promptMessages() []types.Message {
 	if d.in.Mode == "continue" {
-		return nil
+		return []types.Message{}
 	}
 	return []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: promptText(d.in.Prompt)}}}}
 }
@@ -366,12 +367,18 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 		return
 	}
 	telemetry.FireOnStepEnd(d.telStepCtx, telemetry.TelemetryStepEndEvent{
-		Settings:     d.in.Telemetry,
-		CallID:       d.telCallID,
-		StepNumber:   stepNumber,
-		FinishReason: string(step.FinishReason),
-		Usage:        telemetryUsageFromTypesUsage(step.Usage),
-		Text:         step.Text,
+		Settings:      d.in.Telemetry,
+		CallID:        d.telCallID,
+		OperationType: "ai.harness",
+		StepNumber:    stepNumber,
+		// TS stepEnd passes step.response ({callId}-{n}, timestamp, model),
+		// which the legacy step span records as ai.response.*.
+		ResponseID:        step.Response.ID,
+		ResponseModelID:   step.Response.ModelID,
+		ResponseTimestamp: step.Response.Timestamp,
+		FinishReason:      string(step.FinishReason),
+		Usage:             telemetryUsageFromTypesUsage(step.Usage),
+		Text:              step.Text,
 		// TS legacy ai.response.reasoning joins the parts with "\n".
 		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ReasoningParts:   step.Reasoning,
@@ -439,6 +446,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 	}
 	telemetry.FireOnEnd(d.telCtx, telemetry.TelemetryFinishEvent{
 		CallID:        d.telCallID,
+		OperationType: "ai.harness",
 		FinishReason:  string(finalStep.FinishReason),
 		Usage:         telemetryUsageFromTypesUsage(totalUsage),
 		ModelProvider: "harness:" + d.in.Harness.HarnessID(),

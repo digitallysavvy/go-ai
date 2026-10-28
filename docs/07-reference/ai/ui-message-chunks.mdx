@@ -393,4 +393,4 @@ The operation-level result of a stream. Declare one with `UIMessageStreamWriter.
 | `ai.ToUIMessageStream(ctx, stream provider.TextStream, opts ...UIMessageStreamResultOptions)` | Converts a whole provider stream to a chunk channel. |
 | `ai.IsUIMessageStreamError(err error) bool` | Reports whether `err` is an `*ai.UIMessageStreamError`. |
 
-`ai.UIMessageStreamError` is the error type reported through `OnError` when a chunk refers to a part that does not exist, for example a `text-delta` with no matching `text-start`.
+`ai.UIMessageStreamError` is the error a UI message stream fails with when a chunk refers to a part that does not exist, for example a `text-delta` with no matching `text-start`. Like TypeScript, the stream checks this only while it builds the message for an `OnEnd` or `OnStepEnd` callback: the chunk is not delivered, the stream stops, the error arrives on the error channel and is the `OnEnd` outcome (`failed`). `ReadUIMessages` reports it through its `OnError`.

@@ -197,9 +197,10 @@ func TestDualIntegration_GenerateText_Abort(t *testing.T) {
 
 	assertAllSpansEndedExactlyOnce(t, "legacy", legacyRec)
 	assertAllSpansEndedExactlyOnce(t, "genai", genAIRec)
-	// Abort records no error status (mirrors TS onAbort's plain span.end()).
-	assertRootSpanEnded(t, "legacy", legacyRec, "ai.generateText", false)
-	assertRootSpanEnded(t, "genai", genAIRec, "invoke_agent test-model", false)
+	// TS generateText has no onAbort: the abort goes through telemetry
+	// onError, which records the error status.
+	assertRootSpanEnded(t, "legacy", legacyRec, "ai.generateText", true)
+	assertRootSpanEnded(t, "genai", genAIRec, "invoke_agent test-model", true)
 }
 
 // --- streamText -------------------------------------------------------------

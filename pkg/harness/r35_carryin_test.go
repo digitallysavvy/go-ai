@@ -126,10 +126,12 @@ func TestRunPrompt_ContentlessFinishStepStillOpensStep(t *testing.T) {
 	}
 }
 
-// TS opens the step before the settled-replay `continue`, so a step whose only
-// content is a replay is open when a bare finish arrives: the turn fails with
-// the unclosed-step error (after onTurnFinished), as for any other content.
-func TestRunPrompt_SettledReplayThenBareFinishIsUnclosedStep(t *testing.T) {
+// TS opens the step (lifecycle.ensureStepOpen) before the settled-replay
+// `continue`, but the skipped replay adds no step content, and
+// HarnessStreamTextResult.finish() fails only for unclosed content
+// (currentStepContent.length > 0): a bare finish after a replay-only step
+// finishes the turn normally.
+func TestRunPrompt_SettledReplayThenBareFinishFinishes(t *testing.T) {
 	restricted := types.Tool{Name: "restricted", Parameters: restrictedSchema()}
 	mock := newMockHarness(mockHarnessOptions{
 		script: func(submit func(string, interface{})) []StreamPart {
@@ -153,9 +155,12 @@ func TestRunPrompt_SettledReplayThenBareFinishIsUnclosedStep(t *testing.T) {
 	})
 	chunks := drainRunPrompt(t, out)
 	if finished.Load() != 1 || failed.Load() != 0 {
-		t.Fatalf("finished=%d failed=%d, want 1 and 0 (replay-only step left open)", finished.Load(), failed.Load())
+		t.Fatalf("finished=%d failed=%d, want 1 and 0", finished.Load(), failed.Load())
 	}
-	if errs := chunksOfType(chunks, provider.ChunkTypeError); len(errs) != 1 || errs[0].Err == nil || errs[0].Err.Error() != unclosedStepErrorMessage {
-		t.Fatalf("error chunks = %+v, want the unclosed step error", errs)
+	if errs := chunksOfType(chunks, provider.ChunkTypeError); len(errs) != 0 || out.Result.Err() != nil {
+		t.Fatalf("error chunks = %+v, err = %v; want none (no unclosed content)", errs, out.Result.Err())
+	}
+	if f := chunksOfType(chunks, provider.ChunkTypeFinish); len(f) != 1 {
+		t.Fatalf("finish chunks = %+v", f)
 	}
 }

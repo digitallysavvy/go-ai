@@ -475,8 +475,9 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		if b, err := jsonstr.Marshal(formatModelMessages(e.Prompt, e.Messages)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
-	} else if recordInputs && len(e.Messages) > 0 {
-		// TS onGenerateStart: formatModelMessages({messages}).
+	} else if recordInputs && e.Messages != nil {
+		// TS onGenerateStart: formatModelMessages({messages}), [] for an
+		// empty list.
 		if b, err := jsonstr.Marshal(formatModelMessages("", e.Messages)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}

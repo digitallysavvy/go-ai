@@ -326,14 +326,19 @@ func (r *remoteOps) execute(ctx context.Context, name string, input json.RawMess
 		if res.ExitCode != 0 {
 			return nil, errors.New(res.Stderr)
 		}
-		re, err := globRegexp(in.Pattern)
-		if err != nil {
-			return nil, err
-		}
+		// TS compiles the pattern in path.matchesGlob, once per file, so with
+		// no files an invalid or too long pattern is never compiled and the
+		// result is empty.
+		var re *globPattern
 		files := []string{}
 		for _, file := range strings.Split(res.Stdout, "\x00") {
 			if file == "" {
 				continue
+			}
+			if re == nil {
+				if re, err = globRegexpContext(ctx, in.Pattern); err != nil {
+					return nil, err
+				}
 			}
 			if rel := posixRelative(target, file); re.MatchString(rel) {
 				files = append(files, rel)
@@ -526,13 +531,31 @@ func globRegexp(pattern string) (*globPattern, error) {
 	return compileGlob(pattern, globNoCase, globWin32Paths)
 }
 
+func globRegexpContext(ctx context.Context, pattern string) (*globPattern, error) {
+	return compileGlobContext(ctx, pattern, globNoCase, globWin32Paths)
+}
+
 func compileGlob(pattern string, noCase, win32 bool) (*globPattern, error) {
+	return compileGlobContext(context.Background(), pattern, noCase, win32)
+}
+
+// compileGlobContext compiles pattern, returning ctx.Err() when ctx ends
+// first (see globCanceler).
+func compileGlobContext(ctx context.Context, pattern string, noCase, win32 bool) (*globPattern, error) {
 	if jsLength(pattern) > globMaxPatternLength {
 		// minimatch assertValidPattern throws a TypeError.
 		return nil, errors.New("pattern is too long")
 	}
 	g := &globPattern{noCase: noCase, win32: win32}
-	for _, parts := range globPatternParts(strings.ReplaceAll(pattern, `\`, "/")) {
+	partLists, err := globPatternPartsContext(ctx, strings.ReplaceAll(pattern, `\`, "/"))
+	if err != nil {
+		return nil, err
+	}
+	c := newGlobCanceler(ctx)
+	for _, parts := range partLists {
+		if c.stop() {
+			return nil, c.err
+		}
 		var segs []globSegment
 		for _, part := range parts {
 			if part == "**" {

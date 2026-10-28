@@ -295,20 +295,6 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			fatalErr = err
 		}
 
-		enqueueError := func(err error) {
-			failOutcome(err)
-			// TS handleError: an onError that throws fails the stream with
-			// that error instead of writing an error chunk.
-			defer func() {
-				if r := recover(); r != nil {
-					onErrorErr := panicToError(r)
-					failOutcome(onErrorErr)
-					reportUIStreamCallbackFailure(errCh, r)
-				}
-			}()
-			appendErrorChunk(onError, safeEnqueue, err)
-		}
-
 		generateID := options.GenerateMessageID
 		if generateID == nil {
 			// TS default: the built-in generateId (16 alphanumerics, no prefix).
@@ -321,13 +307,21 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 		responseMessageID := stringValue(uiState.message["id"])
 
 		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
+		// processingErr is the first chunk the callback state could not apply
+		// (TS processUIMessageStream throws a UIMessageStreamError). Only set
+		// on the consumer goroutine, read after it is done.
+		var processingErr error
 		callOnEnd := func() {
 			if onEnd == nil {
 				return
 			}
 			outcomeMu.Lock()
 			outcome := declaredOutcome
-			if hasFatalFailure {
+			if processingErr != nil {
+				// TS handleUIMessageStreamFinish: a processing failure is the
+				// outcome, whatever the stream owner declared.
+				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: processingErr}
+			} else if hasFatalFailure {
 				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: fatalErr}
 			} else if outcome.Status == UIMessageStreamOutcomeUnknown && uiState.isAborted {
 				outcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeAborted}
@@ -379,7 +373,14 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			}()
 			onStepEnd(stepEvent)
 		}
+		// TS handleUIMessageStreamFinish only processes the chunks (message
+		// state, step callbacks) when an end or step-end callback is set.
+		processing := onEnd != nil || onStepEnd != nil
 		processAndEnqueue := func(part UIMessageChunk) {
+			if processingErr != nil {
+				// TS: the processing failure errored the stream.
+				return
+			}
 			// TS handleUIMessageStreamFinish: a start chunk without a
 			// messageId gets the response message id (the continued
 			// assistant message's id, else the generated one).
@@ -394,9 +395,15 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 					part = injected
 				}
 			}
-			uiState.apply(part, onError)
-			if part["type"] == "finish-step" {
-				callOnStepFinish()
+			if processing {
+				if err := applyUIStateChunk(uiState, part, onError); err != nil {
+					processingErr = err
+					sendUIStreamErr(errCh, err)
+					return
+				}
+				if part["type"] == "finish-step" {
+					callOnStepFinish()
+				}
 			}
 			safeEnqueue(part)
 		}
@@ -432,6 +439,23 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			case chunkCh <- part:
 			case <-ctx.Done():
 			}
+		}
+
+		// enqueueError writes the error chunk through the same pipeline as
+		// every other chunk (TS handleError enqueues it on the stream that
+		// handleUIMessageStreamFinish processes).
+		enqueueError := func(err error) {
+			failOutcome(err)
+			// TS handleError: an onError that throws fails the stream with
+			// that error instead of writing an error chunk.
+			defer func() {
+				if r := recover(); r != nil {
+					onErrorErr := panicToError(r)
+					failOutcome(onErrorErr)
+					reportUIStreamCallbackFailure(errCh, r)
+				}
+			}()
+			appendErrorChunk(onError, sendChunk, err)
 		}
 
 		var wg sync.WaitGroup
@@ -612,9 +636,16 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 
 		onEnd := resolveUIMessageStreamOnEnd(options.OnEnd, options.OnFinish)
+		// processingErr is the first chunk the callback state could not apply
+		// (TS processUIMessageStream throws a UIMessageStreamError, which
+		// errors the stream and becomes the outcome).
+		var processingErr error
 		callOnEnd := func(finishReason types.FinishReason) {
 			if onEnd == nil {
 				return
+			}
+			if processingErr != nil {
+				sourceOutcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: processingErr}
 			}
 			// isCancelled reflects the consumer stopping (ctx cancelled) before
 			// the source stream itself declared an outcome; isAborted reflects
@@ -675,10 +706,22 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 
+		// TS handleUIMessageStreamFinish only processes the chunks (message
+		// state, step callbacks) when an end or step-end callback is set.
+		processing := onEnd != nil || onStepEnd != nil
 		processChunk := func(chunk UIMessageChunk) {
-			uiState.apply(chunk, onError)
-			if chunk["type"] == "finish-step" {
-				callOnStepFinish()
+			if processingErr != nil {
+				return
+			}
+			if processing {
+				if err := applyUIStateChunk(uiState, chunk, onError); err != nil {
+					processingErr = err
+					sendUIStreamErr(errCh, err)
+					return
+				}
+				if chunk["type"] == "finish-step" {
+					callOnStepFinish()
+				}
 			}
 			safeEnqueue(chunk)
 		}
@@ -843,6 +886,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 		for {
+			if processingErr != nil {
+				callOnEnd(finishReason)
+				return
+			}
 			select {
 			case <-ctx.Done():
 				sendUIStreamErr(errCh, ctx.Err())
@@ -1662,6 +1709,31 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	}
 }
 
+// applyUIStateChunk applies chunk to the callback state and returns the
+// processing failure TS processUIMessageStream throws (a delta, end or tool
+// chunk with no matching part), which errors the stream. An `error` chunk is
+// reported through onError and is not a failure.
+func applyUIStateChunk(state *uiMessageCallbackState, chunk UIMessageChunk, onError func(error) string) (failure error) {
+	// An onError that panics for an error chunk fails the processing too
+	// (TS: the error thrown in the transform errors the stream).
+	defer func() {
+		if r := recover(); r != nil {
+			failure = panicToError(r)
+		}
+	}()
+	isErrorChunk := chunk["type"] == "error"
+	state.apply(chunk, func(err error) string {
+		if isErrorChunk {
+			return onError(err)
+		}
+		if failure == nil {
+			failure = err
+		}
+		return ""
+	})
+	return failure
+}
+
 // findToolPart returns the tool invocation for toolCallID, preferring the
 // current step and falling back to the latest matching part in the message
 // (TS getToolInvocation).
@@ -1817,11 +1889,13 @@ func parseToolInputPartial(text string) interface{} {
 	return jsonparser.ParsePartialJSON(text).Value
 }
 
-// UIMessageStreamError is the error reported (via onError) when a UI message
-// stream contains invalid or out-of-sequence chunks: a delta/end chunk
-// received without a corresponding start chunk, or a tool invocation/
-// approval response that can't be matched to a toolCallId/approvalId.
-// Mirrors TS's AI_UIMessageStreamError (error/ui-message-stream-error.ts).
+// UIMessageStreamError is the error a UI message stream fails with when it
+// contains invalid or out-of-sequence chunks: a delta/end chunk received
+// without a corresponding start chunk, or a tool invocation/approval
+// response that can't be matched to a toolCallId/approvalId. As in TS, the
+// stream checks this only while it builds the message for an OnEnd or
+// OnStepEnd callback; ReadUIMessages reports it through OnError. Mirrors TS's
+// AI_UIMessageStreamError (error/ui-message-stream-error.ts).
 type UIMessageStreamError struct {
 	// ChunkType is the type of chunk that caused the error (e.g. "text-delta", "reasoning-end").
 	ChunkType string

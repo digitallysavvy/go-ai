@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"reflect"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
@@ -245,34 +244,42 @@ func sameContextValue(a, b any) bool {
 // one opened late by a PrepareCall telemetry override.
 func (a *ToolLoopAgent) loopStartEvent(callID string, settings *ai.TelemetrySettings, messages []types.Message) telemetry.TelemetryStartEvent {
 	var sys string
+	var instructionMessages []types.Message
 	// A nil *Options records inputs (integrations treat it the same way).
 	if settings.ShouldRecordInputs() {
 		sys = a.config.System
+		// Instructions given as system messages (TS instructions:
+		// SystemModelMessage[]) are the root's instructions, as GenerateText
+		// reports them on its start event.
+		if len(a.config.InstructionMessages) > 0 {
+			instructionMessages = append([]types.Message(nil), a.config.InstructionMessages...)
+		}
 	}
 	maxRetries := 2
 	if a.config.MaxRetries != nil {
 		maxRetries = *a.config.MaxRetries
 	}
 	return telemetry.TelemetryStartEvent{
-		CallID:           callID,
-		OperationType:    "ai.generateText",
-		ModelProvider:    a.config.Model.Provider(),
-		ModelID:          a.config.Model.ModelID(),
-		Settings:         settings,
-		System:           sys,
-		Messages:         messages,
-		Headers:          loopHeaders(a.config.Headers),
-		MaxOutputTokens:  a.config.MaxTokens,
-		Temperature:      a.config.Temperature,
-		TopP:             a.config.TopP,
-		TopK:             a.config.TopK,
-		PresencePenalty:  a.config.PresencePenalty,
-		FrequencyPenalty: a.config.FrequencyPenalty,
-		StopSequences:    a.config.StopSequences,
-		Seed:             a.config.Seed,
-		MaxRetries:       &maxRetries,
-		RuntimeContext:   telemetryRuntimeContextFor(settings, a.runtimeContext()),
-		ToolsContext:     telemetryToolsContextFor(settings, a.config.ToolsContext),
+		CallID:              callID,
+		OperationType:       "ai.generateText",
+		ModelProvider:       a.config.Model.Provider(),
+		ModelID:             a.config.Model.ModelID(),
+		Settings:            settings,
+		System:              sys,
+		Messages:            messages,
+		InstructionMessages: instructionMessages,
+		Headers:             loopHeaders(a.config.Headers),
+		MaxOutputTokens:     a.config.MaxTokens,
+		Temperature:         a.config.Temperature,
+		TopP:                a.config.TopP,
+		TopK:                a.config.TopK,
+		PresencePenalty:     a.config.PresencePenalty,
+		FrequencyPenalty:    a.config.FrequencyPenalty,
+		StopSequences:       a.config.StopSequences,
+		Seed:                a.config.Seed,
+		MaxRetries:          &maxRetries,
+		RuntimeContext:      telemetryRuntimeContextFor(settings, a.runtimeContext()),
+		ToolsContext:        telemetryToolsContextFor(settings, a.config.ToolsContext),
 	}
 }
 
@@ -340,18 +347,6 @@ func telemetryUsage(u types.Usage) telemetry.TelemetryUsage {
 	return out
 }
 
-// isAbort reports whether err ends the run as an abort: a cancellation or a
-// timeout, as GenerateText classifies them (TS timeouts are abort signals).
-func isAbort(ctx context.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	return ctx != nil && ctx.Err() != nil
-}
-
 // beginLoopTelemetry opens the root span unless the caller already did.
 func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types.Message) (context.Context, *loopTelemetry) {
 	settings := a.loopTelemetrySettings()
@@ -389,15 +384,9 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 // call id.
 func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *AgentResult, err error) {
 	if err != nil {
-		if isAbort(ctx, err) {
-			var steps []types.StepResult
-			if result != nil {
-				steps = result.Steps
-			}
-			telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: root.settings, CallID: root.callID, Reason: err, Steps: steps})
-		} else {
-			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: root.settings, CallID: root.callID, Error: err})
-		}
+		// The loop runs as generateText does in TS, which has no abort
+		// telemetry: an abort or timeout is reported through onError.
+		telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: root.settings, CallID: root.callID, Error: err})
 		return
 	}
 	if result == nil {
@@ -475,7 +464,7 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 		ModelProvider:  c.Model.Provider(),
 		ModelID:        c.Model.ModelID(),
 		ToolChoice:     c.ToolChoice,
-		PromptMessages: c.Messages,
+		PromptMessages: loopPromptMessages(c),
 		StepTools:      c.Tools,
 		RuntimeContext: telemetryRuntimeContextFor(lt.settings, c.RuntimeContext),
 		ToolsContext:   telemetryToolsContextFor(lt.settings, c.ToolsContext),
@@ -483,15 +472,27 @@ func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetr
 	return &loopStepTelemetry{lt: lt, stepCtx: stepCtx, errCtx: stepCtx}
 }
 
-// fail closes the step span after an error (no error status for an abort).
+// loopPromptMessages is the step's prompt messages for the step span (TS
+// promptMessages): instructions given as system messages come first, as the
+// step's prompt places them (see executeStep).
+func loopPromptMessages(c PrepareCallConfig) []types.Message {
+	if len(c.InstructionMessages) == 0 {
+		return c.Messages
+	}
+	out := make([]types.Message, 0, len(c.InstructionMessages)+len(c.Messages))
+	for _, m := range c.InstructionMessages {
+		out = append(out, types.Message{Role: types.RoleSystem, Content: m.Content, ProviderOptions: m.ProviderOptions})
+	}
+	return append(out, c.Messages...)
+}
+
+// fail closes the step span after an error, an abort included (TS
+// generateText reports aborts through onStepError).
 func (s *loopStepTelemetry) fail(err error) {
 	if s == nil || s.closed {
 		return
 	}
 	s.closed = true
-	if isAbort(s.stepCtx, err) {
-		err = nil
-	}
 	telemetry.FireOnStepError(s.errCtx, telemetry.TelemetryErrorEvent{Settings: s.lt.settings, CallID: s.lt.callID, Error: err})
 }
 
@@ -532,22 +533,25 @@ func (s *loopStepTelemetry) modelCallStart(c PrepareCallConfig, model interface 
 		return nil
 	}
 	ctx := telemetry.FireOnLanguageModelCallStart(s.stepCtx, telemetry.LanguageModelCallStartEvent{
-		Settings:         s.lt.settings,
-		CallID:           s.lt.callID,
-		ModelProvider:    model.Provider(),
-		ModelID:          model.ModelID(),
-		Prompt:           prompt,
-		Messages:         c.Messages,
-		Tools:            genTools,
-		System:           c.System,
-		Temperature:      c.Temperature,
-		MaxOutputTokens:  c.MaxTokens,
-		TopP:             c.TopP,
-		TopK:             c.TopK,
-		PresencePenalty:  c.PresencePenalty,
-		FrequencyPenalty: c.FrequencyPenalty,
-		StopSequences:    c.StopSequences,
-		Seed:             c.Seed,
+		Settings:      s.lt.settings,
+		CallID:        s.lt.callID,
+		ModelProvider: model.Provider(),
+		ModelID:       model.ModelID(),
+		Prompt:        prompt,
+		Messages:      c.Messages,
+		Tools:         genTools,
+		System:        c.System,
+		// TS languageModelCallStart instructions: the step's instruction
+		// messages when they were given as messages.
+		InstructionMessages: c.InstructionMessages,
+		Temperature:         c.Temperature,
+		MaxOutputTokens:     c.MaxTokens,
+		TopP:                c.TopP,
+		TopK:                c.TopK,
+		PresencePenalty:     c.PresencePenalty,
+		FrequencyPenalty:    c.FrequencyPenalty,
+		StopSequences:       c.StopSequences,
+		Seed:                c.Seed,
 	})
 	s.errCtx = ctx
 	return ctx

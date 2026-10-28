@@ -326,6 +326,18 @@ These match TS and are unlikely to need code changes, but can change output.
   without one, and `EnrichSpan` values are sanitized by Go kind** (empty
   arrays and byte slices dropped, pointers and named types read as their
   value).
+- **A harness turn's result takes the raw finish reason and provider
+  metadata of the adapter's terminal `finish`, also when it has none**, as TS
+  `finish(input)` does, instead of keeping the last step's. A turn that ends
+  without an adapter `finish` (host-input pause, stop condition, suspension)
+  has a finish part carrying the last step's provider metadata and the summed
+  step usage, like TS `finish()`.
+- **A harness turn fails with the unclosed-step error only when the open step
+  recorded content** (text, reasoning, a tool call, result or approval), as TS
+  `currentStepContent.length > 0`. A step that only saw tool-input, source,
+  file or replayed parts before the terminal `finish` no longer fails it.
+- A harness step's `Response.Timestamp` is the time the step finished, as TS
+  `finishStep` builds the response, not the time it opened.
 - **A harness turn suspended before the adapter's `finish` still ends with a
   finish part** (finish reason `other`, the open step discarded), as TS
   `result.finish(undefined)`. `ToUIMessageStream` maps a call-level finish
@@ -367,6 +379,35 @@ These match TS and are unlikely to need code changes, but can change output.
   step (and call) whose only reasoning is a reasoning file, as TS counts
   reasoning-file parts (new `ReasoningFiles` on the step-end and finish
   events).
+- **Telemetry: a canceled or timed-out `GenerateText` reports `OnError`, not
+  `OnAbort`**, as TS `generateText` has no abort telemetry: the root and step
+  spans carry the error status. The legacy `ToolLoopAgent` loop does the
+  same. `GenerateTextOptions.OnAbortEvent`/`OnAbort` still fire.
+- **UI message streams fail on an out-of-sequence chunk**, as TS: while
+  `CreateUIMessageStreamWithOptions`/`ToUIMessageStream` build the message for
+  an `OnEnd`/`OnStepEnd` callback, a chunk with no matching part (a
+  `text-delta` without `text-start`, a tool result for an unknown call) stops
+  the stream with a `*UIMessageStreamError` on the error channel and as the
+  failed `OnEnd` outcome; it used to go to `OnError` and the stream went on.
+  Without those callbacks the chunks are not processed at all, so `OnError`
+  is no longer called for them, nor a second time for an error chunk.
+- **Telemetry:** legacy `ai.prompt` records instructions given as system
+  messages (`InstructionMessages`) as the message array
+  (`{"system":[{"role":"system","content":...}],...}`), as TS
+  `JSON.stringify({system: instructions})`, instead of their joined text. A
+  string `System` is still a string. The legacy `ToolLoopAgent` root now
+  carries `AgentConfig.InstructionMessages` (also the GenAI
+  `gen_ai.system_instructions` of its root), and its steps pass the step's
+  instruction messages to the chat span (`gen_ai.system_instructions`) and
+  to the legacy step span's `ai.prompt.messages`.
+- **Telemetry:** a harness continuation turn (no fresh prompt) records its
+  empty message list like TS `messages: []`: legacy `ai.prompt` is
+  `{"messages":[]}` and the GenAI root `gen_ai.input.messages` is `[]`
+  instead of being left out.
+- **Telemetry:** a harness step's legacy span records `ai.response.id`
+  (`{callId}-{n}`), `ai.response.model`, `ai.response.timestamp` and the
+  matching `gen_ai.response.*`, as TS `lifecycle.stepEnd` passes the step's
+  response.
 - **GenAI telemetry:** the text root and chat spans format the caller-facing
   messages like TS `formatModelMessages` (image parts as `uri`/`blob`, parts
   the TS converter does not map, such as an assistant custom part or a tool
@@ -592,6 +633,13 @@ in v0.5.3.
 
 ### Workflow, MCP, code mode and harness
 
+- fx `glob`: the pattern compile (brace expansion and minimatch's
+  preprocessing) stops when the tool call's context ends, returning the
+  context's error; a pattern such as `{a,b}` repeated 17 times took tens of
+  seconds of CPU regardless. Results are unchanged.
+- fx `glob` with no files found returns `[]` without compiling the pattern,
+  as TS (which compiles it per file in `path.matchesGlob`), so a too long
+  pattern no longer fails an empty search.
 - ACP mapping and authentication settings were serialized with Go field
   names and never took effect. (v0.5.3)
 - A malformed ACP `askUserQuestions` tool result no longer crashes the host,

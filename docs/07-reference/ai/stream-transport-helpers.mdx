@@ -202,7 +202,7 @@ When `opts.Message` seeds a message and the stream's `start` chunk carries a dif
 func IsUIMessageStreamError(err error) bool
 ```
 
-Reports whether `err` is an `*ai.UIMessageStreamError`, which the stream reports through `OnError` when a chunk refers to a part that does not exist.
+Reports whether `err` is an `*ai.UIMessageStreamError`: the error a UI message stream fails with when a chunk refers to a part that does not exist. As in TypeScript, the stream only checks this while it builds the message for an `OnEnd` or `OnStepEnd` callback; the error goes to the error channel and the `OnEnd` outcome, not to `OnError`. `ReadUIMessages` reports it through its `OnError`.
 
 ## `SmoothStream`
 

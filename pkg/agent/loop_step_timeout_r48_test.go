@@ -62,13 +62,3 @@ func TestLegacyLoopStepTimeoutIsDeadlineExceeded(t *testing.T) {
 		}
 	}
 }
-
-// Timeouts end the legacy loop's telemetry as aborts, as GenerateText does.
-func TestLegacyLoopTimeoutIsAbort(t *testing.T) {
-	if !isAbort(context.Background(), context.DeadlineExceeded) {
-		t.Fatal("a deadline is not an abort")
-	}
-	if isAbort(context.Background(), errors.New("boom")) {
-		t.Fatal("a plain error is an abort")
-	}
-}
