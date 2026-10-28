@@ -622,6 +622,14 @@ These match TS and are unlikely to need code changes, but can change output.
 - **Non-2xx responses with an empty or non-JSON body** use the HTTP status
   text as `ProviderError.Message` (`Bad Gateway`); the body stays in
   `ResponseBody`.
+- **OpenAI chat streams fail the call on an error before output.** An error
+  frame after the empty first `{role:"assistant",content:""}` chunk or a
+  finish-only chunk now fails the call (retryable), as TS, instead of
+  streaming an error part. OpenAI-compatible chat models are unchanged.
+- **OpenAI Responses `IncludeRawChunks` yields one raw part per event.** Raw
+  parts were duplicated after the first output event, and those of
+  `response.in_progress` and unmodeled early events were dropped. The finish
+  `responseId` comes only from `response.created`.
 
 ### Workflow, MCP, code mode and harness
 
@@ -755,6 +763,10 @@ in v0.5.3.
   `toolCall`/`toolResponse` without a string `id` or an `inlineData` without
   `mimeType` and `data` is dropped. With `IncludeRawChunks`, a failed
   long-decode continuation emits an empty raw chunk before its error.
+- Open Responses ignores a stream payload that is valid JSON but not an
+  object, and a `null` payload errors the stream, as TS. An xAI Responses
+  stream without usage reports explicit zeros (`cacheWrite` 0), as its
+  `Generate`.
 
 ### Workflow, MCP, code mode and harness
 
