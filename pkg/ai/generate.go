@@ -1260,10 +1260,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if prepared.Reasoning != nil {
 				stepReasoningLevel = prepared.Reasoning
 			}
-			// TS prepareStepCallSettings validates the step's settings.
-			if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
-				return nil, err
-			}
 		}
 
 		// Apply deferred tool discovery (ai.ToolSearch) and tool-caller
@@ -1304,6 +1300,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			return nil, err
 		}
 		stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
+		// TS generateText runs prepareStepCallSettings (which validates the
+		// step's settings) after convertToLanguageModelPrompt and before the
+		// step start event.
+		if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+			return nil, err
+		}
 
 		// Emit OnStepStartEvent.
 		stepStartEvent := OnStepStartEvent{
