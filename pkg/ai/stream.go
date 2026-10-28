@@ -759,12 +759,10 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if err := validateMaxRetries(opts.MaxRetries); err != nil {
-		return nil, err
-	}
-	if err := validateStreamRetries(opts.StreamRetries); err != nil {
-		return nil, err
-	}
+	// TS order: streamTextInternal prepares toolCallConcurrency, then the
+	// DefaultStreamTextResult constructor resolves the tool callers and the
+	// tool search state before prepareRetries checks maxRetries and
+	// streamRetries.
 	if _, err := prepareToolCallConcurrency(opts.ToolCallConcurrency); err != nil {
 		return nil, err
 	}
@@ -780,6 +778,17 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	}
 	toolSearchState, err := NewToolSearchState(opts.Tools, resolvedToolCallers)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	if err := validateStreamRetries(opts.StreamRetries); err != nil {
+		return nil, err
+	}
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries in
+	// the DefaultStreamTextResult constructor.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
 		return nil, err
 	}
 
@@ -1176,6 +1185,15 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		}
 		if prepared.Reasoning != nil {
 			stepReasoningLevel = prepared.Reasoning
+		}
+		// TS prepareStepCallSettings validates the step's settings.
+		if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+			if stepCancel != nil {
+				stepCancel()
+			}
+			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
+			r.fail(err)
+			return
 		}
 	}
 
@@ -3313,6 +3331,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 			if prepared.Reasoning != nil {
 				nextReasoningLevel = prepared.Reasoning
+			}
+			// TS prepareStepCallSettings validates the step's settings.
+			if err := validateMaxOutputTokens(nextMaxTokens); err != nil {
+				nextStepCancel()
+				r.err = err
+				break
 			}
 		}
 

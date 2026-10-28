@@ -813,6 +813,10 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateO
 		return nil, maxRetryErr
 	}
 	opts.MaxRetries = &maxRetries
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
+	}
 
 	// TS generate-object.ts tags every call's headers with `ai/${VERSION}`
 	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
@@ -1764,6 +1768,10 @@ func StreamObject(ctx context.Context, opts StreamObjectOptions) (*GenerateObjec
 		return nil, maxRetryErr
 	}
 	opts.MaxRetries = &maxRetries
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
+	}
 
 	// Generate call ID and extract telemetry info for callback events.
 	callID := newCallID()

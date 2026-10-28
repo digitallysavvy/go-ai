@@ -59,6 +59,18 @@ func validateMaxRetries(maxRetries *int) error {
 	return nil
 }
 
+// validateMaxOutputTokens mirrors TS prepareLanguageModelCallOptions: a
+// maxOutputTokens below 1 is an InvalidArgumentError (nil leaves it unset).
+func validateMaxOutputTokens(maxOutputTokens *int) error {
+	if maxOutputTokens != nil && *maxOutputTokens < 1 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "maxOutputTokens",
+			Message: "maxOutputTokens must be >= 1",
+		}
+	}
+	return nil
+}
+
 func preparedMaxRetries(maxRetries *int) int {
 	if maxRetries == nil {
 		return 2
@@ -776,17 +788,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if err := validateMaxRetries(opts.MaxRetries); err != nil {
-		return nil, err
-	}
+	// TS generateTextInternal validates in this order: toolCallConcurrency,
+	// the tool callers, the tool search state, then maxRetries.
 	toolCallConcurrency, err := prepareToolCallConcurrency(opts.ToolCallConcurrency)
 	if err != nil {
 		return nil, err
 	}
-	// TS generate-text.ts tags every call's headers with `ai/${VERSION}`
-	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
-	// right after validating retries, before the prompt is standardized.
-	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 	resolvedToolCallers, err := ResolveToolCallerConfiguration(opts.Tools, opts.ExperimentalToolCallers)
 	if err != nil {
 		return nil, err
@@ -795,6 +802,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	if err != nil {
 		return nil, err
 	}
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	// TS prepareLanguageModelCallOptions(settings) follows prepareRetries.
+	if err := validateMaxOutputTokens(opts.MaxTokens); err != nil {
+		return nil, err
+	}
+	// TS generate-text.ts tags every call's headers with `ai/${VERSION}`
+	// (`headersWithUserAgent = withUserAgentSuffix(headers ?? {}, ai/${VERSION})`)
+	// right after validating retries, before the prompt is standardized.
+	opts.Headers = version.WithUserAgentSuffix(opts.Headers, version.UserAgent())
 	telemetrySettings := effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
 	system := effectiveSystem(opts.System, opts.Instructions)
@@ -939,7 +957,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if openStep != nil {
 				step := *openStep
 				openStep = nil
-				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, opts.OnStepError)
+				// TS notifies onStepError with wrapGatewayError(error).
+				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: wrapGatewayError(err)}, opts.OnStepError)
 			}
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
@@ -1230,6 +1249,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 			if prepared.Reasoning != nil {
 				stepReasoningLevel = prepared.Reasoning
+			}
+			// TS prepareStepCallSettings validates the step's settings.
+			if err := validateMaxOutputTokens(stepMaxTokens); err != nil {
+				return nil, err
 			}
 		}
 

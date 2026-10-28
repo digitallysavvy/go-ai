@@ -884,6 +884,14 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				local.config.ToolCallConcurrency = callConfig.ToolCallConcurrency
 				stepAgent = &local
 			}
+			// The tool timeouts come from the step's timeout (a PrepareCall
+			// override included), as the step timeout does (TS
+			// `timeout ?? preparedCall.timeout` reaches executeToolCall).
+			if callConfig.Timeout != nil && callConfig.Timeout != stepAgent.config.Timeout {
+				local := *stepAgent
+				local.config.Timeout = callConfig.Timeout
+				stepAgent = &local
+			}
 			// The tool-call events report the step's model (a PrepareCall model
 			// override), not the agent's configured one.
 			if callConfig.Model != nil && callConfig.Model != stepAgent.config.Model {
@@ -1861,7 +1869,16 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 
 	// Call the model with step context, retrying transient Gateway failures
-	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5).
+	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5). As TS
+	// doStreamStep, prepareRetries rejects an invalid maxRetries before the
+	// model call; ToolCallConcurrency was validated when the run started.
+	if err := validateAgentMaxRetries(callConfig.MaxRetries); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	// TS prepareLanguageModelCallOptions follows prepareRetries (generateText).
+	if err := validateAgentMaxOutputTokens(callConfig.MaxTokens); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
 	modelCallCtx := stepCtx
 	ai.Notify(stepCtx, ai.LanguageModelCallStartEvent{
 		CallID:              stepTel.callID(),

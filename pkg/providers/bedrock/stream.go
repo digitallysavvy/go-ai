@@ -157,7 +157,8 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// ends (via decoder EOF) before any later messageStop overwrites it.
 			s.finishReason = types.FinishReasonError
 			if s.includeRawChunks {
-				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: string(event.Data)})
+				// TS safeParseJSON: rawValue is undefined for unparsable JSON.
+				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: nil})
 			}
 			parseErr := providererrors.NewJSONParseError(string(event.Data), err)
 			s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeError, Text: parseErr.Error(), Err: parseErr})

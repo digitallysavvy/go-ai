@@ -3,6 +3,7 @@ package streaming
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -51,17 +52,24 @@ type SSEParser struct {
 	scanner *bufio.Scanner
 	err     error
 	started bool
+	// unterminated is set by the split function when the token it just
+	// returned is the stream's final line with no line terminator after it.
+	unterminated bool
 }
 
 // scanSSELines splits on "\n", "\r\n" and a bare "\r", the three line
 // terminators of the SSE spec (bufio.ScanLines knows only the first two).
-func scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+// The stream's final bytes with no terminator after them (including a lone
+// trailing "\r", which eventsource-parser holds back as a possible CRLF half)
+// come back as one last token with p.unterminated set.
+func (p *SSEParser) scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil
 	}
 	i := bytes.IndexAny(data, "\r\n")
 	if i < 0 {
 		if atEOF {
+			p.unterminated = true
 			return len(data), data, nil
 		}
 		return 0, nil, nil
@@ -77,6 +85,7 @@ func scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error
 		return i + 1, data[:i], nil
 	}
 	if atEOF {
+		p.unterminated = true
 		return i + 1, data[:i], nil
 	}
 	return 0, nil, nil
@@ -86,10 +95,9 @@ func scanSSELines(data []byte, atEOF bool) (advance int, token []byte, err error
 func NewSSEParser(r io.Reader) *SSEParser {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, sseScannerInitialBufferSize), sseScannerMaxLineSize)
-	scanner.Split(scanSSELines)
-	return &SSEParser{
-		scanner: scanner,
-	}
+	p := &SSEParser{scanner: scanner}
+	scanner.Split(p.scanSSELines)
+	return p
 }
 
 // Next returns the next SSE event from the stream
@@ -103,6 +111,13 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 	var dataLines []string
 
 	for p.scanner.Scan() {
+		if p.unterminated {
+			// The final line has no terminator: eventsource-parser keeps it
+			// as an incomplete line, and EventSourceParserStream (3.0.8, the
+			// version TS provider-utils resolves) has no flush, so it is
+			// never parsed.
+			break
+		}
 		line := p.scanner.Text()
 		if !p.started {
 			// eventsource-parser strips a leading byte order mark.
@@ -171,13 +186,10 @@ func (p *SSEParser) Next() (*SSEEvent, error) {
 		return nil, err
 	}
 
-	// Check if we have any data left
-	if len(dataLines) > 0 {
-		event.Data = strings.Join(dataLines, "\n")
-		return event, nil
-	}
-
-	// End of stream
+	// End of stream. An event still pending (data lines with no closing
+	// blank line) is dropped: eventsource-parser dispatches only on a blank
+	// line, and EventSourceParserStream never flushes or resets the parser
+	// when its input ends.
 	p.err = io.EOF
 	return nil, io.EOF
 }
@@ -273,6 +285,19 @@ func (w *SSEWriter) WriteDone() error {
 		Event: "done",
 		Data:  "[DONE]",
 	})
+}
+
+// RawChunkValue is the value a raw stream part carries for an SSE data
+// payload (TS `rawValue: chunk.rawValue` from parseJsonEventStream): the
+// parsed JSON, or nil when the payload is not valid JSON, as safeParseJSON
+// returns `rawValue: undefined` for a JSONParseError. A payload that parses
+// but fails the chunk schema keeps its parsed value.
+func RawChunkValue(data string) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return nil
+	}
+	return raw
 }
 
 // IsStreamDone checks if an SSE event signals the stream is done

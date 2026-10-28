@@ -19,6 +19,30 @@ func validateToolCallConcurrency(n *int) error {
 	return nil
 }
 
+// validateAgentMaxRetries mirrors TS prepareRetries: a negative maxRetries is
+// an InvalidArgumentError (nil selects the default of 2).
+func validateAgentMaxRetries(n *int) error {
+	if n != nil && *n < 0 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "maxRetries",
+			Message: "maxRetries must be >= 0",
+		}
+	}
+	return nil
+}
+
+// validateAgentMaxOutputTokens mirrors TS prepareLanguageModelCallOptions: a
+// maxOutputTokens below 1 is an InvalidArgumentError.
+func validateAgentMaxOutputTokens(n *int) error {
+	if n != nil && *n < 1 {
+		return &providererrors.InvalidArgumentError{
+			Field:   "maxOutputTokens",
+			Message: "maxOutputTokens must be >= 1",
+		}
+	}
+	return nil
+}
+
 // runToolCalls runs runCall for every tool call of a step in the legacy
 // AgentResult loop. At most AgentConfig.ToolCallConcurrency calls run at once;
 // when it is unset all calls of the step run concurrently, as in TS (Promise.all

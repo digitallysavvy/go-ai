@@ -1104,6 +1104,7 @@ func TestInteractionsStreamErrorEmitsErrorAndFinish(t *testing.T) {
 		``,
 		`data: {"event_type":"error","error":{"code":"bad","message":"boom"}}`,
 		``,
+		``,
 	}, "\n")
 	stream := newInteractionsEventStream(context.Background(), New(Config{APIKey: "test-key"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
 	defer func() { _ = stream.Close() }()

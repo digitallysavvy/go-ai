@@ -48,6 +48,7 @@ func TestGatewayTextStreamMapsV4PartsAndFiltersRaw(t *testing.T) {
 			"",
 			`data: {"type":"finish","finishReason":"stop"}`,
 			"",
+			"",
 		}, "\n")),
 		body: io.NopCloser(strings.NewReader("")),
 	}

@@ -210,10 +210,7 @@ func (s *OpenAICompatStream) Next() (*provider.StreamChunk, error) {
 			if s.IncludeRawChunks {
 				s.pendingEventData = eventData
 				s.hasPendingEvent = true
-				var raw interface{}
-				if err := json.Unmarshal([]byte(eventData), &raw); err != nil {
-					raw = eventData
-				}
+				raw := RawChunkValue(eventData)
 				return &provider.StreamChunk{
 					Type: provider.ChunkTypeRaw,
 					Raw:  raw,

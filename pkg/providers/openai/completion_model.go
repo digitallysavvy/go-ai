@@ -633,10 +633,7 @@ func (s *completionStream) rawChunk(data string) *provider.StreamChunk {
 	if !s.includeRawChunks {
 		return nil
 	}
-	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
-		raw = data
-	}
+	raw := streaming.RawChunkValue(data)
 	return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}
 }
 

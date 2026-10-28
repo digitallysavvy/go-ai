@@ -34,6 +34,7 @@ func TestInteractionsStreamIncludeRawChunksAndMalformedEvent(t *testing.T) {
 		``,
 		`data: not json`,
 		``,
+		``,
 	}, "\n")
 	s := newInteractionsEventStream(context.Background(), New(Config{APIKey: "k"}).client, io.NopCloser(strings.NewReader(body)), "", nil, nil, nil, 0)
 	s.(*interactionsStream).includeRawChunks = true

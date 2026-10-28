@@ -821,10 +821,7 @@ func (s *deepseekStream) Next() (*provider.StreamChunk, error) {
 		}
 		rawQueued := false
 		if s.includeRawChunks {
-			var raw interface{}
-			if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
 				Type: provider.ChunkTypeRaw,
 				Raw:  raw,

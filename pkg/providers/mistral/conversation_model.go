@@ -490,10 +490,7 @@ func (s *conversationStream) Next() (*provider.StreamChunk, error) {
 			continue
 		}
 		if s.includeRawChunks {
-			var raw interface{}
-			if json.Unmarshal([]byte(event.Data), &raw) != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.queue = append(s.queue, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 		s.handle(event.Data)

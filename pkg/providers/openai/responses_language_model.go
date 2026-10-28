@@ -3963,10 +3963,7 @@ func (s *responsesStream) queueRawChunk(data string) {
 }
 
 func openAIResponsesRawChunk(data string) *provider.StreamChunk {
-	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
-		raw = data
-	}
+	raw := streaming.RawChunkValue(data)
 	return &provider.StreamChunk{
 		Type: provider.ChunkTypeRaw,
 		Raw:  raw,

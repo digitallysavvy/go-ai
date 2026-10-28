@@ -1248,10 +1248,7 @@ func (s *openResponsesStream) Next() (*provider.StreamChunk, error) {
 			// before processing it when includeRawChunks is set.
 			if s.includeRawChunks {
 				s.pendingEventData, s.hasPendingEvent = eventData, true
-				var raw interface{}
-				if err := json.Unmarshal([]byte(eventData), &raw); err != nil {
-					raw = eventData
-				}
+				raw := streaming.RawChunkValue(eventData)
 				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
 			}
 		}

@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,7 +9,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"strings"
 	"time"
 
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
@@ -19,6 +17,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 )
 
 // VideoModel implements the provider.VideoModelV3 interface for AI Gateway
@@ -363,31 +362,36 @@ type SSEVideoEvent struct {
 // Like the TypeScript SDK parser, only result and error events are accepted.
 // Context cancellation is checked on each iteration to stop reading immediately.
 func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (*provider.VideoModelV3Response, error) {
-	scanner := bufio.NewScanner(body)
-	// A "result" event can carry an inline base64-encoded video, which is
-	// routinely well over bufio.Scanner's default 64 KiB token limit on a
-	// single unchunked `data: ` line. Raise it in line with the 64 KiB
-	// start / 32 MiB ceiling used for the shared SSEParser (R4-4) and the
-	// batch NDJSON scanners elsewhere in the codebase.
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
+	// The shared SSEParser is TS parseJsonEventStream's EventSourceParserStream:
+	// an event is its data lines joined once a blank line ends it, and the
+	// '[DONE]' event is skipped.
+	parser := streaming.NewSSEParser(body)
 
-	for scanner.Scan() {
-		// Check for context cancellation before processing each line
+	for {
+		// Check for context cancellation before processing each event
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
 
-		line := scanner.Text()
-
-		// SSE data field: "data:" followed by an optional single space
-		// (the event-stream spec; TS parseJsonEventStream accepts both).
-		if !strings.HasPrefix(line, "data:") {
+		sseEvent, err := parser.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			// The parser stopped due to context cancellation or a read error
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+			}
+			return nil, fmt.Errorf("SSE stream read error: %w", err)
+		}
+		if sseEvent.Data == "[DONE]" {
 			continue
 		}
-
-		data := strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")
+		data := sseEvent.Data
 
 		// TS parseJsonEventStream validates each event against
 		// gatewayVideoEventSchema; a malformed event (bad JSON, unknown
@@ -414,16 +418,6 @@ func (m *VideoModel) readSSEVideoResponse(ctx context.Context, body io.Reader) (
 			return nil, m.sseAPICallError(ctx, statusCode, event.Message, errBody, nil, event.ErrorType)
 		}
 		return m.buildResponseFromSSEEvent(&event)
-	}
-
-	// Check if the scanner stopped due to context cancellation or a read error
-	if err := scanner.Err(); err != nil {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-		return nil, fmt.Errorf("SSE stream read error: %w", err)
 	}
 
 	// Stream ended without a result or error event

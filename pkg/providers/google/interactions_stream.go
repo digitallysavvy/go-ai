@@ -322,10 +322,7 @@ restart:
 			continue
 		}
 		if s.includeRawChunks {
-			var raw interface{}
-			if json.Unmarshal([]byte(event.Data), &raw) != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 		var payload interactionsEvent
