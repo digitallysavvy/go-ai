@@ -634,8 +634,9 @@ func validateBatchRequests(requests []BatchRequest) error {
 		}
 		if _, ok := seen[id]; ok {
 			return &providererrors.InvalidArgumentError{
-				Field:   "requests",
-				Message: fmt.Sprintf("request IDs must be unique; duplicate ID %q", id),
+				Field: "requests",
+				// TS template literal: the ID is not escaped.
+				Message: fmt.Sprintf(`request IDs must be unique; duplicate ID "%s"`, id),
 			}
 		}
 		seen[id] = struct{}{}
@@ -655,7 +656,7 @@ func validateCompatibleBatchTools(tools []types.Tool, toolsByName map[string]int
 		if prev, ok := toolsByName[tools[i].Name]; ok && !reflect.DeepEqual(prev, def) {
 			return &providererrors.InvalidArgumentError{
 				Field:   "requests",
-				Message: fmt.Sprintf("tool %q must have the same definition in every batch request", tools[i].Name),
+				Message: fmt.Sprintf(`tool "%s" must have the same definition in every batch request`, tools[i].Name),
 			}
 		}
 		toolsByName[tools[i].Name] = def

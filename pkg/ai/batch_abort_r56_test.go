@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
@@ -38,5 +39,28 @@ func TestStartBatchAbortWhileNormalizingLastRequestSkipsStart(t *testing.T) {
 	}
 	if started {
 		t.Fatal("DoStartBatch was called after the abort")
+	}
+}
+
+// TS builds these messages with template literals, so an ID or tool name with
+// a quote or a non-ASCII character appears verbatim (Go %q would escape it).
+func TestStartBatchErrorMessagesQuoteVerbatim(t *testing.T) {
+	id := `ré"q`
+	_, err := ExperimentalStartBatch(context.Background(), StartBatchOptions{
+		Provider: &mockBatchV4{providerName: "mock.batch"},
+		Requests: []BatchRequest{textBatchRequest(id, "m"), textBatchRequest(id, "m")},
+	})
+	var invalid *providererrors.InvalidArgumentError
+	if !errors.As(err, &invalid) || invalid.Message != `request IDs must be unique; duplicate ID "ré"q"` {
+		t.Fatalf("err = %v", err)
+	}
+
+	obj := map[string]interface{}{"type": "object"}
+	name := `sé"arch`
+	a := []types.Tool{{Name: name, Parameters: obj, Description: "a"}}
+	b := []types.Tool{{Name: name, Parameters: obj, Description: "b"}}
+	err = startBatchWithTools(t, a, b, nil, nil)
+	if !errors.As(err, &invalid) || invalid.Message != `tool "sé"arch" must have the same definition in every batch request` {
+		t.Fatalf("err = %v", err)
 	}
 }
