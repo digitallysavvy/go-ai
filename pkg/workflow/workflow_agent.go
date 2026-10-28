@@ -2317,9 +2317,13 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 	// dispatches no telemetry. The resume's tool events therefore find no
 	// root, as in TS, where the integration has no call state yet and records
 	// no tool span. Both TS methods open the root as 'ai.workflowAgent.stream'.
+	cancelled := ctx != nil && ctx.Err() != nil
+	if cancelled {
+		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
+	}
 	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, callID, modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
-	if ctx != nil && ctx.Err() != nil {
+	if cancelled {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID})
 		if onAbort != nil {
 			onAbort(ctx, nil)
@@ -2375,6 +2379,34 @@ func (w *WorkflowAgent) GenerateWithOptions(ctx context.Context, opts WorkflowGe
 		responseMessages = append(responseMessages, step.Response.Messages...)
 	}
 	return &WorkflowResult{AgentResult: result, ResponseMessages: responseMessages}, nil
+}
+
+// fireWorkflowStartBeforeAbort fires the user OnStart for a run whose context
+// was already cancelled before the loop. TS WorkflowAgent calls onStart (then
+// the telemetry start) before its abort check, so a pre-cancelled run still
+// reports its start, then onAbort. Normally core fires OnStart; this run never
+// reaches it. The event carries what TS's does: the model, the standardized
+// messages (a plain prompt is one user message) and the contexts.
+func fireWorkflowStartBeforeAbort(ctx context.Context, onStart StartCallback, model provider.LanguageModel, messages []types.Message, prompt string, runtimeContext interface{}, toolsContext map[string]interface{}) {
+	if onStart == nil {
+		return
+	}
+	if len(messages) == 0 && prompt != "" {
+		messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
+	}
+	providerName, modelID := workflowModelInfo(model)
+	onStart(ctx, ai.OnStartEvent{
+		Provider: providerName,
+		// ModelProvider is the deprecated alias of Provider, set for
+		// callbacks still reading it.
+		ModelProvider:       providerName, //nolint:staticcheck
+		ModelID:             modelID,
+		Prompt:              prompt,
+		Messages:            messages,
+		ExperimentalContext: runtimeContext,
+		RuntimeContext:      runtimeContext,
+		ToolsContext:        toolsContext,
+	})
 }
 
 // stepResultFromFinishEvent converts a step-end event to the StepResult handed
@@ -2525,9 +2557,13 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 	// as soon as the underlying stream is obtained: the streaming happens as
 	// the caller drains WorkflowStreamResult, under the child span the
 	// delegated ai.StreamText call creates for itself.
+	cancelled := ctx != nil && ctx.Err() != nil
+	if cancelled {
+		fireWorkflowStartBeforeAbort(ctx, mergeStart(w.OnStart, opts.OnStart), model, opts.Messages, opts.Prompt, runtimeContext, toolsContext)
+	}
 	ctx = telemetrypkg.FireOnStart(ctx, workflowStartEvent(workflowRootOperation, "", modelProvider, modelID, telemetrySettings, early, prepared, opts.Messages, opts.Prompt, runtimeContext, toolsContext))
 	onAbort := mergeAbort(w.OnAbort, opts.OnAbort)
-	if ctx != nil && ctx.Err() != nil {
+	if cancelled {
 		telemetrypkg.FireOnAbort(ctx, telemetrypkg.TelemetryAbortEvent{Settings: telemetrySettings})
 		if onAbort != nil {
 			onAbort(ctx, nil)

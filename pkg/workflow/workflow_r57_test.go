@@ -2,10 +2,12 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
@@ -84,5 +86,56 @@ func TestWorkflowPrepareStepHeadersOverrideDropsUserAgentSuffix(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TS WorkflowAgent calls onStart before its abort check, so a run whose
+// context is already cancelled reports its start (model, messages, contexts)
+// and then onAbort. Go fired OnAbort only: core, which builds the start
+// event, is never reached.
+func TestWorkflowPreCancelledRunFiresOnStartThenOnAbort(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "generate", true: "stream"}[stream], func(t *testing.T) {
+			var mu sync.Mutex
+			var order []string
+			var start ai.OnStartEvent
+			m := &wfMockModel{}
+			w, err := NewWorkflowAgent(WorkflowAgent{
+				Model:          m,
+				RuntimeContext: map[string]interface{}{"k": "v"},
+				OnStart: func(_ context.Context, e ai.OnStartEvent) {
+					mu.Lock()
+					order = append(order, "start")
+					start = e
+					mu.Unlock()
+				},
+				OnAbort: func(context.Context, []types.StepResult) { mu.Lock(); order = append(order, "abort"); mu.Unlock() },
+				OnEnd:   func(context.Context, ai.OnFinishEvent) { mu.Lock(); order = append(order, "end"); mu.Unlock() },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if stream {
+				_, err = w.StreamWithOptions(ctx, WorkflowStreamOptions{Prompt: "go"})
+			} else {
+				_, err = w.GenerateWithOptions(ctx, WorkflowGenerateOptions{Prompt: "go"})
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("err = %v, want context.Canceled", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if have := strings.Join(order, " "); have != "start abort" {
+				t.Fatalf("callbacks = %q, want %q", have, "start abort")
+			}
+			if start.ModelID != m.ModelID() || len(start.Messages) != 1 || start.Messages[0].Role != types.RoleUser {
+				t.Fatalf("start event = model %q messages %+v, want the model and the prompt as one user message", start.ModelID, start.Messages)
+			}
+			if rc, _ := start.RuntimeContext.(map[string]interface{}); rc["k"] != "v" {
+				t.Fatalf("start runtime context = %v", start.RuntimeContext)
+			}
+		})
 	}
 }
