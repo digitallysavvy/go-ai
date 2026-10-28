@@ -469,7 +469,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 				textParts = append(textParts, text)
 				textBlocks = append(textBlocks, types.TextContent{
 					Text:             text,
-					ProviderMetadata: anthropicCompactionMetadata(content.Signature),
+					ProviderMetadata: anthropicCompactionMetadata(content.Signature, content.HasSignature || content.Signature != ""),
 				})
 				byBlock[blockIdx] = append(byBlock[blockIdx], textBlocks[len(textBlocks)-1])
 			}
@@ -913,10 +913,11 @@ func anthropicCompactionText(raw json.RawMessage) (string, bool) {
 }
 
 // anthropicCompactionMetadata builds the providerMetadata.anthropic payload
-// for a compaction text block (TS: `{type: 'compaction', ...(signature && {signature})}`).
-func anthropicCompactionMetadata(signature string) json.RawMessage {
+// for a compaction text block (TS: `{type: 'compaction', ...(part.signature !=
+// null && {signature})}`, so an empty signature is kept).
+func anthropicCompactionMetadata(signature string, hasSignature bool) json.RawMessage {
 	meta := map[string]interface{}{"type": "compaction"}
-	if signature != "" {
+	if hasSignature {
 		meta["signature"] = signature
 	}
 	raw, err := json.Marshal(map[string]interface{}{"anthropic": meta})
@@ -1426,7 +1427,10 @@ type anthropicContent struct {
 	RawInput  json.RawMessage `json:"-"`
 	Thinking  string          `json:"thinking,omitempty"`  // For "thinking" type
 	Signature string          `json:"signature,omitempty"` // For "thinking" type
-	Data      string          `json:"data,omitempty"`      // For "redacted_thinking" type
+	// HasSignature reports a non-null wire signature, empty included (TS
+	// `part.signature != null`); set by UnmarshalJSON.
+	HasSignature bool   `json:"-"`
+	Data         string `json:"data,omitempty"` // For "redacted_thinking" type
 	// Citations holds the raw citation objects attached to a "text" content
 	// block (page_location, char_location, content_block_location,
 	// search_result_location, web_search_result_location, ...). Kept as raw
@@ -1824,8 +1828,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					ToolUseID string          `json:"tool_use_id"`
 					IsError   *bool           `json:"is_error"`
 					Content   json.RawMessage `json:"content"`
-					// compaction fields
-					Signature string `json:"signature"`
+					// compaction fields (nil when absent or null: TS != null)
+					Signature *string `json:"signature"`
 					// redacted_thinking field
 					Data string `json:"data"`
 					// fallback fields
@@ -2091,8 +2095,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// (TS content_block_start "compaction" case).
 				s.contentBlocks[start.Index] = &streamContentBlock{blockType: "compaction"}
 				meta := map[string]interface{}{"type": "compaction"}
-				if start.ContentBlock.Signature != "" {
-					meta["signature"] = start.ContentBlock.Signature
+				if start.ContentBlock.Signature != nil {
+					meta["signature"] = *start.ContentBlock.Signature
 				}
 				metaJSON, _ := json.Marshal(map[string]interface{}{"anthropic": meta})
 				textStart := &provider.StreamChunk{
@@ -2103,7 +2107,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				// On-demand compaction blocks may arrive fully formed in
 				// content_block_start — without any following compaction_delta
 				// events — when both signature and content are present.
-				if start.ContentBlock.Signature != "" {
+				if start.ContentBlock.Signature != nil {
 					var text string
 					if err := json.Unmarshal(start.ContentBlock.Content, &text); err == nil && text != "" {
 						s.pending = append(s.pending, &provider.StreamChunk{

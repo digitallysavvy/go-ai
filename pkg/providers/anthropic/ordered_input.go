@@ -21,10 +21,15 @@ func (c *anthropicContent) UnmarshalJSON(b []byte) error {
 	}
 	*c = anthropicContent(p)
 	var aux struct {
-		Input json.RawMessage `json:"input"`
+		Input     json.RawMessage `json:"input"`
+		Signature json.RawMessage `json:"signature"`
 	}
-	if json.Unmarshal(b, &aux) == nil && len(aux.Input) > 0 && string(aux.Input) != "null" {
-		c.RawInput = aux.Input
+	if json.Unmarshal(b, &aux) == nil {
+		if len(aux.Input) > 0 && string(aux.Input) != "null" {
+			c.RawInput = aux.Input
+		}
+		// TS `part.signature != null`: an empty string still counts.
+		c.HasSignature = len(aux.Signature) > 0 && string(aux.Signature) != "null"
 	}
 	return nil
 }
