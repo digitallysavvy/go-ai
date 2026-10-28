@@ -101,7 +101,9 @@ A value set on the call replaces the agent's (`Headers` and `ProviderOptions` re
 
 `OnAbort` receives the steps completed before the abort (generate and stream). `OnError` and `OnAbort` fire for failures that happen while a stream is being consumed (provider error chunks,
 cancellation), not only before it starts. A timeout (the agent's `Timeout`, or a context deadline) counts as an
-abort like a cancellation: `OnAbort` fires and `OnError` does not.
+abort like a cancellation: `OnAbort` fires and `OnError` does not. In `Stream`, `OnEnd` fires for every run that was not
+aborted, as in TypeScript: after a failure (a model call or `PrepareStep` hook that fails) it follows `OnError`
+and carries the steps completed so far. `Generate` fires `OnEnd` only when the run succeeds.
 
 ### Continuing the conversation
 

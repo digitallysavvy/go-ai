@@ -211,6 +211,8 @@ Each item has before/after code in the
   A `PrepareStep` `ActiveTools` narrows the call's active tools instead of
   widening them in `Generate`, and `PrepareCall`/`PrepareStep` see the
   agent's `ActiveTools` when the call sets none.
+  A failed (not aborted) `Stream` run now fires `OnEnd` after `OnError`,
+  with the steps completed so far, as TS stream mode does.
   **Migration:** a hook that overrides a value for one step must set it back
   on later steps.
 

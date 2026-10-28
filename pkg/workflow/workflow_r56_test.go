@@ -7,9 +7,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // r56CallModel records each model call's x-h/x-pc headers; with failFirst
@@ -276,5 +278,133 @@ func TestWorkflowPrepareStepActiveToolsNarrowCallActiveTools(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// r56FailModel answers step 0 with a tool call (or fails it when failAt is
+// 0) and fails the model call of step failAt.
+type r56FailModel struct {
+	wfMockModel
+	mu     sync.Mutex
+	n      int
+	failAt int
+}
+
+func (m *r56FailModel) DoStream(_ context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+	m.mu.Lock()
+	n := m.n
+	m.n++
+	m.mu.Unlock()
+	if n == m.failAt {
+		return nil, errors.New("boom")
+	}
+	return testutil.NewMockTextStream([]provider.StreamChunk{
+		{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+	}), nil
+}
+
+func (m *r56FailModel) DoGenerate(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
+	m.mu.Lock()
+	n := m.n
+	m.n++
+	m.mu.Unlock()
+	if n == m.failAt {
+		return nil, errors.New("boom")
+	}
+	return &types.GenerateResult{FinishReason: types.FinishReasonToolCalls, ToolCalls: []types.ToolCall{{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}}}, nil
+}
+
+// TS WorkflowAgent's stream mode calls onEnd for every run that was not
+// aborted (`mode === 'stream' || !hasEncounteredError`), after onError, with
+// the steps completed so far; generate fires it only on success. Go's stream
+// fired no OnEnd when a model call (or a PrepareStep hook) failed.
+func TestWorkflowStreamOnEndAfterFailure(t *testing.T) {
+	cases := []struct {
+		name        string
+		failAt      int
+		hookErr     bool
+		stream      bool
+		wantEnds    int
+		wantSteps   int
+		wantFinish  types.FinishReason
+		wantOrdered string
+	}{
+		{name: "stream/first step fails", failAt: 0, stream: true, wantEnds: 1, wantSteps: 0, wantFinish: types.FinishReasonOther, wantOrdered: "err end"},
+		{name: "stream/second step fails", failAt: 1, stream: true, wantEnds: 1, wantSteps: 1, wantFinish: types.FinishReasonToolCalls, wantOrdered: "err end"},
+		{name: "stream/PrepareStep fails", failAt: -1, hookErr: true, stream: true, wantEnds: 1, wantSteps: 0, wantFinish: types.FinishReasonOther, wantOrdered: "err end"},
+		{name: "generate/second step fails", failAt: 1, wantEnds: 0, wantOrdered: "err"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var order []string
+			var ends []ai.OnFinishEvent
+			cfg := WorkflowAgent{
+				Model: &r56FailModel{failAt: tc.failAt}, Tools: r56Tool(),
+				OnEnd: func(_ context.Context, e ai.OnFinishEvent) {
+					mu.Lock()
+					order = append(order, "end")
+					ends = append(ends, e)
+					mu.Unlock()
+				},
+				OnError: func(context.Context, error) { mu.Lock(); order = append(order, "err"); mu.Unlock() },
+			}
+			if tc.hookErr {
+				cfg.PrepareStep = func(context.Context, LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					return LanguageModelCallOptions{}, errors.New("hook")
+				}
+			}
+			w, err := NewWorkflowAgent(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r56Run(t, w, tc.stream); err == nil {
+				t.Fatal("want the run to fail")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if have := strings.Join(order, " "); have != tc.wantOrdered {
+				t.Fatalf("callbacks = %q, want %q", have, tc.wantOrdered)
+			}
+			if len(ends) != tc.wantEnds {
+				t.Fatalf("OnEnd calls = %d, want %d", len(ends), tc.wantEnds)
+			}
+			if tc.wantEnds == 0 {
+				return
+			}
+			if e := ends[0]; len(e.Steps) != tc.wantSteps || e.FinishReason != tc.wantFinish {
+				t.Fatalf("OnEnd steps = %d finish = %q, want %d %q", len(e.Steps), e.FinishReason, tc.wantSteps, tc.wantFinish)
+			}
+		})
+	}
+}
+
+// An aborted stream fires OnAbort and no OnEnd (TS notifyEnd returns early).
+func TestWorkflowStreamNoOnEndAfterAbort(t *testing.T) {
+	var mu sync.Mutex
+	var ends, aborts int
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &r56FailModel{failAt: -1}
+	w, err := NewWorkflowAgent(WorkflowAgent{
+		Model: m,
+		Tools: []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			cancel()
+			return "r", nil
+		}}},
+		OnEnd:   func(context.Context, ai.OnFinishEvent) { mu.Lock(); ends++; mu.Unlock() },
+		OnAbort: func(context.Context, []types.StepResult) { mu.Lock(); aborts++; mu.Unlock() },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := w.StreamWithOptions(ctx, WorkflowStreamOptions{Prompt: "go"})
+	if err == nil {
+		_ = res.ConsumeStream()
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if ends != 0 || aborts == 0 {
+		t.Fatalf("OnEnd = %d, OnAbort = %d; want 0 and at least 1", ends, aborts)
 	}
 }
