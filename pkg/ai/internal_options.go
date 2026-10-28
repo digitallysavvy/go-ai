@@ -55,6 +55,14 @@ type InternalOptions struct {
 	// when its loop throws. A run that ended on a stream's own error keeps the
 	// final conversation, as TS's iterator returns it. Used by WorkflowAgent.
 	FailedEndMessages []types.Message
+
+	// HeadersAsGiven makes the legacy agent loop (pkg/agent GenerateAgent)
+	// send each step's headers to the model as they are, without its
+	// ai-sdk-agent/tool-loop and ai/<version> user-agent tags. TS
+	// WorkflowAgent hands its step headers straight to doGenerate, so a
+	// PrepareStep that replaces them leaves no SDK tag at all. Used by
+	// WorkflowAgent.
+	HeadersAsGiven bool
 }
 
 // notifyFailedEnd fires the end event of a failed run when

@@ -2635,7 +2635,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 // TimeoutError as aborts, so onAbort fires and onError does not).
 // workflowInternalOptions makes the loop continue after a provider-executed
 // tool call with no result (TS WorkflowAgent warns and sends an empty result).
-var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true}
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true}
 
 func isWorkflowAbort(ctx context.Context, err error) bool {
 	if ctx != nil && ctx.Err() != nil {

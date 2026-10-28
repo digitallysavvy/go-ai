@@ -28,8 +28,11 @@ func (m *r57UAModel) note(o *provider.GenerateOptions) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	tag := "-"
-	if strings.Contains(o.Headers["user-agent"], "ai-sdk-agent/workflow") {
+	switch ua := o.Headers["user-agent"]; {
+	case ua == "ai-sdk-agent/workflow":
 		tag = "ua"
+	case ua != "":
+		tag = ua
 	}
 	m.calls = append(m.calls, tag+"/"+o.Headers["x-h"])
 }
