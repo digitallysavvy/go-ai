@@ -155,6 +155,14 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (map[string]inte
 	for k, v := range extras {
 		body[k] = v
 	}
+	// TS builds the body as {...agentOptions, ...modelSelection, input,
+	// max_output_tokens, temperature, top_p, reasoning, response_format, tools}:
+	// those keys are always assigned, so a loose providerOptions.perplexity
+	// entry of the same name never reaches the wire when the call value is
+	// undefined (JSON.stringify drops it).
+	for _, k := range []string{"max_output_tokens", "temperature", "top_p", "response_format"} {
+		delete(body, k)
+	}
 	if model != "" {
 		body["model"] = model
 	}
