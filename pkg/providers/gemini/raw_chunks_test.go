@@ -50,8 +50,9 @@ func TestStreamIncludeRawChunks(t *testing.T) {
 	if _, ok := raws[0].(map[string]interface{}); !ok {
 		t.Fatalf("raw[0] = %#v, want parsed object", raws[0])
 	}
-	if raws[1] != "not json" {
-		t.Fatalf("raw[1] = %#v, want the unparsable text", raws[1])
+	// TS safeParseJSON: rawValue is undefined for a payload that is not JSON.
+	if raws[1] != nil {
+		t.Fatalf("raw[1] = %#v, want nil for the unparsable payload", raws[1])
 	}
 	// The raw chunk for the malformed payload precedes its error chunk.
 	for i, c := range chunks {

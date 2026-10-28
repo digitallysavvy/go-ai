@@ -1768,7 +1768,7 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 		if s.includeRawChunks && s.heldEvent == nil && !s.rawEmitted {
 			s.heldEvent = event
 			s.rawEmitted = true
-			return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: rawSSEPayload(event.Data)}, nil
+			return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: streaming.RawChunkValue(event.Data)}, nil
 		}
 		s.rawEmitted = false
 
@@ -3113,16 +3113,6 @@ func messageStartChunk(data string) *provider.StreamChunk {
 			ProviderMetadata: metadata,
 		},
 	}
-}
-
-// rawSSEPayload decodes an SSE data payload to the value a raw chunk carries
-// (the parsed JSON, or the text itself when it is not valid JSON).
-func rawSSEPayload(data string) interface{} {
-	var raw interface{}
-	if err := json.Unmarshal([]byte(data), &raw); err != nil {
-		return data
-	}
-	return raw
 }
 
 // anthropicHTTPError builds the ProviderError for a failed Anthropic HTTP

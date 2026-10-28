@@ -218,10 +218,7 @@ func (s *stream) Next() (*provider.StreamChunk, error) {
 		}
 
 		if s.includeRawChunks {
-			var raw interface{}
-			if json.Unmarshal([]byte(event.Data), &raw) != nil {
-				raw = event.Data
-			}
+			raw := streaming.RawChunkValue(event.Data)
 			s.chunkBuffer = append(s.chunkBuffer, &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw})
 		}
 

@@ -3,6 +3,7 @@ package streaming
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -284,6 +285,19 @@ func (w *SSEWriter) WriteDone() error {
 		Event: "done",
 		Data:  "[DONE]",
 	})
+}
+
+// RawChunkValue is the value a raw stream part carries for an SSE data
+// payload (TS `rawValue: chunk.rawValue` from parseJsonEventStream): the
+// parsed JSON, or nil when the payload is not valid JSON, as safeParseJSON
+// returns `rawValue: undefined` for a JSONParseError. A payload that parses
+// but fails the chunk schema keeps its parsed value.
+func RawChunkValue(data string) interface{} {
+	var raw interface{}
+	if err := json.Unmarshal([]byte(data), &raw); err != nil {
+		return nil
+	}
+	return raw
 }
 
 // IsStreamDone checks if an SSE event signals the stream is done

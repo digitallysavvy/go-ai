@@ -719,10 +719,7 @@ func (s *cohereV2Stream) Next() (*provider.StreamChunk, error) {
 			}
 			if s.includeRawChunks {
 				s.pendingEvent = event
-				var raw interface{}
-				if err := json.Unmarshal([]byte(event.Data), &raw); err != nil {
-					raw = event.Data
-				}
+				raw := streaming.RawChunkValue(event.Data)
 				return &provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: raw}, nil
 			}
 		}
