@@ -1564,12 +1564,6 @@ func (d *turnDriver) ensureStepOpen() {
 		return
 	}
 	d.stepOpen = true
-	// The step's response id and model (TS `finishStep`: response.id
-	// `${callId}-${stepNumber}`, response.modelId). A metadata chunk opens no
-	// step of its own.
-	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{
-		ID: fmt.Sprintf("%s-%d", d.telCallID, d.stepNumber), Timestamp: time.Now(), ModelID: d.respModelID,
-	}})
 	d.telStepStart()
 	if d.in.Callbacks.OnStepStart != nil {
 		provider := "harness:" + d.in.Harness.HarnessID()
@@ -1864,7 +1858,12 @@ func (d *turnDriver) completeStep(finishReason FinishReason, usage Usage, metada
 	}
 
 	// TS: `result.finishStep()` enqueues the finish-step part and returns the
-	// step; `lifecycle.stepEnd(step)` then reports that step.
+	// step; `lifecycle.stepEnd(step)` then reports that step. Its response is
+	// built there: id `${callId}-${stepNumber}`, the current model id and the
+	// time the step finished. A metadata chunk opens no step of its own.
+	d.stream.push(provider.StreamChunk{Type: provider.ChunkTypeResponseMetadata, ResponseMetadata: &provider.ResponseMetadata{
+		ID: fmt.Sprintf("%s-%d", d.telCallID, d.stepNumber), Timestamp: time.Now(), ModelID: d.respModelID,
+	}})
 	waiting := d.steps.expect()
 	d.stream.push(provider.StreamChunk{
 		Type:             provider.ChunkTypeFinishStep,

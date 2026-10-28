@@ -336,6 +336,8 @@ These match TS and are unlikely to need code changes, but can change output.
   recorded content** (text, reasoning, a tool call, result or approval), as TS
   `currentStepContent.length > 0`. A step that only saw tool-input, source,
   file or replayed parts before the terminal `finish` no longer fails it.
+- A harness step's `Response.Timestamp` is the time the step finished, as TS
+  `finishStep` builds the response, not the time it opened.
 - **A harness turn suspended before the adapter's `finish` still ends with a
   finish part** (finish reason `other`, the open step discarded), as TS
   `result.finish(undefined)`. `ToUIMessageStream` maps a call-level finish

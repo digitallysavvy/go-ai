@@ -3,7 +3,9 @@ package harness
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
@@ -43,5 +45,37 @@ func TestR51UnclosedStepFailsOnlyWithContent(t *testing.T) {
 		if f := chunksOfType(chunks, provider.ChunkTypeFinish); len(f) != 1 {
 			t.Fatalf("tool input only: finish chunks = %+v", f)
 		}
+	}
+}
+
+// TS builds a harness step's response in finishStep, so its timestamp is
+// when the step finished, not when it opened.
+func TestR51HarnessStepResponseTimestampAtFinish(t *testing.T) {
+	mock := newMockHarness(mockHarnessOptions{
+		script: func(submit func(string, interface{})) []StreamPart {
+			stop := FinishReason{Unified: FinishReasonStop}
+			return []StreamPart{
+				&StreamStartPart{},
+				&TextDeltaPart{ID: "t1", Delta: "hi"},
+				&FinishStepPart{FinishReason: stop, Usage: stringUsage(1, 1)},
+				&FinishPart{FinishReason: stop, TotalUsage: stringUsage(1, 1)},
+			}
+		},
+	})
+	var opened time.Time
+	out := runPrompt(context.Background(), runPromptInput{
+		Harness: mock.harness, Session: mock.session, Prompt: TextPrompt("go"), SandboxSession: testSandbox(),
+		Callbacks: Callbacks{OnLanguageModelCallStart: func(context.Context, ai.LanguageModelCallStartEvent) {
+			opened = time.Now()
+			time.Sleep(30 * time.Millisecond)
+		}},
+	})
+	drainRunPrompt(t, out)
+	steps := out.Result.Steps()
+	if len(steps) != 1 {
+		t.Fatalf("steps = %d", len(steps))
+	}
+	if ts := steps[0].Response.Timestamp; ts.Sub(opened) < 25*time.Millisecond {
+		t.Fatalf("response timestamp %v is %v after the step opened, want the finish time", ts, ts.Sub(opened))
 	}
 }
