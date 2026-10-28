@@ -89,7 +89,7 @@ func TestR51HarnessLegacyStepSpanResponseAttrs(t *testing.T) {
 			continue
 		}
 		for _, kv := range s.Attributes() {
-			attrs[string(kv.Key)] = kv.Value.Emit()
+			attrs[string(kv.Key)] = kv.Value.String()
 		}
 	}
 	wantID := steps[0].Response.ID

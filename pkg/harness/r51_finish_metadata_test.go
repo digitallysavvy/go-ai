@@ -35,7 +35,7 @@ func TestR51TerminalFinishMetadataLikeTS(t *testing.T) {
 			t.Fatalf("adapterFinish=%v: %d finish chunks", adapterFinish, len(finishes))
 		}
 		f := finishes[0]
-		raw, md := out.Result.RawFinishReason(), string(out.Result.ProviderMetadata())
+		raw, md := out.Result.RawFinishReason(), string(out.Result.ProviderMetadata()) //nolint:staticcheck // TS result.providerMetadata
 		if adapterFinish {
 			if raw != "" || md != "" {
 				t.Errorf("adapter finish: result raw = %q, metadata = %s; want none", raw, md)

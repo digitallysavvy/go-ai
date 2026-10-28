@@ -127,8 +127,6 @@ func hasBraceGroup(s string) bool {
 }
 
 // braceExpand is brace-expansion's expand.
-func braceExpand(str string) []string { return braceExpandC(nil, str) }
-
 func braceExpandC(c *globCanceler, str string) []string {
 	if str == "" {
 		return nil
@@ -628,15 +626,10 @@ func globPartsMatch(a, b []string) ([]string, bool) {
 	return result, true
 }
 
-// globPatternParts is the part lists minimatch matches a path against: the
-// deduplicated brace expansions, slash-split and preprocessed.
-func globPatternParts(pattern string) [][]string {
-	parts, _ := globPatternPartsContext(context.Background(), pattern)
-	return parts
-}
-
-// globPatternPartsContext is globPatternParts that stops with ctx.Err() when
-// ctx ends during the expansion or either preprocessing phase.
+// globPatternPartsContext is the part lists minimatch matches a path against:
+// the deduplicated brace expansions, slash-split and preprocessed. It stops
+// with ctx.Err() when ctx ends during the expansion or either preprocessing
+// phase.
 func globPatternPartsContext(ctx context.Context, pattern string) ([][]string, error) {
 	c := newGlobCanceler(ctx)
 	if err := ctx.Err(); err != nil {

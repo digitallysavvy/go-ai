@@ -2693,7 +2693,7 @@ func TestToUIMessageStream_Outcome_FailedOnTransportError(t *testing.T) {
 // missingPartStream runs one out-of-sequence chunk through
 // CreateUIMessageStreamWithOptions, with an OnEnd callback when withOnEnd is
 // set, and returns the stream error, the OnError calls and the end event.
-func missingPartStream(t *testing.T, chunk UIMessageChunk, withOnEnd bool) (error, []error, map[string]interface{}) {
+func missingPartStream(t *testing.T, chunk UIMessageChunk, withOnEnd bool) ([]error, map[string]interface{}, error) {
 	t.Helper()
 	var onErrorCalls []error
 	var endEvent map[string]interface{}
@@ -2716,7 +2716,7 @@ func missingPartStream(t *testing.T, chunk UIMessageChunk, withOnEnd bool) (erro
 	if withOnEnd && len(delivered) != 0 {
 		t.Fatalf("chunks after the processing failure = %v", delivered)
 	}
-	return err, onErrorCalls, endEvent
+	return onErrorCalls, endEvent, err
 }
 
 // TS processUIMessageStream throws an AI_UIMessageStreamError for a delta,
@@ -2737,7 +2737,7 @@ func TestUIMessageStreamError_MissingParts(t *testing.T) {
 		{UIMessageChunk{"type": "reasoning-end", "id": "reasoning_missing"}, "reasoning-end", "reasoning_missing",
 			`Received reasoning-end for missing reasoning part with ID "reasoning_missing". Ensure a "reasoning-start" chunk is sent before any "reasoning-end" chunks.`},
 	} {
-		err, onErrorCalls, end := missingPartStream(t, tc.chunk, true)
+		onErrorCalls, end, err := missingPartStream(t, tc.chunk, true)
 		var target *UIMessageStreamError
 		if !errors.As(err, &target) || !IsUIMessageStreamError(err) {
 			t.Fatalf("%s: stream err = %T %v, want *UIMessageStreamError", tc.chunkType, err, err)
@@ -2752,7 +2752,7 @@ func TestUIMessageStreamError_MissingParts(t *testing.T) {
 			t.Errorf("%s: outcome = %#v", tc.chunkType, end["outcome"])
 		}
 
-		err, onErrorCalls, _ = missingPartStream(t, tc.chunk, false)
+		onErrorCalls, _, err = missingPartStream(t, tc.chunk, false)
 		if err != nil || len(onErrorCalls) != 0 {
 			t.Errorf("%s without callbacks: err = %v, OnError calls = %v", tc.chunkType, err, onErrorCalls)
 		}
