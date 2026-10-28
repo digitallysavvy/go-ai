@@ -100,6 +100,10 @@ type interactionsContentBlock struct {
 	// nameSet is true when the wire block had a non-null "name" (TS
 	// `name ?? fallback` keeps an empty name).
 	nameSet bool
+	// textAbsent is true when the block was decoded from JSON whose "text"
+	// was missing or not a string (TS `typeof item.text === 'string'`). A
+	// hand-built block keeps the zero value.
+	textAbsent bool
 }
 
 // UnmarshalJSON decodes the block and records whether "name" was present.
@@ -114,12 +118,17 @@ func (b *interactionsContentBlock) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// afterLooseDecode records whether "name" was a string on the wire.
+// afterLooseDecode records whether "name" and "text" were strings on the wire.
 func (b *interactionsContentBlock) afterLooseDecode(data []byte) {
 	var probe struct {
 		Name *string `json:"name"`
 	}
 	b.nameSet = json.Unmarshal(data, &probe) == nil && probe.Name != nil
+	var textProbe struct {
+		Text json.RawMessage `json:"text"`
+	}
+	var text string
+	b.textAbsent = json.Unmarshal(data, &textProbe) != nil || len(textProbe.Text) == 0 || string(textProbe.Text) == "null" || json.Unmarshal(textProbe.Text, &text) != nil
 }
 
 // nameOr returns the block's name, or fallback when the wire had none (TS
