@@ -1118,6 +1118,17 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
+		// TS `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`: a
+		// call aborted after a step ended (e.g. while a tool that ignores
+		// ctx ran) fails before the next step starts, so PrepareStep and the
+		// step callbacks are not called for it.
+		if stepNum > 1 && ctx.Err() != nil {
+			abortErr := context.Cause(ctx)
+			if opts.Timeout != nil && opts.Timeout.HasTotal() {
+				abortErr = wrapTimeoutError(TimeoutReasonTotal, abortErr)
+			}
+			return nil, abortErr
+		}
 		stepStart := time.Now()
 		stepIndex := stepNum - 1
 		// The per-step timeout starts with the step, before PrepareStep, as
