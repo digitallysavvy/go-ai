@@ -161,6 +161,7 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 			// is not aborted — and mark finishReason as error in case the stream
 			// ends (via decoder EOF) before any later messageStop overwrites it.
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: {unified: 'error', raw: undefined}
 			if s.includeRawChunks {
 				// TS safeParseJSON: rawValue is undefined for unparsable JSON.
 				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: nil})
@@ -185,6 +186,7 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		// becomes error, like the unparsable-JSON branch above.
 		if verr := validateConverseStreamEvent(payloadType, rawPayload); verr != nil {
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: {unified: 'error', raw: undefined}
 			if s.includeRawChunks {
 				s.enqueue(&provider.StreamChunk{Type: provider.ChunkTypeRaw, Raw: map[string]interface{}{payloadType: rawPayload}})
 			}
@@ -213,6 +215,7 @@ func (s *bedrockConverseStream) Next() (*provider.StreamChunk, error) {
 		switch payloadType {
 		case "internalServerException", "modelStreamErrorException", "serviceUnavailableException", "throttlingException", "validationException":
 			s.finishReason = types.FinishReasonError
+			s.rawFinishReason = "" // TS: {unified: 'error', raw: undefined}
 			// Do NOT set s.done here. TS's enqueueError (amazon-bedrock-chat-
 			// language-model.ts) records the error and sets finishReason but lets
 			// the ReadableStream's own flush() run when the underlying connection

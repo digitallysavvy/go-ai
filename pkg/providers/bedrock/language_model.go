@@ -855,7 +855,9 @@ type bedrockConverseReasoningContent struct {
 	RedactedReasoning *struct {
 		Data string `json:"data"`
 	} `json:"redactedReasoning"`
-	RedactedContent string `json:"redactedContent"`
+	// RedactedContent is a pointer: TS `'redactedContent' in part` keeps
+	// an empty value.
+	RedactedContent *string `json:"redactedContent"`
 }
 
 type bedrockConverseContentBlock struct {
@@ -954,11 +956,11 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 						"bedrock":       map[string]interface{}{"redactedData": rc.RedactedReasoning.Data},
 					}),
 				}
-			case rc.RedactedContent != "":
+			case rc.RedactedContent != nil:
 				reasoning = types.ReasoningContent{
 					ProviderMetadata: mustMarshalProviderMetadata(map[string]interface{}{
-						"amazonBedrock": map[string]interface{}{"redactedContent": rc.RedactedContent},
-						"bedrock":       map[string]interface{}{"redactedContent": rc.RedactedContent},
+						"amazonBedrock": map[string]interface{}{"redactedContent": *rc.RedactedContent},
+						"bedrock":       map[string]interface{}{"redactedContent": *rc.RedactedContent},
 					}),
 				}
 			}
@@ -987,14 +989,13 @@ func (m *LanguageModel) convertConverseResponse(body []byte, usesJSONInstruction
 				args = map[string]interface{}{}
 			}
 			// TS: toolUseId || generateId(), name ?? `tool-${generateId()}`.
+			// The schema requires a string name, so an empty name is kept
+			// (only a nullish one would fall back).
 			rawID := part.ToolUse.ToolUseID
 			if rawID == "" {
 				rawID = streaming.GenerateID()
 			}
 			name := part.ToolUse.Name
-			if name == "" {
-				name = "tool-" + streaming.GenerateID()
-			}
 			call := types.ToolCall{
 				ID:        normalizeToolCallID(rawID, isMistral),
 				ToolName:  name,

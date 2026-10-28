@@ -333,6 +333,13 @@ restart:
 			// unknownEvent fallback) requires a string event_type, so null,
 			// non-object JSON and objects without it fail validation.
 			err = errors.New("event_type: expected string")
+		} else if err != nil && hasStringEventType(event.Data) {
+			// TS: a known event_type whose payload fails its member schema
+			// matches the loose unknownEvent member and is still dispatched
+			// by event_type with the raw object.
+			payload = interactionsEvent{}
+			looseDecode([]byte(event.Data), &payload)
+			err = nil
 		}
 		if err != nil {
 			// TS: an unparsable chunk marks the interaction failed, is
@@ -521,9 +528,8 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if event.Interaction.ID != "" {
 				s.interactionID = event.Interaction.ID
 			}
-			if event.Interaction.ServiceTier != "" {
-				s.serviceTier = event.Interaction.ServiceTier
-			}
+			// TS reads service_tier only from interaction.completed (and
+			// the response header), never from interaction.created.
 			s.buffer = append(s.buffer, &provider.StreamChunk{
 				Type: provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: &provider.ResponseMetadata{
@@ -585,9 +591,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			// is always enqueued at step.start.
 			s.hasFunction = true
 			open.argsString = ""
-			if open.toolName == "" {
-				open.toolName = "unknown"
-			}
+			open.toolName = block.nameOr("unknown")
 			s.buffer = append(s.buffer, &provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: open.toolCallID, ToolName: open.toolName}})
 			open.startEmitted = true
 		default:
@@ -689,7 +693,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if args, ok := objectArguments(delta.Arguments); ok {
 				open.args, open.argsRaw = args, delta.Arguments
 			}
-			if delta.Name != "" && open.blockType == "mcp_server_tool_call" {
+			if (delta.nameSet || delta.Name != "") && open.blockType == "mcp_server_tool_call" {
 				open.toolName = delta.Name
 			}
 		case isBuiltinInteractionsToolResult(open.blockType) && delta.Type == open.blockType:
@@ -702,7 +706,7 @@ func (s *interactionsStream) processEvent(event interactionsEvent) {
 			if delta.IsError != nil {
 				open.isError = *delta.IsError
 			}
-			if delta.Name != "" && open.blockType == "mcp_server_tool_result" {
+			if (delta.nameSet || delta.Name != "") && open.blockType == "mcp_server_tool_result" {
 				open.toolName = delta.Name
 			}
 		}

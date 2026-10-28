@@ -2364,15 +2364,19 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 						args = map[string]interface{}{}
 					}
 					inputJSON := inputText(part.RawInput, args)
+					// Go maps provider tool names back to SDK names here as
+					// for streamed tool_use blocks (Known difference since
+					// r34; TS passes part.name through raw).
+					toolName := mapAnthropicToolName(part.Name, s.toolNameMap)
 					s.pending = append(s.pending,
-						&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: part.ID, ToolName: part.Name}},
+						&provider.StreamChunk{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: part.ID, ToolName: toolName}},
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputDelta, ID: part.ID, Text: inputJSON},
 						&provider.StreamChunk{Type: provider.ChunkTypeToolInputEnd, ToolCall: &types.ToolCall{ID: part.ID}},
 						&provider.StreamChunk{
 							Type: provider.ChunkTypeToolCall,
 							ToolCall: &types.ToolCall{
 								ID:               part.ID,
-								ToolName:         part.Name,
+								ToolName:         toolName,
 								Arguments:        args,
 								RawArguments:     inputJSON,
 								ProviderMetadata: anthropicCallerMetadata(part.Caller),

@@ -779,14 +779,14 @@ func isBuiltinInteractionsToolResult(t string) bool {
 
 func builtinToolName(block interactionsContentBlock) string {
 	if block.Type == "mcp_server_tool_call" {
-		return firstNonEmpty(block.Name, "mcp_server_tool")
+		return block.nameOr("mcp_server_tool")
 	}
 	return strings.TrimSuffix(block.Type, "_call")
 }
 
 func builtinResultToolName(block interactionsContentBlock) string {
 	if block.Type == "mcp_server_tool_result" {
-		return firstNonEmpty(block.Name, "mcp_server_tool")
+		return block.nameOr("mcp_server_tool")
 	}
 	return strings.TrimSuffix(block.Type, "_result")
 }

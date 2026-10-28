@@ -96,6 +96,39 @@ type interactionsContentBlock struct {
 	Annotations []interactionsAnnotation   `json:"annotations,omitempty"`
 	SearchType  string                     `json:"search_type,omitempty"`
 	Raw         map[string]interface{}     `json:"-"`
+
+	// nameSet is true when the wire block had a non-null "name" (TS
+	// `name ?? fallback` keeps an empty name).
+	nameSet bool
+}
+
+// UnmarshalJSON decodes the block and records whether "name" was present.
+func (b *interactionsContentBlock) UnmarshalJSON(data []byte) error {
+	type plain interactionsContentBlock
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	*b = interactionsContentBlock(p)
+	b.afterLooseDecode(data)
+	return nil
+}
+
+// afterLooseDecode records whether "name" was a string on the wire.
+func (b *interactionsContentBlock) afterLooseDecode(data []byte) {
+	var probe struct {
+		Name *string `json:"name"`
+	}
+	b.nameSet = json.Unmarshal(data, &probe) == nil && probe.Name != nil
+}
+
+// nameOr returns the block's name, or fallback when the wire had none (TS
+// `name ?? fallback`).
+func (b interactionsContentBlock) nameOr(fallback string) string {
+	if b.nameSet || b.Name != "" {
+		return b.Name
+	}
+	return fallback
 }
 
 type interactionsAnnotation struct {
@@ -146,6 +179,15 @@ func (u *interactionsUsage) UnmarshalJSON(b []byte) error {
 		u.raw = raw
 	}
 	return nil
+}
+
+// afterLooseDecode keeps the wire usage object after a loose decode.
+func (u *interactionsUsage) afterLooseDecode(b []byte) {
+	u.raw = nil
+	var raw map[string]interface{}
+	if json.Unmarshal(b, &raw) == nil {
+		u.raw = raw
+	}
 }
 
 type interactionsModalityTokens struct {
