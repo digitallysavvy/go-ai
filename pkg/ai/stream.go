@@ -759,12 +759,10 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	if opts.Model == nil {
 		return nil, fmt.Errorf("model is required")
 	}
-	if err := validateMaxRetries(opts.MaxRetries); err != nil {
-		return nil, err
-	}
-	if err := validateStreamRetries(opts.StreamRetries); err != nil {
-		return nil, err
-	}
+	// TS order: streamTextInternal prepares toolCallConcurrency, then the
+	// DefaultStreamTextResult constructor resolves the tool callers and the
+	// tool search state before prepareRetries checks maxRetries and
+	// streamRetries.
 	if _, err := prepareToolCallConcurrency(opts.ToolCallConcurrency); err != nil {
 		return nil, err
 	}
@@ -780,6 +778,12 @@ func StreamText(ctx context.Context, opts StreamTextOptions) (*StreamTextResult,
 	}
 	toolSearchState, err := NewToolSearchState(opts.Tools, resolvedToolCallers)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateMaxRetries(opts.MaxRetries); err != nil {
+		return nil, err
+	}
+	if err := validateStreamRetries(opts.StreamRetries); err != nil {
 		return nil, err
 	}
 

@@ -1861,7 +1861,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	}
 
 	// Call the model with step context, retrying transient Gateway failures
-	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5).
+	// per callConfig.MaxRetries (WORKFLOW-AGENT-OPTIONS, e6064c5). As TS
+	// doStreamStep, prepareRetries rejects an invalid maxRetries before the
+	// model call; ToolCallConcurrency was validated when the run started.
+	if err := validateAgentMaxRetries(callConfig.MaxRetries); err != nil {
+		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
 	modelCallCtx := stepCtx
 	ai.Notify(stepCtx, ai.LanguageModelCallStartEvent{
 		CallID:              stepTel.callID(),
