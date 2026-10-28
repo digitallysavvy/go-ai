@@ -800,6 +800,15 @@ in v0.5.3.
   object, and a `null` payload errors the stream, as TS. An xAI Responses
   stream without usage reports explicit zeros (`cacheWrite` 0), as its
   `Generate`.
+- Anthropic streams map pre-populated `message_start` `tool_use` names through
+  the provider tool-name map. Gemini treats a `functionCall` with `name: ""`
+  as a call (new `FunctionCall.NameSet`) and, in `Generate`, a thought part
+  with code execution as code execution. Google interactions decode a known
+  event whose payload fails its shape loosely instead of failing the frame,
+  keep empty step names and ignore `service_tier` on `interaction.created`.
+  Bedrock clears the raw finish reason on a stream error and keeps an empty
+  `redactedContent` and an empty `toolUse.name` in `Generate`
+  (review round 56).
 
 ### Workflow, MCP, code mode and harness
 
@@ -925,6 +934,12 @@ Notable ones:
   are accepted. TS `secureJsonParse` rejects them to guard against
   JavaScript prototype pollution; Go `encoding/json` has no prototypes, so
   rejecting them would only turn valid JSON into errors.
+- A `""` value in some typed string fields of provider responses (Gemini
+  `finishMessage`, `serviceTier` and `continuationToken`, interactions
+  signatures, `service_tier` and `mime_type`, Anthropic and Bedrock
+  `stop_sequence`) counts as absent; TS treats `""` as present. An
+  interactions `interaction.created` event with an empty id keeps the earlier
+  id, which Go uses to reconnect.
 
 ---
 

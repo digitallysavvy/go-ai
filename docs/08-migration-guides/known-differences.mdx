@@ -271,6 +271,22 @@ pollution. Go `encoding/json` decodes into maps and structs, which have no
 prototypes, so there is nothing to guard against, and rejecting the
 payloads would only turn valid JSON into errors.
 
+## Empty strings in provider response fields
+
+- **Typed string fields.** Some exported response structs hold a value as a
+  plain `string`, so `""` reads the same as an absent field: Gemini
+  `finishMessage`, `usageMetadata.serviceTier` and `continuationToken`;
+  Google interactions `signature`/`thought_signature`, the completed
+  `service_tier` and a file `mime_type`; Anthropic and Bedrock
+  `stop_sequence`. TS checks `!= null`, so `""` counts as present there.
+  Changing these fields' types would break v0.5.x callers, and the real APIs
+  do not send these empty values. An interactions builtin-tool
+  `delta.result: null` is not stored; TS stores `null`.
+- **Interactions id on `interaction.created`.** An `interaction.created`
+  event with an empty id keeps the interaction id from an earlier event. TS
+  resets it, but Go also uses that id to reconnect to and cancel the
+  interaction.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
