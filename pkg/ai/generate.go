@@ -941,7 +941,8 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			if openStep != nil {
 				step := *openStep
 				openStep = nil
-				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: err}, opts.OnStepError)
+				// TS notifies onStepError with wrapGatewayError(error).
+				Notify(ctx, OnStepErrorEvent{OnStepStartEvent: step, Error: wrapGatewayError(err)}, opts.OnStepError)
 			}
 			if isAbortErr(ctx, err) {
 				var abortSteps []types.StepResult
