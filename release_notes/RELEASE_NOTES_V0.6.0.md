@@ -656,6 +656,11 @@ These match TS and are unlikely to need code changes, but can change output.
   the stream, as TS `parseJsonEventStream` ignores event names. OpenAI
   Responses and Open Responses no longer retry the "returned no output" 500
   error (TS `isRetryable: false`) (review round 56).
+- **OpenAI Responses and Open Responses `DoGenerate` keep client tool calls
+  in output order in `Content`** (TS doGenerate): a function call that came
+  before a message is no longer moved after its text, so the next step's
+  assistant message replays the items in the order the model produced them
+  (review round 57).
 
 - **Provider IDs follow TS `config.provider`**: `groq.chat`, `mistral.embedding`,
   `openai.image` and so on (they were the bare provider name). Telemetry
