@@ -1920,6 +1920,13 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		// conversation (the converted prompt the loop started from, then every
 		// step's response messages).
 		onEnd = func(ctx context.Context, e ai.OnFinishEvent) {
+			if e.Messages != nil {
+				// A run that failed by a thrown error: core already set
+				// TS's `prompt.messages` fallback (InternalOptions
+				// FailedEndMessages).
+				inner(ctx, e)
+				return
+			}
 			messages := append([]types.Message(nil), *endBase...)
 			from := 0
 			lastStep.Lock()
@@ -2076,13 +2083,21 @@ type earlyPrepare struct {
 }
 
 // internalOptions returns the core internal options for the run: the shared
-// workflow options plus, in the stream path, the PrepareStep call settings.
-func (e *earlyPrepare) internalOptions() *ai.InternalOptions {
+// workflow options plus, in the stream path, the PrepareStep call settings
+// and the end event messages of a run that fails by a thrown error: TS's
+// standardized prompt messages (`prompt.messages`, after the approval
+// resume), without the instructions and with a plain prompt as one user
+// message.
+func (e *earlyPrepare) internalOptions(messages []types.Message, prompt string) *ai.InternalOptions {
 	if e == nil || e.stepSettings == nil {
 		return workflowInternalOptions
 	}
 	internal := *workflowInternalOptions
 	internal.StepCallSettings = e.stepSettings.get
+	if len(messages) == 0 && prompt != "" {
+		messages = []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: prompt}}}}
+	}
+	internal.FailedEndMessages = append([]types.Message{}, messages...)
 	return &internal
 }
 
@@ -2581,7 +2596,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 		}
 	}
 	call := agent.AgentStreamOptions{
-		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: early.internalOptions()},
+		AgentGenerateOptions:  agent.AgentGenerateOptions{Prompt: opts.Prompt, Messages: opts.Messages, System: system, InstructionMessages: instructionMessages, AllowSystemInMessages: opts.AllowSystemInMessages || w.AllowSystemInMessages, StopWhen: withFinishReasonStop(opts.StopWhen), Output: firstNonNil(opts.Output, w.Output), Telemetry: telemetrySettings, Internal: early.internalOptions(opts.Messages, opts.Prompt)},
 		OnChunk:               opts.OnChunk,
 		InitialStreamChunks:   prefixChunks,
 		ExperimentalTransform: opts.ExperimentalTransform,

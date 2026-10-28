@@ -1441,7 +1441,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			if opts.OnError != nil {
 				safeInvoke(func() { opts.OnError(ctx, startErr) })
 			}
-			notifyFailedEnd(ctx, opts.Internal, onEndEvent, callID, runtimeContext, toolsContext, initialResponseMessages, nil)
+			notifyFailedEnd(ctx, opts.Internal, onEndEvent, callID, runtimeContext, toolsContext, initialResponseMessages, nil, startErr)
 			if r.chunkBuf != nil {
 				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
 				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: startErr, Text: startErr.Error()})
@@ -3644,7 +3644,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			safeInvoke(func() { opts.OnError(ctx, r.err) })
 		}
 		if !isAbortErr(ctx, r.err) {
-			notifyFailedEnd(ctx, opts.Internal, r.cbOnEndEvent, r.cbCallID, r.cbRuntimeCtx, r.cbToolsCtx, r.initialResponseMessages, allSteps)
+			notifyFailedEnd(ctx, opts.Internal, r.cbOnEndEvent, r.cbCallID, r.cbRuntimeCtx, r.cbToolsCtx, r.initialResponseMessages, allSteps, r.err)
 		}
 		if !isAbortErr(ctx, r.err) {
 			telemetry.FireOnError(r.telemetryCtx, telemetry.TelemetryErrorEvent{

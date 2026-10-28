@@ -10,6 +10,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // r57UAModel records whether each model call's user-agent carries the
@@ -135,6 +136,76 @@ func TestWorkflowPreCancelledRunFiresOnStartThenOnAbort(t *testing.T) {
 			}
 			if rc, _ := start.RuntimeContext.(map[string]interface{}); rc["k"] != "v" {
 				t.Fatalf("start runtime context = %v", start.RuntimeContext)
+			}
+		})
+	}
+}
+
+// r57ChunksModel streams the given chunks on every call.
+type r57ChunksModel struct {
+	wfMockModel
+	chunks []provider.StreamChunk
+}
+
+func (m *r57ChunksModel) DoStream(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+	return testutil.NewMockTextStream(m.chunks), nil
+}
+
+// TS WorkflowAgent's onEnd `messages` is `finalMessages ?? prompt.messages`:
+// a stream run whose loop throws (a model call that fails to open, a
+// PrepareStep error) reports the standardized prompt messages, without the
+// instructions and without the completed steps' responses. A run that ends on
+// the stream's own error (an error part, or a stream with no output) keeps
+// the final conversation the iterator returns.
+func TestWorkflowStreamOnEndMessagesAfterThrownFailure(t *testing.T) {
+	errorPart := []provider.StreamChunk{
+		{Type: provider.ChunkTypeText, Text: "partial"},
+		{Type: provider.ChunkTypeError, Err: errors.New("mid"), Text: "mid"},
+		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonError},
+	}
+	cases := []struct {
+		name    string
+		model   provider.LanguageModel
+		hookErr bool
+		want    string
+	}{
+		{name: "first step fails to open", model: &r56FailModel{failAt: 0}, want: "user"},
+		{name: "second step fails to open", model: &r56FailModel{failAt: 1}, want: "user"},
+		{name: "PrepareStep fails", model: &r56FailModel{failAt: -1}, hookErr: true, want: "user"},
+		{name: "stream error part", model: &r57ChunksModel{chunks: errorPart}, want: "system user assistant"},
+		{name: "stream without output", model: &r57ChunksModel{}, want: "system user"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var ends []ai.OnFinishEvent
+			cfg := WorkflowAgent{
+				Model: tc.model, System: "sys", Tools: r56Tool(),
+				OnEnd: func(_ context.Context, e ai.OnFinishEvent) { mu.Lock(); ends = append(ends, e); mu.Unlock() },
+			}
+			if tc.hookErr {
+				cfg.PrepareStep = func(context.Context, LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					return LanguageModelCallOptions{}, errors.New("hook")
+				}
+			}
+			w, err := NewWorkflowAgent(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r56Run(t, w, true); err == nil {
+				t.Fatal("want the run to fail")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(ends) != 1 {
+				t.Fatalf("OnEnd calls = %d, want 1", len(ends))
+			}
+			roles := make([]string, 0, len(ends[0].Messages))
+			for _, msg := range ends[0].Messages {
+				roles = append(roles, string(msg.Role))
+			}
+			if have := strings.Join(roles, " "); have != tc.want {
+				t.Fatalf("OnEnd message roles = %q, want %q", have, tc.want)
 			}
 		})
 	}

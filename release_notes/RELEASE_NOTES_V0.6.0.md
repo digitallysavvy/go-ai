@@ -219,7 +219,13 @@ Each item has before/after code in the
   widening them in `Generate`, and `PrepareCall`/`PrepareStep` see the
   agent's `ActiveTools` when the call sets none.
   A failed (not aborted) `Stream` run now fires `OnEnd` after `OnError`,
-  with the steps completed so far, as TS stream mode does.
+  with the steps completed so far, as TS stream mode does. When the run
+  failed by a thrown error (a model call that failed to open, a failed
+  `PrepareStep`), its `Messages` are the input messages only, as TS falls
+  back to `prompt.messages`. A `PrepareStep` that returns different
+  `Headers` replaces the call's, dropping the `ai-sdk-agent/workflow`
+  user-agent suffix (TS). A run whose context is already cancelled fires
+  `OnStart` before `OnAbort`.
   **Migration:** a hook that overrides a value for one step must set it back
   on later steps.
 
