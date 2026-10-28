@@ -597,6 +597,10 @@ in v0.5.3.
 
 ### Workflow, MCP, code mode and harness
 
+- fx `glob`: the pattern compile (brace expansion and minimatch's
+  preprocessing) stops when the tool call's context ends, returning the
+  context's error; a pattern such as `{a,b}` repeated 17 times took tens of
+  seconds of CPU regardless. Results are unchanged.
 - ACP mapping and authentication settings were serialized with Go field
   names and never took effect. (v0.5.3)
 - A malformed ACP `askUserQuestions` tool result no longer crashes the host,

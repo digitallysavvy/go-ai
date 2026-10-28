@@ -326,7 +326,7 @@ func (r *remoteOps) execute(ctx context.Context, name string, input json.RawMess
 		if res.ExitCode != 0 {
 			return nil, errors.New(res.Stderr)
 		}
-		re, err := globRegexp(in.Pattern)
+		re, err := globRegexpContext(ctx, in.Pattern)
 		if err != nil {
 			return nil, err
 		}
@@ -526,13 +526,31 @@ func globRegexp(pattern string) (*globPattern, error) {
 	return compileGlob(pattern, globNoCase, globWin32Paths)
 }
 
+func globRegexpContext(ctx context.Context, pattern string) (*globPattern, error) {
+	return compileGlobContext(ctx, pattern, globNoCase, globWin32Paths)
+}
+
 func compileGlob(pattern string, noCase, win32 bool) (*globPattern, error) {
+	return compileGlobContext(context.Background(), pattern, noCase, win32)
+}
+
+// compileGlobContext compiles pattern, returning ctx.Err() when ctx ends
+// first (see globCanceler).
+func compileGlobContext(ctx context.Context, pattern string, noCase, win32 bool) (*globPattern, error) {
 	if jsLength(pattern) > globMaxPatternLength {
 		// minimatch assertValidPattern throws a TypeError.
 		return nil, errors.New("pattern is too long")
 	}
 	g := &globPattern{noCase: noCase, win32: win32}
-	for _, parts := range globPatternParts(strings.ReplaceAll(pattern, `\`, "/")) {
+	partLists, err := globPatternPartsContext(ctx, strings.ReplaceAll(pattern, `\`, "/"))
+	if err != nil {
+		return nil, err
+	}
+	c := newGlobCanceler(ctx)
+	for _, parts := range partLists {
+		if c.stop() {
+			return nil, c.err
+		}
 		var segs []globSegment
 		for _, part := range parts {
 			if part == "**" {

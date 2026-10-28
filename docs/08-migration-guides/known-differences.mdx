@@ -190,10 +190,11 @@ These details differ:
     segment instead of failing the tool.
   - Brace patterns cost about what they cost in Node: minimatch's
     second-phase merge is quadratic in the number of expansions, so
-    `{a,b}` repeated 17 times takes tens of seconds of CPU in both, and the
-    Go compile does not watch the context. Braces nested thousands of
-    levels deep make Node throw "Maximum call stack size exceeded"; Go
-    expands them, slowly.
+    `{a,b}` repeated 17 times takes tens of seconds of CPU in both. Node
+    cannot interrupt the synchronous compile; Go stops it when the tool
+    call's context ends and the tool fails with the context's error.
+    Braces nested thousands of levels deep make Node throw "Maximum call
+    stack size exceeded"; Go expands them, slowly, until the context ends.
 
 ## Harness file reporter
 

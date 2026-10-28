@@ -1,6 +1,7 @@
 package fx
 
 import (
+	"context"
 	"errors"
 	"math"
 	"regexp"
@@ -41,6 +42,44 @@ var (
 	globSlashesRE          = regexp.MustCompile(`/+`)
 )
 
+// globCancelEvery is how many steps a compile takes between context checks.
+const globCancelEvery = 1024
+
+// globCanceler stops a pattern compile when its context ends. minimatch's
+// work is synchronous, so a pattern such as `{a,b}` repeated 17 times (whose
+// second-phase merge is quadratic in its 100000 expansions) runs for tens of
+// seconds; Go checks the context every globCancelEvery steps instead. A
+// stopped compile returns partial results that the caller discards for
+// err, so a compile that is not canceled is unchanged. A nil canceler never
+// stops.
+type globCanceler struct {
+	ctx context.Context
+	n   int
+	err error
+}
+
+func newGlobCanceler(ctx context.Context) *globCanceler {
+	if ctx == nil || ctx.Done() == nil {
+		return nil
+	}
+	return &globCanceler{ctx: ctx}
+}
+
+// stop counts one step and reports whether the compile must stop.
+func (c *globCanceler) stop() bool {
+	if c == nil {
+		return false
+	}
+	if c.err != nil {
+		return true
+	}
+	c.n++
+	if c.n%globCancelEvery == 0 {
+		c.err = c.ctx.Err()
+	}
+	return c.err != nil
+}
+
 // jsLength is a string's JavaScript length in UTF-16 code units.
 func jsLength(s string) int {
 	n := 0
@@ -58,10 +97,14 @@ func isJSLineTerminator(r rune) bool {
 // minimatchBraceExpand is minimatch's braceExpand: a pattern without a
 // `{...}` group (no nested `{` or line terminator inside) is kept as is.
 func minimatchBraceExpand(pattern string) []string {
+	return minimatchBraceExpandC(nil, pattern)
+}
+
+func minimatchBraceExpandC(c *globCanceler, pattern string) []string {
 	if !hasBraceGroup(pattern) {
 		return []string{pattern}
 	}
-	return braceExpand(pattern)
+	return braceExpandC(c, pattern)
 }
 
 // hasBraceGroup is /\{(?:(?!\{).)*\}/.test(pattern).
@@ -84,14 +127,16 @@ func hasBraceGroup(s string) bool {
 }
 
 // braceExpand is brace-expansion's expand.
-func braceExpand(str string) []string {
+func braceExpand(str string) []string { return braceExpandC(nil, str) }
+
+func braceExpandC(c *globCanceler, str string) []string {
 	if str == "" {
 		return nil
 	}
 	if strings.HasPrefix(str, "{}") {
 		str = `\{\}` + str[2:]
 	}
-	out := braceExpandInner(braceEscape(str), true)
+	out := braceExpandInner(c, braceEscape(str), true)
 	for i := range out {
 		out[i] = braceUnescape(out[i])
 	}
@@ -126,7 +171,7 @@ func indexFrom(s, sub string, from int) int {
 }
 
 // balancedBraces is balanced-match's balanced('{', '}', str).
-func balancedBraces(str string) (pre, body, post string, ok bool) {
+func balancedBraces(c *globCanceler, str string) (pre, body, post string, ok bool) {
 	ai := strings.IndexByte(str, '{')
 	bi := indexFrom(str, "}", ai+1)
 	i := ai
@@ -136,6 +181,9 @@ func balancedBraces(str string) (pre, body, post string, ok bool) {
 		left, right := len(str), -1
 		found := false
 		for i >= 0 && !found {
+			if c.stop() {
+				return "", "", "", false
+			}
 			switch {
 			case i == ai:
 				begs = append(begs, i)
@@ -172,17 +220,17 @@ func balancedBraces(str string) (pre, body, post string, ok bool) {
 	return str[:start], str[start+1 : end], str[end+1:], true
 }
 
-func braceParseCommaParts(str string) []string {
-	if str == "" {
+func braceParseCommaParts(c *globCanceler, str string) []string {
+	if str == "" || c.stop() {
 		return []string{""}
 	}
-	pre, body, post, ok := balancedBraces(str)
+	pre, body, post, ok := balancedBraces(c, str)
 	if !ok {
 		return strings.Split(str, ",")
 	}
 	p := strings.Split(pre, ",")
 	p[len(p)-1] += "{" + body + "}"
-	postParts := braceParseCommaParts(post)
+	postParts := braceParseCommaParts(c, post)
 	if post != "" {
 		p[len(p)-1] += postParts[0]
 		p = append(p, postParts[1:]...)
@@ -190,12 +238,12 @@ func braceParseCommaParts(str string) []string {
 	return p
 }
 
-func braceCombine(acc []string, pre string, values []string, dropEmpties bool) []string {
+func braceCombine(c *globCanceler, acc []string, pre string, values []string, dropEmpties bool) []string {
 	out := []string{}
 	length := 0
 	for _, a := range acc {
 		for _, v := range values {
-			if len(out) >= braceExpansionMax {
+			if len(out) >= braceExpansionMax || c.stop() {
 				return out
 			}
 			expansion := a + pre + v
@@ -223,7 +271,7 @@ func braceNumeric(s string) float64 {
 	return float64(utf16.Encode([]rune(s))[0])
 }
 
-func braceExpandSequence(body string, alpha bool) []string {
+func braceExpandSequence(c *globCanceler, body string, alpha bool) []string {
 	n := strings.Split(body, "..")
 	out := []string{}
 	if len(n) < 2 {
@@ -246,7 +294,7 @@ func braceExpandSequence(body string, alpha bool) []string {
 		}
 	}
 	length := 0
-	for i := x; (reverse && i >= y || !reverse && i <= y) && len(out) < braceExpansionMax; i += incr {
+	for i := x; (reverse && i >= y || !reverse && i <= y) && len(out) < braceExpansionMax && !c.stop(); i += incr {
 		var c string
 		if alpha {
 			c = string(utf16.Decode([]uint16{uint16(i)}))
@@ -295,17 +343,20 @@ func bracePostReopens(post string) bool {
 	return false
 }
 
-func braceExpandInner(str string, isTop bool) []string {
+func braceExpandInner(c *globCanceler, str string, isTop bool) []string {
 	acc := []string{""}
 	dropEmpties := false
 	firstGroup := true
 	for {
-		pre, body, post, ok := balancedBraces(str)
+		if c.stop() {
+			return acc
+		}
+		pre, body, post, ok := balancedBraces(c, str)
 		if !ok {
-			return braceCombine(acc, str, []string{""}, dropEmpties)
+			return braceCombine(c, acc, str, []string{""}, dropEmpties)
 		}
 		if strings.HasSuffix(pre, "$") {
-			acc = braceCombine(acc, pre+"{"+body+"}", []string{""}, dropEmpties && post == "")
+			acc = braceCombine(c, acc, pre+"{"+body+"}", []string{""}, dropEmpties && post == "")
 			firstGroup = false
 			if post == "" {
 				break
@@ -322,7 +373,7 @@ func braceExpandInner(str string, isTop bool) []string {
 				isTop = true
 				continue
 			}
-			return braceCombine(acc, pre+"{"+body+"}"+post, []string{""}, dropEmpties)
+			return braceCombine(c, acc, pre+"{"+body+"}"+post, []string{""}, dropEmpties)
 		}
 		if firstGroup {
 			dropEmpties = isTop && !isSequence
@@ -330,17 +381,17 @@ func braceExpandInner(str string, isTop bool) []string {
 		}
 		var values []string
 		if isSequence {
-			values = braceExpandSequence(body, isAlpha)
+			values = braceExpandSequence(c, body, isAlpha)
 		} else {
-			n := braceParseCommaParts(body)
+			n := braceParseCommaParts(c, body)
 			if len(n) == 1 {
-				inner := braceExpandInner(n[0], false)
+				inner := braceExpandInner(c, n[0], false)
 				n = make([]string, len(inner))
 				for i, s := range inner {
 					n[i] = "{" + s + "}"
 				}
 				if len(n) == 1 {
-					acc = braceCombine(acc, pre+n[0], []string{""}, dropEmpties && post == "")
+					acc = braceCombine(c, acc, pre+n[0], []string{""}, dropEmpties && post == "")
 					if post == "" {
 						break
 					}
@@ -359,7 +410,10 @@ func braceExpandInner(str string, isTop bool) []string {
 			valuesLength := 0
 		outer:
 			for _, part := range n {
-				for _, v := range braceExpandInner(part, false) {
+				if c.stop() {
+					break
+				}
+				for _, v := range braceExpandInner(c, part, false) {
 					if dropsEmpties && v == "" {
 						continue
 					}
@@ -371,7 +425,7 @@ func braceExpandInner(str string, isTop bool) []string {
 				}
 			}
 		}
-		acc = braceCombine(acc, pre, values, dropEmpties && post == "")
+		acc = braceCombine(c, acc, pre, values, dropEmpties && post == "")
 		if post == "" {
 			break
 		}
@@ -408,10 +462,13 @@ func removeParts(parts []string, at, n int, insert ...string) []string {
 }
 
 // globFirstPhasePreProcess is minimatch's firstPhasePreProcess.
-func globFirstPhasePreProcess(globParts [][]string) [][]string {
+func globFirstPhasePreProcess(c *globCanceler, globParts [][]string) [][]string {
 	for didSomething := true; didSomething; {
 		didSomething = false
 		for k := 0; k < len(globParts); k++ {
+			if c.stop() {
+				return globParts
+			}
 			parts := globParts[k]
 			for gs := indexOfPart(parts, "**", 0); gs != -1; gs = indexOfPart(parts, "**", gs+1) {
 				gss := gs
@@ -504,9 +561,12 @@ func globLevelTwoFileOptimize(parts []string) []string {
 
 // globSecondPhasePreProcess is minimatch's secondPhasePreProcess: a part
 // list that partsMatch merges with a later one is replaced by the merge.
-func globSecondPhasePreProcess(globParts [][]string) [][]string {
+func globSecondPhasePreProcess(c *globCanceler, globParts [][]string) [][]string {
 	for i := 0; i < len(globParts)-1; i++ {
 		for j := i + 1; j < len(globParts); j++ {
+			if c.stop() {
+				return nil
+			}
 			if matched, ok := globPartsMatch(globParts[i], globParts[j]); ok {
 				globParts[i] = nil
 				globParts[j] = matched
@@ -571,14 +631,32 @@ func globPartsMatch(a, b []string) ([]string, bool) {
 // globPatternParts is the part lists minimatch matches a path against: the
 // deduplicated brace expansions, slash-split and preprocessed.
 func globPatternParts(pattern string) [][]string {
+	parts, _ := globPatternPartsContext(context.Background(), pattern)
+	return parts
+}
+
+// globPatternPartsContext is globPatternParts that stops with ctx.Err() when
+// ctx ends during the expansion or either preprocessing phase.
+func globPatternPartsContext(ctx context.Context, pattern string) ([][]string, error) {
+	c := newGlobCanceler(ctx)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var globParts [][]string
 	seen := map[string]bool{}
-	for _, s := range minimatchBraceExpand(pattern) {
+	for _, s := range minimatchBraceExpandC(c, pattern) {
 		if seen[s] {
 			continue
 		}
 		seen[s] = true
 		globParts = append(globParts, globSlashSplit(s))
 	}
-	return globSecondPhasePreProcess(globFirstPhasePreProcess(globParts))
+	if c.stop() {
+		return nil, c.err
+	}
+	globParts = globSecondPhasePreProcess(c, globFirstPhasePreProcess(c, globParts))
+	if c != nil && c.err != nil {
+		return nil, c.err
+	}
+	return globParts, nil
 }
