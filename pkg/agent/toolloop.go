@@ -605,6 +605,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		ModelProvider:       fc.Model.Provider(), //nolint:staticcheck
 		ModelID:             fc.Model.ModelID(),
 		Instructions:        fc.System,
+		InstructionMessages: fc.InstructionMessages,
 		System:              fc.System, //nolint:staticcheck
 		Messages:            fc.Messages,
 		Tools:               fc.Tools,
