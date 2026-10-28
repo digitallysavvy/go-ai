@@ -1457,13 +1457,16 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		if callActive == nil {
 			callActive = pctx.activeTools
 		}
+		headersOverridden := false
 		if stepsInline && stepHook != nil {
 			opts = persist.apply(opts)
+			opts.Headers = maps.Clone(opts.Headers)
+			inHeaders := maps.Clone(opts.Headers)
 			mutated, err := stepHook(ctx, opts)
 			if err != nil {
 				return failStep(err)
 			}
-			persist.record(opts, mutated)
+			headersOverridden = persist.record(opts, mutated, inHeaders)
 			opts = mutated
 		}
 		if opts.Model != nil {
@@ -1479,7 +1482,7 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		}
 		c.Temperature, c.MaxTokens, c.TopP, c.TopK = opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK
 		c.FrequencyPenalty, c.PresencePenalty, c.StopSequences, c.Seed = opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed
-		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = version.WithUserAgentSuffix(opts.Headers, "ai-sdk-agent/workflow"), opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
+		c.Headers, c.Reasoning, c.SendReasoning, c.ProviderOptions = workflowStepHeaders(opts.Headers, headersOverridden), opts.Reasoning, opts.SendReasoning, opts.ProviderOptions
 		c.RuntimeContext, c.ToolsContext, c.ExperimentalSandbox, c.CustomData = opts.RuntimeContext, opts.ToolsContext, opts.ExperimentalSandbox, opts.CustomData
 		c.StopWhen, c.ExperimentalDownload, c.MaxRetries, c.Timeout = withFinishReasonStop(opts.StopWhen), opts.ExperimentalDownload, opts.MaxRetries, opts.Timeout
 		if w.FilterActiveTools != nil {
@@ -1510,6 +1513,22 @@ type stepPersistence struct {
 	mu   sync.Mutex
 	set  bool
 	last LanguageModelCallOptions
+	// headersOverridden records that a PrepareStep hook replaced the headers
+	// (see record); it stays set for the rest of the run.
+	headersOverridden bool
+}
+
+// workflowStepHeaders returns the headers for a step's model call: the
+// call's headers tagged with the ai-sdk-agent/workflow user-agent suffix, or,
+// once a PrepareStep hook replaced them, the hook's headers as they are. TS
+// appends the suffix to the call's generation settings before the loop, and
+// mergePrepareStepGenerationSettings then replaces the headers with the
+// hook's, so the suffix is gone after an override.
+func workflowStepHeaders(headers map[string]string, overridden bool) map[string]string {
+	if overridden {
+		return headers
+	}
+	return version.WithUserAgentSuffix(headers, "ai-sdk-agent/workflow")
 }
 
 // apply overlays the previous hook result onto a later step's options.
@@ -1537,14 +1556,23 @@ func (p *stepPersistence) apply(opts LanguageModelCallOptions) LanguageModelCall
 
 // record keeps a hook result for later steps, with the instructions resolved
 // against the hook's input (a changed System replaces instruction messages).
-func (p *stepPersistence) record(in, out LanguageModelCallOptions) {
+// inHeaders is a copy of the headers the hook was given: a hook that returns
+// other headers replaced them (TS prepareStep `headers`, which drops the
+// user-agent suffix). It returns whether the headers were replaced in this or
+// an earlier step.
+func (p *stepPersistence) record(in, out LanguageModelCallOptions, inHeaders map[string]string) bool {
+	changed := !reflect.DeepEqual(inHeaders, out.Headers)
 	if p == nil {
-		return
+		return changed
 	}
 	out.System, out.InstructionMessages, _ = resolveInstructionChange(in.System, in.InstructionMessages, out.System, out.InstructionMessages)
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.set, p.last = true, out
-	p.mu.Unlock()
+	if changed {
+		p.headersOverridden = true
+	}
+	return p.headersOverridden
 }
 
 // stepCallSettings hands the headers and maxRetries a PrepareStep hook left
@@ -1615,6 +1643,8 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 		}
 		inSystem, inInstructionMessages := o.System, o.InstructionMessages
 		opts = persist.apply(opts)
+		opts.Headers = maps.Clone(opts.Headers)
+		inHeaders := maps.Clone(opts.Headers)
 		mutated, err := hook(ctx, opts)
 		if err == nil && mutated.MaxRetries != nil && *mutated.MaxRetries < 0 {
 			// TS prepareRetries rejects the step's maxRetries.
@@ -1628,8 +1658,8 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			o.Model = &hookFailedModel{LanguageModel: base, err: err}
 			return o
 		}
-		persist.record(opts, mutated)
-		settings.put(version.WithUserAgentSuffix(mutated.Headers, "ai-sdk-agent/workflow"), mutated.MaxRetries)
+		overridden := persist.record(opts, mutated, inHeaders)
+		settings.put(workflowStepHeaders(mutated.Headers, overridden), mutated.MaxRetries)
 		if mutated.Model != nil {
 			o.Model = mutated.Model
 		}
