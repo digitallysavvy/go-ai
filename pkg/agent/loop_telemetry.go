@@ -185,23 +185,23 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 		if current.ctx == nil {
 			current.ctx = lt.baseCtx
 		}
+		base := lt.baseCtx
+		if base == nil {
+			base = ctx
+		}
 		for i, r := range lt.otherRoots {
 			if sameIntegrations(r.settings, settings) {
 				lt.otherRoots[i] = current
 				lt.rootSettings, lt.callID, lt.rootCtx = r.settings, r.callID, r.ctx
-				return r.ctx
+				return switchedRootCtx{Context: ctx, root: r.ctx, base: base}
 			}
 		}
 		lt.otherRoots = append(lt.otherRoots, current)
 		lt.rootSettings = settings
 		lt.callID = newTelemetryCallID()
-		base := lt.baseCtx
-		if base == nil {
-			base = ctx
-		}
-		ctx = telemetry.FireOnStart(base, a.loopStartEvent(lt.callID, settings, messages))
-		lt.rootCtx = ctx
-		return ctx
+		root := telemetry.FireOnStart(base, a.loopStartEvent(lt.callID, settings, messages))
+		lt.rootCtx = root
+		return switchedRootCtx{Context: ctx, root: root, base: base}
 	}
 	// The caller's root keeps its call id (and the call state integrations
 	// keep under it) for its own end event; the late root is a call of its own.
@@ -211,6 +211,32 @@ func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTele
 	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
 	lt.rootCtx = ctx
 	return ctx
+}
+
+// switchedRootCtx is the loop's context after a PrepareCall override switched
+// it to another root span. The root was opened from the loop's base context,
+// so the roots are siblings, but the steps after the switch must keep the
+// loop's own context: its deadline and cancellation (the total timeout), and
+// the values the loop added after the base (run id, telemetry state). Values
+// the root's integrations added or changed relative to the base (their span)
+// come from the root; every other value comes from the loop's context.
+type switchedRootCtx struct {
+	context.Context
+	root, base context.Context
+}
+
+func (c switchedRootCtx) Value(key any) any {
+	if v := c.root.Value(key); !sameContextValue(v, c.base.Value(key)) {
+		return v
+	}
+	return c.Context.Value(key)
+}
+
+func sameContextValue(a, b any) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return sameValue(reflect.ValueOf(a), reflect.ValueOf(b))
 }
 
 // loopStartEvent is the root start event of the legacy loop: call-level
