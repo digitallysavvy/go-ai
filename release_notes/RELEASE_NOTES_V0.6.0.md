@@ -698,6 +698,12 @@ in v0.5.3.
 - Google and Vertex `providerMetadata.serviceTier` comes only from
   `usageMetadata.serviceTier`, as in TS; a top-level `serviceTier` in the
   response body no longer fills it.
+- Gemini, Google and Vertex response parts keep only the fields of the first
+  TS part shape they match: in `Generate` a part with a function call (or a
+  valid `toolCall`) and text is only the call, as in the stream, and a
+  `toolCall`/`toolResponse` without a string `id` or an `inlineData` without
+  `mimeType` and `data` is dropped. With `IncludeRawChunks`, a failed
+  long-decode continuation emits an empty raw chunk before its error.
 
 ### Workflow, MCP, code mode and harness
 
@@ -764,6 +770,13 @@ in v0.5.3.
 - MCP `HTTPTransport` reports no read error from a POST event stream after
   `Close`, and ignores an inbound GET's `mcp-session-id` once the protocol
   is 2026-07-28, as TS.
+- MCP `NewSSETransport` no longer modifies the `HTTPClient` you pass either
+  (v0.5.2 set its `Timeout` and `CheckRedirect` in place); it uses a copy.
+- MCP `HTTPTransport` and `SSETransport` with an `AuthProvider`: a request
+  waiting on the shared OAuth recovery no longer fails with another
+  request's cancellation; it runs the flow again, as TS `authorizeOnce` is
+  tied to no request's signal. An inbound SSE reconnect resumes from the
+  last event id seen when its backoff timer fires.
 
 ---
 
