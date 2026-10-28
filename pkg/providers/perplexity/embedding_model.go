@@ -2,9 +2,10 @@ package perplexity
 
 import (
 	"context"
-	"encoding/base64"
 	"net/http"
+	"strings"
 
+	"github.com/digitallysavvy/go-ai/pkg/internal/fileutil"
 	internalhttp "github.com/digitallysavvy/go-ai/pkg/internal/http"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -245,7 +246,10 @@ func embedOptsHeaders(opts *provider.EmbedModelOptions) map[string]string {
 // int8 values; for "base64_binary" the raw unsigned bytes (packed bits) are
 // returned.
 func decodePerplexityEmbedding(encoded string, encodingFormat string) ([]float64, error) {
-	bytes, err := base64.StdEncoding.DecodeString(encoded)
+	// TS convertBase64ToUint8Array: base64url characters map to the standard
+	// alphabet and atob's forgiving decode applies (padding optional,
+	// whitespace ignored).
+	bytes, err := fileutil.DecodeForgivingBase64(strings.NewReplacer("-", "+", "_", "/").Replace(encoded))
 	if err != nil {
 		return nil, err
 	}
