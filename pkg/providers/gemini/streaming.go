@@ -685,7 +685,13 @@ func (s *stream) processNonFuncPart(part Part) {
 			})
 			return
 		}
-		if part.CodeExecutionResult != nil && s.lastCodeExecID != "" {
+		if part.CodeExecutionResult != nil {
+			// TS takes this branch for any codeExecutionResult part and only
+			// emits when an executable code part came first; it never falls
+			// through to the text branch.
+			if s.lastCodeExecID == "" {
+				return
+			}
 			// Do not clear lastCodeExecID: TS associates a result only with the
 			// most recently seen executable code part, but does not reset the
 			// pointer after emitting the result.

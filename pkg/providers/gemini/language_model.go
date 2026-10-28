@@ -476,7 +476,10 @@ func (m *LanguageModel) convertResponseWithGrounding(response Response, tnm tool
 			})
 			continue
 		}
-		if part.CodeExecutionResult != nil && lastCodeExecID != "" {
+		if part.CodeExecutionResult != nil {
+			// TS pushes the result for any codeExecutionResult part (toolCallId
+			// `lastCodeExecutionToolCallId!`, undefined before any code part)
+			// and never falls through to the text branch.
 			result.Content = append(result.Content, types.ToolResultContent{
 				ToolCallID: lastCodeExecID,
 				ToolName:   tnm.toCustomToolName("code_execution"),
