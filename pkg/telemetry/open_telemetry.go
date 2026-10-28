@@ -995,23 +995,15 @@ func (i OpenTelemetry) OnLanguageModelCallEnd(ctx context.Context, e LanguageMod
 			if err, ok := out.Error.(error); ok {
 				RecordErrorOnSpan(toolSpan, err)
 			} else if out.Error != nil {
-				toolSpan.SetStatus(codes.Error, jsonOrString(out.Error))
+				// TS recordErrorOnSpan: a thrown value that is not an Error
+				// sets the error status with no message or exception event.
+				toolSpan.SetStatus(codes.Error, "")
 			}
 		}
 		toolSpan.End()
 	}
 
 	entry.span.End()
-}
-
-func jsonOrString(v interface{}) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	if b, err := jsonstr.Marshal(v); err == nil {
-		return string(b)
-	}
-	return ""
 }
 
 // baseUsageAttrs returns the GenAI SemConv usage attributes. cacheCreation

@@ -4,9 +4,11 @@ import (
 	"context"
 	"testing"
 
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
@@ -46,5 +48,35 @@ func TestR49TranscriptionOutputMessageKeyOrder(t *testing.T) {
 	got, _ := attrValue(ended[0], "gen_ai.output.messages")
 	if want := `[{"role":"assistant","parts":[{"type":"text","content":"hi"}]}]`; got != want {
 		t.Fatalf("gen_ai.output.messages = %v, want %s", got, want)
+	}
+}
+
+// TS recordErrorOnSpan: a provider-executed tool error that is not an Error
+// sets the error status without a message or exception event.
+func TestR49ProviderToolErrorValueStatusHasNoMessage(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	integration := NewOpenTelemetry(OpenTelemetryOptions{Tracer: tp.Tracer("t")})
+	settings := &Settings{IsEnabled: Bool(true)}
+	ctx := integration.OnStart(context.Background(), TelemetryStartEvent{OperationType: "ai.generateText", Settings: settings, CallID: "c"})
+	ctx = integration.OnStepStart(ctx, TelemetryStepStartEvent{Settings: settings, OperationType: "ai.generateText", CallID: "c"})
+	ctx = integration.OnLanguageModelCallStart(ctx, LanguageModelCallStartEvent{Settings: settings, CallID: "c", ModelID: "m"})
+	integration.OnLanguageModelCallEnd(ctx, LanguageModelCallEndEvent{
+		Settings: settings, CallID: "c", FinishReason: "stop",
+		Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "t1", ToolName: "web_search", ProviderExecuted: true},
+			types.ToolErrorContent{ToolCallID: "t1", ToolName: "web_search", Error: map[string]interface{}{"code": "unavailable"}},
+		},
+	})
+	spans := findSpans(rec, "execute_tool web_search")
+	if len(spans) != 1 {
+		t.Fatalf("%d tool spans", len(spans))
+	}
+	if st := spans[0].Status(); st.Code != codes.Error || st.Description != "" {
+		t.Fatalf("status = %+v, want error with no message", st)
+	}
+	if n := len(spans[0].Events()); n != 0 {
+		t.Fatalf("%d span events, want none", n)
 	}
 }
