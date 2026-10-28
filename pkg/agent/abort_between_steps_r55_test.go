@@ -42,3 +42,31 @@ func TestGenerateAgentAbortBetweenStepsStopsBeforeNextStep(t *testing.T) {
 		t.Fatalf("PrepareCall calls %d, step starts %d; want 1, 1", prepareCalls, stepStarts)
 	}
 }
+
+// The abort between steps reports the error through OnChainError, like the
+// legacy loop's other step failures.
+func TestGenerateAgentAbortBetweenStepsCallsOnChainError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		FinishReason: types.FinishReasonToolCalls,
+		ToolCalls:    []types.ToolCall{{ID: "1", ToolName: "work", Arguments: map[string]interface{}{}}},
+	}, {Text: "done", FinishReason: types.FinishReasonStop}}}
+	work := types.Tool{Name: "work", Parameters: map[string]interface{}{"type": "object"},
+		Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			cancel()
+			return "ok", nil
+		}}
+	var chainErr error
+	a := NewToolLoopAgent(AgentConfig{
+		Model:        model,
+		Tools:        []types.Tool{work},
+		OnChainError: func(err error) { chainErr = err },
+	})
+	if _, err := a.GenerateAgent(ctx, AgentGenerateOptions{Prompt: "go"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if !errors.Is(chainErr, context.Canceled) {
+		t.Fatalf("OnChainError got %v, want context.Canceled", chainErr)
+	}
+}
