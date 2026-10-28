@@ -303,12 +303,23 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 	return events, nil
 }
 
+// containsFinishEvent reports whether a run's stream ended. TS
+// WorkflowChatTransport ignores SSE event names and ends on a UI message
+// chunk whose type is "finish"; an event named "done" is an ordinary event.
+// This multiplexer's own server (ServeHTTP/Resume) also ends a run with an
+// event named "finish" and a `[DONE]` data line, which count as well.
 func containsFinishEvent(events []*streaming.SSEEvent) bool {
 	for _, event := range events {
 		if event == nil {
 			continue
 		}
-		if event.Event == "finish" || event.Event == "done" || event.Data == "[DONE]" {
+		if event.Event == "finish" || event.Data == "[DONE]" {
+			return true
+		}
+		var chunk struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(event.Data), &chunk) == nil && chunk.Type == "finish" {
 			return true
 		}
 	}

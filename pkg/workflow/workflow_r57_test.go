@@ -3,6 +3,8 @@ package workflow
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/streaming"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -206,6 +209,54 @@ func TestWorkflowStreamOnEndMessagesAfterThrownFailure(t *testing.T) {
 			}
 			if have := strings.Join(roles, " "); have != tc.want {
 				t.Fatalf("OnEnd message roles = %q, want %q", have, tc.want)
+			}
+		})
+	}
+}
+
+// TS WorkflowChatTransport ends a run on a UI message chunk of type
+// "finish" and ignores SSE event names, so an event named "done" does not end
+// the run (the client reconnects), while a finish chunk under any event name
+// does.
+func TestWorkflowRunMultiplexerFinishMarker(t *testing.T) {
+	cases := []struct {
+		name          string
+		event, data   string
+		wantReconnect bool
+	}{
+		{name: "event named done", event: "done", data: `{"type":"text-delta","id":"1","delta":"x"}`, wantReconnect: true},
+		{name: "finish chunk", event: "", data: `{"type":"finish"}`, wantReconnect: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			reconnects := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("X-Workflow-Run-ID", "run-1")
+				sse := streaming.NewSSEWriter(w)
+				if r.Method == http.MethodGet {
+					mu.Lock()
+					reconnects++
+					mu.Unlock()
+					_ = sse.WriteNamedEvent("finish", `{"status":"done"}`)
+					return
+				}
+				if tc.event != "" {
+					_ = sse.WriteNamedEvent(tc.event, tc.data)
+				} else {
+					_ = sse.WriteData(tc.data)
+				}
+			}))
+			defer srv.Close()
+			tr := NewWorkflowRunMultiplexer(WorkflowRunMultiplexerOptions{API: srv.URL})
+			if _, err := tr.SendMessages(context.Background(), SendMessagesOptions{ChatID: "c"}); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if (reconnects > 0) != tc.wantReconnect {
+				t.Fatalf("reconnects = %d, want reconnect %v", reconnects, tc.wantReconnect)
 			}
 		})
 	}
