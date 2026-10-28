@@ -39,10 +39,12 @@ func FuzzParseJSDate(f *testing.F) {
 	})
 }
 
-// Each hostile shape parses in linear time: a 1 MiB string takes far less
-// than the 16 times a quarter of it would take if the parser were quadratic.
-// The time grows with the input instead of being capped, so a slow or loaded
-// machine (or -race) cannot fail it.
+// Each hostile shape parses in linear time: a 1 MiB string costs far less
+// than the 16 times a quarter of it would cost if the parser were quadratic.
+// Cost is the process CPU time of one parse, not wall time, so other
+// processes competing for the CPUs (a parallel full-suite run) cannot inflate
+// one size more than the other; the sizes are interleaved and each takes the
+// cheapest of several runs. A wall-clock backstop only guards against a hang.
 func TestParseJSDateHostileInputIsLinear(t *testing.T) {
 	const n = 1 << 20
 	inputs := map[string]func(n int) string{
@@ -56,21 +58,34 @@ func TestParseJSDateHostileInputIsLinear(t *testing.T) {
 		"numbers":       func(n int) string { return strings.Repeat("12 ", n/3) },
 		"astral":        func(n int) string { return strings.Repeat("😀", n/4) },
 	}
-	measure := func(s string) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for i := 0; i < 3; i++ {
-			start := time.Now()
-			_, _ = ParseJSDate(s)
-			if d := time.Since(start); d < best {
-				best = d
+	const (
+		runs      = 5
+		growthCap = 8.0 // linear is 4x, quadratic 16x
+		noise     = 50 * time.Millisecond
+		backstop  = 2 * time.Minute
+	)
+	for name, build := range inputs {
+		small, large := build(n/4), build(n)
+		bestSmall, bestLarge := time.Duration(1<<63-1), time.Duration(1<<63-1)
+		for i := 0; i < runs; i++ {
+			for _, c := range []struct {
+				src  string
+				best *time.Duration
+			}{{small, &bestSmall}, {large, &bestLarge}} {
+				start, cpuStart := time.Now(), processCPUTime()
+				_, _ = ParseJSDate(c.src)
+				d := processCPUTime() - cpuStart
+				if wall := time.Since(start); wall > backstop {
+					t.Fatalf("%s: %d bytes took %v", name, len(c.src), wall)
+				}
+				if d < *c.best {
+					*c.best = d
+				}
 			}
 		}
-		return best
-	}
-	for name, build := range inputs {
-		small, large := measure(build(n/4)), measure(build(n))
-		if large > 8*small+50*time.Millisecond {
-			t.Errorf("%s: %v for %d bytes, %v for a quarter of it", name, large, n, small)
+		if limit := time.Duration(float64(bestSmall)*growthCap) + noise; bestLarge > limit {
+			t.Errorf("%s: cost grows superlinearly: %d bytes took %v CPU, %d bytes took %v CPU (limit %v)",
+				name, len(small), bestSmall, len(large), bestLarge, limit)
 		}
 	}
 }
