@@ -59,8 +59,10 @@ func TestR53LegacyLoopEmptyActiveToolsSendsNoTools(t *testing.T) {
 func TestR53LegacyLoopRepairGetsStepMessages(t *testing.T) {
 	var got []types.Message
 	a := NewToolLoopAgent(AgentConfig{
-		Model:               r52ToolCallModel(types.ToolCall{ID: "c1", ToolName: "missing", RawArguments: `{}`}),
-		Tools:               []types.Tool{{Name: "weather", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) { return "ok", nil }}},
+		Model: r52ToolCallModel(types.ToolCall{ID: "c1", ToolName: "missing", RawArguments: `{}`}),
+		Tools: []types.Tool{{Name: "weather", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "ok", nil
+		}}},
 		InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "be brief"}}}},
 		StopWhen:            []ai.StopCondition{ai.StepCountIs(1)},
 		RepairToolCall: func(_ context.Context, o ai.ToolCallRepairOptions) (*types.ToolCall, error) {
