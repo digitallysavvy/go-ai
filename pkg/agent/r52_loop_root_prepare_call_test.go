@@ -75,3 +75,30 @@ func TestR52LoopRootUsesPreparedCall(t *testing.T) {
 		t.Fatalf("end events = %+v", rec.ends)
 	}
 }
+
+// The legacy loop's end event carries the final step's fields like the TS
+// generateText onEnd event: call id, step number, model, raw finish reason,
+// response and contexts.
+func TestR52LegacyLoopEndEventCarriesFinalStep(t *testing.T) {
+	var ended []ai.OnFinishEvent
+	a := NewToolLoopAgent(AgentConfig{
+		Model:          &mockLanguageModel{responses: []types.GenerateResult{{Text: "done", FinishReason: types.FinishReasonStop, RawFinishReason: "end_turn"}}},
+		RuntimeContext: map[string]interface{}{"tenant": "a"},
+		PrepareCall: func(_ context.Context, c PrepareCallConfig) PrepareCallConfig {
+			c.RuntimeContext = map[string]interface{}{"tenant": "prepared"}
+			return c
+		},
+		OnEndEvent: func(_ context.Context, e ai.OnFinishEvent) { ended = append(ended, e) },
+	})
+	if _, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ended) != 1 {
+		t.Fatalf("end events = %d", len(ended))
+	}
+	e := ended[0]
+	rc, _ := e.RuntimeContext.(map[string]interface{})
+	if e.CallID == "" || e.ModelID != "mock-model" || e.RawFinishReason != "end_turn" || e.FinalStep.Text != "done" || rc["tenant"] != "prepared" {
+		t.Fatalf("end event = %+v", e)
+	}
+}

@@ -1170,6 +1170,36 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			RuntimeContext:      a.runtimeContext(),
 			ToolsContext:        a.config.ToolsContext,
 		}
+		if lt != nil {
+			finishEvent.CallID = lt.callID
+		}
+		// TS onEndEvent: the final step's number, model, reasoning, raw finish
+		// reason, provider metadata, request and response, and its runtime
+		// and tools context.
+		if n := len(result.Steps); n > 0 {
+			last := result.Steps[n-1]
+			finishEvent.StepNumber = last.StepNumber
+			finishEvent.Model = last.Model
+			finishEvent.ModelProvider = last.Model.Provider
+			finishEvent.ModelID = last.Model.ModelID
+			finishEvent.Reasoning = last.Reasoning
+			finishEvent.ReasoningText = last.ReasoningText
+			finishEvent.RawFinishReason = last.RawFinishReason
+			finishEvent.ProviderMetadata = last.ProviderMetadata
+			finishEvent.ResponseHeaders = last.Response.Headers
+			finishEvent.Request = ai.GenerateStepRequest{Body: last.Request.Body}
+			finishEvent.Response = ai.GenerateStepResponse{
+				ID:        last.Response.ID,
+				Timestamp: last.Response.Timestamp,
+				ModelID:   last.Response.ModelID,
+				Headers:   last.Response.Headers,
+				Messages:  last.ResponseMessages,
+				Body:      last.Response.Body,
+			}
+			finishEvent.RuntimeContext = last.RuntimeContext
+			finishEvent.ToolsContext = last.ToolsContext
+		}
+		finishEvent.Output = result.Output
 		finishEvent.SetAggregatesFromSteps(result.Steps, append(append([]types.Message(nil), resumed.ResponseMessages...), responseMessagesOf(result.Steps)...))
 		if len(finishEvent.ToolResults) == 0 {
 			finishEvent.ToolResults = result.ToolResults
