@@ -2646,9 +2646,13 @@ type responsesStream struct {
 	logprobsEnabled   bool              // providerOptions.<name>.logprobs is truthy
 	logprobs          []json.RawMessage // per-delta logprobs collected for finish metadata
 	outputStarted     bool
-	pendingRaw        []*provider.StreamChunk
-	pendingMetadata   *provider.StreamChunk
-	responseHeaders   http.Header
+	// held keeps, in arrival order, the chunks produced before the first output
+	// event (the raw chunks and response-metadata of response.created and
+	// response.in_progress, unmodeled events). TS hands the stream out only
+	// after its early-error peek, so an error frame in that window fails the
+	// call with nothing delivered; markOutputStarted releases the chunks.
+	held            []*provider.StreamChunk
+	responseHeaders http.Header
 
 	// hadDecodeError is set when a known event type (one with a dedicated
 	// case below) fails schema decode (row eee6200). The stream keeps
@@ -2883,6 +2887,8 @@ func (s *responsesStream) Err() error {
 // finish reason (interrupted, or error after a decode failure) and responseId
 // metadata, and the end of the stream.
 func (s *responsesStream) queueEOFFinish() {
+	// TS hands the stream out when its early-error peek reaches the end.
+	s.markOutputStarted()
 	s.queueFallbackSources()
 	finishReason := types.FinishReasonInterrupted
 	if s.hadDecodeError {
@@ -3014,6 +3020,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		s.curEventData = event.Data
 		var peek responses.ResponsesStreamEvent
 		if err := json.Unmarshal([]byte(event.Data), &peek); err != nil {
+			s.markOutputStarted() // TS hands the stream out on a chunk that fails to parse
 			s.queueRawChunk(event.Data)
 			msg, perr := providerutils.ChunkParseFailure(event.Data, err)
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -3042,6 +3049,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				mismatch := providererrors.NewProviderError(s.providerName, 0, "", chatCompletionsMismatchMessage, nil)
 				mismatch.ResponseBody = event.Data
 				mismatch.Retryable = &notRetryable
+				s.markOutputStarted()
 				s.queueRawChunk(event.Data)
 				s.hadDecodeError = true
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -3060,6 +3068,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 		// part + finish reason "error"); unmodeled event types pass as
 		// unknown chunks.
 		if msg, perr := providerutils.CheckResponsesChunk(event.Data); perr != nil {
+			s.markOutputStarted()
 			s.queueRawChunk(event.Data)
 			s.hadDecodeError = true
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -3072,17 +3081,22 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			continue
 		}
+		// Every raw chunk is queued exactly once, ahead of the chunks its event
+		// produces. Before the first output event they wait in held (an early
+		// error frame drops them, as TS never exposes them); response.failed is
+		// decided by its handler, which may find no error and carry on.
 		var eventRawChunk *provider.StreamChunk
 		if s.includeRawChunks {
-			eventRawChunk = openAIResponsesRawChunk(event.Data)
-			if !s.outputStarted && peek.Type == "response.created" {
-				s.pendingRaw = append(s.pendingRaw, eventRawChunk)
-			} else if !s.outputStarted && (peek.Type == "error" || peek.Type == "response.failed") {
+			rawChunk := openAIResponsesRawChunk(event.Data)
+			switch {
+			case s.outputStarted:
+				s.flushQueue = append(s.flushQueue, rawChunk)
+			case peek.Type == "error":
 				// TS checks early errors before exposing raw chunks.
-			} else if !s.outputStarted {
-				// First output raw is queued after pending metadata in the handler.
-			} else {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
+			case peek.Type == "response.failed":
+				eventRawChunk = rawChunk
+			default:
+				s.held = append(s.held, rawChunk)
 			}
 		}
 
@@ -3108,9 +3122,14 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			if e.Response.CreatedAt != 0 {
 				metadata.Timestamp = time.Unix(e.Response.CreatedAt, 0)
 			}
-			s.pendingMetadata = &provider.StreamChunk{
+			metadataChunk := &provider.StreamChunk{
 				Type:             provider.ChunkTypeResponseMetadata,
 				ResponseMetadata: metadata,
+			}
+			if s.outputStarted {
+				s.flushQueue = append(s.flushQueue, metadataChunk)
+			} else {
+				s.held = append(s.held, metadataChunk)
 			}
 			continue
 
@@ -3130,9 +3149,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			switch e.Item.Type {
 			case "function_call":
 				suppress := responses.IsUndeclaredParallelToolCall(e.Item.Name, s.tools)
@@ -3391,9 +3407,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			// TS enqueues text-delta unconditionally (even for ""), keyed by
 			// resolveOutputItemId(item_id, output_index).
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeText,
 				ID:   s.resolveEventItemID(e.OutputIndex, e.ItemID),
@@ -3414,9 +3427,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if accum, ok := s.toolAccum[e.OutputIndex]; ok {
 				accum.arguments += e.Delta
 				if accum.suppressInputStreaming {
@@ -3441,9 +3451,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			// TS unconditionally enqueues reasoning-delta here, even for an
 			// empty-string delta -- no guard.
 			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
@@ -3469,9 +3476,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			// The first summary part's reasoning-start was already emitted from
 			// output_item.added; only summary_index > 0 needs boundary handling
 			// here (row a0d2e8c/6fe187f area).
@@ -3525,9 +3529,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			itemID := s.resolveEventItemID(e.OutputIndex, e.ItemID)
 			if accum := s.reasoningAccum[itemID]; accum != nil {
 				if s.store {
@@ -3561,9 +3562,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			// TS: `ongoingAnnotations.push(value.annotation)` -- surfaced on the
 			// owning message item's text-end providerMetadata.openai.annotations.
 			s.ongoingAnnotations = append(s.ongoingAnnotations, e.Annotation)
@@ -3595,9 +3593,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
@@ -3621,9 +3616,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil {
 				toolCall.applyPatch.hasDiff = true
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
@@ -3648,9 +3640,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok && toolCall.applyPatch != nil && !toolCall.applyPatch.endEmitted {
 				if !toolCall.applyPatch.hasDiff {
 					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
@@ -3678,9 +3667,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 				Type: provider.ChunkTypeToolResult,
 				ToolResult: &types.ToolResult{
@@ -3705,9 +3691,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
 					Type: provider.ChunkTypeToolInputDelta,
@@ -3731,9 +3714,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			if toolCall, ok := s.ongoingToolCalls[e.OutputIndex]; ok {
 				delete(s.ongoingToolCalls, e.OutputIndex)
 				containerID := ""
@@ -3767,9 +3747,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				continue
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 			chunk, ok := s.handleOutputItemDone(e)
 			if ok {
 				return chunk, nil
@@ -3801,9 +3778,6 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 				}
 			}
 			s.markOutputStarted()
-			if eventRawChunk != nil {
-				s.flushQueue = append(s.flushQueue, eventRawChunk)
-			}
 
 			var meta json.RawMessage
 			responseID := s.responseID
@@ -3847,10 +3821,15 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if !s.outputStarted && e.Response.Error != nil {
 				s.flushQueue = nil
-				s.pendingRaw = nil
-				s.pendingMetadata = nil
+				s.held = nil
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
 				return nil, s.err
+			}
+			// No error object: TS keeps peeking past this chunk, so the stream is
+			// handed out with everything held and the raw chunk first.
+			s.markOutputStarted()
+			if eventRawChunk != nil {
+				s.flushQueue = append(s.flushQueue, eventRawChunk)
 			}
 			usage := convertResponsesUsage(e.Response.Usage)
 			finishReason := types.FinishReason("error")
@@ -3911,8 +3890,7 @@ func (s *responsesStream) Next() (*provider.StreamChunk, error) {
 			}
 			if !s.outputStarted {
 				s.flushQueue = nil
-				s.pendingRaw = nil
-				s.pendingMetadata = nil
+				s.held = nil
 				s.err = newOpenAIStreamProviderError(s.providerName, json.RawMessage(event.Data), s.responseHeaders)
 				return nil, s.err
 			}
@@ -3946,14 +3924,8 @@ func (s *responsesStream) markOutputStarted() {
 		return
 	}
 	s.outputStarted = true
-	if len(s.pendingRaw) > 0 {
-		s.flushQueue = append(s.flushQueue, s.pendingRaw...)
-		s.pendingRaw = nil
-	}
-	if s.pendingMetadata != nil {
-		s.flushQueue = append(s.flushQueue, s.pendingMetadata)
-		s.pendingMetadata = nil
-	}
+	s.flushQueue = append(s.flushQueue, s.held...)
+	s.held = nil
 }
 
 func (s *responsesStream) queueRawChunk(data string) {
