@@ -65,6 +65,89 @@ type loopTelemetry struct {
 	// rootCtx is the context carrying the root span when the loop opened it
 	// late, for a PrepareCall telemetry override (see adoptPreparedTelemetry).
 	rootCtx context.Context
+	// baseCtx is the context the loop's own root was opened from; a root
+	// opened for a different integration set starts from it too, so the
+	// roots are siblings rather than nested.
+	baseCtx context.Context
+	// otherRoots are roots the loop opened for an earlier integration set
+	// that a PrepareCall override switched away from. Each is ended with its
+	// own settings and call id.
+	otherRoots []loopRoot
+}
+
+// loopRoot is a root span the legacy loop opened: the settings it was
+// started with, its call id and the context carrying it.
+type loopRoot struct {
+	settings *ai.TelemetrySettings
+	callID   string
+	ctx      context.Context
+}
+
+// sameIntegrations reports whether a and b dispatch to the same integrations
+// (an empty list means the globally registered ones).
+func sameIntegrations(a, b *ai.TelemetrySettings) bool {
+	var as, bs []telemetry.TelemetryIntegration
+	if a != nil {
+		as = a.Integrations
+	}
+	if b != nil {
+		bs = b.Integrations
+	}
+	if len(as) != len(bs) {
+		return false
+	}
+	for i := range as {
+		if !sameIntegration(as[i], bs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameIntegration reports whether a and b are the same integration. The
+// SDK's integrations are struct values with func fields, which == cannot
+// compare, so values of one type are compared field by field, with
+// reference-like fields (pointers, maps, funcs, slices, channels) compared by
+// identity: two copies of one constructed integration are the same, two
+// constructions are not (each holds its own state pointer).
+func sameIntegration(a, b telemetry.TelemetryIntegration) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return sameValue(reflect.ValueOf(a), reflect.ValueOf(b))
+}
+
+func sameValue(a, b reflect.Value) bool {
+	if a.Type() != b.Type() {
+		return false
+	}
+	switch a.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		return a.Pointer() == b.Pointer()
+	case reflect.Slice:
+		return a.Pointer() == b.Pointer() && a.Len() == b.Len()
+	case reflect.Interface:
+		if a.IsNil() || b.IsNil() {
+			return a.IsNil() && b.IsNil()
+		}
+		return sameValue(a.Elem(), b.Elem())
+	case reflect.Struct:
+		for i := 0; i < a.NumField(); i++ {
+			if !sameValue(a.Field(i), b.Field(i)) {
+				return false
+			}
+		}
+		return true
+	case reflect.Array:
+		for i := 0; i < a.Len(); i++ {
+			if !sameValue(a.Index(i), b.Index(i)) {
+				return false
+			}
+		}
+		return true
+	default:
+		return a.Equal(b)
+	}
 }
 
 // adoptPreparedTelemetry applies a PrepareCall telemetry override (TS
@@ -72,18 +155,52 @@ type loopTelemetry struct {
 // already opened a root span under the previous settings, the new settings
 // have none, so the loop opens one for them, under a new call id, and closes
 // it at the end. When the loop's own root was not opened because telemetry
-// was disabled, it is opened now under the new settings.
+// was disabled, it is opened now under the new settings. When the override
+// routes the steps to a different integration set than the loop's root, that
+// set gets a root of its own (see below); every root is ended at the end.
 func (a *ToolLoopAgent) adoptPreparedTelemetry(ctx context.Context, lt *loopTelemetry, settings *ai.TelemetrySettings, messages []types.Message) context.Context {
 	if lt == nil || settings == nil || settings == lt.settings {
 		return ctx
 	}
 	lt.settings = settings
 	if lt.ownsRoot {
-		if !telemetry.Enabled(lt.rootSettings) && telemetry.Enabled(settings) {
-			lt.rootSettings = settings
-			ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
-			lt.rootCtx = ctx
+		if !telemetry.Enabled(lt.rootSettings) {
+			if telemetry.Enabled(settings) {
+				lt.rootSettings = settings
+				ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
+				lt.rootCtx = ctx
+			}
+			return ctx
 		}
+		if !telemetry.Enabled(settings) || sameIntegrations(lt.rootSettings, settings) {
+			return ctx
+		}
+		// The override routes the steps to a different integration set. TS
+		// applies prepareCall before generateText opens its root, so the
+		// integrations that receive the steps always have a root for the
+		// call: switch back to a root already open for this set, or open one
+		// under a call id of its own. The previous root stays open until the
+		// loop ends.
+		current := loopRoot{settings: lt.rootSettings, callID: lt.callID, ctx: lt.rootCtx}
+		if current.ctx == nil {
+			current.ctx = lt.baseCtx
+		}
+		for i, r := range lt.otherRoots {
+			if sameIntegrations(r.settings, settings) {
+				lt.otherRoots[i] = current
+				lt.rootSettings, lt.callID, lt.rootCtx = r.settings, r.callID, r.ctx
+				return r.ctx
+			}
+		}
+		lt.otherRoots = append(lt.otherRoots, current)
+		lt.rootSettings = settings
+		lt.callID = newTelemetryCallID()
+		base := lt.baseCtx
+		if base == nil {
+			base = ctx
+		}
+		ctx = telemetry.FireOnStart(base, a.loopStartEvent(lt.callID, settings, messages))
+		lt.rootCtx = ctx
 		return ctx
 	}
 	// The caller's root keeps its call id (and the call state integrations
@@ -215,8 +332,11 @@ func (a *ToolLoopAgent) beginLoopTelemetry(ctx context.Context, messages []types
 	if id, ok := ctx.Value(telemetryCallIDKey{}).(string); ok && id != "" {
 		return ctx, &loopTelemetry{settings: settings, callID: id}
 	}
-	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true}
+	lt := &loopTelemetry{settings: settings, rootSettings: settings, callID: newTelemetryCallID(), ownsRoot: true, baseCtx: ctx}
 	ctx = telemetry.FireOnStart(ctx, a.loopStartEvent(lt.callID, settings, messages))
+	if telemetry.Enabled(settings) {
+		lt.rootCtx = ctx
+	}
 	return ctx, lt
 }
 
@@ -225,18 +345,32 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 	if lt == nil || !lt.ownsRoot {
 		return
 	}
+	rootCtx := ctx
 	if lt.rootCtx != nil {
-		ctx = lt.rootCtx
+		rootCtx = lt.rootCtx
 	}
+	a.endLoopRoot(rootCtx, loopRoot{settings: lt.rootSettings, callID: lt.callID}, result, err)
+	for i := len(lt.otherRoots) - 1; i >= 0; i-- {
+		r := lt.otherRoots[i]
+		if r.ctx == nil {
+			r.ctx = ctx
+		}
+		a.endLoopRoot(r.ctx, r, result, err)
+	}
+}
+
+// endLoopRoot ends one root span the loop opened with its own settings and
+// call id.
+func (a *ToolLoopAgent) endLoopRoot(ctx context.Context, root loopRoot, result *AgentResult, err error) {
 	if err != nil {
 		if isAbort(ctx, err) {
 			var steps []types.StepResult
 			if result != nil {
 				steps = result.Steps
 			}
-			telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: lt.rootSettings, CallID: lt.callID, Reason: err, Steps: steps})
+			telemetry.FireOnAbort(ctx, telemetry.TelemetryAbortEvent{Settings: root.settings, CallID: root.callID, Reason: err, Steps: steps})
 		} else {
-			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: lt.rootSettings, CallID: lt.callID, Error: err})
+			telemetry.FireOnError(ctx, telemetry.TelemetryErrorEvent{Settings: root.settings, CallID: root.callID, Error: err})
 		}
 		return
 	}
@@ -257,7 +391,7 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 		allFiles = append(allFiles, step.Files...)
 	}
 	telemetry.FireOnEnd(ctx, telemetry.TelemetryFinishEvent{
-		CallID:         lt.callID,
+		CallID:         root.callID,
 		OperationType:  "ai.generateText",
 		FinishReason:   string(result.FinishReason),
 		Usage:          telemetryUsage(result.Usage),
@@ -271,9 +405,9 @@ func (a *ToolLoopAgent) endLoopTelemetry(ctx context.Context, lt *loopTelemetry,
 		// TS onEndEvent.files spans every step.
 		Files:            allFiles,
 		ProviderMetadata: last.ProviderMetadata,
-		Settings:         lt.rootSettings,
-		RuntimeContext:   telemetryRuntimeContextFor(lt.rootSettings, a.runtimeContext()),
-		ToolsContext:     telemetryToolsContextFor(lt.rootSettings, a.config.ToolsContext),
+		Settings:         root.settings,
+		RuntimeContext:   telemetryRuntimeContextFor(root.settings, a.runtimeContext()),
+		ToolsContext:     telemetryToolsContextFor(root.settings, a.config.ToolsContext),
 	})
 }
 
