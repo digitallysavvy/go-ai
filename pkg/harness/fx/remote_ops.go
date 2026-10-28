@@ -474,9 +474,10 @@ var (
 	globWin32Paths = runtime.GOOS == "windows"
 )
 
-// globPattern is a compiled glob (`*`, `?`, `**`, `[...]`, `{a,b}`) over
-// slash-separated relative paths: the subset of Node's path.matchesGlob
-// (minimatch without the dot option) the fx glob tool relies on. As there,
+// globPattern is a compiled glob (`*`, `?`, `**`, `[...]`, and braces and
+// path preprocessing as in glob_expand.go) over slash-separated relative
+// paths: Node's path.matchesGlob (minimatch without the dot option, without
+// extglobs) as the fx glob tool uses it. As there,
 // a wildcard never matches a path segment that starts with "." unless the
 // pattern segment itself starts with ".", so `**/*` skips .git and other
 // dot directories. A `\` in the pattern is a separator, never an escape
@@ -526,10 +527,14 @@ func globRegexp(pattern string) (*globPattern, error) {
 }
 
 func compileGlob(pattern string, noCase, win32 bool) (*globPattern, error) {
+	if jsLength(pattern) > globMaxPatternLength {
+		// minimatch assertValidPattern throws a TypeError.
+		return nil, errors.New("pattern is too long")
+	}
 	g := &globPattern{noCase: noCase, win32: win32}
-	for _, alt := range expandBraces(strings.ReplaceAll(pattern, `\`, "/")) {
+	for _, parts := range globPatternParts(strings.ReplaceAll(pattern, `\`, "/")) {
 		var segs []globSegment
-		for _, part := range strings.Split(alt, "/") {
+		for _, part := range parts {
 			if part == "**" {
 				segs = append(segs, globSegment{globstar: true})
 				continue
@@ -550,7 +555,7 @@ func (g *globPattern) MatchString(path string) bool {
 	if g.win32 {
 		path = strings.ReplaceAll(path, `\`, "/")
 	}
-	parts := strings.Split(path, "/")
+	parts := globLevelTwoFileOptimize(globSlashSplit(path))
 	for _, segs := range g.alternatives {
 		if g.matchSegments(segs, parts) {
 			return true
@@ -970,48 +975,4 @@ func classSingleRune(item string) (rune, bool) {
 	default:
 		return r, true
 	}
-}
-
-// expandBraces expands {a,b} alternatives (nested braces included); a
-// brace without a matching close, or without a comma, is literal.
-func expandBraces(pattern string) []string {
-	open := strings.IndexByte(pattern, '{')
-	for open >= 0 {
-		depth, commas, closeAt := 0, []int{}, -1
-		for i := open; i < len(pattern) && closeAt < 0; i++ {
-			switch pattern[i] {
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					closeAt = i
-				}
-			case ',':
-				if depth == 1 {
-					commas = append(commas, i)
-				}
-			}
-		}
-		if closeAt < 0 {
-			return []string{pattern}
-		}
-		if len(commas) == 0 {
-			next := strings.IndexByte(pattern[open+1:], '{')
-			if next < 0 {
-				return []string{pattern}
-			}
-			open += 1 + next
-			continue
-		}
-		prefix, suffix := pattern[:open], pattern[closeAt+1:]
-		var out []string
-		start := open + 1
-		for _, c := range append(commas, closeAt) {
-			out = append(out, expandBraces(prefix+pattern[start:c]+suffix)...)
-			start = c + 1
-		}
-		return out
-	}
-	return []string{pattern}
 }

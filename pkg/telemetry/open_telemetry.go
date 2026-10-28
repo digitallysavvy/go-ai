@@ -245,6 +245,43 @@ type genAICallState struct {
 	// (none for object and audio roots), replaced by each step's. EnrichSpan
 	// receives it for child spans.
 	runtimeContext map[string]interface{}
+	// settings are TS state.settings: the root call's request settings,
+	// which the chat spans report (not a step's PrepareStep override).
+	settings genAIRequestSettings
+}
+
+// genAIRequestSettings are the call-level request settings of a text or
+// object root (TS onGenerateStart/onObjectOperationStart `settings`).
+type genAIRequestSettings struct {
+	Temperature      *float64
+	MaxOutputTokens  *int
+	TopP             *float64
+	TopK             *int
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	StopSequences    []string
+}
+
+// systemInstructionsAttr is gen_ai.system_instructions: one text part per
+// instruction message (TS formatSystemInstructions of a message array), else
+// the system string.
+func systemInstructionsAttr(system string, instructionMessages []types.Message) (attribute.KeyValue, bool) {
+	var parts []semConvPart
+	if len(instructionMessages) > 0 {
+		parts = make([]semConvPart, 0, len(instructionMessages))
+		for _, m := range instructionMessages {
+			parts = append(parts, semConvPart{"type": "text", "content": systemMessageText(m)})
+		}
+	} else if system != "" {
+		parts = formatSystemInstructions(system)
+	} else {
+		return attribute.KeyValue{}, false
+	}
+	b, err := jsonstr.Marshal(parts)
+	if err != nil {
+		return attribute.KeyValue{}, false
+	}
+	return attribute.String("gen_ai.system_instructions", string(b)), true
 }
 
 var genAICallStates sync.Map // map[string]*genAICallState, keyed by CallID
@@ -427,27 +464,20 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 	}
 	span.SetAttributes(requestSettingAttributes(e, !isObjectOperation)...)
 	recordInputs := e.Settings.ShouldRecordInputs()
-	if recordInputs && e.System != "" {
-		if b, err := jsonstr.Marshal(formatSystemInstructions(e.System)); err == nil {
-			span.SetAttributes(attribute.String("gen_ai.system_instructions", string(b)))
+	if recordInputs {
+		if kv, ok := systemInstructionsAttr(e.System, e.InstructionMessages); ok {
+			span.SetAttributes(kv)
 		}
 	}
 	if recordInputs && isObjectOperation {
 		// TS onObjectOperationStart: formatModelMessages({prompt, messages}),
 		// a string prompt first as the user message, recorded even when empty.
-		messages := e.Messages
-		if e.Prompt != "" {
-			messages = append([]types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: e.Prompt}}}}, e.Messages...)
-		}
-		formatted := formatInputMessages(messages)
-		if formatted == nil {
-			formatted = []semConvInputMessage{}
-		}
-		if b, err := jsonstr.Marshal(formatted); err == nil {
+		if b, err := jsonstr.Marshal(formatModelMessages(e.Prompt, e.Messages)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
 	} else if recordInputs && len(e.Messages) > 0 {
-		if b, err := jsonstr.Marshal(formatInputMessages(e.Messages)); err == nil {
+		// TS onGenerateStart: formatModelMessages({messages}).
+		if b, err := jsonstr.Marshal(formatModelMessages("", e.Messages)); err == nil {
 			span.SetAttributes(attribute.String("gen_ai.input.messages", string(b)))
 		}
 	}
@@ -544,6 +574,12 @@ func (i OpenTelemetry) OnStart(ctx context.Context, e TelemetryStartEvent) conte
 		st.tracer = tracer
 		st.operationType = e.OperationType
 		st.runtimeContext = rootRuntimeContext(e.OperationType, e.RuntimeContext)
+		if genAIRootSpanKind(e.OperationType) == trace.SpanKindInternal {
+			st.settings = genAIRequestSettings{
+				Temperature: e.Temperature, MaxOutputTokens: e.MaxOutputTokens, TopP: e.TopP, TopK: e.TopK,
+				PresencePenalty: e.PresencePenalty, FrequencyPenalty: e.FrequencyPenalty, StopSequences: e.StopSequences,
+			}
+		}
 		st.mu.Unlock()
 	}
 	return ctx
@@ -682,6 +718,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 	// generateObject/streamObject (TS onObjectStepStart) parent the chat span
 	// under the root instead.
 	var parent trace.Span
+	var settings genAIRequestSettings
 	isObject := genAIIsObjectCall(i.stateKey(e.CallID))
 	if e.CallID != "" {
 		if st := genAILoadedState(i.stateKey(e.CallID)); st != nil {
@@ -690,6 +727,7 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 			if isObject {
 				parent = st.rootSpan
 			}
+			settings = st.settings
 			st.mu.Unlock()
 		}
 	}
@@ -710,40 +748,51 @@ func (i OpenTelemetry) OnLanguageModelCallStart(ctx context.Context, e LanguageM
 		attribute.String("gen_ai.provider.name", mapProviderName(e.ModelProvider)),
 		attribute.String("gen_ai.request.model", e.ModelID),
 	}
-	if e.Temperature != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.request.temperature", *e.Temperature)
+	// TS reads the request settings from the root call (state.settings), so
+	// a step's PrepareStep override does not show here.
+	if settings.Temperature != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.temperature", *settings.Temperature)
 	}
-	if e.MaxOutputTokens != nil {
-		attrs = append(attrs, attribute.Int("gen_ai.request.max_tokens", *e.MaxOutputTokens))
+	if settings.MaxOutputTokens != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.max_tokens", *settings.MaxOutputTokens))
 	}
-	if e.TopP != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.request.top_p", *e.TopP)
+	if settings.TopP != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.top_p", *settings.TopP)
 	}
-	if e.TopK != nil {
-		attrs = append(attrs, attribute.Int("gen_ai.request.top_k", *e.TopK))
+	if settings.TopK != nil {
+		attrs = append(attrs, attribute.Int("gen_ai.request.top_k", *settings.TopK))
 	}
-	if e.PresencePenalty != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.request.presence_penalty", *e.PresencePenalty)
+	if settings.PresencePenalty != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.presence_penalty", *settings.PresencePenalty)
 	}
-	if e.FrequencyPenalty != nil {
-		attrs = setFiniteFloat64(attrs, "gen_ai.request.frequency_penalty", *e.FrequencyPenalty)
+	if settings.FrequencyPenalty != nil {
+		attrs = setFiniteFloat64(attrs, "gen_ai.request.frequency_penalty", *settings.FrequencyPenalty)
 	}
 	// TS chat spans carry no gen_ai.request.seed (only the root does), and
 	// the object chat span declares its JSON output and no stop sequences.
 	if isObject {
 		attrs = append(attrs, attribute.String("gen_ai.output.type", "json"))
-	} else if len(e.StopSequences) > 0 {
-		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", e.StopSequences))
+	} else if len(settings.StopSequences) > 0 {
+		attrs = append(attrs, attribute.StringSlice("gen_ai.request.stop_sequences", settings.StopSequences))
 	}
 	recordInputs := e.Settings.ShouldRecordInputs()
-	if recordInputs && e.System != "" {
-		if b, err := jsonstr.Marshal(formatSystemInstructions(e.System)); err == nil {
-			attrs = append(attrs, attribute.String("gen_ai.system_instructions", string(b)))
+	if recordInputs {
+		if kv, ok := systemInstructionsAttr(e.System, e.InstructionMessages); ok {
+			attrs = append(attrs, kv)
 		}
 	}
 	if recordInputs {
-		if messages, ok := promptMessages(e.Prompt); ok && len(messages) > 0 {
-			if b, err := jsonstr.Marshal(formatInputMessages(messages)); err == nil {
+		// A text call's chat span formats the caller-facing step messages
+		// (TS formatModelMessages(event.messages)); an object call's formats
+		// its language model prompt (TS onObjectStepStart formatInputMessages).
+		var formatted []semConvInputMessage
+		if !isObject && e.Messages != nil {
+			formatted = formatModelMessages("", e.Messages)
+		} else if messages, ok := promptMessages(e.Prompt); ok {
+			formatted = formatInputMessages(messages)
+		}
+		if len(formatted) > 0 {
+			if b, err := jsonstr.Marshal(formatted); err == nil {
 				attrs = append(attrs, attribute.String("gen_ai.input.messages", string(b)))
 			}
 		}

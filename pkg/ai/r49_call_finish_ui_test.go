@@ -23,7 +23,7 @@ func TestR49ToUIMessageStream_CallLevelFinishAfterDiscardedStep(t *testing.T) {
 		{Type: provider.ChunkTypeDiscardStep},
 		{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonOther},
 	})
-	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{Provider: "harness", ModelID: "m"})
+	result := NewStreamTextResultFromParts(context.Background(), src, ExternalStreamOptions{Provider: "harness", ModelID: "m", TerminalFinishClosesTurn: true})
 	uiChunks, errs := result.ToUIMessageStream(context.Background())
 	var got []string
 	var finishReason interface{}

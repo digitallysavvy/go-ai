@@ -218,6 +218,7 @@ func (d *turnDriver) telStepStart() {
 		ModelID:       d.modelID,
 		System:        d.in.Instructions,
 		Prompt:        types.Prompt{Messages: d.promptMessages()},
+		Messages:      d.promptMessages(),
 		Tools:         toolSpecsAsTypesTools(d.in.ToolSpecs),
 	})
 }
@@ -374,6 +375,7 @@ func (d *turnDriver) telStepEnd(stepNumber int, step types.StepResult) {
 		// TS legacy ai.response.reasoning joins the parts with "\n".
 		Reasoning:        telemetry.JoinReasoning(step.Reasoning),
 		ReasoningParts:   step.Reasoning,
+		ReasoningFiles:   harnessReasoningFiles(step.Content),
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		Files:            step.Files,
@@ -448,6 +450,7 @@ func (d *turnDriver) telEnd(steps []types.StepResult, totalUsage types.Usage) {
 		// GenAI integration formats them into gen_ai.output.messages.
 		ToolResults:      toolResults,
 		ReasoningParts:   finalStep.Reasoning,
+		ReasoningFiles:   harnessReasoningFiles(finalStep.Content),
 		Files:            files,
 		ProviderMetadata: finalStep.ProviderMetadata,
 		Settings:         d.in.Telemetry,
@@ -498,4 +501,21 @@ func (d *turnDriver) telAbort(err error) {
 	telemetry.FireOnAbort(d.telCtx, telemetry.TelemetryAbortEvent{
 		Settings: d.in.Telemetry, CallID: d.telCallID, Reason: err, Steps: d.completedSteps,
 	})
+}
+
+// harnessReasoningFiles returns the reasoning file parts of a step's content
+// (TS StepResult.reasoning holds them next to the reasoning parts).
+func harnessReasoningFiles(content []types.ContentPart) []types.ReasoningFileContent {
+	var out []types.ReasoningFileContent
+	for _, p := range content {
+		switch v := p.(type) {
+		case types.ReasoningFileContent:
+			out = append(out, v)
+		case *types.ReasoningFileContent:
+			if v != nil {
+				out = append(out, *v)
+			}
+		}
+	}
+	return out
 }

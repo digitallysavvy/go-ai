@@ -872,12 +872,13 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// in the returned context.  FireOnFinish / FireOnError are called later
 	// from processStream or ReadAll once the stream completes.
 	telSystem := ""
-	var telMessages []types.Message
+	var telMessages, telInstructionMessages []types.Message
 	// A nil *Options records inputs (integrations treat it the same way).
 	if telemetrySettings.ShouldRecordInputs() {
 		telSystem = system
 		if len(instructionMessages) > 0 {
 			telSystem = instructionMessagesText(instructionMessages)
+			telInstructionMessages = instructionMessages
 		}
 		// See the matching comment in generate.go: TS's
 		// GenerateTextStartEvent.messages is always the normalized message
@@ -891,25 +892,26 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// span by CallID.
 	callID := internalGenerateCallID(opts.Internal)()
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
-		CallID:           callID,
-		OperationType:    "ai.streamText",
-		ModelProvider:    opts.Model.Provider(),
-		ModelID:          opts.Model.ModelID(),
-		Settings:         telemetrySettings,
-		System:           telSystem,
-		Messages:         telMessages,
-		Headers:          opts.Headers,
-		MaxOutputTokens:  opts.MaxTokens,
-		Temperature:      opts.Temperature,
-		TopP:             opts.TopP,
-		TopK:             opts.TopK,
-		PresencePenalty:  opts.PresencePenalty,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		StopSequences:    opts.StopSequences,
-		Seed:             opts.Seed,
-		MaxRetries:       &streamTextMaxRetries,
-		RuntimeContext:   telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
-		ToolsContext:     telemetryToolsContext(telemetrySettings, toolsContext),
+		CallID:              callID,
+		OperationType:       "ai.streamText",
+		ModelProvider:       opts.Model.Provider(),
+		ModelID:             opts.Model.ModelID(),
+		Settings:            telemetrySettings,
+		System:              telSystem,
+		Messages:            telMessages,
+		InstructionMessages: telInstructionMessages,
+		Headers:             opts.Headers,
+		MaxOutputTokens:     opts.MaxTokens,
+		Temperature:         opts.Temperature,
+		TopP:                opts.TopP,
+		TopK:                opts.TopK,
+		PresencePenalty:     opts.PresencePenalty,
+		FrequencyPenalty:    opts.FrequencyPenalty,
+		StopSequences:       opts.StopSequences,
+		Seed:                opts.Seed,
+		MaxRetries:          &streamTextMaxRetries,
+		RuntimeContext:      telemetryRuntimeContextWithSensitivity(telemetrySettings, runtimeContext, opts.SensitiveRuntimeContext),
+		ToolsContext:        telemetryToolsContext(telemetrySettings, toolsContext),
 	})
 	telemetryCtx := ctx // snapshot ctx with embedded spans before timeout wrapping
 
@@ -1333,21 +1335,23 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	// itself is unchanged for subsequent chunk processing and tool
 	// execution, which are parented under the step span instead.
 	modelCallCtx := telemetry.FireOnLanguageModelCallStart(telemetryStepCtx, telemetry.LanguageModelCallStartEvent{
-		Settings:         telemetrySettings,
-		CallID:           callID,
-		ModelProvider:    stepModel.Provider(),
-		ModelID:          stepModel.ModelID(),
-		Prompt:           genOpts.Prompt,
-		Tools:            genOpts.Tools,
-		System:           stepSystem,
-		Temperature:      genOpts.Temperature,
-		MaxOutputTokens:  genOpts.MaxTokens,
-		TopP:             genOpts.TopP,
-		TopK:             genOpts.TopK,
-		PresencePenalty:  genOpts.PresencePenalty,
-		FrequencyPenalty: genOpts.FrequencyPenalty,
-		StopSequences:    genOpts.StopSequences,
-		Seed:             genOpts.Seed,
+		Settings:            telemetrySettings,
+		CallID:              callID,
+		ModelProvider:       stepModel.Provider(),
+		ModelID:             stepModel.ModelID(),
+		Prompt:              genOpts.Prompt,
+		Messages:            stepMessages,
+		InstructionMessages: stepInstructionMessages,
+		Tools:               genOpts.Tools,
+		System:              stepSystem,
+		Temperature:         genOpts.Temperature,
+		MaxOutputTokens:     genOpts.MaxTokens,
+		TopP:                genOpts.TopP,
+		TopK:                genOpts.TopK,
+		PresencePenalty:     genOpts.PresencePenalty,
+		FrequencyPenalty:    genOpts.FrequencyPenalty,
+		StopSequences:       genOpts.StopSequences,
+		Seed:                genOpts.Seed,
 	})
 
 	// Start streaming
@@ -3000,6 +3004,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				Text:           stepText,
 				Reasoning:      telemetry.JoinReasoning(stepResult.Reasoning),
 				ReasoningParts: stepResult.Reasoning,
+				ReasoningFiles: reasoningFilesOf(stepResult.Content),
 				ToolCalls:      stepResult.ToolCalls,
 				ToolResults:    publicStepToolResults,
 				Files:          stepFiles,
@@ -3425,21 +3430,23 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// the first step's stream is started, above. Parented under the step
 		// span created just above.
 		nextModelCallCtx := telemetry.FireOnLanguageModelCallStart(nextTelemetryStepCtx, telemetry.LanguageModelCallStartEvent{
-			Settings:         r.telemetrySettings,
-			CallID:           r.cbCallID,
-			ModelProvider:    nextModel.Provider(),
-			ModelID:          nextModel.ModelID(),
-			Prompt:           nextGenOpts.Prompt,
-			Tools:            nextGenOpts.Tools,
-			System:           nextSystem,
-			Temperature:      nextGenOpts.Temperature,
-			MaxOutputTokens:  nextGenOpts.MaxTokens,
-			TopP:             nextGenOpts.TopP,
-			TopK:             nextGenOpts.TopK,
-			PresencePenalty:  nextGenOpts.PresencePenalty,
-			FrequencyPenalty: nextGenOpts.FrequencyPenalty,
-			StopSequences:    nextGenOpts.StopSequences,
-			Seed:             nextGenOpts.Seed,
+			Settings:            r.telemetrySettings,
+			CallID:              r.cbCallID,
+			ModelProvider:       nextModel.Provider(),
+			ModelID:             nextModel.ModelID(),
+			Prompt:              nextGenOpts.Prompt,
+			Messages:            nextMessages,
+			InstructionMessages: nextInstructionMessages,
+			Tools:               nextGenOpts.Tools,
+			System:              nextSystem,
+			Temperature:         nextGenOpts.Temperature,
+			MaxOutputTokens:     nextGenOpts.MaxTokens,
+			TopP:                nextGenOpts.TopP,
+			TopK:                nextGenOpts.TopK,
+			PresencePenalty:     nextGenOpts.PresencePenalty,
+			FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
+			StopSequences:       nextGenOpts.StopSequences,
+			Seed:                nextGenOpts.Seed,
 		})
 		r.stepReopenModel = nextModel
 		r.stepReopenGenOpts = nextGenOpts
@@ -3626,6 +3633,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		ToolCalls:        streamToolCalls,
 		ToolResults:      telemetryToolResultsOf(allSteps),
 		ReasoningParts:   telemetryFinalReasoningOf(allSteps),
+		ReasoningFiles:   telemetryFinalReasoningFilesOf(allSteps),
 		Files:            streamFiles,
 		ProviderMetadata: streamProviderMeta,
 		Settings:         r.telemetrySettings,
@@ -4700,6 +4708,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 		ToolCalls:        step.ToolCalls,
 		ToolResults:      step.ToolResults,
 		ReasoningParts:   step.Reasoning,
+		ReasoningFiles:   reasoningFilesOf(step.Content),
 		Files:            readAllFiles,
 		ProviderMetadata: readAllProviderMeta,
 		Settings:         r.telemetrySettings,

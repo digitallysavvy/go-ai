@@ -248,29 +248,112 @@ func fileMediaType(f types.FileContent) string {
 }
 
 // convertFilePartToSemConv converts a FileContent part to a "uri" or "blob"
-// SemConv part, mirroring TS's 'file' case in convertMessagePartToSemConv.
+// SemConv part, mirroring TS's 'file' case in convertMessagePartToSemConv
+// (and in convertModelMessageToSemConv, which is the same).
 func convertFilePartToSemConv(f types.FileContent) semConvPart {
 	mediaType := fileMediaType(f)
 	modality := modalityForMediaType(mediaType)
 	mimeType := nullableString(mediaType)
+	uri := func(u string) semConvPart {
+		return semConvPart{"type": "uri", "modality": modality, "mime_type": mimeType, "uri": u}
+	}
+	// TS: a string datum that starts with http:// or https:// is a uri, any
+	// other string is the blob content as is.
+	fromString := func(s string) semConvPart {
+		if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+			return uri(s)
+		}
+		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": s}
+	}
 
 	switch f.FileData.Type {
 	case types.FileDataTypeURL:
-		return semConvPart{"type": "uri", "modality": modality, "mime_type": mimeType, "uri": firstNonEmptyStr(f.FileData.URL, f.URL)}
+		return uri(firstNonEmptyStr(f.FileData.URL, f.URL))
 	case types.FileDataTypeText:
-		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": f.FileData.Text}
+		return fromString(f.FileData.Text)
+	case types.FileDataTypeReference:
+		// TS: a reference has no data, so the datum is ''.
+		return fromString("")
 	case types.FileDataTypeData:
-		content := f.FileData.DataString
-		if content == "" && len(f.FileData.Data) > 0 {
-			content = base64.StdEncoding.EncodeToString(f.FileData.Data)
+		if f.FileData.DataString != "" {
+			return fromString(f.FileData.DataString)
 		}
-		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": content}
+		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": base64.StdEncoding.EncodeToString(f.FileData.Data)}
 	default:
 		if f.URL != "" {
-			return semConvPart{"type": "uri", "modality": modality, "mime_type": mimeType, "uri": f.URL}
+			return uri(f.URL)
 		}
 		return semConvPart{"type": "blob", "modality": modality, "mime_type": mimeType, "content": base64.StdEncoding.EncodeToString(f.Data)}
 	}
+}
+
+// convertImagePartToSemConv converts a user message image part, mirroring
+// the 'image' case of TS convertModelMessageToSemConv: always the image
+// modality, a URL as a uri, a string datum as a uri when it is an http(s)
+// URL and as blob content otherwise, bytes as base64 blob content.
+func convertImagePartToSemConv(img types.ImageContent) semConvPart {
+	mimeType := nullableString(img.MimeType)
+	if img.URL != "" {
+		return semConvPart{"type": "uri", "modality": "image", "mime_type": mimeType, "uri": img.URL}
+	}
+	return semConvPart{"type": "blob", "modality": "image", "mime_type": mimeType, "content": base64.StdEncoding.EncodeToString(img.Image)}
+}
+
+// formatModelMessages converts caller-facing messages (and an optional
+// string prompt, first, as a user message) into the gen_ai.input.messages
+// SemConv format, mirroring TS formatModelMessages /
+// convertModelMessageToSemConv. Unlike formatInputMessages (the language
+// model prompt), a part the TS ModelMessage converter does not map (for
+// example an assistant file or custom part, or a tool approval response) is
+// reported by its type only.
+func formatModelMessages(prompt string, messages []types.Message) []semConvInputMessage {
+	result := make([]semConvInputMessage, 0, len(messages)+1)
+	if prompt != "" {
+		result = append(result, semConvInputMessage{Role: "user", Parts: []semConvPart{{"type": "text", "content": prompt}}})
+	}
+	for _, m := range messages {
+		if m.Role == types.RoleSystem {
+			result = append(result, semConvInputMessage{
+				Role:  "system",
+				Parts: []semConvPart{{"type": "text", "content": systemMessageText(m)}},
+			})
+			continue
+		}
+		parts := make([]semConvPart, 0, len(m.Content))
+		for _, c := range m.Content {
+			parts = append(parts, convertModelPartToSemConv(m.Role, c))
+		}
+		result = append(result, semConvInputMessage{Role: string(m.Role), Parts: parts})
+	}
+	return result
+}
+
+func convertModelPartToSemConv(role types.MessageRole, part types.ContentPart) semConvPart {
+	switch role {
+	case types.RoleUser:
+		switch p := part.(type) {
+		case types.TextContent:
+			return semConvPart{"type": "text", "content": p.Text}
+		case types.ImageContent:
+			return convertImagePartToSemConv(p)
+		case types.FileContent:
+			return convertFilePartToSemConv(p)
+		}
+	case types.RoleAssistant:
+		switch p := part.(type) {
+		case types.TextContent:
+			return semConvPart{"type": "text", "content": p.Text}
+		case types.ReasoningContent:
+			return semConvPart{"type": "reasoning", "content": p.Text}
+		case types.ToolCallContent, types.ToolResultContent:
+			return convertMessagePartToSemConv(p)
+		}
+	case types.RoleTool:
+		if p, ok := part.(types.ToolResultContent); ok {
+			return convertMessagePartToSemConv(p)
+		}
+	}
+	return semConvPart{"type": part.ContentType()}
 }
 
 // convertMessagePartToSemConv converts a single content part to its SemConv
