@@ -74,6 +74,13 @@ type HTTPTransport struct {
 	// its OAuth refresh, or before its inbound SSE lifecycle started) can
 	// tell and stay closed instead of starting a GET nothing will stop.
 	closeGen uint64
+	// startMu makes Connect's start (marking the transport connected and
+	// starting the inbound SSE lifecycle) and Close's teardown (stopping that
+	// lifecycle and marking it disconnected) mutually exclusive. Without it a
+	// Connect that started after Close bumped closeGen could finish before
+	// Close cleared connected: it returned nil, and then Close marked the
+	// transport disconnected while its inbound SSE GET kept running.
+	startMu sync.Mutex
 
 	// Configuration
 	config TransportConfig
@@ -427,6 +434,8 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 
 	// Test connection with a ping
 	// For now, just mark as connected
+	t.startMu.Lock()
+	defer t.startMu.Unlock()
 	t.mu.Lock()
 	if t.connected {
 		t.mu.Unlock()
@@ -447,18 +456,8 @@ func (t *HTTPTransport) Connect(ctx context.Context) error {
 	if !t.isModernProtocol() {
 		t.startInboundSSE(false, "")
 	}
-	// A Close that ran after connected was set but before the lifecycle
-	// started found nothing to stop: stop what this Connect started.
-	t.mu.Lock()
-	closed := t.closeGen != closeGen
-	t.mu.Unlock()
-	if closed {
-		t.stopInboundSSE()
-		t.mu.Lock()
-		t.connected = false
-		t.mu.Unlock()
-		return errHTTPTransportClosedDuringStart()
-	}
+	// startMu keeps Close out until the lifecycle has started, so the Close
+	// sees and stops it.
 	return nil
 }
 
@@ -498,6 +497,7 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	// sseLifecycleCtx, which every in-flight Send()'s derived request context
 	// (see deriveRequestContext) is also watching, so this unblocks in-flight
 	// POST requests and POST-response SSE reads too, not just inbound SSE.
+	t.startMu.Lock()
 	t.sseMu.Lock()
 	started := t.sseLifecycleCtx != nil
 	t.sseMu.Unlock()
@@ -509,13 +509,17 @@ func (t *HTTPTransport) CloseContext(ctx context.Context) error {
 	t.postSSEWG.Wait()
 
 	t.mu.Lock()
+	t.connected = false
+	t.mu.Unlock()
+	t.startMu.Unlock()
+
+	t.mu.Lock()
 	sessionID := t.sessionID
 	terminate := t.terminateSessionOnClose
 	url := t.url
 	httpClient := t.client
 	sseClient := t.sseClient
 	protocolVersion := t.protocolVersion
-	t.connected = false
 	t.mu.Unlock()
 
 	// TS close() only terminates the session of a transport that was started
