@@ -112,6 +112,26 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 ## Behavior changes that can need an edit
 
+- **`WorkflowAgent` `PrepareStep` overrides carry over to later steps.** As
+  TS's model-call iterator, the next step's hook gets the previous step's
+  model, instructions, tool choice, active tools, contexts and generation
+  settings, and a hook that returns them unchanged keeps them. v0.5 reset
+  them every step in `Generate` (and kept only the model and instructions in
+  `Stream`). A hook that changes a value for one step only must set it back:
+
+  ```go
+  hook := func(_ context.Context, o workflow.LanguageModelCallOptions) (workflow.LanguageModelCallOptions, error) {
+  	if o.StepNumber == 0 {
+  		t := 0.2
+  		o.Temperature = &t
+  	} else {
+  		o.Temperature = nil // v0.6: undo the step-0 override explicitly
+  	}
+  	return o, nil
+  }
+  _ = hook
+  ```
+
 - **`MaxTokens` below 1 is rejected.** As TS
   `prepareLanguageModelCallOptions`, `GenerateText`, `StreamText`,
   `GenerateObject`, `StreamObject`, batch text requests, `PrepareStep`

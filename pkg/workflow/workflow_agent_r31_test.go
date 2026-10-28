@@ -17,7 +17,13 @@ func TestWorkflowPrepareHooksCanOverrideTheModel(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				base, alt := &wfMockModel{}, &wfMockModel{}
 				hook := func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
-					if o.Model != base {
+					// Later steps start from the override: TS's iterator keeps
+					// currentModel across steps.
+					if want := interface{}(base); o.StepNumber > 0 {
+						if o.Model != alt {
+							t.Errorf("step %d hook saw model %v, want the override", o.StepNumber, o.Model)
+						}
+					} else if o.Model != want {
 						t.Errorf("hook saw model %v, want the agent model", o.Model)
 					}
 					o.Model = alt

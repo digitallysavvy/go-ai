@@ -1408,7 +1408,7 @@ func (r *prepareCallRunner) resolved(messages []types.Message) {
 // the whole run. When stepsInline is set (the legacy generate loop calls this
 // closure on every step) the PrepareStep hook also runs here; the streaming
 // path runs it per step through makePrepareStep instead.
-func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline bool) (func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig, *prepareCallRunner) {
+func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline bool, persist *stepPersistence) (func(ctx context.Context, c agent.PrepareCallConfig) agent.PrepareCallConfig, *prepareCallRunner) {
 	stepHook := w.stepHook(pctx)
 	if w.PrepareCall == nil && (stepHook == nil || !stepsInline) && w.FilterActiveTools == nil && pctx.activeTools == nil && w.ActiveTools == nil {
 		return nil, nil
@@ -1446,10 +1446,12 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 		}
 		st.mu.Unlock()
 		if stepsInline && stepHook != nil {
+			opts = persist.apply(opts)
 			mutated, err := stepHook(ctx, opts)
 			if err != nil {
 				return failStep(err)
 			}
+			persist.record(opts, mutated)
 			opts = mutated
 		}
 		if opts.Model != nil {
@@ -1486,9 +1488,56 @@ func (w *WorkflowAgent) makePrepareCall(pctx prepareCallContext, stepsInline boo
 	}, r
 }
 
+// stepPersistence carries what a PrepareStep hook returned into the next
+// step's hook input and settings. TS's model-call iterator keeps the current
+// model, instructions (conversationPrompt[0]), runtime and tools contexts,
+// active tools, tool choice and generation settings across steps, so an
+// override applies until a later prepareStep changes it; only the sandbox is
+// per step. Messages already persist through the loop's own history.
+type stepPersistence struct {
+	mu   sync.Mutex
+	set  bool
+	last LanguageModelCallOptions
+}
+
+// apply overlays the previous hook result onto a later step's options.
+func (p *stepPersistence) apply(opts LanguageModelCallOptions) LanguageModelCallOptions {
+	if p == nil {
+		return opts
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.set {
+		return opts
+	}
+	l := p.last
+	if l.Model != nil {
+		opts.Model = l.Model
+	}
+	opts.System, opts.InstructionMessages = l.System, l.InstructionMessages
+	opts.Temperature, opts.MaxTokens, opts.TopP, opts.TopK = l.Temperature, l.MaxTokens, l.TopP, l.TopK
+	opts.FrequencyPenalty, opts.PresencePenalty, opts.StopSequences, opts.Seed = l.FrequencyPenalty, l.PresencePenalty, l.StopSequences, l.Seed
+	opts.MaxRetries, opts.Headers, opts.Reasoning, opts.ProviderOptions = l.MaxRetries, l.Headers, l.Reasoning, l.ProviderOptions
+	opts.ToolChoice, opts.ActiveTools = l.ToolChoice, l.ActiveTools
+	opts.RuntimeContext, opts.ToolsContext = l.RuntimeContext, l.ToolsContext
+	return opts
+}
+
+// record keeps a hook result for later steps, with the instructions resolved
+// against the hook's input (a changed System replaces instruction messages).
+func (p *stepPersistence) record(in, out LanguageModelCallOptions) {
+	if p == nil {
+		return
+	}
+	out.System, out.InstructionMessages, _ = resolveInstructionChange(in.System, in.InstructionMessages, out.System, out.InstructionMessages)
+	p.mu.Lock()
+	p.set, p.last = true, out
+	p.mu.Unlock()
+}
+
 // makePrepareStep adapts the WorkflowAgent PrepareStep hook to the streaming
 // loop's per-step hook so it runs before every step, not only the first.
-func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []types.Tool, allowSystem bool) func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions {
+func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []types.Tool, allowSystem bool, persist *stepPersistence) func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions {
 	hook := w.stepHook(pctx)
 	if hook == nil {
 		return nil
@@ -1510,6 +1559,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			InstructionMessages: o.InstructionMessages, InitialInstructionMessages: pctx.instructionMessages,
 		}
 		inSystem, inInstructionMessages := o.System, o.InstructionMessages
+		opts = persist.apply(opts)
 		mutated, err := hook(ctx, opts)
 		if err != nil {
 			base := o.Model
@@ -1519,6 +1569,7 @@ func (w *WorkflowAgent) makePrepareStep(pctx prepareCallContext, allTools []type
 			o.Model = &hookFailedModel{LanguageModel: base, err: err}
 			return o
 		}
+		persist.record(opts, mutated)
 		if mutated.Model != nil {
 			o.Model = mutated.Model
 		}
@@ -1743,14 +1794,46 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 	endBase := &[]types.Message{}
 	*endBase = workflowConversationBase(system, instructionMessages, initialMessages, basePrompt)
 	onEnd := mergeFinish(resolveEnd(w.OnEnd, w.OnFinish), mergeFinish(resolveEnd(govr.OnEnd, govr.OnFinish), resolveEnd(ovr.OnEnd, ovr.OnFinish)))
+	onStepStart := mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart))
 	if onEnd != nil {
 		inner := onEnd
+		// lastStep is the prompt of the latest step: TS's iterator keeps one
+		// conversationPrompt that a prepareStep messages/system override
+		// replaces for the rest of the run, so the final conversation is that
+		// step's prompt plus the messages of the steps from there on.
+		var lastStep struct {
+			sync.Mutex
+			set                 bool
+			number              int
+			system              string
+			instructionMessages []types.Message
+			messages            []types.Message
+		}
+		userStepStart := onStepStart
+		onStepStart = func(ctx context.Context, e ai.OnStepStartEvent) {
+			lastStep.Lock()
+			lastStep.set, lastStep.number = true, e.StepNumber
+			lastStep.system = e.Instructions
+			lastStep.instructionMessages = append([]types.Message(nil), e.InstructionMessages...)
+			lastStep.messages = append([]types.Message(nil), e.Messages...)
+			lastStep.Unlock()
+			if userStepStart != nil {
+				userStepStart(ctx, e)
+			}
+		}
 		// TS WorkflowAgent's onEnd event carries `messages`: the final
 		// conversation (the converted prompt the loop started from, then every
 		// step's response messages).
 		onEnd = func(ctx context.Context, e ai.OnFinishEvent) {
 			messages := append([]types.Message(nil), *endBase...)
-			for _, step := range e.Steps {
+			from := 0
+			lastStep.Lock()
+			if lastStep.set && lastStep.number <= len(e.Steps) {
+				messages = workflowConversationBase(lastStep.system, lastStep.instructionMessages, lastStep.messages, "")
+				from = lastStep.number
+			}
+			lastStep.Unlock()
+			for _, step := range e.Steps[from:] {
 				messages = append(messages, step.Response.Messages...)
 			}
 			e.Messages = messages
@@ -1813,10 +1896,11 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		},
 	}
 	var stepAdapter func(context.Context, ai.PrepareStepOptions) ai.PrepareStepOptions
+	persist := &stepPersistence{}
 	if streaming {
-		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages)
+		stepAdapter = w.makePrepareStep(pctx, tools, allowSystemInMessages, persist)
 	}
-	prepareCall, runner := w.makePrepareCall(pctx, !streaming)
+	prepareCall, runner := w.makePrepareCall(pctx, !streaming, persist)
 	cfg := agent.AgentConfig{
 		ID: w.ID, Model: w.Model, System: system, InstructionMessages: instructionMessages, Prompt: w.Prompt, Tools: tools, StopWhen: withFinishReasonStop(stopWhen),
 		AllowSystemInMessages: allowSystemInMessages,
@@ -1842,7 +1926,7 @@ func (w *WorkflowAgent) makeAgent(ovr WorkflowStreamOptions, govr WorkflowGenera
 		MaxRetries:                     maxRetries,
 		Timeout:                        timeout,
 		OnStart:                        mergeStart(w.OnStart, mergeStart(govr.OnStart, ovr.OnStart)),
-		OnStepStartEvent:               mergeStepStart(w.OnStepStart, mergeStepStart(govr.OnStepStart, ovr.OnStepStart)),
+		OnStepStartEvent:               onStepStart,
 		OnToolExecutionStart:           mergeToolStart(w.OnToolExecutionStart, mergeToolStart(govr.OnToolExecutionStart, ovr.OnToolExecutionStart)),
 		OnToolExecutionEnd:             mergeToolEnd(w.OnToolExecutionEnd, mergeToolEnd(govr.OnToolExecutionEnd, ovr.OnToolExecutionEnd)),
 		OnStepEndEvent:                 mergeStepFinish(resolveStepEnd(w.OnStepEnd, w.OnStepFinish), mergeStepFinish(resolveStepEnd(govr.OnStepEnd, govr.OnStepFinish), resolveStepEnd(ovr.OnStepEnd, ovr.OnStepFinish))),
