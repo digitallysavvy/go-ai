@@ -305,6 +305,16 @@ Each item has before/after code in the
   to the step, as in TS.
   **Migration:** check `errors.Is(err, context.DeadlineExceeded)` for step
   timeouts.
+- **UI message streams fail on an out-of-sequence chunk**, as TS: while
+  `CreateUIMessageStreamWithOptions`/`ToUIMessageStream` build the message for
+  an `OnEnd`/`OnStepEnd` callback, a chunk with no matching part (a
+  `text-delta` without `text-start`, a tool result for an unknown call) stops
+  the stream with a `*UIMessageStreamError` on the error channel and as the
+  failed `OnEnd` outcome; it used to go to `OnError` and the stream went on.
+  Without those callbacks the chunks are not processed at all, so `OnError`
+  is no longer called for them, nor a second time for an error chunk.
+  **Migration:** emit each part's start chunk before its deltas, and treat a
+  `*UIMessageStreamError` on the error channel as the stream's failure.
 
 ---
 
@@ -383,14 +393,6 @@ These match TS and are unlikely to need code changes, but can change output.
   `OnAbort`**, as TS `generateText` has no abort telemetry: the root and step
   spans carry the error status. The legacy `ToolLoopAgent` loop does the
   same. `GenerateTextOptions.OnAbortEvent`/`OnAbort` still fire.
-- **UI message streams fail on an out-of-sequence chunk**, as TS: while
-  `CreateUIMessageStreamWithOptions`/`ToUIMessageStream` build the message for
-  an `OnEnd`/`OnStepEnd` callback, a chunk with no matching part (a
-  `text-delta` without `text-start`, a tool result for an unknown call) stops
-  the stream with a `*UIMessageStreamError` on the error channel and as the
-  failed `OnEnd` outcome; it used to go to `OnError` and the stream went on.
-  Without those callbacks the chunks are not processed at all, so `OnError`
-  is no longer called for them, nor a second time for an error chunk.
 - **Telemetry:** legacy `ai.prompt` records instructions given as system
   messages (`InstructionMessages`) as the message array
   (`{"system":[{"role":"system","content":...}],...}`), as TS
