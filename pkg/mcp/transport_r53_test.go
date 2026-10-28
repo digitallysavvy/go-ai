@@ -109,3 +109,17 @@ func TestTransportAuthJoinedCallerSurvivesLeaderCancel(t *testing.T) {
 		t.Fatal("follower hung")
 	}
 }
+
+// NewSSETransport applies its timeout and redirect policy to a copy of the
+// caller's client, as NewHTTPTransport does: the caller's client (perhaps
+// http.DefaultClient) is left unchanged.
+func TestSSETransportDoesNotMutateCallerHTTPClient(t *testing.T) {
+	caller := &http.Client{}
+	tr := NewSSETransport(SSETransportConfig{URL: "http://localhost:9999/sse", TimeoutMS: 1500, HTTPClient: caller})
+	if caller.Timeout != 0 || caller.CheckRedirect != nil {
+		t.Fatalf("caller client changed: timeout %v, CheckRedirect set %v", caller.Timeout, caller.CheckRedirect != nil)
+	}
+	if tr.client == caller || tr.client.Timeout != 1500*time.Millisecond || tr.client.CheckRedirect == nil {
+		t.Fatalf("transport client = %+v", tr.client)
+	}
+}
