@@ -109,3 +109,54 @@ func TestR53StreamNextStepTimeoutCoversPrepareStep(t *testing.T) {
 		t.Fatalf("err = %v, want the second step's deadline", err)
 	}
 }
+
+// A step's response messages never overwrite the backing array of a
+// caller's slice (here a PrepareStep result with spare capacity).
+func TestR53StreamDoesNotWriteIntoCallerMessages(t *testing.T) {
+	user := func(text string) types.Message {
+		return types.Message{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: text}}}
+	}
+	base := []types.Message{user("hi"), user("keep-1"), user("keep-2")}
+	calls := 0
+	model := &testutil.MockLanguageModel{
+		DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+			calls++
+			if calls == 1 {
+				return testutil.NewMockTextStream([]provider.StreamChunk{
+					{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "noop", RawArguments: `{}`}},
+					{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+				}), nil
+			}
+			return testutil.NewMockTextStream([]provider.StreamChunk{
+				{Type: provider.ChunkTypeText, Text: "ok"},
+				{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+			}), nil
+		},
+	}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "hi",
+		Tools: []types.Tool{{Name: "noop", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+			return "done", nil
+		}}},
+		StopWhen: []StopCondition{StepCountIs(3)},
+		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
+			if o.StepNumber == 0 {
+				return PrepareStepOptions{Messages: base[:1]}
+			}
+			return PrepareStepOptions{}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := res.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []string{"keep-1", "keep-2"} {
+		m := base[i+1]
+		if m.Role != types.RoleUser || m.Content[0].(types.TextContent).Text != want {
+			t.Fatalf("base[%d] = %+v, want the caller's %q", i+1, m, want)
+		}
+	}
+}

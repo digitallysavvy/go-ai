@@ -3054,7 +3054,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			responseContent,
 			recordedToolResults,
 		)
-		currentMessages = append(currentMessages, stepResponseMsgs...)
+		// Copy before appending: currentMessages may share its backing array
+		// with a caller's slice (a PrepareStep result, the prompt messages).
+		currentMessages = append(append([]types.Message(nil), currentMessages...), stepResponseMsgs...)
 		allSteps[len(allSteps)-1].ResponseMessages = stepResponseMsgs
 		allSteps[len(allSteps)-1].Response.Messages = stepResponseMsgs
 		stepWarnings := append([]types.Warning(nil), r.warnings[stepWarningsStart:]...)
