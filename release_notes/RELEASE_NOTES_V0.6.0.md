@@ -532,6 +532,19 @@ These match TS and are unlikely to need code changes, but can change output.
   that disables telemetry opens no root. The root's end event reports the
   last step's model, runtime context and tools context, like TS `onEnd`.
 
+- **`GenerateText` and the legacy `ToolLoopAgent` loop notify each tool call
+  and resolve its approval in one pass, call by call**, as TS
+  `generateText`: `OnInputStart`, `OnInputAvailable`, then the approval of
+  the first call before the next call's callbacks. The legacy loop now
+  resolves every approval before running any tool, so an approval that
+  cannot be resolved fails the run before a tool executes (tool calls run
+  concurrently); input callbacks use the execution tool set, like TS
+  `stepExecutionTools`.
+- **The legacy `ToolLoopAgent` per-step timeout covers the step's tool
+  execution**, as the TS step timeout aborts the signal the tools get; a
+  step whose timeout expired while its tools ran ends the run with the step
+  deadline before the next step, even when a tool swallowed it.
+
 ### Providers
 
 - **Provider IDs follow TS `config.provider`**: `groq.chat`, `mistral.embedding`,
