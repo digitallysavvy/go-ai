@@ -1920,7 +1920,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if callConfig.Include != nil {
 		include = *callConfig.Include
 	}
-	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, prompt.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
+	// The repair function gets the step's messages (TS stepMessages), not the
+	// converted prompt with the instruction messages prepended.
+	toolCalls, err := parseAgentToolCalls(stepCtx, genResult.ToolCalls, callConfig, callConfig.Messages, genOpts.ToolChoice.Type == types.ToolChoiceNone)
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
