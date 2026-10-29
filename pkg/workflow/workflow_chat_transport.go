@@ -259,15 +259,17 @@ func (t *WorkflowRunMultiplexer) SendMessages(ctx context.Context, opts SendMess
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// TS WorkflowChatTransport rejects a failed POST before it calls
+	// onChatSendMessage, which only sees a sent request.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		payload, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("workflow chat transport: POST %s returned %d: %s", api, resp.StatusCode, string(payload))
+	}
 	if t.OnChatSendMessage != nil {
 		if err := t.OnChatSendMessage(resp, opts); err != nil {
 			_, _ = io.Copy(io.Discard, resp.Body)
 			return nil, err
 		}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		payload, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("workflow chat transport: POST %s returned %d: %s", api, resp.StatusCode, string(payload))
 	}
 	events, err := streaming.ParseSSEStream(resp.Body)
 	if err != nil {

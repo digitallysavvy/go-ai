@@ -648,6 +648,11 @@ type StreamTextResult struct {
 	// resumeChunksRemaining counts the resumed-approval chunks at the head of
 	// the stream; they are forwarded but not accumulated into step content.
 	resumeChunksRemaining int
+	// adapterToolResults are the tool results of InitialStreamChunks: an
+	// adapter resolved them before the step (WorkflowAgent's resumed
+	// approvals), so they keep their own ProviderExecuted flag instead of
+	// being treated as model output.
+	adapterToolResults    map[*types.ToolResult]bool
 	cbExperimentalSandbox interface{}
 	// cbCallSandbox is the sandbox given to the call (before any per-step
 	// PrepareStep override).
@@ -875,6 +880,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		toolsContext = map[string]interface{}{}
 	}
 
+	// H5: compute callID before FireOnStart so TelemetryStartEvent.CallID is
+	// populated — every telemetry integration needs it from the very first
+	// event to track its own root span by CallID. TS generates it before
+	// standardizePrompt, so an abort during prompt validation carries it too.
+	callID := internalGenerateCallID(opts.Internal)()
+
 	// Build prompt. TS standardizePrompt runs before the start events, so a
 	// prompt error reaches no integration: none has call state for it yet
 	// (TS integrations ignore its onError), and a Go integration without
@@ -889,7 +900,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		normalizedPrompt, normErr = promptutils.NormalizePrompt(prompt, allowSystem)
 	}
 	if normErr != nil {
-		r.failBeforeStream(ctx, opts, normErr)
+		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID}, normErr)
 		return
 	}
 	prompt = normalizedPrompt
@@ -912,11 +923,6 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		telMessages = buildPrompt(opts.Prompt, opts.Messages, "").Messages
 	}
 	streamTextMaxRetries := preparedMaxRetries(opts.MaxRetries)
-	// H5: compute callID before FireOnStart (previously computed further down)
-	// so TelemetryStartEvent.CallID is populated — every telemetry
-	// integration needs it from the very first event to track its own root
-	// span by CallID.
-	callID := internalGenerateCallID(opts.Internal)()
 	ctx = telemetry.FireOnStart(ctx, telemetry.TelemetryStartEvent{
 		CallID:              callID,
 		OperationType:       "ai.streamText",
@@ -1057,7 +1063,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// caller already has this *StreamTextResult and reads the error via
 		// Err()/ReadAll()/Stream(), matching review finding F6.
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: resumeErr})
-		r.failBeforeStream(ctx, opts, resumeErr)
+		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, resumeErr)
 		return
 	}
 	initialResponseMessages := resumed.responseMessages
@@ -1142,7 +1148,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 					stepCancel()
 				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-				r.failBeforeStream(ctx, opts, err)
+				r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 				return
 			}
 			stepInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
@@ -1236,7 +1242,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
-		r.failBeforeStream(ctx, opts, err)
+		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		return
 	}
 
@@ -1252,7 +1258,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 					stepCancel()
 				}
 				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: rfErr})
-				r.failBeforeStream(ctx, opts, rfErr)
+				r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, rfErr)
 				return
 			}
 			responseFormat = rf
@@ -1265,7 +1271,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: normErr})
-		r.failBeforeStream(ctx, opts, normErr)
+		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, normErr)
 		return
 	}
 	if toolResultsErr := validateStepToolResults(stepPrompt.Messages, opts.Tools); toolResultsErr != nil {
@@ -1273,7 +1279,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			stepCancel()
 		}
 		telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: toolResultsErr})
-		r.failBeforeStream(ctx, opts, toolResultsErr)
+		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, toolResultsErr)
 		return
 	}
 	stepPrompt = prependInstructionMessages(stepPrompt, stepInstructionMessages)
@@ -1421,12 +1427,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// DoStream for step 1 too. No error status on abort, matching TS
 		// onAbort.
 		if isAbortErr(stepCtx, err) {
-			reason := abortReason(stepCtx, err)
-			if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
-				safeInvoke(func() { onAbort(stepCtx, GenerateTextAbortEvent{CallID: callID, Reason: reason}) })
-			}
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID})
-			telemetry.FireOnAbort(telemetryCtx, telemetry.TelemetryAbortEvent{Settings: telemetrySettings, CallID: callID, Reason: reason})
+			// TS: `start`, onAbort and an `abort` part.
+			r.abortBeforeStream(stepCtx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		} else {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			r.notifyStepError(ctx, opts.OnStepError, wrapGatewayError(err))
@@ -1459,6 +1462,14 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		prefix := make([]provider.StreamChunk, 0, len(resumed.chunks)+len(opts.InitialStreamChunks))
 		prefix = append(prefix, resumed.chunks...)
 		prefix = append(prefix, opts.InitialStreamChunks...)
+		for _, c := range opts.InitialStreamChunks {
+			if c.ToolResult != nil {
+				if r.adapterToolResults == nil {
+					r.adapterToolResults = map[*types.ToolResult]bool{}
+				}
+				r.adapterToolResults[c.ToolResult] = true
+			}
+		}
 		stream = &prefixedTextStream{prefix: prefix, base: stream}
 	}
 
@@ -1550,10 +1561,14 @@ func (r *StreamTextResult) notifyStepError(ctx context.Context, onStepError func
 // open (prompt standardization or conversion, approval resume, PrepareStep
 // results, step settings). TS runs all of it inside streamText's async
 // pipeline, whose catch adds an `error` part after `start`, so onError is
-// called with it, as for a model call that fails to open. An abort is left to
-// fail.
-func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamTextOptions, err error) {
-	if !isAbortErr(ctx, err) {
+// called with it, as for a model call that fails to open. When the abort
+// signal has fired, TS's outer stream reads that part, sees the signal and
+// ends with an `abort` part instead (onAbort, no onError and no error part),
+// whatever the error was.
+func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamTextOptions, call preStreamCall, err error) {
+	if isAbortErr(ctx, err) {
+		r.abortBeforeStream(ctx, opts, call, err)
+	} else {
 		wrapped := wrapGatewayError(err)
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, wrapped) })
@@ -1564,6 +1579,36 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 		}
 	}
 	r.fail(err)
+}
+
+// preStreamCall identifies the call for the abort events of a run that ends
+// before its first model stream: telemetryCtx is nil before the telemetry
+// start event (no integration has call state for it yet).
+type preStreamCall struct {
+	callID            string
+	telemetryCtx      context.Context
+	telemetrySettings *TelemetrySettings
+}
+
+// abortBeforeStream reports a run aborted before its first model stream:
+// TS's outer stream enqueues `start`, notifies onAbort and the telemetry
+// onAbort, and ends with an `abort` part.
+func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTextOptions, call preStreamCall, err error) {
+	reason := abortReason(ctx, err)
+	if onAbort := firstOnAbort(opts.OnAbortEvent, opts.OnAbort); onAbort != nil {
+		safeInvoke(func() { onAbort(ctx, GenerateTextAbortEvent{CallID: call.callID, Reason: reason}) })
+	}
+	if call.telemetryCtx != nil {
+		telemetry.FireOnAbort(call.telemetryCtx, telemetry.TelemetryAbortEvent{Settings: call.telemetrySettings, CallID: call.callID, Reason: reason})
+	}
+	if r.chunkBuf != nil {
+		abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
+		if reason != nil {
+			abortChunk.AbortReason = reason.Error()
+		}
+		r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
+		r.chunkBuf.push(abortChunk)
+	}
 }
 
 // fail records a failure that happened before the per-step stream loop ever
@@ -2302,7 +2347,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 			// Track provider-inline tool results for the deferred hasResult check.
 			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
-				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, stepToolCalls, toolsByName, &stepUsage)
+				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], stepToolCalls, toolsByName, &stepUsage)
 				if convertErr != nil {
 					r.err = convertErr
 					break
@@ -3883,7 +3928,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
 }
 
-func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
+func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, fromModel bool, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
 	call, hasCall := findToolCallByID(toolCalls, result.ToolCallID)
 	if hasCall {
 		if result.ToolName == "" {
@@ -3899,6 +3944,11 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 				result.ProviderExecuted = call.ProviderExecuted
 			}
 		}
+	}
+	// TS stream-language-model-call.ts: every tool-result the model streams
+	// is provider-executed, with or without a matching call.
+	if fromModel {
+		result.ProviderExecuted = true
 	}
 	tool := toolsByName[result.ToolName]
 	if tool == nil || tool.ToModelOutput == nil || result.ModelOutput != nil || result.Error != nil {
@@ -4636,7 +4686,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			})
 		}
 		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
-			enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, pendingToolCalls, toolsByName, &r.usage)
+			enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], pendingToolCalls, toolsByName, &r.usage)
 			if convertErr != nil {
 				r.err = convertErr
 				return "", convertErr

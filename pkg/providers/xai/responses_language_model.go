@@ -503,6 +503,20 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 
 	var toolCalls []types.ToolCall
 	var hasFunctionCall bool // true only when a function_call item is encountered
+	// pushCall records a tool call and puts its tool-call part in the content
+	// at the output item's position: TS doGenerate pushes every part in output
+	// order, so a function call ahead of a message stays ahead of its text and
+	// a provider-executed call comes before its tool-result.
+	pushCall := func(tc types.ToolCall) {
+		toolCalls = append(toolCalls, tc)
+		result.Content = append(result.Content, types.ToolCallContent{
+			ToolCallID:       tc.ID,
+			ToolName:         tc.ToolName,
+			Input:            tc.RawArguments,
+			Arguments:        tc.Arguments,
+			ProviderExecuted: tc.ProviderExecuted,
+		})
+	}
 
 	for _, rawItem := range resp.Output {
 		var peek struct {
@@ -555,7 +569,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			var args map[string]interface{}
 			json.Unmarshal([]byte(item.Arguments), &args) //nolint:errcheck
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:           item.CallID,
 				ToolName:     item.Name,
 				Arguments:    args,
@@ -638,7 +652,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			}
 			var toolArgs map[string]interface{}
 			_ = json.Unmarshal([]byte(toolInput), &toolArgs)
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
 				Arguments:        toolArgs,
@@ -673,7 +687,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if toolName == "" {
 				toolName = "file_search"
 			}
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
 				ProviderExecuted: true,
@@ -723,7 +737,7 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			if toolName == "" {
 				toolName = "image_generation"
 			}
-			toolCalls = append(toolCalls, types.ToolCall{
+			pushCall(types.ToolCall{
 				ID:               item.ID,
 				ToolName:         toolName,
 				RawArguments:     "{}",

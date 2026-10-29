@@ -160,6 +160,27 @@ func generateResultContentParts(result *types.GenerateResult) []types.ContentPar
 	seenToolCalls := map[string]bool{}
 	for i, part := range parts {
 		switch p := part.(type) {
+		case types.ToolResultContent:
+			// TS convertLanguageModelContent: every tool-result or
+			// tool-error the model returns is provider-executed, so it stays
+			// in the assistant response message.
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolResultContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
+		case types.ToolErrorContent:
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolErrorContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
 		case types.ToolCallContent:
 			seenToolCalls[p.ToolCallID] = true
 			if call, ok := toolCallByID(result.ToolCalls, p.ToolCallID); ok {
