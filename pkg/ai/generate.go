@@ -1118,6 +1118,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// (TS currentModelResponse.structuredOutputText).
 	var lastStructuredOutputText *string
 
+	// lastResponseHeaders are the last model response's HTTP headers (the
+	// final step's, for the end event and ResponseHeaders).
+	var lastResponseHeaders map[string]string
+
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
 		// TS `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`: a
@@ -1469,6 +1473,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			return nil, err
 		}
 		lastStructuredOutputText = genResult.StructuredOutputText
+		lastResponseHeaders = genResult.ResponseHeaders
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
 		performance := stepPerformance(modelCallStart, genResult.Usage, nil, nil)
@@ -2052,6 +2057,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.ProviderMetadata = result.FinalStep.ProviderMetadata
 		result.Request = result.FinalStep.Request
 		result.Response = result.FinalStep.Response
+		result.ResponseHeaders = lastResponseHeaders
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.RawRequest = result.Request.Body
 		result.RawResponse = result.Response.Body
@@ -2184,11 +2190,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ProviderMetadata:   result.ProviderMetadata,
 		ResponseHeaders:    result.ResponseHeaders,
 		Request:            GenerateStepRequest{Body: result.RawRequest},
+		// TS onEndEvent.response is the final step's response, as the step-end
+		// event of that step reports it.
 		Response: GenerateStepResponse{
 			ID:        result.Response.ID,
 			Timestamp: result.Response.Timestamp,
 			ModelID:   result.Response.ModelID,
-			Headers:   result.ResponseHeaders,
+			Headers:   result.Response.Headers,
 			Messages:  result.Response.Messages,
 			Body:      result.RawResponse,
 		},
