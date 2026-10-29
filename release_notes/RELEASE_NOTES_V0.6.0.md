@@ -256,7 +256,10 @@ Each item has before/after code in the
   report an unset choice instead of `auto`, as TS ToolLoopAgent passes it
   through. Z.AI no longer sends `tool_choice` without tools. **Migration:** an
   OpenAI-compatible server that rejects `"tool_choice": "auto"` (for example
-  vLLM without `--enable-auto-tool-choice`) needs that support enabled.
+  vLLM started without `--enable-auto-tool-choice`) needs that support
+  enabled, or wrap the model with a `middleware.LanguageModelMiddleware`
+  whose `TransformParams` resets `params.ToolChoice` to `types.ToolChoice{}`
+  (the v0.5 request).
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
   TS calls `onError` for the `error` parts of the stream; a failure it throws
   inside the stream is reported to `onStepError` and the telemetry `onError`
@@ -505,8 +508,9 @@ Each item has before/after code in the
   **Migration:** update queries or dashboards that match
   `ai.workflowAgent.generate`.
 - **An out-of-range `UIMessageStreamResponseInit.KeepAliveMs` is an error**
-  (review round 63). A zero or negative duration, or one above
-  2147483647ms, used to turn keep-alive off; the `Pipe*`/`Create*` UI
+  (review round 63). A pointer to a zero or negative duration used to turn
+  keep-alive off, and one above 2147483647ms enabled it with that interval
+  (a nil `KeepAliveMs` is unchanged: no keep-alive); the `Pipe*`/`Create*` UI
   message stream response helpers now return `keepAliveMs must be a positive
   finite timer duration no greater than 2147483647` before writing anything,
   as TS `createSseStreamWithKeepAlive` throws. **Migration:** leave

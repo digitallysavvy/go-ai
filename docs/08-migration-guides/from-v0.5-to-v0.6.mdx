@@ -147,6 +147,40 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   still resume. Answer an approval with the request's `ApprovalID`, not the
   tool call ID, as in the `WorkflowAgent` example above.
 
+- **An unset `ToolChoice` reaches the model as `auto`.** As TS
+  `prepareToolChoice`, `GenerateText`, `StreamText` and
+  `ExperimentalStartBatch` pass the model `ToolChoice{Type: "auto"}` when
+  neither the call nor `PrepareStep` sets one. Requests with tools now carry
+  the provider's explicit auto choice (`"tool_choice": "auto"` for OpenAI and
+  OpenAI-compatible servers, `{"type": "auto"}` for Anthropic, mode `AUTO`
+  for Google). Events still report the choice as given. An OpenAI-compatible
+  server that rejects an explicit auto choice (for example vLLM started
+  without `--enable-auto-tool-choice`) needs that support enabled, or a
+  middleware that restores the v0.5 request:
+
+  ```go
+  clearToolChoice := &middleware.LanguageModelMiddleware{
+  	TransformParams: func(_ context.Context, _ string, params *provider.GenerateOptions, _ provider.LanguageModel) (*provider.GenerateOptions, error) {
+  		p := *params
+  		p.ToolChoice = types.ToolChoice{} // send no tool_choice, as v0.5
+  		return &p, nil
+  	},
+  }
+  model = middleware.WrapLanguageModel(model, []*middleware.LanguageModelMiddleware{clearToolChoice}, nil, nil)
+  ```
+
+- **An out-of-range `KeepAliveMs` is an error.** A
+  `UIMessageStreamResponseInit.KeepAliveMs` that points to zero, a negative
+  duration or more than 2147483647ms now makes the UI message stream response
+  helpers return an error before writing anything, as TS
+  `createSseStreamWithKeepAlive` throws (v0.5 turned keep-alive off for zero
+  or negative values). A nil `KeepAliveMs` is unchanged. Leave it nil to turn
+  keep-alive off:
+
+  ```go
+  init := &ai.UIMessageStreamResponseInit{} // KeepAliveMs nil: no keep-alive
+  ```
+
 - **A `StreamText` tool choice violation now ends with `finish`.** The run
   emits an `error` chunk, then `finish` (finish reason `error`), and calls
   `OnFinish` and `OnEnd`; `Err()` still returns the
