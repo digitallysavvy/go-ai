@@ -55,7 +55,7 @@ func TestR61WorkflowStreamApprovalRequestsFollowToolResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	var types_ []provider.ChunkType
-	stream := res.FullStream()
+	stream := res.Stream()
 	for {
 		chunk, err := stream.Next()
 		if err != nil {
