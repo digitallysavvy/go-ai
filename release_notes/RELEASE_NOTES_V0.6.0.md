@@ -233,6 +233,18 @@ Each item has before/after code in the
   matched and verified against the stored request's ID. **Migration:**
   answer an approval with the `ApprovalID` of its
   `ToolApprovalRequestContent`, not the tool call ID.
+- **Legacy `ToolLoopAgent` approval IDs are generated** (review round 62).
+  The `Execute`, `ExecuteWithMessages` and `GenerateAgent` loop names each
+  approval request, and the response of an automatic approval or denial,
+  with the run's ID generator (`InternalOptions.GenerateID`, by default
+  `aitxt-` plus 24 characters), as TS ToolLoopAgent's `generateText` calls
+  `generateId()`; the signature covers that ID. v0.5.2 used the tool call
+  ID, which some providers repeat across steps. A step response without an
+  ID also takes its ID from `InternalOptions.GenerateID`. Approvals
+  persisted by v0.5.2 still resume: the response is matched and verified
+  against the stored request's ID. `WorkflowAgent` keeps
+  `approval-<toolCallId>`. **Migration:** answer an approval with the
+  request's `ApprovalID`, not the tool call ID.
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
   TS calls `onError` for the `error` parts of the stream; a failure it throws
   inside the stream is reported to `onStepError` and the telemetry `onError`

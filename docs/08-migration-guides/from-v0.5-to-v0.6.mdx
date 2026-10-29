@@ -139,6 +139,14 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   _ = response // not request.ToolCallID
   ```
 
+- **Legacy `ToolLoopAgent` approval IDs are generated.** The `Execute`,
+  `ExecuteWithMessages` and `GenerateAgent` loop names each approval with
+  the run's ID generator (`InternalOptions.GenerateID`, by default `aitxt-`
+  plus 24 characters), as TS `generateId()`. v0.5 used the tool call ID,
+  which some providers repeat across steps. Approvals persisted by v0.5
+  still resume. Answer an approval with the request's `ApprovalID`, not the
+  tool call ID, as in the `WorkflowAgent` example above.
+
 - **A `StreamText` tool choice violation now ends with `finish`.** The run
   emits an `error` chunk, then `finish` (finish reason `error`), and calls
   `OnFinish` and `OnEnd`; `Err()` still returns the
