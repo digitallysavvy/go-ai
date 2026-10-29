@@ -2813,7 +2813,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		var violation error
 		if !transformStopped {
-			violation = checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepResponseModelID, stepContent)
+			violation = checkToolChoiceViolation(currentToolChoice, stepToolCalls, r.finishReason, stepProvider, stepModelID, stepContent)
 		}
 		if violation != nil {
 			// TS model-call-end carries finishReason "error" for a tool-choice
