@@ -118,7 +118,7 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 		},
 	}
 
-	lmResult, err := NewLanguageModel(m.prov, m.modelID).DoGenerate(ctx, lmOpts)
+	lmResult, err := newLanguageModel(m.prov, m.modelID, m.Provider()).DoGenerate(ctx, lmOpts)
 	if err != nil {
 		return nil, err
 	}
