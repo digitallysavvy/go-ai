@@ -2256,7 +2256,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// such as a bare text-start or an empty reasoning delta do not, and
 			// neither does a tool call withheld for tool choice none (TS counts
 			// the parts that reach the step's stream).
-			if isOutputChunkForTiming(*chunk) && !(withholdToolParts && chunk.Type == provider.ChunkTypeToolCall) {
+			if isOutputChunkForTiming(*chunk) && (!withholdToolParts || chunk.Type != provider.ChunkTypeToolCall) {
 				stepSawOutput = true
 			}
 
