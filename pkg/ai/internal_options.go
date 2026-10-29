@@ -204,7 +204,7 @@ func emptyProviderResult(call types.ToolCall, provider, model string) types.Tool
 	LogWarnings(LogWarningsOptions{
 		Warnings: []types.Warning{{
 			Type: "other",
-			Message: fmt.Sprintf("[WorkflowAgent] Provider-executed tool %q (%s) did not receive a result from the stream. This may indicate a provider issue.",
+			Message: fmt.Sprintf("[WorkflowAgent] Provider-executed tool \"%s\" (%s) did not receive a result from the stream. This may indicate a provider issue.",
 				call.ToolName, call.ID),
 		}},
 		Provider: provider,

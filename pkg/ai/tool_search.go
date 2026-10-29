@@ -202,7 +202,7 @@ func NewToolSearchState(tools []types.Tool, toolCallers ResolvedToolCallers) (*T
 			return nil, &providererrors.InvalidArgumentError{
 				Field: "tools",
 				Message: fmt.Sprintf(
-					"tool %q must be callable directly or through code mode with toolDiscovery: 'conversation'. The search tool itself must not defer loading.",
+					"tool \"%s\" must be callable directly or through code mode with toolDiscovery: 'conversation'. The search tool itself must not defer loading.",
 					name,
 				),
 			}

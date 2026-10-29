@@ -80,7 +80,7 @@ func CreateIDGenerator(opts ...CreateIDGeneratorOptions) (IDGenerator, error) {
 	if strings.Contains(alphabet, separator) {
 		return nil, &providererrors.InvalidArgumentError{
 			Field:   "separator",
-			Message: fmt.Sprintf("The separator %q must not be part of the alphabet %q.", separator, alphabet),
+			Message: fmt.Sprintf("The separator \"%s\" must not be part of the alphabet \"%s\".", separator, alphabet),
 		}
 	}
 

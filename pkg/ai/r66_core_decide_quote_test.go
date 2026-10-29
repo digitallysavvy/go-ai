@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -36,5 +37,46 @@ func TestR66DecisionErrorsQuoteIDAsIs(t *testing.T) {
 	unsupported := &providererrors.DecisionUnsupportedQuestionTypeError{QuestionID: id, QuestionType: "box", Provider: `p"`, ModelID: "m"}
 	if want := `Question "a"b\é" has type "box", which is not supported by provider "p"" and model "m".`; unsupported.Error() != want {
 		t.Errorf("unsupported: %q, want %q", unsupported.Error(), want)
+	}
+}
+
+// The other TS template-literal messages that quote a name ("${name}") keep
+// it as is, too.
+func TestR66TemplateLiteralMessagesQuoteNamesAsIs(t *testing.T) {
+	const name = `t"\é`
+	check := func(label string, err error, want string) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want it to contain %q", label, err, want)
+		}
+	}
+
+	_, err := CreateIDGenerator(CreateIDGeneratorOptions{Prefix: "p", Separator: `"`, Alphabet: `ab"\`})
+	check("separator", err, `The separator """ must not be part of the alphabet "ab"\".`)
+
+	tools := []types.Tool{{Name: name}}
+	_, err = ResolveToolCallerConfiguration(tools, ExperimentalToolCallers{`x"`: nil})
+	check("unknown tool", err, `unknown tool "x"".`)
+	_, err = ResolveToolCallerConfiguration(tools, ExperimentalToolCallers{name: {"nope"}})
+	check("invalid caller", err, `tool "t"\é" contains an invalid caller.`)
+
+	_, err = NewToolSearchState([]types.Tool{{Name: name, IsToolSearch: true, DeferLoading: true}}, nil)
+	check("tool search", err, `tool "t"\é" must be callable directly`)
+
+	_, err = ExperimentalStreamSpeech(context.Background(), StreamSpeechOptions{Model: &testutil.MockSpeechModel{ModelName: name}, Text: "hi"})
+	check("stream speech", err, `model "t"\é" does not support streaming speech.`)
+	_, err = ExperimentalStreamTranscribe(context.Background(), StreamTranscribeOptions{Model: &testutil.MockTranscriptionModel{ModelName: name}})
+	check("stream transcribe", err, `model "t"\é" does not support streaming transcription.`)
+
+	var got []string
+	SetLogWarnings(func(o LogWarningsOptions) {
+		for _, w := range o.Warnings {
+			got = append(got, w.Message)
+		}
+	})
+	t.Cleanup(func() { resetLogWarningsState(nil) })
+	emptyProviderResult(types.ToolCall{ID: "c1", ToolName: name}, "p", "m")
+	if want := `[WorkflowAgent] Provider-executed tool "t"\é" (c1) did not receive a result from the stream. This may indicate a provider issue.`; len(got) != 1 || got[0] != want {
+		t.Errorf("workflow warning = %q, want %q", got, want)
 	}
 }

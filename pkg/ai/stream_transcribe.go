@@ -242,7 +242,7 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: "streaming transcription",
 			Message: fmt.Sprintf(
-				"The %s model %q does not support streaming transcription.",
+				"The %s model \"%s\" does not support streaming transcription.",
 				opts.Model.Provider(), opts.Model.ModelID(),
 			),
 		}
