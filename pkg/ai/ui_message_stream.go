@@ -837,6 +837,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// step boundary.
 		sawStartStepChunk := false
 		endedWithCallFinish := false
+		// callFinishPart is the source's last ChunkTypeFinish: the TS 'finish'
+		// part messageMetadata sees carries the call's finishReason,
+		// rawFinishReason and totalUsage.
+		var callFinishPart *provider.StreamChunk
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -935,6 +939,8 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// recorded as Failed.
 			if chunk.Type == provider.ChunkTypeFinish {
 				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+				finishPart := *chunk
+				callFinishPart = &finishPart
 			}
 			if chunk.Type == provider.ChunkTypeError {
 				sawTerminal = true
@@ -1112,10 +1118,13 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 		var finishMetadata map[string]interface{}
 		if options.MessageMetadata != nil {
-			finishMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{
-				Type:         provider.ChunkType("finish"),
-				FinishReason: finishReason,
-			}, "finish"))
+			finishPart := provider.StreamChunk{}
+			if callFinishPart != nil {
+				finishPart = *callFinishPart
+			}
+			finishPart.Type = provider.ChunkType("finish")
+			finishPart.FinishReason = finishReason
+			finishMetadata = options.MessageMetadata(messageMetadataInput(finishPart, "finish"))
 		}
 		if sendFinish {
 			finishEvent := map[string]interface{}{
