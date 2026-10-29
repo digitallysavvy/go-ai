@@ -1189,10 +1189,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		accumulatedResponseMessages := responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		if opts.PrepareStep != nil {
+			givenInstructions := stepSystem
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 				Model:                        stepModel,
 				System:                       stepSystem,
-				Instructions:                 &stepSystem,
+				Instructions:                 &givenInstructions,
 				InitialInstructions:          &initialInstructions,
 				InstructionMessages:          cloneInstructionMessages(stepInstructionMessages),
 				InitialInstructionMessages:   cloneInstructionMessages(instructionMessages),
@@ -1231,7 +1232,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 				}
 				stepInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
 				stepSystem = ""
-			} else if prepared.Instructions != nil {
+			} else if preparedInstructionsSet(prepared.Instructions, &givenInstructions, stepSystem) {
 				stepSystem = *prepared.Instructions
 				stepInstructionMessages = nil
 			} else if prepared.System != "" {
@@ -2249,6 +2250,16 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 
 	return result, nil
+}
+
+// preparedInstructionsSet reports whether a PrepareStep result sets
+// Instructions (TS prepareStepResult.instructions): it holds a pointer other
+// than the given one, or the callback wrote through the given one. The given
+// pointer passed back unchanged leaves System to decide (TS
+// `instructions ?? system`), so a callback that only sets System overrides
+// the step instructions.
+func preparedInstructionsSet(prepared, given *string, current string) bool {
+	return prepared != nil && (prepared != given || *given != current)
 }
 
 // preparedToolChoice is TS prepareToolChoice: the model call gets an unset
