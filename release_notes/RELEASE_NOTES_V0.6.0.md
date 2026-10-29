@@ -507,6 +507,18 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Core
 
+- **`StreamText` step performance is the model call's** (review round 63).
+  `StepResult.Performance.ResponseTimeMs` and the rates built on it run from
+  just before the model call to its finish part, as the
+  `OnLanguageModelCallEnd` performance does; they no longer include tool
+  execution or leave out the time to open the stream. `StepTimeMs` runs from
+  after `PrepareStep`. Output timing follows chunk arrival. A step whose
+  stream ended without a finish part reports only `StepTimeMs` and
+  `ToolExecutionMs`. A stream retry fires `OnLanguageModelCallStart` again.
+- **UI stream `MessageMetadata` sees the call's finish part** (review round
+  63): the `finish` input's part carries the raw finish reason and total
+  usage. A start chunk that gives the response another message id ends the
+  continuation (`isContinuation` false, the original message kept).
 - **A provider tool-approval-request in a generate response takes its call**
   (review round 60): in `GenerateText`, batch text results and the legacy
   `ToolLoopAgent` loop, the `ToolApprovalRequestContent` an MCP provider
