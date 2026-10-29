@@ -202,16 +202,24 @@ Each item has before/after code in the
   TS calls `onError` for the `error` parts of the stream; a failure it throws
   inside the stream is reported to `onStepError` and the telemetry `onError`
   and ends the stream with that error. `OnError` is no longer called when the
-  model stream itself fails (its `Next` returns an error), or when a file
-  download, a tool input callback or a tool output conversion fails; `Err()`,
-  `OnStepError` and the stream's error still report it. A later step that
-  fails to prepare or open, an incomplete model stream and a stream retry
-  whose model call fails to open are error parts and still reach `OnError`.
-  A tool choice violation is now an `error` part after the model output
-  (`OnError` once), and the run still ends with a `finish` chunk and
-  `OnEnd` (finish reason `error`); `Err()` reports the violation as before.
+  model stream itself fails (its `Next` returns an error; a provider `error`
+  chunk still reaches `OnError`), or when a URL-backed generated file
+  download, a tool input callback (`OnInputStart`, `OnInputDelta`,
+  `OnInputAvailable`), an approval resolved inside the stream or a tool
+  output conversion (`ToModelOutput`) fails. `Err()`, `ReadAll()`, the
+  stream's error, `OnStepError` and the telemetry `OnError` still report it.
+  These still reach `OnError`: a first model call that fails to open or any
+  failure before the first stream, a later step that fails to prepare or
+  open, an incomplete model stream, a stream retry whose model call fails to
+  open, and a tool context that fails its schema.
   **Migration:** handle fatal stream failures through `Err()` or
   `OnStepError`.
+- **A `StreamText` tool choice violation ends the run with `finish`**
+  (review round 59). The `ToolChoiceViolationError` is now an `error` chunk
+  after the model output (`OnError` once, as before), and the run ends with a
+  `finish` chunk (finish reason `error`), `OnFinish` and `OnEnd`, as TS.
+  `Err()` still returns the violation. v0.5.2 ended the run without `finish`,
+  `OnFinish` or `OnEnd`.
 - **Tool results the model returns stay in the assistant message**
   (review round 58). As TS sets `providerExecuted: true` on every tool result
   and tool error a model returns, `GenerateText`, `StreamText` and the legacy
@@ -721,7 +729,14 @@ These match TS and are unlikely to need code changes, but can change output.
   with an empty URL is kept and a null `url` or `pattern` stays null; a
   `url_citation` with an empty URL is a source, one with a null title or a
   non-string URL is not, and a malformed annotation no longer drops the
-  message text.
+  message text. Only the matched action type's fields are checked.
+- Anthropic `DoGenerate` in jsonTool mode keeps a `compaction` block's text
+  and puts the json tool's text in its block's place, after any server tool
+  call or result before it, as TS (review round 59). A response with only the
+  json tool is unchanged: the JSON is in `Text`. A Google Interactions
+  tool-result `ImageContentBlock` takes TS's file-with-data path: a bare
+  `image` or empty media type is sniffed and a non-image type is dropped with
+  TS's warning.
 - An SSE event named `done` that carries a JSON payload is an ordinary chunk in
   every OpenAI-compatible and SSE provider stream; only `data: [DONE]` ends
   the stream, as TS `parseJsonEventStream` ignores event names. OpenAI

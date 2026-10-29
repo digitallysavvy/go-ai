@@ -113,11 +113,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 ## Behavior changes that can need an edit
 
 - **`StreamText` `OnError` sees error parts only.** As in TS, `OnError` is
-  called for the `error` parts of the stream (a provider error chunk, a later
-  step that fails to open, a tool choice violation). When the model stream
-  itself fails, or a file download, tool input callback or tool output
-  conversion fails, the run ends with that error without calling `OnError`.
-  Read it from `Err()` or `OnStepError`:
+  called for the `error` parts of the stream (a provider error chunk, a model
+  call that fails to open, an incomplete model stream, a tool choice
+  violation, a tool context that fails its schema). When the model stream
+  itself fails (`Next` returns an error), or a generated file download, a
+  tool input callback, an approval resolved inside the stream or a tool
+  output conversion fails, the run ends with that error without calling
+  `OnError`. Read it from `Err()` or `OnStepError`:
 
   ```go
   res, _ := ai.StreamText(ctx, opts)
@@ -125,6 +127,12 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   	log.Printf("stream failed: %v", err) // also reported to OnStepError
   }
   ```
+
+- **A `StreamText` tool choice violation now ends with `finish`.** The run
+  emits an `error` chunk, then `finish` (finish reason `error`), and calls
+  `OnFinish` and `OnEnd`; `Err()` still returns the
+  `ToolChoiceViolationError`. Code that treated a missing `OnEnd` as a failure
+  should check `Err()` instead.
 
 - **Tool results the model returns stay in the assistant message.** As in
   TS, every tool result or tool error a provider returns (web search, file
