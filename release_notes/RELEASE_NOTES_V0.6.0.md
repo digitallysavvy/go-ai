@@ -949,6 +949,9 @@ in v0.5.3.
 
 ### Core
 
+- UI message `source-url` and `source-document` chunks carry the source's
+  own `providerMetadata` (for example Anthropic's `pageAge`), as TS does;
+  only chunk-level metadata was forwarded.
 - `toolbash` keeps its truncation notice past 2^31 output characters on
   32-bit builds.
 - `StreamText` no longer writes a step's response messages into a caller's
@@ -1069,6 +1072,9 @@ in v0.5.3.
 
 ### Workflow, MCP, code mode and harness
 
+- `workflow.ToUIMessageChunk` forwards a source's own `providerMetadata`
+  and always writes a document source's `title` (required by the UI message
+  schema), as TS does.
 - `WorkflowChatTransport`: a reconnect stream that fails after its `finish`
   chunk (a malformed frame or a read error) counts as a consecutive error, as
   TS's catch does, so reaching `MaxConsecutiveErrors` still fails the
