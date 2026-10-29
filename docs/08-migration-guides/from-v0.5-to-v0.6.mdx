@@ -181,6 +181,11 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   init := &ai.UIMessageStreamResponseInit{} // KeepAliveMs nil: no keep-alive
   ```
 
+- **A `StreamText` `PrepareStep` model applies to one step.** As TS and
+  `GenerateText`, each step starts from the call's `Model`, and `PrepareStep`
+  receives it in `PrepareStepOptions.Model`. To keep an override for the
+  following steps, return it from every `PrepareStep` call.
+
 - **`StreamText` fires `OnLanguageModelCallStart` once per attempt.** As
   TS, each retried attempt to open the model stream (`MaxRetries`) is a new
   model call: `OnLanguageModelCallStart` fires again and the call's
