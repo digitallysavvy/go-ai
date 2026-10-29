@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
@@ -80,5 +83,51 @@ func TestR59StreamTextProviderStreamThrowSkipsOnError(t *testing.T) {
 	defer rec.mu.Unlock()
 	if rec.errors != 1 {
 		t.Fatalf("telemetry OnError calls = %d, want 1", rec.errors)
+	}
+}
+
+// The same holds for the other failures TS throws inside its stream: a file
+// download and a tool input callback.
+func TestR59StreamTextThrownFailuresSkipOnError(t *testing.T) {
+	inputErr := errors.New("input callback failed")
+	var hits atomic.Int32
+	toolCall := func() provider.TextStream {
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolInputStart, ToolCall: &types.ToolCall{ID: "1", ToolName: "t"}},
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+		})
+	}
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return toolCall(), nil
+	}}
+	cases := map[string]StreamTextOptions{
+		"tool input callback": {Prompt: "a", Model: model, Tools: []types.Tool{{Name: "t",
+			OnInputStart: func(context.Context, types.OnInputStartOptions) error { return inputErr },
+			Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "r", nil
+			},
+		}}},
+		"file download": {Prompt: "a", Model: fileModel(urlFile(fileServer(t, http.StatusServiceUnavailable, &hits)))},
+	}
+	for name, opts := range cases {
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := 0
+			opts.OnError = func(context.Context, error) { mu.Lock(); calls++; mu.Unlock() }
+			res, err := StreamText(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = r58FullStreamParts(t, res)
+			if res.Err() == nil {
+				t.Fatal("want the run to fail")
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("OnError calls = %d, want 0 (%v)", calls, res.Err())
+			}
+		})
 	}
 }

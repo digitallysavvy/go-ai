@@ -129,6 +129,8 @@ func TestR59StreamTextTerminalPartsPassThroughTransforms(t *testing.T) {
 				mu.Unlock()
 				return []provider.StreamChunk{c}
 			}}
+			onErrors := 0
+			opts.OnError = func(context.Context, error) { mu.Lock(); onErrors++; mu.Unlock() }
 			res, err := StreamText(ctx, opts)
 			if err != nil {
 				t.Fatal(err)
@@ -141,6 +143,14 @@ func TestR59StreamTextTerminalPartsPassThroughTransforms(t *testing.T) {
 			defer mu.Unlock()
 			if !strings.Contains(strings.Join(seen, " "), string(tc.want)) {
 				t.Fatalf("transform saw %q, want the %s part", seen, tc.want)
+			}
+			// An error part reaches OnError once; an abort does not.
+			wantOnErrors := 1
+			if tc.want == provider.ChunkTypeAbort {
+				wantOnErrors = 0
+			}
+			if onErrors != wantOnErrors {
+				t.Fatalf("OnError calls = %d, want %d", onErrors, wantOnErrors)
 			}
 		})
 	}

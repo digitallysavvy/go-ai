@@ -1755,11 +1755,14 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// error parts go through it, as TS's abort and error parts pass through
 	// experimental_transform after the outer stream.
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
-	// thrownStreamErr is a model stream failure that is not an error part
-	// (TS: the model stream throws). TS's outer stream reports it to
-	// onStepError and the telemetry onError and errors the stream; the
-	// onError callback, which sees error parts, is not called.
-	var thrownStreamErr error
+	// errorPartEnd: the run ended with a failure that TS reports as an `error` part
+	// (a later step that fails to prepare or open, an incomplete model
+	// stream, a tool choice violation), which reaches the onError callback.
+	// Every other failure is thrown inside TS's stream (a model stream that
+	// fails, a file download, an approval or tool input callback, a tool
+	// output conversion): the outer stream reports it to onStepError and the
+	// telemetry onError and errors the stream, without onError.
+	errorPartEnd := false
 	abortFired := false
 	fireAbort := func(reason error) {
 		if abortFired {
@@ -1866,6 +1869,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// which reaches onError (called once, after the loop) and the full stream.
 	failNextStep := func(err error) {
 		r.err = err
+		errorPartEnd = true
 		if !isAbortErr(ctx, err) {
 			wrapped := wrapGatewayError(err)
 			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()}})
@@ -2070,8 +2074,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				r.err = err
 				if isAbortErr(ctx, err) {
 					fireAbort(err)
-				} else {
-					thrownStreamErr = err
 				}
 				chunkDeadlineCancel()
 				break
@@ -2759,6 +2761,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if !stepSawTerminal {
 			if !stepSawOutput {
 				r.err = newIncompleteModelStreamError()
+				errorPartEnd = true
 				forwardThroughTransformChain(0, []provider.StreamChunk{{
 					Type: provider.ChunkTypeError,
 					Err:  r.err,
@@ -3288,6 +3291,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		if violation != nil {
 			r.err = violation
+			errorPartEnd = true
 			steeringEndReason = SteeringError
 			break
 		}
@@ -3668,6 +3672,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
 			}
 			r.err = wrapGatewayError(err)
+			errorPartEnd = true
 			// Close the still-open step span and the model-call/"chat" span
 			// opened just above via FireOnStepStart/FireOnLanguageModelCallStart
 			// (this next step's own iteration of the outer loop is never
@@ -3755,7 +3760,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// report it before the call error (aborts end with OnAbort).
 			r.notifyStepError(ctx, opts.OnStepError, r.err)
 		}
-		if opts.OnError != nil && !isAbortErr(ctx, r.err) && (thrownStreamErr == nil || r.err != thrownStreamErr) {
+		if opts.OnError != nil && !isAbortErr(ctx, r.err) && errorPartEnd {
 			safeInvoke(func() { opts.OnError(ctx, r.err) })
 		}
 		if !isAbortErr(ctx, r.err) {
