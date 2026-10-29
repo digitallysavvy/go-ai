@@ -244,6 +244,17 @@ Each item has before/after code in the
   against the stored request's ID. `WorkflowAgent` keeps
   `approval-<toolCallId>`. **Migration:** answer an approval with the
   request's `ApprovalID`, not the tool call ID.
+- **An unset `ToolChoice` reaches the model as `auto`** (review round 63).
+  `GenerateText`, `StreamText` and `ExperimentalStartBatch` pass the model
+  `ToolChoice{Type: "auto"}` when the call (or `PrepareStep`) sets none, as
+  TS `prepareToolChoice` does, so requests with tools now carry the
+  provider's auto tool choice (OpenAI-compatible `"tool_choice": "auto"`,
+  Anthropic `{"type": "auto"}`, Bedrock `toolChoice.auto`, Google `AUTO`), the
+  Gateway always sends `toolChoice`, and the OpenAI completion and Prodia
+  models warn that `toolChoice` is unsupported. Events keep the choice as
+  given. Z.AI no longer sends `tool_choice` without tools. **Migration:** an
+  OpenAI-compatible server that rejects `"tool_choice": "auto"` (for example
+  vLLM without `--enable-auto-tool-choice`) needs that support enabled.
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
   TS calls `onError` for the `error` parts of the stream; a failure it throws
   inside the stream is reported to `onStepError` and the telemetry `onError`
@@ -507,6 +518,14 @@ These match TS and are unlikely to need code changes, but can change output.
   `convertLanguageModelContent`; one that names no call of the response fails
   with `ToolCallNotFoundForApprovalError`. The legacy loop now pauses on such
   a request (it read `ToolCall.ProviderExecuted`, which was empty).
+- **An approved call that does not run keeps its approval parts** (review
+  round 63): in `GenerateText` and the legacy `ToolLoopAgent` loop, a local
+  call whose `ToolApproval` is approved but that does not run (its tool has
+  no `Execute`, or the step's finish reason does not allow execution) records
+  its automatic `ToolApprovalRequestContent` and `ToolApprovalResponseContent`,
+  as `StreamText` and TS do; the legacy loop also gives it a generated
+  approval ID, in call order. It is still not a tool result, and the run
+  stops after the step.
 - **A legacy `ToolLoopAgent` `ToolApproval` denial without a reason leaves it
   unset** (review round 60), as `GenerateText` and TS do, so the provider's
   default denial text reaches the model instead of "Tool call to X was denied
@@ -951,6 +970,9 @@ in v0.5.3.
 
 - `toolbash` keeps its truncation notice past 2^31 output characters on
   32-bit builds.
+- `GenerateText`'s end event reports the final step's response headers when
+  the run ends on a tool-call step (it had none), and `ResponseHeaders`
+  follows the final step.
 - `StreamText` no longer writes a step's response messages into a caller's
   message slice (a `PrepareStep` result with spare capacity).
 - `GenerateObject`/`StreamObject` sent the response format type as
