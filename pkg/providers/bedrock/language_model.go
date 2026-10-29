@@ -227,7 +227,14 @@ func (m *LanguageModel) getArgs(opts *provider.GenerateOptions) (*converseArgs, 
 		disableParallelToolUse = m.options.DisableParallelToolUse
 	}
 
-	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), reasoningBudgetTokens, disableParallelToolUse, caps.RejectsForcedToolUse)
+	// TS passes prepareTools the budget of the reasoning config after
+	// resolveAmazonBedrockReasoningConfig, which drops budgetTokens from a
+	// disabled config under a custom reasoning level.
+	toolsReasoningBudgetTokens := reasoningBudgetTokens
+	if resolvedReasoningConfig != nil && resolvedReasoningConfig.BudgetTokens == nil {
+		toolsReasoningBudgetTokens = nil
+	}
+	prepared := prepareBedrockTools(toolsForPrep, toolChoiceForPrep, hasToolChoice, m.modelID, m.modelFamily(), toolsReasoningBudgetTokens, disableParallelToolUse, caps.RejectsForcedToolUse)
 	warnings = append(warnings, prepared.Warnings...)
 	for k, v := range prepared.AdditionalTools {
 		additionalModelRequestFields[k] = v

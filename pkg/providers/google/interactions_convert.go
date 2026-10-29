@@ -693,15 +693,14 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// interactionMediaKind maps the top-level media type (TS getTopLevelMediaType:
+// the text before the first "/", or the whole string) to a content block kind.
 func interactionMediaKind(mediaType string) string {
-	switch {
-	case strings.HasPrefix(mediaType, "image"):
-		return "image"
-	case strings.HasPrefix(mediaType, "audio"):
-		return "audio"
-	case strings.HasPrefix(mediaType, "video"):
-		return "video"
-	case strings.HasPrefix(mediaType, "application"), strings.HasPrefix(mediaType, "text"):
+	top, _, _ := strings.Cut(mediaType, "/")
+	switch top {
+	case "image", "audio", "video":
+		return top
+	case "application", "text":
 		return "document"
 	default:
 		return ""

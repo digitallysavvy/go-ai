@@ -248,13 +248,16 @@ func (m *LanguageModel) streamStartError(chunk *provider.StreamChunk, headers ht
 	retryable := false
 	var data interface{}
 	var streamErr *providererrors.StreamProviderError
-	if errors.As(chunk.Err, &streamErr) {
-		if streamErr.StatusCode != nil {
-			status = *streamErr.StatusCode
-		}
-		retryable = streamErr.IsRetryable
-		data = streamErr.Data
+	if !errors.As(chunk.Err, &streamErr) {
+		// TS: a first error part that is not a normalized provider stream
+		// error (an unparsable or schema-invalid frame) throws a plain Error.
+		return errors.New("Expected a normalized Anthropic stream error") //nolint:staticcheck // TS error text
 	}
+	if streamErr.StatusCode != nil {
+		status = *streamErr.StatusCode
+	}
+	retryable = streamErr.IsRetryable
+	data = streamErr.Data
 	pe := providererrors.NewProviderError(m.provider.Name(), status, "", chunk.Text, chunk.Err)
 	pe.ResponseHeaders = providerutils.ExtractHeaders(headers)
 	if b, err := json.Marshal(data); err == nil {
