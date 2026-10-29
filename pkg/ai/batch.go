@@ -169,6 +169,9 @@ type StartBatchOptions struct {
 	// erroring.
 	WebhookURL string
 
+	// MaxRetries is kept for v0.5 callers. It is validated (it must not be
+	// negative) but not used: TS startBatch takes no maxRetries and calls
+	// doStartBatch once, so a failed start is never retried.
 	MaxRetries *int
 	Headers    map[string]string
 	Timeout    *time.Duration
