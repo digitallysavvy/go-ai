@@ -1716,7 +1716,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.ToolResults = publicResults
 			stepResult.StaticToolResults = filterStaticToolResults(publicResults)
 			stepResult.DynamicToolResults = filterDynamicToolResults(publicResults)
-			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(toolResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
+			// An approved local call that did not run (no Execute, or a finish
+			// reason that blocks execution) still records its approval
+			// request and response, as TS does.
+			attachToolApprovalSignatures(toolResults, opts.ExperimentalToolApprovalSecret)
+			contentResults := withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals)
+			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)

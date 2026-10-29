@@ -935,7 +935,12 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				return nil, err
 			}
 
-			assignAgentApprovalIDs(toolResults, callConfig.Internal)
+			// An approved local call that did not run (no Execute, or a finish
+			// reason that blocks execution) has no result, but TS still names
+			// its approval (in call order) and records the approval request
+			// and response.
+			approvalOnly := agentApprovedUnexecutedCalls(stepResult.ToolCalls, callTools, preApprovals, toolResults)
+			toolResults, approvalOnly = splitAgentApprovalOnly(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), callConfig.Internal)
 
 			// WorkflowAgent: a provider-executed call with no result gets an
 			// empty text result (TS resolveProviderToolResult) instead of the
@@ -962,7 +967,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			stepResult.ToolResults = publicResults
 			stepResult.StaticToolResults = filterAgentStaticToolResults(publicResults)
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(publicResults)
-			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(toolResults, callConfig.ExperimentalToolApprovalSecret)...)
+			stepResult.Content = append(stepResult.Content, agentToolResultsToContentParts(mergeAgentApprovalOnly(toolResults, stepResult.ToolCalls, approvalOnly), callConfig.ExperimentalToolApprovalSecret)...)
 			responseContent = stepResult.Content
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			if len(toolResults) == 0 {
@@ -2823,6 +2828,96 @@ func assignAgentApprovalIDs(results []types.ToolResult, internal *ai.InternalOpt
 	}
 }
 
+// agentApprovedUnexecuted is the Result of an entry that carries only the
+// automatic approval of a local call that did not run (its tool has no
+// Execute, or the step's finish reason does not allow execution): TS records
+// the call's approval request and response, but no tool output.
+type agentApprovedUnexecuted struct{}
+
+// agentApprovedUnexecutedCalls returns, by call ID, an approval-only entry for
+// each valid local call whose approval was approved but that got no result.
+func agentApprovedUnexecutedCalls(calls []types.ToolCall, tools []types.Tool, approvals map[string]types.ToolApprovalResult, results []types.ToolResult) map[string]types.ToolResult {
+	answered := make(map[string]bool, len(results))
+	for _, r := range results {
+		answered[r.ToolCallID] = true
+	}
+	var out map[string]types.ToolResult
+	for _, call := range calls {
+		approval, ok := approvals[call.ID]
+		if !ok || call.Invalid || answered[call.ID] || approval.Status != types.ToolApprovalStatusApproved {
+			continue
+		}
+		tool := findAgentTool(call.ToolName, tools)
+		if tool == nil || tool.ProviderExecuted || call.ProviderExecuted {
+			continue
+		}
+		if out == nil {
+			out = map[string]types.ToolResult{}
+		}
+		out[call.ID] = types.ToolResult{
+			ToolCallID:          call.ID,
+			ToolName:            call.ToolName,
+			Title:               call.Title,
+			Input:               call.Arguments,
+			Result:              agentApprovedUnexecuted{},
+			ApprovalStatus:      types.ToolApprovalStatusApproved,
+			ApprovalReason:      approval.Reason,
+			ProviderExecutedSet: call.ProviderExecutedSet,
+			ProviderMetadata:    mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata),
+			ToolMetadata:        call.ToolMetadata,
+			Dynamic:             call.Dynamic,
+		}
+	}
+	return out
+}
+
+// mergeAgentApprovalOnly inserts the approval-only entries into results (in
+// call order) at their calls' positions. results is returned as is when
+// there are none.
+func mergeAgentApprovalOnly(results []types.ToolResult, calls []types.ToolCall, approvalOnly map[string]types.ToolResult) []types.ToolResult {
+	if len(approvalOnly) == 0 {
+		return results
+	}
+	out := make([]types.ToolResult, 0, len(results)+len(approvalOnly))
+	j := 0
+	for _, call := range calls {
+		start := j
+		for j < len(results) && results[j].ToolCallID == call.ID {
+			j++
+		}
+		if j > start {
+			out = append(out, results[start:j]...)
+			continue
+		}
+		if entry, ok := approvalOnly[call.ID]; ok {
+			out = append(out, entry)
+		}
+	}
+	return append(out, results[j:]...)
+}
+
+// splitAgentApprovalOnly names the approvals of merged (assignAgentApprovalIDs)
+// and splits it back into the tool results and the approval-only entries.
+func splitAgentApprovalOnly(merged []types.ToolResult, internal *ai.InternalOptions) ([]types.ToolResult, map[string]types.ToolResult) {
+	assignAgentApprovalIDs(merged, internal)
+	var approvalOnly map[string]types.ToolResult
+	results := merged[:0:0]
+	for _, r := range merged {
+		if _, ok := r.Result.(agentApprovedUnexecuted); ok {
+			if approvalOnly == nil {
+				approvalOnly = map[string]types.ToolResult{}
+			}
+			approvalOnly[r.ToolCallID] = r
+			continue
+		}
+		results = append(results, r)
+	}
+	if approvalOnly == nil {
+		return merged, nil
+	}
+	return results, approvalOnly
+}
+
 // agentGenerateID is the run's ID generator: InternalOptions.GenerateID (TS
 // _internal.generateId), else TS generateText's default (`aitxt-` plus 24
 // characters).
@@ -2916,6 +3011,9 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				ProviderExecutedSet: result.ProviderExecutedSet,
 			})
 			if result.ProviderExecuted || result.ApprovalStatus == types.ToolApprovalStatusDenied {
+				continue
+			}
+			if _, approvalOnly := result.Result.(agentApprovedUnexecuted); approvalOnly {
 				continue
 			}
 		}

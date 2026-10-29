@@ -452,6 +452,68 @@ func toolApprovalResponseFromToolResult(tr types.ToolResult) types.ToolApprovalR
 	}
 }
 
+// approvedUnexecutedOutput is the Result of an entry that carries only the
+// automatic approval of a local call that did not run: its tool has no
+// Execute, or the step's finish reason does not allow execution. TS
+// generateText still records the call's approval request and response
+// (convertLanguageModelContent toolApprovalRequests/toolApprovalResponses),
+// but no tool output.
+type approvedUnexecutedOutput struct{}
+
+func isApprovedUnexecuted(tr types.ToolResult) bool {
+	_, ok := tr.Result.(approvedUnexecutedOutput)
+	return ok
+}
+
+// withApprovedUnexecutedCalls returns the step's results for its content
+// parts: results, plus (in call order) an approval-only entry for each valid
+// local call whose approval was approved but that has no result because it
+// never ran. results must be in call order; it is returned as is when no
+// entry is added. The entries are for content only: they are not tool
+// results (TS step.toolResults), and the call still counts as unanswered.
+func withApprovedUnexecutedCalls(results []types.ToolResult, calls []types.ToolCall, tools []types.Tool, approvals map[string]preResolvedApproval) []types.ToolResult {
+	var out []types.ToolResult
+	added := false
+	j := 0
+	for _, call := range calls {
+		start := j
+		for j < len(results) && results[j].ToolCallID == call.ID {
+			j++
+		}
+		if j > start {
+			out = append(out, results[start:j]...)
+			continue
+		}
+		pre, ok := approvals[call.ID]
+		if !ok || call.Invalid || pre.err != nil || pre.approval.Status != types.ToolApprovalStatusApproved {
+			continue
+		}
+		tool := findToolForCall(call, tools)
+		if tool == nil || tool.ProviderExecuted || call.ProviderExecuted {
+			continue
+		}
+		out = append(out, types.ToolResult{
+			ToolCallID:          call.ID,
+			ToolName:            call.ToolName,
+			Title:               call.Title,
+			Input:               call.Arguments,
+			Result:              approvedUnexecutedOutput{},
+			ApprovalStatus:      types.ToolApprovalStatusApproved,
+			ApprovalID:          pre.id,
+			ApprovalReason:      pre.approval.Reason,
+			ProviderExecutedSet: call.ProviderExecutedSet,
+			ProviderMetadata:    mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata),
+			ToolMetadata:        call.ToolMetadata,
+			Dynamic:             call.Dynamic,
+		})
+		added = true
+	}
+	if !added {
+		return results
+	}
+	return append(out, results[j:]...)
+}
+
 func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []types.ContentPart {
 	if len(results) == 0 {
 		return nil
@@ -478,7 +540,7 @@ func toolResultsToContentParts(results []types.ToolResult, secret ...[]byte) []t
 		case types.ToolApprovalStatusApproved:
 			approvalRequests = append(approvalRequests, approvalRequest)
 			approvalResponses = append(approvalResponses, toolApprovalResponseFromToolResult(tr))
-			if tr.ProviderExecuted {
+			if tr.ProviderExecuted || isApprovedUnexecuted(tr) {
 				continue
 			}
 		case types.ToolApprovalStatusDenied:
