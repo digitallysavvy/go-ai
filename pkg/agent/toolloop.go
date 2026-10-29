@@ -659,20 +659,26 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// continued without executing the tool or verifying its signature.
 	// TS generateText resumes them with the prepared call's tools, approval
 	// configuration and contexts.
-	resumed, resumeErr := ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
-		Messages:             currentMessages,
-		Tools:                fc.Tools,
-		ToolApproval:         fc.ToolApproval,
-		ToolsContext:         fc.ToolsContext,
-		RuntimeContext:       fc.RuntimeContext,
-		Secret:               fc.ExperimentalToolApprovalSecret,
-		RefineToolInput:      fc.ExperimentalRefineToolInput,
-		ToolCallConcurrency:  fc.ToolCallConcurrency,
-		ModelProvider:        fc.Model.Provider(),
-		ModelID:              fc.Model.ModelID(),
-		OnToolExecutionStart: cbs.onToolCallStart,
-		OnToolExecutionEnd:   cbs.onToolCallFinish,
-	})
+	// A caller that resumed the approvals itself (WorkflowAgent,
+	// InternalOptions.ApprovalsResumed) leaves nothing to resume here.
+	var resumed ai.ResumeToolApprovalsResult
+	var resumeErr error
+	if fc.Internal == nil || !fc.Internal.ApprovalsResumed {
+		resumed, resumeErr = ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
+			Messages:             currentMessages,
+			Tools:                fc.Tools,
+			ToolApproval:         fc.ToolApproval,
+			ToolsContext:         fc.ToolsContext,
+			RuntimeContext:       fc.RuntimeContext,
+			Secret:               fc.ExperimentalToolApprovalSecret,
+			RefineToolInput:      fc.ExperimentalRefineToolInput,
+			ToolCallConcurrency:  fc.ToolCallConcurrency,
+			ModelProvider:        fc.Model.Provider(),
+			ModelID:              fc.Model.ModelID(),
+			OnToolExecutionStart: cbs.onToolCallStart,
+			OnToolExecutionEnd:   cbs.onToolCallFinish,
+		})
+	}
 	if resumeErr != nil {
 		if a.config.OnChainError != nil {
 			a.config.OnChainError(resumeErr)

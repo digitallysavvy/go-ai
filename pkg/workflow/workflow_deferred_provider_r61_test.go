@@ -44,6 +44,9 @@ func (m *wfScriptModel) DoStream(_ context.Context, opts *provider.GenerateOptio
 			chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: v.ToolCallID, ToolName: v.ToolName, RawArguments: v.Input, ProviderExecuted: v.ProviderExecuted}})
 		case types.ToolResultContent:
 			chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: v.ToolCallID, ToolName: v.ToolName, Result: v.Result, ProviderExecuted: true}})
+		case types.ToolApprovalRequestContent:
+			request := v
+			chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeToolApprovalRequest, ToolApprovalRequest: &request})
 		}
 	}
 	chunks = append(chunks, provider.StreamChunk{Type: provider.ChunkTypeFinish, FinishReason: r.FinishReason})

@@ -85,6 +85,14 @@ type InternalOptions struct {
 	// resolves each approval at its tool-call part, as TS streamText. Used by
 	// WorkflowAgent.
 	DeferApprovalRequests bool
+
+	// ApprovalsResumed tells the legacy agent loop (pkg/agent GenerateAgent)
+	// that the caller already resumed the tool approvals of the input
+	// messages, so the loop does not resume them again: TS WorkflowAgent
+	// resumes approvals itself and forwards a provider-executed call's
+	// approval response as is, without generateText's execution-denied
+	// result. Used by WorkflowAgent.
+	ApprovalsResumed bool
 }
 
 func deferApprovalRequests(internal *InternalOptions) bool {

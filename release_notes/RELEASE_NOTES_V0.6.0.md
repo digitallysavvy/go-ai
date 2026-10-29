@@ -857,6 +857,12 @@ These match TS and are unlikely to need code changes, but can change output.
   the approval requests after the calls and results, as in generate mode.
   Earlier, each request came right after its tool call (StreamText's order).
   New `InternalOptions.DeferApprovalRequests`.
+- **`WorkflowAgent.Generate` forwards a provider-executed denial as is**
+  (review round 61): resuming a denied provider (MCP) approval sent the
+  model an extra `execution-denied` tool result next to the forwarded
+  approval response, because the legacy loop resumed the approvals a second
+  time. TS WorkflowAgent forwards only the response, as `Stream` already did
+  (new `InternalOptions.ApprovalsResumed`).
 - **MCP clients have no default request timeout**, JSON-RPC request IDs
   start at 0, `MCPClientError.Error()` is the bare message, and the HTTP and
   stdio transports probe `server/discover` first.
