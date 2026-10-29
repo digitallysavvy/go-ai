@@ -484,6 +484,14 @@ These match TS and are unlikely to need code changes, but can change output.
   provider-executed results the model returned, before the locally executed
   ones, as `GenerateText` and TS `step.toolResults` do (WorkflowAgent's
   generate results too). New helper: `ai.ProviderToolResultsFromContent`.
+- **Legacy `ToolLoopAgent` prompts leave out local approval parts** (review
+  round 61): the tool-approval-request and -response parts of an
+  automatically decided (or resumed) local approval reached the next model
+  call, where the OpenAI Responses converter sent an `mcp_approval_response`
+  for them. They are removed before the call, keeping a provider-executed
+  call's approval response, as `GenerateText`, `StreamText` and TS
+  `convertToLanguageModelPrompt` (WorkflowAgent's generate mode too). New
+  helper: `ai.MessagesForModel`.
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or

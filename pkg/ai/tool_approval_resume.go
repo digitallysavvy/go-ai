@@ -207,6 +207,13 @@ func resumeToolApprovals(ctx context.Context, opts toolApprovalResumeOptions) (t
 	return out, nil
 }
 
+// MessagesForModel is messagesForModel for loops outside this package (the
+// legacy agent loop): the approval parts TS convertToLanguageModelPrompt
+// keeps out of a model call's prompt are removed.
+func MessagesForModel(messages []types.Message) []types.Message {
+	return messagesForModel(messages)
+}
+
 // messagesForModel prepares model messages for a language model call the way
 // TS convertToLanguageModelPrompt does for approval parts: tool approval
 // requests are removed from assistant messages, tool approval responses are

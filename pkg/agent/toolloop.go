@@ -1855,8 +1855,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		}
 		promptSystem = ""
 	}
+	// Approval parts stay out of the model's prompt, except a
+	// provider-executed call's approval response (TS
+	// convertToLanguageModelPrompt, as GenerateText).
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
-		Messages: callConfig.Messages,
+		Messages: ai.MessagesForModel(callConfig.Messages),
 		System:   promptSystem,
 	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
