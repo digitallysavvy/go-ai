@@ -209,6 +209,47 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   with the text "hi". In v0.5 they were empty for a `Prompt` call. Read
   `OnStartEvent.Prompt` if you need the original string.
 
+- **Step-start events report the call's tools and the output.**
+  - **What changed:** `OnStepStartEvent.Tools` of `GenerateText`,
+    `StreamText`, `ToolLoopAgent.Generate`/`Stream` and the legacy
+    `GenerateAgent`/`Execute` loop is the call's tool set. In v0.5 it was the
+    step's narrowed set (after `ActiveTools`, `FilterActiveTools`, tool search
+    and tool-caller routing). `OnStepStartEvent.Output` is now set to the
+    call's output specification; v0.5 left it nil. TS `stepStartEvent.tools`
+    is "the tools available for this generation", and `stepStartEvent.output`
+    is the output.
+  - **Am I affected?** Search for `OnStepStart` callbacks (and
+    `OnStepStartEvent` in `AgentConfig`) that read `e.Tools`.
+  - **What to do:** read `e.ActiveTools` for the step's limit, or read the
+    tools sent to the model from `OnLanguageModelCallStart`:
+
+    ```go
+    opts.OnLanguageModelCallStart = func(ctx context.Context, e ai.LanguageModelCallStartEvent) {
+    	sent := e.Tools // v0.5: OnStepStartEvent.Tools
+    	_ = sent
+    }
+    ```
+  - **Kind:** silent behavior change.
+
+- **The legacy loop follows the `PrepareCall` tools, tool callers and output.**
+  - **What changed:** `GenerateAgent`, `Execute`, `ExecuteWithMessages`
+    (and `WorkflowAgent.Generate`, which runs this loop) resolve tool search
+    and `ExperimentalToolCallers` from the tools and tool callers that the
+    first `PrepareCall` returns, and parse `AgentResult.Output` with the
+    `Output` it returns. The output's `ParseCompleteOutput` gets the last
+    step's usage. In v0.5 the loop used the agent's configured tools, tool
+    callers and output: a `ToolSearch` tool added by `PrepareCall` failed
+    with "toolSearch must be bound by an AI SDK generation.", and the parse
+    got the total usage. TS `ToolLoopAgent` passes the `prepareCall` result
+    to `generateText`, which parses with `lastStep.usage`.
+  - **Am I affected?** Search for `PrepareCall` functions that set `Tools`,
+    `ExperimentalToolCallers` or `Output`, and for `ParseCompleteOutput`
+    implementations that read `opts.Usage`.
+  - **What to do:** no action unless your `PrepareCall` changes those fields
+    and relied on the configured ones winning, or your output reads the
+    usage. For the total usage, read `AgentResult.Usage`.
+  - **Kind:** silent behavior change.
+
 - **The legacy loop returns the wrapped AI Gateway authentication error.**
   `GenerateAgent`, `Execute` and `ExecuteWithMessages` return an
   unauthenticated AI Gateway error with the message that says how to

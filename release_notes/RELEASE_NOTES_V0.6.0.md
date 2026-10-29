@@ -197,6 +197,21 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **Step-start events report the call's tools and the output** (review
+  round 67). `OnStepStartEvent.Tools` of `GenerateText`, `StreamText`,
+  `ToolLoopAgent.Generate`/`Stream` and the legacy loop is the call's tool
+  set, as TS `stepStartEvent.tools`; v0.5 reported the step's narrowed set.
+  `OnStepStartEvent.Output` is now set (TS `stepStartEvent.output`).
+  **Migration:** read `ActiveTools` for the step's limit, or the tools sent to
+  the model from `LanguageModelCallStartEvent.Tools`.
+- **The legacy `ToolLoopAgent` loop follows the `PrepareCall` tools, tool
+  callers and output** (review round 67). `GenerateAgent`/`Execute` (and
+  `WorkflowAgent.Generate`) resolve tool search and `ExperimentalToolCallers`
+  from the first `PrepareCall` result and parse the output with its `Output`;
+  `ParseCompleteOutput` gets the last step's usage, as TS
+  (`lastStep.usage`). v0.5 used the configured tools, tool callers and output
+  (a `ToolSearch` added by `PrepareCall` stayed unbound) and the total usage.
+  **Migration:** read `AgentResult.Usage` for the total.
 - **A provider-executed tool call is never run locally** (review round 61),
   in `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop. A call
   the provider marks `ProviderExecuted` ran a local tool of the same name
