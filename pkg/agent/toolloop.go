@@ -540,9 +540,15 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	var lt *loopTelemetry
 	result, err := a.runLoop(ctx, messages, callCallbacks, &lt)
 	if lt != nil {
+		// Telemetry gets the original error (TS telemetry onError).
 		a.endLoopTelemetry(baseCtx, lt, result, err)
 	}
-	return result, err
+	if err != nil {
+		// TS ToolLoopAgent runs generateText, which rethrows every failure
+		// through wrapGatewayError.
+		return result, aibridge.WrapGatewayError(err)
+	}
+	return result, nil
 }
 
 func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, callCallbacks agentCallbacks, ltOut **loopTelemetry) (*AgentResult, error) {

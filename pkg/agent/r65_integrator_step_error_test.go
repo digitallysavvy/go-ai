@@ -119,3 +119,25 @@ func TestR65IntegratorLegacyStepErrorAfterModelCall(t *testing.T) {
 		})
 	}
 }
+
+// TS generateText (which ToolLoopAgent runs) throws wrapGatewayError(error):
+// the legacy loop returns the wrapped gateway error too, with the original
+// still reachable through errors.As.
+func TestR66LegacyLoopReturnsWrappedGatewayError(t *testing.T) {
+	raw := gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
+	zero := 0
+	cfg := AgentConfig{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, raw
+		}},
+		MaxRetries: &zero,
+	}
+	_, genErr := NewToolLoopAgent(cfg).GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"})
+	_, execErr := NewToolLoopAgent(cfg).Execute(context.Background(), "go")
+	for name, err := range map[string]error{"GenerateAgent": genErr, "Execute": execErr} {
+		var auth *gatewayerrors.GatewayAuthenticationError
+		if !errors.As(err, &auth) || !strings.Contains(err.Error(), "AI_GATEWAY_API_KEY") {
+			t.Fatalf("%s error = %v, want the wrapped gateway error", name, err)
+		}
+	}
+}
