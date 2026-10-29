@@ -33,6 +33,11 @@ type BatchTextRequest struct {
 	Messages []types.Message
 	System   string
 
+	// AllowSystemInMessages permits system-role messages in Messages (TS
+	// TextBatchRequest.allowSystemInMessages, from Prompt). Defaults to
+	// false: system messages in Messages are rejected.
+	AllowSystemInMessages bool
+
 	Temperature      *float64
 	MaxTokens        *int
 	TopP             *float64
@@ -753,7 +758,7 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
 			ctx,
 			buildPrompt(t.Prompt, t.Messages, t.System),
-			false,
+			t.AllowSystemInMessages,
 			DefaultDownload,
 			urlChecker,
 		)
@@ -767,20 +772,22 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 			return provider.BatchV4Request{}, err
 		}
 		genOpts := provider.GenerateOptions{
-			Prompt:           normalizedPrompt,
-			Temperature:      t.Temperature,
-			MaxTokens:        t.MaxTokens,
-			TopP:             t.TopP,
-			TopK:             t.TopK,
-			FrequencyPenalty: t.FrequencyPenalty,
-			PresencePenalty:  t.PresencePenalty,
-			StopSequences:    t.StopSequences,
-			Seed:             t.Seed,
-			Tools:            toolutil.ResolveToolSchemas(resolvedTools),
-			ToolChoice:       preparedToolChoice(t.ToolChoice), // TS prepareToolChoice
-			Reasoning:        t.Reasoning,
-			ResponseFormat:   t.ResponseFormat,
-			ProviderOptions:  t.ProviderOptions,
+			Prompt:                normalizedPrompt,
+			AllowSystemMessages:   t.AllowSystemInMessages,
+			AllowSystemInMessages: t.AllowSystemInMessages,
+			Temperature:           t.Temperature,
+			MaxTokens:             t.MaxTokens,
+			TopP:                  t.TopP,
+			TopK:                  t.TopK,
+			FrequencyPenalty:      t.FrequencyPenalty,
+			PresencePenalty:       t.PresencePenalty,
+			StopSequences:         t.StopSequences,
+			Seed:                  t.Seed,
+			Tools:                 toolutil.ResolveToolSchemas(resolvedTools),
+			ToolChoice:            preparedToolChoice(t.ToolChoice), // TS prepareToolChoice
+			Reasoning:             t.Reasoning,
+			ResponseFormat:        t.ResponseFormat,
+			ProviderOptions:       t.ProviderOptions,
 		}
 		return provider.BatchV4Request{
 			Type: provider.BatchRequestTypeText,

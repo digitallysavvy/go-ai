@@ -1002,6 +1002,9 @@ in v0.5.3.
 
 ### Core
 
+- `BatchTextRequest.AllowSystemInMessages` (additive) lets a batch text
+  request carry system messages in `Messages`, as TS `allowSystemInMessages`
+  does; without it they are still rejected.
 - UI message `source-url` and `source-document` chunks carry the source's
   own `providerMetadata` (for example Anthropic's `pageAge`), as TS does;
   only chunk-level metadata was forwarded.
