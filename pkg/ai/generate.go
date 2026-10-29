@@ -874,9 +874,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	runtimeContext := effectiveRuntimeContext(opts.RuntimeContext, opts.ExperimentalContext)
 	system := effectiveSystem(opts.System, opts.Instructions)
 	instructionMessages := cloneInstructionMessages(opts.InstructionMessages)
-	if err := validateInstructionMessages(instructionMessages); err != nil {
-		return nil, err
-	}
 	if len(instructionMessages) > 0 {
 		// System-message instructions take precedence over text instructions.
 		system = ""
@@ -897,7 +894,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// Standardize the prompt first: TS standardizePrompt throws before any
 	// start event or telemetry is emitted.
 	// Build prompt
-	if err := promptutils.ValidatePromptInput(opts.Prompt, opts.Messages); err != nil {
+	if err := validateStandardizedPromptInput(opts.Prompt, opts.Messages, instructionMessages); err != nil {
 		return nil, err
 	}
 	prompt := buildPrompt(opts.Prompt, opts.Messages, system)

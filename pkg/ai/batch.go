@@ -32,6 +32,15 @@ type BatchTextRequest struct {
 	Prompt   string
 	Messages []types.Message
 	System   string
+	// Instructions is a TypeScript-compatible alias for System (TS
+	// TextBatchRequest.instructions, from Prompt). When set, it takes
+	// precedence over System.
+	Instructions *string
+	// InstructionMessages supplies the instructions as system messages (TS
+	// instructions: SystemModelMessage | SystemModelMessage[]), keeping each
+	// message's ProviderOptions. When non-empty it takes precedence over
+	// Instructions and System. Every message must have the system role.
+	InstructionMessages []types.Message
 
 	// AllowSystemInMessages permits system-role messages in Messages (TS
 	// TextBatchRequest.allowSystemInMessages, from Prompt). Defaults to
@@ -738,8 +747,22 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		// since batch does not expose an experimental_download option), so
 		// remote file URLs the batch interface can't consume directly are
 		// inlined before the request is sent.
-		if err := promptutils.ValidatePromptInput(t.Prompt, t.Messages); err != nil {
+		// TS standardizePrompt(request) runs first: the prompt input and
+		// instructions checks, then the system message check.
+		instructionMessages := cloneInstructionMessages(t.InstructionMessages)
+		if err := validateStandardizedPromptInput(t.Prompt, t.Messages, instructionMessages); err != nil {
 			return provider.BatchV4Request{}, err
+		}
+		system := effectiveSystem(t.System, t.Instructions)
+		if len(instructionMessages) > 0 {
+			system = ""
+		}
+		if !t.AllowSystemInMessages {
+			for _, m := range t.Messages {
+				if m.Role == types.RoleSystem {
+					return provider.BatchV4Request{}, &promptutils.UnsupportedSystemMessageError{}
+				}
+			}
 		}
 		// Mirrors TypeScript's `prepareTools({ tools, toolOrder, toolsContext })`
 		// in packages/ai/src/batch/batch.ts: dynamic tool descriptions are
@@ -757,7 +780,7 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		}
 		normalizedPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(
 			ctx,
-			buildPrompt(t.Prompt, t.Messages, t.System),
+			buildPrompt(t.Prompt, t.Messages, system),
 			t.AllowSystemInMessages,
 			DefaultDownload,
 			urlChecker,
@@ -771,6 +794,7 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 		if err := validateStepToolResults(normalizedPrompt.Messages, t.Tools); err != nil {
 			return provider.BatchV4Request{}, err
 		}
+		normalizedPrompt = prependInstructionMessages(normalizedPrompt, instructionMessages)
 		genOpts := provider.GenerateOptions{
 			Prompt:                normalizedPrompt,
 			AllowSystemMessages:   t.AllowSystemInMessages,
