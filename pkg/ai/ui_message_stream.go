@@ -329,7 +329,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			outcomeMu.Unlock()
 			isCancelled := ctx.Err() != nil && outcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"isAborted":       uiState.isAborted || outcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
@@ -355,7 +355,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				return
 			}
 			stepEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
@@ -653,7 +653,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// above and TS to-ui-message-stream.ts (audit row #10/#103).
 			isCancelled := ctx.Err() != nil && sourceOutcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"isAborted":       uiState.isAborted || sourceOutcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
@@ -679,7 +679,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				return
 			}
 			stepEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
@@ -1213,11 +1213,13 @@ type uiMessageCallbackState struct {
 	originalMessages []UIMessageChunk
 	message          UIMessageChunk
 	isContinuation   bool
-	isAborted        bool
-	finishReason     interface{}
-	activeText       map[string]UIMessageChunk
-	activeReasoning  map[string]UIMessageChunk
-	partialTools     map[string]*uiPartialToolCall
+	// lastMessageID is the id of the continued assistant message.
+	lastMessageID   string
+	isAborted       bool
+	finishReason    interface{}
+	activeText      map[string]UIMessageChunk
+	activeReasoning map[string]UIMessageChunk
+	partialTools    map[string]*uiPartialToolCall
 
 	// resetOnMessageIDChange discards the seeded message (parts, metadata and
 	// in-flight part state) when a start chunk carries a different message
@@ -1254,6 +1256,7 @@ func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiM
 		last := original[len(original)-1]
 		if role, _ := last["role"].(string); role == "assistant" {
 			state.isContinuation = true
+			state.lastMessageID = stringValue(last["id"])
 			state.message = cloneUIMessageChunk(last)
 			if _, ok := state.message["parts"]; !ok {
 				state.message["parts"] = []interface{}{}
@@ -1303,9 +1306,16 @@ func (s *uiMessageCallbackState) responseMessage() UIMessageChunk {
 	return cloneUIMessageChunk(s.message)
 }
 
+// continuation reports whether the response continues the last original
+// assistant message: TS `state.message.id === lastMessage?.id`, so a start
+// chunk that gives the response another id ends the continuation.
+func (s *uiMessageCallbackState) continuation() bool {
+	return s.isContinuation && stringValue(s.message["id"]) == s.lastMessageID
+}
+
 func (s *uiMessageCallbackState) messages() []UIMessageChunk {
 	messages := append([]UIMessageChunk(nil), s.originalMessages...)
-	if s.isContinuation && len(messages) > 0 {
+	if s.continuation() && len(messages) > 0 {
 		messages = messages[:len(messages)-1]
 	}
 	messages = append(messages, s.responseMessage())

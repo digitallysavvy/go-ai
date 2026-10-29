@@ -44,3 +44,40 @@ func TestR63UIFinishMetadataSeesCallFinishPart(t *testing.T) {
 		t.Fatalf("finish metadata part = %+v, want the call finish part with raw finish reason and total usage", finishPart)
 	}
 }
+
+// TS handleUIMessageStreamFinish computes isContinuation as
+// `state.message.id === lastMessage?.id`: a start chunk that gives the
+// response another id is not a continuation, so messages keeps the original
+// assistant message and appends the response.
+func TestR63UIStreamStartWithOtherIDIsNotContinuation(t *testing.T) {
+	original := []UIMessageChunk{
+		{"id": "u1", "role": "user", "parts": []interface{}{map[string]interface{}{"type": "text", "text": "hi"}}},
+		{"id": "a1", "role": "assistant", "parts": []interface{}{}},
+	}
+	var endEvent, stepEvent map[string]interface{}
+	chunks, errs := CreateUIMessageStreamWithOptions(context.Background(), UIMessageStreamOptions{
+		OriginalMessages: original,
+		Execute: func(w UIMessageStreamWriter) {
+			w.Write(UIMessageChunk{"type": "start", "messageId": "m2"})
+			w.Write(UIMessageChunk{"type": "start-step"})
+			w.Write(UIMessageChunk{"type": "finish-step"})
+			w.Write(UIMessageChunk{"type": "finish"})
+		},
+		OnStepEnd: func(e map[string]interface{}) { stepEvent = e },
+		OnEnd:     func(e map[string]interface{}) { endEvent = e },
+	})
+	for range chunks {
+	}
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	for name, e := range map[string]map[string]interface{}{"onEnd": endEvent, "onStepEnd": stepEvent} {
+		if e["isContinuation"] != false {
+			t.Fatalf("%s isContinuation = %v, want false", name, e["isContinuation"])
+		}
+		msgs := e["messages"].([]UIMessageChunk)
+		if len(msgs) != 3 || msgs[1]["id"] != "a1" || msgs[2]["id"] != "m2" {
+			t.Fatalf("%s messages = %v, want u1, a1, m2", name, msgs)
+		}
+	}
+}
