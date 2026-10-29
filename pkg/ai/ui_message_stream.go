@@ -586,10 +586,16 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		defer close(errCh)
 		// An OnError, MessageMetadata or conversion callback that panics
 		// fails the stream (TS: an error thrown in the transform errors the
-		// stream) instead of crashing the program from this goroutine.
+		// stream) instead of crashing the program from this goroutine, and
+		// OnEnd runs once with that error as the failed outcome (TS
+		// failOutcome, then handleUIMessageStreamFinish's cancel).
+		var endOnPanic func(error)
 		defer func() {
 			if r := recover(); r != nil {
 				reportUIStreamCallbackFailure(errCh, r)
+				if endOnPanic != nil {
+					endOnPanic(panicToError(r))
+				}
 			}
 		}()
 		if stream == nil {
@@ -640,10 +646,12 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// (TS processUIMessageStream throws a UIMessageStreamError, which
 		// errors the stream and becomes the outcome).
 		var processingErr error
+		endCalled := false
 		callOnEnd := func(finishReason types.FinishReason) {
-			if onEnd == nil {
+			if onEnd == nil || endCalled {
 				return
 			}
+			endCalled = true
 			if processingErr != nil {
 				sourceOutcome = UIMessageStreamOutcome{Status: UIMessageStreamOutcomeFailed, Error: processingErr}
 			}
@@ -671,6 +679,11 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				}
 			}()
 			onEnd(finishEvent)
+		}
+		finishReason := types.FinishReason("")
+		endOnPanic = func(err error) {
+			failSourceOutcome(err)
+			callOnEnd(finishReason)
 		}
 
 		onStepEnd := resolveUIMessageStreamOnStepEnd(options.OnStepEnd, options.OnStepFinish)
@@ -787,7 +800,6 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			processChunk(startEvent)
 		}
 
-		finishReason := types.FinishReason("")
 		sawTerminal := false
 		sawFinishChunk := false
 		sawOutput := false

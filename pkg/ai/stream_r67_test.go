@@ -2,10 +2,13 @@ package ai
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
+	"github.com/digitallysavvy/go-ai/pkg/provider/types"
 )
 
 // TestR67StreamTranscribeCloseRejectsWithCancelReason mirrors TS
@@ -113,5 +116,61 @@ func TestR67ToolInputDeltaUnparseableInputAbsent(t *testing.T) {
 	s.apply(UIMessageChunk{"type": "tool-input-delta", "toolCallId": "c1", "inputTextDelta": "null"}, nil)
 	if v, ok := part["input"]; !ok || v != nil {
 		t.Errorf("null text: input = %v (present %v), want JSON null", v, ok)
+	}
+}
+
+// TS to-ui-message-stream.test.ts "reports message metadata failures as
+// failed exactly once" and "reports UI chunk conversion failures as failed
+// exactly once": a messageMetadata or onError callback that throws errors the
+// stream with that error, and onEnd runs once with a failed outcome carrying
+// it. A Go callback that panics is the thrown error.
+func TestR67ToUIMessageStreamCallbackPanicFailsOutcome(t *testing.T) {
+	metadataErr := errors.New("message metadata failed")
+	conversionErr := errors.New("UI chunk conversion failed")
+	for _, tc := range []struct {
+		name   string
+		chunks []provider.StreamChunk
+		opts   UIMessageStreamResultOptions
+		want   error
+	}{
+		{
+			name:   "message metadata",
+			chunks: []provider.StreamChunk{{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop}},
+			opts: UIMessageStreamResultOptions{MessageMetadata: func(map[string]interface{}) map[string]interface{} {
+				panic(metadataErr)
+			}},
+			want: metadataErr,
+		},
+		{
+			name:   "conversion",
+			chunks: []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: errors.New("generation failed")}},
+			opts:   UIMessageStreamResultOptions{OnError: func(error) string { panic(conversionErr) }},
+			want:   conversionErr,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var events []map[string]interface{}
+			tc.opts.OnEnd = func(e map[string]interface{}) {
+				mu.Lock()
+				events = append(events, e)
+				mu.Unlock()
+			}
+			out, errCh := ToUIMessageStream(context.Background(), SimulateReadableStream(tc.chunks, 0), tc.opts)
+			for range out { //nolint:revive // drain
+			}
+			if err := <-errCh; !errors.Is(err, tc.want) {
+				t.Fatalf("stream error = %v, want %v", err, tc.want)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(events) != 1 {
+				t.Fatalf("onEnd calls = %d, want 1", len(events))
+			}
+			outcome, _ := events[0]["outcome"].(map[string]interface{})
+			if outcome["status"] != "failed" || !errors.Is(outcome["error"].(error), tc.want) {
+				t.Fatalf("outcome = %v, want failed with %v", outcome, tc.want)
+			}
+		})
 	}
 }
