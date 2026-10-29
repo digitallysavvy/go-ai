@@ -69,6 +69,14 @@ type InternalOptions struct {
 	// `approval-X`, where generateText and streamText call generateId().
 	// Used by WorkflowAgent.
 	ApprovalID func(toolCallID string) string
+
+	// RequestMessagesAsPrompt makes the legacy agent loop (pkg/agent
+	// GenerateAgent) record each step's request messages
+	// (Include.RequestMessages) as the model call's prompt, its system
+	// message first: TS WorkflowAgent keeps its language model prompt there,
+	// where generateText (and ToolLoopAgent) keeps the step's messages
+	// without the instructions. Used by WorkflowAgent.
+	RequestMessagesAsPrompt bool
 }
 
 // internalApprovalID returns the approval ID function for a call: the

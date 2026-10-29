@@ -2090,7 +2090,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		ProviderMetadata: genResult.ProviderMetadata,
 		Request: types.StepRequest{
 			Body:     includeValue(include.RequestBody, genResult.RawRequest),
-			Messages: includeAgentRequestMessages(include.RequestMessages, prompt.Messages),
+			Messages: includeAgentRequestMessages(include.RequestMessages, callConfig.Internal, callConfig.Messages, prompt),
 		},
 		Response:       stepResponse,
 		ToolsContext:   callConfig.ToolsContext,
@@ -2509,9 +2509,23 @@ func includeValue(include bool, value interface{}) interface{} {
 	return value
 }
 
-func includeAgentRequestMessages(include bool, messages []types.Message) []types.Message {
+// includeAgentRequestMessages is a step's request messages when
+// Include.RequestMessages is set: the step's messages as given to the model
+// call, before prompt conversion and without the instructions (TS
+// generateText cloneModelMessages(stepMessages)). With
+// InternalOptions.RequestMessagesAsPrompt (WorkflowAgent) it is the model
+// call's prompt, its system message first (TS WorkflowAgent
+// conversationPrompt).
+func includeAgentRequestMessages(include bool, internal *ai.InternalOptions, messages []types.Message, prompt types.Prompt) []types.Message {
 	if !include {
 		return nil
+	}
+	if internal != nil && internal.RequestMessagesAsPrompt {
+		out := make([]types.Message, 0, len(prompt.Messages)+1)
+		if prompt.System != "" {
+			out = append(out, types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: prompt.System}}})
+		}
+		return append(out, prompt.Messages...)
 	}
 	return append([]types.Message(nil), messages...)
 }

@@ -492,6 +492,12 @@ These match TS and are unlikely to need code changes, but can change output.
   call's approval response, as `GenerateText`, `StreamText` and TS
   `convertToLanguageModelPrompt` (WorkflowAgent's generate mode too). New
   helper: `ai.MessagesForModel`.
+- **Legacy `ToolLoopAgent` request messages leave out the instructions**
+  (review round 61): with `Include.RequestMessages`, `StepResult.Request.Messages`
+  is the step's messages as `GenerateText` and TS `generateText` record them,
+  without instruction messages and before prompt conversion. WorkflowAgent's
+  generate steps record the model prompt with its system message first, as
+  TS WorkflowAgent does (new `InternalOptions.RequestMessagesAsPrompt`).
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or
