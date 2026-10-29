@@ -547,9 +547,11 @@ func (s *loopStepTelemetry) finish(step *types.StepResult, rc interface{}, tc ma
 		ResponseID:        step.Response.ID,
 		ResponseModelID:   step.Response.ModelID,
 		ResponseTimestamp: step.Response.Timestamp,
-		Settings:          s.lt.settings,
-		RuntimeContext:    telemetryRuntimeContextFor(s.lt.settings, rc),
-		ToolsContext:      telemetryToolsContextFor(s.lt.settings, tc),
+		// The model call's performance, as GenerateText's step end event.
+		Performance:    ai.NonStreamingModelCallPerformance(step.Performance.ResponseTimeMs, step.Usage),
+		Settings:       s.lt.settings,
+		RuntimeContext: telemetryRuntimeContextFor(s.lt.settings, rc),
+		ToolsContext:   telemetryToolsContextFor(s.lt.settings, tc),
 	})
 }
 

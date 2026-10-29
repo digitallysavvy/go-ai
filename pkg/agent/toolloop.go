@@ -783,8 +783,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			callConfig.Messages = ai.AppendToolCallerMessages(callConfig.Messages, toolCallerMessages)
 		}
 
-		// CB-T23: Emit OnStepStartEvent
-		ai.Notify(ctx, ai.OnStepStartEvent{
+		// CB-T23: Emit OnStepStartEvent. It precedes the step's prompt
+		// conversion, as TS WorkflowAgent's onStepStart does (this loop runs
+		// WorkflowAgent.Generate); a step that fails after it ends with
+		// OnStepError (TS generateText onStepError).
+		stepStartEvent := ai.OnStepStartEvent{
 			CallID:     loopCallID,
 			StepNumber: stepIndex,
 			Provider:   callConfig.Model.Provider(),
@@ -807,7 +810,18 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			ExperimentalContext: a.config.ExperimentalContext,
 			RuntimeContext:      callConfig.RuntimeContext,
 			ToolsContext:        callConfig.ToolsContext,
-		}, cbs.onStepStart)
+		}
+		ai.Notify(ctx, stepStartEvent, cbs.onStepStart)
+		stepStartNotified := true
+		// failStep reports a failure of a step that started to OnStepError
+		// (TS notifies onStepError with wrapGatewayError(error)).
+		failStep := func(err error) {
+			if !stepStartNotified {
+				return
+			}
+			stepStartNotified = false
+			ai.Notify(ctx, ai.OnStepErrorEvent{OnStepStartEvent: stepStartEvent, Error: aibridge.WrapGatewayError(err)}, a.config.OnStepError)
+		}
 
 		// Call step start callback (legacy)
 		if a.config.OnStepStart != nil {
@@ -835,6 +849,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		if err != nil {
 			cancelStepTimeout()
 			stepTel.fail(err)
+			failStep(err)
 			// Call OnChainError callback
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(err)
@@ -868,6 +883,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				failErr = inputErr
 			}
 			stepTel.fail(failErr)
+			failStep(failErr)
 			if a.config.OnChainError != nil {
 				a.config.OnChainError(failErr)
 			}
@@ -920,6 +936,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				if err := validateToolCallConcurrency(callConfig.ToolCallConcurrency); err != nil {
 					cancelStepTimeout()
 					stepTel.fail(err)
+					failStep(err)
 					return nil, err
 				}
 				local := *a
@@ -945,12 +962,17 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if err != nil {
 				cancelStepTimeout()
 				stepTel.fail(err)
+				var conversionErr *toolResultModelOutputError
+				if errors.As(err, &conversionErr) {
+					failStep(conversionErr.Unwrap())
+				} else {
+					failStep(err)
+				}
 				// Call OnChainError callback
 				if a.config.OnChainError != nil {
 					a.config.OnChainError(err)
 				}
-				var conversionErr *toolResultModelOutputError
-				if errors.As(err, &conversionErr) {
+				if conversionErr != nil {
 					return nil, conversionErr.Unwrap()
 				}
 				return nil, err
@@ -1876,9 +1898,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if len(callConfig.InstructionMessages) > 0 {
 		for _, m := range callConfig.InstructionMessages {
 			if m.Role != types.RoleSystem {
-				return nil, false, callConfig.CustomData, callConfig.Tools, &providererrors.InvalidArgumentError{
-					Field:   "instructions",
-					Message: "instructions must be a string, SystemModelMessage, or array of SystemModelMessage",
+				// TS standardizePrompt throws an InvalidPromptError; its Cause is
+				// the *InvalidArgumentError v0.5 returned (as ai.GenerateText).
+				const message = "instructions must be a string, SystemModelMessage, or array of SystemModelMessage"
+				return nil, false, callConfig.CustomData, callConfig.Tools, &providererrors.InvalidPromptError{
+					Message: message,
+					Cause:   &providererrors.InvalidArgumentError{Field: "instructions", Message: message},
 				}
 			}
 		}

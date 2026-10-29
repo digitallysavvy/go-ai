@@ -1939,6 +1939,8 @@ func IsUIMessageStreamError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// The report functions build TS's template-literal messages: the id is quoted
+// as is, not escaped.
 func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID string) {
 	if onError == nil {
 		return
@@ -1951,7 +1953,7 @@ func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID s
 	_ = onError(&UIMessageStreamError{
 		ChunkType: chunkType,
 		ChunkID:   chunkID,
-		Message:   fmt.Sprintf(`Received %s for missing %s part with ID %q. Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType),
+		Message:   fmt.Sprintf(`Received %s for missing %s part with ID "%s". Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType),
 	})
 }
 
@@ -1962,7 +1964,7 @@ func reportMissingToolInput(onError func(error) string, chunkType, toolCallID st
 	_ = onError(&UIMessageStreamError{
 		ChunkType: chunkType,
 		ChunkID:   toolCallID,
-		Message:   fmt.Sprintf(`Received %s for missing tool call with ID %q. Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType),
+		Message:   fmt.Sprintf(`Received %s for missing tool call with ID "%s". Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType),
 	})
 }
 
@@ -1973,7 +1975,7 @@ func reportMissingToolInvocation(onError func(error) string, toolCallID string) 
 	_ = onError(&UIMessageStreamError{
 		ChunkType: "tool-invocation",
 		ChunkID:   toolCallID,
-		Message:   fmt.Sprintf("No tool invocation found for tool call ID %q.", toolCallID),
+		Message:   fmt.Sprintf(`No tool invocation found for tool call ID "%s".`, toolCallID),
 	})
 }
 
@@ -1984,7 +1986,7 @@ func reportMissingApproval(onError func(error) string, approvalID string) {
 	_ = onError(&UIMessageStreamError{
 		ChunkType: "tool-approval-response",
 		ChunkID:   approvalID,
-		Message:   fmt.Sprintf("No tool invocation found for approval ID %q.", approvalID),
+		Message:   fmt.Sprintf(`No tool invocation found for approval ID "%s".`, approvalID),
 	})
 }
 
@@ -2143,15 +2145,6 @@ func PipeUIMessageStreamToResponse(ctx context.Context, result *StreamTextResult
 	return PipeUIMessageStreamToResponseWithInit(ctx, result, w, nil, opts...)
 }
 
-// PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
-//
-// If writing to w fails (for example because the client disconnected), the
-// internal source stream is cancelled before returning so its background
-// producer goroutine and any upstream provider resources it holds are
-// released instead of leaking (blocked forever trying to send a chunk to a
-// reader that has stopped listening). Mirrors TS
-// write-to-server-response.ts's client-disconnect handling, which cancels
-// the ReadableStream's reader on a premature close (TS #21578).
 // writeUIMessageSSEChunk JSON-encodes and writes a single UI message chunk
 // as one SSE "data: ...\n\n" event, then flushes it.
 func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessageChunk) error {
@@ -2171,6 +2164,15 @@ func writeUIMessageSSEChunk(bw *bufio.Writer, flush func() error, chunk UIMessag
 	return flush()
 }
 
+// PipeUIMessageStreamToResponseWithInit supports optional SSE side-channel consumption.
+//
+// If writing to w fails (for example because the client disconnected), the
+// internal source stream is cancelled before returning so its background
+// producer goroutine and any upstream provider resources it holds are
+// released instead of leaking (blocked forever trying to send a chunk to a
+// reader that has stopped listening). Mirrors TS
+// write-to-server-response.ts's client-disconnect handling, which cancels
+// the ReadableStream's reader on a premature close (TS #21578).
 func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTextResult, w io.Writer, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) error {
 	if result == nil {
 		return fmt.Errorf("result is required")

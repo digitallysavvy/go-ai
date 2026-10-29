@@ -69,4 +69,8 @@ var (
 	// loop. It fails closed: an unknown approval status or an unsupported
 	// configuration value is an error instead of letting the tool run.
 	ResolveToolApproval func(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}) (types.ToolApprovalResult, error)
+
+	// WrapGatewayError is TS wrapGatewayError (an unauthenticated AI Gateway
+	// error becomes one that says how to authenticate).
+	WrapGatewayError func(err error) error
 )
