@@ -507,6 +507,13 @@ type StreamTextResult struct {
 	// this step's stream instead of calling FireOnStepStart a second time.
 	stepReopenTelemetryStepCtx context.Context
 
+	// stepStartedAt and stepCallStartedAt are when the step that is about to
+	// be consumed started (TS stepStartTimestampMs, after PrepareStep) and
+	// when its model call was issued (TS callStartTimestampMs, just before
+	// doStream). Set by the goroutine that opens the step's stream.
+	stepStartedAt     time.Time
+	stepCallStartedAt time.Time
+
 	// status tracks the lifecycle of the stream.
 	// Protected by mu because it is read by Status() and written by processStream.
 	status StreamStatus
@@ -1246,6 +1253,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		return
 	}
+	r.stepStartedAt = time.Now()
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
 	// A response format that cannot be built fails the model call itself (TS
@@ -1408,6 +1416,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.stepReopenCtx = modelCallCtx
 	r.stepReopenMaxRetries = stepMaxRetries
 	var stream provider.TextStream
+	r.stepCallStartedAt = time.Now()
 	err := responseFormatErr
 	if err == nil {
 		stream, err = doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, stepMaxRetries)
@@ -1885,7 +1894,17 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 	for stepNum := 1; ; stepNum++ {
 		stepIndex := stepNum - 1
-		stepStart := time.Now()
+		// The step's time runs from after its PrepareStep and the model call's
+		// from just before doStream (TS stepStartTimestampMs and
+		// callStartTimestampMs); both were recorded when the stream was opened.
+		stepStart := r.stepStartedAt
+		if stepStart.IsZero() {
+			stepStart = time.Now()
+		}
+		callStart := r.stepCallStartedAt
+		if callStart.IsZero() {
+			callStart = stepStart
+		}
 		stepCtx := ctx
 		cancelStep := func() {}
 		if pendingStepCtx != nil {
@@ -1977,6 +1996,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		var stepBlocks blockContent
 		var stepReasoningBuilder strings.Builder
 		var modelCallEndFired bool
+		// modelCallPerformance is the model call's performance at its finish
+		// part (TS model-call-end performance); the step's performance spreads
+		// it next to stepTimeMs and toolExecutionMs.
+		var modelCallPerformance *types.StepPerformance
 		var stepUsage types.Usage
 		// stepProviderMetadataRaw is the provider metadata of this step's
 		// finish chunk (TS stepProviderMetadata = model-call-end
@@ -2414,7 +2437,8 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				if !modelCallEndFired {
 					modelCallEndFired = true
-					performance := stepPerformance(stepStart, stepUsage, firstTokenAt, outputChunkGapsMs)
+					performance := stepPerformance(callStart, stepUsage, firstTokenAt, outputChunkGapsMs)
+					modelCallPerformance = &performance
 					responseID := stepResponseID
 					if responseID == "" {
 						responseID = responseIDFromMetadata(chunk.ResponseMetadata)
@@ -2594,7 +2618,50 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeReasoningEnd, ID: id}})
 					}
 					openTextIDs, openReasoningIDs = nil, nil
-					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, r.stepReopenModel, r.stepReopenGenOpts, r.stepReopenMaxRetries)
+					// TS callLanguageModel runs streamLanguageModelCall again: the
+					// retry is a new model call, with its own
+					// onLanguageModelCallStart (callback and telemetry) and call
+					// start time (onStepStart is not repeated).
+					reopenModel, reopenOpts := r.stepReopenModel, r.stepReopenGenOpts
+					Notify(telemetryStepCtx, LanguageModelCallStartEvent{
+						CallID:              r.cbCallID,
+						Provider:            reopenModel.Provider(),
+						ModelID:             reopenModel.ModelID(),
+						Instructions:        stepInstructions,
+						InstructionMessages: stepInstructionMessages,
+						Messages:            currentMessages,
+						Tools:               reopenOpts.Tools,
+						MaxOutputTokens:     reopenOpts.MaxTokens,
+						Temperature:         reopenOpts.Temperature,
+						TopP:                reopenOpts.TopP,
+						TopK:                reopenOpts.TopK,
+						PresencePenalty:     reopenOpts.PresencePenalty,
+						FrequencyPenalty:    reopenOpts.FrequencyPenalty,
+						StopSequences:       reopenOpts.StopSequences,
+						Seed:                reopenOpts.Seed,
+						Reasoning:           reopenOpts.Reasoning,
+					}, onLanguageModelCallStart)
+					r.stepReopenCtx = telemetry.FireOnLanguageModelCallStart(telemetryStepCtx, telemetry.LanguageModelCallStartEvent{
+						Settings:            r.telemetrySettings,
+						CallID:              r.cbCallID,
+						ModelProvider:       reopenModel.Provider(),
+						ModelID:             reopenModel.ModelID(),
+						Prompt:              reopenOpts.Prompt,
+						Messages:            currentMessages,
+						InstructionMessages: stepInstructionMessages,
+						Tools:               reopenOpts.Tools,
+						System:              stepInstructions,
+						Temperature:         reopenOpts.Temperature,
+						MaxOutputTokens:     reopenOpts.MaxTokens,
+						TopP:                reopenOpts.TopP,
+						TopK:                reopenOpts.TopK,
+						PresencePenalty:     reopenOpts.PresencePenalty,
+						FrequencyPenalty:    reopenOpts.FrequencyPenalty,
+						StopSequences:       reopenOpts.StopSequences,
+						Seed:                reopenOpts.Seed,
+					})
+					callStart = time.Now()
+					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, reopenModel, reopenOpts, r.stepReopenMaxRetries)
 					if reopenErr != nil {
 						if isAbortErr(ctx, reopenErr) {
 							// TS's outer stream turns the error part into
@@ -2647,6 +2714,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					stepBlocks.reset()
 					stepReasoningBuilder.Reset()
 					modelCallEndFired = false
+					modelCallPerformance = nil
 					stepUsage = types.Usage{}
 					stepProviderMetadataRaw = nil
 					stepSawTerminal = false
@@ -3080,7 +3148,13 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 		// Record this step. For multi-step streaming, r.text accumulates across steps;
 		// use the current snapshot as the step's text.
-		performance := stepPerformance(stepStart, stepUsage, firstTokenAt, outputChunkGapsMs)
+		// TS finish-step performance: {stepTimeMs, toolExecutionMs,
+		// ...modelCallPerformance}; without a finish part the model call
+		// reported no performance.
+		var performance types.StepPerformance
+		if modelCallPerformance != nil {
+			performance = *modelCallPerformance
+		}
 		performance = finishStepPerformance(performance, stepStart, toolExecutionMs)
 		stepSources := append([]types.SourceContent(nil), r.sources[stepSourcesStart:]...)
 		stepFiles := append([]types.GeneratedFileContent(nil), r.files[stepFilesStart:]...)
@@ -3565,6 +3639,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			failNextStep(err)
 			break
 		}
+		r.stepStartedAt = time.Now()
 		nextPrompt, normErr := promptutils.NormalizePromptWithDownloadSupport(nextStepCtx, types.Prompt{
 			Messages: messagesForModel(nextMessages),
 			System:   appendSandboxDescription(nextSystem, nextSandbox),
@@ -3692,6 +3767,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.stepReopenCtx = nextModelCallCtx
 		r.stepReopenMaxRetries = nextMaxRetries
 		var newStream provider.TextStream
+		r.stepCallStartedAt = time.Now()
 		err := nextResponseFormatErr
 		if err == nil {
 			newStream, err = doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, nextMaxRetries)
