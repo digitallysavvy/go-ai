@@ -1757,7 +1757,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
 	// errorPartEnd: the run ended with a failure that TS reports as an `error` part
 	// (a later step that fails to prepare or open, an incomplete model
-	// stream, a tool choice violation), which reaches the onError callback.
+	// stream), which reaches the onError callback.
 	// Every other failure is thrown inside TS's stream (a model stream that
 	// fails, a file download, an approval or tool input callback, a tool
 	// output conversion): the outer stream reports it to onStepError and the
@@ -2818,8 +2818,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// TS model-call-end carries finishReason "error" for a tool-choice
 			// violation (usage and metadata are preserved). The step is still
 			// recorded and ends with OnStepEnd, not OnStepError; its tool calls
-			// are not executed and the call fails with the violation.
+			// are not executed. The violation is an `error` part after the
+			// model output (onError sees it), the run ends with `finish`, and
+			// Err() reports it like any error part.
 			r.finishReason = types.FinishReasonError
+			if opts.OnError != nil {
+				safeInvoke(func() { opts.OnError(ctx, violation) })
+			}
+			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: violation, Text: violation.Error()}})
+			r.mu.Lock()
+			if r.chunkErr == nil || opts.Internal == nil || !opts.Internal.StopOnStreamError {
+				r.chunkErr = violation
+			}
+			r.mu.Unlock()
 		}
 
 		// Execute accumulated tool calls after stream is fully consumed.
@@ -3290,8 +3301,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		cancelStep()
 
 		if violation != nil {
-			r.err = violation
-			errorPartEnd = true
 			steeringEndReason = SteeringError
 			break
 		}
