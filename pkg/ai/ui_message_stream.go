@@ -1939,6 +1939,8 @@ func IsUIMessageStreamError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// The report functions build TS's template-literal messages: the id is quoted
+// as is, not escaped.
 func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID string) {
 	if onError == nil {
 		return
@@ -1951,7 +1953,7 @@ func reportMissingUIMessagePart(onError func(error) string, chunkType, chunkID s
 	_ = onError(&UIMessageStreamError{
 		ChunkType: chunkType,
 		ChunkID:   chunkID,
-		Message:   fmt.Sprintf(`Received %s for missing %s part with ID %q. Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType),
+		Message:   fmt.Sprintf(`Received %s for missing %s part with ID "%s". Ensure a "%s" chunk is sent before any "%s" chunks.`, chunkType, partType, chunkID, startType, chunkType),
 	})
 }
 
@@ -1962,7 +1964,7 @@ func reportMissingToolInput(onError func(error) string, chunkType, toolCallID st
 	_ = onError(&UIMessageStreamError{
 		ChunkType: chunkType,
 		ChunkID:   toolCallID,
-		Message:   fmt.Sprintf(`Received %s for missing tool call with ID %q. Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType),
+		Message:   fmt.Sprintf(`Received %s for missing tool call with ID "%s". Ensure a "tool-input-start" chunk is sent before any "%s" chunks.`, chunkType, toolCallID, chunkType),
 	})
 }
 
@@ -1973,7 +1975,7 @@ func reportMissingToolInvocation(onError func(error) string, toolCallID string) 
 	_ = onError(&UIMessageStreamError{
 		ChunkType: "tool-invocation",
 		ChunkID:   toolCallID,
-		Message:   fmt.Sprintf("No tool invocation found for tool call ID %q.", toolCallID),
+		Message:   fmt.Sprintf(`No tool invocation found for tool call ID "%s".`, toolCallID),
 	})
 }
 
@@ -1984,7 +1986,7 @@ func reportMissingApproval(onError func(error) string, approvalID string) {
 	_ = onError(&UIMessageStreamError{
 		ChunkType: "tool-approval-response",
 		ChunkID:   approvalID,
-		Message:   fmt.Sprintf("No tool invocation found for approval ID %q.", approvalID),
+		Message:   fmt.Sprintf(`No tool invocation found for approval ID "%s".`, approvalID),
 	})
 }
 
