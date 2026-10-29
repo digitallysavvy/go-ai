@@ -973,6 +973,9 @@ in v0.5.3.
 - `GenerateText`'s end event reports the final step's response headers when
   the run ends on a tool-call step (it had none), and `ResponseHeaders`
   follows the final step.
+- `GenerateText` accepts a deferred provider tool result whose tool
+  `ActiveTools` leaves out of the step ("Tool call <id> not found." before),
+  as TS checks the call's tools.
 - `StreamText` no longer writes a step's response messages into a caller's
   message slice (a `PrepareStep` result with spare capacity).
 - `GenerateObject`/`StreamObject` sent the response format type as

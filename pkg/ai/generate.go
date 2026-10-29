@@ -1511,10 +1511,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			genResult = &resolvedResult
 		}
 
-		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, toolsByName); err != nil {
+		// A deferred provider result is checked against the call's tools, not
+		// the step's active tools (TS convertLanguageModelContent gets `tools`).
+		callToolsByName := toolsByNameOf(opts.Tools)
+		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, callToolsByName); err != nil {
 			return nil, err
 		}
-		if content, changed := withDeferredToolResultMetadata(genResult.Content, genResult.ToolCalls, toolsByName); changed {
+		if content, changed := withDeferredToolResultMetadata(genResult.Content, genResult.ToolCalls, callToolsByName); changed {
 			withMetadata := *genResult
 			withMetadata.Content = content
 			genResult = &withMetadata
