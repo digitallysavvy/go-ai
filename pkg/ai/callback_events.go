@@ -163,7 +163,9 @@ type OnStepStartEvent struct {
 	// Messages being sent to the model for this step
 	Messages []types.Message
 
-	// Tools available in this step
+	// Tools are the call's tools (TS stepStartEvent.tools: the tools
+	// available for this generation). ActiveTools limits them for this step;
+	// the tools actually sent to the model are LanguageModelCallStartEvent.Tools.
 	Tools []types.Tool
 
 	// ToolChoice in effect for this step.

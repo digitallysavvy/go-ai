@@ -1301,11 +1301,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		InstructionMessages: stepInstructionMessages,
 		System:              stepSystem,
 		Messages:            stepMessages,
-		Tools:               stepTools,
+		Tools:               opts.Tools, // TS stepStartEvent.tools: the call's tools
 		ToolChoice:          stepToolChoice,
 		ActiveTools:         stepActiveTools,
 		ToolOrder:           stepToolOrder,
 		ProviderOptions:     stepProviderOptions,
+		Output:              opts.Output,
 		PreviousSteps:       nil, // first (and only) step
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
@@ -3688,11 +3689,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			InstructionMessages: nextInstructionMessages,
 			System:              nextSystem,
 			Messages:            nextMessages,
-			Tools:               nextTools,
+			Tools:               opts.Tools, // TS stepStartEvent.tools: the call's tools
 			ToolChoice:          nextToolChoice,
 			ActiveTools:         nextActiveTools,
 			ToolOrder:           nextToolOrder,
 			ProviderOptions:     nextProviderOptions,
+			Output:              opts.Output,
 			Steps:               allSteps,
 			PreviousSteps:       allSteps,
 			ExperimentalContext: r.cbExperimentalCtx,

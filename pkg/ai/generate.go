@@ -1349,11 +1349,14 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			InstructionMessages: stepInstructionMessages,
 			System:              stepSystem,
 			Messages:            stepMessages,
-			Tools:               stepTools,
+			// TS stepStartEvent.tools: the call's tools ("the tools available
+			// for this generation"); ActiveTools narrows them for the step.
+			Tools:               opts.Tools,
 			ToolChoice:          stepToolChoice,
 			ActiveTools:         stepActiveTools,
 			ToolOrder:           stepToolOrder,
 			ProviderOptions:     stepProviderOptions,
+			Output:              opts.Output,
 			Steps:               result.Steps,
 			PreviousSteps:       result.Steps, // deprecated alias
 			ExperimentalContext: runtimeContext,
