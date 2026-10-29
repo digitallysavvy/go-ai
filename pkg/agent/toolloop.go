@@ -2175,25 +2175,40 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			// throws and fails the run (no tool-error result).
 			return nil, approvalErr
 		}
+		approverDenied := false
 		if a.config.ToolApprovalRequired && a.config.ToolApprover != nil && approval.Status == types.ToolApprovalStatusNotApplicable {
 			if !a.config.ToolApprover(call) {
 				approval = types.ToolApprovalResult{Status: types.ToolApprovalStatusDenied}
+				approverDenied = true
 			}
 		}
 		switch approval.Status {
 		case types.ToolApprovalStatusDenied:
+			// A ToolApproval denial without a reason leaves it unset, as
+			// GenerateText and TS do, so each provider converter applies its
+			// own default denial text. The Go-only ToolApprover names its
+			// policy.
+			policyText := fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName)
 			reason := approval.Reason
-			if reason == nil {
-				reason = strPtr(fmt.Sprintf("Tool call to %s was denied by ToolApproval policy.", call.ToolName))
+			if reason == nil && approverDenied {
+				reason = strPtr(policyText)
 			}
-			rejectionErr := fmt.Errorf("%s", *reason)
+			reasonText := ""
+			if reason != nil {
+				reasonText = *reason
+			}
+			errText := reasonText
+			if errText == "" {
+				errText = policyText
+			}
+			rejectionErr := errors.New(errText)
 			results = append(results, types.ToolResult{
 				ToolCallID:       call.ID,
 				ToolName:         call.ToolName,
 				Title:            call.Title,
 				Input:            call.Arguments,
 				Error:            rejectionErr,
-				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: *reason},
+				Result:           types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: reasonText},
 				ApprovalStatus:   types.ToolApprovalStatusDenied,
 				ApprovalReason:   reason,
 				ProviderExecuted: providerExecuted,
