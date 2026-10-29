@@ -1002,6 +1002,10 @@ in v0.5.3.
 
 ### Core
 
+- A model that `StreamText`'s `PrepareStep` returns applies to its own step
+  only (review round 64). Later steps start from the call's model again, and
+  their `PrepareStep` receives it, as TS and `GenerateText` do; before, the
+  override stayed in effect for every following step.
 - `BatchTextRequest.AllowSystemInMessages` (additive) lets a batch text
   request carry system messages in `Messages`, as TS `allowSystemInMessages`
   does; without it they are still rejected.

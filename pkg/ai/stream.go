@@ -3477,7 +3477,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 
 		// Start a new stream for the next step.
-		nextModel := r.cbModel
+		// Each step starts from the call's model (TS `prepareStepResult?.model
+		// ?? model`): a PrepareStep model applies to its own step only.
+		nextModel := opts.Model
 		nextSystem := r.cbSystem
 		nextMessages := currentMessages
 		nextSteering := r.steering.takeMessages()
