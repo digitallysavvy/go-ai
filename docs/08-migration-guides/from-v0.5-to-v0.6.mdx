@@ -183,8 +183,10 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 - **A `StreamText` `PrepareStep` model applies to one step.** As TS and
   `GenerateText`, each step starts from the call's `Model`, and `PrepareStep`
-  receives it in `PrepareStepOptions.Model`. To keep an override for the
-  following steps, return it from every `PrepareStep` call.
+  receives it in `PrepareStepOptions.Model`. In v0.5 a model that
+  `PrepareStep` returned stayed in effect for every following step, and
+  later `PrepareStep` calls received it as `Model`. To keep an override for
+  the following steps, return it from every `PrepareStep` call.
 
 - **`StreamText` fires `OnLanguageModelCallStart` once per attempt.** As
   TS, each retried attempt to open the model stream (`MaxRetries`) is a new

@@ -260,6 +260,13 @@ Each item has before/after code in the
   enabled, or wrap the model with a `middleware.LanguageModelMiddleware`
   whose `TransformParams` resets `params.ToolChoice` to `types.ToolChoice{}`
   (the v0.5 request).
+- **A `StreamText` `PrepareStep` model applies to its own step only**
+  (review round 64). Each later step starts from the call's `Model` again,
+  and its `PrepareStep` receives that model in `PrepareStepOptions.Model`, as
+  TS (`prepareStepResult?.model ?? model`) and `GenerateText` do. In v0.5.2
+  an override stayed in effect for every following step, and later
+  `PrepareStep` calls received it as `Model`. **Migration:** to keep an
+  override for later steps, return it from every `PrepareStep` call.
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
   TS calls `onError` for the `error` parts of the stream; a failure it throws
   inside the stream is reported to `onStepError` and the telemetry `onError`
@@ -1002,10 +1009,6 @@ in v0.5.3.
 
 ### Core
 
-- A model that `StreamText`'s `PrepareStep` returns applies to its own step
-  only (review round 64). Later steps start from the call's model again, and
-  their `PrepareStep` receives it, as TS and `GenerateText` do; before, the
-  override stayed in effect for every following step.
 - The UI message stream's `MessageMetadata` callback runs once per stream
   part, as TS does; the `start` part of a `StreamText` stream called it twice.
 - The legacy `ToolLoopAgent` loop (`GenerateAgent`, `Execute`,
@@ -1054,6 +1057,10 @@ in v0.5.3.
 
 ### Providers
 
+- A failed Vertex Gemini image call's `ProviderError.Provider` is
+  `google.vertex.image`, the image model's provider (it said
+  `google.vertex.chat`), as TS builds the image model's inner language model
+  with the image model's provider.
 - `google.Config` and `googlevertex.Config` take a `GenerateID` (TS
   `generateId` provider setting). It reaches the chat, Vertex image and
   Interactions models, which use it for tool calls without an id, sources
