@@ -453,12 +453,14 @@ func parseBatchToolCalls(ctx context.Context, result *types.GenerateResult, tool
 	if err := ValidateToolResultParts(resolved, parsedCalls, tools); err != nil {
 		return nil, err
 	}
+	resolved, _ = withDeferredToolResultMetadata(resolved, parsedCalls, toolsByNameOf(tools))
 	out := *result
 	out.ToolCalls = parsedCalls
 	out.Content = resolved
-	if len(parsedCalls) > 0 {
-		out.Content = replaceToolCallContentParts(append([]types.ContentPart(nil), resolved...), parsedCalls)
-	}
+	// The content GenerateText builds (TS convertLanguageModelContent): the
+	// parsed calls, and every tool result the model returns provider-executed
+	// with its call's input.
+	out.Content = generateResultContentParts(&out)
 	return &out, nil
 }
 

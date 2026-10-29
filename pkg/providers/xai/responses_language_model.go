@@ -531,13 +531,9 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 			// Parse with annotations support for url_citation.
 			var item struct {
 				Content []struct {
-					Type        string `json:"type"`
-					Text        string `json:"text"`
-					Annotations []struct {
-						Type  string  `json:"type"`
-						URL   string  `json:"url,omitempty"`
-						Title *string `json:"title,omitempty"`
-					} `json:"annotations,omitempty"`
+					Type        string            `json:"type"`
+					Text        string            `json:"text"`
+					Annotations []json.RawMessage `json:"annotations,omitempty"`
 				} `json:"content"`
 			}
 			if err := json.Unmarshal(rawItem, &item); err != nil {
@@ -551,13 +547,8 @@ func (m *ResponsesLanguageModel) convertResponse(resp responses.ResponsesAPIResp
 					result.Content = append(result.Content, types.TextContent{Text: part.Text})
 				}
 				for _, ann := range part.Annotations {
-					if ann.Type == "url_citation" && ann.URL != "" {
-						result.Content = append(result.Content, types.SourceContent{
-							SourceType: "url",
-							ID:         streaming.GenerateID(),
-							URL:        ann.URL,
-							Title:      xaiCitationTitle(ann.Title, ann.URL),
-						})
+					if source := xaiURLCitationSource(ann); source != nil {
+						result.Content = append(result.Content, *source)
 					}
 				}
 			}
@@ -891,63 +882,71 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 	if len(raw) == 0 {
 		return result
 	}
+	// TS webSearchWireActionSchema: a discriminated union on type whose
+	// string fields are nullish; a field of the wrong type fails the parse.
 	var action struct {
-		Type    string        `json:"type"`
-		Query   *string       `json:"query,omitempty"`
-		Queries []string      `json:"queries,omitempty"`
-		URL     *string       `json:"url,omitempty"`
-		Pattern *string       `json:"pattern,omitempty"`
-		Sources []interface{} `json:"sources,omitempty"`
+		Type    string            `json:"type"`
+		Query   *string           `json:"query,omitempty"`
+		Queries []string          `json:"queries,omitempty"`
+		URL     *string           `json:"url,omitempty"`
+		Pattern *string           `json:"pattern,omitempty"`
+		Sources []json.RawMessage `json:"sources,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &action); err != nil {
 		return result
 	}
-
-	var sources []map[string]interface{}
-	for _, s := range action.Sources {
-		sm, ok := s.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if sm["type"] != "url" {
-			continue
-		}
-		url, _ := sm["url"].(string)
-		if url == "" {
-			continue
-		}
-		sources = append(sources, map[string]interface{}{"type": "url", "url": url})
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return result
 	}
-	if len(sources) > 0 {
-		result["sources"] = sources
+	// nullable returns a nullish string field as TS passes it on: the value,
+	// null when the wire sent null, and absent when it was absent.
+	nullable := func(a map[string]interface{}, key string, v *string) {
+		if v != nil {
+			a[key] = *v
+		} else if f, ok := fields[key]; ok && string(f) == "null" {
+			a[key] = nil
+		}
 	}
 
+	var a map[string]interface{}
 	switch action.Type {
 	case "search":
-		a := map[string]interface{}{"type": "search"}
+		a = map[string]interface{}{"type": "search"}
 		if action.Query != nil {
 			a["query"] = *action.Query
 		}
 		if action.Queries != nil {
 			a["queries"] = action.Queries
 		}
-		result["action"] = a
 	case "open_page":
-		// TS passes url through as is: an absent url stays absent.
-		a := map[string]interface{}{"type": "openPage"}
-		if action.URL != nil {
-			a["url"] = *action.URL
-		}
-		result["action"] = a
+		a = map[string]interface{}{"type": "openPage"}
+		nullable(a, "url", action.URL)
 	case "find_in_page":
-		a := map[string]interface{}{"type": "findInPage"}
-		if action.URL != nil {
-			a["url"] = *action.URL
+		a = map[string]interface{}{"type": "findInPage"}
+		nullable(a, "url", action.URL)
+		nullable(a, "pattern", action.Pattern)
+	default:
+		// TS: an action that matches no branch of the union yields {}.
+		return result
+	}
+	result["action"] = a
+
+	// TS webSearchWireSourceSchema: {type: 'url', url: string}; other
+	// sources are dropped.
+	var sources []map[string]interface{}
+	for _, rawSource := range action.Sources {
+		var source struct {
+			Type string  `json:"type"`
+			URL  *string `json:"url"`
 		}
-		if action.Pattern != nil {
-			a["pattern"] = *action.Pattern
+		if json.Unmarshal(rawSource, &source) != nil || source.Type != "url" || source.URL == nil {
+			continue
 		}
-		result["action"] = a
+		sources = append(sources, map[string]interface{}{"type": "url", "url": *source.URL})
+	}
+	if len(sources) > 0 {
+		result["sources"] = sources
 	}
 	return result
 }
@@ -1400,27 +1399,14 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		// Gap 7: url_citation annotations delivered when a text item is finalised.
 		case "response.output_text.done":
 			var e struct {
-				Annotations []struct {
-					Type  string  `json:"type"`
-					URL   string  `json:"url,omitempty"`
-					Title *string `json:"title,omitempty"`
-				} `json:"annotations,omitempty"`
+				Annotations []json.RawMessage `json:"annotations,omitempty"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
 			for _, ann := range e.Annotations {
-				if ann.Type == "url_citation" && ann.URL != "" {
-					title := xaiCitationTitle(ann.Title, ann.URL)
-					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-						Type: provider.ChunkTypeSource,
-						SourceContent: &types.SourceContent{
-							SourceType: "url",
-							ID:         streaming.GenerateID(),
-							URL:        ann.URL,
-							Title:      title,
-						},
-					})
+				if source := xaiURLCitationSource(ann); source != nil {
+					s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: source})
 				}
 			}
 			continue
@@ -1428,25 +1414,15 @@ func (s *xaiResponsesStream) Next() (*provider.StreamChunk, error) {
 		// Gap 7: individual annotation added mid-stream.
 		case "response.output_text.annotation.added":
 			var e struct {
-				Annotation struct {
-					Type  string  `json:"type"`
-					URL   string  `json:"url,omitempty"`
-					Title *string `json:"title,omitempty"`
-				} `json:"annotation"`
+				Annotation json.RawMessage `json:"annotation"`
 			}
 			if err := json.Unmarshal([]byte(event.Data), &e); err != nil {
 				continue
 			}
-			if e.Annotation.Type == "url_citation" && e.Annotation.URL != "" {
-				title := xaiCitationTitle(e.Annotation.Title, e.Annotation.URL)
+			if source := xaiURLCitationSource(e.Annotation); source != nil {
 				chunk, ok := s.emitParsedChunk(&provider.StreamChunk{
-					Type: provider.ChunkTypeSource,
-					SourceContent: &types.SourceContent{
-						SourceType: "url",
-						ID:         streaming.GenerateID(),
-						URL:        e.Annotation.URL,
-						Title:      title,
-					},
+					Type:          provider.ChunkTypeSource,
+					SourceContent: source,
 				})
 				if ok {
 					return chunk, nil
@@ -1609,6 +1585,29 @@ func xaiCitationTitle(title *string, url string) string {
 	return *title
 }
 
+// xaiURLCitationSource is TS's `annotation.type === 'url_citation' && 'url'
+// in annotation` over xAI's annotation union: the url_citation branch needs a
+// string url (an empty one included) and an absent or string title; an
+// annotation that fails it parses as the bare {type} branch and is no source.
+func xaiURLCitationSource(raw json.RawMessage) *types.SourceContent {
+	var ann struct {
+		Type  string  `json:"type"`
+		URL   *string `json:"url"`
+		Title *string `json:"title"`
+	}
+	if json.Unmarshal(raw, &ann) != nil || ann.Type != "url_citation" || ann.URL == nil {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	if title, ok := fields["title"]; ok && string(title) == "null" {
+		return nil
+	}
+	return &types.SourceContent{SourceType: "url", ID: streaming.GenerateID(), URL: *ann.URL, Title: xaiCitationTitle(ann.Title, *ann.URL)}
+}
+
 // startTextBlock enqueues text-start the first time a text block id is seen.
 func (s *xaiResponsesStream) startTextBlock(blockID string) {
 	if s.textSeen[blockID] {
@@ -1626,12 +1625,8 @@ func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 	var item struct {
 		ID      string `json:"id"`
 		Content []struct {
-			Text        string `json:"text"`
-			Annotations []struct {
-				Type  string  `json:"type"`
-				URL   string  `json:"url"`
-				Title *string `json:"title"`
-			} `json:"annotations"`
+			Text        string            `json:"text"`
+			Annotations []json.RawMessage `json:"annotations"`
 		} `json:"content"`
 	}
 	if json.Unmarshal(raw, &item) != nil {
@@ -1644,14 +1639,9 @@ func (s *xaiResponsesStream) queueMessageItem(raw json.RawMessage) {
 			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeText, ID: blockID, Text: part.Text})
 		}
 		for _, ann := range part.Annotations {
-			if ann.Type != "url_citation" || ann.URL == "" {
-				continue
+			if source := xaiURLCitationSource(ann); source != nil {
+				s.flushQueue = append(s.flushQueue, &provider.StreamChunk{Type: provider.ChunkTypeSource, SourceContent: source})
 			}
-			title := xaiCitationTitle(ann.Title, ann.URL)
-			s.flushQueue = append(s.flushQueue, &provider.StreamChunk{
-				Type:          provider.ChunkTypeSource,
-				SourceContent: &types.SourceContent{SourceType: "url", ID: streaming.GenerateID(), URL: ann.URL, Title: title},
-			})
 		}
 	}
 }

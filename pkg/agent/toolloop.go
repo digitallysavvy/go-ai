@@ -929,7 +929,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			// empty text result (TS resolveProviderToolResult) instead of the
 			// pending marker, so the loop continues with a text output.
 			if callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult {
-				for _, synthetic := range ai.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, a.config.Model.Provider(), a.config.Model.ModelID()) {
+				for _, synthetic := range ai.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, stepResult.Model.Provider, stepResult.Model.ModelID) {
 					for i := range toolResults {
 						if toolResults[i].ToolCallID == synthetic.ToolCallID && toolResults[i].ProviderExecuted && toolResults[i].Result == nil && toolResults[i].Error == nil {
 							toolResults[i].Result = synthetic.Result
@@ -1817,10 +1817,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		toolChoice = types.AutoToolChoice()
 	}
 
-	responseFormat, err := responseFormatForOutput(stepCtx, callConfig.Output)
-	if err != nil {
-		return nil, false, callConfig.CustomData, callConfig.Tools, err
-	}
+	// TS awaits output.responseFormat inside doGenerate: a failure fails the
+	// model call, after the language model call start.
+	responseFormat, responseFormatErr := responseFormatForOutput(stepCtx, callConfig.Output)
 	stepModel := callConfig.Model
 	if stepModel == nil {
 		stepModel = a.config.Model
@@ -1944,7 +1943,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		}
 	}
 	modelCallStarted := time.Now()
-	genResult, err := ai.DoGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, callConfig.MaxRetries)
+	var genResult *types.GenerateResult
+	err = responseFormatErr
+	if err == nil {
+		genResult, err = ai.DoGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, callConfig.MaxRetries)
+	}
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
@@ -1978,6 +1981,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// convertLanguageModelContent: "Tool call <id> not found.").
 	if err := ai.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
+	}
+	if content, changed := agentDeferredToolResultMetadata(genResult.Content, toolCalls, callConfig.Tools); changed {
+		withMetadata := *genResult
+		withMetadata.Content = content
+		genResult = &withMetadata
 	}
 	modelCallContent := contentFromGenerateResult(genResult, toolCalls)
 	// Sources, files and reasoning come from the content parts, as in
@@ -2530,6 +2538,70 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	return parts
 }
 
+// agentDeferredToolResultMetadata gives a deferred provider tool result (a
+// tool-result or tool-error part that answers no tool call of the response)
+// its tool definition's metadata (TS convertLanguageModelContent
+// `toolMetadata: tool.metadata`). content is not modified.
+func agentDeferredToolResultMetadata(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) (_ []types.ContentPart, changed bool) {
+	metadataFor := func(id, name string, current map[string]interface{}) map[string]interface{} {
+		if current != nil {
+			return nil
+		}
+		if _, ok := agentToolCallByID(calls, id); ok {
+			return nil
+		}
+		for i := range tools {
+			if tools[i].Name == name {
+				return tools[i].Metadata
+			}
+		}
+		return nil
+	}
+	var out []types.ContentPart
+	for i, part := range content {
+		var updated types.ContentPart
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+				p.ToolMetadata = md
+				updated = p
+			}
+		case *types.ToolResultContent:
+			if p != nil {
+				if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+					c := *p
+					c.ToolMetadata = md
+					updated = c
+				}
+			}
+		case types.ToolErrorContent:
+			if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+				p.ToolMetadata = md
+				updated = p
+			}
+		case *types.ToolErrorContent:
+			if p != nil {
+				if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+					c := *p
+					c.ToolMetadata = md
+					updated = c
+				}
+			}
+		}
+		if updated == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]types.ContentPart(nil), content...)
+		}
+		out[i] = updated
+	}
+	if out == nil {
+		return content, false
+	}
+	return out, true
+}
+
 func agentToolCallByID(calls []types.ToolCall, id string) (types.ToolCall, bool) {
 	for _, call := range calls {
 		if call.ID == id {
@@ -2645,13 +2717,19 @@ func agentContentHasText(parts []types.ContentPart) bool {
 
 // agentToolResultsToContentParts converts tool results to content parts. When
 // secret is non-nil, approval requests are signed so they can be verified on
-// resume.
+// resume. The parts are ordered as TS convertLanguageModelContent (and
+// GenerateText) orders them: outputs without an approval response, the
+// approval requests, the approval responses, then the outputs with one.
 func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) []types.ContentPart {
 	if len(results) == 0 {
 		return nil
 	}
-	parts := make([]types.ContentPart, 0, len(results))
+	var withoutApproval, requests, responses, withApproval []types.ContentPart
 	for _, result := range results {
+		parts := &withoutApproval
+		if result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied {
+			parts = &withApproval
+		}
 		if result.ProviderExecuted && result.ApprovalStatus == "" {
 			continue
 		}
@@ -2686,7 +2764,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval && result.ApprovalReason != nil {
 				approvalRequest.Reason = *result.ApprovalReason
 			}
-			parts = append(parts, approvalRequest)
+			requests = append(requests, approvalRequest)
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				continue
 			}
@@ -2694,7 +2772,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			if result.ApprovalReason != nil {
 				reason = *result.ApprovalReason
 			}
-			parts = append(parts, types.ToolApprovalResponseContent{
+			responses = append(responses, types.ToolApprovalResponseContent{
 				ApprovalID:       result.ToolCallID,
 				ToolCallID:       result.ToolCallID,
 				ToolCall:         toolCall,
@@ -2709,7 +2787,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			}
 		}
 		if result.Error != nil {
-			parts = append(parts, types.ToolErrorContent{
+			*parts = append(*parts, types.ToolErrorContent{
 				ToolCallID:       result.ToolCallID,
 				ToolName:         result.ToolName,
 				Input:            result.Input,
@@ -2755,9 +2833,13 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				part.Result = nil
 			}
 		}
-		parts = append(parts, part)
+		*parts = append(*parts, part)
 	}
-	return parts
+	out := make([]types.ContentPart, 0, len(withoutApproval)+len(requests)+len(responses)+len(withApproval))
+	out = append(out, withoutApproval...)
+	out = append(out, requests...)
+	out = append(out, responses...)
+	return append(out, withApproval...)
 }
 
 func modelFacingToolResultOutput(result types.ToolResult) types.ToolResultOutput {

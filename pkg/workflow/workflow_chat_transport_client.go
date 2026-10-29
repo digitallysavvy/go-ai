@@ -208,7 +208,8 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 
 	workflowRunID := resp.Header.Get("x-workflow-run-id")
 	if workflowRunID == "" {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// TS throws at once; draining an open run stream would wait for it
+		// to end.
 		_ = resp.Body.Close()
 		errs <- fmt.Errorf(`Workflow run ID not found in "x-workflow-run-id" response header`) //nolint:staticcheck // matches TS SDK error text
 		return
@@ -216,7 +217,6 @@ func (t *WorkflowChatTransport) sendMessages(ctx context.Context, req ai.ChatTra
 
 	if t.onChatSendMessage != nil {
 		if err := t.onChatSendMessage(resp, req); err != nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 			errs <- err
 			return
