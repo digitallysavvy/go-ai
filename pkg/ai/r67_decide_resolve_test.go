@@ -44,3 +44,20 @@ func TestExperimentalDecide_R67_ResolveNoSuchModelError(t *testing.T) {
 		t.Errorf("unsupported provider: got %+v / %q", nsm, err.Error())
 	}
 }
+
+type r67NilEvaluationProvider struct{}
+
+func (r67NilEvaluationProvider) EvaluationModel(string) (provider.EvaluationModel, error) { //nolint:staticcheck // deprecated compatibility path
+	return nil, nil
+}
+
+// The adapted legacy provider (AdaptEvaluationModelProvider) reports a missing
+// model as NoSuchModelError too.
+func TestAdaptEvaluationModelProvider_R67_NilModelIsNoSuchModelError(t *testing.T) {
+	p := provider.AdaptEvaluationModelProvider(r67NilEvaluationProvider{}) //nolint:staticcheck // deprecated compatibility path
+	_, err := p.DecisionModel("gone")
+	var nsm *providererrors.NoSuchModelError
+	if !errors.As(err, &nsm) || err.Error() != "No such decisionModel: gone" {
+		t.Fatalf("err = %T %v, want *NoSuchModelError", err, err)
+	}
+}
