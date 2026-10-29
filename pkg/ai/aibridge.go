@@ -24,4 +24,5 @@ func init() {
 	aibridge.InvalidToolCallInput = invalidToolCallInput
 	aibridge.ValidateToolContext = validateToolContext
 	aibridge.ResolveToolApproval = resolveToolApproval
+	aibridge.WrapGatewayError = wrapGatewayError
 }
