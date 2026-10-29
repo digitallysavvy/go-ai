@@ -168,8 +168,8 @@ type UIMessageStreamResponseInit struct {
 	// right away even if the first real chunk is slow) and send a
 	// ": keep-alive\n\n" comment whenever this duration elapses without any
 	// other write, resetting on every chunk. Must be a positive duration;
-	// zero or negative disables it the same as a nil value. Mirrors TS
-	// createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
+	// zero, a negative duration or one above 2147483647ms is an error, as in
+	// TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
 	KeepAliveMs *time.Duration //nolint:revive,staticcheck // name matches TS SDK field "keepAliveMs" for parity
 }
 
@@ -329,7 +329,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 			outcomeMu.Unlock()
 			isCancelled := ctx.Err() != nil && outcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"isAborted":       uiState.isAborted || outcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
@@ -355,7 +355,7 @@ func CreateUIMessageStreamWithOptions(ctx context.Context, options UIMessageStre
 				return
 			}
 			stepEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
@@ -653,7 +653,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// above and TS to-ui-message-stream.ts (audit row #10/#103).
 			isCancelled := ctx.Err() != nil && sourceOutcome.Status == UIMessageStreamOutcomeUnknown
 			finishEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"isAborted":       uiState.isAborted || sourceOutcome.Status == UIMessageStreamOutcomeAborted,
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
@@ -679,7 +679,7 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 				return
 			}
 			stepEvent := map[string]interface{}{
-				"isContinuation":  uiState.isContinuation,
+				"isContinuation":  uiState.continuation(),
 				"responseMessage": uiState.responseMessage(),
 				"messages":        uiState.messages(),
 			}
@@ -837,6 +837,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		// step boundary.
 		sawStartStepChunk := false
 		endedWithCallFinish := false
+		// callFinishPart is the source's last ChunkTypeFinish: the TS 'finish'
+		// part messageMetadata sees carries the call's finishReason,
+		// rawFinishReason and totalUsage.
+		var callFinishPart *provider.StreamChunk
 		activeTextIDs := &orderedIDSet{}
 		activeReasoningIDs := &orderedIDSet{}
 		textID := ""
@@ -935,6 +939,8 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			// recorded as Failed.
 			if chunk.Type == provider.ChunkTypeFinish {
 				setSourceOutcome(UIMessageStreamOutcome{Status: UIMessageStreamOutcomeCompleted})
+				finishPart := *chunk
+				callFinishPart = &finishPart
 			}
 			if chunk.Type == provider.ChunkTypeError {
 				sawTerminal = true
@@ -1112,10 +1118,13 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 		}
 		var finishMetadata map[string]interface{}
 		if options.MessageMetadata != nil {
-			finishMetadata = options.MessageMetadata(messageMetadataInput(provider.StreamChunk{
-				Type:         provider.ChunkType("finish"),
-				FinishReason: finishReason,
-			}, "finish"))
+			finishPart := provider.StreamChunk{}
+			if callFinishPart != nil {
+				finishPart = *callFinishPart
+			}
+			finishPart.Type = provider.ChunkType("finish")
+			finishPart.FinishReason = finishReason
+			finishMetadata = options.MessageMetadata(messageMetadataInput(finishPart, "finish"))
 		}
 		if sendFinish {
 			finishEvent := map[string]interface{}{
@@ -1204,11 +1213,13 @@ type uiMessageCallbackState struct {
 	originalMessages []UIMessageChunk
 	message          UIMessageChunk
 	isContinuation   bool
-	isAborted        bool
-	finishReason     interface{}
-	activeText       map[string]UIMessageChunk
-	activeReasoning  map[string]UIMessageChunk
-	partialTools     map[string]*uiPartialToolCall
+	// lastMessageID is the id of the continued assistant message.
+	lastMessageID   string
+	isAborted       bool
+	finishReason    interface{}
+	activeText      map[string]UIMessageChunk
+	activeReasoning map[string]UIMessageChunk
+	partialTools    map[string]*uiPartialToolCall
 
 	// resetOnMessageIDChange discards the seeded message (parts, metadata and
 	// in-flight part state) when a start chunk carries a different message
@@ -1245,6 +1256,7 @@ func newUIMessageCallbackState(original []UIMessageChunk, messageID string) *uiM
 		last := original[len(original)-1]
 		if role, _ := last["role"].(string); role == "assistant" {
 			state.isContinuation = true
+			state.lastMessageID = stringValue(last["id"])
 			state.message = cloneUIMessageChunk(last)
 			if _, ok := state.message["parts"]; !ok {
 				state.message["parts"] = []interface{}{}
@@ -1294,9 +1306,16 @@ func (s *uiMessageCallbackState) responseMessage() UIMessageChunk {
 	return cloneUIMessageChunk(s.message)
 }
 
+// continuation reports whether the response continues the last original
+// assistant message: TS `state.message.id === lastMessage?.id`, so a start
+// chunk that gives the response another id ends the continuation.
+func (s *uiMessageCallbackState) continuation() bool {
+	return s.isContinuation && stringValue(s.message["id"]) == s.lastMessageID
+}
+
 func (s *uiMessageCallbackState) messages() []UIMessageChunk {
 	messages := append([]UIMessageChunk(nil), s.originalMessages...)
-	if s.isContinuation && len(messages) > 0 {
+	if s.continuation() && len(messages) > 0 {
 		messages = messages[:len(messages)-1]
 	}
 	messages = append(messages, s.responseMessage())
@@ -2053,6 +2072,19 @@ func UIMessageStreamHeaders() http.Header {
 	return h
 }
 
+// validateUIMessageStreamKeepAlive rejects a KeepAliveMs that is not a
+// positive timer duration of at most 2147483647ms, as TS
+// createSseStreamWithKeepAlive throws before the response starts.
+func validateUIMessageStreamKeepAlive(init *UIMessageStreamResponseInit) error {
+	if init == nil || init.KeepAliveMs == nil {
+		return nil
+	}
+	if d := *init.KeepAliveMs; d <= 0 || d > 2147483647*time.Millisecond {
+		return errors.New("keepAliveMs must be a positive finite timer duration no greater than 2147483647")
+	}
+	return nil
+}
+
 // uiMessageStreamResponseHead resolves the status and headers for a UI
 // message stream response from the defaults and init.
 func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string, http.Header) {
@@ -2081,6 +2113,9 @@ func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string
 func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
+	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return nil, err
 	}
 
 	status, statusText, headers := uiMessageStreamResponseHead(init)
@@ -2140,6 +2175,9 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return err
+	}
 
 	// streamCtx is cancelled on any write/flush failure (the deferred cancel
 	// runs as soon as writing stops) so the CreateUIMessageStream producer
@@ -2188,6 +2226,9 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return err
+	}
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
 	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
@@ -2204,6 +2245,9 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessageStreamResponseInit) (*http.Response, error) {
 	if chunks == nil {
 		return nil, fmt.Errorf("stream is required")
+	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return nil, err
 	}
 	status, statusText, headers := uiMessageStreamResponseHead(init)
 	pr, pw := io.Pipe()
@@ -2245,7 +2289,7 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 
 	var keepAliveDuration time.Duration
 	keepAliveEnabled := false
-	if init != nil && init.KeepAliveMs != nil && *init.KeepAliveMs > 0 {
+	if init != nil && init.KeepAliveMs != nil {
 		keepAliveDuration = *init.KeepAliveMs
 		keepAliveEnabled = true
 	}
