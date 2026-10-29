@@ -197,15 +197,6 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
-- **Vertex Gemini image models reject URL input images** (review round 65),
-  as the Google image model already does. An `ImageGenerateOptions.Files`
-  entry with a `URL` (HTTP or `gs://`) returns an
-  `*errors.UnsupportedFunctionalityError` ("file of media type "image/*" must
-  specify subtype since it is not passed as inline bytes") before any
-  request. v0.5.2 sent it as `fileData` with the media type taken from the
-  file or the URL extension. TS sends URL files as `image/*`, which its prompt
-  conversion rejects. **Migration:** download the image and pass the bytes as
-  a `Type: "file"` entry.
 - **A provider-executed tool call is never run locally** (review round 61),
   in `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop. A call
   the provider marks `ProviderExecuted` ran a local tool of the same name

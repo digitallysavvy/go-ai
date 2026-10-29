@@ -102,16 +102,12 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	if opts.Mask != nil {
 		return nil, providererrors.NewProviderError("google-vertex", 0, "", "Gemini image models do not support mask-based image editing.", nil)
 	}
-	content, err := vertexGeminiImageContent(opts)
-	if err != nil {
-		return nil, err
-	}
 	vertexOpts, _ := gemini.ImageCallOptions(extractVertexOptions(opts.ProviderOptions), opts.AspectRatio, "sampleImageSize")
 	lmOpts := &provider.GenerateOptions{
 		Prompt: types.Prompt{
 			Messages: []types.Message{{
 				Role:    types.RoleUser,
-				Content: content,
+				Content: vertexGeminiImageContent(opts),
 			}},
 		},
 		Seed:    opts.Seed,
@@ -165,24 +161,12 @@ func (m *ImageModel) doGenerateGemini(ctx context.Context, opts *provider.ImageG
 	return result, nil
 }
 
-// vertexGeminiImageContent builds the user message of the inner Gemini call.
-// TS sends a URL file as `mediaType: 'image/*'`, which the Google prompt
-// conversion rejects (resolveFullMediaType: a URL is not inline bytes), so a
-// URL file fails with that UnsupportedFunctionalityError, as in the Google
-// image model.
-func vertexGeminiImageContent(opts *provider.ImageGenerateOptions) ([]types.ContentPart, error) {
+func vertexGeminiImageContent(opts *provider.ImageGenerateOptions) []types.ContentPart {
 	parts := []types.ContentPart{}
 	if opts.Prompt != "" {
 		parts = append(parts, types.TextContent{Text: opts.Prompt})
 	}
 	for _, file := range opts.Files {
-		if file.URL != "" {
-			functionality := `file of media type "image/*" must specify subtype since it is not passed as inline bytes`
-			return nil, &providererrors.UnsupportedFunctionalityError{
-				Functionality: functionality,
-				Message:       "'" + functionality + "' functionality not supported.",
-			}
-		}
 		mediaType := file.MediaType
 		if mediaType == "" {
 			mediaType = "image/*"
@@ -191,9 +175,10 @@ func vertexGeminiImageContent(opts *provider.ImageGenerateOptions) ([]types.Cont
 			Data:      file.Data,
 			MediaType: mediaType,
 			MimeType:  mediaType,
+			URL:       file.URL,
 		})
 	}
-	return parts, nil
+	return parts
 }
 
 func vertexImageWarnings(opts *provider.ImageGenerateOptions) []types.Warning {

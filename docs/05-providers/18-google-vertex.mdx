@@ -299,13 +299,6 @@ os.WriteFile("vertex_gemini_image.png", result.Image.Data, 0644)
 - `16:9` - Widescreen (1920x1080)
 - `9:16` - Vertical (1080x1920)
 
-Image editing takes its input images as bytes (`provider.ImageFile` with
-`Type: "file"`, `Data` and `MediaType`). A `Type: "url"` entry (including a
-`gs://` URL) returns an `UnsupportedFunctionalityError` ("file of media type
-"image/*" must specify subtype since it is not passed as inline bytes")
-before any request, as the TypeScript SDK does. Download the image and pass
-the bytes.
-
 **Model Comparison:**
 
 | Model | Speed | Quality | Best For |
