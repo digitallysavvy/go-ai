@@ -863,6 +863,12 @@ These match TS and are unlikely to need code changes, but can change output.
   approval response, because the legacy loop resumed the approvals a second
   time. TS WorkflowAgent forwards only the response, as `Stream` already did
   (new `InternalOptions.ApprovalsResumed`).
+- **WorkflowAgent resumed approval results carry their model output**
+  (review round 61): the tool message holding the results of resumed
+  approvals (the first of `ResponseMessages`, and the prompt of the next
+  model call) has each `ToolResultContent.Output` set (text for a string
+  result, else JSON, or the tool's `ToModelOutput`) and no `Input`, as TS
+  WorkflowAgent's `modelResult`. It held the raw `Result` and the input.
 - **MCP clients have no default request timeout**, JSON-RPC request IDs
   start at 0, `MCPClientError.Error()` is the bare message, and the HTTP and
   stdio transports probe `server/discover` first.
