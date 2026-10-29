@@ -569,7 +569,9 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   ("Invalid prompt: instructions must be a string, SystemModelMessage, or
   array of SystemModelMessage"). In v0.5 the error was an
   `*InvalidArgumentError` ("Invalid argument for parameter instructions:
-  ..."). It is now the `Cause`, so `errors.As` on either type matches.
+  ..."). It is now the `Cause`, so `errors.As` on either type matches. The
+  checks run in TS order: a missing prompt first, then invalid instructions,
+  then empty messages.
 - **Am I affected?** Code that compares this error's text.
 - **What to do:** compare error types, not text:
 
@@ -788,8 +790,10 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What changed:** the loop names each approval request, and the response of
   an automatic approval or denial, with the run's ID generator
   (`InternalOptions.GenerateID`, by default `aitxt-` plus 24 characters), as
-  TS `generateId()`. v0.5 used the tool call ID, which some providers repeat
-  across steps. Approvals persisted by v0.5 still resume.
+  TS `generateId()`, and signs that ID. v0.5 used the tool call ID, which
+  some providers repeat across steps. A step response without an ID also
+  takes its ID from `InternalOptions.GenerateID`. Approvals persisted by v0.5
+  still resume. `WorkflowAgent` keeps `approval-` plus the call ID.
 - **Am I affected?** Code that answers an approval with the tool call ID.
 - **What to do:** answer with the request's `ApprovalID`:
 

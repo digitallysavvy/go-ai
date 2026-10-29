@@ -77,6 +77,11 @@ and the [v0.5 to v0.6 migration guide](./docs/08-migration-guides/from-v0.5-to-v
 
 ### Breaking
 
+The most common ones are below. The
+[migration guide](./docs/08-migration-guides/from-v0.5-to-v0.6.mdx) lists
+every change that can need an edit, with a quick-scan table of patterns to
+search for.
+
 - `GenerateObjectOptions.MaxRetries` and `StreamObjectOptions.MaxRetries`
   are `*int`; an explicit 0 disables retries.
 - `telemetry.Options.RecordInputs` / `RecordOutputs` are `*bool`, and unset
