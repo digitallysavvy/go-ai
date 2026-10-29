@@ -929,7 +929,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			// empty text result (TS resolveProviderToolResult) instead of the
 			// pending marker, so the loop continues with a text output.
 			if callConfig.Internal != nil && callConfig.Internal.ContinueOnMissingProviderResult {
-				for _, synthetic := range ai.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, a.config.Model.Provider(), a.config.Model.ModelID()) {
+				for _, synthetic := range ai.EmptyProviderResults(stepResult.ToolCalls, callConfig.Tools, stepResult.Content, stepResult.FinishReason, stepResult.Model.Provider, stepResult.Model.ModelID) {
 					for i := range toolResults {
 						if toolResults[i].ToolCallID == synthetic.ToolCallID && toolResults[i].ProviderExecuted && toolResults[i].Result == nil && toolResults[i].Error == nil {
 							toolResults[i].Result = synthetic.Result
