@@ -1008,6 +1008,11 @@ in v0.5.3.
   override stayed in effect for every following step.
 - The UI message stream's `MessageMetadata` callback runs once per stream
   part, as TS does; the `start` part of a `StreamText` stream called it twice.
+- The legacy `ToolLoopAgent` loop (`GenerateAgent`, `Execute`,
+  `ExecuteWithMessages`) gives `OnStart` and `OnStepStartEvent` the call ID
+  that its end event carries, and the call's operation, active tools, tool
+  order, tool choice, timeout, reasoning, retries, headers and output, as TS
+  generateText's start events do; they had no call ID.
 - `BatchTextRequest.AllowSystemInMessages` (additive) lets a batch text
   request carry system messages in `Messages`, as TS `allowSystemInMessages`
   does; without it they are still rejected.
