@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 )
@@ -150,7 +149,8 @@ func (p evaluationToDecisionProvider) DecisionModel(modelID string) (DecisionMod
 		return nil, err
 	}
 	if model == nil {
-		return nil, fmt.Errorf("no such decisionModel: %s", modelID)
+		// TS resolveDecisionModel: NoSuchModelError({ modelId, modelType: 'decisionModel' }).
+		return nil, providererrors.NewNoSuchModelError(modelID, "decisionModel")
 	}
 	return AdaptEvaluationModel(model), nil
 }

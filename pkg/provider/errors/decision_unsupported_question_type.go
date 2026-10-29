@@ -1,11 +1,12 @@
 package errors
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/digitallysavvy/go-ai/pkg/providerutils/jsonstr"
 )
 
 // DecisionUnsupportedQuestionTypeError indicates a decision model does
@@ -57,8 +58,9 @@ func (e *DecisionRefusalError) Error() string {
 	}
 	quoted := make([]string, len(e.QuestionIDs))
 	for i, id := range e.QuestionIDs {
-		// JSON.stringify(id) in the TypeScript SDK.
-		b, err := json.Marshal(id)
+		// JSON.stringify(id) in the TypeScript SDK: <, > and & stay literal,
+		// as do U+2028 and U+2029 (json.Marshal escapes them).
+		b, err := jsonstr.Marshal(id)
 		if err != nil {
 			b = []byte(strconv.Quote(id))
 		}
