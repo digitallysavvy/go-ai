@@ -986,13 +986,44 @@ func interactionToolArgs(args map[string]interface{}, input string) (map[string]
 		return map[string]interface{}{}, ""
 	}
 	var parsed interface{}
-	if err := json.Unmarshal([]byte(input), &parsed); err != nil {
+	// TS secureJsonParse throws on a forbidden prototype key, and the catch
+	// sends the raw text as {value: input}.
+	if err := json.Unmarshal([]byte(input), &parsed); err != nil || hasForbiddenPrototypeKey(parsed) {
 		return map[string]interface{}{"value": input}, ""
 	}
 	if obj, ok := parsed.(map[string]interface{}); ok {
 		return obj, input
 	}
 	return map[string]interface{}{"value": parsed}, ""
+}
+
+// hasForbiddenPrototypeKey reports whether a parsed JSON value holds, at any
+// depth, an object with an own `__proto__` key or a `constructor` object with
+// an own `prototype` key (the keys secure-json-parse rejects).
+func hasForbiddenPrototypeKey(v interface{}) bool {
+	switch x := v.(type) {
+	case map[string]interface{}:
+		if _, ok := x["__proto__"]; ok {
+			return true
+		}
+		if c, ok := x["constructor"].(map[string]interface{}); ok {
+			if _, has := c["prototype"]; has {
+				return true
+			}
+		}
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, e := range x {
+			if hasForbiddenPrototypeKey(e) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveInteractionMediaType ports TS resolveFullMediaType for inline file
