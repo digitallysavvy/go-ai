@@ -267,6 +267,17 @@ Each item has before/after code in the
   an override stayed in effect for every following step, and later
   `PrepareStep` calls received it as `Model`. **Migration:** to keep an
   override for later steps, return it from every `PrepareStep` call.
+- **Invalid instructions are an `InvalidPromptError`** (review round 65).
+  `InstructionMessages` that are not all system messages fail
+  `GenerateText`, `StreamText`, the legacy `ToolLoopAgent` loop and batch
+  text requests with `*providererrors.InvalidPromptError` ("Invalid prompt:
+  instructions must be a string, SystemModelMessage, or array of
+  SystemModelMessage"), as TS standardizePrompt throws. v0.5.2 returned an
+  `*InvalidArgumentError` ("Invalid argument for parameter instructions:
+  ..."); it is now the error's `Cause`, so `errors.As` still matches it. A
+  missing prompt is reported before invalid instructions, and invalid
+  instructions before empty messages, in TS order. **Migration:** code that
+  compares the error text should match the new text, or use `errors.As`.
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
   TS calls `onError` for the `error` parts of the stream; a failure it throws
   inside the stream is reported to `onStepError` and the telemetry `onError`
@@ -1019,6 +1030,23 @@ in v0.5.3.
 - `BatchTextRequest.AllowSystemInMessages` (additive) lets a batch text
   request carry system messages in `Messages`, as TS `allowSystemInMessages`
   does; without it they are still rejected.
+- `BatchTextRequest.Instructions` and `InstructionMessages` (additive) give a
+  batch text request its instructions, as TS `TextBatchRequest` takes
+  Prompt's `instructions` (a string or system messages with provider
+  options). A batch request's prompt checks (prompt or messages,
+  instructions, system messages without `AllowSystemInMessages`) run before
+  its tools and settings are checked, as TS `startBatch` runs
+  `standardizePrompt` first (review round 65).
+- The legacy `ToolLoopAgent` loop (`GenerateAgent`, `Execute`,
+  `ExecuteWithMessages`, `WorkflowAgent.Generate`) calls
+  `AgentConfig.OnStepError` when a step that started fails (the model call,
+  the prompt, tool input callbacks, approvals or tool execution), with the
+  step-start event and the error, as TS generateText's `onStepError`; it was
+  never called. Its telemetry step end carries the model call's performance,
+  as `GenerateText`'s does (review round 65).
+- `UIMessageStreamError` messages quote the part, tool call or approval ID
+  as TS template literals do (`ID "a"b"`), without Go escaping (review
+  round 65).
 - UI message `source-url` and `source-document` chunks carry the source's
   own `providerMetadata` (for example Anthropic's `pageAge`), as TS does;
   only chunk-level metadata was forwarded.
