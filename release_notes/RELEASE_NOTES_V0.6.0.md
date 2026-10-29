@@ -197,6 +197,14 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **An unknown decision model ID is a `NoSuchModelError`** (review round
+  67). `ExperimentalEvaluate`/`ExperimentalDecide` with a string `Model`
+  whose provider returns no model fail with
+  `*providererrors.NoSuchModelError` ("No such decisionModel: <id>"), as TS
+  `resolveDecisionModel`; v0.5.2 returned a plain "no such evaluationModel:
+  <id>" error. A `Provider` without a decision factory is a
+  `NoSuchModelError` with the TS message. **Migration:** match with
+  `errors.As` on `*providererrors.NoSuchModelError`.
 - **A provider-executed tool call is never run locally** (review round 61),
   in `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop. A call
   the provider marks `ProviderExecuted` ran a local tool of the same name
@@ -872,6 +880,9 @@ These match TS and are unlikely to need code changes, but can change output.
   (formerly evaluation) answer validation and the decision language
   model's `Question "<id>" ...` messages, and
   `DecisionUnsupportedQuestionTypeError`.
+  The download URL check (`CreateURLDownload`, `GenerateVideo` downloads)
+  writes a blocked hostname unquoted, as TS (`URL with hostname
+  printer.local is not allowed`; review round 67).
 - **`OnStartEvent.Messages` holds a `Prompt` string as one user message**
   for `GenerateText` and `StreamText` (v0.5.x: empty), as TS
   `initialPrompt.messages` (review round 66; see the migration guide).
