@@ -224,10 +224,13 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
     tools sent to the model from `OnLanguageModelCallStart`:
 
     ```go
-    opts.OnLanguageModelCallStart = func(ctx context.Context, e ai.LanguageModelCallStartEvent) {
-    	sent := e.Tools // v0.5: OnStepStartEvent.Tools
-    	_ = sent
+    opts := ai.GenerateTextOptions{
+    	OnLanguageModelCallStart: func(ctx context.Context, e ai.LanguageModelCallStartEvent) {
+    		sent := e.Tools // v0.5: OnStepStartEvent.Tools
+    		_ = sent
+    	},
     }
+    _ = opts
     ```
   - **Kind:** silent behavior change.
 
