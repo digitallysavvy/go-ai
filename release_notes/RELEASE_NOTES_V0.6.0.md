@@ -194,6 +194,8 @@ search for and ends with a checklist for coding agents. Entries marked
 - **The per-step timeout starts before PrepareStep** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-timeout-before-preparestep)
 - **MaxTokens below 1 is rejected** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#max-tokens-min)
 - **Start events report a Prompt string as a user message** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#start-event-messages)
+- **A PrepareStep that sets only System changes the step instructions** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#preparestep-system-override)
+- **ExperimentalStreamTranscribe reports the cancel reason after Close** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stream-transcribe-cancel-reason)
 - **Stop conditions run only when the loop would continue** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#stop-conditions-only-when-continue)
 - **Generated IDs use the TS formats** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generated-id-formats)
 - **JSON is not HTML-escaped** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#json-not-html-escaped)
@@ -229,6 +231,7 @@ search for and ends with a checklist for coding agents. Entries marked
 - **A legacy ToolLoopAgent step timeout is context.DeadlineExceeded** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-step-timeout-deadline)
 - **The legacy ToolLoopAgent step timeout covers tool execution** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-step-timeout-tools)
 - **An empty ActiveTools leaves no tools active in the legacy loop** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-empty-active-tools)
+- **The legacy ToolLoopAgent follows the PrepareCall tools, tool callers and output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#legacy-preparecall-tools-output)
 - **AI Gateway authentication errors are wrapped** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#gateway-auth-error)
 - **WorkflowAgent approval IDs are approval-toolCallId** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-approval-ids)
 - **Resumed approval results carry their model output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#workflow-resumed-output)
@@ -242,6 +245,7 @@ search for and ends with a checklist for coding agents. Entries marked
 
 - **UI message streams fail on an out-of-sequence chunk** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-out-of-sequence)
 - **An out-of-range KeepAliveMs is an error** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#keep-alive-range)
+- **UI message state follows TS for four chunk edge cases** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#ui-message-state-edge-cases)
 
 #### Telemetry and events
 
@@ -250,11 +254,13 @@ search for and ends with a checklist for coding agents. Entries marked
 - **EnrichSpan and runtime context attributes follow TS** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#enrich-span-attributes)
 - **Evaluate telemetry and event names are decide names** (wire/protocol change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-telemetry-names)
 - **A cancelled GenerateText reports OnError to telemetry** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#generate-cancel-telemetry)
+- **Step-start events report the call's tools and the output** (silent behavior change). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#step-start-call-tools)
 
 #### Errors
 
 - **Errors are returned without Go prefixes** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#errors-unprefixed)
 - **Error messages quote names as TS does** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#error-name-quoting)
+- **An unknown decision model ID is a NoSuchModelError** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#decide-unknown-model)
 - **Non-JSON error bodies use the HTTP status text** (error text only). [Migration](../docs/08-migration-guides/from-v0.5-to-v0.6.mdx#non-json-error-body)
 
 #### Providers
@@ -641,7 +647,10 @@ also listed, with a link to their migration entry, under
   `ExperimentalStreamTranscribe` for a model without streaming, decision
   (formerly evaluation) answer validation and the decision language
   model's `Question "<id>" ...` messages, and
-  `DecisionUnsupportedQuestionTypeError`.
+  `DecisionUnsupportedQuestionTypeError`. The download URL check
+  (`CreateURLDownload`, `GenerateVideo` downloads) writes a blocked hostname
+  unquoted, as TS (`URL with hostname printer.local is not allowed`; review
+  round 67).
 - **`OnStartEvent.Messages` holds a `Prompt` string as one user message**
   for `GenerateText` and `StreamText` (v0.5.x: empty), as TS
   `initialPrompt.messages` (review round 66; see the migration guide).
@@ -897,6 +906,17 @@ in v0.5.3.
   v0.5.2 said 0.5.0).
 - `StreamTextResult.NewStream()` returns an independent stream, so the UI
   message stream works after the full stream was consumed.
+- `ToUIMessageStream` calls `OnEnd` once with a failed outcome carrying the
+  error when a `MessageMetadata` or `OnError` callback panics, as TS reports
+  those failures (review round 67).
+- `StreamText` error parts for a failed prompt, step preparation or model
+  call open carry the error itself; only `OnError` gets it through
+  `wrapGatewayError`, also for a later step that fails to prepare (review
+  round 67).
+- `ExperimentalDecide` telemetry end events carry every start field (state,
+  questions, max retries, headers), as TS `{ ...startEvent, ...result }`,
+  and `DecisionRefusalError` quotes question IDs as `JSON.stringify` (no
+  `\u003c` or U+2028 escaping) (review round 67).
 
 ### Providers
 
@@ -1162,7 +1182,16 @@ Notable ones:
   stream and writes no `error` chunk. Same API and chunk protocol as TS, and
   `useChat` shows the error text. Caveat: client logic that reacts to a
   dropped connection (for example reconnect-on-network-error) sees a clean
-  end with an `error` chunk instead (v0.5.x behavior, owner decision).
+  end with an `error` chunk instead (v0.5.x behavior, owner decision). The
+  SSE helpers then write `data: [DONE]` and
+  `CreateUIMessageStreamResponseWithInit` closes the body cleanly; TS writes
+  no `[DONE]` and errors the body.
+- Go's single `InvalidArgumentError` type always starts its message with
+  "Invalid argument for parameter ..."; TS's provider-package
+  `InvalidArgumentError` has the bare text (coordinator ruling, round 67).
+- Go does not check a model's specification version (TS throws
+  `UnsupportedModelVersionError`), and the `Decide` telemetry events carry a
+  subset of the TS fields (Go design, round 67).
 - UI tool parts cannot tell an unset `dynamic` from `dynamic: false` (Go
   `bool`), so Go writes `dynamic` only when true; TS can write
   `dynamic: false` for a tool missing from the tool set.

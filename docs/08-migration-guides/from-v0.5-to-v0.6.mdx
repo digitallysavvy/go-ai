@@ -60,6 +60,8 @@ already, you can skip them.
 | `Timeout.PerStep` together with `PrepareStep:` | Step timer starts before `PrepareStep` | silent behavior change | Size `PerStep` to include it | [Step timeout start](#step-timeout-before-preparestep) |
 | `MaxTokens:` set to `0` or a negative value | Rejected with `InvalidArgumentError` | silent behavior change | Leave nil or set at least 1 | [MaxTokens below 1](#max-tokens-min) |
 | `OnStartEvent.Messages` with `Prompt:` | Holds the prompt as one user message | silent behavior change | Read `OnStartEvent.Prompt` for the string | [Start event messages](#start-event-messages) |
+| `PrepareStep:` that sets `System` and returns its options | `System` sets the step instructions | silent behavior change | Remove a `System` assignment meant to have no effect | [PrepareStep System](#preparestep-system-override) |
+| `ExperimentalStreamTranscribe` accessor errors after `FullStream().Close()`; `context.Canceled` checks | Cancel reason text after `Close`; the ctx cause after a caller cancel | silent behavior change | Match the text after `Close`, or cancel your own `ctx` | [StreamTranscribe cancel reason](#stream-transcribe-cancel-reason) |
 | `StopWhen:` conditions with side effects | Run only when the loop would continue | silent behavior change | Move side effects to `OnStepFinish` | [Stop conditions](#stop-conditions-only-when-continue) |
 | `"call-"` prefix checks on response, approval or UI message IDs | TS ID formats (`aitxt-`, `aiobj-`, 16 chars) | silent behavior change | Do not parse ID prefixes | [Generated IDs](#generated-id-formats) |
 | `<`, `>`, `&` in expected request or stream JSON | JSON is not HTML-escaped | wire/protocol change | Update golden files | [JSON escaping](#json-not-html-escaped) |
@@ -86,6 +88,7 @@ already, you can skip them.
 | `errors.Is(err, context.Canceled)` for a legacy step timeout | Now `context.DeadlineExceeded` | silent behavior change | Check `DeadlineExceeded` | [Legacy step timeout error](#legacy-step-timeout-deadline) |
 | `Timeout.PerStep` on the legacy agent with slow tools | Step timeout covers tools | silent behavior change | Raise `PerStep` or use `Total` | [Legacy step timeout and tools](#legacy-step-timeout-tools) |
 | `ActiveTools: []string{}` on the legacy agent | No tools active | silent behavior change | Use nil for all tools | [Legacy empty ActiveTools](#legacy-empty-active-tools) |
+| `PrepareCall:` that sets `Tools`, `ExperimentalToolCallers`, `ToolCallConcurrency` or `Output`; `ParseCompleteOutput` reading `Usage` | Legacy loop uses the prepared values; the parse gets the last step's usage | silent behavior change | Read `AgentResult.Usage` for the total | [Legacy PrepareCall](#legacy-preparecall-tools-output) |
 | "Unauthenticated request to AI Gateway" text, gateway auth errors from `GenerateAgent` | Wrapped TS error | error text only | Match `*GatewayAuthenticationError` | [Gateway auth error](#gateway-auth-error) |
 | `.ToolCallID` used as an approval response ID (`WorkflowAgent`) | IDs are `approval-` + call ID | silent behavior change | Answer with `ApprovalID` | [WorkflowAgent approval IDs](#workflow-approval-ids) |
 | `.Result` on `ResponseMessages[0]` after an approval resume | Use `Output` | silent behavior change | Read `Output` | [Resumed approval output](#workflow-resumed-output) |
@@ -96,13 +99,16 @@ already, you can skip them.
 | SSE event named `done`, `OnChatSendMessage:` on `WorkflowRunMultiplexer` | Ends on a `finish` chunk; sees successful sends only | wire/protocol change | Emit a `finish` chunk | [WorkflowRunMultiplexer](#workflow-multiplexer-finish) |
 | `CreateUIMessageStreamWithOptions`, `ToUIMessageStream` with `OnEnd` / `OnStepEnd` | Out-of-sequence chunk ends the stream | silent behavior change | Emit start chunks first; handle `*ai.UIMessageStreamError` | [UI stream sequence](#ui-out-of-sequence) |
 | `KeepAliveMs` | Zero, negative or too large is an error | silent behavior change | Leave nil to disable | [KeepAliveMs](#keep-alive-range) |
+| Chunks you write with a `title` on `tool-output-*`, `"finishReason": null`, an empty reasoning `id`; `part["input"] == nil` | Message state follows TS | silent behavior change | Check for a missing `input` key | [UI message state](#ui-message-state-edge-cases) |
 | `Integrations: []telemetry.TelemetryIntegration{}` | Empty slice disables telemetry | silent behavior change | Leave nil for globals | [Empty Integrations](#empty-integrations) |
 | `"ai-sdk"`, `"go-ai"` tracer or instrumentation scope names, `telemetry.TracerName` | Tracers are `ai` and `gen_ai` | wire/protocol change | Update filters | [Tracer names](#tracer-names) |
 | `EnrichSpan:`, runtime context objects in spans | TS attribute rules | wire/protocol change | Read flattened keys | [Span attributes](#enrich-span-attributes) |
 | `experimental_onEvaluate`, `ai.evaluate`, `ai.evaluation.`, `gen_ai.operation.name=evaluate` | Renamed to decide | wire/protocol change | Update names | [Decide telemetry names](#decide-telemetry-names) |
 | Telemetry integration `OnAbort` for a cancelled `GenerateText` | Integrations get `OnError` | silent behavior change | Handle `OnError` | [GenerateText abort telemetry](#generate-cancel-telemetry) |
+| `OnStepStart:` / `OnStepStartEvent:` reading `e.Tools` or `e.Output` | The call's tools; `Output` is set | silent behavior change | Read `e.ActiveTools`, or `LanguageModelCallStartEvent.Tools` | [Step-start tools](#step-start-call-tools) |
 | `strings.Contains(err.Error(), "failed at step"` and other prefixes | Errors returned as is | error text only | Use `errors.As` / `errors.Is` | [Unprefixed errors](#errors-unprefixed) |
-| Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
+| Error text with `%q`-quoted names (tool callers, tool search, decide, ID generator, download URL hostname) | TS quoting | error text only | Use `errors.As` | [Name quoting](#error-name-quoting) |
+| `"no such evaluationModel"` text checks on `ExperimentalEvaluate` / `ExperimentalDecide` errors | `*providererrors.NoSuchModelError` | error text only | Use `errors.As` | [Unknown decision model](#decide-unknown-model) |
 | `ProviderError.Message` for an empty or non-JSON error body | HTTP status text | error text only | Read `StatusCode` / `ResponseBody` | [Non-JSON error bodies](#non-json-error-body) |
 | `.Provider()` compared with `"groq"`, `"openai"`; `ai.model.provider` | TS `config.provider` IDs (`groq.chat`) | silent behavior change | Compare prefixes | [Provider IDs](#provider-ids) |
 | Custom or proxy endpoints that return non-standard JSON | "Invalid JSON response" | silent behavior change | Return the provider's schema | [Response validation](#response-validation) |
@@ -484,6 +490,62 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 - **Am I affected?** `OnStart:` callbacks that read `Messages` and expect it
   empty for `Prompt` calls.
 - **What to do:** read `OnStartEvent.Prompt` for the original string.
+- **Kind:** silent behavior change
+
+### A PrepareStep that sets only System changes the step instructions {#preparestep-system-override}
+
+- **What changed:** in `GenerateText` and `StreamText`, a `PrepareStep`
+  callback that sets `System` and returns the options it got now sends that
+  system prompt for the step. In v0.5 the `Instructions` pointer it got back
+  still held the old value and won, so the new `System` was ignored. TS reads
+  `prepareStepResult.instructions ?? prepareStepResult.system`.
+  `Instructions` still wins when the callback sets it (a new pointer, or a
+  write through the given one).
+- **Am I affected?** `PrepareStep:` callbacks that assign `System` (for
+  example `step.System = ...`) and return the options they got.
+- **What to do:** no action unless such a callback relied on its `System`
+  being ignored; remove that assignment to keep the v0.5 prompt:
+
+  ```go
+  opts := ai.GenerateTextOptions{
+  	PrepareStep: func(ctx context.Context, step ai.PrepareStepOptions) ai.PrepareStepOptions {
+  		step.System = "Answer briefly." // v0.6: used for this step; v0.5: ignored
+  		return step
+  	},
+  }
+  _ = opts
+  ```
+
+- **Kind:** silent behavior change
+
+### ExperimentalStreamTranscribe reports the cancel reason after Close {#stream-transcribe-cancel-reason}
+
+- **What changed:** after `FullStream().Close()`, `Text()` and the other
+  `StreamTranscriptionResult` accessors return `Transcription stream was
+  cancelled.`, the reason TS `Transformer.cancel` aborts the pipe with. v0.5
+  returned that text only when the pipe was blocked sending a part; while it
+  waited on the provider it returned the provider's `context canceled`. When
+  your own `ctx` is cancelled instead, the accessors return the ctx's cause
+  (`context.Canceled` unless you set one), also while a send was blocked
+  (v0.5 returned the cancel text there).
+- **Am I affected?** `errors.Is(err, context.Canceled)` or
+  `"Transcription stream was cancelled."` checks on `StreamTranscriptionResult`
+  accessor errors.
+- **What to do:** match the text after `Close`, or cancel your own context
+  and check `errors.Is(err, context.Canceled)`:
+
+  ```go
+  func closed(res *ai.StreamTranscriptionResult) bool {
+  	stream, err := res.FullStream()
+  	if err != nil {
+  		return false
+  	}
+  	_ = stream.Close()
+  	_, err = res.Text()
+  	return err != nil && err.Error() == "Transcription stream was cancelled."
+  }
+  ```
+
 - **Kind:** silent behavior change
 
 ### Stop conditions run only when the loop would continue {#stop-conditions-only-when-continue}
@@ -893,6 +955,29 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 - **What to do:** use nil to keep all tools.
 - **Kind:** silent behavior change
 
+#### The legacy ToolLoopAgent follows the PrepareCall tools, tool callers and output {#legacy-preparecall-tools-output}
+
+- **What changed:** `GenerateAgent`, `Execute` and `ExecuteWithMessages` (and
+  `WorkflowAgent.Generate`, which runs this loop) resolve tool search and
+  `ExperimentalToolCallers` from the tools and tool callers that the first
+  `PrepareCall` returns, and parse `AgentResult.Output` with the `Output` it
+  returns. Its `ToolCallConcurrency` is validated before the run starts: an
+  invalid value fails before `OnStart`, even when the model calls no tool,
+  and an invalid configured value that `PrepareCall` replaces is no error.
+  The output's `ParseCompleteOutput` gets the last step's usage. In v0.5 the
+  loop used the configured tools, tool callers and output (a `ToolSearch`
+  added by `PrepareCall` failed with "toolSearch must be bound by an AI SDK
+  generation.") and passed the total usage. TS `ToolLoopAgent` passes the
+  `prepareCall` result to `generateText`, which parses with
+  `lastStep.usage`.
+- **Am I affected?** `PrepareCall:` functions that set `Tools`,
+  `ExperimentalToolCallers`, `ToolCallConcurrency` or `Output`, and
+  `ParseCompleteOutput` implementations that read `opts.Usage`.
+- **What to do:** no action unless your `PrepareCall` changes those fields
+  and relied on the configured ones winning, or your output reads the usage.
+  For the total usage, read `AgentResult.Usage`.
+- **Kind:** silent behavior change
+
 #### AI Gateway authentication errors are wrapped {#gateway-auth-error}
 
 - **What changed:** `GenerateAgent`, `Execute` and `ExecuteWithMessages`
@@ -1065,6 +1150,31 @@ These entries apply to the `Execute`, `ExecuteWithMessages` and
 
 - **Kind:** silent behavior change
 
+### UI message state follows TS for four chunk edge cases {#ui-message-state-edge-cases}
+
+- **What changed:** the message that `OnEnd`, `OnStepEnd` and
+  `ReadUIMessages` build keeps a tool part's own `title` when a
+  `tool-output-available` or `tool-output-error` chunk carries one (TS passes
+  the invocation's title), keeps an empty `id` on a reasoning part, keeps the
+  earlier finish reason when a `finish` chunk has `"finishReason": null`, and
+  leaves `input` out of a streaming tool part whose partial input cannot be
+  parsed (v0.5 set it to JSON `null`). TS `processUIMessageStream` does each
+  of these.
+- **Am I affected?** Only if you write such chunks yourself (through
+  `UIMessageStreamWriter.Write` or a merged stream) and read the built
+  message's parts, for example `part["title"]` or `part["input"] == nil`.
+- **What to do:** no action unless you relied on a chunk title replacing the
+  part's title or on a `null` partial input. Check for a missing key:
+
+  ```go
+  func hasInput(part map[string]interface{}) bool {
+  	_, ok := part["input"] // v0.5: present with a nil value
+  	return ok
+  }
+  ```
+
+- **Kind:** silent behavior change
+
 ## Telemetry and events {#telemetry-and-events}
 
 The [telemetry recording change](#telemetry-record-pointers) is listed under
@@ -1152,6 +1262,32 @@ compile-time changes.
 - **What to do:** handle the cancellation in the integration's `OnError`.
 - **Kind:** silent behavior change
 
+### Step-start events report the call's tools and the output {#step-start-call-tools}
+
+- **What changed:** `OnStepStartEvent.Tools` of `GenerateText`, `StreamText`,
+  `ToolLoopAgent.Generate` / `Stream` and the legacy `GenerateAgent` /
+  `Execute` loop is the call's tool set. In v0.5 it was the step's narrowed
+  set (after `ActiveTools`, `FilterActiveTools`, tool search and tool-caller
+  routing). `OnStepStartEvent.Output` is now the call's output specification;
+  v0.5 left it nil. TS `stepStartEvent.tools` is "the tools available for
+  this generation", and `stepStartEvent.output` is the output.
+- **Am I affected?** `OnStepStart:` callbacks (and `OnStepStartEvent:` in
+  `AgentConfig`) that read `e.Tools` or expect `e.Output` to be nil.
+- **What to do:** read `e.ActiveTools` for the step's limit, or read the
+  tools sent to the model from `OnLanguageModelCallStart`:
+
+  ```go
+  opts := ai.GenerateTextOptions{
+  	OnLanguageModelCallStart: func(ctx context.Context, e ai.LanguageModelCallStartEvent) {
+  		sent := e.Tools // v0.5: OnStepStartEvent.Tools
+  		_ = sent
+  	},
+  }
+  _ = opts
+  ```
+
+- **Kind:** silent behavior change
+
 ## Errors {#errors}
 
 ### Errors are returned without Go prefixes {#errors-unprefixed}
@@ -1173,9 +1309,37 @@ compile-time changes.
   `ExperimentalStreamTranscribe`, decision validation,
   `DecisionUnsupportedQuestionTypeError`) put the name between plain double
   quotes instead of Go `%q` escaping. The text changes only for a name with
-  `"`, `\`, non-ASCII or control characters.
+  `"`, `\`, non-ASCII or control characters. The download URL check
+  (`CreateURLDownload`, `GenerateVideo` downloads) writes a blocked hostname
+  without quotes, as TS: `URL with hostname printer.local is not allowed`
+  (v0.5: `"printer.local"`).
 - **Am I affected?** Code that compares these messages.
 - **What to do:** match these errors with `errors.As`, not by their text.
+- **Kind:** error text only
+
+### An unknown decision model ID is a NoSuchModelError {#decide-unknown-model}
+
+- **What changed:** `ExperimentalEvaluate` and `ExperimentalDecide` with a
+  string `Model` whose provider returns no model fail with
+  `*providererrors.NoSuchModelError` (`ModelType: "decisionModel"`, message
+  `No such decisionModel: <id>`), as TS `resolveDecisionModel`. v0.5 returned
+  a plain error, `no such evaluationModel: <id>`. A `Provider` with no
+  decision factory is also a `NoSuchModelError`, with the TS message ("The
+  default provider does not support decision models. ..."). The adapter from
+  `provider.AdaptEvaluationModelProvider` reports a missing model the same
+  way.
+- **Am I affected?** Code that compares an `ExperimentalEvaluate` or
+  `ExperimentalDecide` error with `no such evaluationModel`.
+- **What to do:** match the type (`errors.Is(err, providererrors.ErrModelNotFound)`
+  also matches):
+
+  ```go
+  var nsm *providererrors.NoSuchModelError
+  if errors.As(err, &nsm) {
+  	log.Printf("unknown decision model %s", nsm.ModelID)
+  }
+  ```
+
 - **Kind:** error text only
 
 ### Non-JSON error bodies use the HTTP status text {#non-json-error-body}
@@ -1601,7 +1765,8 @@ after upgrading:
 
 - **`ToUIMessageStream` writes a masked `error` chunk** when its source stream
   fails, and ends the UI stream cleanly (owner decision 2026-10-29, the v0.5.x
-  behavior). TS errors the stream instead. See
+  behavior). The SSE helpers then write `data: [DONE]` and close the response
+  body without an error. TS errors the stream instead. See
   [UI message stream: source failure writes an error chunk](./known-differences.mdx).
 - **The Vertex Gemini image model accepts URL and `gs://` input images**
   (owner ruling 2026-10-29). Current TS rejects them. Set `MediaType` for a
@@ -1623,6 +1788,13 @@ after upgrading:
   [Option validation timing](./known-differences.mdx).
 - **Each `WorkflowAgent` call has its own root call ID**; TS uses the literal
   `workflow-agent`. See [WorkflowAgent root call ID](./known-differences.mdx).
+- **`InvalidArgumentError` text always starts with "Invalid argument for
+  parameter ..."**, also where TS throws the provider package's
+  `InvalidArgumentError`, whose message is the bare text. See
+  [InvalidArgumentError message prefix](./known-differences.mdx).
+- **Go does not check a model's specification version**, and the `Decide`
+  telemetry events carry a subset of the TS fields. See
+  [Decide: model version check and telemetry fields](./known-differences.mdx).
 
 ## For coding agents {#for-coding-agents}
 
@@ -1657,7 +1829,8 @@ next one.
      -e 'workflowAgent\.generate|WorkflowRunMultiplexer|OnChatSendMessage|UIMessageStreamWithOptions|ToUIMessageStream|KeepAliveMs' \
      -e 'Integrations:|"ai-sdk"|"go-ai"|TracerName|EnrichSpan|onEvaluate|ai\.evaluat|err\.Error\(\)|\.Provider\(\)' \
      -e 'promptCacheOptions|OPENAI_API_KEY|DEEPSEEK_API_KEY|DownloadError|klingai|perplexity|Issuer|RequestTimeoutMS|TimeoutMS' \
-     -e 'codemode\.|wazero|acp\.|ClientAppName|AgentSettings|"terminal"|fx\.Settings|policy\.|cohere' .
+     -e 'codemode\.|wazero|acp\.|ClientAppName|AgentSettings|"terminal"|fx\.Settings|policy\.|cohere' \
+     -e 'OnStepStart|PrepareCall:|ParseCompleteOutput|StreamTranscri|no such (evaluation|decision)Model|finishReason|is not allowed' .
    ```
 
 4. For each match, open the entry the table links to. Apply **What to do**.

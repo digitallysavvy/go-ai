@@ -284,6 +284,40 @@ client logic that reacts to a dropped connection (for example
 reconnect-on-network-error) sees a clean end with an `error` chunk instead.
 This is the v0.5.x behavior (owner decision, 2026-10-29).
 
+The SSE helpers follow the same ruling. After a fatal UI stream failure (a
+source read error, a processing failure or a callback that panics), the
+`Pipe*` and `Create*` UI message stream response helpers write the masked
+`error` chunk and then `data: [DONE]`, and
+`CreateUIMessageStreamResponseWithInit` closes its pipe cleanly, so the
+response body ends without an error. TS `writeToServerResponse` ends the
+response without `[DONE]`, and the body of `createUIMessageStreamResponse`
+errors.
+
+## InvalidArgumentError message prefix
+
+Go has one `errors.InvalidArgumentError` type, and its message always starts
+with `Invalid argument for parameter <field>: `. TS has two: the `ai`
+package's `InvalidArgumentError` adds that prefix, while the provider
+package's `InvalidArgumentError` (thrown, for example, by
+`DecisionLanguageModel` for "Decision requires at least one question.") has
+the bare text. Where Go ports the provider-package error, its text has the
+prefix TS leaves out. Match these errors with `errors.As`, not by their text
+(coordinator ruling, round 67).
+
+## Decide: model version check and telemetry fields
+
+- Go does not check a model's specification version. TS
+  `resolveDecisionModel` (and the other TS model resolvers) throws
+  `UnsupportedModelVersionError` for a model whose `specificationVersion` is
+  not the current one. Go models are typed by their Go interface, so no Go
+  resolver checks a version.
+- The Go `Decide` telemetry events (`telemetry.DecideStartEvent`,
+  `DecideEndEvent`, `DecisionModelCallEndEvent`) carry the subset of the TS
+  fields that the OpenTelemetry integration reads. They have no
+  `MaxOutputTokens`, `Reasoning`, `ProviderOptions`, `Warnings`, rounding
+  settings or full response. This matches the other Go telemetry events
+  (coordinator ruling, round 67).
+
 ## UI tool parts: `dynamic: false`
 
 Go UI tool parts and chunks cannot tell an unset `dynamic` from
