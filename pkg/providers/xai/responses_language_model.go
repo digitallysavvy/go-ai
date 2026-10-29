@@ -891,63 +891,71 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 	if len(raw) == 0 {
 		return result
 	}
+	// TS webSearchWireActionSchema: a discriminated union on type whose
+	// string fields are nullish; a field of the wrong type fails the parse.
 	var action struct {
-		Type    string        `json:"type"`
-		Query   *string       `json:"query,omitempty"`
-		Queries []string      `json:"queries,omitempty"`
-		URL     *string       `json:"url,omitempty"`
-		Pattern *string       `json:"pattern,omitempty"`
-		Sources []interface{} `json:"sources,omitempty"`
+		Type    string            `json:"type"`
+		Query   *string           `json:"query,omitempty"`
+		Queries []string          `json:"queries,omitempty"`
+		URL     *string           `json:"url,omitempty"`
+		Pattern *string           `json:"pattern,omitempty"`
+		Sources []json.RawMessage `json:"sources,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &action); err != nil {
 		return result
 	}
-
-	var sources []map[string]interface{}
-	for _, s := range action.Sources {
-		sm, ok := s.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		if sm["type"] != "url" {
-			continue
-		}
-		url, _ := sm["url"].(string)
-		if url == "" {
-			continue
-		}
-		sources = append(sources, map[string]interface{}{"type": "url", "url": url})
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return result
 	}
-	if len(sources) > 0 {
-		result["sources"] = sources
+	// nullable returns a nullish string field as TS passes it on: the value,
+	// null when the wire sent null, and absent when it was absent.
+	nullable := func(a map[string]interface{}, key string, v *string) {
+		if v != nil {
+			a[key] = *v
+		} else if f, ok := fields[key]; ok && string(f) == "null" {
+			a[key] = nil
+		}
 	}
 
+	var a map[string]interface{}
 	switch action.Type {
 	case "search":
-		a := map[string]interface{}{"type": "search"}
+		a = map[string]interface{}{"type": "search"}
 		if action.Query != nil {
 			a["query"] = *action.Query
 		}
 		if action.Queries != nil {
 			a["queries"] = action.Queries
 		}
-		result["action"] = a
 	case "open_page":
-		// TS passes url through as is: an absent url stays absent.
-		a := map[string]interface{}{"type": "openPage"}
-		if action.URL != nil {
-			a["url"] = *action.URL
-		}
-		result["action"] = a
+		a = map[string]interface{}{"type": "openPage"}
+		nullable(a, "url", action.URL)
 	case "find_in_page":
-		a := map[string]interface{}{"type": "findInPage"}
-		if action.URL != nil {
-			a["url"] = *action.URL
+		a = map[string]interface{}{"type": "findInPage"}
+		nullable(a, "url", action.URL)
+		nullable(a, "pattern", action.Pattern)
+	default:
+		// TS: an action that matches no branch of the union yields {}.
+		return result
+	}
+	result["action"] = a
+
+	// TS webSearchWireSourceSchema: {type: 'url', url: string}; other
+	// sources are dropped.
+	var sources []map[string]interface{}
+	for _, rawSource := range action.Sources {
+		var source struct {
+			Type string  `json:"type"`
+			URL  *string `json:"url"`
 		}
-		if action.Pattern != nil {
-			a["pattern"] = *action.Pattern
+		if json.Unmarshal(rawSource, &source) != nil || source.Type != "url" || source.URL == nil {
+			continue
 		}
-		result["action"] = a
+		sources = append(sources, map[string]interface{}{"type": "url", "url": *source.URL})
+	}
+	if len(sources) > 0 {
+		result["sources"] = sources
 	}
 	return result
 }
