@@ -1047,6 +1047,32 @@ in v0.5.3.
 - `UIMessageStreamError` messages quote the part, tool call or approval ID
   as TS template literals do (`ID "a"b"`), without Go escaping (review
   round 65).
+- The legacy `ToolLoopAgent` loop (`GenerateAgent`, `Execute`,
+  `ExecuteWithMessages`) returns an unauthenticated AI Gateway error wrapped
+  with the message that says how to authenticate, as TS generateText
+  rethrows `wrapGatewayError(error)`; the original error stays reachable
+  with `errors.As`. Telemetry `onError` still gets the original error
+  (review round 66).
+- `GenerateText` and `StreamText` start events (`OnStartEvent.Messages`)
+  carry the standardized messages, so a `Prompt` string is reported as one
+  user message, as TS `initialPrompt.messages`; they were empty for a
+  `Prompt` call. `OnStartEvent.Prompt` is still set (review round 66).
+- The legacy `ToolLoopAgent` loop reports `InstructionMessages` as the
+  instructions: when they are set, the start, step-start and model-call
+  events have an empty `Instructions`, as `GenerateText` reports them (TS
+  `instructions` is one value) (review round 66).
+- The UI message state behind `OnEnd`/`OnStepEnd` and `ReadUIMessages`
+  follows TS `processUIMessageStream` in three edge cases: a
+  `tool-input-error` chunk's `title` is not applied, a data chunk with an
+  empty `id` updates the data part with that id, and a `start` chunk's empty
+  `messageId` is applied (review round 66).
+- Error messages that quote a name use TS template-literal quoting (`"a"b"`)
+  instead of Go `%q` escaping: decision answer validation (`Question "<id>"
+  ...`), `DecisionUnsupportedQuestionTypeError`, `CreateIDGenerator`'s
+  separator error, `ExperimentalToolCallers` and tool search validation,
+  `ExperimentalStreamSpeech`/`ExperimentalStreamTranscribe` for a model
+  without streaming, and the WorkflowAgent missing provider result warning
+  (review round 66).
 - UI message `source-url` and `source-document` chunks carry the source's
   own `providerMetadata` (for example Anthropic's `pageAge`), as TS does;
   only chunk-level metadata was forwarded.
