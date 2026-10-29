@@ -64,4 +64,9 @@ var (
 
 	// ValidateToolContext is TS resolveToolContext for one tool.
 	ValidateToolContext func(tool *types.Tool, toolName string, ctxValue interface{}) (interface{}, error)
+
+	// ResolveToolApproval is TS resolveToolApproval for the legacy agent
+	// loop. It fails closed: an unknown approval status or an unsupported
+	// configuration value is an error instead of letting the tool run.
+	ResolveToolApproval func(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeCtx interface{}, toolsCtx map[string]interface{}, toolApproval interface{}) (types.ToolApprovalResult, error)
 )

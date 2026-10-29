@@ -23,4 +23,5 @@ func init() {
 	aibridge.MarkDynamicToolResults = markDynamicToolResults
 	aibridge.InvalidToolCallInput = invalidToolCallInput
 	aibridge.ValidateToolContext = validateToolContext
+	aibridge.ResolveToolApproval = resolveToolApproval
 }

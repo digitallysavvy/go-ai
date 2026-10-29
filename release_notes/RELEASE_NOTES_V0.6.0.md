@@ -117,8 +117,7 @@ earlier, upgrade to either.
   `GenerateAgent` ran a tool when its approval resolved to an unknown status
   (a typo such as `"aproved"`) or `ToolApproval` held an unsupported type.
   Both now fail the run with an error, as in `GenerateText` (see "Tool
-  approval and tool-context errors fail the call"). The resolver is exported
-  as `ai.ResolveToolApproval`.
+  approval and tool-context errors fail the call").
 - **Gladia no longer sends the API key to a foreign `result_url`.** The poll
   URL comes from the server's response; credentials now go only to the
   configured API origin.

@@ -22,6 +22,7 @@ func TestR62AIBridgeIsWired(t *testing.T) {
 		"MarkDynamicToolResults":         aibridge.MarkDynamicToolResults != nil,
 		"InvalidToolCallInput":           aibridge.InvalidToolCallInput != nil,
 		"ValidateToolContext":            aibridge.ValidateToolContext != nil,
+		"ResolveToolApproval":            aibridge.ResolveToolApproval != nil,
 	} {
 		if !set {
 			t.Errorf("aibridge.%s is not wired", name)

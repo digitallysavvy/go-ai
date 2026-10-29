@@ -3055,7 +3055,7 @@ func (a *ToolLoopAgent) notifyToolCallsAndResolveApprovals(ctx context.Context, 
 func (a *ToolLoopAgent) resolveToolApproval(ctx context.Context, call types.ToolCall, tools []types.Tool, messages []types.Message, runtimeContext interface{}, toolsContext map[string]interface{}, toolApproval types.ToolApprovalConfig) (types.ToolApprovalResult, error) {
 	// Shared with ai.GenerateText so the loop fails closed the same way: an
 	// unknown status or unsupported configuration is an error, not a pass.
-	return ai.ResolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
+	return aibridge.ResolveToolApproval(ctx, call, tools, messages, runtimeContext, toolsContext, toolApproval)
 }
 
 func findAgentTool(toolName string, tools []types.Tool) *types.Tool {
