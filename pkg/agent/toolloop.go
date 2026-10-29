@@ -2717,13 +2717,19 @@ func agentContentHasText(parts []types.ContentPart) bool {
 
 // agentToolResultsToContentParts converts tool results to content parts. When
 // secret is non-nil, approval requests are signed so they can be verified on
-// resume.
+// resume. The parts are ordered as TS convertLanguageModelContent (and
+// GenerateText) orders them: outputs without an approval response, the
+// approval requests, the approval responses, then the outputs with one.
 func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) []types.ContentPart {
 	if len(results) == 0 {
 		return nil
 	}
-	parts := make([]types.ContentPart, 0, len(results))
+	var withoutApproval, requests, responses, withApproval []types.ContentPart
 	for _, result := range results {
+		parts := &withoutApproval
+		if result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied {
+			parts = &withApproval
+		}
 		if result.ProviderExecuted && result.ApprovalStatus == "" {
 			continue
 		}
@@ -2758,7 +2764,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval && result.ApprovalReason != nil {
 				approvalRequest.Reason = *result.ApprovalReason
 			}
-			parts = append(parts, approvalRequest)
+			requests = append(requests, approvalRequest)
 			if result.ApprovalStatus == types.ToolApprovalStatusUserApproval {
 				continue
 			}
@@ -2766,7 +2772,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			if result.ApprovalReason != nil {
 				reason = *result.ApprovalReason
 			}
-			parts = append(parts, types.ToolApprovalResponseContent{
+			responses = append(responses, types.ToolApprovalResponseContent{
 				ApprovalID:       result.ToolCallID,
 				ToolCallID:       result.ToolCallID,
 				ToolCall:         toolCall,
@@ -2781,7 +2787,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			}
 		}
 		if result.Error != nil {
-			parts = append(parts, types.ToolErrorContent{
+			*parts = append(*parts, types.ToolErrorContent{
 				ToolCallID:       result.ToolCallID,
 				ToolName:         result.ToolName,
 				Input:            result.Input,
@@ -2827,9 +2833,13 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				part.Result = nil
 			}
 		}
-		parts = append(parts, part)
+		*parts = append(*parts, part)
 	}
-	return parts
+	out := make([]types.ContentPart, 0, len(withoutApproval)+len(requests)+len(responses)+len(withApproval))
+	out = append(out, withoutApproval...)
+	out = append(out, requests...)
+	out = append(out, responses...)
+	return append(out, withApproval...)
 }
 
 func modelFacingToolResultOutput(result types.ToolResult) types.ToolResultOutput {
