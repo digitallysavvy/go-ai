@@ -111,11 +111,3 @@ func checkToolChoiceViolation(choice types.ToolChoice, toolCalls []types.ToolCal
 		Content:      content,
 	}
 }
-
-// CheckToolChoiceViolation is the exported form of checkToolChoiceViolation for
-// step loops outside this package (the agent loop). It returns a
-// *ToolChoiceViolationError when choice requires a tool call (any call for
-// "required", a call to the named tool for "tool") that toolCalls lacks.
-func CheckToolChoiceViolation(choice types.ToolChoice, toolCalls []types.ToolCall, finishReason types.FinishReason, provider, modelID string, content []types.ContentPart) error {
-	return checkToolChoiceViolation(choice, toolCalls, finishReason, provider, modelID, content)
-}

@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 )
 
@@ -127,7 +128,7 @@ func ToUIMessageChunk(part ModelCallStreamPart) (ai.UIMessageChunk, bool) {
 				"type":       "tool-input-error",
 				"toolCallId": tc.ID,
 				"toolName":   tc.ToolName,
-				"input":      ai.InvalidToolCallInput(*tc),
+				"input":      aibridge.InvalidToolCallInput(*tc),
 				"errorText":  errorText,
 			}, true
 		}

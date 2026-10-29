@@ -50,17 +50,19 @@ func TestR60AssignAgentApprovalIDs(t *testing.T) {
 		t.Errorf("response IDs = %v, want [approval-b]", responseIDs)
 	}
 
+	// Without the override each approval gets an ID from the run's
+	// generator (r62 owner ruling: TS generateId()), never the call's ID.
 	results = newResults()
-	assignAgentApprovalIDs(results, nil)
+	assignAgentApprovalIDs(results, &ai.InternalOptions{GenerateID: func() string { return "gen" }})
 	for _, part := range agentToolResultsToContentParts(results, nil) {
 		switch p := part.(type) {
 		case types.ToolApprovalRequestContent:
-			if p.ApprovalID != p.ToolCallID {
-				t.Errorf("without the option the request ID = %q, want the call ID %q", p.ApprovalID, p.ToolCallID)
+			if p.ApprovalID != "gen" {
+				t.Errorf("without the option the request ID = %q, want the generated ID", p.ApprovalID)
 			}
 		case types.ToolApprovalResponseContent:
-			if p.ApprovalID != p.ToolCallID {
-				t.Errorf("without the option the response ID = %q, want the call ID %q", p.ApprovalID, p.ToolCallID)
+			if p.ApprovalID != "gen" {
+				t.Errorf("without the option the response ID = %q, want the generated ID", p.ApprovalID)
 			}
 		}
 	}

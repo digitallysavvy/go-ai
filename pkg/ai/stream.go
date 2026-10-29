@@ -3254,7 +3254,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		// Populate ResponseMessages on the step that just completed.
 		responseCalls, responseContent := stepResult.ToolCalls, stepResult.Content
 		if workflowBlocked {
-			responseCalls, responseContent = WorkflowBlockedResponse(responseCalls, responseContent)
+			responseCalls, responseContent = workflowBlockedResponse(responseCalls, responseContent)
 		}
 		stepResponseMsgs := providerutils.ConvertToResponseMessages(
 			responseCalls,

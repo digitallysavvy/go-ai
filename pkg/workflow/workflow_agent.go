@@ -16,6 +16,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/agent"
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/internal/ordered"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
@@ -1050,7 +1051,7 @@ func resolveWorkflowToolContext(tool *types.Tool, toolName string, toolsContext 
 	if toolsContext != nil {
 		entry = toolsContext[toolName]
 	}
-	return ai.ValidateToolContext(tool, toolName, entry)
+	return aibridge.ValidateToolContext(tool, toolName, entry)
 }
 
 func executeWorkflowApprovedTool(ctx context.Context, tool *types.Tool, call types.ToolCall, opts workflowApprovalResumeOptions) (interface{}, error) {
