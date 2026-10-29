@@ -815,6 +815,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		}
 
 		responseContent := append([]types.ContentPart(nil), stepResult.Content...)
+		// The model's own content, before any tool output is appended.
+		modelContent := responseContent
+		toolResultsBefore := len(result.ToolResults)
 
 		// If there are tool calls, execute them
 		var stepToolResults []types.ToolResult
@@ -975,6 +978,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if hasUnresolvedLocalAgentToolCalls(stepResult.ToolCalls, executionTools, toolResults) {
 				shouldContinue = false
 			}
+		}
+		// Provider-executed results the model returned in this response are
+		// tool-result content parts, so TS step.toolResults has them (in
+		// content order, before the locally executed results), as
+		// GenerateText's step does.
+		if providerResults := ai.ProviderToolResultsFromContent(modelContent, stepToolResults); len(providerResults) > 0 {
+			stepResult.ToolResults = append(providerResults, stepResult.ToolResults...)
+			stepResult.StaticToolResults = filterAgentStaticToolResults(stepResult.ToolResults)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(stepResult.ToolResults)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], stepResult.ToolResults...)
 		}
 		// A provider-executed call the provider gated behind its own
 		// tool-approval-request (MCP) pauses the loop until the caller

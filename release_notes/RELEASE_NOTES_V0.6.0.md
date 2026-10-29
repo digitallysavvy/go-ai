@@ -478,6 +478,12 @@ These match TS and are unlikely to need code changes, but can change output.
   JSON `null` output into the step content and the assistant response
   message, next to the provider's own result. The step now holds only the
   provider's result, as `GenerateText` and TS `convertLanguageModelContent`.
+- **Legacy `ToolLoopAgent` step tool results list provider results** (review
+  round 61): `StepResult.ToolResults` (with `StaticToolResults` /
+  `DynamicToolResults`) and `AgentResult.ToolResults` now hold the
+  provider-executed results the model returned, before the locally executed
+  ones, as `GenerateText` and TS `step.toolResults` do (WorkflowAgent's
+  generate results too). New helper: `ai.ProviderToolResultsFromContent`.
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or
