@@ -421,16 +421,21 @@ func resolveDecisionModel(model interface{}, resolver interface{}) (provider.Dec
 		}
 		resolved, supported, err := provider.DecisionModelFromProvider(resolver, v)
 		if !supported {
-			return nil, &providererrors.InvalidArgumentError{
-				Field:   "provider",
-				Message: "provider must implement provider.DecisionModelProvider (or the deprecated provider.EvaluationModelProvider)",
+			// TS resolveDecisionModel: a default provider without a
+			// decisionModel (or evaluationModel) factory is a NoSuchModelError.
+			return nil, &providererrors.NoSuchModelError{
+				ModelID:   v,
+				ModelType: "decisionModel",
+				Message: "The default provider does not support decision models. " +
+					"Pass a decision model instance or configure AI_SDK_DEFAULT_PROVIDER with a decisionModel method.",
 			}
 		}
 		if err != nil {
 			return nil, err
 		}
 		if resolved == nil {
-			return nil, fmt.Errorf("no such decisionModel: %s", v)
+			// TS: NoSuchModelError({ modelId, modelType: 'decisionModel' }).
+			return nil, providererrors.NewNoSuchModelError(v, "decisionModel")
 		}
 		return resolved, nil
 	case nil:
