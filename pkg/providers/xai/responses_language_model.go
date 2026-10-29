@@ -884,15 +884,49 @@ func mapWebSearchAction(raw json.RawMessage) map[string]interface{} {
 	}
 	// TS webSearchWireActionSchema: a discriminated union on type whose
 	// string fields are nullish; a field of the wrong type fails the parse.
-	var action struct {
-		Type    string            `json:"type"`
-		Query   *string           `json:"query,omitempty"`
-		Queries []string          `json:"queries,omitempty"`
-		URL     *string           `json:"url,omitempty"`
-		Pattern *string           `json:"pattern,omitempty"`
-		Sources []json.RawMessage `json:"sources,omitempty"`
+	// Only the matched branch's fields are checked (zod strips other keys).
+	var head struct {
+		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(raw, &action); err != nil {
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return result
+	}
+	var action struct {
+		Type    string
+		Query   *string
+		Queries []string
+		URL     *string
+		Pattern *string
+		Sources []json.RawMessage
+	}
+	action.Type = head.Type
+	var branchErr error
+	switch head.Type {
+	case "search":
+		var b struct {
+			Query   *string           `json:"query"`
+			Queries []string          `json:"queries"`
+			Sources []json.RawMessage `json:"sources"`
+		}
+		branchErr = json.Unmarshal(raw, &b)
+		action.Query, action.Queries, action.Sources = b.Query, b.Queries, b.Sources
+	case "open_page":
+		var b struct {
+			URL     *string           `json:"url"`
+			Sources []json.RawMessage `json:"sources"`
+		}
+		branchErr = json.Unmarshal(raw, &b)
+		action.URL, action.Sources = b.URL, b.Sources
+	case "find_in_page":
+		var b struct {
+			URL     *string           `json:"url"`
+			Pattern *string           `json:"pattern"`
+			Sources []json.RawMessage `json:"sources"`
+		}
+		branchErr = json.Unmarshal(raw, &b)
+		action.URL, action.Pattern, action.Sources = b.URL, b.Pattern, b.Sources
+	}
+	if branchErr != nil {
 		return result
 	}
 	var fields map[string]json.RawMessage

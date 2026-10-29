@@ -34,6 +34,18 @@ func TestR59MapWebSearchActionMatchesTSSchema(t *testing.T) {
 			in:   `{"type":"search","sources":null}`,
 			want: `{"action":{"type":"search"}}`,
 		},
+		"another branch's field of any type is ignored": {
+			in:   `{"type":"search","query":"q","pattern":5,"url":{}}`,
+			want: `{"action":{"query":"q","type":"search"}}`,
+		},
+		"open_page ignores query": {
+			in:   `{"type":"open_page","url":"https://a.test","query":1}`,
+			want: `{"action":{"type":"openPage","url":"https://a.test"}}`,
+		},
+		"own branch field of the wrong type fails the parse": {
+			in:   `{"type":"find_in_page","url":"https://a.test","pattern":5}`,
+			want: `{}`,
+		},
 		"wrong source url type is dropped": {
 			in:   `{"type":"search","sources":[{"type":"url","url":3}]}`,
 			want: `{"action":{"type":"search"}}`,
