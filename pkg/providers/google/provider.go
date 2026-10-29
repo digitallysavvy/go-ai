@@ -46,6 +46,11 @@ type Config struct {
 
 	// HTTPClient overrides the HTTP client used for requests.
 	HTTPClient *http.Client
+
+	// GenerateID generates the ids the chat and Interactions models create
+	// (tool calls without an id, sources, processing steps). TS
+	// `generateId`; defaults to a random id.
+	GenerateID func() string `json:"-"`
 }
 
 // New creates a new Google provider with the given configuration

@@ -137,6 +137,11 @@ type Config struct {
 	// (Vertex function responses only accept inline data, unlike the Google
 	// Generative AI API). Matches TS GoogleVertexProviderSettings.toolResultDownloads.
 	ToolResultDownloads ToolResultDownloadsConfig
+
+	// GenerateID generates the ids the chat, image and Interactions models
+	// create (tool calls without an id, sources, processing steps). TS
+	// `generateId`; defaults to a random id.
+	GenerateID func() string `json:"-"`
 }
 
 // ToolResultDownloadsConfig configures the Vertex tool-result file downloader.
@@ -526,6 +531,7 @@ func (p *Provider) interactionsConfig() googleprovider.InteractionsConfig {
 	return googleprovider.InteractionsConfig{
 		ProviderName: "google.vertex.interactions",
 		Client:       client,
+		GenerateID:   p.config.GenerateID,
 		SerializableConfig: func() map[string]interface{} {
 			return provider.SerializableConfig(p.config)
 		},

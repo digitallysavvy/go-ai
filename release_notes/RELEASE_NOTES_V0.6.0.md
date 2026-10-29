@@ -978,6 +978,11 @@ in v0.5.3.
 
 ### Providers
 
+- `google.Config` and `googlevertex.Config` take a `GenerateID` (TS
+  `generateId` provider setting). It reaches the chat, Vertex image and
+  Interactions models, which use it for tool calls without an id, sources
+  and processing steps; before, only `InteractionsConfig.GenerateID` could
+  set it.
 - Gemini, Google and Vertex `doGenerate` and batch results no longer fail
   on a stray `error` key (TS `responseSchema`).
 - Gemini, Google and Vertex: a long-decode response continued over several
@@ -1216,7 +1221,8 @@ Notable ones:
   id, which Go uses to reconnect.
 - Google Interactions: a non-streaming `function_call` step without an
   `id` gets an ID from the provider's ID generator
-  (`InteractionsConfig.GenerateID`, else random); TS keeps the empty ID, and
+  (`Config.GenerateID` or `InteractionsConfig.GenerateID`, else random); TS
+  keeps the empty ID, and
   v0.5.2 used a per-response `call_N` counter that repeated across steps.
   Go matches tool results by ID (coordinator ruling, round 62). The stream
   fallback `<interactionId>:<index>` (`interaction:<index>` with
