@@ -2,6 +2,7 @@ package googlevertex
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
@@ -168,6 +169,12 @@ func vertexGeminiImageContent(opts *provider.ImageGenerateOptions) []types.Conte
 	}
 	for _, file := range opts.Files {
 		mediaType := file.MediaType
+		if file.URL != "" && (mediaType == "" || mediaType == "image" || mediaType == "image/*") {
+			// A URL file without a full caller image media type takes it
+			// from the URL path, so a query string or fragment does not hide the
+			// extension (y.png?sig=1 is image/png).
+			mediaType = imageMediaTypeFromURL(file.URL)
+		}
 		if mediaType == "" {
 			mediaType = "image/*"
 		}
@@ -179,6 +186,25 @@ func vertexGeminiImageContent(opts *provider.ImageGenerateOptions) []types.Conte
 		})
 	}
 	return parts
+}
+
+// imageMediaTypeFromURL infers an image media type from the path of rawURL
+// (the query string and fragment are ignored), falling back to image/jpeg.
+func imageMediaTypeFromURL(rawURL string) string {
+	path := rawURL
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	path = strings.ToLower(path)
+	switch {
+	case strings.HasSuffix(path, ".png"):
+		return "image/png"
+	case strings.HasSuffix(path, ".gif"):
+		return "image/gif"
+	case strings.HasSuffix(path, ".webp"):
+		return "image/webp"
+	}
+	return "image/jpeg"
 }
 
 func vertexImageWarnings(opts *provider.ImageGenerateOptions) []types.Warning {
