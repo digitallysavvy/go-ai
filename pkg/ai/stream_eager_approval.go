@@ -34,7 +34,7 @@ func eagerApprovalChunks(
 	toolsCtx map[string]interface{},
 	toolApproval interface{},
 	secret []byte,
-	generateID IDGenerator,
+	newApprovalID func(toolCallID string) string,
 ) (pre preResolvedApproval, chunks []provider.StreamChunk, parts []types.ContentPart, handled bool) {
 	if call.Invalid {
 		return pre, nil, nil, false
@@ -50,7 +50,7 @@ func eagerApprovalChunks(
 	pre = preResolvedApproval{approval: approval, err: err}
 	switch approval.Status {
 	case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
-		pre.id = generateID()
+		pre.id = newApprovalID(call.ID)
 	}
 	if err != nil {
 		return pre, nil, nil, true

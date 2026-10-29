@@ -925,6 +925,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 				return nil, err
 			}
 
+			assignAgentApprovalIDs(toolResults, callConfig.Internal)
+
 			// WorkflowAgent: a provider-executed call with no result gets an
 			// empty text result (TS resolveProviderToolResult) instead of the
 			// pending marker, so the loop continues with a text output.
@@ -2734,6 +2736,42 @@ func agentContentHasText(parts []types.ContentPart) bool {
 	return false
 }
 
+// assignAgentApprovalIDs names the approvals of a step's tool calls with
+// InternalOptions.ApprovalID when it is set (TS WorkflowAgent:
+// `approval-<toolCallId>`). Otherwise an approval keeps the call's ID, as in
+// earlier releases.
+func assignAgentApprovalIDs(results []types.ToolResult, internal *ai.InternalOptions) {
+	if internal == nil || internal.ApprovalID == nil {
+		return
+	}
+	for i := range results {
+		switch results[i].ApprovalStatus {
+		case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+		default:
+			continue
+		}
+		id := internal.ApprovalID(results[i].ToolCallID)
+		results[i].ApprovalID = id
+		if request, ok := results[i].Result.(map[string]interface{}); ok && request["type"] == "tool-approval-request" {
+			copied := make(map[string]interface{}, len(request))
+			for k, v := range request {
+				copied[k] = v
+			}
+			copied["approvalId"] = id
+			results[i].Result = copied
+		}
+	}
+}
+
+// agentApprovalID is a result's approval ID: the assigned one, else the
+// call's ID.
+func agentApprovalID(result types.ToolResult) string {
+	if result.ApprovalID != "" {
+		return result.ApprovalID
+	}
+	return result.ToolCallID
+}
+
 // agentToolResultsToContentParts converts tool results to content parts. When
 // secret is non-nil, approval requests are signed so they can be verified on
 // resume. The parts are ordered as TS convertLanguageModelContent (and
@@ -2768,10 +2806,10 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 			}
 			signature := ""
 			if secret != nil {
-				signature, _ = ai.SignToolApproval(secret, result.ToolCallID, result.ToolCallID, result.ToolName, result.Input)
+				signature, _ = ai.SignToolApproval(secret, agentApprovalID(result), result.ToolCallID, result.ToolName, result.Input)
 			}
 			approvalRequest := types.ToolApprovalRequestContent{
-				ApprovalID:  result.ToolCallID,
+				ApprovalID:  agentApprovalID(result),
 				ToolCallID:  result.ToolCallID,
 				ToolCall:    toolCall,
 				Signature:   signature,
@@ -2792,7 +2830,7 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 				reason = *result.ApprovalReason
 			}
 			responses = append(responses, types.ToolApprovalResponseContent{
-				ApprovalID:       result.ToolCallID,
+				ApprovalID:       agentApprovalID(result),
 				ToolCallID:       result.ToolCallID,
 				ToolCall:         toolCall,
 				Approved:         result.ApprovalStatus == types.ToolApprovalStatusApproved,

@@ -63,6 +63,24 @@ type InternalOptions struct {
 	// PrepareStep that replaces them leaves no SDK tag at all. Used by
 	// WorkflowAgent.
 	HeadersAsGiven bool
+
+	// ApprovalID, when set, gives each tool call's approval its ID instead of
+	// GenerateID: TS WorkflowAgent names the approval of call X
+	// `approval-X`, where generateText and streamText call generateId().
+	// Used by WorkflowAgent.
+	ApprovalID func(toolCallID string) string
+}
+
+// internalApprovalID returns the approval ID function for a call: the
+// InternalOptions.ApprovalID override, or gen (the call's ID generator).
+func internalApprovalID(internal *InternalOptions, gen IDGenerator) func(toolCallID string) string {
+	if internal != nil && internal.ApprovalID != nil {
+		return internal.ApprovalID
+	}
+	if gen == nil {
+		gen = newTextID
+	}
+	return func(string) string { return gen() }
 }
 
 // notifyFailedEnd fires the end event of a failed run when
