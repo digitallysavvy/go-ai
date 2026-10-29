@@ -1,8 +1,10 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -79,5 +81,38 @@ func TestR63UIStreamStartWithOtherIDIsNotContinuation(t *testing.T) {
 		if len(msgs) != 3 || msgs[1]["id"] != "a1" || msgs[2]["id"] != "m2" {
 			t.Fatalf("%s messages = %v, want u1, a1, m2", name, msgs)
 		}
+	}
+}
+
+// TS createSseStreamWithKeepAlive throws for a keepAliveMs that is not a
+// positive timer duration of at most 2147483647ms, before the response starts.
+func TestR63KeepAliveMsOutOfRangeIsAnError(t *testing.T) {
+	const want = "keepAliveMs must be a positive finite timer duration no greater than 2147483647"
+	for _, d := range []time.Duration{0, -time.Second, 2147483648 * time.Millisecond} {
+		d := d
+		init := &UIMessageStreamResponseInit{KeepAliveMs: &d}
+		var buf bytes.Buffer
+		if err := PipeUIMessageChunksToResponse(make(chan UIMessageChunk), &buf, init); err == nil || err.Error() != want {
+			t.Fatalf("PipeUIMessageChunksToResponse(%v) err = %v, want %q", d, err, want)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("PipeUIMessageChunksToResponse(%v) wrote %q before failing", d, buf.String())
+		}
+		if _, err := CreateUIMessageChunksResponse(make(chan UIMessageChunk), init); err == nil || err.Error() != want {
+			t.Fatalf("CreateUIMessageChunksResponse(%v) err = %v", d, err)
+		}
+		res := &StreamTextResult{}
+		if _, err := CreateUIMessageStreamResponseWithInit(context.Background(), res, init); err == nil || err.Error() != want {
+			t.Fatalf("CreateUIMessageStreamResponseWithInit(%v) err = %v", d, err)
+		}
+		if err := PipeUIMessageStreamToResponseWithInit(context.Background(), res, &buf, init); err == nil || err.Error() != want {
+			t.Fatalf("PipeUIMessageStreamToResponseWithInit(%v) err = %v", d, err)
+		}
+	}
+	max := 2147483647 * time.Millisecond
+	ch := make(chan UIMessageChunk)
+	close(ch)
+	if err := PipeUIMessageChunksToResponse(ch, &bytes.Buffer{}, &UIMessageStreamResponseInit{KeepAliveMs: &max}); err != nil {
+		t.Fatalf("max keepAliveMs err = %v", err)
 	}
 }

@@ -491,6 +491,13 @@ Each item has before/after code in the
   them yet); an error before that point reports no telemetry.
   **Migration:** update queries or dashboards that match
   `ai.workflowAgent.generate`.
+- **An out-of-range `UIMessageStreamResponseInit.KeepAliveMs` is an error**
+  (review round 63). A zero or negative duration, or one above
+  2147483647ms, used to turn keep-alive off; the `Pipe*`/`Create*` UI
+  message stream response helpers now return `keepAliveMs must be a positive
+  finite timer duration no greater than 2147483647` before writing anything,
+  as TS `createSseStreamWithKeepAlive` throws. **Migration:** leave
+  `KeepAliveMs` nil to turn keep-alive off.
 
 ---
 

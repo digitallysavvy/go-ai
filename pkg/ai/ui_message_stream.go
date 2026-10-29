@@ -168,8 +168,8 @@ type UIMessageStreamResponseInit struct {
 	// right away even if the first real chunk is slow) and send a
 	// ": keep-alive\n\n" comment whenever this duration elapses without any
 	// other write, resetting on every chunk. Must be a positive duration;
-	// zero or negative disables it the same as a nil value. Mirrors TS
-	// createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
+	// zero, a negative duration or one above 2147483647ms is an error, as in
+	// TS createSseStreamWithKeepAlive's `keepAliveMs` option (TS #21672).
 	KeepAliveMs *time.Duration //nolint:revive,staticcheck // name matches TS SDK field "keepAliveMs" for parity
 }
 
@@ -2072,6 +2072,19 @@ func UIMessageStreamHeaders() http.Header {
 	return h
 }
 
+// validateUIMessageStreamKeepAlive rejects a KeepAliveMs that is not a
+// positive timer duration of at most 2147483647ms, as TS
+// createSseStreamWithKeepAlive throws before the response starts.
+func validateUIMessageStreamKeepAlive(init *UIMessageStreamResponseInit) error {
+	if init == nil || init.KeepAliveMs == nil {
+		return nil
+	}
+	if d := *init.KeepAliveMs; d <= 0 || d > 2147483647*time.Millisecond {
+		return errors.New("keepAliveMs must be a positive finite timer duration no greater than 2147483647")
+	}
+	return nil
+}
+
 // uiMessageStreamResponseHead resolves the status and headers for a UI
 // message stream response from the defaults and init.
 func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string, http.Header) {
@@ -2100,6 +2113,9 @@ func uiMessageStreamResponseHead(init *UIMessageStreamResponseInit) (int, string
 func CreateUIMessageStreamResponseWithInit(ctx context.Context, result *StreamTextResult, init *UIMessageStreamResponseInit, opts ...UIMessageStreamResultOptions) (*http.Response, error) {
 	if result == nil {
 		return nil, fmt.Errorf("result is required")
+	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return nil, err
 	}
 
 	status, statusText, headers := uiMessageStreamResponseHead(init)
@@ -2159,6 +2175,9 @@ func PipeUIMessageStreamToResponseWithInit(ctx context.Context, result *StreamTe
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return err
+	}
 
 	// streamCtx is cancelled on any write/flush failure (the deferred cancel
 	// runs as soon as writing stops) so the CreateUIMessageStream producer
@@ -2207,6 +2226,9 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 	if w == nil {
 		return fmt.Errorf("writer is required")
 	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return err
+	}
 	status, _, headers := uiMessageStreamResponseHead(init)
 	writeResponseHead(w, status, headers)
 	consumeErr, err := writeUIMessageChunksSSE(chunks, w, init)
@@ -2223,6 +2245,9 @@ func PipeUIMessageChunksToResponse(chunks <-chan UIMessageChunk, w io.Writer, in
 func CreateUIMessageChunksResponse(chunks <-chan UIMessageChunk, init *UIMessageStreamResponseInit) (*http.Response, error) {
 	if chunks == nil {
 		return nil, fmt.Errorf("stream is required")
+	}
+	if err := validateUIMessageStreamKeepAlive(init); err != nil {
+		return nil, err
 	}
 	status, statusText, headers := uiMessageStreamResponseHead(init)
 	pr, pw := io.Pipe()
@@ -2264,7 +2289,7 @@ func writeUIMessageChunksSSE(chunks <-chan UIMessageChunk, w io.Writer, init *UI
 
 	var keepAliveDuration time.Duration
 	keepAliveEnabled := false
-	if init != nil && init.KeepAliveMs != nil && *init.KeepAliveMs > 0 {
+	if init != nil && init.KeepAliveMs != nil {
 		keepAliveDuration = *init.KeepAliveMs
 		keepAliveEnabled = true
 	}
