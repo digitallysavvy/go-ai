@@ -33,7 +33,7 @@ A `Provider` field accepts a `provider.BatchV4` value, a provider that exposes `
 | `Requests` | `[]BatchRequest` |  |
 | `ProviderOptions` | `map[string]interface{}` |  |
 | `WebhookURL` | `string` | WebhookURL, when set, is the URL the provider notifies when the batch reaches a terminal state. Providers that do not support completion webhooks return an unsupported-functionality warning instead of erroring. |
-| `MaxRetries` | `*int` |  |
+| `MaxRetries` | `*int` | MaxRetries is kept for v0.5 callers. It is validated (it must not be negative) but not used: TS startBatch takes no maxRetries and calls doStartBatch once, so a failed start is never retried. |
 | `Headers` | `map[string]string` |  |
 | `Timeout` | `*time.Duration` |  |
 
