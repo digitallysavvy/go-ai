@@ -821,6 +821,10 @@ These match TS and are unlikely to need code changes, but can change output.
   part), and static video offsets use JavaScript number formatting (`1e-7s`,
   `1e+21s`, `0s` for negative zero), as TS's template literal (review round
   61).
+- An Anthropic `message_stop` with no earlier `message_start` or
+  `message_delta` reports `providerMetadata.anthropic.usage: null` and TS's
+  initial usage object (zero token counts, `iterations: null`) as
+  `usage.raw` (review round 62, TS `rawUsage ?? usage`).
 - An SSE event named `done` that carries a JSON payload is an ordinary chunk in
   every OpenAI-compatible and SSE provider stream; only `data: [DONE]` ends
   the stream, as TS `parseJsonEventStream` ignores event names. OpenAI
@@ -1210,6 +1214,14 @@ Notable ones:
   `stop_sequence`) counts as absent; TS treats `""` as present. An
   interactions `interaction.created` event with an empty id keeps the earlier
   id, which Go uses to reconnect.
+- Google Interactions: a non-streaming `function_call` step without an
+  `id` gets an ID from the provider's ID generator
+  (`InteractionsConfig.GenerateID`, else random); TS keeps the empty ID, and
+  v0.5.2 used a per-response `call_N` counter that repeated across steps.
+  Go matches tool results by ID (coordinator ruling, round 62). The stream
+  fallback `<interactionId>:<index>` (`interaction:<index>` with
+  `store: false`) matches TS and can repeat across steps under
+  `store: false`.
 
 ---
 

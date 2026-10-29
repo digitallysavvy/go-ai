@@ -310,6 +310,20 @@ through without parsing, so throwing would reject inputs that TS accepts.
   resets it, but Go also uses that id to reconnect to and cancel the
   interaction.
 
+## Google Interactions tool call IDs
+
+A non-streaming Interactions response whose `function_call` step has no
+`id` (or an empty one) gets an ID from the provider's ID generator
+(`InteractionsConfig.GenerateID`, else a random ID), as other Go providers
+do for missing tool call IDs. TS keeps the empty or missing ID. Go matches
+tool results and approvals by ID, so an empty ID, or the per-response
+`call_N` counter v0.5.2 used, could repeat across the steps of one run.
+
+The stream fallback follows TS: a step without an `id` is named
+`<interactionId>:<index>`, and `interaction:<index>` when the response has
+no interaction id (`store: false`). Under `store: false` that fallback can
+repeat across steps.
+
 ## Features that are TypeScript-only (not ported)
 
 - **OpenAI Live over WebRTC** — the browser transport for OpenAI's realtime
