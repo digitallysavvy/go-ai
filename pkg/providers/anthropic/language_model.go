@@ -416,8 +416,8 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// content whose providerMetadata identifies them as a compaction summary
 	// (TS: `content.push({type: 'text', text: part.content, providerMetadata})`).
 	// An empty or null compaction content is omitted entirely (TS: `if
-	// (!part.content) break;`).
-	if !usesJsonResponseTool {
+	// (!part.content) break;`). TS keeps compaction text in jsonTool mode too.
+	{
 		var textParts []string
 		var textBlocks []types.ContentPart
 		hasExtraContent := false
@@ -433,6 +433,9 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		for blockIdx, content := range response.Content {
 			switch content.Type {
 			case "text":
+				if usesJsonResponseTool {
+					continue
+				}
 				textParts = append(textParts, content.Text)
 				// Every citation is normalized onto the text part and kept raw in
 				// providerMetadata; retrieved sources are separate (TS #21797).
@@ -581,6 +584,7 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// resolve the same toolName and reuse the same providerMetadata.
 	mcpToolCalls := map[string]mcpToolCallInfo{}
 	serverToolProviderNames := map[string]string{}
+	jsonToolBlocks := map[int]bool{}
 	addToolCall := func(blockIdx int, tc types.ToolCall) {
 		result.ToolCalls = append(result.ToolCalls, tc)
 		byBlock[blockIdx] = append(byBlock[blockIdx], toolCallContentOf(tc))
@@ -590,8 +594,13 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		case "tool_use":
 			if usesJsonResponseTool && content.Name == "json" {
 				// jsonTool mode: the model responded via the synthetic json tool.
-				// Extract the tool input as the structured text result.
-				result.Text = inputText(content.RawInput, content.Input)
+				// The tool input becomes a text part in the block's place (TS
+				// content.push({type: 'text', text: JSON.stringify(part.input)})),
+				// after any compaction text or server tool parts before it.
+				jsonText := inputText(content.RawInput, content.Input)
+				result.Text += jsonText
+				byBlock[blockIdx] = append(byBlock[blockIdx], types.TextContent{Text: jsonText})
+				jsonToolBlocks[blockIdx] = true
 				isJsonResponseFromTool = true
 			} else if content.ToolsetName != "" {
 				// Toolset member calls (e.g. the computer toolset) map to the
@@ -748,7 +757,8 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 	// of the thinking or tool blocks that precede it.
 	ordered := textInContent
 	for i, c := range response.Content {
-		if c.Type != "text" && len(byBlock[i]) > 0 {
+		// A json-tool text part alone stays on result.Text, like plain text.
+		if c.Type != "text" && !jsonToolBlocks[i] && len(byBlock[i]) > 0 {
 			ordered = true
 		}
 	}
