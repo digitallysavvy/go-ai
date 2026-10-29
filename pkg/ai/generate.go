@@ -1042,7 +1042,9 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		InstructionMessages: instructionMessages,
 		System:              system,
 		Prompt:              opts.Prompt,
-		Messages:            opts.Messages,
+		// TS start event messages: the standardized prompt's messages (a
+		// prompt string becomes one user message).
+		Messages:            buildPrompt(opts.Prompt, opts.Messages, "").Messages,
 		Tools:               opts.Tools,
 		ActiveTools:         opts.ActiveTools,
 		ToolOrder:           opts.ToolOrder,

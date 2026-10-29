@@ -325,7 +325,7 @@ func ExperimentalStreamSpeech(ctx context.Context, opts StreamSpeechOptions) (*S
 		return nil, &providererrors.UnsupportedFunctionalityError{
 			Functionality: "streaming speech",
 			Message: fmt.Sprintf(
-				"The %s model %q does not support streaming speech.",
+				"The %s model \"%s\" does not support streaming speech.",
 				opts.Model.Provider(), opts.Model.ModelID(),
 			),
 		}

@@ -1329,7 +1329,8 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	chunkType, _ := chunk["type"].(string)
 	switch chunkType {
 	case "start":
-		if id, _ := chunk["messageId"].(string); id != "" {
+		// TS `chunk.messageId != null`: an empty id is still applied.
+		if id, ok := chunk["messageId"].(string); ok {
 			if s.resetOnMessageIDChange && id != stringValue(s.message["id"]) {
 				s.message = UIMessageChunk{"id": id, "role": "assistant", "parts": []interface{}{}}
 				s.activeText = map[string]UIMessageChunk{}
@@ -1521,7 +1522,15 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		// carry a legacy rawInput continue to go through the separate
 		// validate-ui-messages compatibility path.
 		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"], "input": chunk["input"]}
-		s.updateToolPart(toolCallID, toolName, dynamic, update, chunk)
+		// TS passes no title for tool-input-error (the chunk's title is not
+		// applied): a new part has none, an existing part keeps its own.
+		source := make(UIMessageChunk, len(chunk))
+		for k, v := range chunk {
+			if k != "title" {
+				source[k] = v
+			}
+		}
+		s.updateToolPart(toolCallID, toolName, dynamic, update, source)
 	case "tool-output-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		part := s.findToolPart(toolCallID)
@@ -1643,8 +1652,9 @@ func (s *uiMessageCallbackState) appendPart(part UIMessageChunk) {
 }
 
 func (s *uiMessageCallbackState) upsertDataPart(chunk UIMessageChunk) {
+	// TS `dataChunk.id != null`: an empty id still names a part.
 	id, hasID := chunk["id"].(string)
-	if hasID && id != "" {
+	if hasID {
 		for _, raw := range uiParts(s.message) {
 			part, ok := raw.(UIMessageChunk)
 			if !ok {

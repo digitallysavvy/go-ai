@@ -24,7 +24,7 @@ func (e *DecisionUnsupportedQuestionTypeError) Error() string {
 		return e.Message
 	}
 	return fmt.Sprintf(
-		"Question %q has type %q, which is not supported by provider %q and model %q.",
+		"Question \"%s\" has type \"%s\", which is not supported by provider \"%s\" and model \"%s\".",
 		e.QuestionID, e.QuestionType, e.Provider, e.ModelID,
 	)
 }

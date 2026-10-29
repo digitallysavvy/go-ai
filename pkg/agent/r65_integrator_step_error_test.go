@@ -119,3 +119,109 @@ func TestR65IntegratorLegacyStepErrorAfterModelCall(t *testing.T) {
 		})
 	}
 }
+
+// TS generateText (which ToolLoopAgent runs) throws wrapGatewayError(error):
+// the legacy loop returns the wrapped gateway error too, with the original
+// still reachable through errors.As.
+func TestR66LegacyLoopReturnsWrappedGatewayError(t *testing.T) {
+	raw := gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
+	zero := 0
+	cfg := AgentConfig{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return nil, raw
+		}},
+		MaxRetries: &zero,
+	}
+	_, genErr := NewToolLoopAgent(cfg).GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"})
+	_, execErr := NewToolLoopAgent(cfg).Execute(context.Background(), "go")
+	for name, err := range map[string]error{"GenerateAgent": genErr, "Execute": execErr} {
+		var auth *gatewayerrors.GatewayAuthenticationError
+		if !errors.As(err, &auth) || !strings.Contains(err.Error(), "AI_GATEWAY_API_KEY") {
+			t.Fatalf("%s error = %v, want the wrapped gateway error", name, err)
+		}
+	}
+}
+
+// Instructions given as system messages replace the text instructions in the
+// legacy loop's events, as GenerateText reports them (TS instructions is a
+// single value): Instructions is empty next to InstructionMessages.
+func TestR66LegacyLoopInstructionMessagesReplaceSystemInEvents(t *testing.T) {
+	var mu sync.Mutex
+	var got []string
+	record := func(label, instructions string, n int) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, label+"="+instructions)
+		if n != 1 {
+			got = append(got, label+" messages missing")
+		}
+	}
+	cfg := AgentConfig{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{Text: "ok", FinishReason: types.FinishReasonStop}, nil
+		}},
+		System:              "text",
+		InstructionMessages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "msg"}}}},
+		OnLanguageModelCallStart: func(_ context.Context, e ai.LanguageModelCallStartEvent) {
+			record("lm", e.Instructions, len(e.InstructionMessages))
+		},
+	}
+	_, err := NewToolLoopAgent(cfg).GenerateAgent(context.Background(), AgentGenerateOptions{
+		Prompt: "go",
+		OnStart: func(_ context.Context, e ai.OnStartEvent) {
+			record("start", e.Instructions, len(e.InstructionMessages))
+		},
+		OnStepStart: func(_ context.Context, e ai.OnStepStartEvent) {
+			record("step", e.Instructions, len(e.InstructionMessages))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := "start=,step=,lm="; strings.Join(got, ",") != want {
+		t.Fatalf("events = %q, want %q", strings.Join(got, ","), want)
+	}
+}
+
+// TS generateText checks a response's deferred provider result against the
+// call's tools: a SupportsDeferredResults provider tool left out of the
+// step's ActiveTools still accepts its result (no "Tool call not found").
+func TestR66LegacyLoopDeferredResultCheckedAgainstCallTools(t *testing.T) {
+	cfg := AgentConfig{
+		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
+			return &types.GenerateResult{
+				Text:         "done",
+				FinishReason: types.FinishReasonStop,
+				Content: []types.ContentPart{
+					types.TextContent{Text: "done"},
+					types.ToolResultContent{ToolCallID: "earlier", ToolName: "p", Result: "r"},
+				},
+			}, nil
+		}},
+		Tools: []types.Tool{
+			{Name: "c", Parameters: map[string]interface{}{"type": "object"}, Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+				return "ok", nil
+			}},
+			{Name: "p", ProviderExecuted: true, SupportsDeferredResults: true, Metadata: map[string]interface{}{"k": "v"}},
+		},
+		ActiveTools: []string{"c"},
+	}
+	res, err := NewToolLoopAgent(cfg).GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"})
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	found := false
+	for _, part := range res.Steps[0].Content {
+		if tr, ok := part.(types.ToolResultContent); ok && tr.ToolCallID == "earlier" {
+			found = true
+			if tr.ToolMetadata["k"] != "v" {
+				t.Fatalf("deferred result metadata = %v, want the tool's metadata", tr.ToolMetadata)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("content = %+v, want the deferred result", res.Steps[0].Content)
+	}
+}

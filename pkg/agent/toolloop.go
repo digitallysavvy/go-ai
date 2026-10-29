@@ -540,9 +540,15 @@ func (a *ToolLoopAgent) executeWithMessages(ctx context.Context, messages []type
 	var lt *loopTelemetry
 	result, err := a.runLoop(ctx, messages, callCallbacks, &lt)
 	if lt != nil {
+		// Telemetry gets the original error (TS telemetry onError).
 		a.endLoopTelemetry(baseCtx, lt, result, err)
 	}
-	return result, err
+	if err != nil {
+		// TS ToolLoopAgent runs generateText, which rethrows every failure
+		// through wrapGatewayError.
+		return result, aibridge.WrapGatewayError(err)
+	}
+	return result, nil
 }
 
 func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, callCallbacks agentCallbacks, ltOut **loopTelemetry) (*AgentResult, error) {
@@ -741,13 +747,20 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	for stepNum := 1; a.config.MaxSteps <= 0 || stepNum <= a.config.MaxSteps; stepNum++ {
 		stepIndex := stepNum - 1
 		var callConfig PrepareCallConfig
+		// callTools is the step's prepared tool set before ActiveTools, tool
+		// search and tool-caller routing narrow it: TS generateText checks a
+		// response's provider results against the call's `tools`.
+		var callTools []types.Tool
 		if stepIndex == 0 {
 			// Step 0 runs with the configuration prepared before the root
 			// opened, plus any messages the approval resumption added.
+			callTools = fc.Tools
 			callConfig = a.finishStepCallConfig(ctx, stepIndex, fc)
 			callConfig.Messages = currentMessages
 		} else {
-			callConfig = a.prepareStepCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+			prepared := a.prepareCallConfig(ctx, stepIndex, "", currentMessages, result.Steps, result.Usage, customData)
+			callTools = prepared.Tools
+			callConfig = a.finishStepCallConfig(ctx, stepIndex, prepared)
 		}
 		// A PrepareCall override of the telemetry settings (TS prepareCall
 		// `telemetry`) applies to this and the following steps' spans.
@@ -837,7 +850,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 		// Execute one step with custom data
 		stepStarted := time.Now()
-		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(stepCtx, callConfig, stepTel)
+		stepResult, shouldContinue, newCustomData, _, err := a.executeStep(stepCtx, callConfig, callTools, stepTel)
 		customData = newCustomData
 		if err == nil {
 			// TS generateText continues only for client (locally executed)
@@ -1395,6 +1408,13 @@ func (a *ToolLoopAgent) prepareCallConfig(ctx context.Context, stepNum int, prom
 	if a.config.PrepareCall != nil {
 		callConfig = a.config.PrepareCall(ctx, callConfig)
 	}
+	if len(callConfig.InstructionMessages) > 0 {
+		// Instructions given as system messages replace the text
+		// instructions (TS instructions is one value), as GenerateText
+		// reports them: the start, step-start and model-call events carry
+		// the messages and no text instructions.
+		callConfig.System = ""
+	}
 	if callConfig.Model == nil {
 		callConfig.Model = a.config.Model
 	}
@@ -1873,7 +1893,7 @@ func (a *ToolLoopAgent) stepTimeoutContext(ctx context.Context, callConfig Prepa
 }
 
 // executeStep executes a single agent step
-func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig, stepTel *loopStepTelemetry) (*types.StepResult, bool, interface{}, []types.Tool, error) {
+func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallConfig, callTools []types.Tool, stepTel *loopStepTelemetry) (*types.StepResult, bool, interface{}, []types.Tool, error) {
 	// ctx carries the per-step timeout (see stepTimeoutContext); it also
 	// covers the step's tool execution, as TS mergedAbortSignal does.
 	stepCtx := ctx
@@ -2055,11 +2075,13 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		genResult = &resolvedResult
 	}
 	// A tool-result part must answer a tool call of the same response (TS
-	// convertLanguageModelContent: "Tool call <id> not found.").
-	if err := aibridge.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
+	// convertLanguageModelContent: "Tool call <id> not found."). A deferred
+	// provider result is checked against the call's tools, not the step's
+	// active tools (TS convertLanguageModelContent gets `tools`).
+	if err := aibridge.ValidateToolResultParts(genResult.Content, toolCalls, callTools); err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
-	if content, changed := agentDeferredToolResultMetadata(genResult.Content, toolCalls, callConfig.Tools); changed {
+	if content, changed := agentDeferredToolResultMetadata(genResult.Content, toolCalls, callTools); changed {
 		withMetadata := *genResult
 		withMetadata.Content = content
 		genResult = &withMetadata
