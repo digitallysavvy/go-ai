@@ -21,6 +21,7 @@ The tables on this page are generated from the Go source. For usage, see the [Go
 | `Headers` | `map[string]string` | Headers are custom HTTP headers to include in requests. |
 | `Name` | `string` | Name overrides the provider name returned by Provider.Name(). Defaults to "google.generative-ai". |
 | `HTTPClient` | `*http.Client` | HTTPClient overrides the HTTP client used for requests. |
+| `GenerateID` | `func() string` | GenerateID generates the ids the chat and Interactions models create (tool calls without an id, sources, processing steps). TS `generateId`; defaults to a random id. |
 
 {/* /gen:fields */}
 
