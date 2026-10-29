@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2342,7 +2343,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				stepContent = append(stepContent, toolCallContentOf(refined))
 				// With tool choice none the call is rejected at the end of the
 				// model call, so no approval is requested for it.
-				if !withholdToolParts {
+				if !withholdToolParts && !deferApprovalRequests(opts.Internal) {
 					if pre, approvalChunks, approvalParts, handled := eagerApprovalChunks(stepCtx, refined, &parsed, stepExecutionTools, currentMessages, r.cbRuntimeCtx, r.cbToolsCtx, opts.ToolApproval, opts.ExperimentalToolApprovalSecret, internalApprovalID(opts.Internal, remapGenerateID)); handled {
 						if pre.err != nil {
 							// TS resolveToolApproval throws inside the
@@ -2944,7 +2945,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 
 		// Forward tool execution chunks to OnChunk consumers after execution.
+		// With InternalOptions.DeferApprovalRequests the tool results come
+		// first and the approval parts after them (TS WorkflowAgent
+		// writeToolResults, then writeApprovalRequests).
+		emitOrder := make([]int, 0, len(stepToolResults))
 		for i := range stepToolResults {
+			emitOrder = append(emitOrder, i)
+		}
+		if deferApprovalRequests(opts.Internal) {
+			sort.SliceStable(emitOrder, func(a, b int) bool {
+				return !hasApprovalStatus(stepToolResults[emitOrder[a]]) && hasApprovalStatus(stepToolResults[emitOrder[b]])
+			})
+		}
+		for _, i := range emitOrder {
 			tr := &stepToolResults[i]
 			emitChunk := func(resultChunk provider.StreamChunk) {
 				forwardThroughTransformChain(0, []provider.StreamChunk{resultChunk})

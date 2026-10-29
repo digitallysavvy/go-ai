@@ -20,6 +20,7 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/providerutils"
 	promptutils "github.com/digitallysavvy/go-ai/pkg/providerutils/prompt"
 	"github.com/digitallysavvy/go-ai/pkg/schema"
 	telemetrypkg "github.com/digitallysavvy/go-ai/pkg/telemetry"
@@ -734,6 +735,21 @@ func workflowToolDeclaresApproval(tool *types.Tool) bool {
 	}
 }
 
+// workflowDefaultModelOutput is the model output of a resumed approved tool's
+// result without ToModelOutput (TS createToolModelOutput: a string is text,
+// anything else JSON).
+func workflowDefaultModelOutput(call types.ToolCall, result interface{}) *types.ToolResultOutput {
+	msgs := providerutils.ConvertToResponseMessages(nil, nil, []types.ToolResult{{ToolCallID: call.ID, ToolName: call.ToolName, Result: result}})
+	for _, msg := range msgs {
+		for _, part := range msg.Content {
+			if p, ok := part.(types.ToolResultContent); ok && p.Output != nil {
+				return p.Output
+			}
+		}
+	}
+	return &types.ToolResultOutput{Type: types.ToolResultOutputJSON, Value: result}
+}
+
 // workflowApprovalResumeOptions configures processWorkflowApprovalResume.
 type workflowApprovalResumeOptions struct {
 	messages            []types.Message
@@ -871,11 +887,13 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 				},
 			}
 		}
+		// TS modelResult: {type, toolCallId, toolName, output}, the output
+		// being the tool's ToModelOutput or createToolModelOutput's default
+		// (text for a string, else JSON); no input.
 		part := types.ToolResultContent{
 			ToolCallID: call.ID,
 			ToolName:   call.ToolName,
-			Input:      call.Arguments,
-			Result:     result,
+			Output:     workflowDefaultModelOutput(call, result),
 		}
 		if tool.ToModelOutput != nil {
 			callCopy := call
@@ -941,7 +959,6 @@ func processWorkflowApprovalResume(ctx context.Context, opts workflowApprovalRes
 			localResults = append(localResults, types.ToolResultContent{
 				ToolCallID: call.ID,
 				ToolName:   call.ToolName,
-				Input:      call.Arguments,
 				Output:     &types.ToolResultOutput{Type: types.ToolResultOutputExecutionDenied, Reason: approval.ApprovalResponse.Reason},
 			})
 		}
@@ -2635,7 +2652,7 @@ func (w *WorkflowAgent) StreamWithOptions(ctx context.Context, opts WorkflowStre
 // TimeoutError as aborts, so onAbort fires and onError does not).
 // workflowInternalOptions makes the loop continue after a provider-executed
 // tool call with no result (TS WorkflowAgent warns and sends an empty result).
-var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID}
+var workflowInternalOptions = &ai.InternalOptions{ContinueOnMissingProviderResult: true, StopOnStreamError: true, EndOnError: true, HeadersAsGiven: true, ApprovalID: workflowApprovalID, RequestMessagesAsPrompt: true, DeferApprovalRequests: true, ApprovalsResumed: true}
 
 // workflowApprovalID is TS WorkflowAgent's approval ID for a tool call:
 // `approval-${toolCallId}`, in generate and stream mode.

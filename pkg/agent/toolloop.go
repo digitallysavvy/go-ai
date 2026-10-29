@@ -659,20 +659,26 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// continued without executing the tool or verifying its signature.
 	// TS generateText resumes them with the prepared call's tools, approval
 	// configuration and contexts.
-	resumed, resumeErr := ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
-		Messages:             currentMessages,
-		Tools:                fc.Tools,
-		ToolApproval:         fc.ToolApproval,
-		ToolsContext:         fc.ToolsContext,
-		RuntimeContext:       fc.RuntimeContext,
-		Secret:               fc.ExperimentalToolApprovalSecret,
-		RefineToolInput:      fc.ExperimentalRefineToolInput,
-		ToolCallConcurrency:  fc.ToolCallConcurrency,
-		ModelProvider:        fc.Model.Provider(),
-		ModelID:              fc.Model.ModelID(),
-		OnToolExecutionStart: cbs.onToolCallStart,
-		OnToolExecutionEnd:   cbs.onToolCallFinish,
-	})
+	// A caller that resumed the approvals itself (WorkflowAgent,
+	// InternalOptions.ApprovalsResumed) leaves nothing to resume here.
+	var resumed ai.ResumeToolApprovalsResult
+	var resumeErr error
+	if fc.Internal == nil || !fc.Internal.ApprovalsResumed {
+		resumed, resumeErr = ai.ResumeToolApprovals(ctx, ai.ResumeToolApprovalsOptions{
+			Messages:             currentMessages,
+			Tools:                fc.Tools,
+			ToolApproval:         fc.ToolApproval,
+			ToolsContext:         fc.ToolsContext,
+			RuntimeContext:       fc.RuntimeContext,
+			Secret:               fc.ExperimentalToolApprovalSecret,
+			RefineToolInput:      fc.ExperimentalRefineToolInput,
+			ToolCallConcurrency:  fc.ToolCallConcurrency,
+			ModelProvider:        fc.Model.Provider(),
+			ModelID:              fc.Model.ModelID(),
+			OnToolExecutionStart: cbs.onToolCallStart,
+			OnToolExecutionEnd:   cbs.onToolCallFinish,
+		})
+	}
 	if resumeErr != nil {
 		if a.config.OnChainError != nil {
 			a.config.OnChainError(resumeErr)
@@ -815,6 +821,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		}
 
 		responseContent := append([]types.ContentPart(nil), stepResult.Content...)
+		// The model's own content, before any tool output is appended.
+		modelContent := responseContent
+		toolResultsBefore := len(result.ToolResults)
 
 		// If there are tool calls, execute them
 		var stepToolResults []types.ToolResult
@@ -975,6 +984,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			if hasUnresolvedLocalAgentToolCalls(stepResult.ToolCalls, executionTools, toolResults) {
 				shouldContinue = false
 			}
+		}
+		// Provider-executed results the model returned in this response are
+		// tool-result content parts, so TS step.toolResults has them (in
+		// content order, before the locally executed results), as
+		// GenerateText's step does.
+		if providerResults := ai.ProviderToolResultsFromContent(modelContent, stepToolResults); len(providerResults) > 0 {
+			stepResult.ToolResults = append(providerResults, stepResult.ToolResults...)
+			stepResult.StaticToolResults = filterAgentStaticToolResults(stepResult.ToolResults)
+			stepResult.DynamicToolResults = filterAgentDynamicToolResults(stepResult.ToolResults)
+			result.ToolResults = append(result.ToolResults[:toolResultsBefore:toolResultsBefore], stepResult.ToolResults...)
 		}
 		// A provider-executed call the provider gated behind its own
 		// tool-approval-request (MCP) pauses the loop until the caller
@@ -1842,8 +1861,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		}
 		promptSystem = ""
 	}
+	// Approval parts stay out of the model's prompt, except a
+	// provider-executed call's approval response (TS
+	// convertToLanguageModelPrompt, as GenerateText).
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
-		Messages: callConfig.Messages,
+		Messages: ai.MessagesForModel(callConfig.Messages),
 		System:   promptSystem,
 	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {
@@ -2074,7 +2096,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		ProviderMetadata: genResult.ProviderMetadata,
 		Request: types.StepRequest{
 			Body:     includeValue(include.RequestBody, genResult.RawRequest),
-			Messages: includeAgentRequestMessages(include.RequestMessages, prompt.Messages),
+			Messages: includeAgentRequestMessages(include.RequestMessages, callConfig.Internal, callConfig.Messages, prompt),
 		},
 		Response:       stepResponse,
 		ToolsContext:   callConfig.ToolsContext,
@@ -2162,7 +2184,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			return results, nil
 		}
 
-		providerExecuted := tool.ProviderExecuted
+		// A call the provider marks as executed is never run locally, even
+		// when a local tool has its name (TS: client tool calls are the calls
+		// without providerExecuted).
+		providerExecuted := tool.ProviderExecuted || call.ProviderExecuted
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 
 		approval, resolved := preApprovals[call.ID]
@@ -2493,9 +2518,23 @@ func includeValue(include bool, value interface{}) interface{} {
 	return value
 }
 
-func includeAgentRequestMessages(include bool, messages []types.Message) []types.Message {
+// includeAgentRequestMessages is a step's request messages when
+// Include.RequestMessages is set: the step's messages as given to the model
+// call, before prompt conversion and without the instructions (TS
+// generateText cloneModelMessages(stepMessages)). With
+// InternalOptions.RequestMessagesAsPrompt (WorkflowAgent) it is the model
+// call's prompt, its system message first (TS WorkflowAgent
+// conversationPrompt).
+func includeAgentRequestMessages(include bool, internal *ai.InternalOptions, messages []types.Message, prompt types.Prompt) []types.Message {
 	if !include {
 		return nil
+	}
+	if internal != nil && internal.RequestMessagesAsPrompt {
+		out := make([]types.Message, 0, len(prompt.Messages)+1)
+		if prompt.System != "" {
+			out = append(out, types.Message{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: prompt.System}}})
+		}
+		return append(out, prompt.Messages...)
 	}
 	return append([]types.Message(nil), messages...)
 }
@@ -2802,12 +2841,18 @@ func agentToolResultsToContentParts(results []types.ToolResult, secret []byte) [
 		if result.ApprovalStatus == types.ToolApprovalStatusApproved || result.ApprovalStatus == types.ToolApprovalStatusDenied {
 			parts = &withApproval
 		}
-		if result.ProviderExecuted && result.ApprovalStatus == "" {
+		hasApproval := result.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
+			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
+			result.ApprovalStatus == types.ToolApprovalStatusDenied
+		// A provider-executed call without an approval is the pending marker
+		// (its result, if any, is the provider's own content part), whatever
+		// its approval status ("" or not-applicable): it adds no content, as
+		// in GenerateText. Only the synthetic WorkflowAgent empty result
+		// (ContinueOnMissingProviderResult) carries an output.
+		if result.ProviderExecuted && !hasApproval && result.Result == nil && result.Error == nil && result.ModelOutput == nil {
 			continue
 		}
-		if result.ApprovalStatus == types.ToolApprovalStatusUserApproval ||
-			result.ApprovalStatus == types.ToolApprovalStatusApproved ||
-			result.ApprovalStatus == types.ToolApprovalStatusDenied {
+		if hasApproval {
 			toolCall := types.ToolCall{
 				ID:                  result.ToolCallID,
 				ToolName:            result.ToolName,

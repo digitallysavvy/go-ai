@@ -69,6 +69,44 @@ type InternalOptions struct {
 	// `approval-X`, where generateText and streamText call generateId().
 	// Used by WorkflowAgent.
 	ApprovalID func(toolCallID string) string
+
+	// RequestMessagesAsPrompt makes the legacy agent loop (pkg/agent
+	// GenerateAgent) record each step's request messages
+	// (Include.RequestMessages) as the model call's prompt, its system
+	// message first: TS WorkflowAgent keeps its language model prompt there,
+	// where generateText (and ToolLoopAgent) keeps the step's messages
+	// without the instructions. Used by WorkflowAgent.
+	RequestMessagesAsPrompt bool
+
+	// DeferApprovalRequests makes StreamText resolve a step's tool approvals
+	// after the model stream, with its tools, and emit the approval parts
+	// after the step's tool results, as TS WorkflowAgent's stream mode does
+	// (writeToolResults, then writeApprovalRequests). Plain StreamText
+	// resolves each approval at its tool-call part, as TS streamText. Used by
+	// WorkflowAgent.
+	DeferApprovalRequests bool
+
+	// ApprovalsResumed tells the legacy agent loop (pkg/agent GenerateAgent)
+	// that the caller already resumed the tool approvals of the input
+	// messages, so the loop does not resume them again: TS WorkflowAgent
+	// resumes approvals itself and forwards a provider-executed call's
+	// approval response as is, without generateText's execution-denied
+	// result. Used by WorkflowAgent.
+	ApprovalsResumed bool
+}
+
+func deferApprovalRequests(internal *InternalOptions) bool {
+	return internal != nil && internal.DeferApprovalRequests
+}
+
+// hasApprovalStatus reports whether a tool result carries an approval
+// outcome (a request, or an automatic approval or denial).
+func hasApprovalStatus(tr types.ToolResult) bool {
+	switch tr.ApprovalStatus {
+	case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+		return true
+	}
+	return false
 }
 
 // internalApprovalID returns the approval ID function for a call: the

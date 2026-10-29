@@ -472,6 +472,37 @@ These match TS and are unlikely to need code changes, but can change output.
   unset** (review round 60), as `GenerateText` and TS do, so the provider's
   default denial text reaches the model instead of "Tool call to X was denied
   by ToolApproval policy." (the Go-only `ToolApprover` keeps that text).
+- **A legacy `ToolLoopAgent` provider-executed call adds no null tool result**
+  (review round 61): a call to a configured provider tool (web search, code
+  execution) without an approval put a second `ToolResultContent` with a
+  JSON `null` output into the step content and the assistant response
+  message, next to the provider's own result. The step now holds only the
+  provider's result, as `GenerateText` and TS `convertLanguageModelContent`.
+- **Legacy `ToolLoopAgent` step tool results list provider results** (review
+  round 61): `StepResult.ToolResults` (with `StaticToolResults` /
+  `DynamicToolResults`) and `AgentResult.ToolResults` now hold the
+  provider-executed results the model returned, before the locally executed
+  ones, as `GenerateText` and TS `step.toolResults` do (WorkflowAgent's
+  generate results too). New helper: `ai.ProviderToolResultsFromContent`.
+- **Legacy `ToolLoopAgent` prompts leave out local approval parts** (review
+  round 61): the tool-approval-request and -response parts of an
+  automatically decided (or resumed) local approval reached the next model
+  call, where the OpenAI Responses converter sent an `mcp_approval_response`
+  for them. They are removed before the call, keeping a provider-executed
+  call's approval response, as `GenerateText`, `StreamText` and TS
+  `convertToLanguageModelPrompt` (WorkflowAgent's generate mode too). New
+  helper: `ai.MessagesForModel`.
+- **Legacy `ToolLoopAgent` request messages leave out the instructions**
+  (review round 61): with `Include.RequestMessages`, `StepResult.Request.Messages`
+  is the step's messages as `GenerateText` and TS `generateText` record them,
+  without instruction messages and before prompt conversion. WorkflowAgent's
+  generate steps record the model prompt with its system message first, as
+  TS WorkflowAgent does (new `InternalOptions.RequestMessagesAsPrompt`).
+- **A provider-executed call is never run locally** (review round 61): in
+  `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop, a tool
+  call the provider marks `ProviderExecuted` no longer runs a local tool of
+  the same name (which added a second, local result next to the provider's).
+  TS executes only the calls without `providerExecuted`.
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or
@@ -818,6 +849,26 @@ These match TS and are unlikely to need code changes, but can change output.
 
 - **`WorkflowAgent.Stream` has no default step limit** (TS defaults only
   generate to 20 steps). Set `StopWhen` to bound a stream.
+- **`WorkflowAgent.Stream` emits approval requests after the step's tool
+  results** (review round 61): it resolves a step's tool approvals after the
+  model stream and writes the `tool-approval-request` parts after the tool
+  results, as TS WorkflowAgent (`writeToolResults`, then
+  `writeApprovalRequests`). The step content and the assistant message list
+  the approval requests after the calls and results, as in generate mode.
+  Earlier, each request came right after its tool call (StreamText's order).
+  New `InternalOptions.DeferApprovalRequests`.
+- **`WorkflowAgent.Generate` forwards a provider-executed denial as is**
+  (review round 61): resuming a denied provider (MCP) approval sent the
+  model an extra `execution-denied` tool result next to the forwarded
+  approval response, because the legacy loop resumed the approvals a second
+  time. TS WorkflowAgent forwards only the response, as `Stream` already did
+  (new `InternalOptions.ApprovalsResumed`).
+- **WorkflowAgent resumed approval results carry their model output**
+  (review round 61): the tool message holding the results of resumed
+  approvals (the first of `ResponseMessages`, and the prompt of the next
+  model call) has each `ToolResultContent.Output` set (text for a string
+  result, else JSON, or the tool's `ToModelOutput`) and no `Input`, as TS
+  WorkflowAgent's `modelResult`. It held the raw `Result` and the input.
 - **MCP clients have no default request timeout**, JSON-RPC request IDs
   start at 0, `MCPClientError.Error()` is the bare message, and the HTTP and
   stdio transports probe `server/discover` first.

@@ -166,6 +166,35 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
+- **Legacy `ToolLoopAgent` tool results list provider results.** As
+  `GenerateText` and TS `step.toolResults`, `GenerateAgent`/`Execute` step
+  `ToolResults` (and `AgentResult.ToolResults`, which `WorkflowAgent.Generate`
+  returns) hold the provider-executed results the model returned, before the
+  local ones. A provider-executed call no longer runs a local tool of the same
+  name, and no longer adds a `null` result to the step. Code that treated
+  every entry as a local execution should skip provider results:
+
+  ```go
+  for _, r := range result.ToolResults {
+  	if r.ProviderExecuted {
+  		continue // the provider's own result (web search, code execution, ...)
+  	}
+  	_ = r.Result
+  }
+  ```
+
+- **`WorkflowAgent` resumed approval results carry their model output.** The
+  tool message holding resumed approvals' results (the first of
+  `ResponseMessages`) has `ToolResultContent.Output` set (text for a string,
+  else JSON, or the tool's `ToModelOutput`) and no `Input`, as TS
+  WorkflowAgent. Read `Output` instead of `Result`:
+
+  ```go
+  if part, ok := resumed.ResponseMessages[0].Content[0].(types.ToolResultContent); ok && part.Output != nil {
+  	_ = part.Output.Value // v0.5: part.Result
+  }
+  ```
+
 - **`WorkflowAgent` `PrepareStep` overrides carry over to later steps.** As
   TS's model-call iterator, the next step's hook gets the previous step's
   model, instructions, tool choice, active tools, contexts and generation
