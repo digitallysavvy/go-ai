@@ -34,6 +34,15 @@ func TestR58StreamFirstChunkNonProviderError(t *testing.T) {
 			if errors.As(err, &pe) {
 				t.Fatalf("err must not be a ProviderError: %#v", pe)
 			}
+			// The frame's parse or validation error stays reachable.
+			var parseErr *providererrors.JSONParseError
+			var validationErr *providererrors.ValidationError
+			if name == "unparsable" && !errors.As(err, &parseErr) {
+				t.Fatalf("err must unwrap to the JSONParseError: %#v", err)
+			}
+			if name == "invalid" && !errors.As(err, &validationErr) {
+				t.Fatalf("err must unwrap to the ValidationError: %#v", err)
+			}
 		})
 	}
 }

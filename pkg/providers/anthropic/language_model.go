@@ -243,6 +243,16 @@ func (m *LanguageModel) failOnFirstStreamError(stream *anthropicStream, headers 
 	return nil
 }
 
+// unnormalizedStreamError is TS's plain "Expected a normalized Anthropic
+// stream error" Error; Unwrap returns the frame's parse or validation error.
+type unnormalizedStreamError struct{ cause error }
+
+func (e *unnormalizedStreamError) Error() string {
+	return "Expected a normalized Anthropic stream error"
+}
+
+func (e *unnormalizedStreamError) Unwrap() error { return e.cause }
+
 func (m *LanguageModel) streamStartError(chunk *provider.StreamChunk, headers http.Header) error {
 	status := 500
 	retryable := false
@@ -250,8 +260,10 @@ func (m *LanguageModel) streamStartError(chunk *provider.StreamChunk, headers ht
 	var streamErr *providererrors.StreamProviderError
 	if !errors.As(chunk.Err, &streamErr) {
 		// TS: a first error part that is not a normalized provider stream
-		// error (an unparsable or schema-invalid frame) throws a plain Error.
-		return errors.New("Expected a normalized Anthropic stream error") //nolint:staticcheck // TS error text
+		// error (an unparsable or schema-invalid frame) throws a plain Error,
+		// not an APICallError. Go keeps the parse or validation error
+		// reachable with errors.As.
+		return &unnormalizedStreamError{cause: chunk.Err}
 	}
 	if streamErr.StatusCode != nil {
 		status = *streamErr.StatusCode
