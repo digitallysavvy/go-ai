@@ -1424,10 +1424,10 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// (GenAI) opened above: without this they would leak, since
 		// telemetryCtx below only closes the root span (H4 item 2). Both are
 		// reachable from modelCallCtx now that FireOnStepStart runs before
-		// DoStream for step 1 too. No error status on abort, matching TS
-		// onAbort.
+		// DoStream for step 1 too. On abort, TS's notifyStepError returns
+		// early (no telemetry onStepError) and the telemetry onAbort ends the
+		// step and model-call spans.
 		if isAbortErr(stepCtx, err) {
-			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID})
 			// TS: the failed model call reaches streamText's pipeline catch,
 			// which reports telemetry onError before the outer stream turns
 			// its error part into abort(): `start`, onAbort (callback and
@@ -2556,14 +2556,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						// (found via CallID regardless of ctx) here — the shared
 						// cleanup after the loop only closes the root span
 						// (H4 item 2).
-						stepErr := reopenErr
-						isAbort := isAbortErr(ctx, reopenErr)
-						if isAbort {
-							stepErr = nil
-						}
-						telemetry.FireOnStepError(telemetryStepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
-						if isAbort {
+						// On abort TS skips onStepError; the telemetry
+						// onAbort ends the spans.
+						if isAbortErr(ctx, reopenErr) {
 							fireAbort(reopenErr)
+						} else {
+							telemetry.FireOnStepError(telemetryStepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: reopenErr})
 						}
 						break
 					}
@@ -3635,21 +3633,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// (this next step's own iteration of the outer loop is never
 			// reached — this break prevents it): the shared cleanup after the
 			// loop only closes the root span (H4 item 2).
-			isAbort := isAbortErr(nextStepCtx, r.err)
-			stepErr := r.err
-			if isAbort {
-				stepErr = nil
-			}
-			if !isAbort {
+			// On abort TS's step catch only enqueues an `error` part, which the
+			// outer stream turns into abort(): no telemetry onStepError (its
+			// notifyStepError returns once aborted) and no onError; the
+			// telemetry onAbort ends the spans.
+			if isAbortErr(nextStepCtx, r.err) {
+				fireAbort(r.err)
+			} else {
 				// Same as the first step: the failure is an error part. onError
 				// is called once, by the shared error handling after the loop.
 				if onChunk != nil {
 					onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: r.err, Text: r.err.Error()})
 				}
-			}
-			telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: stepErr})
-			if isAbort {
-				fireAbort(r.err)
+				telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: r.err})
 			}
 			nextStepCancel()
 			break
