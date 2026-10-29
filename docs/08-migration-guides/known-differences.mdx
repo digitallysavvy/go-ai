@@ -262,6 +262,28 @@ correlating events with their run.
   stream path (`doStreamStep`) does not check it and sends the value to the
   provider.
 
+## UI message stream: source failure writes an error chunk
+
+When the source stream of `ToUIMessageStream` fails (any error other than an
+abort), Go writes one standard `error` chunk (`{"type":"error","errorText":...}`,
+masked unless `OnError` returns other text), ends the UI stream cleanly, and
+returns the error on its error channel. The pipe and response helpers do the
+same. TS `toUIMessageStream` errors the stream instead (`controller.error`),
+so no `error` chunk is written and a TS client sees a failed or aborted
+response. The API and the chunk protocol are the same as TS, and TS clients
+(`useChat`) handle the extra `error` chunk and show its text. One caveat:
+client logic that reacts to a dropped connection (for example
+reconnect-on-network-error) sees a clean end with an `error` chunk instead.
+This is the v0.5.x behavior (owner decision, 2026-10-29).
+
+## UI tool parts: `dynamic: false`
+
+Go UI tool parts and chunks cannot tell an unset `dynamic` from
+`dynamic: false` (`ToolCall.Dynamic` is a `bool`), so Go writes `dynamic`
+only when it is true. TS `toUIMessageChunk` copies a tool part's own
+`dynamic` for a tool missing from the tool set, so it can write
+`dynamic: false`. Clients read a missing `dynamic` as false.
+
 ## StreamText tool context failure ends the run
 
 When a tool's `ContextSchema` rejects its tool context, TS

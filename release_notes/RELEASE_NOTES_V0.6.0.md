@@ -1178,6 +1178,9 @@ in v0.5.3.
   `DoStream` with TS's plain "Expected a normalized Anthropic stream error"
   (not a status-500 `*ProviderError`); it unwraps to the frame's
   `*JSONParseError` or `*ValidationError` (review round 58).
+- Google and Vertex Gemini image models send a caller's empty
+  `imageConfig: {}` as `generationConfig.imageConfig: {}`, as TS
+  (`userImageConfig != null`); it was dropped (review round 65).
 
 ### Workflow, MCP, code mode and harness
 
@@ -1334,6 +1337,16 @@ Notable ones:
   `stop_sequence`) counts as absent; TS treats `""` as present. An
   interactions `interaction.created` event with an empty id keeps the earlier
   id, which Go uses to reconnect.
+- When the source stream of `ToUIMessageStream` fails (not an abort), Go
+  writes one standard `error` chunk (masked text unless `OnError` says
+  otherwise), ends the stream cleanly and returns the error; TS errors the
+  stream and writes no `error` chunk. Same API and chunk protocol as TS, and
+  `useChat` shows the error text. Caveat: client logic that reacts to a
+  dropped connection (for example reconnect-on-network-error) sees a clean
+  end with an `error` chunk instead (v0.5.x behavior, owner decision).
+- UI tool parts cannot tell an unset `dynamic` from `dynamic: false` (Go
+  `bool`), so Go writes `dynamic` only when true; TS can write
+  `dynamic: false` for a tool missing from the tool set.
 - Google Interactions: a non-streaming `function_call` step without an
   `id` gets an ID from the provider's ID generator
   (`Config.GenerateID` or `InteractionsConfig.GenerateID`, else random); TS
