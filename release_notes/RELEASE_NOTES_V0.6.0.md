@@ -968,7 +968,8 @@ Notable ones:
   except the BFL, Luma and fal generated-media downloads.
 - `ProviderError.Error()` text differs from the TS `APICallError` message.
 - Some Go extensions from v0.5.x are kept: Open Responses forwards options
-  TS strips, Groq/DeepSeek/Moonshot/Z.AI read `openaiCompatible` options, and
+  TS strips (and keeps the function-call `namespace` key in tool-call
+  provider metadata), Groq/DeepSeek/Moonshot/Z.AI read `openaiCompatible` options, and
   Mistral accepts a call-level `Language`.
 - Streaming speech "closed before completion" errors omit the WebSocket
   close code and reason.
