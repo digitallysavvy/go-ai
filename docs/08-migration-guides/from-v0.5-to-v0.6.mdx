@@ -128,6 +128,16 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
+- **`WorkflowAgent` approval IDs are `approval-<toolCallId>`.** As in TS,
+  `Generate` and `Stream` name the approval of tool call `X` `approval-X`
+  (v0.5 used the call ID in `Generate` and a random ID in `Stream`). Answer
+  with the request's ID:
+
+  ```go
+  response := types.ToolApprovalResponseContent{ApprovalID: request.ApprovalID, Approved: true}
+  _ = response // not request.ToolCallID
+  ```
+
 - **A `StreamText` tool choice violation now ends with `finish`.** The run
   emits an `error` chunk, then `finish` (finish reason `error`), and calls
   `OnFinish` and `OnEnd`; `Err()` still returns the
