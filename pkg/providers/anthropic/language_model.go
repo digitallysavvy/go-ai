@@ -1613,10 +1613,9 @@ type anthropicStream struct {
 	// provider metadata.
 	inputTransformations interface{}
 	safeguardResults     interface{}
-	// finish holds the finish chunk assembled from message_delta; it is
-	// emitted on message_stop (or at end of stream).
-	finish       *provider.StreamChunk
-	finishIssued bool
+	// finish holds the finish chunk being issued by message_stop (a fresh
+	// chunk per message_stop, built from the stream-wide state).
+	finish *provider.StreamChunk
 	// curFinishReason / curRawFinishReason mirror TS's stream-wide
 	// finishReason variable: set by message_start (stop_reason) and
 	// message_delta, kept across messages, and used by a message_stop that had
@@ -2335,9 +2334,6 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 					s.curFinishReason = mapStopReason(msg.Message.StopReason, s.isJsonResponseFromTool)
 					s.curRawFinishReason = msg.Message.StopReason
 				}
-				// A new message gets its own finish chunk.
-				s.finishIssued = false
-				s.finish = nil
 				// Expose the initial message accounting as an
 				// anthropic.message_start custom chunk (TS #21979). The raw
 				// usage object is passed through unchanged.
@@ -2802,15 +2798,6 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				if delta.Usage.Iterations != nil {
 					s.usage.Iterations = delta.Usage.Iterations
 				}
-				usage := convertAnthropicUsage(s.usage)
-
-				chunk := &provider.StreamChunk{
-					Type:            provider.ChunkTypeFinish,
-					FinishReason:    finishReason,
-					RawFinishReason: delta.Delta.StopReason,
-					Usage:           &usage,
-				}
-
 				// TS: contextManagement is stream-wide; a message_delta with
 				// context_management replaces it and one without keeps the
 				// earlier value (also for later messages' finishes). Go-only:
@@ -2821,9 +2808,8 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 				} else if delta.Usage.ContextManagement != nil {
 					s.contextManagement = delta.Usage.ContextManagement
 				}
-				// The finish chunk is emitted on message_stop so later deltas
+				// The finish chunk is built on message_stop so later deltas
 				// (e.g. final safeguard results) are included.
-				s.finish = chunk
 				s.curFinishReason, s.curRawFinishReason = finishReason, delta.Delta.StopReason
 				continue
 			}
@@ -2890,26 +2876,21 @@ func (s *anthropicStream) nextEvent() (*provider.StreamChunk, error) {
 			s.isMessageOpen = false
 			s.activeMessageID = ""
 			// TS emits one finish part per message_stop and keeps reading, so a
-			// stream of several concatenated messages yields one finish each.
-			// The stream ends when the underlying body does.
-			if s.finish == nil && !s.finishIssued {
-				// message_stop without a preceding message_delta: TS still
-				// finishes, with its initial finish reason {unified: other}.
-				fr := s.curFinishReason
-				if fr == "" {
-					fr = types.FinishReasonOther
-				}
-				s.finish = &provider.StreamChunk{
-					Type:            provider.ChunkTypeFinish,
-					FinishReason:    fr,
-					RawFinishReason: s.curRawFinishReason,
-				}
+			// stream of several concatenated messages yields one finish each,
+			// and so does a repeated message_stop. The finish reason is the
+			// stream-wide one (TS's initial {unified: other} when no
+			// message_start or message_delta set it). The stream ends when the
+			// underlying body does.
+			fr := s.curFinishReason
+			if fr == "" {
+				fr = types.FinishReasonOther
 			}
-			if s.finish != nil && !s.finishIssued {
-				s.finishIssued = true
-				return s.issueFinish(false), nil
+			s.finish = &provider.StreamChunk{
+				Type:            provider.ChunkTypeFinish,
+				FinishReason:    fr,
+				RawFinishReason: s.curRawFinishReason,
 			}
-			continue
+			return s.issueFinish(false), nil
 		}
 
 		// Unknown event, get next
