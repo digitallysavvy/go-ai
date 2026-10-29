@@ -112,6 +112,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
 
 ## Behavior changes that can need an edit
 
+- **`StreamText` `OnError` sees error parts only.** As in TS, `OnError` is
+  called for the `error` parts of the stream (a provider error chunk, a later
+  step that fails to open, a tool choice violation). When the model stream
+  itself fails, or a file download, tool input callback or tool output
+  conversion fails, the run ends with that error without calling `OnError`.
+  Read it from `Err()` or `OnStepError`:
+
+  ```go
+  res, _ := ai.StreamText(ctx, opts)
+  if _, err := res.ReadAll(); err != nil {
+  	log.Printf("stream failed: %v", err) // also reported to OnStepError
+  }
+  ```
+
 - **Tool results the model returns stay in the assistant message.** As in
   TS, every tool result or tool error a provider returns (web search, file
   search, image generation, code execution and other provider-executed tools)

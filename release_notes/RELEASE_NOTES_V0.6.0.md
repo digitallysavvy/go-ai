@@ -198,6 +198,20 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **`StreamText` calls `OnError` only for error parts** (review round 59).
+  TS calls `onError` for the `error` parts of the stream; a failure it throws
+  inside the stream is reported to `onStepError` and the telemetry `onError`
+  and ends the stream with that error. `OnError` is no longer called when the
+  model stream itself fails (its `Next` returns an error), or when a file
+  download, a tool input callback or a tool output conversion fails; `Err()`,
+  `OnStepError` and the stream's error still report it. A later step that
+  fails to prepare or open, an incomplete model stream and a stream retry
+  whose model call fails to open are error parts and still reach `OnError`.
+  A tool choice violation is now an `error` part after the model output
+  (`OnError` once), and the run still ends with a `finish` chunk and
+  `OnEnd` (finish reason `error`); `Err()` reports the violation as before.
+  **Migration:** handle fatal stream failures through `Err()` or
+  `OnStepError`.
 - **Tool results the model returns stay in the assistant message**
   (review round 58). As TS sets `providerExecuted: true` on every tool result
   and tool error a model returns, `GenerateText`, `StreamText` and the legacy
@@ -432,6 +446,30 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Core
 
+- **`StreamText` terminal parts pass through `ExperimentalTransform`**
+  (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
+  `error` chunks of an incomplete model stream, a step that fails to open or
+  prepare, and a run that ends before its first stream (with its `start`).
+  A stream retry whose model call fails to open now ends the step with an
+  `error` chunk, `finish-step` (finish reason `error`) and `finish`, after the
+  failed attempt's open text and reasoning blocks are closed; it used to end
+  the run with no step. An aborted step no longer fires the telemetry
+  `OnStepError` (TS skips it once the signal fired); the telemetry `OnAbort`
+  ends its spans, and a later step aborted while it opened reports only
+  `OnAbort`.
+- **An `Output` response format that cannot be built fails the model call**
+  (review round 59), as TS awaits it inside `doGenerate`/`doStream`: in
+  `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop the step
+  start and the language model call start come first, and the step ends with
+  `OnStepError`. `StreamText` used to ignore the failure on a later step.
+- **Deferred provider tool results carry the tool's metadata** (review round
+  59): a tool result or error with no call in the response takes
+  `ToolMetadata` from the tool definition (TS `toolMetadata: tool.metadata`)
+  in `GenerateText`, batch results and the legacy agent loop. Batch text
+  results build their content like `GenerateText`: model tool results are
+  provider-executed and carry their call's input. The legacy agent loop orders
+  a step's tool outputs like `GenerateText` (outputs without approval, approval
+  requests, approval responses, outputs with approval).
 - **SSE streams follow TS eventsource-parser 3.0.8 at the end of a
   stream.** A final event with no closing blank line (or a last line with
   no terminator) is dropped, as in TS; v0.5.x dispatched it. This applies to
@@ -678,6 +716,12 @@ These match TS and are unlikely to need code changes, but can change output.
 
 ### Providers
 
+- xAI Responses follows TS's schemas for hosted tool output (review round
+  59): a `web_search_call` action of an unknown type yields `{}`, a URL source
+  with an empty URL is kept and a null `url` or `pattern` stays null; a
+  `url_citation` with an empty URL is a source, one with a null title or a
+  non-string URL is not, and a malformed annotation no longer drops the
+  message text.
 - An SSE event named `done` that carries a JSON payload is an ordinary chunk in
   every OpenAI-compatible and SSE provider stream; only `data: [DONE]` ends
   the stream, as TS `parseJsonEventStream` ignores event names. OpenAI
@@ -903,6 +947,11 @@ in v0.5.3.
 
 ### Workflow, MCP, code mode and harness
 
+- `WorkflowChatTransport` and `WorkflowRunMultiplexer` return a missing
+  `x-workflow-run-id` header or an `OnChatSendMessage` error at once instead
+  of reading the rest of the run's stream first (TS throws). The multiplexer
+  puts at most 4 KiB of a failed response's body into its error (review round
+  59).
 - fx `glob`: the pattern compile (brace expansion and minimatch's
   preprocessing) stops when the tool call's context ends, returning the
   context's error; a pattern such as `{a,b}` repeated 17 times took tens of
