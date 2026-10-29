@@ -15,9 +15,9 @@ import (
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
-// r65RunStepErrors runs the legacy loop and returns its error and the
-// OnStepError events it reported.
-func r65RunStepErrors(t *testing.T, cfg AgentConfig) (error, []ai.OnStepErrorEvent) {
+// r65RunStepErrors runs the legacy loop and returns the OnStepError events
+// it reported and the run's error.
+func r65RunStepErrors(t *testing.T, cfg AgentConfig) ([]ai.OnStepErrorEvent, error) {
 	t.Helper()
 	var mu sync.Mutex
 	var events []ai.OnStepErrorEvent
@@ -29,7 +29,7 @@ func r65RunStepErrors(t *testing.T, cfg AgentConfig) (error, []ai.OnStepErrorEve
 	_, err := NewToolLoopAgent(cfg).GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"})
 	mu.Lock()
 	defer mu.Unlock()
-	return err, append([]ai.OnStepErrorEvent(nil), events...)
+	return append([]ai.OnStepErrorEvent(nil), events...), err
 }
 
 // TS generateText notifies onStepError with wrapGatewayError(error): an
@@ -38,7 +38,7 @@ func r65RunStepErrors(t *testing.T, cfg AgentConfig) (error, []ai.OnStepErrorEve
 func TestR65IntegratorLegacyStepErrorWrapsGatewayError(t *testing.T) {
 	raw := gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
 	zero := 0
-	_, events := r65RunStepErrors(t, AgentConfig{
+	events, _ := r65RunStepErrors(t, AgentConfig{
 		Model: &testutil.MockLanguageModel{DoGenerateFunc: func(context.Context, *provider.GenerateOptions) (*types.GenerateResult, error) {
 			return nil, raw
 		}},
@@ -97,7 +97,9 @@ func TestR65IntegratorLegacyStepErrorAfterModelCall(t *testing.T) {
 				}
 				return c
 			},
-		}, func(err error) bool { return err != nil && strings.Contains(err.Error(), "toolCallConcurrency must be >= 1") }, 1},
+		}, func(err error) bool {
+			return err != nil && strings.Contains(err.Error(), "toolCallConcurrency must be >= 1")
+		}, 1},
 		{"tool context", AgentConfig{Tools: []types.Tool{ctxTool}, ToolsContext: map[string]interface{}{"t": map[string]interface{}{}}}, func(err error) bool { return err != nil }, 0},
 		{"to model output", AgentConfig{Tools: []types.Tool{convertTool}}, func(err error) bool { return err == convertErr }, 0},
 	}
@@ -107,7 +109,7 @@ func TestR65IntegratorLegacyStepErrorAfterModelCall(t *testing.T) {
 				return &types.GenerateResult{ToolCalls: []types.ToolCall{call}, FinishReason: types.FinishReasonToolCalls}, nil
 			}}
 			tc.cfg.MaxSteps = 3
-			err, events := r65RunStepErrors(t, tc.cfg)
+			events, err := r65RunStepErrors(t, tc.cfg)
 			if err == nil {
 				t.Fatal("run succeeded, want a failure")
 			}
