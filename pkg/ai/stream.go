@@ -2114,6 +2114,19 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				forwardThroughTransformChain(0, []provider.StreamChunk{*chunk})
 				continue
 			}
+			// The model call's output timing (TS stream-language-model-call)
+			// observes every output chunk as it is read: before tool parts are
+			// withheld for tool choice none, and not again when chunks held back
+			// for stream retries are replayed.
+			if !replayed && isOutputChunkForTiming(*chunk) {
+				now := time.Now()
+				if firstTokenAt == nil {
+					firstTokenAt = &now
+				} else if previousOutputChunkAt != nil {
+					outputChunkGapsMs = append(outputChunkGapsMs, now.Sub(*previousOutputChunkAt).Milliseconds())
+				}
+				previousOutputChunkAt = &now
+			}
 			// Tool choice none rejects every tool call when the model call
 			// finishes. Withhold tool parts so consumers (for example
 			// client-side tools) cannot act on them before the rejection, and
@@ -2228,15 +2241,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			// Transition from Submitted to Streaming on the first content chunk.
 			// Metadata and stream lifecycle chunks are forwarded before this
 			// marker, matching the TypeScript stream part order.
-			if forwardChunk && isOutputChunkForTiming(*chunk) {
-				now := time.Now()
-				if firstTokenAt == nil {
-					firstTokenAt = &now
-				} else if previousOutputChunkAt != nil {
-					outputChunkGapsMs = append(outputChunkGapsMs, now.Sub(*previousOutputChunkAt).Milliseconds())
-				}
-				previousOutputChunkAt = &now
-			}
 			if firstChunkEver && forwardChunk && isFirstChunkContent(chunk.Type) {
 				firstChunkEver = false
 				r.mu.Lock()

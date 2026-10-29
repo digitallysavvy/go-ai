@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -118,5 +119,78 @@ func TestR63StreamRetryFiresLanguageModelCallStartAgain(t *testing.T) {
 	defer mu.Unlock()
 	if callStarts != 2 || stepStarts != 1 {
 		t.Fatalf("OnLanguageModelCallStart = %d, OnStepStart = %d; want 2 and 1", callStarts, stepStarts)
+	}
+}
+
+type r63DelayedStream struct {
+	chunks []provider.StreamChunk
+	delays []time.Duration
+	i      int
+}
+
+func (s *r63DelayedStream) Next() (*provider.StreamChunk, error) {
+	if s.i >= len(s.chunks) {
+		return nil, io.EOF
+	}
+	time.Sleep(s.delays[s.i])
+	c := s.chunks[s.i]
+	s.i++
+	return &c, nil
+}
+func (s *r63DelayedStream) Err() error   { return nil }
+func (s *r63DelayedStream) Close() error { return nil }
+
+// TS stream-language-model-call times output chunks as the model streams
+// them, upstream of the tool-part buffering that stream retries add and of
+// the tool-part withholding of tool choice none.
+func TestR63StreamOutputTimingIsTakenAsChunksArrive(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts func(*StreamTextOptions)
+	}{
+		{"stream retries buffer tool parts", func(o *StreamTextOptions) { n := 1; o.StreamRetries = &n }},
+		{"tool choice none withholds tool parts", func(o *StreamTextOptions) { o.ToolChoice = types.ToolChoice{Type: types.ToolChoiceNone} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+				return &r63DelayedStream{
+					chunks: []provider.StreamChunk{
+						{Type: provider.ChunkTypeToolInputStart, ID: "c1", ToolCall: &types.ToolCall{ID: "c1", ToolName: "t"}},
+						{Type: provider.ChunkTypeToolInputDelta, ID: "c1", Text: "{}"},
+						{Type: provider.ChunkTypeToolInputEnd, ID: "c1"},
+						{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+						{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+					},
+					delays: []time.Duration{0, 0, 0, 0, 120 * time.Millisecond},
+				}, nil
+			}}
+			var mu sync.Mutex
+			var ttfo *int64
+			opts := StreamTextOptions{
+				Prompt: "a",
+				Model:  model,
+				Tools:  []types.Tool{{Name: "t"}},
+				OnLanguageModelCallEnd: func(_ context.Context, e LanguageModelCallEndEvent) {
+					mu.Lock()
+					ttfo = e.Performance.TimeToFirstOutputMs
+					mu.Unlock()
+				},
+			}
+			tc.opts(&opts)
+			res, err := StreamText(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = res.ConsumeStream()
+			mu.Lock()
+			defer mu.Unlock()
+			if ttfo == nil || *ttfo >= 100 {
+				got := "nil"
+				if ttfo != nil {
+					got = time.Duration(*ttfo * int64(time.Millisecond)).String()
+				}
+				t.Fatalf("TimeToFirstOutputMs = %s, want the tool input delta's arrival (< 100ms)", got)
+			}
+		})
 	}
 }
