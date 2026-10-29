@@ -1895,11 +1895,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// streamText catches the failed streamStep and enqueues an `error` part,
 	// which reaches onError (called once, after the loop) and the full stream.
 	failNextStep := func(err error) {
-		r.err = err
+		// onError (after the loop) gets r.err: TS's event processor passes
+		// wrapGatewayError(part.error), as for a later step that fails to open.
+		r.err = wrapGatewayError(err)
 		errorPartEnd = true
 		if !isAbortErr(ctx, err) {
-			// TS's step catch enqueues the error itself; onError (after the
-			// loop) gets it wrapped.
+			// TS's step catch enqueues the error itself.
 			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: err, Text: err.Error()}})
 		}
 	}
