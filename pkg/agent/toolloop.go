@@ -2178,7 +2178,10 @@ func (a *ToolLoopAgent) executeTools(ctx context.Context, toolCalls []types.Tool
 			return results, nil
 		}
 
-		providerExecuted := tool.ProviderExecuted
+		// A call the provider marks as executed is never run locally, even
+		// when a local tool has its name (TS: client tool calls are the calls
+		// without providerExecuted).
+		providerExecuted := tool.ProviderExecuted || call.ProviderExecuted
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 
 		approval, resolved := preApprovals[call.ID]

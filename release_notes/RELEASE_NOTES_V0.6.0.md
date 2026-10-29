@@ -498,6 +498,11 @@ These match TS and are unlikely to need code changes, but can change output.
   without instruction messages and before prompt conversion. WorkflowAgent's
   generate steps record the model prompt with its system message first, as
   TS WorkflowAgent does (new `InternalOptions.RequestMessagesAsPrompt`).
+- **A provider-executed call is never run locally** (review round 61): in
+  `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop, a tool
+  call the provider marks `ProviderExecuted` no longer runs a local tool of
+  the same name (which added a second, local result next to the provider's).
+  TS executes only the calls without `providerExecuted`.
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or

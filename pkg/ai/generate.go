@@ -2535,7 +2535,10 @@ func executeTools(ctx context.Context, toolCalls []types.ToolCall, availableTool
 		// Check if this is a provider-executed tool.
 		// ProviderExecuted is set to true on types.Tool by each provider tool constructor
 		// (e.g., web_search_20260209, web_fetch_20260209, code_execution, tool_search_bm25).
-		providerExecuted := tool.ProviderExecuted
+		// A call the provider marks as executed is never run locally, even
+		// when a local tool has its name (TS: client tool calls are the calls
+		// without providerExecuted).
+		providerExecuted := tool.ProviderExecuted || call.ProviderExecuted
 
 		providerMetadata := mergeProviderMetadataMaps(call.ProviderMetadata, tool.ProviderMetadata)
 		var approval types.ToolApprovalResult

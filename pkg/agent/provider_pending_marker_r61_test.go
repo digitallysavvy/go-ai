@@ -116,3 +116,32 @@ func TestR61GenerateAgentStepToolResultsIncludeProviderResults(t *testing.T) {
 		t.Fatalf("provider result = %+v", res.Steps[0].ToolResults[0])
 	}
 }
+
+// The legacy loop never runs a provider-executed call locally either (TS
+// client tool calls exclude providerExecuted calls).
+func TestR61GenerateAgentProviderExecutedCallIsNotRunLocally(t *testing.T) {
+	executed := 0
+	tools := []types.Tool{{Name: "action", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+		executed++
+		return "local", nil
+	}}}
+	model := &mockLanguageModel{responses: []types.GenerateResult{{
+		Content: []types.ContentPart{
+			types.ToolCallContent{ToolCallID: "call-1", ToolName: "action", Input: `{}`, ProviderExecuted: true},
+			types.ToolResultContent{ToolCallID: "call-1", ToolName: "action", Result: "remote"},
+		},
+		ToolCalls:    []types.ToolCall{{ID: "call-1", ToolName: "action", RawArguments: `{}`, ProviderExecuted: true}},
+		FinishReason: types.FinishReasonToolCalls,
+	}}}
+	a := NewToolLoopAgent(AgentConfig{Model: model, Tools: tools})
+	res, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed != 0 {
+		t.Fatalf("local tool executed %d times", executed)
+	}
+	if len(res.Steps) != 1 || len(res.Steps[0].ToolResults) != 1 || res.Steps[0].ToolResults[0].Result != "remote" {
+		t.Fatalf("steps = %+v", res.Steps)
+	}
+}
