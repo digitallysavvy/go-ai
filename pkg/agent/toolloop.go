@@ -335,7 +335,7 @@ func (a *ToolLoopAgent) Generate(ctx context.Context, opts AgentGenerateOptions)
 		Headers:                        agentHeaders(callConfig.Headers),
 		Tools:                          callConfig.Tools,
 		ActiveTools:                    callConfig.ActiveTools,
-		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
+		ToolChoice:                     callConfig.ToolChoice,
 		ToolOrder:                      callConfig.ToolOrder,
 		ToolCallConcurrency:            callConfig.ToolCallConcurrency,
 		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
@@ -460,7 +460,7 @@ func (a *ToolLoopAgent) Stream(ctx context.Context, opts AgentStreamOptions) (*a
 		Headers:                        agentHeaders(callConfig.Headers),
 		Tools:                          callConfig.Tools,
 		ActiveTools:                    callConfig.ActiveTools,
-		ToolChoice:                     defaultToolChoice(callConfig.ToolChoice),
+		ToolChoice:                     callConfig.ToolChoice,
 		ToolOrder:                      callConfig.ToolOrder,
 		ToolCallConcurrency:            callConfig.ToolCallConcurrency,
 		ExperimentalToolCallers:        callConfig.ExperimentalToolCallers,
@@ -1759,13 +1759,6 @@ func validateAgentPromptOptions(prompt string, messages []types.Message) error {
 		return err
 	}
 	return nil
-}
-
-func defaultToolChoice(choice types.ToolChoice) types.ToolChoice {
-	if choice.Type == "" {
-		return types.AutoToolChoice()
-	}
-	return choice
 }
 
 type responseFormatProvider interface {

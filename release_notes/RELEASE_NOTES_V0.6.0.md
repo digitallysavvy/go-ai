@@ -252,7 +252,9 @@ Each item has before/after code in the
   Anthropic `{"type": "auto"}`, Bedrock `toolChoice.auto`, Google `AUTO`), the
   Gateway always sends `toolChoice`, and the OpenAI completion and Prodia
   models warn that `toolChoice` is unsupported. Events keep the choice as
-  given. Z.AI no longer sends `tool_choice` without tools. **Migration:** an
+  given, so `ToolLoopAgent.Generate` and `Stream` start and step start events
+  report an unset choice instead of `auto`, as TS ToolLoopAgent passes it
+  through. Z.AI no longer sends `tool_choice` without tools. **Migration:** an
   OpenAI-compatible server that rejects `"tool_choice": "auto"` (for example
   vLLM without `--enable-auto-tool-choice`) needs that support enabled.
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
