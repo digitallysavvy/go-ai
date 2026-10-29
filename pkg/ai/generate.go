@@ -1376,7 +1376,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Seed:                  stepSeed,
 			Headers:               opts.Headers,
 			Tools:                 toolutil.ResolveToolSchemas(stepTools),
-			ToolChoice:            stepToolChoice,
+			ToolChoice:            preparedToolChoice(stepToolChoice),
 			RuntimeContext:        runtimeContext,
 			ToolsContext:          toolsContext,
 			ResponseFormat:        responseFormat,
@@ -2224,6 +2224,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 
 	return result, nil
+}
+
+// preparedToolChoice is TS prepareToolChoice: the model call gets an unset
+// tool choice as auto (the events keep the choice as given).
+func preparedToolChoice(choice types.ToolChoice) types.ToolChoice {
+	if choice.Type == "" {
+		return types.AutoToolChoice()
+	}
+	return choice
 }
 
 // finalStepModel is the provider and model id of the last step (TS

@@ -219,9 +219,11 @@ func (m *LanguageModel) buildRequestBody(opts *provider.GenerateOptions, stream 
 		functionTools, dropped := tool.DropProviderDefinedTools(tools, nil)
 		toolWarnings = dropped
 		body["tools"] = tool.ToOpenAIFormat(functionTools)
-	}
-	if toolChoice.Type != "" {
-		body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(toolChoice)
+		// TS openai-compatible prepareTools: without tools there is no
+		// tool_choice (generateText always passes one, auto by default).
+		if toolChoice.Type != "" {
+			body["tool_choice"] = tool.ConvertToolChoiceToOpenAI(toolChoice)
+		}
 	}
 
 	compatibleOptions, resolveWarnings := providerutils.ResolveOpenAICompatibleProviderOptions("zai", opts.ProviderOptions)

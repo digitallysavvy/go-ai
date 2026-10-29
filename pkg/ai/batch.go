@@ -777,7 +777,7 @@ func buildBatchProviderRequest(ctx context.Context, req BatchRequest, urlChecker
 			StopSequences:    t.StopSequences,
 			Seed:             t.Seed,
 			Tools:            toolutil.ResolveToolSchemas(resolvedTools),
-			ToolChoice:       t.ToolChoice,
+			ToolChoice:       preparedToolChoice(t.ToolChoice), // TS prepareToolChoice
 			Reasoning:        t.Reasoning,
 			ResponseFormat:   t.ResponseFormat,
 			ProviderOptions:  t.ProviderOptions,
