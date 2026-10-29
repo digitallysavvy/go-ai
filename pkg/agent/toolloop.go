@@ -723,14 +723,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// per-step application ai.GenerateText/StreamText perform internally.
 	// Mirrors TS workflow/stream-text-iterator.ts's createToolSearchState +
 	// prepareToolSearch(filterActiveTools(...)).
-	resolvedToolCallers, err := ai.ResolveToolCallerConfiguration(a.config.Tools, a.config.ExperimentalToolCallers)
+	// TS generateText resolves them from the prepared call's tools and
+	// tool callers (ToolLoopAgent passes the prepareCall result).
+	resolvedToolCallers, err := ai.ResolveToolCallerConfiguration(fc.Tools, fc.ExperimentalToolCallers)
 	if err != nil {
 		if a.config.OnChainError != nil {
 			a.config.OnChainError(err)
 		}
 		return nil, err
 	}
-	toolSearchState, err := ai.NewToolSearchState(a.config.Tools, resolvedToolCallers)
+	toolSearchState, err := ai.NewToolSearchState(fc.Tools, resolvedToolCallers)
 	if err != nil {
 		if a.config.OnChainError != nil {
 			a.config.OnChainError(err)
@@ -780,8 +782,8 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// routed exclusively through a local/provider caller are hidden
 		// from the model (executionTools keeps the caller-bound Execute
 		// used below to actually run the call; callConfig.Tools becomes
-		// the model-visible set reported to OnStepStartEvent and sent to
-		// the model). A local caller's catalog-announcement message, if
+		// the model-visible set sent to the model, while OnStepStartEvent
+		// reports the call's tools, as TS stepStartEvent.tools). A local caller's catalog-announcement message, if
 		// any, is appended to callConfig.Messages below, and persists into
 		// currentMessages once this step's response messages are recorded
 		// (see the currentMessages assignment after executeTools/
@@ -813,11 +815,14 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			InstructionMessages: callConfig.InstructionMessages,
 			System:              callConfig.System, //nolint:staticcheck
 			Messages:            callConfig.Messages,
-			Tools:               callConfig.Tools,
+			// TS stepStartEvent.tools: the call's tools, before ActiveTools,
+			// tool search and tool-caller routing narrow them.
+			Tools:               callTools,
 			ToolChoice:          callConfig.ToolChoice,
 			ActiveTools:         callConfig.ActiveTools,
 			ToolOrder:           callConfig.ToolOrder,
 			ProviderOptions:     callConfig.ProviderOptions,
+			Output:              callConfig.Output,
 			Steps:               result.Steps,
 			PreviousSteps:       result.Steps,
 			ExperimentalContext: a.config.ExperimentalContext,
@@ -1328,8 +1333,10 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// that produced text, and only after onEnd has run: a parse failure
 	// rejects after the end event, and a tool-calls finish leaves the output
 	// unset instead of failing the call.
-	if result.Output == nil && (a.config.Output == nil || shouldParseAgentOutput(result.FinishReason, result.Text)) {
-		output, err := parseAgentOutput(ctx, a.config.Output, result)
+	// The output is the prepared call's (TS ToolLoopAgent passes the
+	// prepareCall result to generateText).
+	if result.Output == nil && (fc.Output == nil || shouldParseAgentOutput(result.FinishReason, result.Text)) {
+		output, err := parseAgentOutput(ctx, fc.Output, result)
 		if err != nil {
 			emitFinishEvent()
 			if a.config.OnChainError != nil {
@@ -1858,11 +1865,16 @@ func parseAgentOutput(ctx context.Context, output interface{}, result *AgentResu
 	if !method.IsValid() {
 		return result.Text, nil
 	}
+	// TS parseCompleteOutput gets the last step's usage, not the total.
+	var lastUsage types.Usage
+	if n := len(result.Steps); n > 0 {
+		lastUsage = result.Steps[n-1].Usage
+	}
 	args := []reflect.Value{
 		reflect.ValueOf(ctx),
 		reflect.ValueOf(ai.ParseCompleteOutputOptions{
 			Text:         result.Text,
-			Usage:        &result.Usage,
+			Usage:        &lastUsage,
 			FinishReason: result.FinishReason,
 		}),
 	}
