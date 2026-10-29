@@ -1006,6 +1006,8 @@ in v0.5.3.
   only (review round 64). Later steps start from the call's model again, and
   their `PrepareStep` receives it, as TS and `GenerateText` do; before, the
   override stayed in effect for every following step.
+- The UI message stream's `MessageMetadata` callback runs once per stream
+  part, as TS does; the `start` part of a `StreamText` stream called it twice.
 - `BatchTextRequest.AllowSystemInMessages` (additive) lets a batch text
   request carry system messages in `Messages`, as TS `allowSystemInMessages`
   does; without it they are still rejected.
