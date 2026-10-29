@@ -201,7 +201,9 @@ Each item has before/after code in the
 - **`WorkflowAgent` approval IDs are `approval-<toolCallId>`** (review round
   60), in `Generate` and `Stream`, as TS WorkflowAgent names them; the
   signature covers that ID. `Generate` used the tool call ID and `Stream` a
-  random ID. **Migration:** answer an approval with the `ApprovalID` of its
+  random ID. Approvals persisted by v0.5.2 still resume: the response is
+  matched and verified against the stored request's ID. **Migration:**
+  answer an approval with the `ApprovalID` of its
   `ToolApprovalRequestContent`, not the tool call ID.
 - **`StreamText` calls `OnError` only for error parts** (review round 59).
   TS calls `onError` for the `error` parts of the stream; a failure it throws
@@ -753,6 +755,12 @@ These match TS and are unlikely to need code changes, but can change output.
   tool-result `ImageContentBlock` takes TS's file-with-data path: a bare
   `image` or empty media type is sniffed and a non-image type is dropped with
   TS's warning.
+- Anthropic `DoGenerate` in jsonTool mode builds `Text` from the content's
+  text parts in order, so a json tool text ahead of a `compaction` block
+  stays first (review round 60). Outside jsonTool mode `Text` is unchanged.
+  Google Interactions: a stringified assistant tool-call input with a
+  `__proto__` key or a `constructor.prototype` member is sent as
+  `{value: input}`, as TS `safeParseToolArgs` (review round 60).
 - An SSE event named `done` that carries a JSON payload is an ordinary chunk in
   every OpenAI-compatible and SSE provider stream; only `data: [DONE]` ends
   the stream, as TS `parseJsonEventStream` ignores event names. OpenAI
@@ -1109,7 +1117,14 @@ Notable ones:
 - JSON payloads with a `__proto__` key or a `constructor.prototype` member
   are accepted. TS `secureJsonParse` rejects them to guard against
   JavaScript prototype pollution; Go `encoding/json` has no prototypes, so
-  rejecting them would only turn valid JSON into errors.
+  rejecting them would only turn valid JSON into errors. This covers
+  provider responses and stream chunks only: Google Interactions prompt
+  conversion follows TS and sends such a stringified tool-call input as
+  `{value: input}`.
+- A `StreamText` tool whose `ContextSchema` rejects its tool context ends the
+  run with the `ValidationError` (no `finish-step`, `finish` or `OnEnd`;
+  `OnError` once), as `GenerateText` and the agents fail the call. TS
+  enqueues an `error` part and finishes the run (owner decision).
 - A `""` value in some typed string fields of provider responses (Gemini
   `finishMessage`, `serviceTier` and `continuationToken`, interactions
   signatures, `service_tier` and `mime_type`, Anthropic and Bedrock
