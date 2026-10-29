@@ -844,6 +844,14 @@ These match TS and are unlikely to need code changes, but can change output.
 
 - **`WorkflowAgent.Stream` has no default step limit** (TS defaults only
   generate to 20 steps). Set `StopWhen` to bound a stream.
+- **`WorkflowAgent.Stream` emits approval requests after the step's tool
+  results** (review round 61): it resolves a step's tool approvals after the
+  model stream and writes the `tool-approval-request` parts after the tool
+  results, as TS WorkflowAgent (`writeToolResults`, then
+  `writeApprovalRequests`). The step content and the assistant message list
+  the approval requests after the calls and results, as in generate mode.
+  Earlier, each request came right after its tool call (StreamText's order).
+  New `InternalOptions.DeferApprovalRequests`.
 - **MCP clients have no default request timeout**, JSON-RPC request IDs
   start at 0, `MCPClientError.Error()` is the bare message, and the HTTP and
   stdio transports probe `server/discover` first.

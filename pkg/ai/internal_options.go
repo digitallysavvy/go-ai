@@ -77,6 +77,28 @@ type InternalOptions struct {
 	// where generateText (and ToolLoopAgent) keeps the step's messages
 	// without the instructions. Used by WorkflowAgent.
 	RequestMessagesAsPrompt bool
+
+	// DeferApprovalRequests makes StreamText resolve a step's tool approvals
+	// after the model stream, with its tools, and emit the approval parts
+	// after the step's tool results, as TS WorkflowAgent's stream mode does
+	// (writeToolResults, then writeApprovalRequests). Plain StreamText
+	// resolves each approval at its tool-call part, as TS streamText. Used by
+	// WorkflowAgent.
+	DeferApprovalRequests bool
+}
+
+func deferApprovalRequests(internal *InternalOptions) bool {
+	return internal != nil && internal.DeferApprovalRequests
+}
+
+// hasApprovalStatus reports whether a tool result carries an approval
+// outcome (a request, or an automatic approval or denial).
+func hasApprovalStatus(tr types.ToolResult) bool {
+	switch tr.ApprovalStatus {
+	case types.ToolApprovalStatusUserApproval, types.ToolApprovalStatusApproved, types.ToolApprovalStatusDenied:
+		return true
+	}
+	return false
 }
 
 // internalApprovalID returns the approval ID function for a call: the
