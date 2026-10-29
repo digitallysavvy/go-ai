@@ -1118,6 +1118,10 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	// (TS currentModelResponse.structuredOutputText).
 	var lastStructuredOutputText *string
 
+	// lastResponseHeaders are the last model response's HTTP headers (the
+	// final step's, for the end event and ResponseHeaders).
+	var lastResponseHeaders map[string]string
+
 	// Execute generation loop (for tool calling)
 	for stepNum := 1; stepNum <= maxSteps; stepNum++ {
 		// TS `if (steps.length > 0) mergedAbortSignal?.throwIfAborted()`: a
@@ -1372,7 +1376,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			Seed:                  stepSeed,
 			Headers:               opts.Headers,
 			Tools:                 toolutil.ResolveToolSchemas(stepTools),
-			ToolChoice:            stepToolChoice,
+			ToolChoice:            preparedToolChoice(stepToolChoice),
 			RuntimeContext:        runtimeContext,
 			ToolsContext:          toolsContext,
 			ResponseFormat:        responseFormat,
@@ -1469,6 +1473,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			return nil, err
 		}
 		lastStructuredOutputText = genResult.StructuredOutputText
+		lastResponseHeaders = genResult.ResponseHeaders
 
 		modelCallUsage := telemetryUsageFromUsage(genResult.Usage)
 		performance := stepPerformance(modelCallStart, genResult.Usage, nil, nil)
@@ -1506,10 +1511,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			genResult = &resolvedResult
 		}
 
-		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, toolsByName); err != nil {
+		// A deferred provider result is checked against the call's tools, not
+		// the step's active tools (TS convertLanguageModelContent gets `tools`).
+		callToolsByName := toolsByNameOf(opts.Tools)
+		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, callToolsByName); err != nil {
 			return nil, err
 		}
-		if content, changed := withDeferredToolResultMetadata(genResult.Content, genResult.ToolCalls, toolsByName); changed {
+		if content, changed := withDeferredToolResultMetadata(genResult.Content, genResult.ToolCalls, callToolsByName); changed {
 			withMetadata := *genResult
 			withMetadata.Content = content
 			genResult = &withMetadata
@@ -1716,7 +1724,12 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			stepResult.ToolResults = publicResults
 			stepResult.StaticToolResults = filterStaticToolResults(publicResults)
 			stepResult.DynamicToolResults = filterDynamicToolResults(publicResults)
-			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(toolResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
+			// An approved local call that did not run (no Execute, or a finish
+			// reason that blocks execution) still records its approval
+			// request and response, as TS does.
+			attachToolApprovalSignatures(toolResults, opts.ExperimentalToolApprovalSecret)
+			contentResults := withApprovedUnexecutedCalls(toolResults, toolsToExecute, stepExecutionTools, preApprovals)
+			stepResult.Content = append(stepResult.Content, attachInputSchemaInputs(toolResultsToContentParts(contentResults, opts.ExperimentalToolApprovalSecret), inputSchemaInputs(preRefinementCalls, genResult.ToolCalls))...)
 			stepResult.Performance = finishStepPerformance(stepResult.Performance, stepStart, toolCallbacks.toolExecutionMs)
 			result.ToolResults = append(result.ToolResults, publicResults...)
 			result.StaticToolResults = filterStaticToolResults(result.ToolResults)
@@ -2047,6 +2060,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		result.ProviderMetadata = result.FinalStep.ProviderMetadata
 		result.Request = result.FinalStep.Request
 		result.Response = result.FinalStep.Response
+		result.ResponseHeaders = lastResponseHeaders
 		result.ResponseMessages = responseMessagesWithInitial(initialResponseMessages, result.Steps)
 		result.RawRequest = result.Request.Body
 		result.RawResponse = result.Response.Body
@@ -2179,11 +2193,13 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		ProviderMetadata:   result.ProviderMetadata,
 		ResponseHeaders:    result.ResponseHeaders,
 		Request:            GenerateStepRequest{Body: result.RawRequest},
+		// TS onEndEvent.response is the final step's response, as the step-end
+		// event of that step reports it.
 		Response: GenerateStepResponse{
 			ID:        result.Response.ID,
 			Timestamp: result.Response.Timestamp,
 			ModelID:   result.Response.ModelID,
-			Headers:   result.ResponseHeaders,
+			Headers:   result.Response.Headers,
 			Messages:  result.Response.Messages,
 			Body:      result.RawResponse,
 		},
@@ -2211,6 +2227,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 	}
 
 	return result, nil
+}
+
+// preparedToolChoice is TS prepareToolChoice: the model call gets an unset
+// tool choice as auto (the events keep the choice as given).
+func preparedToolChoice(choice types.ToolChoice) types.ToolChoice {
+	if choice.Type == "" {
+		return types.AutoToolChoice()
+	}
+	return choice
 }
 
 // finalStepModel is the provider and model id of the last step (TS
