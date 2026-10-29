@@ -468,11 +468,15 @@ func toolResultContentBlocks(blocks []types.ToolResultContentBlock) ([]map[strin
 	var warnings []types.Warning
 	out := make([]map[string]interface{}, 0, len(blocks))
 	for _, block := range blocks {
+		// The legacy image block is TS's file item with inline data, so it
+		// takes the file path: a bare "image" or "image/*" type is sniffed
+		// (resolveFullMediaType) and a non-image type is dropped.
+		if img, ok := block.(types.ImageContentBlock); ok {
+			block = types.FileContentBlock{FileData: types.FileData{Type: types.FileDataTypeData, Data: img.Data}, MediaType: firstNonEmpty(img.MediaType, "image"), ProviderOptions: img.ProviderOptions}
+		}
 		switch b := block.(type) {
 		case types.TextContentBlock:
 			out = append(out, map[string]interface{}{"type": "text", "text": b.Text})
-		case types.ImageContentBlock:
-			out = append(out, map[string]interface{}{"type": "image", "data": base64.StdEncoding.EncodeToString(b.Data), "mime_type": b.MediaType})
 		case types.FileContentBlock:
 			// TS getTopLevelMediaType(mediaType) !== 'image'.
 			if top, _, _ := strings.Cut(b.MediaType, "/"); top != "image" {
