@@ -1066,6 +1066,12 @@ in v0.5.3.
   `tool-input-error` chunk's `title` is not applied, a data chunk with an
   empty `id` updates the data part with that id, and a `start` chunk's empty
   `messageId` is applied (review round 66).
+- The legacy `ToolLoopAgent` loop checks a response's deferred provider
+  tool result against the step's prepared tools, not only the tools active
+  in that step, as TS checks it against the call's `tools`: a
+  `SupportsDeferredResults` provider tool left out of `ActiveTools` no longer
+  fails the step with "Tool call <id> not found.", and the result gets the
+  tool's metadata (review round 66).
 - Error messages that quote a name use TS template-literal quoting (`"a"b"`)
   instead of Go `%q` escaping: decision answer validation (`Question "<id>"
   ...`), `DecisionUnsupportedQuestionTypeError`, `CreateIDGenerator`'s
