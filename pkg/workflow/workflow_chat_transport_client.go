@@ -343,9 +343,7 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		read, finished, streamErr := t.pumpChunkStream(ctx, resp.Body, normalizer, orphans, out)
 		_ = resp.Body.Close()
 		chunkIndex += read
-		if finished {
-			// Not updating gotFinish/consecutiveErrors here: break ends the
-			// loop immediately, and neither is read again afterward.
+		if finished && streamErr == nil {
 			break
 		}
 		if streamErr == nil && read > 0 {
@@ -365,10 +363,15 @@ func (t *WorkflowChatTransport) reconnectLoop(ctx context.Context, chatID, runID
 		if streamErr != nil {
 			lastErr = "Error: " + streamErr.Error()
 		}
+		// A stream that fails after its finish chunk still counts (TS's catch
+		// runs whether or not gotFinish was set), and the loop then ends.
 		consecutiveErrors++
 		if consecutiveErrors >= t.maxConsecutiveErrors {
 			errs <- fmt.Errorf("Failed to reconnect after %d consecutive errors. Last error: %s", t.maxConsecutiveErrors, lastErr) //nolint:staticcheck // matches TS SDK error text
 			return
+		}
+		if finished {
+			break
 		}
 	}
 
