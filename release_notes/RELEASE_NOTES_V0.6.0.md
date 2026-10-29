@@ -520,7 +520,21 @@ These match TS and are unlikely to need code changes, but can change output.
   through the same error part as a model call that fails to open. A later
   step that cannot be prepared (its prompt conversion, `PrepareStep`
   instructions or settings) now ends the full stream with an `error` chunk
-  too. `Err()` is unchanged.
+  too. `Err()` is unchanged. When the context is already canceled at that
+  point (whatever the error), the run ends like TS's abort instead: before
+  the first stream, `OnAbort` and a `start` and an `abort` chunk (also when
+  the first model call fails to open after a cancel, which used to emit no
+  chunks); at a later step, an `abort` chunk; no `OnError` and no `error`
+  chunk either way.
+- **Tool results and tool errors a model returns are provider-executed**
+  (`ProviderExecuted` is set by core, as TS does for every model
+  tool-result), so they stay in the assistant response message next to their
+  call instead of a tool message, also when the provider left the flag unset
+  (xAI Responses) or the result has no call in the step (a deferred result).
+- **xAI Responses generate keeps tool calls in output order** in the content:
+  a function call ahead of a message stays ahead of its text, and a
+  provider-executed call (image generation, web/file search) comes before its
+  result.
 - **Telemetry: a canceled or timed-out `GenerateText` reports `OnError`, not
   `OnAbort`**, as TS `generateText` has no abort telemetry: the root and step
   spans carry the error status. The legacy `ToolLoopAgent` loop does the
