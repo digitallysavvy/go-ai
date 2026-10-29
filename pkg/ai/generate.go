@@ -1345,16 +1345,15 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		Notify(ctx, stepStartEvent, opts.OnStepStart)
 		openStep = &stepStartEvent
 
-		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back to Output's format.
+		// Resolve ResponseFormat: prefer explicit opts.ResponseFormat; fall back
+		// to Output's format. TS awaits output.responseFormat inside doGenerate,
+		// so a failure fails the model call itself, after the step start and
+		// the language model call start; the rejection propagates as is.
 		responseFormat := opts.ResponseFormat
+		var responseFormatErr error
 		if responseFormat == nil {
 			if op, ok := opts.Output.(outputProcessor); ok {
-				rf, rfErr := op.ResponseFormat(stepCtx)
-				if rfErr != nil {
-					// TS awaits output.responseFormat; a rejection propagates as is.
-					return nil, rfErr
-				}
-				responseFormat = rf
+				responseFormat, responseFormatErr = op.ResponseFormat(stepCtx)
 			}
 		}
 
@@ -1446,7 +1445,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 
 		// Call the model with step context
 		modelCallStart := time.Now()
-		genResult, err := doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
+		var genResult *types.GenerateResult
+		err := responseFormatErr
+		if err == nil {
+			genResult, err = doGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, opts.MaxRetries)
+		}
 		if err != nil {
 			if opts.Timeout != nil {
 				if opts.Timeout.HasPerStep() && deadlineFired(stepCtx, ctx) {

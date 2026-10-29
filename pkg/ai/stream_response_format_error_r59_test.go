@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -86,5 +87,51 @@ func TestR59StreamTextResponseFormatFailureFailsTheModelCall(t *testing.T) {
 				t.Fatalf("OnStepStart = %d, OnStepError = %d (%v), model calls = %d; want %d, 1 (no format), %d", starts, stepErrors, stepErr, modelCalls, failAt, failAt-1)
 			}
 		})
+	}
+}
+
+type r59StepTelemetry struct {
+	telemetry.NoopTelemetryIntegration
+	mu                     sync.Mutex
+	stepStarts, stepErrors int
+}
+
+func (r *r59StepTelemetry) OnStepStart(ctx context.Context, _ telemetry.TelemetryStepStartEvent) context.Context {
+	r.mu.Lock()
+	r.stepStarts++
+	r.mu.Unlock()
+	return ctx
+}
+
+func (r *r59StepTelemetry) OnStepError(context.Context, telemetry.TelemetryErrorEvent) {
+	r.mu.Lock()
+	r.stepErrors++
+	r.mu.Unlock()
+}
+
+// GenerateText: TS awaits output.responseFormat inside doGenerate, so the step
+// start (callbacks and telemetry) and the language model call start precede
+// the failure, which ends the step with onStepError.
+func TestR59GenerateTextResponseFormatFailureFailsTheModelCall(t *testing.T) {
+	var mu sync.Mutex
+	var lmStarts, stepErrors int
+	rec := &r59StepTelemetry{}
+	_, err := GenerateText(context.Background(), GenerateTextOptions{
+		Prompt:                   "a",
+		Output:                   &r59FormatOutput{failAt: 1},
+		Model:                    &testutil.MockLanguageModel{},
+		OnLanguageModelCallStart: func(context.Context, LanguageModelCallStartEvent) { mu.Lock(); lmStarts++; mu.Unlock() },
+		OnStepError:              func(context.Context, OnStepErrorEvent) { mu.Lock(); stepErrors++; mu.Unlock() },
+		Telemetry:                &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}},
+	})
+	if err == nil || err.Error() != "no format" {
+		t.Fatalf("err = %v, want the response format error", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if lmStarts != 1 || stepErrors != 1 || rec.stepStarts != 1 || rec.stepErrors != 1 {
+		t.Fatalf("LM call starts = %d, OnStepError = %d, telemetry step starts = %d, step errors = %d; want 1 each", lmStarts, stepErrors, rec.stepStarts, rec.stepErrors)
 	}
 }

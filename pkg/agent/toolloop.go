@@ -1817,10 +1817,9 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		toolChoice = types.AutoToolChoice()
 	}
 
-	responseFormat, err := responseFormatForOutput(stepCtx, callConfig.Output)
-	if err != nil {
-		return nil, false, callConfig.CustomData, callConfig.Tools, err
-	}
+	// TS awaits output.responseFormat inside doGenerate: a failure fails the
+	// model call, after the language model call start.
+	responseFormat, responseFormatErr := responseFormatForOutput(stepCtx, callConfig.Output)
 	stepModel := callConfig.Model
 	if stepModel == nil {
 		stepModel = a.config.Model
@@ -1944,7 +1943,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		}
 	}
 	modelCallStarted := time.Now()
-	genResult, err := ai.DoGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, callConfig.MaxRetries)
+	var genResult *types.GenerateResult
+	err = responseFormatErr
+	if err == nil {
+		genResult, err = ai.DoGenerateWithGatewayRetry(modelCallCtx, stepModel, genOpts, callConfig.MaxRetries)
+	}
 	if err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
