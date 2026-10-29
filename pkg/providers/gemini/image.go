@@ -35,7 +35,11 @@ func ImageCallOptions(user map[string]interface{}, aspectRatio string, legacyIma
 	opts["responseModalities"] = []string{"IMAGE"}
 
 	imageConfig := map[string]interface{}{}
-	if ic, ok := user["imageConfig"].(map[string]interface{}); ok {
+	// TS sends imageConfig when aspectRatio or the caller's imageConfig is
+	// set (`userImageConfig != null`), so an empty caller map is sent as {}.
+	ic, userImageConfig := user["imageConfig"].(map[string]interface{})
+	userImageConfig = userImageConfig && ic != nil
+	if userImageConfig {
 		for k, v := range ic {
 			imageConfig[k] = v
 		}
@@ -51,7 +55,7 @@ func ImageCallOptions(user map[string]interface{}, aspectRatio string, legacyIma
 			}
 		}
 	}
-	if len(imageConfig) > 0 {
+	if len(imageConfig) > 0 || userImageConfig {
 		opts["imageConfig"] = imageConfig
 	}
 	return opts, googleSearch

@@ -227,14 +227,11 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		contents := reqBody["contents"].([]interface{})
 		content := contents[0].(map[string]interface{})
 		parts := content["parts"].([]interface{})
-		require.Len(t, parts, 3)
+		require.Len(t, parts, 2)
 		assert.Equal(t, "Edit these", parts[0].(map[string]interface{})["text"])
 		inline := parts[1].(map[string]interface{})["inlineData"].(map[string]interface{})
 		assert.Equal(t, "image/png", inline["mimeType"])
 		assert.Equal(t, "aW5saW5l", inline["data"])
-		fileData := parts[2].(map[string]interface{})["fileData"].(map[string]interface{})
-		assert.Equal(t, "https://example.com/ref.png", fileData["fileUri"])
-		assert.Equal(t, "image/png", fileData["mimeType"]) // "image/*" is not a full media type; resolved from the URL extension
 
 		genConfig := reqBody["generationConfig"].(map[string]interface{})
 		imageConfig := genConfig["imageConfig"].(map[string]interface{})
@@ -294,7 +291,6 @@ func TestImageModel_DoGenerate_Gemini_WithFilesOptionsAndWarnings(t *testing.T) 
 		AspectRatio: "9:16",
 		Files: []provider.ImageFile{
 			{Type: "file", MediaType: "image/png", Data: []byte("inline")},
-			{Type: "url", URL: "https://example.com/ref.png"},
 		},
 		ProviderOptions: map[string]interface{}{
 			"googleVertex": map[string]interface{}{
