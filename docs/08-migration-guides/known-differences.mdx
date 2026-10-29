@@ -314,8 +314,8 @@ through without parsing, so throwing would reject inputs that TS accepts.
 
 A non-streaming Interactions response whose `function_call` step has no
 `id` (or an empty one) gets an ID from the provider's ID generator
-(`InteractionsConfig.GenerateID`, else a random ID), as other Go providers
-do for missing tool call IDs. TS keeps the empty or missing ID. Go matches
+(`Config.GenerateID` or `InteractionsConfig.GenerateID`, else a random ID),
+as other Go providers do for missing tool call IDs. TS keeps the empty or missing ID. Go matches
 tool results and approvals by ID, so an empty ID, or the per-response
 `call_N` counter v0.5.2 used, could repeat across the steps of one run.
 

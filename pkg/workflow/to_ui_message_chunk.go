@@ -81,22 +81,33 @@ func ToUIMessageChunk(part ModelCallStreamPart) (ai.UIMessageChunk, bool) {
 		if src == nil {
 			return nil, false
 		}
+		// TS part.providerMetadata is the source's own metadata; Go
+		// providers keep it on SourceContent (some also copy it onto the
+		// chunk, which wins).
+		srcMeta := func(c ai.UIMessageChunk) ai.UIMessageChunk {
+			c = withMeta(c)
+			if _, ok := c["providerMetadata"]; !ok {
+				if md, ok := chunkProviderMetadata(src.ProviderMetadata); ok {
+					c["providerMetadata"] = md
+				}
+			}
+			return c
+		}
 		switch src.SourceType {
 		case "url":
 			c := ai.UIMessageChunk{"type": "source-url", "sourceId": src.ID, "url": src.URL}
 			if src.Title != "" {
 				c["title"] = src.Title
 			}
-			return withMeta(c), true
+			return srcMeta(c), true
 		case "document":
-			c := ai.UIMessageChunk{"type": "source-document", "sourceId": src.ID, "mediaType": src.MediaType}
-			if src.Title != "" {
-				c["title"] = src.Title
-			}
+			// A document source's title is a required string: TS writes it
+			// even when empty, and the UI message schema requires it.
+			c := ai.UIMessageChunk{"type": "source-document", "sourceId": src.ID, "mediaType": src.MediaType, "title": src.Title}
 			if src.Filename != "" {
 				c["filename"] = src.Filename
 			}
-			return withMeta(c), true
+			return srcMeta(c), true
 		}
 		return nil, false
 

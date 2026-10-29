@@ -2448,6 +2448,11 @@ func convertProviderChunkToUIMessageChunks(chunk provider.StreamChunk, opts resu
 		if chunk.SourceContent == nil || !opts.SendSources {
 			break
 		}
+		// TS part.providerMetadata is the source's own metadata; providers
+		// keep it on SourceContent (a chunk-level copy wins).
+		if len(chunk.ProviderMetadata) == 0 {
+			chunk.ProviderMetadata = chunk.SourceContent.ProviderMetadata
+		}
 		if chunk.SourceContent.SourceType == "url" {
 			part := map[string]interface{}{
 				"type":     "source-url",

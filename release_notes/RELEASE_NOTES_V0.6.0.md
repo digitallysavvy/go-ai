@@ -949,6 +949,9 @@ in v0.5.3.
 
 ### Core
 
+- UI message `source-url` and `source-document` chunks carry the source's
+  own `providerMetadata` (for example Anthropic's `pageAge`), as TS does;
+  only chunk-level metadata was forwarded.
 - `toolbash` keeps its truncation notice past 2^31 output characters on
   32-bit builds.
 - `StreamText` no longer writes a step's response messages into a caller's
@@ -978,6 +981,11 @@ in v0.5.3.
 
 ### Providers
 
+- `google.Config` and `googlevertex.Config` take a `GenerateID` (TS
+  `generateId` provider setting). It reaches the chat, Vertex image and
+  Interactions models, which use it for tool calls without an id, sources
+  and processing steps; before, only `InteractionsConfig.GenerateID` could
+  set it.
 - Gemini, Google and Vertex `doGenerate` and batch results no longer fail
   on a stray `error` key (TS `responseSchema`).
 - Gemini, Google and Vertex: a long-decode response continued over several
@@ -1064,6 +1072,9 @@ in v0.5.3.
 
 ### Workflow, MCP, code mode and harness
 
+- `workflow.ToUIMessageChunk` forwards a source's own `providerMetadata`
+  and always writes a document source's `title` (required by the UI message
+  schema), as TS does.
 - `WorkflowChatTransport`: a reconnect stream that fails after its `finish`
   chunk (a malformed frame or a read error) counts as a consecutive error, as
   TS's catch does, so reaching `MaxConsecutiveErrors` still fails the
@@ -1216,7 +1227,8 @@ Notable ones:
   id, which Go uses to reconnect.
 - Google Interactions: a non-streaming `function_call` step without an
   `id` gets an ID from the provider's ID generator
-  (`InteractionsConfig.GenerateID`, else random); TS keeps the empty ID, and
+  (`Config.GenerateID` or `InteractionsConfig.GenerateID`, else random); TS
+  keeps the empty ID, and
   v0.5.2 used a per-response `call_N` counter that repeated across steps.
   Go matches tool results by ID (coordinator ruling, round 62). The stream
   fallback `<interactionId>:<index>` (`interaction:<index>` with

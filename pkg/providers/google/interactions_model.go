@@ -67,6 +67,7 @@ func interactionsConfigFromProvider(p *Provider) InteractionsConfig {
 	return InteractionsConfig{
 		ProviderName: p.Name() + ".interactions",
 		Client:       p.client,
+		GenerateID:   p.config.GenerateID,
 		SerializableConfig: func() map[string]interface{} {
 			return provider.SerializableConfig(p.config)
 		},
