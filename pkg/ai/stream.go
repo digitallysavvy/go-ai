@@ -1117,10 +1117,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		stepCtx, stepCancel = opts.Timeout.CreateTimeoutContext(ctx, "step")
 	}
 	if opts.PrepareStep != nil {
+		givenInstructions := stepSystem
 		prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 			Model:                        stepModel,
 			System:                       stepSystem,
-			Instructions:                 &stepSystem,
+			Instructions:                 &givenInstructions,
 			InitialInstructions:          &system,
 			InstructionMessages:          cloneInstructionMessages(stepInstructionMessages),
 			InitialInstructionMessages:   cloneInstructionMessages(instructionMessages),
@@ -1163,7 +1164,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 			}
 			stepInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
 			stepSystem = ""
-		} else if prepared.Instructions != nil {
+		} else if preparedInstructionsSet(prepared.Instructions, &givenInstructions, stepSystem) {
 			stepSystem = *prepared.Instructions
 			stepInstructionMessages = nil
 		} else if prepared.System != "" {
@@ -1301,11 +1302,12 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		InstructionMessages: stepInstructionMessages,
 		System:              stepSystem,
 		Messages:            stepMessages,
-		Tools:               stepTools,
+		Tools:               opts.Tools, // TS stepStartEvent.tools: the call's tools
 		ToolChoice:          stepToolChoice,
 		ActiveTools:         stepActiveTools,
 		ToolOrder:           stepToolOrder,
 		ProviderOptions:     stepProviderOptions,
+		Output:              opts.Output,
 		PreviousSteps:       nil, // first (and only) step
 		ExperimentalContext: runtimeContext,
 		RuntimeContext:      runtimeContext,
@@ -3514,10 +3516,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 		if opts.PrepareStep != nil {
 			initialSystem := r.cbInitialSystem
+			givenInstructions := nextSystem
 			prepared := opts.PrepareStep(ctx, PrepareStepOptions{
 				Model:                        nextModel,
 				System:                       nextSystem,
-				Instructions:                 &nextSystem,
+				Instructions:                 &givenInstructions,
 				InitialInstructions:          &initialSystem,
 				InstructionMessages:          cloneInstructionMessages(nextInstructionMessages),
 				InitialInstructionMessages:   cloneInstructionMessages(r.cbInitialInstructionMessages),
@@ -3558,7 +3561,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 				}
 				nextInstructionMessages = cloneInstructionMessages(prepared.InstructionMessages)
 				nextSystem = ""
-			} else if prepared.Instructions != nil {
+			} else if preparedInstructionsSet(prepared.Instructions, &givenInstructions, nextSystem) {
 				nextSystem = *prepared.Instructions
 				nextInstructionMessages = nil
 			} else if prepared.System != "" {
@@ -3688,11 +3691,12 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			InstructionMessages: nextInstructionMessages,
 			System:              nextSystem,
 			Messages:            nextMessages,
-			Tools:               nextTools,
+			Tools:               opts.Tools, // TS stepStartEvent.tools: the call's tools
 			ToolChoice:          nextToolChoice,
 			ActiveTools:         nextActiveTools,
 			ToolOrder:           nextToolOrder,
 			ProviderOptions:     nextProviderOptions,
+			Output:              opts.Output,
 			Steps:               allSteps,
 			PreviousSteps:       allSteps,
 			ExperimentalContext: r.cbExperimentalCtx,

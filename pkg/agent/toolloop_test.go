@@ -2141,10 +2141,16 @@ func TestToolLoopAgent_GeneratePerCallOptionsOverrideConfig(t *testing.T) {
 	}
 }
 
+// TestToolLoopAgent_OnStepStartReceivesFilteredTools: the step-start event
+// reports the call's tools (TS stepStartEvent.tools); the filtered,
+// model-visible set is on the language model call start event.
 func TestToolLoopAgent_OnStepStartReceivesFilteredTools(t *testing.T) {
 	mock := &mockLanguageModel{responses: []types.GenerateResult{{Text: "done", FinishReason: types.FinishReasonStop, Usage: types.Usage{TotalTokens: intPtr(1)}}}}
-	var eventTools []types.Tool
+	var eventTools, modelTools []types.Tool
 	agent := NewToolLoopAgent(AgentConfig{
+		OnLanguageModelCallStart: func(_ context.Context, e ai.LanguageModelCallStartEvent) {
+			modelTools = e.Tools
+		},
 		Model: mock,
 		Tools: []types.Tool{
 			{Name: "keep", Parameters: map[string]interface{}{"type": "object"}},
@@ -2160,8 +2166,11 @@ func TestToolLoopAgent_OnStepStartReceivesFilteredTools(t *testing.T) {
 	if _, err := agent.Execute(context.Background(), "test"); err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
-	if len(eventTools) != 1 || eventTools[0].Name != "keep" {
-		t.Fatalf("OnStepStart tools were not filtered: %+v", eventTools)
+	if len(eventTools) != 2 {
+		t.Fatalf("OnStepStart tools = %d, want the call's 2 tools", len(eventTools))
+	}
+	if len(modelTools) != 1 || modelTools[0].Name != "keep" {
+		t.Fatalf("model call tools were not filtered: %+v", modelTools)
 	}
 }
 
@@ -3291,7 +3300,7 @@ func TestExecuteWithMessagesDeferredToolDiscovery(t *testing.T) {
 // with the pre-toolSearch tool list and only narrowed callConfig.Tools
 // afterward, so a still-deferred tool was visibly reported at step start.
 func TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveTools(t *testing.T) {
-	var stepStartToolNames [][]string
+	var stepStartToolNames, modelToolNames [][]string
 	calls := 0
 	model := &functionalAgentLanguageModel{
 		doGenerate: func(_ context.Context, _ *provider.GenerateOptions) (*types.GenerateResult, error) {
@@ -3330,6 +3339,13 @@ func TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveToo
 			}
 			stepStartToolNames = append(stepStartToolNames, names)
 		},
+		OnLanguageModelCallStart: func(_ context.Context, e ai.LanguageModelCallStartEvent) {
+			names := make([]string, 0, len(e.Tools))
+			for _, tl := range e.Tools {
+				names = append(names, tl.Name)
+			}
+			modelToolNames = append(modelToolNames, names)
+		},
 	})
 
 	if _, err := agent.GenerateAgent(context.Background(), AgentGenerateOptions{Prompt: "hi"}); err != nil {
@@ -3338,9 +3354,14 @@ func TestExecuteWithMessagesDeferredToolDiscovery_OnStepStartReportsEffectiveToo
 	if len(stepStartToolNames) < 1 {
 		t.Fatalf("expected at least 1 OnStepStartEvent, got %d", len(stepStartToolNames))
 	}
-	for _, name := range stepStartToolNames[0] {
+	// TS stepStartEvent.tools is the call's tool set; the model-visible set
+	// (secret hidden until discovered) is on the model call start event.
+	if got := strings.Join(stepStartToolNames[0], ","); got != "toolSearch,secret" {
+		t.Fatalf("OnStepStartEvent step 1 tools = %v, want the call's tools", stepStartToolNames[0])
+	}
+	for _, name := range modelToolNames[0] {
 		if name == "secret" {
-			t.Fatalf("OnStepStartEvent step 1 tools = %v, want secret hidden until discovered (matches the tools actually sent to the model)", stepStartToolNames[0])
+			t.Fatalf("model call step 1 tools = %v, want secret hidden until discovered", modelToolNames[0])
 		}
 	}
 }
