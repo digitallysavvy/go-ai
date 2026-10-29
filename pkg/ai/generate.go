@@ -1154,7 +1154,6 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			}
 			return nil, abortErr
 		}
-		stepStart := time.Now()
 		stepIndex := stepNum - 1
 		// The per-step timeout starts with the step, before PrepareStep, as
 		// TS arms its step timer at the top of the step loop.
@@ -1421,6 +1420,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 			ToolsContext:   telemetryToolsContext(telemetrySettings, toolsContext),
 		})
 
+		// TS generateText takes one stepStartTimestampMs after onStepStart,
+		// just before onLanguageModelCallStart, and measures both the step
+		// time and the model call's response time from it (retries
+		// included).
+		stepStart := time.Now()
 		Notify(stepCtx, LanguageModelCallStartEvent{
 			CallID:              callID,
 			Provider:            stepModel.Provider(),
@@ -1467,7 +1471,7 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		})
 
 		// Call the model with step context
-		modelCallStart := time.Now()
+		modelCallStart := stepStart
 		var genResult *types.GenerateResult
 		err := responseFormatErr
 		if err == nil {

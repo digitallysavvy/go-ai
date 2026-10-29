@@ -1020,6 +1020,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		}
 		cancelStepTimeout()
 		// TS stepTimeMs spans the model call and the tool execution.
+		if !stepTel.startedAt.IsZero() {
+			stepStarted = stepTel.startedAt
+		}
 		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
 		responseCalls := stepResult.ToolCalls
 		if workflowBlocked {
@@ -1923,6 +1926,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	modelCallCtx := stepCtx
+	// TS generateText takes stepStartTimestampMs here, just before
+	// onLanguageModelCallStart, for both the response and the step time.
+	modelCallStarted := time.Now()
+	if stepTel != nil {
+		stepTel.startedAt = modelCallStarted
+	}
 	ai.Notify(stepCtx, ai.LanguageModelCallStartEvent{
 		CallID:              stepTel.callID(),
 		Provider:            stepModel.Provider(),
@@ -1965,7 +1974,6 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 			defer stop()
 		}
 	}
-	modelCallStarted := time.Now()
 	var genResult *types.GenerateResult
 	err = responseFormatErr
 	if err == nil {

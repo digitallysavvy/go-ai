@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"reflect"
+	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -477,6 +478,9 @@ type loopStepTelemetry struct {
 	// too), the step ctx otherwise.
 	errCtx context.Context
 	closed bool
+	// startedAt is the step's TS stepStartTimestampMs: taken just before the
+	// language model call start, it times both the model call and the step.
+	startedAt time.Time
 }
 
 func (a *ToolLoopAgent) startStepTelemetry(ctx context.Context, lt *loopTelemetry, stepIndex int, c PrepareCallConfig) *loopStepTelemetry {

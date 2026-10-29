@@ -535,6 +535,12 @@ These match TS and are unlikely to need code changes, but can change output.
   So does each retried attempt to open the model stream (`MaxRetries`,
   review round 64), which also restarts the model call's clock; the step
   start still fires once.
+- **`GenerateText` step performance starts at the model call** (review round
+  64). As TS, `GenerateText` and the legacy `ToolLoopAgent` loop take one
+  timestamp after `OnStepStart`, just before `OnLanguageModelCallStart`, and
+  measure both `ResponseTimeMs` and `StepTimeMs` from it. `StepTimeMs` no
+  longer includes `PrepareStep` or prompt conversion (file downloads), and
+  `ResponseTimeMs` now includes the `OnLanguageModelCallStart` callback.
 - **UI stream `MessageMetadata` sees the call's finish part** (review round
   63): the `finish` input's part carries the raw finish reason and total
   usage. A start chunk that gives the response another message id ends the
