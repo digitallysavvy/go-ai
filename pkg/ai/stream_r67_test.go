@@ -3,12 +3,15 @@ package ai
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	gatewayerrors "github.com/digitallysavvy/go-ai/pkg/providers/gateway/errors"
+	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
 // TestR67StreamTranscribeCloseRejectsWithCancelReason mirrors TS
@@ -170,6 +173,77 @@ func TestR67ToUIMessageStreamCallbackPanicFailsOutcome(t *testing.T) {
 			outcome, _ := events[0]["outcome"].(map[string]interface{})
 			if outcome["status"] != "failed" || !errors.Is(outcome["error"].(error), tc.want) {
 				t.Fatalf("outcome = %v, want failed with %v", outcome, tc.want)
+			}
+		})
+	}
+}
+
+// TS streamText puts the model call's own error in the `error` part of a
+// failed step open (the pipeline and step catches enqueue `{ type: 'error',
+// error }`); only onError gets wrapGatewayError(part.error).
+func TestR67StreamOpenFailureErrorPartCarriesRawError(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	const wrapped = "Unauthenticated. Configure AI_GATEWAY_API_KEY or use a provider module. Learn more: https://ai-sdk.dev/unauthenticated-ai-gateway"
+	for _, failAt := range []int{1, 2} {
+		t.Run(fmt.Sprintf("step %d", failAt), func(t *testing.T) {
+			rawErr := gatewayerrors.NewGatewayAuthenticationError("", 401, nil, "")
+			var mu sync.Mutex
+			calls := 0
+			zero := 0
+			model := &testutil.MockLanguageModel{
+				DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+					mu.Lock()
+					calls++
+					n := calls
+					mu.Unlock()
+					if n == failAt {
+						return nil, rawErr
+					}
+					return SimulateReadableStream([]provider.StreamChunk{
+						{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+						{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonToolCalls},
+					}, 0), nil
+				},
+			}
+			var onErrorErr error
+			result, err := StreamText(context.Background(), StreamTextOptions{
+				Model:      model,
+				Prompt:     "hi",
+				MaxRetries: &zero,
+				StopWhen:   []StopCondition{StepCountIs(3)},
+				Tools: []types.Tool{{Name: "t", Execute: func(context.Context, map[string]interface{}, types.ToolExecutionOptions) (interface{}, error) {
+					return "ok", nil
+				}}},
+				OnError: func(_ context.Context, err error) {
+					mu.Lock()
+					onErrorErr = err
+					mu.Unlock()
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream := result.Stream()
+			var errorChunk *provider.StreamChunk
+			for {
+				c, err := stream.Next()
+				if err != nil {
+					break
+				}
+				if c.Type == provider.ChunkTypeError {
+					errorChunk = c
+				}
+			}
+			if errorChunk == nil {
+				t.Fatal("no error part")
+			}
+			if errorChunk.Err != error(rawErr) || errorChunk.Text != rawErr.Error() {
+				t.Errorf("error part = %T %q, want the model call's own error", errorChunk.Err, errorChunk.Text)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if onErrorErr == nil || onErrorErr.Error() != wrapped {
+				t.Errorf("OnError error = %v, want the wrapped gateway error", onErrorErr)
 			}
 		})
 	}
