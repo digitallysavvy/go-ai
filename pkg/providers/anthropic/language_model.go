@@ -763,9 +763,18 @@ func (m *LanguageModel) convertResponseWithOptions(response anthropicResponse, c
 		}
 	}
 	if ordered {
+		var text strings.Builder
 		for _, parts := range byBlock {
 			result.Content = append(result.Content, parts...)
+			for _, part := range parts {
+				if t, ok := part.(types.TextContent); ok {
+					text.WriteString(t.Text)
+				}
+			}
 		}
+		// TS step text joins the text parts in content order, so a json tool
+		// text that precedes a compaction block stays ahead of it.
+		result.Text = text.String()
 	}
 
 	// Map finish reason.
