@@ -32,3 +32,13 @@ func TestR66DataPartEmptyIDUpdatesInPlace(t *testing.T) {
 		t.Fatalf("parts = %v, want one data part with data 2", parts)
 	}
 }
+
+// TS applies a start chunk's messageId when it is not null, an empty id
+// included.
+func TestR66StartChunkEmptyMessageIDApplied(t *testing.T) {
+	s := newUIMessageCallbackState(nil, "m")
+	s.apply(UIMessageChunk{"type": "start", "messageId": ""}, nil)
+	if id, ok := s.message["id"]; !ok || id != "" {
+		t.Fatalf("message id = %v, want empty", id)
+	}
+}

@@ -1329,7 +1329,8 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	chunkType, _ := chunk["type"].(string)
 	switch chunkType {
 	case "start":
-		if id, _ := chunk["messageId"].(string); id != "" {
+		// TS `chunk.messageId != null`: an empty id is still applied.
+		if id, ok := chunk["messageId"].(string); ok {
 			if s.resetOnMessageIDChange && id != stringValue(s.message["id"]) {
 				s.message = UIMessageChunk{"id": id, "role": "assistant", "parts": []interface{}{}}
 				s.activeText = map[string]UIMessageChunk{}
