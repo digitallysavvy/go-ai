@@ -1979,6 +1979,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	if err := ai.ValidateToolResultParts(genResult.Content, toolCalls, callConfig.Tools); err != nil {
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
+	if content, changed := agentDeferredToolResultMetadata(genResult.Content, toolCalls, callConfig.Tools); changed {
+		withMetadata := *genResult
+		withMetadata.Content = content
+		genResult = &withMetadata
+	}
 	modelCallContent := contentFromGenerateResult(genResult, toolCalls)
 	// Sources, files and reasoning come from the content parts, as in
 	// GenerateText (TS DefaultStepResult getters).
@@ -2528,6 +2533,70 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	}
 	parts = replaceAgentToolResultContentParts(parts, toolCalls)
 	return parts
+}
+
+// agentDeferredToolResultMetadata gives a deferred provider tool result (a
+// tool-result or tool-error part that answers no tool call of the response)
+// its tool definition's metadata (TS convertLanguageModelContent
+// `toolMetadata: tool.metadata`). content is not modified.
+func agentDeferredToolResultMetadata(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) (_ []types.ContentPart, changed bool) {
+	metadataFor := func(id, name string, current map[string]interface{}) map[string]interface{} {
+		if current != nil {
+			return nil
+		}
+		if _, ok := agentToolCallByID(calls, id); ok {
+			return nil
+		}
+		for i := range tools {
+			if tools[i].Name == name {
+				return tools[i].Metadata
+			}
+		}
+		return nil
+	}
+	var out []types.ContentPart
+	for i, part := range content {
+		var updated types.ContentPart
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+				p.ToolMetadata = md
+				updated = p
+			}
+		case *types.ToolResultContent:
+			if p != nil {
+				if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+					c := *p
+					c.ToolMetadata = md
+					updated = c
+				}
+			}
+		case types.ToolErrorContent:
+			if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+				p.ToolMetadata = md
+				updated = p
+			}
+		case *types.ToolErrorContent:
+			if p != nil {
+				if md := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); md != nil {
+					c := *p
+					c.ToolMetadata = md
+					updated = c
+				}
+			}
+		}
+		if updated == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]types.ContentPart(nil), content...)
+		}
+		out[i] = updated
+	}
+	if out == nil {
+		return content, false
+	}
+	return out, true
 }
 
 func agentToolCallByID(calls []types.ToolCall, id string) (types.ToolCall, bool) {

@@ -935,13 +935,80 @@ func validateToolResultParts(content []types.ContentPart, calls []types.ToolCall
 	return nil
 }
 
+// withDeferredToolResultMetadata gives a deferred provider tool result (a
+// tool-result or tool-error part that answers no tool call of the response)
+// its tool definition's metadata, as TS convertLanguageModelContent does
+// (`toolMetadata: tool.metadata`): there is no call to copy it from. content
+// is not modified; changed reports whether the returned copy differs.
+func withDeferredToolResultMetadata(content []types.ContentPart, calls []types.ToolCall, tools map[string]*types.Tool) (_ []types.ContentPart, changed bool) {
+	var out []types.ContentPart
+	set := func(i int, part types.ContentPart) {
+		if out == nil {
+			out = append([]types.ContentPart(nil), content...)
+		}
+		out[i] = part
+	}
+	metadataFor := func(id, name string, current map[string]interface{}) (map[string]interface{}, bool) {
+		if current != nil {
+			return nil, false
+		}
+		if _, ok := toolCallByID(calls, id); ok {
+			return nil, false
+		}
+		if t := tools[name]; t != nil && t.Metadata != nil {
+			return t.Metadata, true
+		}
+		return nil, false
+	}
+	for i, part := range content {
+		switch p := part.(type) {
+		case types.ToolResultContent:
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				p.ToolMetadata = md
+				set(i, p)
+			}
+		case *types.ToolResultContent:
+			if p == nil {
+				continue
+			}
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				c := *p
+				c.ToolMetadata = md
+				set(i, c)
+			}
+		case types.ToolErrorContent:
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				p.ToolMetadata = md
+				set(i, p)
+			}
+		case *types.ToolErrorContent:
+			if p == nil {
+				continue
+			}
+			if md, ok := metadataFor(p.ToolCallID, p.ToolName, p.ToolMetadata); ok {
+				c := *p
+				c.ToolMetadata = md
+				set(i, c)
+			}
+		}
+	}
+	if out == nil {
+		return content, false
+	}
+	return out, true
+}
+
 // ValidateToolResultParts runs the "Tool call <id> not found." check of TS
 // convertLanguageModelContent for callers outside this package (the legacy
 // agent loop). tools is the step's tool set.
 func ValidateToolResultParts(content []types.ContentPart, calls []types.ToolCall, tools []types.Tool) error {
+	return validateToolResultParts(content, calls, toolsByNameOf(tools))
+}
+
+func toolsByNameOf(tools []types.Tool) map[string]*types.Tool {
 	byName := make(map[string]*types.Tool, len(tools))
 	for i := range tools {
 		byName[tools[i].Name] = &tools[i]
 	}
-	return validateToolResultParts(content, calls, byName)
+	return byName
 }

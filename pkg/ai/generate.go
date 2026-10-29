@@ -1506,6 +1506,11 @@ func GenerateText(ctx context.Context, opts GenerateTextOptions) (result *Genera
 		if err := validateToolResultParts(genResult.Content, genResult.ToolCalls, toolsByName); err != nil {
 			return nil, err
 		}
+		if content, changed := withDeferredToolResultMetadata(genResult.Content, genResult.ToolCalls, toolsByName); changed {
+			withMetadata := *genResult
+			withMetadata.Content = content
+			genResult = &withMetadata
+		}
 
 		responseID := ""
 		responseModelID := stepModel.ModelID()
