@@ -1034,7 +1034,8 @@ in v0.5.3.
 - `google.Config` and `googlevertex.Config` take a `GenerateID` (TS
   `generateId` provider setting). It reaches the chat, Vertex image and
   Interactions models, which use it for tool calls without an id, sources
-  and processing steps; before, only `InteractionsConfig.GenerateID` could
+  and processing steps, and to the Google batch, which names the batch
+  `ai-sdk-batch-<id>`; before, only `InteractionsConfig.GenerateID` could
   set it.
 - Gemini, Google and Vertex `doGenerate` and batch results no longer fail
   on a stray `error` key (TS `responseSchema`).
