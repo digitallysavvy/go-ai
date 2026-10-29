@@ -262,6 +262,18 @@ correlating events with their run.
   stream path (`doStreamStep`) does not check it and sends the value to the
   provider.
 
+## StreamText tool context failure ends the run
+
+When a tool's `ContextSchema` rejects its tool context, TS
+`executeToolsFromStream` catches the throw and enqueues an `error` part. The
+TS stream goes on: the step finishes with no tool output, so the run ends
+with `finish` and `onEnd`. Go ends the run with the `ValidationError`: the
+stream stops with no `finish-step` or `finish`, `OnEnd` is not called, and
+`Err()` returns the error. `OnError` is called once, as TS calls `onError`
+for the error part. This keeps StreamText in line with `GenerateText` and the
+agents, where a tool context failure fails the call (owner decision,
+2026-10-28).
+
 ## JSON payloads with `__proto__`
 
 Go accepts JSON with a `__proto__` key or a `constructor.prototype` member
