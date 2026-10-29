@@ -12,7 +12,9 @@ import (
 )
 
 // TS maps `annotation.title ?? annotation.url`: an empty title stays empty,
-// only a missing (or null) title falls back to the URL.
+// only a missing title falls back to the URL. A null title fails the
+// url_citation branch of the annotation schema (title is optional, not
+// nullable), so that annotation is no source (r59).
 func TestXAIResponsesCitationTitleNullishFallback(t *testing.T) {
 	sse := `data: {"type":"response.output_text.annotation.added","item_id":"m1","output_index":0,"content_index":0,"annotation_index":0,"annotation":{"type":"url_citation","url":"https://a.example","title":""}}
 
@@ -44,8 +46,10 @@ data: [DONE]
 		"https://a.example": "",
 		"https://b.example": "https://b.example",
 		"https://c.example": "",
-		"https://d.example": "https://d.example",
 		"https://e.example": "",
+	}
+	if _, ok := titles["https://d.example"]; ok {
+		t.Errorf("a null-title annotation became a source")
 	}
 	for u, w := range want {
 		if got, ok := titles[u]; !ok || got != w {
