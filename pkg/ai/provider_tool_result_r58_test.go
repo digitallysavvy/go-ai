@@ -86,3 +86,36 @@ func TestR58StreamModelToolResultsAreProviderExecuted(t *testing.T) {
 		}
 	}
 }
+
+// InitialStreamChunks carry results an adapter resolved before the step (the
+// WorkflowAgent's resumed approvals): they are not model output and keep their
+// own ProviderExecuted flag.
+func TestR58InitialStreamChunkToolResultsKeepTheirFlag(t *testing.T) {
+	t.Parallel()
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeText, Text: "done"},
+			{Type: provider.ChunkTypeFinish, FinishReason: types.FinishReasonStop},
+		}), nil
+	}}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Model:  model,
+		Prompt: "x",
+		InitialStreamChunks: []provider.StreamChunk{
+			{Type: provider.ChunkTypeToolResult, ToolResult: &types.ToolResult{ToolCallID: "local", ToolName: "t", Result: "r"}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.ConsumeStream(); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range res.Steps() {
+		for _, part := range step.Content {
+			if p, ok := part.(types.ToolResultContent); ok && p.ProviderExecuted {
+				t.Fatalf("initial tool result %s marked provider-executed", p.ToolCallID)
+			}
+		}
+	}
+}

@@ -648,6 +648,11 @@ type StreamTextResult struct {
 	// resumeChunksRemaining counts the resumed-approval chunks at the head of
 	// the stream; they are forwarded but not accumulated into step content.
 	resumeChunksRemaining int
+	// adapterToolResults are the tool results of InitialStreamChunks: an
+	// adapter resolved them before the step (WorkflowAgent's resumed
+	// approvals), so they keep their own ProviderExecuted flag instead of
+	// being treated as model output.
+	adapterToolResults    map[*types.ToolResult]bool
 	cbExperimentalSandbox interface{}
 	// cbCallSandbox is the sandbox given to the call (before any per-step
 	// PrepareStep override).
@@ -1457,6 +1462,14 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		prefix := make([]provider.StreamChunk, 0, len(resumed.chunks)+len(opts.InitialStreamChunks))
 		prefix = append(prefix, resumed.chunks...)
 		prefix = append(prefix, opts.InitialStreamChunks...)
+		for _, c := range opts.InitialStreamChunks {
+			if c.ToolResult != nil {
+				if r.adapterToolResults == nil {
+					r.adapterToolResults = map[*types.ToolResult]bool{}
+				}
+				r.adapterToolResults[c.ToolResult] = true
+			}
+		}
 		stream = &prefixedTextStream{prefix: prefix, base: stream}
 	}
 
@@ -2334,7 +2347,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 
 			// Track provider-inline tool results for the deferred hasResult check.
 			if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
-				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, stepToolCalls, toolsByName, &stepUsage)
+				enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], stepToolCalls, toolsByName, &stepUsage)
 				if convertErr != nil {
 					r.err = convertErr
 					break
@@ -3915,7 +3928,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	Notify(ctx, finishEvent, r.cbOnEndEvent)
 }
 
-func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
+func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.ToolResult, fromModel bool, toolCalls []types.ToolCall, toolsByName map[string]*types.Tool, usage *types.Usage) (types.ToolResult, error) {
 	call, hasCall := findToolCallByID(toolCalls, result.ToolCallID)
 	if hasCall {
 		if result.ToolName == "" {
@@ -3924,10 +3937,19 @@ func enrichStreamedToolResultForModelOutput(ctx context.Context, result types.To
 		if result.Input == nil {
 			result.Input = call.Arguments
 		}
+		if !result.ProviderExecuted {
+			if tool := toolsByName[call.ToolName]; tool != nil && tool.ProviderExecuted {
+				result.ProviderExecuted = true
+			} else {
+				result.ProviderExecuted = call.ProviderExecuted
+			}
+		}
 	}
 	// TS stream-language-model-call.ts: every tool-result the model streams
 	// is provider-executed, with or without a matching call.
-	result.ProviderExecuted = true
+	if fromModel {
+		result.ProviderExecuted = true
+	}
 	tool := toolsByName[result.ToolName]
 	if tool == nil || tool.ToModelOutput == nil || result.ModelOutput != nil || result.Error != nil {
 		return result, nil
@@ -4664,7 +4686,7 @@ func (r *StreamTextResult) readAllLegacy() (string, error) {
 			})
 		}
 		if chunk.Type == provider.ChunkTypeToolResult && chunk.ToolResult != nil {
-			enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, pendingToolCalls, toolsByName, &r.usage)
+			enrichedResult, convertErr := enrichStreamedToolResultForModelOutput(stepCtx, *chunk.ToolResult, !r.adapterToolResults[chunk.ToolResult], pendingToolCalls, toolsByName, &r.usage)
 			if convertErr != nil {
 				r.err = convertErr
 				return "", convertErr
