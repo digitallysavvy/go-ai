@@ -1247,21 +1247,16 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	}
 
 	// Resolve ResponseFormat: prefer explicit field, then derive from Output spec.
+	// A response format that cannot be built fails the model call itself (TS
+	// awaits output.responseFormat inside doStream, after onStepStart and the
+	// language model call start), like a doStream failure.
 	responseFormat := opts.ResponseFormat
 	var outputSpec outputProcessor
+	var responseFormatErr error
 	if op, ok := opts.Output.(outputProcessor); ok {
 		outputSpec = op
 		if responseFormat == nil {
-			rf, rfErr := op.ResponseFormat(stepCtx)
-			if rfErr != nil {
-				if stepCancel != nil {
-					stepCancel()
-				}
-				telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: rfErr})
-				r.failBeforeStream(ctx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, rfErr)
-				return
-			}
-			responseFormat = rf
+			responseFormat, responseFormatErr = op.ResponseFormat(stepCtx)
 		}
 	}
 
@@ -1411,7 +1406,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	r.stepReopenGenOpts = genOpts
 	r.stepReopenCtx = modelCallCtx
 	r.stepReopenMaxRetries = stepMaxRetries
-	stream, err := doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, stepMaxRetries)
+	var stream provider.TextStream
+	err := responseFormatErr
+	if err == nil {
+		stream, err = doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, stepMaxRetries)
+	}
 	if err != nil {
 		// stepCancel runs only after the error is classified below: a cancelled
 		// step context would make every open failure look like a step timeout.
@@ -3356,11 +3355,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		}
 
 		// Resolve ResponseFormat for the next step.
+		// A failure fails this step's model call (see bootstrapAndStream).
 		responseFormat := opts.ResponseFormat
+		var nextResponseFormatErr error
 		if responseFormat == nil && r.outputSpec != nil {
-			if rf, rfErr := r.outputSpec.ResponseFormat(ctx); rfErr == nil {
-				responseFormat = rf
-			}
+			responseFormat, nextResponseFormatErr = r.outputSpec.ResponseFormat(ctx)
 		}
 
 		// Start a new stream for the next step.
@@ -3671,7 +3670,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.stepReopenGenOpts = nextGenOpts
 		r.stepReopenCtx = nextModelCallCtx
 		r.stepReopenMaxRetries = nextMaxRetries
-		newStream, err := doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, nextMaxRetries)
+		var newStream provider.TextStream
+		err := nextResponseFormatErr
+		if err == nil {
+			newStream, err = doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, nextMaxRetries)
+		}
 		if err != nil {
 			// nextStepCancel runs after the error is classified: a cancelled
 			// step context would make every open failure look like a step timeout.
