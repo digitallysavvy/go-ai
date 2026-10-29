@@ -1,6 +1,7 @@
 package google
 
 import (
+	"math"
 	"testing"
 
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -23,6 +24,17 @@ func TestR61InteractionsCompactionMatchesEveryAssistantPartType(t *testing.T) {
 		out := compactMessagesForInteraction(msgs, "v1_prev")
 		if len(out) != 2 || out[0].Role != types.RoleUser || out[1].Role != types.RoleUser {
 			t.Fatalf("%s: compacted messages = %#v, want only the two user messages", name, out)
+		}
+	}
+}
+
+// r61: TS formats static video offsets with a template literal
+// (`${offset}s`), i.e. JavaScript's Number-to-string: exponent notation for
+// tiny and huge values, and "0" for negative zero.
+func TestR61InteractionsVideoOffsetUsesJSNumberString(t *testing.T) {
+	for in, want := range map[float64]string{1e-7: "1e-7s", 1e21: "1e+21s", math.Copysign(0, -1): "0s", 10.5: "10.5s", 3: "3s"} {
+		if got := videoOffsetString(in); got != want {
+			t.Fatalf("videoOffsetString(%v) = %v, want %q", in, got, want)
 		}
 	}
 }
