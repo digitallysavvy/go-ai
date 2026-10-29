@@ -532,6 +532,9 @@ These match TS and are unlikely to need code changes, but can change output.
   after `PrepareStep`. Output timing follows chunk arrival. A step whose
   stream ended without a finish part reports only `StepTimeMs` and
   `ToolExecutionMs`. A stream retry fires `OnLanguageModelCallStart` again.
+  So does each retried attempt to open the model stream (`MaxRetries`,
+  review round 64), which also restarts the model call's clock; the step
+  start still fires once.
 - **UI stream `MessageMetadata` sees the call's finish part** (review round
   63): the `finish` input's part carries the raw finish reason and total
   usage. A start chunk that gives the response another message id ends the

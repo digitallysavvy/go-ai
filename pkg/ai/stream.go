@@ -1366,60 +1366,69 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 	})
 	r.stepReopenTelemetryStepCtx = telemetryStepCtx
 
-	Notify(telemetryStepCtx, LanguageModelCallStartEvent{
-		CallID:              callID,
-		Provider:            stepModel.Provider(),
-		ModelID:             stepModel.ModelID(),
-		Instructions:        stepSystem,
-		InstructionMessages: stepInstructionMessages,
-		Messages:            stepMessages,
-		Tools:               genOpts.Tools,
-		MaxOutputTokens:     genOpts.MaxTokens,
-		Temperature:         genOpts.Temperature,
-		TopP:                genOpts.TopP,
-		TopK:                genOpts.TopK,
-		PresencePenalty:     genOpts.PresencePenalty,
-		FrequencyPenalty:    genOpts.FrequencyPenalty,
-		StopSequences:       genOpts.StopSequences,
-		Seed:                genOpts.Seed,
-		Reasoning:           genOpts.Reasoning,
-	}, onLanguageModelCallStart)
-	// Scoped to just this call (594029e): the model call runs inside the
-	// returned ctx, which embeds the telemetry integration's "chat" span when
-	// one is registered, nested under the step span created just above, so
-	// the provider's own DoStream/HTTP spans become its children. stepCtx
-	// itself is unchanged for subsequent chunk processing and tool
-	// execution, which are parented under the step span instead.
-	modelCallCtx := telemetry.FireOnLanguageModelCallStart(telemetryStepCtx, telemetry.LanguageModelCallStartEvent{
-		Settings:            telemetrySettings,
-		CallID:              callID,
-		ModelProvider:       stepModel.Provider(),
-		ModelID:             stepModel.ModelID(),
-		Prompt:              genOpts.Prompt,
-		Messages:            stepMessages,
-		InstructionMessages: stepInstructionMessages,
-		Tools:               genOpts.Tools,
-		System:              stepSystem,
-		Temperature:         genOpts.Temperature,
-		MaxOutputTokens:     genOpts.MaxTokens,
-		TopP:                genOpts.TopP,
-		TopK:                genOpts.TopK,
-		PresencePenalty:     genOpts.PresencePenalty,
-		FrequencyPenalty:    genOpts.FrequencyPenalty,
-		StopSequences:       genOpts.StopSequences,
-		Seed:                genOpts.Seed,
-	})
+	// startModelCall fires the model call's start (callback and telemetry)
+	// and starts its clock; a retried DoStream open runs it again, as TS
+	// retries streamLanguageModelCall as a whole.
+	var modelCallCtx context.Context
+	startModelCall := func() context.Context {
+		Notify(telemetryStepCtx, LanguageModelCallStartEvent{
+			CallID:              callID,
+			Provider:            stepModel.Provider(),
+			ModelID:             stepModel.ModelID(),
+			Instructions:        stepSystem,
+			InstructionMessages: stepInstructionMessages,
+			Messages:            stepMessages,
+			Tools:               genOpts.Tools,
+			MaxOutputTokens:     genOpts.MaxTokens,
+			Temperature:         genOpts.Temperature,
+			TopP:                genOpts.TopP,
+			TopK:                genOpts.TopK,
+			PresencePenalty:     genOpts.PresencePenalty,
+			FrequencyPenalty:    genOpts.FrequencyPenalty,
+			StopSequences:       genOpts.StopSequences,
+			Seed:                genOpts.Seed,
+			Reasoning:           genOpts.Reasoning,
+		}, onLanguageModelCallStart)
+		// Scoped to just this call (594029e): the model call runs inside the
+		// returned ctx, which embeds the telemetry integration's "chat" span when
+		// one is registered, nested under the step span created just above, so
+		// the provider's own DoStream/HTTP spans become its children. stepCtx
+		// itself is unchanged for subsequent chunk processing and tool
+		// execution, which are parented under the step span instead.
+		modelCallCtx = telemetry.FireOnLanguageModelCallStart(telemetryStepCtx, telemetry.LanguageModelCallStartEvent{
+			Settings:            telemetrySettings,
+			CallID:              callID,
+			ModelProvider:       stepModel.Provider(),
+			ModelID:             stepModel.ModelID(),
+			Prompt:              genOpts.Prompt,
+			Messages:            stepMessages,
+			InstructionMessages: stepInstructionMessages,
+			Tools:               genOpts.Tools,
+			System:              stepSystem,
+			Temperature:         genOpts.Temperature,
+			MaxOutputTokens:     genOpts.MaxTokens,
+			TopP:                genOpts.TopP,
+			TopK:                genOpts.TopK,
+			PresencePenalty:     genOpts.PresencePenalty,
+			FrequencyPenalty:    genOpts.FrequencyPenalty,
+			StopSequences:       genOpts.StopSequences,
+			Seed:                genOpts.Seed,
+		})
+
+		r.stepReopenCtx = modelCallCtx
+		r.stepCallStartedAt = time.Now()
+		return modelCallCtx
+	}
+	startModelCall()
 
 	// Start streaming
 	r.stepReopenModel = stepModel
 	r.stepReopenGenOpts = genOpts
-	r.stepReopenCtx = modelCallCtx
 	r.stepReopenMaxRetries = stepMaxRetries
 	var stream provider.TextStream
-	r.stepCallStartedAt = time.Now()
 	err := responseFormatErr
 	if err == nil {
-		stream, err = doStreamWithGatewayRetry(modelCallCtx, stepModel, genOpts, stepMaxRetries)
+		stream, err = doStreamWithGatewayRetryEach(modelCallCtx, stepModel, genOpts, stepMaxRetries, startModelCall)
 	}
 	if err != nil {
 		// stepCancel runs only after the error is classified below: a cancelled
@@ -2629,45 +2638,49 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					// onLanguageModelCallStart (callback and telemetry) and call
 					// start time (onStepStart is not repeated).
 					reopenModel, reopenOpts := r.stepReopenModel, r.stepReopenGenOpts
-					Notify(telemetryStepCtx, LanguageModelCallStartEvent{
-						CallID:              r.cbCallID,
-						Provider:            reopenModel.Provider(),
-						ModelID:             reopenModel.ModelID(),
-						Instructions:        stepInstructions,
-						InstructionMessages: stepInstructionMessages,
-						Messages:            currentMessages,
-						Tools:               reopenOpts.Tools,
-						MaxOutputTokens:     reopenOpts.MaxTokens,
-						Temperature:         reopenOpts.Temperature,
-						TopP:                reopenOpts.TopP,
-						TopK:                reopenOpts.TopK,
-						PresencePenalty:     reopenOpts.PresencePenalty,
-						FrequencyPenalty:    reopenOpts.FrequencyPenalty,
-						StopSequences:       reopenOpts.StopSequences,
-						Seed:                reopenOpts.Seed,
-						Reasoning:           reopenOpts.Reasoning,
-					}, onLanguageModelCallStart)
-					r.stepReopenCtx = telemetry.FireOnLanguageModelCallStart(telemetryStepCtx, telemetry.LanguageModelCallStartEvent{
-						Settings:            r.telemetrySettings,
-						CallID:              r.cbCallID,
-						ModelProvider:       reopenModel.Provider(),
-						ModelID:             reopenModel.ModelID(),
-						Prompt:              reopenOpts.Prompt,
-						Messages:            currentMessages,
-						InstructionMessages: stepInstructionMessages,
-						Tools:               reopenOpts.Tools,
-						System:              stepInstructions,
-						Temperature:         reopenOpts.Temperature,
-						MaxOutputTokens:     reopenOpts.MaxTokens,
-						TopP:                reopenOpts.TopP,
-						TopK:                reopenOpts.TopK,
-						PresencePenalty:     reopenOpts.PresencePenalty,
-						FrequencyPenalty:    reopenOpts.FrequencyPenalty,
-						StopSequences:       reopenOpts.StopSequences,
-						Seed:                reopenOpts.Seed,
-					})
-					callStart = time.Now()
-					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, reopenModel, reopenOpts, r.stepReopenMaxRetries)
+					startReopenCall := func() context.Context {
+						Notify(telemetryStepCtx, LanguageModelCallStartEvent{
+							CallID:              r.cbCallID,
+							Provider:            reopenModel.Provider(),
+							ModelID:             reopenModel.ModelID(),
+							Instructions:        stepInstructions,
+							InstructionMessages: stepInstructionMessages,
+							Messages:            currentMessages,
+							Tools:               reopenOpts.Tools,
+							MaxOutputTokens:     reopenOpts.MaxTokens,
+							Temperature:         reopenOpts.Temperature,
+							TopP:                reopenOpts.TopP,
+							TopK:                reopenOpts.TopK,
+							PresencePenalty:     reopenOpts.PresencePenalty,
+							FrequencyPenalty:    reopenOpts.FrequencyPenalty,
+							StopSequences:       reopenOpts.StopSequences,
+							Seed:                reopenOpts.Seed,
+							Reasoning:           reopenOpts.Reasoning,
+						}, onLanguageModelCallStart)
+						r.stepReopenCtx = telemetry.FireOnLanguageModelCallStart(telemetryStepCtx, telemetry.LanguageModelCallStartEvent{
+							Settings:            r.telemetrySettings,
+							CallID:              r.cbCallID,
+							ModelProvider:       reopenModel.Provider(),
+							ModelID:             reopenModel.ModelID(),
+							Prompt:              reopenOpts.Prompt,
+							Messages:            currentMessages,
+							InstructionMessages: stepInstructionMessages,
+							Tools:               reopenOpts.Tools,
+							System:              stepInstructions,
+							Temperature:         reopenOpts.Temperature,
+							MaxOutputTokens:     reopenOpts.MaxTokens,
+							TopP:                reopenOpts.TopP,
+							TopK:                reopenOpts.TopK,
+							PresencePenalty:     reopenOpts.PresencePenalty,
+							FrequencyPenalty:    reopenOpts.FrequencyPenalty,
+							StopSequences:       reopenOpts.StopSequences,
+							Seed:                reopenOpts.Seed,
+						})
+						callStart = time.Now()
+						return r.stepReopenCtx
+					}
+					startReopenCall()
+					newStream, reopenErr := doStreamWithGatewayRetryEach(r.stepReopenCtx, reopenModel, reopenOpts, r.stepReopenMaxRetries, startReopenCall)
 					if reopenErr != nil {
 						if isAbortErr(ctx, reopenErr) {
 							// TS's outer stream turns the error part into
@@ -3728,55 +3741,61 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			ToolsContext:   telemetryToolsContext(r.telemetrySettings, r.cbToolsCtx),
 		})
 		r.stepReopenTelemetryStepCtx = nextTelemetryStepCtx
-		Notify(nextTelemetryStepCtx, LanguageModelCallStartEvent{
-			CallID:              r.cbCallID,
-			Provider:            nextModel.Provider(),
-			ModelID:             nextModel.ModelID(),
-			Instructions:        nextSystem,
-			InstructionMessages: nextInstructionMessages,
-			Messages:            nextMessages,
-			Tools:               nextGenOpts.Tools,
-			MaxOutputTokens:     nextGenOpts.MaxTokens,
-			Temperature:         nextGenOpts.Temperature,
-			TopP:                nextGenOpts.TopP,
-			TopK:                nextGenOpts.TopK,
-			PresencePenalty:     nextGenOpts.PresencePenalty,
-			FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
-			StopSequences:       nextGenOpts.StopSequences,
-			Seed:                nextGenOpts.Seed,
-			Reasoning:           nextGenOpts.Reasoning,
-		}, onLanguageModelCallStart)
-		// Scoped to just this call (594029e): see the analogous comment where
-		// the first step's stream is started, above. Parented under the step
-		// span created just above.
-		nextModelCallCtx := telemetry.FireOnLanguageModelCallStart(nextTelemetryStepCtx, telemetry.LanguageModelCallStartEvent{
-			Settings:            r.telemetrySettings,
-			CallID:              r.cbCallID,
-			ModelProvider:       nextModel.Provider(),
-			ModelID:             nextModel.ModelID(),
-			Prompt:              nextGenOpts.Prompt,
-			Messages:            nextMessages,
-			InstructionMessages: nextInstructionMessages,
-			Tools:               nextGenOpts.Tools,
-			System:              nextSystem,
-			Temperature:         nextGenOpts.Temperature,
-			MaxOutputTokens:     nextGenOpts.MaxTokens,
-			TopP:                nextGenOpts.TopP,
-			TopK:                nextGenOpts.TopK,
-			PresencePenalty:     nextGenOpts.PresencePenalty,
-			FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
-			StopSequences:       nextGenOpts.StopSequences,
-			Seed:                nextGenOpts.Seed,
-		})
+		// As for the first step: a retried DoStream open is a new model call.
+		var nextModelCallCtx context.Context
+		startNextModelCall := func() context.Context {
+			Notify(nextTelemetryStepCtx, LanguageModelCallStartEvent{
+				CallID:              r.cbCallID,
+				Provider:            nextModel.Provider(),
+				ModelID:             nextModel.ModelID(),
+				Instructions:        nextSystem,
+				InstructionMessages: nextInstructionMessages,
+				Messages:            nextMessages,
+				Tools:               nextGenOpts.Tools,
+				MaxOutputTokens:     nextGenOpts.MaxTokens,
+				Temperature:         nextGenOpts.Temperature,
+				TopP:                nextGenOpts.TopP,
+				TopK:                nextGenOpts.TopK,
+				PresencePenalty:     nextGenOpts.PresencePenalty,
+				FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
+				StopSequences:       nextGenOpts.StopSequences,
+				Seed:                nextGenOpts.Seed,
+				Reasoning:           nextGenOpts.Reasoning,
+			}, onLanguageModelCallStart)
+			// Scoped to just this call (594029e): see the analogous comment where
+			// the first step's stream is started, above. Parented under the step
+			// span created just above.
+			nextModelCallCtx = telemetry.FireOnLanguageModelCallStart(nextTelemetryStepCtx, telemetry.LanguageModelCallStartEvent{
+				Settings:            r.telemetrySettings,
+				CallID:              r.cbCallID,
+				ModelProvider:       nextModel.Provider(),
+				ModelID:             nextModel.ModelID(),
+				Prompt:              nextGenOpts.Prompt,
+				Messages:            nextMessages,
+				InstructionMessages: nextInstructionMessages,
+				Tools:               nextGenOpts.Tools,
+				System:              nextSystem,
+				Temperature:         nextGenOpts.Temperature,
+				MaxOutputTokens:     nextGenOpts.MaxTokens,
+				TopP:                nextGenOpts.TopP,
+				TopK:                nextGenOpts.TopK,
+				PresencePenalty:     nextGenOpts.PresencePenalty,
+				FrequencyPenalty:    nextGenOpts.FrequencyPenalty,
+				StopSequences:       nextGenOpts.StopSequences,
+				Seed:                nextGenOpts.Seed,
+			})
+			r.stepReopenCtx = nextModelCallCtx
+			r.stepCallStartedAt = time.Now()
+			return nextModelCallCtx
+		}
+		startNextModelCall()
 		r.stepReopenModel = nextModel
 		r.stepReopenGenOpts = nextGenOpts
-		r.stepReopenCtx = nextModelCallCtx
 		r.stepReopenMaxRetries = nextMaxRetries
 		var newStream provider.TextStream
-		r.stepCallStartedAt = time.Now()
 		err := nextResponseFormatErr
 		if err == nil {
-			newStream, err = doStreamWithGatewayRetry(nextModelCallCtx, nextModel, nextGenOpts, nextMaxRetries)
+			newStream, err = doStreamWithGatewayRetryEach(nextModelCallCtx, nextModel, nextGenOpts, nextMaxRetries, startNextModelCall)
 		}
 		if err != nil {
 			// nextStepCancel runs after the error is classified: a cancelled
