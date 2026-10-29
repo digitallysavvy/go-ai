@@ -607,8 +607,16 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 	// CB-T23: Emit OnStartEvent with the prepared call (TS generateText's
 	// start event reports the prepareCall result).
 	fc := firstCallConfig
+	loopCallID := ""
+	if lt != nil {
+		loopCallID = lt.callID
+	}
 	ai.Notify(ctx, ai.OnStartEvent{
-		Provider: fc.Model.Provider(),
+		// TS ToolLoopAgent runs generateText, whose start event carries the
+		// call id, the operation and the call settings.
+		CallID:      loopCallID,
+		OperationID: "ai.generateText",
+		Provider:    fc.Model.Provider(),
 		// ModelProvider/System are deprecated aliases of Provider/Instructions;
 		// set for callbacks still reading the old fields (mirrors
 		// generate.go's OnStartEvent population).
@@ -619,7 +627,14 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		System:              fc.System, //nolint:staticcheck
 		Messages:            fc.Messages,
 		Tools:               fc.Tools,
+		ActiveTools:         fc.ActiveTools,
+		ToolOrder:           fc.ToolOrder,
 		ToolChoice:          fc.ToolChoice,
+		Timeout:             fc.Timeout,
+		Reasoning:           fc.Reasoning,
+		MaxRetries:          ai.GatewayMaxRetries(fc.Model, fc.MaxRetries),
+		Headers:             loopStepHeaders(fc.Internal, fc.Headers),
+		Output:              fc.Output,
 		Temperature:         fc.Temperature,
 		MaxTokens:           fc.MaxTokens,
 		TopP:                fc.TopP,
@@ -770,6 +785,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 
 		// CB-T23: Emit OnStepStartEvent
 		ai.Notify(ctx, ai.OnStepStartEvent{
+			CallID:     loopCallID,
 			StepNumber: stepIndex,
 			Provider:   callConfig.Model.Provider(),
 			// ModelProvider/System are deprecated aliases of Provider/
@@ -782,6 +798,11 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 			System:              callConfig.System, //nolint:staticcheck
 			Messages:            callConfig.Messages,
 			Tools:               callConfig.Tools,
+			ToolChoice:          callConfig.ToolChoice,
+			ActiveTools:         callConfig.ActiveTools,
+			ToolOrder:           callConfig.ToolOrder,
+			ProviderOptions:     callConfig.ProviderOptions,
+			Steps:               result.Steps,
 			PreviousSteps:       result.Steps,
 			ExperimentalContext: a.config.ExperimentalContext,
 			RuntimeContext:      callConfig.RuntimeContext,
@@ -1020,6 +1041,9 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		}
 		cancelStepTimeout()
 		// TS stepTimeMs spans the model call and the tool execution.
+		if !stepTel.startedAt.IsZero() {
+			stepStarted = stepTel.startedAt
+		}
 		stepResult.Performance.StepTimeMs = time.Since(stepStarted).Milliseconds()
 		responseCalls := stepResult.ToolCalls
 		if workflowBlocked {
@@ -1923,6 +1947,12 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		return nil, false, callConfig.CustomData, callConfig.Tools, err
 	}
 	modelCallCtx := stepCtx
+	// TS generateText takes stepStartTimestampMs here, just before
+	// onLanguageModelCallStart, for both the response and the step time.
+	modelCallStarted := time.Now()
+	if stepTel != nil {
+		stepTel.startedAt = modelCallStarted
+	}
 	ai.Notify(stepCtx, ai.LanguageModelCallStartEvent{
 		CallID:              stepTel.callID(),
 		Provider:            stepModel.Provider(),
@@ -1965,7 +1995,6 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 			defer stop()
 		}
 	}
-	modelCallStarted := time.Now()
 	var genResult *types.GenerateResult
 	err = responseFormatErr
 	if err == nil {

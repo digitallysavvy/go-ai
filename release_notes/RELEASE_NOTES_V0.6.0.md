@@ -532,6 +532,15 @@ These match TS and are unlikely to need code changes, but can change output.
   after `PrepareStep`. Output timing follows chunk arrival. A step whose
   stream ended without a finish part reports only `StepTimeMs` and
   `ToolExecutionMs`. A stream retry fires `OnLanguageModelCallStart` again.
+  So does each retried attempt to open the model stream (`MaxRetries`,
+  review round 64), which also restarts the model call's clock; the step
+  start still fires once.
+- **`GenerateText` step performance starts at the model call** (review round
+  64). As TS, `GenerateText` and the legacy `ToolLoopAgent` loop take one
+  timestamp after `OnStepStart`, just before `OnLanguageModelCallStart`, and
+  measure both `ResponseTimeMs` and `StepTimeMs` from it. `StepTimeMs` no
+  longer includes `PrepareStep` or prompt conversion (file downloads), and
+  `ResponseTimeMs` now includes the `OnLanguageModelCallStart` callback.
 - **UI stream `MessageMetadata` sees the call's finish part** (review round
   63): the `finish` input's part carries the raw finish reason and total
   usage. A start chunk that gives the response another message id ends the
@@ -993,6 +1002,20 @@ in v0.5.3.
 
 ### Core
 
+- A model that `StreamText`'s `PrepareStep` returns applies to its own step
+  only (review round 64). Later steps start from the call's model again, and
+  their `PrepareStep` receives it, as TS and `GenerateText` do; before, the
+  override stayed in effect for every following step.
+- The UI message stream's `MessageMetadata` callback runs once per stream
+  part, as TS does; the `start` part of a `StreamText` stream called it twice.
+- The legacy `ToolLoopAgent` loop (`GenerateAgent`, `Execute`,
+  `ExecuteWithMessages`) gives `OnStart` and `OnStepStartEvent` the call ID
+  that its end event carries, and the call's operation, active tools, tool
+  order, tool choice, timeout, reasoning, retries, headers and output, as TS
+  generateText's start events do; they had no call ID.
+- `BatchTextRequest.AllowSystemInMessages` (additive) lets a batch text
+  request carry system messages in `Messages`, as TS `allowSystemInMessages`
+  does; without it they are still rejected.
 - UI message `source-url` and `source-document` chunks carry the source's
   own `providerMetadata` (for example Anthropic's `pageAge`), as TS does;
   only chunk-level metadata was forwarded.

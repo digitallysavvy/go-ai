@@ -749,7 +749,10 @@ func ToUIMessageStream(ctx context.Context, stream provider.TextStream, opts ...
 			}
 		}
 		processMessageMetadata := func(part provider.StreamChunk) {
-			if options.MessageMetadata == nil {
+			// The start part's metadata was taken once, for the start chunk
+			// sent before the source is read: TS calls messageMetadata once per
+			// part, so the source's own start part does not call it again.
+			if options.MessageMetadata == nil || part.Type == provider.ChunkTypeStart {
 				return
 			}
 			input := messageMetadataInput(part, "")
