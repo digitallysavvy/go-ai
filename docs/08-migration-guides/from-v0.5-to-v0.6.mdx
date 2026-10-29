@@ -231,6 +231,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
     ```
   - **Kind:** silent behavior change.
 
+- **A `PrepareStep` that sets only `System` changes the step instructions.**
+  - **What changed:** in `GenerateText` and `StreamText`, a `PrepareStep`
+    callback that sets `System` and returns the options it got now sends
+    that system prompt. In v0.5 the `Instructions` pointer it got back still
+    held the old value and won, so the new `System` was ignored. TS reads
+    `prepareStepResult.instructions ?? prepareStepResult.system`.
+    `Instructions` still wins when the callback sets it (a new pointer, or a
+    write through the given one).
+  - **Am I affected?** Search for `PrepareStep` callbacks that assign
+    `System` (for example `step.System = ...`).
+  - **What to do:** no action unless such a callback relied on its `System`
+    being ignored; remove that assignment to keep the v0.5 prompt.
+  - **Kind:** silent behavior change.
+
 - **The legacy loop follows the `PrepareCall` tools, tool callers and output.**
   - **What changed:** `GenerateAgent`, `Execute`, `ExecuteWithMessages`
     (and `WorkflowAgent.Generate`, which runs this loop) resolve tool search

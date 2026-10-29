@@ -204,6 +204,11 @@ Each item has before/after code in the
   `OnStepStartEvent.Output` is now set (TS `stepStartEvent.output`).
   **Migration:** read `ActiveTools` for the step's limit, or the tools sent to
   the model from `LanguageModelCallStartEvent.Tools`.
+- **A `PrepareStep` that sets only `System` changes the step instructions**
+  (review round 67), in `GenerateText` and `StreamText`. The `Instructions`
+  pointer the callback got back held the old value and won, so the new
+  `System` was ignored (TS `instructions ?? system`). **Migration:** remove a
+  `System` assignment that was meant to have no effect.
 - **The legacy `ToolLoopAgent` loop follows the `PrepareCall` tools, tool
   callers and output** (review round 67). `GenerateAgent`/`Execute` (and
   `WorkflowAgent.Generate`) resolve tool search and `ExperimentalToolCallers`
