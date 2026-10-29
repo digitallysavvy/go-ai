@@ -48,8 +48,9 @@ type Config struct {
 	HTTPClient *http.Client
 
 	// GenerateID generates the ids the chat and Interactions models create
-	// (tool calls without an id, sources, processing steps). TS
-	// `generateId`; defaults to a random id.
+	// (tool calls without an id, sources, processing steps) and the batch
+	// displayName suffix ("ai-sdk-batch-" plus the id). TS `generateId`; defaults
+	// to a random id.
 	GenerateID func() string `json:"-"`
 }
 

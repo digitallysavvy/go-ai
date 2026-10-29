@@ -115,7 +115,15 @@ func (b *Batch) DoStartBatch(ctx context.Context, opts provider.BatchV4StartOpti
 		}
 	}
 
-	displayName := "ai-sdk-batch-" + generateGoogleBatchDisplayNameSuffix()
+	// TS `ai-sdk-batch-${this.batchGenerateId()}` with batchGenerateId =
+	// config.generateId ?? generateId (the provider's generateId setting).
+	suffix := ""
+	if b.provider.config.GenerateID != nil {
+		suffix = b.provider.config.GenerateID()
+	} else {
+		suffix = generateGoogleBatchDisplayNameSuffix()
+	}
+	displayName := "ai-sdk-batch-" + suffix
 	batchFields := map[string]interface{}{"displayName": displayName}
 	if opts.WebhookURL != "" {
 		batchFields["webhookConfig"] = map[string]interface{}{"uris": []string{opts.WebhookURL}}
