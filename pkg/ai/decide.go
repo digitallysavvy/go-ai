@@ -195,7 +195,7 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 	// experimental_onDecideStart/End instead of the generic dispatcher used
 	// by generateText/embed/etc, so registered integrations decide how (and
 	// whether) to create spans — core never touches OTel directly.
-	ctx = telemetry.FireOnDecideStart(ctx, telemetry.DecideStartEvent{
+	telemetryStartEvent := telemetry.DecideStartEvent{
 		Settings:       telemetrySettings,
 		CallID:         callID,
 		OperationID:    "ai.decide",
@@ -206,7 +206,8 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 		Questions:      opts.Questions,
 		MaxRetries:     resolvedMaxRetries,
 		Headers:        opts.Headers,
-	})
+	}
+	ctx = telemetry.FireOnDecideStart(ctx, telemetryStartEvent)
 	if opts.OnStart != nil {
 		safeInvoke(func() { opts.OnStart(startEvent) })
 	}
@@ -354,16 +355,11 @@ func ExperimentalDecide(ctx context.Context, opts DecideOptions) (*DecideResult,
 
 	// Mirrors onDecideOperationEnd: ai.decision.answers is also recorded
 	// on the root span, output-gated, and the root span is ended.
+	// The end event carries every start field (TS `{ ...startEvent,
+	// ...decisionResult }`), including state, questions, maxRetries, headers.
 	telemetry.FireOnDecideEnd(ctx, telemetry.DecideEndEvent{
-		DecideStartEvent: telemetry.DecideStartEvent{
-			Settings:       telemetrySettings,
-			CallID:         callID,
-			OperationID:    "ai.decide",
-			ModelProvider:  model.Provider(),
-			ModelID:        model.ModelID(),
-			RuntimeContext: telemetryRuntimeContext(telemetrySettings, opts.RuntimeContext),
-		},
-		Answers: evalResult.Answers,
+		DecideStartEvent: telemetryStartEvent,
+		Answers:          evalResult.Answers,
 	})
 
 	if opts.OnEnd != nil {

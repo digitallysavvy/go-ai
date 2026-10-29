@@ -359,3 +359,46 @@ func TestExperimentalDecide_TelemetryDispatchShape_Error(t *testing.T) {
 type mockEvalError struct{ msg string }
 
 func (e *mockEvalError) Error() string { return e.msg }
+
+// TestExperimentalDecide_TelemetryEndEventCarriesStartFields mirrors TS
+// decide.ts, which notifies onEnd with `{ ...startEvent, ...decisionResult }`:
+// the decide end event must carry the start event's state, questions,
+// maxRetries and headers, not only the call/model identifiers.
+func TestExperimentalDecide_TelemetryEndEventCarriesStartFields(t *testing.T) {
+	questions, model := decideTelemetryFixture()
+	mock := &mockDecideDispatchIntegration{}
+	maxRetries := 1
+	state := map[string]interface{}{"message": "refund"}
+	_, err := ExperimentalDecide(context.Background(), DecideOptions{
+		Model:      model,
+		State:      state,
+		Questions:  questions,
+		MaxRetries: &maxRetries,
+		Headers:    map[string]string{"x-test": "1"},
+		ExperimentalTelemetry: &telemetry.Options{
+			IsEnabled:    telemetry.Bool(true),
+			Integrations: []telemetry.TelemetryIntegration{mock},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExperimentalDecide() error = %v", err)
+	}
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if mock.decideEnd == nil {
+		t.Fatal("expected OnDecideEnd to be called")
+	}
+	end := mock.decideEnd
+	if got, ok := end.State.(map[string]interface{}); !ok || got["message"] != "refund" {
+		t.Errorf("decideEnd.State = %#v, want the start state", end.State)
+	}
+	if got, ok := end.Questions.(map[string]provider.DecisionQuestion); !ok || len(got) != len(questions) {
+		t.Errorf("decideEnd.Questions = %#v, want the start questions", end.Questions)
+	}
+	if end.MaxRetries != 1 || end.Headers["x-test"] != "1" {
+		t.Errorf("decideEnd MaxRetries/Headers = %d/%v", end.MaxRetries, end.Headers)
+	}
+	if mock.decideStart == nil || end.MaxRetries != mock.decideStart.MaxRetries {
+		t.Errorf("decideEnd.MaxRetries should equal the start event's")
+	}
+}
