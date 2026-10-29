@@ -611,17 +611,17 @@ func validateDecisionDistribution(dist map[string]float64, keys []string, answer
 		keySet[k] = struct{}{}
 	}
 	if len(dist) != len(keySet) {
-		return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q must have a complete distribution of finite probabilities in [0, 1].", id))
+		return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" must have a complete distribution of finite probabilities in [0, 1].", id))
 	}
 	var sum float64
 	for k, p := range dist {
 		if _, ok := keySet[k]; !ok || !isDecisionProbability(p) {
-			return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q must have a complete distribution of finite probabilities in [0, 1].", id))
+			return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" must have a complete distribution of finite probabilities in [0, 1].", id))
 		}
 		sum += p
 	}
 	if math.Abs(sum-1) > decisionTolerance+float64(len(keys))*roundingErr {
-		return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q probabilities must sum to 1 within the declared rounding precision.", id))
+		return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" probabilities must sum to 1 within the declared rounding precision.", id))
 	}
 	return nil
 }
@@ -657,14 +657,14 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ord
 			continue
 		}
 		if answer.Type != q.Type {
-			return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q returned an answer with the wrong type.", id))
+			return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" returned an answer with the wrong type.", id))
 		}
 
 		switch q.Type {
 		case "choice":
 			criteria, _ := isDecisionRecord(q.Criteria)
 			if _, ok := criteria[answer.Choice]; answer.Choice == "" || !ok {
-				return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q selected an unknown option.", id))
+				return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" selected an unknown option.", id))
 			}
 			if answer.Probabilities != nil {
 				keys := make([]string, 0, len(criteria))
@@ -677,7 +677,7 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ord
 				selected := answer.Probabilities[answer.Choice]
 				for _, p := range answer.Probabilities {
 					if p > selected+decisionTolerance+2*probError {
-						return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q did not select a highest-probability option.", id))
+						return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" did not select a highest-probability option.", id))
 					}
 				}
 			}
@@ -685,7 +685,7 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ord
 			criteria, _ := q.Criteria.([]interface{})
 			maxScore := float64(len(criteria) - 1)
 			if answer.Score == nil || !isFiniteFloat(*answer.Score) || *answer.Score < 0 || *answer.Score > maxScore {
-				return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q score must be in [0, %v].", id, maxScore))
+				return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" score must be in [0, %v].", id, maxScore))
 			}
 			if answer.Probabilities != nil {
 				keys := make([]string, len(criteria))
@@ -704,7 +704,7 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ord
 					meanRoundingError += float64(i) * probError
 				}
 				if math.Abs(mean-*answer.Score) > decisionTolerance+meanRoundingError+scoreError {
-					return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q score must equal the probability-weighted mean within the declared rounding precision.", id))
+					return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" score must equal the probability-weighted mean within the declared rounding precision.", id))
 				}
 			}
 		case "box":
@@ -713,11 +713,11 @@ func validateDecisionAnswers(questions map[string]provider.DecisionQuestion, ord
 				!isDecisionProbability(box.Left) || !isDecisionProbability(box.Right) ||
 				!isDecisionProbability(box.Top) || !isDecisionProbability(box.Bottom) ||
 				!(box.Left < box.Right) || !(box.Top < box.Bottom) {
-				return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q must return box edges in [0, 1] with left < right and top < bottom.", id))
+				return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" must return box edges in [0, 1] with left < right and top < bottom.", id))
 			}
 		case "boolean":
 			if answer.Probability == nil || !isDecisionProbability(*answer.Probability) {
-				return invalidDecisionAnswer(answers, fmt.Sprintf("Question %q must return P(true) as a finite probability in [0, 1].", id))
+				return invalidDecisionAnswer(answers, fmt.Sprintf("Question \"%s\" must return P(true) as a finite probability in [0, 1].", id))
 			}
 		}
 	}

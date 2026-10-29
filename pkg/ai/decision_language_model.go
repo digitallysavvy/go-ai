@@ -289,13 +289,13 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 				}
 			}
 			if choiceIndex == -1 {
-				return nil, providererrors.NewInvalidResponseDataError(rawValues, fmt.Sprintf("Question %q selected an unknown option.", en.id))
+				return nil, providererrors.NewInvalidResponseDataError(rawValues, fmt.Sprintf("Question \"%s\" selected an unknown option.", en.id))
 			}
 			answers[en.id] = provider.DecisionAnswer{Type: "choice", Choice: optionKeys[choiceIndex]}
 		case "boolean":
 			num, isNumber := raw.(float64)
 			if !isNumber || !isFiniteFloat(num) || num < 0 || num > 1 {
-				return nil, providererrors.NewInvalidResponseDataError(rawValues, fmt.Sprintf("Question %q must return P(true) as a finite probability in [0, 1].", en.id))
+				return nil, providererrors.NewInvalidResponseDataError(rawValues, fmt.Sprintf("Question \"%s\" must return P(true) as a finite probability in [0, 1].", en.id))
 			}
 			p := num
 			answers[en.id] = provider.DecisionAnswer{Type: "boolean", Probability: &p}
@@ -303,7 +303,7 @@ func (e *DecisionLanguageModel) DoDecide(ctx context.Context, opts provider.Deci
 			criteria, _ := en.question.Criteria.([]interface{})
 			num, isNumber := raw.(float64)
 			if !isNumber || !isFiniteFloat(num) || num < 0 || num > float64(len(criteria)-1) {
-				return nil, providererrors.NewInvalidResponseDataError(rawValues, fmt.Sprintf("Question %q returned a score outside its rubric.", en.id))
+				return nil, providererrors.NewInvalidResponseDataError(rawValues, fmt.Sprintf("Question \"%s\" returned a score outside its rubric.", en.id))
 			}
 			s := num
 			answers[en.id] = provider.DecisionAnswer{Type: "score", Score: &s}
