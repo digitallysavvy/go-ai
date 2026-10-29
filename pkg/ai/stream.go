@@ -2573,29 +2573,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 					if s := r.currentStream(); s != nil {
 						_ = s.Close()
 					}
-					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, r.stepReopenModel, r.stepReopenGenOpts, r.stepReopenMaxRetries)
-					if reopenErr != nil {
-						r.err = reopenErr
-						// Close this iteration's still-open step span
-						// (telemetryStepCtx, from FireOnStepStart at the top of
-						// this loop iteration) and the model-call/"chat" span
-						// (found via CallID regardless of ctx) here — the shared
-						// cleanup after the loop only closes the root span
-						// (H4 item 2).
-						// On abort TS skips onStepError; the telemetry
-						// onAbort ends the spans.
-						if isAbortErr(ctx, reopenErr) {
-							fireAbort(reopenErr)
-						} else {
-							telemetry.FireOnStepError(telemetryStepCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: reopenErr})
-						}
-						break
-					}
-					r.setStream(newStream)
-
 					// Drop the failed attempt's held-back chunks and close the
 					// text/reasoning blocks it left open downstream (TS
-					// closeOpenAttemptParts).
+					// closeOpenAttemptParts, before the retry's model call).
 					heldChunks, replayQueue = nil, nil
 					for _, id := range openTextIDs {
 						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeTextEnd, ID: id}})
@@ -2604,6 +2584,35 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeReasoningEnd, ID: id}})
 					}
 					openTextIDs, openReasoningIDs = nil, nil
+					newStream, reopenErr := doStreamWithGatewayRetry(r.stepReopenCtx, r.stepReopenModel, r.stepReopenGenOpts, r.stepReopenMaxRetries)
+					if reopenErr != nil {
+						if isAbortErr(ctx, reopenErr) {
+							// TS's outer stream turns the error part into
+							// abort(); the telemetry onAbort ends the spans.
+							r.err = reopenErr
+							fireAbort(reopenErr)
+							break
+						}
+						// TS: the failed retry's model call becomes an `error`
+						// part that ends the step's stream, so the step ends
+						// with finish-step (finish reason error) and the error
+						// reaches onError like any error part.
+						retryErr := wrapGatewayError(reopenErr)
+						if opts.OnError != nil {
+							safeInvoke(func() { opts.OnError(ctx, retryErr) })
+						}
+						forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: reopenErr, Text: reopenErr.Error()}})
+						stepSawTerminal = true
+						stepSawErrorChunk = true
+						r.finishReason = types.FinishReasonError
+						r.mu.Lock()
+						if r.chunkErr == nil || opts.Internal == nil || !opts.Internal.StopOnStreamError {
+							r.chunkErr = retryErr
+						}
+						r.mu.Unlock()
+						break
+					}
+					r.setStream(newStream)
 
 					// Discard this attempt's buffered step output and start
 					// the step's aggregation fresh, so the recovered step
