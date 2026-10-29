@@ -862,6 +862,19 @@ These match TS and are unlikely to need code changes, but can change output.
 - **The `GenerateText`/`StreamText` per-step timeout starts before
   `PrepareStep`**, as TS arms its step timer at the top of each step: time
   spent in `PrepareStep` counts toward `Timeout.PerStep`.
+- **Error text: names are quoted as TS template literals** (review round
+  66). Messages that quote a name use `"a"b"` instead of Go `%q` escaping,
+  so the text changes only for a name containing `"`, `\`, a non-ASCII or
+  a control character; the error types are unchanged. Messages from v0.5.2:
+  `CreateIDGenerator`'s separator error, `ExperimentalToolCallers` ("unknown
+  tool", "contains an invalid caller"), tool search validation,
+  `ExperimentalStreamTranscribe` for a model without streaming, decision
+  (formerly evaluation) answer validation and the decision language
+  model's `Question "<id>" ...` messages, and
+  `DecisionUnsupportedQuestionTypeError`.
+- **`OnStartEvent.Messages` holds a `Prompt` string as one user message**
+  for `GenerateText` and `StreamText` (v0.5.x: empty), as TS
+  `initialPrompt.messages` (review round 66; see the migration guide).
 
 ### Providers
 
@@ -1117,6 +1130,10 @@ in v0.5.3.
 
 ### Providers
 
+- The Vertex Gemini image model infers a URL input image's media type from
+  the URL path: a query string or fragment after the extension
+  (`y.png?sig=1`, `gs://b/y.webp#v`) no longer falls back to `image/jpeg`.
+  A caller-supplied full media type still wins (review round 66).
 - A failed Vertex Gemini image call's `ProviderError.Provider` is
   `google.vertex.image`, the image model's provider (it said
   `google.vertex.chat`), as TS builds the image model's inner language model
@@ -1379,6 +1396,14 @@ Notable ones:
 - UI tool parts cannot tell an unset `dynamic` from `dynamic: false` (Go
   `bool`), so Go writes `dynamic` only when true; TS can write
   `dynamic: false` for a tool missing from the tool set.
+- The Vertex Gemini image model accepts URL and `gs://` input images and
+  sends them as `fileData` with the caller's media type, else one inferred
+  from the URL path extension (query string and fragment ignored), else
+  `image/jpeg`, as v0.5.2 accepted them and TS before #14733 sent them.
+  Current TS rejects them: it labels URL inputs `image/*` and its
+  `resolveFullMediaType` (#14733) does not guess a subtype for data that is
+  not inline. Set `MediaType` explicitly for a URL without an image
+  extension (owner ruling).
 - Google Interactions: a non-streaming `function_call` step without an
   `id` gets an ID from the provider's ID generator
   (`Config.GenerateID` or `InteractionsConfig.GenerateID`, else random); TS

@@ -215,6 +215,14 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   authenticate, as `GenerateText` does. Match it with `errors.As` on
   `*gatewayerrors.GatewayAuthenticationError`, not by its text.
 
+- **Error messages quote names as TS does.** Messages that quote a tool,
+  model, question or separator name (`CreateIDGenerator`,
+  `ExperimentalToolCallers`, tool search, `ExperimentalStreamTranscribe`,
+  decision validation, `DecisionUnsupportedQuestionTypeError`) put the name
+  between plain double quotes instead of Go `%q` escaping. The text changes
+  only for a name with `"`, `\`, non-ASCII or control characters; match
+  these errors with `errors.As`, not by their text.
+
 - **`StreamText` fires `OnLanguageModelCallStart` once per attempt.** As
   TS, each retried attempt to open the model stream (`MaxRetries`) is a new
   model call: `OnLanguageModelCallStart` fires again and the call's

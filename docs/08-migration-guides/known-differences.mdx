@@ -284,6 +284,19 @@ only when it is true. TS `toUIMessageChunk` copies a tool part's own
 `dynamic` for a tool missing from the tool set, so it can write
 `dynamic: false`. Clients read a missing `dynamic` as false.
 
+## Vertex Gemini image model: URL input images
+
+The Vertex Gemini image model accepts URL and `gs://` input images
+(`ImageGenerateOptions.Files` entries of type `url`). Go sends each one as
+`fileData` with the caller's `MediaType`, else a type inferred from the
+extension of the URL path (the query string and fragment are ignored:
+`y.png?sig=1` is `image/png`), else `image/jpeg`. v0.5.2 also accepted them,
+and TS before #14733 sent them as `image/jpeg`. Current TS rejects them with
+an `UnsupportedFunctionalityError` before any request: it labels URL inputs
+`image/*`, and `resolveFullMediaType` (#14733) does not guess a subtype for
+data that is not passed inline. Set `MediaType` explicitly for a URL without
+an image extension (owner ruling 2026-10-29).
+
 ## StreamText tool context failure ends the run
 
 When a tool's `ContextSchema` rejects its tool context, TS
