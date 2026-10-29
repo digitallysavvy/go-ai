@@ -2033,16 +2033,13 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		}
 	}
 	stepResponse := types.StepResponse{
-		ID:        newTextResponseID(),
 		Timestamp: time.Now(),
 		ModelID:   stepModel.ModelID(),
 		Headers:   genResult.ResponseHeaders,
 		Body:      includeValue(include.ResponseBody, genResult.RawResponse),
 	}
 	if meta := genResult.ResponseMetadata; meta != nil {
-		if meta.ID != "" {
-			stepResponse.ID = meta.ID
-		}
+		stepResponse.ID = meta.ID
 		if !meta.Timestamp.IsZero() {
 			stepResponse.Timestamp = meta.Timestamp
 		}
@@ -2052,6 +2049,11 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 		if meta.Headers != nil {
 			stepResponse.Headers = meta.Headers
 		}
+	}
+	if stepResponse.ID == "" {
+		// TS `result.response?.id ?? generateId()`: the run's generator is
+		// called only for a response without an ID.
+		stepResponse.ID = agentGenerateID(callConfig.Internal)()
 	}
 	// The language-model-call end event follows the parsed response and
 	// precedes client-side tool execution (TS onLanguageModelCallEnd): its
@@ -2791,13 +2793,16 @@ func agentContentHasText(parts []types.ContentPart) bool {
 	return false
 }
 
-// assignAgentApprovalIDs names the approvals of a step's tool calls with
-// InternalOptions.ApprovalID when it is set (TS WorkflowAgent:
-// `approval-<toolCallId>`). Otherwise an approval keeps the call's ID, as in
-// earlier releases.
+// assignAgentApprovalIDs gives the approvals of a step's tool calls their IDs,
+// in call order: InternalOptions.ApprovalID when it is set (TS WorkflowAgent:
+// `approval-<toolCallId>`), else one ID per approval from the run's ID
+// generator, as TS ToolLoopAgent's generateText calls generateId() for each
+// call whose approval applies. Tool call IDs can repeat across steps with some
+// providers, so they do not name approvals.
 func assignAgentApprovalIDs(results []types.ToolResult, internal *ai.InternalOptions) {
-	if internal == nil || internal.ApprovalID == nil {
-		return
+	approvalID := func(string) string { return agentGenerateID(internal)() }
+	if internal != nil && internal.ApprovalID != nil {
+		approvalID = internal.ApprovalID
 	}
 	for i := range results {
 		switch results[i].ApprovalStatus {
@@ -2805,7 +2810,7 @@ func assignAgentApprovalIDs(results []types.ToolResult, internal *ai.InternalOpt
 		default:
 			continue
 		}
-		id := internal.ApprovalID(results[i].ToolCallID)
+		id := approvalID(results[i].ToolCallID)
 		results[i].ApprovalID = id
 		if request, ok := results[i].Result.(map[string]interface{}); ok && request["type"] == "tool-approval-request" {
 			copied := make(map[string]interface{}, len(request))
@@ -2816,6 +2821,16 @@ func assignAgentApprovalIDs(results []types.ToolResult, internal *ai.InternalOpt
 			results[i].Result = copied
 		}
 	}
+}
+
+// agentGenerateID is the run's ID generator: InternalOptions.GenerateID (TS
+// _internal.generateId), else TS generateText's default (`aitxt-` plus 24
+// characters).
+func agentGenerateID(internal *ai.InternalOptions) ai.IDGenerator {
+	if internal != nil && internal.GenerateID != nil {
+		return internal.GenerateID
+	}
+	return newTextResponseID
 }
 
 // agentApprovalID is a result's approval ID: the assigned one, else the
