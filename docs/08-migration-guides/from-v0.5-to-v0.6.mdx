@@ -561,3 +561,48 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   var validationErr *providererrors.ValidationError
   _ = errors.As(err, &validationErr) // validationErr.Context.Field == "tool context"
   ```
+- **`ExperimentalStreamTranscribe` reports the cancel reason after
+  `FullStream().Close()`.**
+  - **What changed:** after `Close`, `Text()` and the other result accessors
+    return `Transcription stream was cancelled.`, the reason TS
+    `Transformer.cancel` aborts the pipe with. v0.5 returned that text only
+    when the pipe was blocked sending a part; while it waited on the provider
+    it returned the provider's `context canceled`. When your own `ctx` is
+    cancelled instead, the accessors return `ctx`'s cause
+    (`context.Canceled` unless you set one), also while a send was blocked.
+  - **Am I affected?** Search for `errors.Is(err, context.Canceled)` or
+    `"Transcription stream was cancelled."` checks on the errors of
+    `StreamTranscriptionResult` accessors after closing its `FullStream`.
+  - **What to do:** match the cancellation by text after `Close`, or cancel
+    your own context and check `errors.Is(err, context.Canceled)`:
+
+    ```go
+    stream, _ := res.FullStream()
+    _ = stream.Close()
+    if _, err := res.Text(); err != nil && err.Error() == "Transcription stream was cancelled." {
+    	// closed by this consumer
+    }
+    ```
+  - **Kind:** silent behavior change.
+- **UI message state follows TS for four chunk edge cases.**
+  - **What changed:** the message that `OnEnd`, `OnStepEnd` and
+    `ReadUIMessages` build keeps a tool part's own `title` when a
+    `tool-output-available` or `tool-output-error` chunk carries one (TS
+    passes the invocation's title), keeps an empty `id` on a reasoning part,
+    keeps the earlier finish reason when a `finish` chunk has
+    `"finishReason": null`, and leaves `input` out of a streaming tool part
+    whose partial input cannot be parsed (it was JSON `null`). TS
+    `processUIMessageStream` does each of these.
+  - **Am I affected?** Only if you write such chunks yourself (through
+    `UIMessageStreamWriter.Write` or a merged stream) and read
+    `responseMessage` parts, for example `part["title"]` or
+    `part["input"] == nil`.
+  - **What to do:** no action unless you relied on a chunk title replacing the
+    part's title or on a `null` partial input. Check for a missing key:
+
+    ```go
+    if _, ok := part["input"]; !ok {
+    	// no parseable input streamed yet
+    }
+    ```
+  - **Kind:** silent behavior change.

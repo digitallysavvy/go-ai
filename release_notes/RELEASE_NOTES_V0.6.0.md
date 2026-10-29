@@ -533,6 +533,21 @@ Each item has before/after code in the
   finite timer duration no greater than 2147483647` before writing anything,
   as TS `createSseStreamWithKeepAlive` throws. **Migration:** leave
   `KeepAliveMs` nil to turn keep-alive off.
+- **`ExperimentalStreamTranscribe` reports the cancel reason after
+  `FullStream().Close()`** (review round 67). `Text()` and the other result
+  accessors return `Transcription stream was cancelled.` (TS
+  `Transformer.cancel`); they returned the provider's `context canceled`
+  when the pipe was waiting on the provider. A cancelled caller `ctx` gives
+  its cause, also while a send was blocked (it gave the cancel text).
+  **Migration:** match the text after `Close`, or check
+  `errors.Is(err, context.Canceled)` after cancelling your own context.
+- **UI message state follows TS for four chunk edge cases** (review round
+  67). The message `OnEnd`, `OnStepEnd` and `ReadUIMessages` build keeps a
+  tool part's own `title` on `tool-output-available`/`tool-output-error`
+  chunks, an empty reasoning `id`, the earlier finish reason for a null
+  `finishReason`, and no `input` key (not `null`) for partial tool input that
+  cannot be parsed, as TS `processUIMessageStream`. **Migration:** none unless
+  you write such chunks yourself and read those fields.
 
 ---
 
@@ -1127,6 +1142,11 @@ in v0.5.3.
   v0.5.2 said 0.5.0).
 - `StreamTextResult.NewStream()` returns an independent stream, so the UI
   message stream works after the full stream was consumed.
+- `ToUIMessageStream` calls `OnEnd` once with a failed outcome carrying the
+  error when a `MessageMetadata` or `OnError` callback panics, as TS reports
+  those failures. `StreamText` error parts for a failed prompt, step
+  preparation or model call open carry the error itself; only `OnError` gets
+  it through `wrapGatewayError` (review round 67).
 
 ### Providers
 
