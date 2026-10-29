@@ -56,3 +56,59 @@ func TestR61GenerateAgentPromptOmitsLocalApprovalParts(t *testing.T) {
 		t.Fatalf("second prompt:\nagent    %s\ngenerate %s", got, want)
 	}
 }
+
+// A user's approval response to a provider-executed (MCP) call's approval
+// request still reaches the model from the legacy loop, as in TS
+// convertToLanguageModelPrompt (provider-executed responses are kept) and
+// GenerateText; only the request part is removed.
+func TestR61GenerateAgentPromptKeepsProviderApprovalResponse(t *testing.T) {
+	history := func() []types.Message {
+		return []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "go"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{
+				types.ToolCallContent{ToolCallID: "m1", ToolName: "mcp", Input: "{}", ProviderExecuted: true},
+				types.ToolApprovalRequestContent{ApprovalID: "a1", ToolCallID: "m1"},
+			}},
+			{Role: types.RoleTool, Content: []types.ContentPart{
+				types.ToolApprovalResponseContent{ApprovalID: "a1", Approved: true, ProviderExecuted: true},
+			}},
+		}
+	}
+	newResp := func() []types.GenerateResult {
+		return []types.GenerateResult{{Content: []types.ContentPart{types.TextContent{Text: "done"}}, Text: "done", FinishReason: types.FinishReasonStop}}
+	}
+	am := &mockLanguageModel{responses: newResp()}
+	a := NewToolLoopAgent(AgentConfig{Model: am})
+	if _, err := a.GenerateAgent(context.Background(), AgentGenerateOptions{Messages: history()}); err != nil {
+		t.Fatal(err)
+	}
+	gm := &mockLanguageModel{responses: newResp()}
+	if _, err := ai.GenerateText(context.Background(), ai.GenerateTextOptions{Model: gm, Messages: history()}); err != nil {
+		t.Fatal(err)
+	}
+	if len(am.options) != 1 || len(gm.options) != 1 {
+		t.Fatalf("model calls: agent %d, generate %d", len(am.options), len(gm.options))
+	}
+	responses := 0
+	for _, msg := range am.options[0].Prompt.Messages {
+		for _, part := range msg.Content {
+			switch p := part.(type) {
+			case types.ToolApprovalRequestContent:
+				t.Fatalf("approval request reached the model prompt: %+v", am.options[0].Prompt.Messages)
+			case types.ToolApprovalResponseContent:
+				if p.ApprovalID != "a1" || !p.Approved || !p.ProviderExecuted {
+					t.Fatalf("approval response = %+v", p)
+				}
+				responses++
+			}
+		}
+	}
+	if responses != 1 {
+		t.Fatalf("provider approval responses in the prompt = %d, want 1: %+v", responses, am.options[0].Prompt.Messages)
+	}
+	got, _ := json.Marshal(am.options[0].Prompt.Messages)
+	want, _ := json.Marshal(gm.options[0].Prompt.Messages)
+	if string(got) != string(want) {
+		t.Fatalf("prompt:\nagent    %s\ngenerate %s", got, want)
+	}
+}

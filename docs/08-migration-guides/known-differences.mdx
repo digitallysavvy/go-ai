@@ -288,6 +288,12 @@ conversion follows TS: a stringified Google Interactions tool-call input with
 such a key is sent as `{value: input}`, as TS `safeParseToolArgs` does when
 `secureJsonParse` throws.
 
+The Gemini prompt converter (`generateContent`, Google and Vertex) accepts a
+string tool-call input with such a key for `code_execution` and server tool
+calls, where TS `secureJsonParse` throws. In Go, `ToolCallContent.Input` is
+always the wire text, also for inputs that TS holds as objects and passes
+through without parsing, so throwing would reject inputs that TS accepts.
+
 ## Empty strings in provider response fields
 
 - **Typed string fields.** Some exported response structs hold a value as a

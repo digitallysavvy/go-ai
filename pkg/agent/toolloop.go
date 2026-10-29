@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/digitallysavvy/go-ai/pkg/ai"
+	"github.com/digitallysavvy/go-ai/pkg/internal/aibridge"
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	providererrors "github.com/digitallysavvy/go-ai/pkg/provider/errors"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
@@ -989,7 +990,7 @@ func (a *ToolLoopAgent) runLoop(ctx context.Context, messages []types.Message, c
 		// tool-result content parts, so TS step.toolResults has them (in
 		// content order, before the locally executed results), as
 		// GenerateText's step does.
-		if providerResults := ai.ProviderToolResultsFromContent(modelContent, stepToolResults); len(providerResults) > 0 {
+		if providerResults := aibridge.ProviderToolResultsFromContent(modelContent, stepToolResults); len(providerResults) > 0 {
 			stepResult.ToolResults = append(providerResults, stepResult.ToolResults...)
 			stepResult.StaticToolResults = filterAgentStaticToolResults(stepResult.ToolResults)
 			stepResult.DynamicToolResults = filterAgentDynamicToolResults(stepResult.ToolResults)
@@ -1865,7 +1866,7 @@ func (a *ToolLoopAgent) executeStep(ctx context.Context, callConfig PrepareCallC
 	// provider-executed call's approval response (TS
 	// convertToLanguageModelPrompt, as GenerateText).
 	prompt, err := promptutils.NormalizePromptWithDownloadSupport(stepCtx, types.Prompt{
-		Messages: ai.MessagesForModel(callConfig.Messages),
+		Messages: aibridge.MessagesForModel(callConfig.Messages),
 		System:   promptSystem,
 	}, callConfig.AllowSystemInMessages, effectiveAgentDownload(callConfig.ExperimentalDownload), ai.SupportedURLCheckerForModel(stepModel))
 	if err != nil {

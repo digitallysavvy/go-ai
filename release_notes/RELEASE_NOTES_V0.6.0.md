@@ -198,6 +198,34 @@ Each item has before/after code in the
 
 ### Behavior changes that can break callers
 
+- **A provider-executed tool call is never run locally** (review round 61),
+  in `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop. A call
+  the provider marks `ProviderExecuted` ran a local tool of the same name
+  when one was configured, adding a second, local result next to the
+  provider's. TS executes only the calls without `providerExecuted`.
+  **Migration:** give a local tool a name the provider's tools do not use if
+  it must run.
+- **Legacy `ToolLoopAgent` tool results list provider results** (review round
+  61). `StepResult.ToolResults` (with `StaticToolResults` /
+  `DynamicToolResults`) and `AgentResult.ToolResults`, which
+  `WorkflowAgent.Generate` returns too, hold the provider-executed results the
+  model returned, before the locally executed ones, as `GenerateText` and TS
+  `step.toolResults`. **Migration:** skip entries with `ProviderExecuted` set
+  where only local executions are expected.
+- **Legacy `ToolLoopAgent` request messages leave out the instructions**
+  (review round 61). With `Include.RequestMessages`,
+  `StepResult.Request.Messages` is the step's messages as TS `generateText`
+  records them: no instruction messages, before prompt conversion.
+  `WorkflowAgent.Generate` steps record the model prompt with its system
+  message first, as TS WorkflowAgent. **Migration:** read the instructions
+  from your own configuration, not from `Request.Messages[0]`.
+- **`WorkflowAgent` resumed approval results carry their model output**
+  (review round 61). The tool message holding the results of resumed
+  approvals (the first of `ResponseMessages`, and the next model call's
+  prompt) sets each `ToolResultContent.Output` (text for a string result,
+  else JSON, or the tool's `ToModelOutput`) and no `Input`, as TS
+  WorkflowAgent's `modelResult`. It held the raw `Result` and the input.
+  **Migration:** read `Output` instead of `Result`.
 - **`WorkflowAgent` approval IDs are `approval-<toolCallId>`** (review round
   60), in `Generate` and `Stream`, as TS WorkflowAgent names them; the
   signature covers that ID. `Generate` used the tool call ID and `Stream` a
@@ -478,31 +506,13 @@ These match TS and are unlikely to need code changes, but can change output.
   JSON `null` output into the step content and the assistant response
   message, next to the provider's own result. The step now holds only the
   provider's result, as `GenerateText` and TS `convertLanguageModelContent`.
-- **Legacy `ToolLoopAgent` step tool results list provider results** (review
-  round 61): `StepResult.ToolResults` (with `StaticToolResults` /
-  `DynamicToolResults`) and `AgentResult.ToolResults` now hold the
-  provider-executed results the model returned, before the locally executed
-  ones, as `GenerateText` and TS `step.toolResults` do (WorkflowAgent's
-  generate results too). New helper: `ai.ProviderToolResultsFromContent`.
 - **Legacy `ToolLoopAgent` prompts leave out local approval parts** (review
   round 61): the tool-approval-request and -response parts of an
   automatically decided (or resumed) local approval reached the next model
   call, where the OpenAI Responses converter sent an `mcp_approval_response`
   for them. They are removed before the call, keeping a provider-executed
   call's approval response, as `GenerateText`, `StreamText` and TS
-  `convertToLanguageModelPrompt` (WorkflowAgent's generate mode too). New
-  helper: `ai.MessagesForModel`.
-- **Legacy `ToolLoopAgent` request messages leave out the instructions**
-  (review round 61): with `Include.RequestMessages`, `StepResult.Request.Messages`
-  is the step's messages as `GenerateText` and TS `generateText` record them,
-  without instruction messages and before prompt conversion. WorkflowAgent's
-  generate steps record the model prompt with its system message first, as
-  TS WorkflowAgent does (new `InternalOptions.RequestMessagesAsPrompt`).
-- **A provider-executed call is never run locally** (review round 61): in
-  `GenerateText`, `StreamText` and the legacy `ToolLoopAgent` loop, a tool
-  call the provider marks `ProviderExecuted` no longer runs a local tool of
-  the same name (which added a second, local result next to the provider's).
-  TS executes only the calls without `providerExecuted`.
+  `convertToLanguageModelPrompt` (WorkflowAgent's generate mode too).
 - **`StreamText` terminal parts pass through `ExperimentalTransform`**
   (review round 59), as TS's outer-stream parts do: the `abort` chunk and the
   `error` chunks of an incomplete model stream, a step that fails to open or
@@ -792,6 +802,14 @@ These match TS and are unlikely to need code changes, but can change output.
   Google Interactions: a stringified assistant tool-call input with a
   `__proto__` key or a `constructor.prototype` member is sent as
   `{value: input}`, as TS `safeParseToolArgs` (review round 60).
+- The Anthropic stream emits a finish chunk on every `message_stop`, built
+  from the stream-wide finish reason and usage, including a repeated
+  `message_stop` with no new `message_start` (review round 61, TS doStream).
+  Google Interactions compaction also links an assistant turn through a
+  tool-result or reasoning-file part's `interactionId` (TS checks every
+  part), and static video offsets use JavaScript number formatting (`1e-7s`,
+  `1e+21s`, `0s` for negative zero), as TS's template literal (review round
+  61).
 - An SSE event named `done` that carries a JSON payload is an ordinary chunk in
   every OpenAI-compatible and SSE provider stream; only `data: [DONE]` ends
   the stream, as TS `parseJsonEventStream` ignores event names. OpenAI
@@ -863,12 +881,6 @@ These match TS and are unlikely to need code changes, but can change output.
   approval response, because the legacy loop resumed the approvals a second
   time. TS WorkflowAgent forwards only the response, as `Stream` already did
   (new `InternalOptions.ApprovalsResumed`).
-- **WorkflowAgent resumed approval results carry their model output**
-  (review round 61): the tool message holding the results of resumed
-  approvals (the first of `ResponseMessages`, and the prompt of the next
-  model call) has each `ToolResultContent.Output` set (text for a string
-  result, else JSON, or the tool's `ToModelOutput`) and no `Input`, as TS
-  WorkflowAgent's `modelResult`. It held the raw `Result` and the input.
 - **MCP clients have no default request timeout**, JSON-RPC request IDs
   start at 0, `MCPClientError.Error()` is the bare message, and the HTTP and
   stdio transports probe `server/discover` first.
@@ -1172,6 +1184,11 @@ Notable ones:
   provider responses and stream chunks only: Google Interactions prompt
   conversion follows TS and sends such a stringified tool-call input as
   `{value: input}`.
+- The Gemini prompt converter accepts a string tool-call input with a
+  `__proto__` key or a `constructor.prototype` member for `code_execution`
+  and server tool calls; TS `secureJsonParse` throws there. In Go the input is
+  always the wire text, also where TS holds an object and does not parse it,
+  so throwing would reject inputs TS accepts (coordinator ruling, round 61).
 - A `StreamText` tool whose `ContextSchema` rejects its tool context ends the
   run with the `ValidationError` (no `finish-step`, `finish` or `OnEnd`;
   `OnError` once), as `GenerateText` and the agents fail the call. TS

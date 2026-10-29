@@ -166,13 +166,20 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   }
   ```
 
+- **A provider-executed tool call is never run locally.** In `GenerateText`,
+  `StreamText` and the legacy `ToolLoopAgent` loop, a call the provider marks
+  `ProviderExecuted` no longer runs a local tool of the same name, as TS runs
+  only calls without `providerExecuted`. v0.5 ran the local tool too and added
+  a second result. Give a local tool a name the provider's tools do not use if
+  it must run.
+
 - **Legacy `ToolLoopAgent` tool results list provider results.** As
   `GenerateText` and TS `step.toolResults`, `GenerateAgent`/`Execute` step
   `ToolResults` (and `AgentResult.ToolResults`, which `WorkflowAgent.Generate`
   returns) hold the provider-executed results the model returned, before the
-  local ones. A provider-executed call no longer runs a local tool of the same
-  name, and no longer adds a `null` result to the step. Code that treated
-  every entry as a local execution should skip provider results:
+  local ones. A provider-executed call also no longer adds a `null` result to
+  the step. Code that treated every entry as a local execution should skip
+  provider results:
 
   ```go
   for _, r := range result.ToolResults {
@@ -182,6 +189,14 @@ block := acp.TextContentBlock{Type: "text", Text: "hello"}
   	_ = r.Result
   }
   ```
+
+- **Legacy `ToolLoopAgent` request messages leave out the instructions.**
+  With `Include.RequestMessages`, a step's `Request.Messages` is the step's
+  messages as TS `generateText` records them, without instruction messages
+  and before prompt conversion. Read the instructions from your own
+  configuration instead of `Request.Messages[0]`. `WorkflowAgent.Generate`
+  steps record the model prompt with its system message first, as TS
+  WorkflowAgent.
 
 - **`WorkflowAgent` resumed approval results carry their model output.** The
   tool message holding resumed approvals' results (the first of

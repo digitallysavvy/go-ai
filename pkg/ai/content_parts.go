@@ -1034,16 +1034,6 @@ func withDeferredToolResultMetadata(content []types.ContentPart, calls []types.T
 	return out, true
 }
 
-// ProviderToolResultsFromContent returns the provider-executed results a model
-// response carries (its tool-result and tool-error parts) as ToolResults, in
-// content order, skipping calls executed already has a result for. TS
-// StepResult.toolResults holds them next to the locally executed results. It
-// is the building block for loops outside this package (the legacy agent
-// loop).
-func ProviderToolResultsFromContent(content []types.ContentPart, executed []types.ToolResult) []types.ToolResult {
-	return providerToolResultsFromContent(content, executed)
-}
-
 // ValidateToolResultParts runs the "Tool call <id> not found." check of TS
 // convertLanguageModelContent for callers outside this package (the legacy
 // agent loop). tools is the step's tool set.
