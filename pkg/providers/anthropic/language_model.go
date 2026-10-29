@@ -2959,6 +2959,27 @@ func (s *anthropicStream) finalizeFinish() *provider.StreamChunk {
 		inputTransformations: s.inputTransformations,
 		safeguardResults:     s.safeguardResults,
 	})
+	if s.usage.Raw == nil {
+		// No message_start or message_delta yet: TS has no rawUsage, so the
+		// metadata usage is null and usage.raw is its initial usage object
+		// (`raw: rawUsage ?? usage`).
+		usage.Raw = map[string]interface{}{
+			"input_tokens":                s.usage.InputTokens,
+			"output_tokens":               s.usage.OutputTokens,
+			"cache_creation_input_tokens": s.usage.CacheCreationInputTokens,
+			"cache_read_input_tokens":     s.usage.CacheReadInputTokens,
+			"iterations":                  nil,
+		}
+		var meta map[string]map[string]interface{}
+		if json.Unmarshal(chunk.ProviderMetadata, &meta) == nil {
+			for _, m := range meta {
+				m["usage"] = nil
+			}
+			if raw, err := json.Marshal(meta); err == nil {
+				chunk.ProviderMetadata = raw
+			}
+		}
+	}
 	return chunk
 }
 
