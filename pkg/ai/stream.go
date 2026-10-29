@@ -1428,7 +1428,11 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 		// onAbort.
 		if isAbortErr(stepCtx, err) {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID})
-			// TS: `start`, onAbort and an `abort` part.
+			// TS: the failed model call reaches streamText's pipeline catch,
+			// which reports telemetry onError before the outer stream turns
+			// its error part into abort(): `start`, onAbort (callback and
+			// telemetry) and an `abort` part.
+			telemetry.FireOnError(telemetryCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})
 			r.abortBeforeStream(stepCtx, opts, preStreamCall{callID: callID, telemetryCtx: telemetryCtx, telemetrySettings: telemetrySettings}, err)
 		} else {
 			telemetry.FireOnStepError(modelCallCtx, telemetry.TelemetryErrorEvent{Settings: telemetrySettings, CallID: callID, Error: err})

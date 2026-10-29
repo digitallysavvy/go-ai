@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitallysavvy/go-ai/pkg/provider"
 	"github.com/digitallysavvy/go-ai/pkg/provider/types"
+	"github.com/digitallysavvy/go-ai/pkg/telemetry"
 	"github.com/digitallysavvy/go-ai/pkg/testutil"
 )
 
@@ -155,5 +156,64 @@ func TestR58StreamTextAbortWhilePreparingNextStepIsAnAbortPart(t *testing.T) {
 	}
 	if len(rec.aborts) != 1 {
 		t.Fatalf("OnAbort calls = %d, want 1", len(rec.aborts))
+	}
+}
+
+type r58ITelemetryRecorder struct {
+	telemetry.NoopTelemetryIntegration
+	mu             sync.Mutex
+	errors, aborts int
+	abortCallID    string
+}
+
+func (r *r58ITelemetryRecorder) OnError(context.Context, telemetry.TelemetryErrorEvent) {
+	r.mu.Lock()
+	r.errors++
+	r.mu.Unlock()
+}
+
+func (r *r58ITelemetryRecorder) OnAbort(_ context.Context, e telemetry.TelemetryAbortEvent) {
+	r.mu.Lock()
+	r.aborts++
+	r.abortCallID = e.CallID
+	r.mu.Unlock()
+}
+
+// r58 integrator: TS streamText's pipeline catch reports telemetry onError
+// for a failure before the first stream (also once the signal fired), and the
+// outer stream's abort() then reports telemetry onAbort with the call ID.
+func TestR58IStreamTextAbortBeforeFirstStreamTelemetry(t *testing.T) {
+	cases := map[string]func(cancel context.CancelFunc) StreamTextOptions{
+		"PrepareStep instructions (non-abort error)": func(cancel context.CancelFunc) StreamTextOptions {
+			return StreamTextOptions{Prompt: "a", Model: &testutil.MockLanguageModel{}, PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions {
+				cancel()
+				return PrepareStepOptions{InstructionMessages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}}
+			}}
+		},
+		"model call fails to open": func(cancel context.CancelFunc) StreamTextOptions {
+			return StreamTextOptions{Prompt: "a", Model: &testutil.MockLanguageModel{DoStreamFunc: func(ctx context.Context, _ *provider.GenerateOptions) (provider.TextStream, error) {
+				cancel()
+				return nil, ctx.Err()
+			}}}
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			opts := build(cancel)
+			rec := &r58ITelemetryRecorder{}
+			opts.Telemetry = &telemetry.Options{Integrations: []telemetry.TelemetryIntegration{rec}}
+			res, err := StreamText(ctx, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = r58FullStreamParts(t, res)
+			rec.mu.Lock()
+			defer rec.mu.Unlock()
+			if rec.errors != 1 || rec.aborts != 1 || rec.abortCallID == "" {
+				t.Fatalf("telemetry OnError = %d, OnAbort = %d (call ID %q); want 1, 1 and a call ID", rec.errors, rec.aborts, rec.abortCallID)
+			}
+		})
 	}
 }
