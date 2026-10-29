@@ -2486,6 +2486,26 @@ func contentFromGenerateResult(result *types.GenerateResult, toolCalls []types.T
 	seenToolCalls := map[string]bool{}
 	for i, part := range parts {
 		switch p := part.(type) {
+		case types.ToolResultContent:
+			// TS convertLanguageModelContent: every tool-result or
+			// tool-error the model returns is provider-executed.
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolResultContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
+		case types.ToolErrorContent:
+			p.ProviderExecuted = true
+			parts[i] = p
+		case *types.ToolErrorContent:
+			if p != nil {
+				c := *p
+				c.ProviderExecuted = true
+				parts[i] = c
+			}
 		case types.ToolCallContent:
 			seenToolCalls[p.ToolCallID] = true
 			if call, ok := agentToolCallByID(toolCalls, p.ToolCallID); ok {
