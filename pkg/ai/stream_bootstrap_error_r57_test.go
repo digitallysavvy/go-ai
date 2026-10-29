@@ -2,6 +2,7 @@ package ai
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +29,20 @@ func TestR57StreamTextFailureBeforeFirstStreamReachesOnError(t *testing.T) {
 		}}},
 		{name: "PrepareStep instructions", opts: StreamTextOptions{Prompt: "a", PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions {
 			return PrepareStepOptions{InstructionMessages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}}
+		}}},
+		// r57 integrator: the remaining pre-stream sites.
+		{name: "approval resume", opts: StreamTextOptions{
+			Tools:                          []types.Tool{{Name: "tool1"}},
+			ExperimentalToolApprovalSecret: []byte("secret"),
+			Messages:                       approvalHistory("tool1", map[string]interface{}{"value": "v"}, "forged-signature", true, ""),
+		}},
+		{name: "PrepareStep maxOutputTokens", opts: StreamTextOptions{Prompt: "a", PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions {
+			zero := 0
+			return PrepareStepOptions{MaxOutputTokens: &zero}
+		}}},
+		{name: "output response format", opts: StreamTextOptions{Prompt: "a", Output: r57FailingFormatOutput{}}},
+		{name: "step prompt conversion", opts: StreamTextOptions{Prompt: "a", PrepareStep: func(context.Context, PrepareStepOptions) PrepareStepOptions {
+			return PrepareStepOptions{Messages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "s"}}}}}
 		}}},
 	}
 	for _, tc := range cases {
@@ -71,6 +86,24 @@ func TestR57StreamTextFailureBeforeFirstStreamReachesOnError(t *testing.T) {
 // an error part in the full stream, as TS streamText enqueues one when the
 // next streamStep throws; OnError is called once.
 func TestR57StreamTextNextStepPreparationErrorIsAnErrorPart(t *testing.T) {
+	zero := 0
+	cases := map[string]PrepareStepOptions{
+		"missing tool result": {Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "b"}}},
+			{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "9", ToolName: "t"}}},
+		}},
+		// r57 integrator: the other next-step preparation sites.
+		"instructions":      {InstructionMessages: []types.Message{{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "x"}}}}},
+		"maxOutputTokens":   {MaxOutputTokens: &zero},
+		"prompt conversion": {Messages: []types.Message{{Role: types.RoleSystem, Content: []types.ContentPart{types.TextContent{Text: "s"}}}}},
+	}
+	for name, step1 := range cases {
+		t.Run(name, func(t *testing.T) { r57NextStepPreparationError(t, step1) })
+	}
+}
+
+func r57NextStepPreparationError(t *testing.T, step1 PrepareStepOptions) {
+	t.Helper()
 	var mu sync.Mutex
 	var seen []error
 	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
@@ -88,10 +121,7 @@ func TestR57StreamTextNextStepPreparationErrorIsAnErrorPart(t *testing.T) {
 		}}},
 		PrepareStep: func(_ context.Context, o PrepareStepOptions) PrepareStepOptions {
 			if o.StepNumber == 1 {
-				return PrepareStepOptions{Messages: []types.Message{
-					{Role: types.RoleUser, Content: []types.ContentPart{types.TextContent{Text: "b"}}},
-					{Role: types.RoleAssistant, Content: []types.ContentPart{types.ToolCallContent{ToolCallID: "9", ToolName: "t"}}},
-				}}
+				return step1
 			}
 			return PrepareStepOptions{}
 		},
@@ -120,4 +150,19 @@ func TestR57StreamTextNextStepPreparationErrorIsAnErrorPart(t *testing.T) {
 	if len(seen) != 1 {
 		t.Fatalf("OnError calls = %d, want 1", len(seen))
 	}
+}
+
+// r57FailingFormatOutput is an Output whose response format cannot be built.
+type r57FailingFormatOutput struct{}
+
+func (r57FailingFormatOutput) ResponseFormat(context.Context) (*provider.ResponseFormat, error) {
+	return nil, errors.New("no format")
+}
+
+func (r57FailingFormatOutput) parseCompleteOutput(context.Context, ParseCompleteOutputOptions) (interface{}, error) {
+	return nil, nil
+}
+
+func (r57FailingFormatOutput) parsePartialOutput(context.Context, ParsePartialOutputOptions) (interface{}, bool, error) {
+	return nil, false, nil
 }

@@ -264,3 +264,53 @@ func TestWorkflowRunMultiplexerFinishMarker(t *testing.T) {
 		})
 	}
 }
+
+// r57 integrator: a PrepareStep hook that edits the headers map it was given
+// in place changes only its own run. The agent's Headers map is not written,
+// and a later run whose hook leaves the headers alone keeps the user-agent
+// suffix and does not see the earlier edit.
+func TestWorkflowPrepareStepInPlaceHeadersEditStaysInItsRun(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "generate", true: "stream"}[stream], func(t *testing.T) {
+			headers := map[string]string{"x-a": "a"}
+			var mu sync.Mutex
+			edit := true
+			m := &r57UAModel{scriptedModel: scriptedModel{calls: []types.ToolCall{{ID: "1", ToolName: "t", Arguments: map[string]interface{}{}}}}}
+			w, err := NewWorkflowAgent(WorkflowAgent{
+				Model: m, Tools: r56Tool(), Headers: headers,
+				PrepareStep: func(_ context.Context, o LanguageModelCallOptions) (LanguageModelCallOptions, error) {
+					mu.Lock()
+					defer mu.Unlock()
+					if edit && o.StepNumber == 0 {
+						o.Headers["x-h"] = "1"
+					}
+					return o, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r56Run(t, w, stream); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			edit = false
+			mu.Unlock()
+			m.mu.Lock()
+			m.calls = nil
+			m.mu.Unlock()
+			m.scriptedModel = scriptedModel{calls: []types.ToolCall{{ID: "2", ToolName: "t", Arguments: map[string]interface{}{}}}}
+			if err := r56Run(t, w, stream); err != nil {
+				t.Fatal(err)
+			}
+			if len(headers) != 1 || headers["x-a"] != "a" {
+				t.Fatalf("agent Headers = %v, want only x-a", headers)
+			}
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if have := strings.Join(m.calls, " "); have != "ua/ ua/" {
+				t.Fatalf("second run model calls = %q, want %q", have, "ua/ ua/")
+			}
+		})
+	}
+}
