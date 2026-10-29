@@ -1343,7 +1343,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		}
 		s.mergeMetadata(chunk["messageMetadata"])
 	case "finish":
-		if reason, ok := chunk["finishReason"]; ok {
+		if reason := chunk["finishReason"]; reason != nil {
 			s.finishReason = reason
 		}
 		s.mergeMetadata(chunk["messageMetadata"])
@@ -1380,7 +1380,8 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 	case "reasoning-start":
 		id, _ := chunk["id"].(string)
 		part := UIMessageChunk{"type": "reasoning", "text": "", "state": "streaming"}
-		if id != "" {
+		// TS `id: chunk.id`: an empty id is kept.
+		if _, ok := chunk["id"].(string); ok {
 			part["id"] = id
 		}
 		copyIfPresent(part, chunk, "providerMetadata", "providerMetadata")
@@ -1524,13 +1525,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		update := UIMessageChunk{"state": "output-error", "errorText": chunk["errorText"], "input": chunk["input"]}
 		// TS passes no title for tool-input-error (the chunk's title is not
 		// applied): a new part has none, an existing part keeps its own.
-		source := make(UIMessageChunk, len(chunk))
-		for k, v := range chunk {
-			if k != "title" {
-				source[k] = v
-			}
-		}
-		s.updateToolPart(toolCallID, toolName, dynamic, update, source)
+		s.updateToolPart(toolCallID, toolName, dynamic, update, withoutTitle(chunk))
 	case "tool-output-available":
 		toolCallID := stringValue(chunk["toolCallId"])
 		part := s.findToolPart(toolCallID)
@@ -1544,7 +1539,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 			"input":       part["input"],
 			"output":      chunk["output"],
 			"preliminary": chunk["preliminary"],
-		}, chunk)
+		}, withoutTitle(chunk))
 	case "tool-output-error":
 		toolCallID := stringValue(chunk["toolCallId"])
 		part := s.findToolPart(toolCallID)
@@ -1562,7 +1557,7 @@ func (s *uiMessageCallbackState) apply(chunk UIMessageChunk, onError func(error)
 		if !dynamic {
 			update["rawInput"] = part["rawInput"]
 		}
-		s.updateExistingToolPart(part, toolName, dynamic, update, chunk)
+		s.updateExistingToolPart(part, toolName, dynamic, update, withoutTitle(chunk))
 	case "tool-output-denied":
 		toolCallID := stringValue(chunk["toolCallId"])
 		if part := s.findToolPart(toolCallID); part != nil {
@@ -1741,6 +1736,19 @@ func (s *uiMessageCallbackState) applyToolPartUpdate(part UIMessageChunk, toolCa
 	}
 }
 
+// withoutTitle returns chunk without its title. TS passes no title for
+// tool-input-error and the invocation's own title for tool-output-available
+// and tool-output-error, so the chunk's title is never applied for them.
+func withoutTitle(chunk UIMessageChunk) UIMessageChunk {
+	source := make(UIMessageChunk, len(chunk))
+	for k, v := range chunk {
+		if k != "title" {
+			source[k] = v
+		}
+	}
+	return source
+}
+
 // applyUIStateChunk applies chunk to the callback state and returns the
 // processing failure TS processUIMessageStream throws (a delta, end or tool
 // chunk with no matching part), which errors the stream. An `error` chunk is
@@ -1914,11 +1922,14 @@ func stringValue(value interface{}) string {
 
 // parseToolInputPartial is TS parsePartialJson(text).value: incomplete JSON
 // is repaired, so a streaming tool part shows the input received so far.
+// Text that cannot be parsed or repaired gives TS undefined, which
+// applyToolPartUpdate treats as no input key (uiOmitField).
 func parseToolInputPartial(text string) interface{} {
-	if text == "" {
-		return nil
+	result := jsonparser.ParsePartialJSON(text)
+	if result.State == jsonparser.ParseStateFailed {
+		return uiOmitField
 	}
-	return jsonparser.ParsePartialJSON(text).Value
+	return result.Value
 }
 
 // UIMessageStreamError is the error a UI message stream fails with when it
