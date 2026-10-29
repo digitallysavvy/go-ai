@@ -88,7 +88,7 @@ type StreamTranscriptionResult struct {
 	mu          sync.Mutex
 	streamOwner string // "unclaimed" | "full-stream" | "result-promises"
 	ch          chan TranscriptionStreamPart
-	cancel      context.CancelFunc
+	cancel      context.CancelCauseFunc
 	finalErr    *error
 	finalErrMu  sync.Mutex
 }
@@ -193,6 +193,10 @@ func (r *StreamTranscriptionResult) FullStream() (TranscriptionStream, error) {
 
 // TranscriptionStream is a Next()-based stream of TranscriptionStreamPart,
 // following the same convention as provider.TextStream.
+// errTranscriptionStreamCancelled is the reason FullStream.Close aborts the
+// pipe with (TS Transformer.cancel's default reason).
+var errTranscriptionStreamCancelled = errors.New("Transcription stream was cancelled.") //nolint:staticcheck // matches TS SDK's exact error text
+
 type TranscriptionStream interface {
 	Next() (*TranscriptionStreamPart, error)
 	Err() error
@@ -221,7 +225,7 @@ func (s *transcriptionFullStream) Err() error { return s.err }
 
 func (s *transcriptionFullStream) Close() error {
 	s.closeOnce.Do(func() {
-		s.result.cancel()
+		s.result.cancel(errTranscriptionStreamCancelled)
 	})
 	return nil
 }
@@ -250,7 +254,7 @@ func ExperimentalStreamTranscribe(ctx context.Context, opts StreamTranscribeOpti
 	opts.ExperimentalTelemetry = effectiveTelemetrySettings(opts.Telemetry, opts.ExperimentalTelemetry)
 	callID := newCallID()
 
-	pipeCtx, cancel := context.WithCancel(ctx)
+	pipeCtx, cancel := context.WithCancelCause(ctx)
 
 	result := &StreamTranscriptionResult{
 		textP:             newStreamPromise[string](),
@@ -330,6 +334,15 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		result.rejectAll(err)
 		opts.Audio.Cancel(err)
 	}
+	// abortReason reports a failure caused by cancellation with the abort
+	// reason, as TS pipeTo rejects with the signal's reason: Close gives
+	// "Transcription stream was cancelled.", a cancelled ctx its cause.
+	abortReason := func(err error) error {
+		if pipeCtx.Err() != nil {
+			return context.Cause(pipeCtx)
+		}
+		return err
+	}
 
 	streamResult, err := streamer.DoStream(ctx, &provider.TranscriptionStreamOptions{
 		Audio:            audio,
@@ -340,7 +353,7 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 		IncludeRawChunks: opts.IncludeRawChunks,
 	})
 	if err != nil {
-		fail(err)
+		fail(abortReason(err))
 		return
 	}
 	if streamResult.Response != nil {
@@ -367,7 +380,7 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 			break
 		}
 		if nextErr != nil {
-			fail(nextErr)
+			fail(abortReason(nextErr))
 			return
 		}
 
@@ -403,7 +416,7 @@ func runTranscriptionStreamPipe(pipeCtx context.Context, streamer provider.Trans
 				// path: reject the still-pending result promises and cancel
 				// the caller's audio stream instead of leaving them to block
 				// forever (TS stream-transcribe.ts cancel()/catch()).
-				fail(errors.New("Transcription stream was cancelled.")) //nolint:staticcheck // matches TS SDK's exact error text
+				fail(context.Cause(ctx))
 				return
 			}
 

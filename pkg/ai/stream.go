@@ -1471,7 +1471,9 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 				safeInvoke(func() { opts.OnError(ctx, startErr) })
 			}
 			notifyFailedEnd(ctx, opts.Internal, onEndEvent, callID, runtimeContext, toolsContext, initialResponseMessages, nil, startErr)
-			r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: startErr, Text: startErr.Error()})
+			// The error part carries the model call's own error (TS
+			// `{ type: 'error', error }`); onError gets it wrapped.
+			r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
 		}
 		if stepCancel != nil {
 			stepCancel()
@@ -1596,7 +1598,9 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, wrapped) })
 		}
-		r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()})
+		// TS's pipeline catch enqueues the error itself; onError gets it
+		// wrapped.
+		r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: err, Text: err.Error()})
 	}
 	r.fail(err)
 }
@@ -1894,8 +1898,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		r.err = err
 		errorPartEnd = true
 		if !isAbortErr(ctx, err) {
-			wrapped := wrapGatewayError(err)
-			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()}})
+			// TS's step catch enqueues the error itself; onError (after the
+			// loop) gets it wrapped.
+			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: err, Text: err.Error()}})
 		}
 	}
 
@@ -3813,6 +3818,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			} else if r.timeout.HasTotal() && deadlineFired(ctx, r.totalParentCtx) {
 				err = wrapTimeoutError(TimeoutReasonTotal, err)
 			}
+			openErr := err
 			r.err = wrapGatewayError(err)
 			errorPartEnd = true
 			// Close the still-open step span and the model-call/"chat" span
@@ -3829,7 +3835,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			} else {
 				// Same as the first step: the failure is an error part. onError
 				// is called once, by the shared error handling after the loop.
-				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: r.err, Text: r.err.Error()}})
+				// The error part carries the model call's own error (TS step
+				// catch); onError gets it wrapped.
+				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: openErr, Text: openErr.Error()}})
 				telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: r.err})
 			}
 			nextStepCancel()
