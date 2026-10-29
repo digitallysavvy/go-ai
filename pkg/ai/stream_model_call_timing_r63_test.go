@@ -194,3 +194,25 @@ func TestR63StreamOutputTimingIsTakenAsChunksArrive(t *testing.T) {
 		})
 	}
 }
+
+// TS streamText: a tool call withheld for tool choice none never reaches the
+// step's stream, so a model stream that ends with only that call and no
+// finish part produced no output (NoOutputGeneratedError).
+func TestR63WithheldToolCallIsNotStepOutput(t *testing.T) {
+	model := &testutil.MockLanguageModel{DoStreamFunc: func(context.Context, *provider.GenerateOptions) (provider.TextStream, error) {
+		return testutil.NewMockTextStream([]provider.StreamChunk{
+			{Type: provider.ChunkTypeToolCall, ToolCall: &types.ToolCall{ID: "c1", ToolName: "t", Arguments: map[string]interface{}{}}},
+		}), nil
+	}}
+	res, err := StreamText(context.Background(), StreamTextOptions{
+		Prompt: "a", Model: model, Tools: []types.Tool{{Name: "t"}},
+		ToolChoice: types.ToolChoice{Type: types.ToolChoiceNone},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.ConsumeStream()
+	if !IsNoOutputGeneratedError(res.Err()) {
+		t.Fatalf("Err() = %v, want a NoOutputGeneratedError", res.Err())
+	}
+}

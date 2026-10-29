@@ -2253,8 +2253,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			}
 
 			// Only semantic output counts (TS isOutputChunk): boundary chunks
-			// such as a bare text-start or an empty reasoning delta do not.
-			if isOutputChunkForTiming(*chunk) {
+			// such as a bare text-start or an empty reasoning delta do not, and
+			// neither does a tool call withheld for tool choice none (TS counts
+			// the parts that reach the step's stream).
+			if isOutputChunkForTiming(*chunk) && !(withholdToolParts && chunk.Type == provider.ChunkTypeToolCall) {
 				stepSawOutput = true
 			}
 
