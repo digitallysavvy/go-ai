@@ -1449,10 +1449,7 @@ func (r *StreamTextResult) bootstrapAndStream(ctx context.Context, opts StreamTe
 				safeInvoke(func() { opts.OnError(ctx, startErr) })
 			}
 			notifyFailedEnd(ctx, opts.Internal, onEndEvent, callID, runtimeContext, toolsContext, initialResponseMessages, nil, startErr)
-			if r.chunkBuf != nil {
-				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
-				r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: startErr, Text: startErr.Error()})
-			}
+			r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: startErr, Text: startErr.Error()})
 		}
 		if stepCancel != nil {
 			stepCancel()
@@ -1577,12 +1574,43 @@ func (r *StreamTextResult) failBeforeStream(ctx context.Context, opts StreamText
 		if opts.OnError != nil {
 			safeInvoke(func() { opts.OnError(ctx, wrapped) })
 		}
-		if r.chunkBuf != nil {
-			r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
-			r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()})
-		}
+		r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, provider.StreamChunk{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()})
 	}
 	r.fail(err)
+}
+
+// pushPreStreamParts adds the parts of a run that ended before its first
+// model stream to the result streams. They pass through
+// ExperimentalTransform first, as TS's outer stream parts do; a transform
+// that stops the stream drops the parts that follow.
+func (r *StreamTextResult) pushPreStreamParts(ctx context.Context, opts StreamTextOptions, parts ...provider.StreamChunk) {
+	if r.chunkBuf == nil {
+		return
+	}
+	transforms := opts.ExperimentalTransform
+	stopped := false
+	stop := StreamTransformStopper(func() { stopped = true })
+	var run func(idx int, in []provider.StreamChunk) []provider.StreamChunk
+	run = func(idx int, in []provider.StreamChunk) []provider.StreamChunk {
+		if idx >= len(transforms) {
+			return in
+		}
+		var out []provider.StreamChunk
+		emit := StreamTransformEmitter(func(c provider.StreamChunk) {
+			out = append(out, run(idx+1, []provider.StreamChunk{c})...)
+		})
+		emitCtx := WithStreamTransformStopper(WithStreamTransformEmitter(ctx, emit), stop)
+		for _, c := range in {
+			if idx == 0 && stopped {
+				break
+			}
+			out = append(out, run(idx+1, transforms[idx](emitCtx, c))...)
+		}
+		return out
+	}
+	for _, c := range run(0, parts) {
+		r.chunkBuf.push(c)
+	}
 }
 
 // preStreamCall identifies the call for the abort events of a run that ends
@@ -1605,14 +1633,11 @@ func (r *StreamTextResult) abortBeforeStream(ctx context.Context, opts StreamTex
 	if call.telemetryCtx != nil {
 		telemetry.FireOnAbort(call.telemetryCtx, telemetry.TelemetryAbortEvent{Settings: call.telemetrySettings, CallID: call.callID, Reason: reason})
 	}
-	if r.chunkBuf != nil {
-		abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
-		if reason != nil {
-			abortChunk.AbortReason = reason.Error()
-		}
-		r.chunkBuf.push(provider.StreamChunk{Type: provider.ChunkTypeStart})
-		r.chunkBuf.push(abortChunk)
+	abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
+	if reason != nil {
+		abortChunk.AbortReason = reason.Error()
 	}
+	r.pushPreStreamParts(ctx, opts, provider.StreamChunk{Type: provider.ChunkTypeStart}, abortChunk)
 }
 
 // fail records a failure that happened before the per-step stream loop ever
@@ -1726,6 +1751,10 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	remapGenerateID := internalGenerateID(opts.Internal)
 	pendingStepCtx := r.initialStepCtx
 	pendingStepCancel := r.initialStepCancel
+	// forwardThroughTransformChain is defined below; fireAbort and the step
+	// error parts go through it, as TS's abort and error parts pass through
+	// experimental_transform after the outer stream.
+	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
 	abortFired := false
 	fireAbort := func(reason error) {
 		if abortFired {
@@ -1747,13 +1776,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			Reason:   reason,
 			Steps:    append([]types.StepResult(nil), allSteps...),
 		})
-		if onChunk != nil {
-			abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
-			if reason != nil {
-				abortChunk.AbortReason = reason.Error()
-			}
-			onChunk(abortChunk)
+		abortChunk := provider.StreamChunk{Type: provider.ChunkTypeAbort}
+		if reason != nil {
+			abortChunk.AbortReason = reason.Error()
 		}
+		forwardThroughTransformChain(0, []provider.StreamChunk{abortChunk})
 	}
 
 	// forwardThroughTransformChain feeds chunks through
@@ -1776,7 +1803,6 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	var sinkPartialErr error
 	var preliminaryMu sync.Mutex
 	stopTransformStream := StreamTransformStopper(func() { transformStopped = true })
-	var forwardThroughTransformChain func(startIdx int, chunks []provider.StreamChunk)
 	transformEmitterAt := func(startIdx int) StreamTransformEmitter {
 		return func(c provider.StreamChunk) {
 			forwardThroughTransformChain(startIdx, []provider.StreamChunk{c})
@@ -1835,9 +1861,9 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 	// which reaches onError (called once, after the loop) and the full stream.
 	failNextStep := func(err error) {
 		r.err = err
-		if onChunk != nil && !isAbortErr(ctx, err) {
+		if !isAbortErr(ctx, err) {
 			wrapped := wrapGatewayError(err)
-			onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()})
+			forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: wrapped, Text: wrapped.Error()}})
 		}
 	}
 
@@ -2717,13 +2743,11 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 		if !stepSawTerminal {
 			if !stepSawOutput {
 				r.err = newIncompleteModelStreamError()
-				errorChunk := provider.StreamChunk{
+				forwardThroughTransformChain(0, []provider.StreamChunk{{
 					Type: provider.ChunkTypeError,
+					Err:  r.err,
 					Text: r.err.Error(),
-				}
-				if onChunk != nil {
-					onChunk(errorChunk)
-				}
+				}})
 				cancelStep()
 				break
 			}
@@ -3642,9 +3666,7 @@ func (r *StreamTextResult) processStream(ctx context.Context, onChunk func(provi
 			} else {
 				// Same as the first step: the failure is an error part. onError
 				// is called once, by the shared error handling after the loop.
-				if onChunk != nil {
-					onChunk(provider.StreamChunk{Type: provider.ChunkTypeError, Err: r.err, Text: r.err.Error()})
-				}
+				forwardThroughTransformChain(0, []provider.StreamChunk{{Type: provider.ChunkTypeError, Err: r.err, Text: r.err.Error()}})
 				telemetry.FireOnStepError(nextModelCallCtx, telemetry.TelemetryErrorEvent{Settings: r.telemetrySettings, CallID: r.cbCallID, Error: r.err})
 			}
 			nextStepCancel()
